@@ -72,12 +72,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cargo-husky"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b02b629252fe8ef6460461409564e2c21d0c8e77e0944f3d189ff06c4e932ad"
-
-[[package]]
 name = "cargo-run-bin"
 version = "1.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -197,13 +191,6 @@ name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
-
-[[package]]
-name = "mediapm"
-version = "0.1.0"
-dependencies = [
- "cargo-husky",
-]
 
 [[package]]
 name = "memchr"
