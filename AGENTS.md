@@ -36,6 +36,10 @@
   exist before you run or document toolchain commands.
 - Detect install, build, test, lint, format, type-check, and release commands
   from actual repository files instead of assuming a default stack.
+- For Rust workflows, treat `Cargo.toml`, `.cargo/config.toml`,
+  `rust-toolchain.toml`, `.github/workflows/ci.yml`, and
+  `.agents/instructions/rust-workflow.instructions.md` as source-of-truth
+  inputs for validation commands and expectations.
 - When a language, framework, task runner, or test system is clearly present,
   add or refine focused instruction files for it rather than stuffing detailed
   rules into `AGENTS.md`.
@@ -72,5 +76,9 @@
 - `.vscode/settings.json` — terminal auto-approve and editor behavior
 - `.github/workflows/ci.yml`, `.github/dependabot.yml`, `.commitlintrc.mjs` —
   automation and policy
+- `Cargo.toml`, `.cargo/config.toml`, `rust-toolchain.toml`, `rustfmt.toml`,
+  `clippy.toml` — Rust package and quality configuration
+- `.agents/instructions/rust-workflow.instructions.md` — Rust editing and
+  validation guidance
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,
   `.agents/.markdownlint.jsonc` — formatting and line-ending rules

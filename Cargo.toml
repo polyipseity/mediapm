@@ -1,0 +1,10 @@
+[package]
+name = "mediapm"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.0"
+description = "Declarative media package manager"
+license-file = "LICENSE.txt"
+publish = false
+
+[dependencies]

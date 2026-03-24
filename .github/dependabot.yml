@@ -4,6 +4,20 @@
 version: 2
 
 updates:
+  # Rust crate dependencies (Cargo.toml / Cargo.lock)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "build"
+      prefix-development: "chore"
+      include: "scope"
+    groups:
+      cargo:
+        patterns:
+          - "*"
+
   # GitHub Actions (workflow dependencies)
   - package-ecosystem: "github-actions"
     directory: "/"
