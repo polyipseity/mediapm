@@ -7,6 +7,8 @@ description = "Declarative media package manager"
 license-file = "LICENSE.txt"
 publish = false
 
+build = "scripts/build.rs"
+
 [dependencies]
 
 [dev-dependencies]
