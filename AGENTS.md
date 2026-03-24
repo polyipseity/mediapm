@@ -4,16 +4,15 @@
 
 - Root `AGENTS.md` is the workspace-wide source of truth. Do not add
   `.github/copilot-instructions.md`.
-- Treat this repository as a template skeleton, not as a fully initialized app.
-  Language-specific manifests, task-runner files, dependency metadata, and
-  test configs may be introduced later by setup flows and are not guaranteed to
-  exist yet.
+- Treat this repository as an implemented Rust mediapm MVP. Keep guidance
+  aligned to concrete files and current architecture.
 - Keep this file short and durable. Put file-type and workflow-specific rules
   in `.agents/instructions/*.instructions.md`, reusable workflows in
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
-- `src/`, `tests/`, and `scripts/` currently exist as template directories and
-  may contain only `.gitkeep` placeholders. Inspect the on-disk tree before you
-  assume source files, tests, or runnable commands already exist.
+- `src/` is organized into one-level architectural folders:
+  `application`, `configuration`, `domain`, `infrastructure`, and `support`.
+- `tests/` contains workflow-oriented integration tests; keep behavioral
+  guarantees updated alongside code changes.
 
 ## Architecture
 
@@ -30,6 +29,15 @@
 - Formatting and newline behavior come from `.editorconfig`, `.gitattributes`,
   `.markdownlint.jsonc`, and `.agents/.markdownlint.jsonc`.
 
+## Rust Architecture Snapshot
+
+- `src/domain/` contains sidecar model, URI canonicalization, metadata shape,
+  and schema migrations.
+- `src/application/` contains planner and executor orchestration.
+- `src/infrastructure/` contains store persistence, verify, GC, and formatting.
+- `src/configuration/` contains declarative config schema and load/save logic.
+- `src/support/` contains shared utility helpers.
+
 ## Build and Test
 
 - Verify the relevant manifests, scripts, workflow files, and local configs
@@ -40,6 +48,10 @@
   `rust-toolchain.toml`, `.github/workflows/ci.yml`, and
   `.agents/instructions/rust-workflow.instructions.md` as source-of-truth
   inputs for validation commands and expectations.
+- Prefer cargo aliases from `.cargo/config.toml` for local validation:
+  - `cargo fmt-check`
+  - `cargo clippy-all`
+  - `cargo test-all`
 - When a language, framework, task runner, or test system is clearly present,
   add or refine focused instruction files for it rather than stuffing detailed
   rules into `AGENTS.md`.
@@ -80,5 +92,9 @@
   `clippy.toml` — Rust package and quality configuration
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and
   validation guidance
+- `.agents/instructions/mediapm-architecture.instructions.md` — module
+  boundaries and sidecar/storage invariants
+- `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test
+  expectations and Rustdoc/docstring depth requirements
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,
   `.agents/.markdownlint.jsonc` — formatting and line-ending rules
