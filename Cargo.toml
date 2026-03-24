@@ -6,7 +6,6 @@ rust-version = "1.94.0"
 description = "Declarative media package manager"
 license-file = "LICENSE.txt"
 publish = false
-
 build = "scripts/build.rs"
 
 [dependencies]
