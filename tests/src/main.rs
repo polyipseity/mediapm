@@ -17,6 +17,9 @@ fn help_command_prints_usage() {
     assert!(stdout.contains("verify"));
     assert!(stdout.contains("gc"));
     assert!(stdout.contains("fmt"));
+    assert!(stdout.contains("edit"));
+    assert!(!stdout.contains("record-metadata-edit"));
+    assert!(!stdout.contains("record-transcode"));
 }
 
 #[test]

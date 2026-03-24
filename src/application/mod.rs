@@ -9,4 +9,5 @@
 //! - provides a clear seam for future alternative frontends.
 
 pub mod executor;
+pub mod history;
 pub mod planner;

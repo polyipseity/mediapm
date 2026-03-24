@@ -32,6 +32,7 @@ effects while preserving provenance in sidecars.
 - `mediapm verify` — verify hash/object/sidecar integrity
 - `mediapm gc` — collect unreferenced objects (dry-run by default)
 - `mediapm fmt` — canonicalize config and sidecar JSON formatting
+- `mediapm edit` — edit metadata/history (revertable or non-revertable)
 
 All commands support `--workspace <path>`. Commands that read config also
 support `--config <path>` (default: `mediapm.json`).
