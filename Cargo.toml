@@ -29,6 +29,7 @@ tempfile = "3.23.0"
 # <https://github.com/cargo-bins/cargo-binstall/issues/2476>
 # cargo-binstall = { version = "1.17.8" }
 commitlint-rs = { bins = ["commitlint"], version = "0.2.4" }
+rumdl = { version = "0.1.59" }
 
 [workspace]
 members = ["scripts/cargo-bin"]
