@@ -49,8 +49,8 @@ support `--config <path>` (default: `mediapm.json`).
   - BLAKE3 hash identifies exact object bytes
 - Sidecars preserve history/lineage rather than replacing state in place.
 
-For a deeper rationale and end-to-end flow, see
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+For deeper rationale and end-to-end flow, see crate rustdoc in
+`src/lib.rs` (for example via `cargo doc --open`).
 
 ## Config (JSON)
 
