@@ -66,7 +66,7 @@
 //! - [`crate::application`]
 //!   - Pure planning and effect execution orchestration.
 //! - [`crate::infrastructure`]
-//!   - Filesystem-backed store, verification, GC, formatting.
+//!   - Filesystem-backed store, verification, GC, formatting, provider adapters.
 //! - [`crate::support`]
 //!   - Shared deterministic utilities.
 //!
@@ -79,7 +79,8 @@
 //! 3. Executor applies effects:
 //!    - import bytes into object store,
 //!    - update sidecar lineage/history,
-//!    - materialize configured links.
+//!    - materialize configured links,
+//!    - optionally enrich metadata via provider queries.
 //! 4. Sidecars are written canonically and atomically.
 //!
 //! Typical `verify`:

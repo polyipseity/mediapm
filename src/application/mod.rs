@@ -8,6 +8,7 @@
 //! - keeps CLI thin by centralizing orchestration behavior,
 //! - provides a clear seam for future alternative frontends.
 
+pub mod enrichment;
 pub mod executor;
 pub mod history;
 pub mod planner;

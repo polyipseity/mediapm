@@ -24,6 +24,7 @@ fn save_and_load_config_round_trip() {
             },
         }],
         metadata_overrides: Default::default(),
+        provider_queries: Default::default(),
         policies: Policies::default(),
     };
 
@@ -63,4 +64,41 @@ fn accepts_json_content_with_ncl_extension() {
     let config = load_config(&config_path).expect("json-compatible ncl content should load");
     assert_eq!(config.sources.len(), 1);
     assert!(config.links.is_empty());
+}
+
+#[test]
+fn deserializes_provider_query_and_musicbrainz_policy_fields() {
+    let workspace = tempdir().expect("temp workspace should create");
+    let config_path = workspace.path().join("mediapm.json");
+
+    let value = json!({
+        "sources": [{"uri": "inbox/song.flac"}],
+        "provider_queries": {
+            "inbox/song.flac": {
+                "artist": "Artist",
+                "title": "Song",
+                "release": "Album",
+                "limit": 3
+            }
+        },
+        "policies": {
+            "musicbrainz_enabled": true,
+            "musicbrainz": {
+                "base_url": "http://127.0.0.1:9/ws/2",
+                "user_agent": "mediapm-test",
+                "timeout_ms": 50,
+                "min_interval_ms": 0,
+                "cache_ttl_seconds": 1,
+                "max_candidates": 3
+            }
+        }
+    });
+
+    fs::write(&config_path, serde_json::to_vec_pretty(&value).expect("config should serialize"))
+        .expect("config should write");
+
+    let config = load_config(&config_path).expect("config should load");
+    assert!(config.policies.musicbrainz_enabled);
+    assert_eq!(config.policies.musicbrainz.max_candidates, 3);
+    assert_eq!(config.provider_queries["inbox/song.flac"].artist.as_deref(), Some("Artist"));
 }

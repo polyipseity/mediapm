@@ -1,5 +1,6 @@
 pub mod formatter;
 pub mod gc;
+pub mod provider;
 pub mod store;
 pub mod verify;
 

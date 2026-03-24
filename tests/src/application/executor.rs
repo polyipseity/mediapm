@@ -36,6 +36,10 @@ fn dry_run_returns_summary_without_materializing_link() {
     assert_eq!(summary.planned_effects, 2);
     assert_eq!(summary.imports_created, 0);
     assert_eq!(summary.links_created, 0);
+    assert_eq!(summary.provider_queries_attempted, 0);
+    assert_eq!(summary.provider_cache_hits, 0);
+    assert_eq!(summary.provider_sidecars_updated, 0);
+    assert_eq!(summary.provider_failures, 0);
     assert!(!workspace.path().join("library/song.flac").exists());
 }
 
@@ -49,6 +53,8 @@ fn apply_creates_link_and_sidecar_state() {
 
     assert_eq!(summary.imports_created, 1);
     assert_eq!(summary.links_created, 1);
+    assert_eq!(summary.provider_queries_attempted, 0);
+    assert_eq!(summary.provider_failures, 0);
     assert!(workspace.path().join("library/song.flac").exists());
     assert!(paths.media_dir.exists());
 }
@@ -64,4 +70,5 @@ fn repeated_apply_keeps_imports_idempotent() {
 
     assert_eq!(second.imports_created, 0);
     assert_eq!(second.imports_unchanged, 1);
+    assert_eq!(second.provider_queries_attempted, 0);
 }

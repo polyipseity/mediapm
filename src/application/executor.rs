@@ -23,6 +23,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::{
+    application::enrichment::apply_musicbrainz_enrichment,
     application::planner::{Effect, Plan},
     configuration::config::{AppConfig, LinkMethod, SelectionPreference, VariantSelection},
     domain::{
@@ -53,6 +54,14 @@ pub struct SyncSummary {
     pub links_updated: usize,
     /// Count of links already matching desired target.
     pub links_unchanged: usize,
+    /// Provider queries attempted.
+    pub provider_queries_attempted: usize,
+    /// Provider responses served from cache.
+    pub provider_cache_hits: usize,
+    /// Sidecars updated by provider enrichment.
+    pub provider_sidecars_updated: usize,
+    /// Provider enrichment failures.
+    pub provider_failures: usize,
     /// Non-fatal warning messages.
     pub warnings: Vec<String>,
 }
@@ -104,6 +113,15 @@ pub fn execute_plan(
                 }
             }
         }
+    }
+
+    if apply && config.policies.musicbrainz_enabled {
+        let provider_summary = apply_musicbrainz_enrichment(paths, config)?;
+        summary.provider_queries_attempted = provider_summary.queries_attempted;
+        summary.provider_cache_hits = provider_summary.cache_hits;
+        summary.provider_sidecars_updated = provider_summary.sidecars_updated;
+        summary.provider_failures = provider_summary.failures;
+        summary.warnings.extend(provider_summary.warnings);
     }
 
     Ok(summary)

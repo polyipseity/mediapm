@@ -15,3 +15,4 @@ pub mod canonical;
 pub mod metadata;
 pub mod migration;
 pub mod model;
+pub mod provider;

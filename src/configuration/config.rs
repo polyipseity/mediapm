@@ -34,9 +34,38 @@ pub struct AppConfig {
     /// Per-URI metadata overlays merged into normalized metadata.
     #[serde(default)]
     pub metadata_overrides: BTreeMap<String, Value>,
+    /// Provider query declarations keyed by source URI/path-like key.
+    ///
+    /// Keys are canonicalized during execution and can be either canonical URI
+    /// strings or path-like inputs relative to workspace root.
+    #[serde(default)]
+    pub provider_queries: BTreeMap<String, MusicBrainzQueryDecl>,
     /// Operational policies for linking and reconciliation.
     #[serde(default)]
     pub policies: Policies,
+}
+
+/// MusicBrainz query declaration attached to a source identity.
+///
+/// If `query` is provided, it is used verbatim; otherwise, mediapm builds a
+/// deterministic query from `artist` + `title` + optional `release`.
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MusicBrainzQueryDecl {
+    /// Raw MusicBrainz query expression override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Artist hint used for synthesized query expressions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
+    /// Title/recording hint used for synthesized query expressions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Release hint used for synthesized query expressions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
+    /// Optional result cap for this query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
 }
 
 /// A source media declaration.
@@ -118,6 +147,9 @@ pub struct Policies {
     /// Provider integration switch.
     #[serde(default)]
     pub musicbrainz_enabled: bool,
+    /// MusicBrainz runtime/client policy knobs.
+    #[serde(default)]
+    pub musicbrainz: MusicBrainzPolicy,
 }
 
 impl Default for Policies {
@@ -126,6 +158,43 @@ impl Default for Policies {
             link_methods: default_link_methods(),
             strict_rehash: false,
             musicbrainz_enabled: false,
+            musicbrainz: MusicBrainzPolicy::default(),
+        }
+    }
+}
+
+/// Runtime policy for MusicBrainz client behavior.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MusicBrainzPolicy {
+    /// MusicBrainz API base URL.
+    #[serde(default = "default_musicbrainz_base_url")]
+    pub base_url: String,
+    /// Required user-agent for MusicBrainz requests.
+    #[serde(default = "default_musicbrainz_user_agent")]
+    pub user_agent: String,
+    /// Request timeout in milliseconds.
+    #[serde(default = "default_musicbrainz_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Minimum interval between outgoing requests.
+    #[serde(default = "default_musicbrainz_min_interval_ms")]
+    pub min_interval_ms: u64,
+    /// Cache TTL in seconds.
+    #[serde(default = "default_musicbrainz_cache_ttl_seconds")]
+    pub cache_ttl_seconds: u64,
+    /// Default result cap when query-specific `limit` is absent.
+    #[serde(default = "default_musicbrainz_max_candidates")]
+    pub max_candidates: usize,
+}
+
+impl Default for MusicBrainzPolicy {
+    fn default() -> Self {
+        Self {
+            base_url: default_musicbrainz_base_url(),
+            user_agent: default_musicbrainz_user_agent(),
+            timeout_ms: default_musicbrainz_timeout_ms(),
+            min_interval_ms: default_musicbrainz_min_interval_ms(),
+            cache_ttl_seconds: default_musicbrainz_cache_ttl_seconds(),
+            max_candidates: default_musicbrainz_max_candidates(),
         }
     }
 }
@@ -185,4 +254,28 @@ pub fn save_config_pretty(config_path: &Path, config: &AppConfig) -> Result<()> 
     fs::write(config_path, output)?;
 
     Ok(())
+}
+
+fn default_musicbrainz_base_url() -> String {
+    "https://musicbrainz.org/ws/2".to_owned()
+}
+
+fn default_musicbrainz_user_agent() -> String {
+    "mediapm/0.1 (https://example.invalid/mediapm)".to_owned()
+}
+
+fn default_musicbrainz_timeout_ms() -> u64 {
+    10_000
+}
+
+fn default_musicbrainz_min_interval_ms() -> u64 {
+    1_100
+}
+
+fn default_musicbrainz_cache_ttl_seconds() -> u64 {
+    7 * 24 * 60 * 60
+}
+
+fn default_musicbrainz_max_candidates() -> usize {
+    5
 }

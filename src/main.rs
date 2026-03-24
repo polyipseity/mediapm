@@ -200,6 +200,16 @@ fn run() -> Result<()> {
                         "links: created={} updated={} unchanged={}",
                         summary.links_created, summary.links_updated, summary.links_unchanged
                     );
+                    println!(
+                        "provider (musicbrainz): queries={} cache_hits={} sidecars_updated={} failures={}",
+                        summary.provider_queries_attempted,
+                        summary.provider_cache_hits,
+                        summary.provider_sidecars_updated,
+                        summary.provider_failures
+                    );
+                    if !summary.warnings.is_empty() {
+                        println!("warnings: {}", summary.warnings.len());
+                    }
                 }
             }
         }

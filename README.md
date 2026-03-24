@@ -32,7 +32,10 @@ effects while preserving provenance in sidecars.
 - `mediapm verify` — verify hash/object/sidecar integrity
 - `mediapm gc` — collect unreferenced objects (dry-run by default)
 - `mediapm fmt` — canonicalize config and sidecar JSON formatting
-- `mediapm edit` — edit metadata/history (revertable or non-revertable)
+- `mediapm edit` — append metadata/history edits (revertable or non-revertable)
+
+When `policies.musicbrainz_enabled` is true, `sync` also runs provider
+enrichment for entries in `provider_queries`.
 
 All commands support `--workspace <path>`. Commands that read config also
 support `--config <path>` (default: `mediapm.json`).
@@ -60,6 +63,7 @@ For deeper rationale and end-to-end flow, see crate rustdoc in
 - `sources`: source URIs (path-like values are canonicalized to `file://` URIs)
 - `links`: explicit desired link targets
 - `metadata_overrides`: per-URI metadata overlay values
+- `provider_queries`: per-URI MusicBrainz query declarations
 - `policies`: link method order and sync policy toggles
 
 Example:
@@ -83,13 +87,41 @@ Example:
    }
   }
  },
+  "provider_queries": {
+    "inbox/song.flac": {
+      "artist": "Artist",
+      "title": "Song",
+      "release": "Album",
+      "limit": 5
+    }
+  },
  "policies": {
   "link_methods": ["symlink", "hardlink", "copy"],
   "strict_rehash": false,
-  "musicbrainz_enabled": false
+    "musicbrainz_enabled": true,
+    "musicbrainz": {
+      "base_url": "https://musicbrainz.org/ws/2",
+      "user_agent": "mediapm/0.1 (https://example.invalid/mediapm)",
+      "timeout_ms": 10000,
+      "min_interval_ms": 1100,
+      "cache_ttl_seconds": 604800,
+      "max_candidates": 5
+    }
  }
 }
 ```
+
+### Provider merge policy
+
+MusicBrainz metadata is merged deterministically with explicit priority:
+
+1. `metadata_overrides` from config (highest)
+2. existing manual/local metadata values
+3. provider candidate fields
+4. original embedded/source tags (lowest)
+
+Field-level provider provenance and selected-candidate snapshots are stored in
+sidecar `provider_enrichment.musicbrainz` for auditability.
 
 ## Local validation
 
