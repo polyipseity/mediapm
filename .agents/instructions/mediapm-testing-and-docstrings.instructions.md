@@ -3,6 +3,7 @@ description: "Use when editing mediapm tests or introducing new Rust APIs. Cover
 name: "mediapm Testing and Docstrings"
 applyTo: "tests/**/*.rs, src/**/*.rs"
 ---
+
 # mediapm Testing and Docstrings
 
 ## Testing scope expectations

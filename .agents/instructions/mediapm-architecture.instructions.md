@@ -3,6 +3,7 @@ description: "Use when editing mediapm Rust source under src/. Covers the module
 name: "mediapm Architecture and Invariants"
 applyTo: "src/**/*.rs"
 ---
+
 # mediapm Architecture and Invariants
 
 ## Purpose
