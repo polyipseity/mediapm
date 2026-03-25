@@ -46,7 +46,7 @@ pub struct ProviderEnrichmentSummary {
 }
 
 /// Apply MusicBrainz enrichment using production provider adapter.
-pub fn apply_musicbrainz_enrichment(
+pub async fn apply_musicbrainz_enrichment(
     paths: &WorkspacePaths,
     config: &AppConfig,
 ) -> Result<ProviderEnrichmentSummary> {
@@ -55,11 +55,11 @@ pub fn apply_musicbrainz_enrichment(
     }
 
     let mut provider = MusicBrainzHttpProvider::new(paths, &config.policies.musicbrainz)?;
-    apply_musicbrainz_enrichment_with_provider(paths, config, &mut provider)
+    apply_musicbrainz_enrichment_with_provider(paths, config, &mut provider).await
 }
 
 /// Apply MusicBrainz enrichment with injected provider implementation.
-pub fn apply_musicbrainz_enrichment_with_provider<P: MusicBrainzProvider>(
+pub async fn apply_musicbrainz_enrichment_with_provider<P: MusicBrainzProvider>(
     paths: &WorkspacePaths,
     config: &AppConfig,
     provider: &mut P,
@@ -90,7 +90,7 @@ pub fn apply_musicbrainz_enrichment_with_provider<P: MusicBrainzProvider>(
             continue;
         }
 
-        let Some(mut sidecar) = read_sidecar(paths, &canonical_uri)? else {
+        let Some(mut sidecar) = read_sidecar(paths, &canonical_uri).await? else {
             summary.warnings.push(format!(
                 "provider query for '{}' skipped because sidecar does not exist",
                 canonical_uri
@@ -100,7 +100,7 @@ pub fn apply_musicbrainz_enrichment_with_provider<P: MusicBrainzProvider>(
 
         summary.queries_attempted += 1;
 
-        let provider_result = match provider.search_recordings(&query) {
+        let provider_result = match provider.search_recordings(&query).await {
             Ok(result) => result,
             Err(error) => {
                 summary.failures += 1;
@@ -235,7 +235,7 @@ pub fn apply_musicbrainz_enrichment_with_provider<P: MusicBrainzProvider>(
         }
 
         if changed {
-            write_sidecar(paths, &sidecar)?;
+            write_sidecar(paths, &sidecar).await?;
             summary.sidecars_updated += 1;
         }
     }

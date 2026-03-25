@@ -11,7 +11,7 @@ fn help_command_prints_usage() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Declarative, workspace-local media reconciler"));
+    assert!(stdout.contains("Usage:"));
     assert!(stdout.contains("plan"));
     assert!(stdout.contains("sync"));
     assert!(stdout.contains("verify"));

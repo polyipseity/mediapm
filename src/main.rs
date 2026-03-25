@@ -142,7 +142,15 @@ enum CliEditKind {
 }
 
 fn main() -> ExitCode {
-    match run() {
+    let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("error: failed to initialize async runtime: {error:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match runtime.block_on(run()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error:#}");
@@ -157,7 +165,7 @@ fn main() -> ExitCode {
 /// planning, or reconciliation semantics directly; instead, it composes those
 /// capabilities from the library modules and ensures each command has a clear
 /// success/failure contract.
-fn run() -> Result<()> {
+async fn run() -> Result<()> {
     let cli = Cli::parse();
     let workspace_root = resolve_workspace_root(&cli.workspace)?;
     let paths = WorkspacePaths::new(&workspace_root);
@@ -165,7 +173,7 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Plan { config, json } => {
             let config_path = resolve_config_path(&workspace_root, &config);
-            let config = load_config(&config_path)?;
+            let config = load_config(&config_path).await?;
             let plan = build_plan(&config, &workspace_root)?;
 
             if json {
@@ -176,7 +184,7 @@ fn run() -> Result<()> {
         }
         Commands::Sync { config, dry_run, json } => {
             let config_path = resolve_config_path(&workspace_root, &config);
-            let config = load_config(&config_path)?;
+            let config = load_config(&config_path).await?;
             let plan = build_plan(&config, &workspace_root)?;
 
             if dry_run {
@@ -187,7 +195,7 @@ fn run() -> Result<()> {
                     println!("\n(dry-run only; no side effects applied)");
                 }
             } else {
-                let summary = execute_plan(&paths, &config, &plan, true)?;
+                let summary = execute_plan(&paths, &config, &plan, true).await?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&summary)?);
                 } else {
@@ -214,7 +222,7 @@ fn run() -> Result<()> {
             }
         }
         Commands::Verify { json } => {
-            let report = verify_workspace(&paths)?;
+            let report = verify_workspace(&paths).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -235,7 +243,7 @@ fn run() -> Result<()> {
             }
         }
         Commands::Gc { apply, json } => {
-            let report = gc_workspace(&paths, apply)?;
+            let report = gc_workspace(&paths, apply).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -249,7 +257,7 @@ fn run() -> Result<()> {
         }
         Commands::Fmt { config, json } => {
             let config_path = resolve_config_path(&workspace_root, &config);
-            let report = format_workspace(&paths, &config_path)?;
+            let report = format_workspace(&paths, &config_path).await?;
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
@@ -302,7 +310,8 @@ fn run() -> Result<()> {
                         operation,
                         details: merge_message_into_details(details_value, message)?,
                     },
-                )?
+                )
+                .await?
             } else {
                 record_metadata_edit(
                     &paths,
@@ -315,7 +324,8 @@ fn run() -> Result<()> {
                         message,
                         details: details_value,
                     },
-                )?
+                )
+                .await?
             };
 
             if json {

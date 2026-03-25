@@ -7,8 +7,8 @@ use mediapm::{
     infrastructure::{formatter::format_workspace, store::WorkspacePaths},
 };
 
-#[test]
-fn format_workspace_rewrites_config_and_sidecars() {
+#[tokio::test]
+async fn format_workspace_rewrites_config_and_sidecars() {
     let workspace = tempdir().expect("temp workspace should create");
     let source_file = workspace.path().join("inbox/song.flac");
 
@@ -27,12 +27,12 @@ fn format_workspace_rewrites_config_and_sidecars() {
     )
     .expect("config should write");
 
-    let config: AppConfig = load_config(&config_path).expect("config should load");
+    let config: AppConfig = load_config(&config_path).await.expect("config should load");
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
-    execute_plan(&paths, &config, &plan, true).expect("sync should succeed");
+    execute_plan(&paths, &config, &plan, true).await.expect("sync should succeed");
 
-    let report = format_workspace(&paths, &config_path).expect("format should succeed");
+    let report = format_workspace(&paths, &config_path).await.expect("format should succeed");
 
     assert!(report.config_written);
     assert_eq!(report.sidecars_rewritten, 1);

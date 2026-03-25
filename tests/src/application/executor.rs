@@ -25,13 +25,14 @@ fn create_basic_workspace() -> (tempfile::TempDir, AppConfig) {
     (workspace, config)
 }
 
-#[test]
-fn dry_run_returns_summary_without_materializing_link() {
+#[tokio::test]
+async fn dry_run_returns_summary_without_materializing_link() {
     let (workspace, config) = create_basic_workspace();
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
 
-    let summary = execute_plan(&paths, &config, &plan, false).expect("dry run should succeed");
+    let summary =
+        execute_plan(&paths, &config, &plan, false).await.expect("dry run should succeed");
 
     assert_eq!(summary.planned_effects, 2);
     assert_eq!(summary.imports_created, 0);
@@ -43,13 +44,13 @@ fn dry_run_returns_summary_without_materializing_link() {
     assert!(!workspace.path().join("library/song.flac").exists());
 }
 
-#[test]
-fn apply_creates_link_and_sidecar_state() {
+#[tokio::test]
+async fn apply_creates_link_and_sidecar_state() {
     let (workspace, config) = create_basic_workspace();
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
 
-    let summary = execute_plan(&paths, &config, &plan, true).expect("sync should succeed");
+    let summary = execute_plan(&paths, &config, &plan, true).await.expect("sync should succeed");
 
     assert_eq!(summary.imports_created, 1);
     assert_eq!(summary.links_created, 1);
@@ -59,14 +60,16 @@ fn apply_creates_link_and_sidecar_state() {
     assert!(paths.media_dir.exists());
 }
 
-#[test]
-fn repeated_apply_keeps_imports_idempotent() {
+#[tokio::test]
+async fn repeated_apply_keeps_imports_idempotent() {
     let (workspace, config) = create_basic_workspace();
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
 
-    let _first = execute_plan(&paths, &config, &plan, true).expect("first sync should succeed");
-    let second = execute_plan(&paths, &config, &plan, true).expect("second sync should succeed");
+    let _first =
+        execute_plan(&paths, &config, &plan, true).await.expect("first sync should succeed");
+    let second =
+        execute_plan(&paths, &config, &plan, true).await.expect("second sync should succeed");
 
     assert_eq!(second.imports_created, 0);
     assert_eq!(second.imports_unchanged, 1);

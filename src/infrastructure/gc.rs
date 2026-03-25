@@ -8,12 +8,12 @@
 
 use std::{
     collections::HashSet,
-    fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use serde::Serialize;
+use tokio::fs;
 use walkdir::WalkDir;
 
 use crate::infrastructure::store::{WorkspacePaths, load_all_sidecars};
@@ -38,8 +38,8 @@ pub struct GcReport {
 ///
 /// "Mark" is performed by scanning sidecar variant references; "sweep" scans
 /// object files and identifies entries outside that reachable set.
-pub fn gc_workspace(paths: &WorkspacePaths, apply: bool) -> Result<GcReport> {
-    let sidecars = load_all_sidecars(paths)?;
+pub async fn gc_workspace(paths: &WorkspacePaths, apply: bool) -> Result<GcReport> {
+    let sidecars = load_all_sidecars(paths).await?;
 
     let referenced_objects = sidecars
         .iter()
@@ -68,7 +68,7 @@ pub fn gc_workspace(paths: &WorkspacePaths, apply: bool) -> Result<GcReport> {
     let mut removed_count = 0_usize;
     if apply {
         for candidate in &candidates {
-            if remove_path(candidate).is_ok() {
+            if remove_path(candidate).await.is_ok() {
                 removed_count += 1;
             }
         }
@@ -82,12 +82,12 @@ pub fn gc_workspace(paths: &WorkspacePaths, apply: bool) -> Result<GcReport> {
     })
 }
 
-fn remove_path(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+async fn remove_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).await?;
     if metadata.is_file() || metadata.file_type().is_symlink() {
-        fs::remove_file(path)?;
+        fs::remove_file(path).await?;
     } else {
-        fs::remove_dir_all(path)?;
+        fs::remove_dir_all(path).await?;
     }
 
     Ok(())

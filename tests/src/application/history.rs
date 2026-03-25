@@ -15,7 +15,7 @@ use mediapm::{
     infrastructure::{store::WorkspacePaths, verify::verify_workspace},
 };
 
-fn setup_imported_sidecar() -> (tempfile::TempDir, WorkspacePaths, String) {
+async fn setup_imported_sidecar() -> (tempfile::TempDir, WorkspacePaths, String) {
     let workspace = tempdir().expect("temp workspace should create");
     let source_file = workspace.path().join("inbox/song.flac");
 
@@ -31,7 +31,7 @@ fn setup_imported_sidecar() -> (tempfile::TempDir, WorkspacePaths, String) {
 
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
-    execute_plan(&paths, &config, &plan, true).expect("sync should succeed");
+    execute_plan(&paths, &config, &plan, true).await.expect("sync should succeed");
 
     let canonical_uri =
         mediapm::domain::canonical::canonicalize_uri("inbox/song.flac", workspace.path())
@@ -41,9 +41,9 @@ fn setup_imported_sidecar() -> (tempfile::TempDir, WorkspacePaths, String) {
     (workspace, paths, canonical_uri)
 }
 
-#[test]
-fn record_metadata_edit_updates_variant_and_history() {
-    let (_workspace, paths, canonical_uri) = setup_imported_sidecar();
+#[tokio::test]
+async fn record_metadata_edit_updates_variant_and_history() {
+    let (_workspace, paths, canonical_uri) = setup_imported_sidecar().await;
 
     let summary = record_metadata_edit(
         &paths,
@@ -57,12 +57,14 @@ fn record_metadata_edit_updates_variant_and_history() {
             details: json!({"actor": "integration-test"}),
         },
     )
+    .await
     .expect("metadata edit should record");
 
     assert_eq!(summary.canonical_uri, canonical_uri);
     assert_eq!(summary.from_variant_hash, summary.to_variant_hash);
 
     let sidecar = mediapm::infrastructure::store::read_sidecar(&paths, &summary.canonical_uri)
+        .await
         .expect("sidecar should read")
         .expect("sidecar should exist");
 
@@ -76,9 +78,9 @@ fn record_metadata_edit_updates_variant_and_history() {
     assert!(sidecar.edits.iter().any(|event| event.event_id == summary.event_id));
 }
 
-#[test]
-fn record_transcode_event_appends_non_revertable_lineage() {
-    let (workspace, paths, canonical_uri) = setup_imported_sidecar();
+#[tokio::test]
+async fn record_transcode_event_appends_non_revertable_lineage() {
+    let (workspace, paths, canonical_uri) = setup_imported_sidecar().await;
 
     let output_file = workspace.path().join("out/song.mp3");
     std::fs::create_dir_all(output_file.parent().expect("parent should exist"))
@@ -96,6 +98,7 @@ fn record_transcode_event_appends_non_revertable_lineage() {
             details: json!({"tool": "ffmpeg", "preset": "v2"}),
         },
     )
+    .await
     .expect("transcode event should record");
 
     assert_eq!(summary.canonical_uri, canonical_uri);
@@ -103,6 +106,7 @@ fn record_transcode_event_appends_non_revertable_lineage() {
     assert!(summary.variant_created);
 
     let sidecar = mediapm::infrastructure::store::read_sidecar(&paths, &summary.canonical_uri)
+        .await
         .expect("sidecar should read")
         .expect("sidecar should exist");
 
@@ -111,13 +115,13 @@ fn record_transcode_event_appends_non_revertable_lineage() {
             && event.kind == mediapm::domain::model::EditKind::NonRevertable
     }));
 
-    let verify_report = verify_workspace(&paths).expect("verify should run");
+    let verify_report = verify_workspace(&paths).await.expect("verify should run");
     assert!(verify_report.is_clean(), "recorded transcode should preserve integrity");
 }
 
-#[test]
-fn record_transcode_event_reuses_existing_variant_hash_when_present() {
-    let (workspace, paths, canonical_uri) = setup_imported_sidecar();
+#[tokio::test]
+async fn record_transcode_event_reuses_existing_variant_hash_when_present() {
+    let (workspace, paths, canonical_uri) = setup_imported_sidecar().await;
 
     let output_file = workspace.path().join("out/song-copy.flac");
     std::fs::create_dir_all(output_file.parent().expect("parent should exist"))
@@ -135,11 +139,13 @@ fn record_transcode_event_reuses_existing_variant_hash_when_present() {
             details: json!({"tool": "ffmpeg", "mode": "copy"}),
         },
     )
+    .await
     .expect("transcode event should record");
 
     assert!(!summary.variant_created, "same-bytes output should reuse existing variant");
 
     let sidecar = mediapm::infrastructure::store::read_sidecar(&paths, &summary.canonical_uri)
+        .await
         .expect("sidecar should read")
         .expect("sidecar should exist");
 
@@ -147,9 +153,9 @@ fn record_transcode_event_reuses_existing_variant_hash_when_present() {
     assert!(sidecar.edits.iter().any(|event| event.event_id == summary.event_id));
 }
 
-#[test]
-fn record_metadata_edit_supports_non_revertable_history_only_event() {
-    let (_workspace, paths, canonical_uri) = setup_imported_sidecar();
+#[tokio::test]
+async fn record_metadata_edit_supports_non_revertable_history_only_event() {
+    let (_workspace, paths, canonical_uri) = setup_imported_sidecar().await;
 
     let summary = record_metadata_edit(
         &paths,
@@ -163,12 +169,14 @@ fn record_metadata_edit_supports_non_revertable_history_only_event() {
             details: json!({"reason": "audit-note"}),
         },
     )
+    .await
     .expect("history-only metadata edit should record");
 
     assert_eq!(summary.kind, EditKind::NonRevertable);
     assert!(!summary.variant_created);
 
     let sidecar = mediapm::infrastructure::store::read_sidecar(&paths, &summary.canonical_uri)
+        .await
         .expect("sidecar should read")
         .expect("sidecar should exist");
 

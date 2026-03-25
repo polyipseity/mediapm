@@ -6,11 +6,14 @@ use mediapm::{
     infrastructure::{provider::MusicBrainzProvider, provider::musicbrainz::MusicBrainzHttpProvider, store::WorkspacePaths},
 };
 
-#[test]
-fn search_uses_fresh_cache_without_network() {
+#[tokio::test]
+async fn search_uses_fresh_cache_without_network() {
     let workspace = tempfile::tempdir().expect("temp workspace should create");
     let paths = WorkspacePaths::new(workspace.path());
-    paths.ensure_store_dirs().expect("store dirs should create");
+    paths
+        .ensure_store_dirs()
+        .await
+        .expect("store dirs should create");
 
     let policy = MusicBrainzPolicy {
         base_url: "http://127.0.0.1:9/ws/2".to_owned(),
@@ -56,6 +59,7 @@ fn search_uses_fresh_cache_without_network() {
 
     let result = provider
         .search_recordings(&query)
+        .await
         .expect("cached query should succeed");
 
     assert!(result.cache_hit);
@@ -63,11 +67,14 @@ fn search_uses_fresh_cache_without_network() {
     assert_eq!(result.candidates[0].entity_id.as_deref(), Some("rec-1"));
 }
 
-#[test]
-fn expired_cache_falls_back_to_network_and_errors_when_unreachable() {
+#[tokio::test]
+async fn expired_cache_falls_back_to_network_and_errors_when_unreachable() {
     let workspace = tempfile::tempdir().expect("temp workspace should create");
     let paths = WorkspacePaths::new(workspace.path());
-    paths.ensure_store_dirs().expect("store dirs should create");
+    paths
+        .ensure_store_dirs()
+        .await
+        .expect("store dirs should create");
 
     let policy = MusicBrainzPolicy {
         base_url: "http://127.0.0.1:9/ws/2".to_owned(),
@@ -107,6 +114,7 @@ fn expired_cache_falls_back_to_network_and_errors_when_unreachable() {
 
     let error = provider
         .search_recordings(&query)
+        .await
         .expect_err("expired cache should force unreachable network and fail");
 
     assert!(format!("{error:#}").contains("musicbrainz request failed"));

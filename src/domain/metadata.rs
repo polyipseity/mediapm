@@ -7,10 +7,11 @@
 //! In other words, this module defines the *shape contract* between probing and
 //! sidecar persistence, not a final media-analysis implementation.
 
-use std::{fs, path::Path};
+use std::path::Path;
 
 use anyhow::Result;
 use serde_json::{Value, json};
+use tokio::fs;
 
 use crate::domain::model::Blake3Hash;
 
@@ -23,11 +24,11 @@ use crate::domain::model::Blake3Hash;
 /// The split between raw and normalized payloads exists so future adapters can
 /// preserve tool-native output (`raw_probe`) while still presenting a stable,
 /// planner-friendly schema (`normalized_metadata`).
-pub fn probe_media_file(
+pub async fn probe_media_file(
     path: &Path,
     variant_hash: Blake3Hash,
 ) -> Result<(Option<String>, Value, Value)> {
-    let metadata = fs::metadata(path)?;
+    let metadata = fs::metadata(path).await?;
     let file_size = metadata.len();
 
     let container =

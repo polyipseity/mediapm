@@ -47,9 +47,9 @@ impl VerifyReport {
 ///
 /// This function treats the sidecar set as source-of-truth for reachability and
 /// lineage correctness, then validates object bytes against recorded hashes.
-pub fn verify_workspace(paths: &WorkspacePaths) -> Result<VerifyReport> {
+pub async fn verify_workspace(paths: &WorkspacePaths) -> Result<VerifyReport> {
     let mut report = VerifyReport::default();
-    let sidecars = load_all_sidecars(paths)?;
+    let sidecars = load_all_sidecars(paths).await?;
 
     report.sidecars_checked = sidecars.len();
 
@@ -86,7 +86,7 @@ pub fn verify_workspace(paths: &WorkspacePaths) -> Result<VerifyReport> {
                 ));
             }
 
-            let digest = hash_file(&object_path)?;
+            let digest = hash_file(&object_path).await?;
             if digest != variant.variant_hash {
                 report.hash_mismatches.push(format!(
                     "{}: object hash mismatch at {}",

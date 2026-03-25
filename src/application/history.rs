@@ -10,7 +10,6 @@
 //! Instead, they call these APIs and receive deterministic event records.
 
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,6 +17,7 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use serde_json::{Value, json};
+use tokio::fs;
 
 use crate::{
     domain::{
@@ -89,11 +89,12 @@ pub struct HistoryRecordSummary {
 ///
 /// This mutates sidecar metadata for one variant and records an explicit event
 /// where `from_variant_hash == to_variant_hash`.
-pub fn record_metadata_edit(
+pub async fn record_metadata_edit(
     paths: &WorkspacePaths,
     request: MetadataEditRequest,
 ) -> Result<HistoryRecordSummary> {
-    let mut sidecar = read_sidecar(paths, &request.canonical_uri)?
+    let mut sidecar = read_sidecar(paths, &request.canonical_uri)
+        .await?
         .ok_or_else(|| anyhow!("unknown canonical URI: {}", request.canonical_uri))?;
 
     let target_hash = select_variant_hash(&sidecar, request.target_variant_hash)?;
@@ -131,7 +132,7 @@ pub fn record_metadata_edit(
         variant.lineage.edit_event_ids.push(event_id.clone());
     }
 
-    write_sidecar(paths, &sidecar)?;
+    write_sidecar(paths, &sidecar).await?;
 
     Ok(HistoryRecordSummary {
         canonical_uri: request.canonical_uri,
@@ -148,11 +149,12 @@ pub fn record_metadata_edit(
 ///
 /// The actual transcode process is intentionally delegated; this function only
 /// records the resulting bytes and provenance in sidecar/object store state.
-pub fn record_transcode_event(
+pub async fn record_transcode_event(
     paths: &WorkspacePaths,
     request: TranscodeRecordRequest,
 ) -> Result<HistoryRecordSummary> {
-    let mut sidecar = read_sidecar(paths, &request.canonical_uri)?
+    let mut sidecar = read_sidecar(paths, &request.canonical_uri)
+        .await?
         .ok_or_else(|| anyhow!("unknown canonical URI: {}", request.canonical_uri))?;
 
     let from_hash = select_variant_hash(&sidecar, request.from_variant_hash)?;
@@ -162,10 +164,10 @@ pub fn record_transcode_event(
         return Err(anyhow!("output path does not exist: {}", output_path.display()));
     }
 
-    let to_hash = hash_file(&output_path)?;
-    let object_relpath = ensure_object(paths, &output_path, &to_hash)?;
-    let byte_size = fs::metadata(&output_path)?.len();
-    let (container, probe, metadata) = probe_media_file(&output_path, to_hash)?;
+    let to_hash = hash_file(&output_path).await?;
+    let object_relpath = ensure_object(paths, &output_path, &to_hash).await?;
+    let byte_size = fs::metadata(&output_path).await?.len();
+    let (container, probe, metadata) = probe_media_file(&output_path, to_hash).await?;
 
     let operation = normalized_operation(&request.operation, "edit");
     let event_id = generate_event_id("evt_transcode", &to_hash);
@@ -214,7 +216,7 @@ pub fn record_transcode_event(
         to_variant_hash: to_hash,
     });
 
-    write_sidecar(paths, &sidecar)?;
+    write_sidecar(paths, &sidecar).await?;
 
     Ok(HistoryRecordSummary {
         canonical_uri: request.canonical_uri,

@@ -6,17 +6,17 @@
 //! - normalize MusicBrainz payloads into provider-domain candidates.
 
 use std::{
-    fs,
     path::{Path, PathBuf},
-    thread,
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, anyhow};
-use reqwest::blocking::Client;
+use async_trait::async_trait;
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use tokio::{fs, time::sleep};
 
 use crate::{
     configuration::config::MusicBrainzPolicy,
@@ -53,7 +53,7 @@ impl MusicBrainzHttpProvider {
             .context("failed to build MusicBrainz HTTP client")?;
 
         let cache_dir = paths.providers_dir.join("musicbrainz").join("cache");
-        fs::create_dir_all(&cache_dir)?;
+        std::fs::create_dir_all(&cache_dir)?;
 
         Ok(Self { client, policy: policy.clone(), cache_dir, last_request_at: None })
     }
@@ -80,12 +80,12 @@ impl MusicBrainzHttpProvider {
         Ok((expression, limit))
     }
 
-    fn read_fresh_cache(&self, cache_path: &Path) -> Result<Option<Value>> {
+    async fn read_fresh_cache(&self, cache_path: &Path) -> Result<Option<Value>> {
         if !cache_path.exists() {
             return Ok(None);
         }
 
-        let bytes = fs::read(cache_path)?;
+        let bytes = fs::read(cache_path).await?;
         let entry: CacheEntry = serde_json::from_slice(&bytes)?;
 
         let fetched_at = OffsetDateTime::parse(&entry.fetched_at, &Rfc3339)?;
@@ -98,27 +98,27 @@ impl MusicBrainzHttpProvider {
         Ok(None)
     }
 
-    fn write_cache(&self, cache_path: &Path, response: &Value) -> Result<()> {
+    async fn write_cache(&self, cache_path: &Path, response: &Value) -> Result<()> {
         let entry = CacheEntry { fetched_at: now_rfc3339()?, response: response.clone() };
         let mut bytes = serde_json::to_vec_pretty(&entry)?;
         bytes.push(b'\n');
-        atomic_write_bytes(cache_path, &bytes)
+        atomic_write_bytes(cache_path, &bytes).await
     }
 
-    fn enforce_rate_limit(&mut self) {
+    async fn enforce_rate_limit(&mut self) {
         let min_interval = Duration::from_millis(self.policy.min_interval_ms);
         if let Some(last_request) = self.last_request_at {
             let elapsed = last_request.elapsed();
             if elapsed < min_interval {
-                thread::sleep(min_interval - elapsed);
+                sleep(min_interval - elapsed).await;
             }
         }
 
         self.last_request_at = Some(Instant::now());
     }
 
-    fn request_recordings(&mut self, query_expression: &str, limit: usize) -> Result<Value> {
-        self.enforce_rate_limit();
+    async fn request_recordings(&mut self, query_expression: &str, limit: usize) -> Result<Value> {
+        self.enforce_rate_limit().await;
 
         let endpoint = format!("{}/recording", self.policy.base_url.trim_end_matches('/'));
         let limit_value = limit.to_string();
@@ -128,33 +128,38 @@ impl MusicBrainzHttpProvider {
             .get(endpoint)
             .query(&[("query", query_expression), ("fmt", "json"), ("limit", &limit_value)])
             .send()
+            .await
             .context("musicbrainz request failed")?;
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().unwrap_or_else(|_| "<body unavailable>".to_owned());
+            let body = response.text().await.unwrap_or_else(|_| "<body unavailable>".to_owned());
             return Err(anyhow!("musicbrainz request failed with status {}: {}", status, body));
         }
 
-        response.json::<Value>().context("musicbrainz response was not valid JSON")
+        response.json::<Value>().await.context("musicbrainz response was not valid JSON")
     }
 }
 
+#[async_trait]
 impl MusicBrainzProvider for MusicBrainzHttpProvider {
-    fn search_recordings(&mut self, query: &MusicBrainzQuery) -> Result<ProviderSearchResult> {
+    async fn search_recordings(
+        &mut self,
+        query: &MusicBrainzQuery,
+    ) -> Result<ProviderSearchResult> {
         let (query_expression, limit) = self.effective_query_and_limit(query)?;
         let cache_key = cache_key_from_expression(&query_expression, limit);
         let cache_path = self.cache_path_for_key(&cache_key);
 
-        if let Some(cached_response) = self.read_fresh_cache(&cache_path)? {
+        if let Some(cached_response) = self.read_fresh_cache(&cache_path).await? {
             return Ok(ProviderSearchResult {
                 candidates: parse_recording_candidates(&cached_response),
                 cache_hit: true,
             });
         }
 
-        let response = self.request_recordings(&query_expression, limit)?;
-        self.write_cache(&cache_path, &response)?;
+        let response = self.request_recordings(&query_expression, limit).await?;
+        self.write_cache(&cache_path, &response).await?;
 
         Ok(ProviderSearchResult {
             candidates: parse_recording_candidates(&response),
@@ -239,8 +244,8 @@ mod tests {
     use super::{MusicBrainzHttpProvider, parse_recording_candidates};
     use crate::{configuration::config::MusicBrainzPolicy, infrastructure::store::WorkspacePaths};
 
-    #[test]
-    fn parses_recording_candidates_from_musicbrainz_payload() {
+    #[tokio::test]
+    async fn parses_recording_candidates_from_musicbrainz_payload() {
         let payload = json!({
             "recordings": [
                 {
@@ -262,8 +267,8 @@ mod tests {
         assert_eq!(candidates[0].score, Some(98.0));
     }
 
-    #[test]
-    fn cache_key_is_deterministic() {
+    #[tokio::test]
+    async fn cache_key_is_deterministic() {
         let workspace = tempdir().expect("temp workspace should create");
         let paths = WorkspacePaths::new(workspace.path());
         let provider = MusicBrainzHttpProvider::new(&paths, &MusicBrainzPolicy::default())

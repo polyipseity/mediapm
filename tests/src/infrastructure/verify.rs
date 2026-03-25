@@ -7,7 +7,7 @@ use mediapm::{
     infrastructure::{store::WorkspacePaths, verify::verify_workspace},
 };
 
-fn prepare_workspace_with_import() -> (tempfile::TempDir, WorkspacePaths) {
+async fn prepare_workspace_with_import() -> (tempfile::TempDir, WorkspacePaths) {
     let workspace = tempdir().expect("temp workspace should create");
     let source_file = workspace.path().join("inbox/song.flac");
 
@@ -23,25 +23,25 @@ fn prepare_workspace_with_import() -> (tempfile::TempDir, WorkspacePaths) {
 
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
-    execute_plan(&paths, &config, &plan, true).expect("sync should succeed");
+    execute_plan(&paths, &config, &plan, true).await.expect("sync should succeed");
 
     (workspace, paths)
 }
 
-#[test]
-fn verify_reports_clean_state_after_sync() {
-    let (_workspace, paths) = prepare_workspace_with_import();
+#[tokio::test]
+async fn verify_reports_clean_state_after_sync() {
+    let (_workspace, paths) = prepare_workspace_with_import().await;
 
-    let report = verify_workspace(&paths).expect("verify should run");
+    let report = verify_workspace(&paths).await.expect("verify should run");
 
     assert!(report.is_clean());
     assert_eq!(report.hash_mismatches.len(), 0);
     assert_eq!(report.missing_objects.len(), 0);
 }
 
-#[test]
-fn verify_detects_missing_object_after_manual_deletion() {
-    let (_workspace, paths) = prepare_workspace_with_import();
+#[tokio::test]
+async fn verify_detects_missing_object_after_manual_deletion() {
+    let (_workspace, paths) = prepare_workspace_with_import().await;
 
     let object = walkdir::WalkDir::new(&paths.objects_dir)
         .into_iter()
@@ -53,7 +53,7 @@ fn verify_detects_missing_object_after_manual_deletion() {
 
     std::fs::remove_file(&object).expect("object should be removed");
 
-    let report = verify_workspace(&paths).expect("verify should run");
+    let report = verify_workspace(&paths).await.expect("verify should run");
 
     assert!(!report.is_clean());
     assert_eq!(report.missing_objects.len(), 1);

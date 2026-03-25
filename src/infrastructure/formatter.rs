@@ -26,17 +26,17 @@ pub struct FormatReport {
 ///
 /// This command is useful after migrations, automated updates, or any workflow
 /// that may leave JSON key ordering inconsistent across files.
-pub fn format_workspace(paths: &WorkspacePaths, config_path: &Path) -> Result<FormatReport> {
+pub async fn format_workspace(paths: &WorkspacePaths, config_path: &Path) -> Result<FormatReport> {
     let mut report = FormatReport::default();
 
     if config_path.exists() {
-        let config: AppConfig = load_config(config_path)?;
-        save_config_pretty(config_path, &config)?;
+        let config: AppConfig = load_config(config_path).await?;
+        save_config_pretty(config_path, &config).await?;
         report.config_written = true;
     }
 
-    for sidecar in load_all_sidecars(paths)? {
-        write_sidecar(paths, &sidecar)?;
+    for sidecar in load_all_sidecars(paths).await? {
+        write_sidecar(paths, &sidecar).await?;
         report.sidecars_rewritten += 1;
     }
 

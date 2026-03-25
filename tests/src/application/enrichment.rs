@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use serde_json::json;
 
 use mediapm::{
@@ -17,13 +18,17 @@ struct StubProvider {
     result: ProviderSearchResult,
 }
 
+#[async_trait]
 impl MusicBrainzProvider for StubProvider {
-    fn search_recordings(&mut self, _query: &MusicBrainzQuery) -> Result<ProviderSearchResult> {
+    async fn search_recordings(
+        &mut self,
+        _query: &MusicBrainzQuery,
+    ) -> Result<ProviderSearchResult> {
         Ok(self.result.clone())
     }
 }
 
-fn setup_workspace_with_sidecar() -> (tempfile::TempDir, WorkspacePaths, AppConfig, String) {
+async fn setup_workspace_with_sidecar() -> (tempfile::TempDir, WorkspacePaths, AppConfig, String) {
     let workspace = tempfile::tempdir().expect("temp workspace should create");
     let source_file = workspace.path().join("inbox/song.flac");
 
@@ -64,14 +69,14 @@ fn setup_workspace_with_sidecar() -> (tempfile::TempDir, WorkspacePaths, AppConf
 
     let paths = WorkspacePaths::new(workspace.path());
     let plan = build_plan(&config, workspace.path()).expect("plan should build");
-    execute_plan(&paths, &config, &plan, true).expect("sync should succeed");
+    execute_plan(&paths, &config, &plan, true).await.expect("sync should succeed");
 
     (workspace, paths, config, canonical_uri)
 }
 
-#[test]
-fn provider_enrichment_applies_patch_with_priority_rules() {
-    let (_workspace, paths, config, canonical_uri) = setup_workspace_with_sidecar();
+#[tokio::test]
+async fn provider_enrichment_applies_patch_with_priority_rules() {
+    let (_workspace, paths, config, canonical_uri) = setup_workspace_with_sidecar().await;
 
     let mut provider = StubProvider {
         result: ProviderSearchResult {
@@ -89,6 +94,7 @@ fn provider_enrichment_applies_patch_with_priority_rules() {
     };
 
     let summary = apply_musicbrainz_enrichment_with_provider(&paths, &config, &mut provider)
+        .await
         .expect("enrichment should succeed");
 
     assert_eq!(summary.queries_declared, 1);
@@ -98,6 +104,7 @@ fn provider_enrichment_applies_patch_with_priority_rules() {
     assert_eq!(summary.sidecars_updated, 1);
 
     let sidecar = mediapm::infrastructure::store::read_sidecar(&paths, &canonical_uri)
+        .await
         .expect("sidecar should read")
         .expect("sidecar should exist");
 
@@ -108,13 +115,13 @@ fn provider_enrichment_applies_patch_with_priority_rules() {
 
     assert!(sidecar.edits.iter().any(|event| event.operation == "provider_musicbrainz_apply"));
 
-    let verify = verify_workspace(&paths).expect("verify should run");
+    let verify = verify_workspace(&paths).await.expect("verify should run");
     assert!(verify.is_clean());
 }
 
-#[test]
-fn repeated_same_enrichment_is_idempotent() {
-    let (_workspace, paths, config, _canonical_uri) = setup_workspace_with_sidecar();
+#[tokio::test]
+async fn repeated_same_enrichment_is_idempotent() {
+    let (_workspace, paths, config, _canonical_uri) = setup_workspace_with_sidecar().await;
 
     let base_result = ProviderSearchResult {
         candidates: vec![ProviderCandidate {
@@ -131,10 +138,12 @@ fn repeated_same_enrichment_is_idempotent() {
 
     let mut provider_a = StubProvider { result: base_result.clone() };
     let first = apply_musicbrainz_enrichment_with_provider(&paths, &config, &mut provider_a)
+        .await
         .expect("first enrichment should succeed");
 
     let mut provider_b = StubProvider { result: base_result };
     let second = apply_musicbrainz_enrichment_with_provider(&paths, &config, &mut provider_b)
+        .await
         .expect("second enrichment should succeed");
 
     assert_eq!(first.sidecars_updated, 1);

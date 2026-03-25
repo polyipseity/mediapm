@@ -10,11 +10,12 @@
 //! format. A compatibility path for `.ncl` exists only as a migration-friendly
 //! stepping stone toward richer config evaluation in future iterations.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::fs;
 
 /// Default filename searched by CLI commands.
 pub const DEFAULT_CONFIG_FILE: &str = "mediapm.json";
@@ -222,8 +223,8 @@ pub enum LinkMethod {
 ///
 /// Extension-based parsing is explicit on purpose; unclear extension handling
 /// tends to hide configuration errors and make support/debugging harder.
-pub fn load_config(config_path: &Path) -> Result<AppConfig> {
-    let bytes = fs::read(config_path)?;
+pub async fn load_config(config_path: &Path) -> Result<AppConfig> {
+    let bytes = fs::read(config_path).await?;
 
     match config_path.extension().and_then(|value| value.to_str()) {
         Some("json") => Ok(serde_json::from_slice(&bytes)?),
@@ -244,14 +245,14 @@ pub fn load_config(config_path: &Path) -> Result<AppConfig> {
 ///
 /// Formatting output deterministically is valuable for review workflows and for
 /// making generated diffs stable in CI.
-pub fn save_config_pretty(config_path: &Path, config: &AppConfig) -> Result<()> {
+pub async fn save_config_pretty(config_path: &Path, config: &AppConfig) -> Result<()> {
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).await?;
     }
 
     let mut output = serde_json::to_vec_pretty(config)?;
     output.push(b'\n');
-    fs::write(config_path, output)?;
+    fs::write(config_path, output).await?;
 
     Ok(())
 }

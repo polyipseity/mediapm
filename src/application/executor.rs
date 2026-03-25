@@ -13,7 +13,6 @@
 //! history and identity invariants while reconciling user intent.
 
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -21,10 +20,13 @@ use std::{
 use anyhow::{Result, anyhow};
 use serde::Serialize;
 use serde_json::json;
+use tokio::fs;
 
 use crate::{
-    application::enrichment::apply_musicbrainz_enrichment,
-    application::planner::{Effect, Plan},
+    application::{
+        enrichment::apply_musicbrainz_enrichment,
+        planner::{Effect, Plan},
+    },
     configuration::config::{AppConfig, LinkMethod, SelectionPreference, VariantSelection},
     domain::{
         metadata::probe_media_file,
@@ -73,13 +75,13 @@ pub struct SyncSummary {
 ///
 /// Side effects are intentionally centralized here instead of being scattered
 /// through CLI and helper modules.
-pub fn execute_plan(
+pub async fn execute_plan(
     paths: &WorkspacePaths,
     config: &AppConfig,
     plan: &Plan,
     apply: bool,
 ) -> Result<SyncSummary> {
-    paths.ensure_store_dirs()?;
+    paths.ensure_store_dirs().await?;
 
     let mut summary = SyncSummary { planned_effects: plan.effects.len(), ..SyncSummary::default() };
 
@@ -90,7 +92,7 @@ pub fn execute_plan(
                     continue;
                 }
 
-                match ensure_imported(paths, config, canonical_uri, Path::new(source_path))? {
+                match ensure_imported(paths, config, canonical_uri, Path::new(source_path)).await? {
                     ImportOutcome::Created => summary.imports_created += 1,
                     ImportOutcome::Unchanged => summary.imports_unchanged += 1,
                 }
@@ -106,7 +108,9 @@ pub fn execute_plan(
                     canonical_uri,
                     Path::new(link_path),
                     selection,
-                )? {
+                )
+                .await?
+                {
                     LinkOutcome::Created => summary.links_created += 1,
                     LinkOutcome::Updated => summary.links_updated += 1,
                     LinkOutcome::Unchanged => summary.links_unchanged += 1,
@@ -116,7 +120,7 @@ pub fn execute_plan(
     }
 
     if apply && config.policies.musicbrainz_enabled {
-        let provider_summary = apply_musicbrainz_enrichment(paths, config)?;
+        let provider_summary = apply_musicbrainz_enrichment(paths, config).await?;
         summary.provider_queries_attempted = provider_summary.queries_attempted;
         summary.provider_cache_hits = provider_summary.cache_hits;
         summary.provider_sidecars_updated = provider_summary.sidecars_updated;
@@ -138,23 +142,23 @@ enum LinkOutcome {
     Unchanged,
 }
 
-fn ensure_imported(
+async fn ensure_imported(
     paths: &WorkspacePaths,
     config: &AppConfig,
     canonical_uri: &str,
     source_path: &Path,
 ) -> Result<ImportOutcome> {
-    let variant_hash = hash_file(source_path)?;
-    let object_relpath = ensure_object(paths, source_path, &variant_hash)?;
-    let byte_size = fs::metadata(source_path)?.len();
+    let variant_hash = hash_file(source_path).await?;
+    let object_relpath = ensure_object(paths, source_path, &variant_hash).await?;
+    let byte_size = fs::metadata(source_path).await?.len();
 
-    let (container, probe, mut metadata) = probe_media_file(source_path, variant_hash)?;
+    let (container, probe, mut metadata) = probe_media_file(source_path, variant_hash).await?;
 
     if let Some(override_value) = config.metadata_overrides.get(canonical_uri) {
         merge_json_object(&mut metadata, override_value);
     }
 
-    if let Some(mut sidecar) = read_sidecar(paths, canonical_uri)? {
+    if let Some(mut sidecar) = read_sidecar(paths, canonical_uri).await? {
         if sidecar.has_variant(&variant_hash) {
             return Ok(ImportOutcome::Unchanged);
         }
@@ -195,7 +199,7 @@ fn ensure_imported(
         });
 
         sidecar.updated_at = now_rfc3339()?;
-        write_sidecar(paths, &sidecar)?;
+        write_sidecar(paths, &sidecar).await?;
 
         return Ok(ImportOutcome::Created);
     }
@@ -220,18 +224,19 @@ fn ensure_imported(
         original_metadata,
     );
 
-    write_sidecar(paths, &new_sidecar)?;
+    write_sidecar(paths, &new_sidecar).await?;
     Ok(ImportOutcome::Created)
 }
 
-fn ensure_link(
+async fn ensure_link(
     paths: &WorkspacePaths,
     methods: &[LinkMethod],
     canonical_uri: &str,
     link_path: &Path,
     selection: &VariantSelection,
 ) -> Result<LinkOutcome> {
-    let sidecar = read_sidecar(paths, canonical_uri)?
+    let sidecar = read_sidecar(paths, canonical_uri)
+        .await?
         .ok_or_else(|| anyhow!("cannot link unknown media URI: {canonical_uri}"))?;
 
     let variant = select_variant(&sidecar, selection)?;
@@ -245,21 +250,21 @@ fn ensure_link(
         ));
     }
 
-    let existed_before = link_path.exists() || fs::symlink_metadata(link_path).is_ok();
+    let existed_before = link_path.exists() || fs::symlink_metadata(link_path).await.is_ok();
 
-    if is_existing_symlink_to(link_path, &source_path)? {
+    if is_existing_symlink_to(link_path, &source_path).await? {
         return Ok(LinkOutcome::Unchanged);
     }
 
     if let Some(parent) = link_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).await?;
     }
 
     if existed_before {
-        remove_existing_path(link_path)?;
+        remove_existing_path(link_path).await?;
     }
 
-    materialize_link_with_fallback(&source_path, link_path, methods)?;
+    materialize_link_with_fallback(&source_path, link_path, methods).await?;
 
     if existed_before { Ok(LinkOutcome::Updated) } else { Ok(LinkOutcome::Created) }
 }
@@ -295,7 +300,7 @@ fn is_lossy_container(container: Option<&str>) -> bool {
     matches!(container, Some("mp3") | Some("aac") | Some("ogg") | Some("opus") | Some("wma"))
 }
 
-fn materialize_link_with_fallback(
+async fn materialize_link_with_fallback(
     source: &Path,
     target: &Path,
     methods: &[LinkMethod],
@@ -308,18 +313,18 @@ fn materialize_link_with_fallback(
                 Ok(()) => return Ok(()),
                 Err(error) => failures.push(format!("symlink failed: {error}")),
             },
-            LinkMethod::Hardlink => match fs::hard_link(source, target) {
+            LinkMethod::Hardlink => match fs::hard_link(source, target).await {
                 Ok(()) => return Ok(()),
                 Err(error) => failures.push(format!("hardlink failed: {error}")),
             },
-            LinkMethod::Copy => match fs::copy(source, target) {
+            LinkMethod::Copy => match fs::copy(source, target).await {
                 Ok(_) => return Ok(()),
                 Err(error) => failures.push(format!("copy failed: {error}")),
             },
         }
 
         if target.exists() {
-            let _ = remove_existing_path(target);
+            let _ = remove_existing_path(target).await;
         }
     }
 
@@ -343,8 +348,8 @@ fn create_file_symlink(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_existing_symlink_to(link_path: &Path, expected_target: &Path) -> Result<bool> {
-    let metadata = match fs::symlink_metadata(link_path) {
+async fn is_existing_symlink_to(link_path: &Path, expected_target: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(link_path).await {
         Ok(metadata) => metadata,
         Err(_) => return Ok(false),
     };
@@ -353,35 +358,35 @@ fn is_existing_symlink_to(link_path: &Path, expected_target: &Path) -> Result<bo
         return Ok(false);
     }
 
-    let link_target = fs::read_link(link_path)?;
+    let link_target = fs::read_link(link_path).await?;
     let resolved_target = if link_target.is_absolute() {
         link_target
     } else {
         link_path.parent().unwrap_or_else(|| Path::new(".")).join(link_target)
     };
 
-    let normalized_expected = normalize_existing_path(expected_target);
-    let normalized_actual = normalize_existing_path(&resolved_target);
+    let normalized_expected = normalize_existing_path(expected_target).await;
+    let normalized_actual = normalize_existing_path(&resolved_target).await;
 
     Ok(normalized_expected == normalized_actual)
 }
 
-fn normalize_existing_path(path: &Path) -> PathBuf {
+async fn normalize_existing_path(path: &Path) -> PathBuf {
     if path.exists() {
-        fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+        fs::canonicalize(path).await.unwrap_or_else(|_| path.to_path_buf())
     } else {
         path.to_path_buf()
     }
 }
 
-fn remove_existing_path(path: &Path) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+async fn remove_existing_path(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path).await?;
 
     if metadata.file_type().is_symlink() || metadata.is_file() {
-        fs::remove_file(path)?;
+        fs::remove_file(path).await?;
         return Ok(());
     }
 
-    fs::remove_dir_all(path)?;
+    fs::remove_dir_all(path).await?;
     Ok(())
 }

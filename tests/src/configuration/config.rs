@@ -8,8 +8,8 @@ use mediapm::configuration::config::{
     save_config_pretty,
 };
 
-#[test]
-fn save_and_load_config_round_trip() {
+#[tokio::test]
+async fn save_and_load_config_round_trip() {
     let workspace = tempdir().expect("temp workspace should create");
     let config_path = workspace.path().join("mediapm.json");
 
@@ -28,28 +28,28 @@ fn save_and_load_config_round_trip() {
         policies: Policies::default(),
     };
 
-    save_config_pretty(&config_path, &config).expect("config should save");
-    let loaded = load_config(&config_path).expect("config should load");
+    save_config_pretty(&config_path, &config).await.expect("config should save");
+    let loaded = load_config(&config_path).await.expect("config should load");
 
     assert_eq!(loaded.sources.len(), 1);
     assert_eq!(loaded.links.len(), 1);
     assert_eq!(loaded.links[0].select.prefer, SelectionPreference::LatestNonLossy);
 }
 
-#[test]
-fn rejects_unknown_extension() {
+#[tokio::test]
+async fn rejects_unknown_extension() {
     let workspace = tempdir().expect("temp workspace should create");
     let config_path = workspace.path().join("mediapm.toml");
     fs::write(&config_path, b"anything").expect("config bytes should write");
 
-    let error = load_config(&config_path).expect_err("unknown extension should fail");
+    let error = load_config(&config_path).await.expect_err("unknown extension should fail");
     let error_text = format!("{error:#}");
 
     assert!(error_text.contains("unsupported config extension"));
 }
 
-#[test]
-fn accepts_json_content_with_ncl_extension() {
+#[tokio::test]
+async fn accepts_json_content_with_ncl_extension() {
     let workspace = tempdir().expect("temp workspace should create");
     let config_path = workspace.path().join("mediapm.ncl");
 
@@ -61,13 +61,13 @@ fn accepts_json_content_with_ncl_extension() {
     fs::write(&config_path, serde_json::to_vec_pretty(&value).expect("json should serialize"))
         .expect("ncl config should write");
 
-    let config = load_config(&config_path).expect("json-compatible ncl content should load");
+    let config = load_config(&config_path).await.expect("json-compatible ncl content should load");
     assert_eq!(config.sources.len(), 1);
     assert!(config.links.is_empty());
 }
 
-#[test]
-fn deserializes_provider_query_and_musicbrainz_policy_fields() {
+#[tokio::test]
+async fn deserializes_provider_query_and_musicbrainz_policy_fields() {
     let workspace = tempdir().expect("temp workspace should create");
     let config_path = workspace.path().join("mediapm.json");
 
@@ -97,7 +97,7 @@ fn deserializes_provider_query_and_musicbrainz_policy_fields() {
     fs::write(&config_path, serde_json::to_vec_pretty(&value).expect("config should serialize"))
         .expect("config should write");
 
-    let config = load_config(&config_path).expect("config should load");
+    let config = load_config(&config_path).await.expect("config should load");
     assert!(config.policies.musicbrainz_enabled);
     assert_eq!(config.policies.musicbrainz.max_candidates, 3);
     assert_eq!(config.provider_queries["inbox/song.flac"].artist.as_deref(), Some("Artist"));
