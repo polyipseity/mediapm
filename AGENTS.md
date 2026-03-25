@@ -4,15 +4,19 @@
 
 - Root `AGENTS.md` is the workspace-wide source of truth. Do not add
   `.github/copilot-instructions.md`.
-- Treat this repository as an implemented Rust mediapm MVP. Keep guidance
-  aligned to concrete files and current architecture.
+- Treat this repository as a Rust workspace that is evolving toward the
+  mediapm phase architecture. Keep guidance aligned to concrete files and
+  current implementation state.
 - Keep this file short and durable. Put file-type and workflow-specific rules
   in `.agents/instructions/*.instructions.md`, reusable workflows in
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
-- `src/` is organized into one-level architectural folders:
-  `application`, `configuration`, `domain`, `infrastructure`, and `support`.
-- `tests/` contains workflow-oriented integration tests; keep behavioral
-  guarantees updated alongside code changes.
+- `src/` now contains workspace member crates:
+  - `src/cas/` (Phase 1)
+  - `src/conductor/` (Phase 2)
+  - `src/conductor-builtins/*/` (Phase 2 built-ins)
+  - `src/mediapm/` (Phase 3)
+- Integration tests currently live with the phase crates (for example,
+  `src/mediapm/tests/`).
 
 ## Architecture
 
@@ -31,12 +35,13 @@
 
 ## Rust Architecture Snapshot
 
-- `src/domain/` contains sidecar model, URI canonicalization, metadata shape,
-  and schema migrations.
-- `src/application/` contains planner and executor orchestration.
-- `src/infrastructure/` contains store persistence, verify, GC, and formatting.
-- `src/configuration/` contains declarative config schema and load/save logic.
-- `src/support/` contains shared utility helpers.
+- `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
+- `src/conductor/` provides the Phase 2 orchestration state model and
+  persistence-merge logic.
+- `src/conductor-builtins/` provides versioned built-in tool contracts such as
+  `fs-ops`, `import`, and `zip`.
+- `src/mediapm/` composes CAS + Conductor into the Phase 3 media-facing API
+  and CLI scaffold.
 
 ## Build and Test
 
@@ -92,8 +97,8 @@
   `clippy.toml` — Rust package and quality configuration
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and
   validation guidance
-- `.agents/instructions/mediapm-architecture.instructions.md` — module
-  boundaries and sidecar/storage invariants
+- `.agents/instructions/mediapm-architecture.instructions.md` — phase boundaries
+  and cross-crate invariants
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test
   expectations and Rustdoc/docstring depth requirements
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,

@@ -1,0 +1,18 @@
+[package]
+name = "mediapm-conductor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Phase 2 orchestration contracts and state model for mediapm"
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+mediapm-cas = { path = "../cas" }
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

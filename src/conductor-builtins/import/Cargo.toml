@@ -1,0 +1,12 @@
+[package]
+name = "mediapm-conductor-builtin-import"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Phase 2 built-in import tool contract"
+
+[dependencies]
+mediapm-cas = { path = "../../cas" }
+serde.workspace = true

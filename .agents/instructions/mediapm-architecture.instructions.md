@@ -8,42 +8,39 @@ applyTo: "src/**/*.rs"
 
 ## Purpose
 
-- Keep code aligned with mediapm's functional-core direction and explicit state model.
+- Keep code aligned with mediapm's phase-based architecture and explicit state model.
 - Preserve determinism and auditability of media state transitions.
 - Keep boundaries between planning logic and side effects clear.
 
 ## Module layout (source of truth)
 
-- `src/configuration/`
-  - `config.rs`: declarative config schema and file IO.
-- `src/domain/`
-  - `canonical.rs`: URI/path canonicalization.
-  - `model.rs`: sidecar domain model and hash types.
-  - `metadata.rs`: raw + normalized metadata probing shape.
-  - `migration.rs`: schema-version migration chain and provenance.
-- `src/application/`
-  - `planner.rs`: deterministic effect planning (no IO).
-  - `executor.rs`: effect interpretation (filesystem side effects).
-- `src/infrastructure/`
-  - `store.rs`: object store + sidecar persistence.
-  - `verify.rs`: integrity checks and invariants.
-  - `gc.rs`: reachability-based object cleanup.
-  - `formatter.rs`: config/sidecar canonical formatting.
-- `src/support/`
-  - `util.rs`: shared helper functions.
+- `src/cas/` (Phase 1)
+  - identity/hash model
+  - CAS async API contracts
+  - storage/index/constraint behavior
+- `src/conductor/` (Phase 2)
+  - orchestration state model
+  - deterministic instance-key and merge logic
+  - workflow execution contracts
+- `src/conductor-builtins/*/` (Phase 2 built-ins)
+  - versioned built-in tool contracts such as `fs-ops`, `import`, `zip`
+- `src/mediapm/` (Phase 3)
+  - media-facing API
+  - CLI shell and phase composition over conductor + CAS
 
-If you introduce a new file, place it under one of these first-level folders.
-Avoid re-introducing flat `src/*.rs` module sprawl.
+If you introduce a new file, place it in the phase crate that owns that
+concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
 
 ## Layering rules
 
-- `domain` must not depend on CLI or command dispatch concerns.
-- `planner` should be pure in behavior: derive effects from inputs; avoid side effects.
-- `executor` is the side-effect shell and may call infrastructure IO.
-- `infrastructure` should not hide behavior; keep operations explicit and auditable.
+- `cas` should remain runtime-agnostic at public API boundaries.
+- `conductor` should keep deterministic planning/keying logic explicit and testable.
+- `mediapm` should compose phase 1/2 APIs rather than bypassing them.
+- Built-ins should stay narrowly scoped and version-addressable.
 - Prefer one-directional dependencies:
-  - `configuration/domain/support -> application -> infrastructure` is acceptable for orchestration,
-    but avoid circular dependencies and hidden global state.
+  - `cas -> conductor -> mediapm` composition,
+  - with built-ins consumed by conductor/mediapm as contracts,
+  - and no circular crate dependencies.
 
 ## Identity and storage invariants
 
