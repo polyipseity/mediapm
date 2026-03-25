@@ -59,7 +59,7 @@ As the schema of the Orchestration State or Tool Metadata evolves, Conductor use
 
 ---
 
-## 5. Built-in Mini-Tools (`src/builtins/`)
+## 5. Built-in Mini-Tools (`src/conductor-builtins/`)
 
 Independent, date-versioned crates (e.g., `unzip@2026.03.25`).
 

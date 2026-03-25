@@ -1,1077 +1,425 @@
-# mediapm — Implementation Plan (Extremely Detailed)
+# mediapm — Master Implementation Plan (Rewritten)
 
-## 0) Vision, Product Positioning, and Persona
+This document is the implementation contract for `mediapm`.
 
-### 0.1 Project Identity
+It rewrites the previous plan with one non-negotiable goal:
+**build a simple, high-performance, fully functional, incremental, async,
+runtime-agnostic, actor-based Rust system that remains modular and testable as
+it scales**.
 
-- **Name:** mediapm
-- **One-line definition:** A declarative, workspace-local, content-addressed media organizer that records media provenance and transformation history while minimizing mutable state.
-- **Tagline:** _Treat media like immutable artifacts, link them like configuration._
+It is aligned with:
 
-### 0.2 What mediapm Is / Is Not
-
-**mediapm is:**
-
-- A **content store + metadata + declarative linker**.
-- A tool that **delegates downloading** and heavy fetch orchestration to other projects.
-- A system that uses **URI as identity**, plus **content hash variants**.
-- A **functional-core-first** Rust system.
-- A workspace tool where links are **explicitly declared by the user** (not auto-magically discovered and rearranged).
-
-**mediapm is not:**
-
-- A generic “scan everything and auto-organize my files” media manager.
-- A monolithic download manager.
-- A database-centric application.
-
-### 0.3 Primary Personas
-
-1. **Collector / Archivist**
-
-   - Cares about provenance, reproducibility, and exact source tracking.
-
-2. **Music Enthusiast**
-
-   - Cares about rich metadata quality, album/track correctness, and provider-backed enrichment (MusicBrainz now, more later).
-   - Cares about preserving originals and clearly recording edits/transcodes.
-
-3. **Technical User / Power User**
-
-   - Wants deterministic operations, scriptability, and composable declarative control.
-
-4. **Developer Integrator**
-
-   - Wants a stable core library and simple CLI commands to build custom workflows.
-
-### 0.4 Hard Product Constraints (From Requirements)
-
-- **Rust implementation.**
-- **No metadata DB** (no SQLite/Postgres/etc. for canonical metadata state).
-- **JSON sidecars** are the canonical metadata storage.
-- **URI is the only identity key** for source identity.
-- A source URI may have multiple variants; variants are content-addressed by hash.
-- Content store is in the workspace.
-- Links are manually specified declaratively by the user.
-- Keep design simple and command set minimal.
-- Architecture should be as functional as practical (functional programming style, low mutable state).
+- `PLAN_PHASE_1.md` (Unified Delta CAS)
+- `PLAN_PHASE_2.md` (Conductor functional orchestration)
+- `PLAN_PHASE_3.md` (Media orchestration and materialization)
 
 ---
 
-## 1) Core Principles
+## 1) Hard principles (must always hold)
 
-1. **Declarative over imperative**
+1. **Simplicity first**
+   - Choose the smallest design that preserves correctness and extensibility.
+   - Prefer explicit data flow over clever abstractions.
 
-   - Desired state is expressed in config.
-   - CLI reconciles actual state to desired state.
+2. **Performance as a feature**
+   - Optimize for cache locality, branch predictability, allocation minimization,
+     bounded copying, and deterministic I/O behavior.
+   - Use profiling + benchmarks before and after optimization.
 
-2. **Functional core, imperative shell**
+3. **Functional core, imperative shell**
+   - Planning, diffing, normalization, and key derivation are pure functions.
+   - Mutable state and side effects are pushed to system boundaries.
 
-   - Pure planning functions produce effects.
-   - Side effects are executed in a thin shell layer.
+4. **Incremental by default**
+   - Every major operation computes minimal deltas and avoids full rebuilds.
+   - Cache keys are explicit and content-addressed.
 
-3. **Minimal state, explicit state**
+5. **Async everywhere it matters**
+   - All I/O and orchestration paths are async.
+   - Blocking operations are isolated behind bounded worker interfaces.
 
-   - Persistent state = content-addressed objects + JSON sidecars + config files.
-   - No hidden database state.
+6. **Runtime agnostic architecture**
+   - Tokio is the default runtime.
+   - Runtime-specific code is isolated behind thin adapters.
+   - Core/application layers never depend directly on Tokio types.
 
-4. **Determinism where feasible**
+7. **Actor pattern for parallelism and extensibility**
+   - Parallelism and lifecycle orchestration use `ractor` actors.
+   - Supervision trees are explicit.
+   - Messages are typed and versionable.
 
-   - Canonical serialization and reproducible plans.
-   - Idempotent commands.
+8. **Extreme modularity**
+   - Keep stable module boundaries and contracts.
+   - Prefer composable traits + generics over monolithic implementations.
 
-5. **Safety and provenance first**
+9. **Type-system-enforced invariants**
+   - Invalid states should be unrepresentable whenever practical.
+   - Use newtypes, typestates, constrained constructors, and exhaustive enums.
 
-   - Preserve original hashes and original metadata snapshots.
-   - Record edit history with reversible/non-reversible classification.
+10. **Macro use is pragmatic**
+    - Use macros to remove repetitive boilerplate in messages, errors,
+      registrations, and test fixtures.
+    - Do not hide critical control flow in opaque macros.
 
-6. **Cross-platform correctness**
+11. **Documentation is part of the API**
+    - Public modules/types/functions require clear Rustdoc explaining semantics,
+      invariants, side effects, and failure modes.
 
-   - Linux/macOS/Windows behavior documented and tested.
-
----
-
-## 2) High-Level Architecture
-
-### 2.1 Bounded Contexts
-
-1. **Spec Engine**
-
-   - Parses and evaluates declarative user spec.
-   - Produces normalized desired state.
-
-2. **Identity & Storage Core**
-
-   - URI canonicalization.
-   - Content hashing and object pathing.
-   - Object store management.
-
-3. **Metadata Core**
-
-   - Extracts container metadata.
-   - Maintains normalized and provider-enriched metadata.
-   - Maintains sidecar schema/version lifecycle.
-
-4. **History Core**
-
-   - Records original metadata, original hash, and transformation chain.
-   - Differentiates reversible vs non-reversible edits.
-
-5. **Link Materializer**
-
-   - Resolves declared links to chosen variant.
-   - Creates symlink/hardlink/reflink/copy according to policy.
-
-6. **Provider Integration Layer**
-
-   - MusicBrainz now.
-   - Provider abstraction for future providers.
-
-7. **Planner/Executor**
-
-   - Computes desired effects.
-   - Executes effects atomically where possible.
-
-### 2.2 Functional Core Pattern
-
-Define a pure state transition model:
-
-```text
-(State, CommandInput) -> (NewStateProjection, Vec<Effect>)
-```
-
-Where:
-
-- `State` is loaded from JSON + object store indexes + config.
-- `CommandInput` is CLI args + runtime options.
-- `NewStateProjection` is computed desired state (pure).
-- `Effect` is explicit IO action (read/write/link/hash/network/probe/transcode invocation wrapper).
-
-Imperative shell:
-
-- Interprets and executes `Effect`s.
-- Captures outcomes and writes final JSON updates.
+12. **Quality gates are mandatory**
+    - Formatting: `rustfmt`
+    - Linting: `clippy` (with strict CI gates)
+    - Tests: unit + integration + end-to-end + property + concurrency where
+      applicable.
 
 ---
 
-## 3) Filesystem Layout (Workspace-local Store)
+## 2) Research-backed technology baseline
 
-```text
-<workspace>/
-  mediapm.ncl                      # Nickel entry config (or chosen entrypoint)
-  .mediapm/
-    objects/
-      blake3/
-        ab/
-          cdef...                 # content-addressed media object file
-    media/
-      <media-id>/
-        media.json                # canonical metadata sidecar for media identity (URI-keyed)
-        variants/
-          <variant-hash>.json     # per-variant sidecar (or folded into media.json)
-    providers/
-      musicbrainz/
-        cache/
-          <cache-key>.json
-    links/
-      manifest.json               # optional materialization state snapshot
-    locks/
-    tmp/
-```
+This plan uses existing libraries where they provide strong leverage and keeps
+targeted custom implementations where project-specific performance or semantics
+demand it.
 
-### 3.1 Notes
+### Core crates
 
-- The **object filename** is hash-based.
-- The **identity key** remains canonical URI in metadata JSON.
-- We keep object files immutable once imported.
+- **Actors / orchestration:** `ractor`
+  - Runtime features: `tokio_runtime` (default), `async-std` (optional)
+  - Supervision, messaging priority, actor lifecycle hooks.
+- **Hashing:** `blake3`
+  - SIMD-accelerated, strong performance for CAS identity.
+- **Async abstraction:** `futures`, optional `async-trait` (where useful)
+- **Tracing:** `tracing`, `tracing-subscriber`
+- **Serialization:** `serde`, `serde_json` (deterministic writer policy)
 
----
+### Performance-oriented crates (adopt with measurement)
 
-## 4) Identity, URI Canonicalization, and Variant Model
+- `bytes` (zero-copy buffer ownership/slicing)
+- `smallvec` (small inline collections)
+- `hashbrown` (SwissTable map/set behavior)
+- `ahash` (fast keyed hashing when HashDoS is irrelevant)
+- `memmap2` (large file read/write patterns where safe)
 
-### 4.1 URI as Only Identity
+### Testing and verification
 
-- Canonical identity key: `canonical_uri: String`
-- Canonicalization pipeline:
-  1. Parse using `url` crate.
-  2. Normalize scheme + host rules where applicable.
-  3. Normalize path segments.
-  4. Strip disallowed ambiguity where policy permits.
-  5. For file paths, convert to canonical absolute file URI.
+- **Unit/integration/e2e:** `cargo test` (+ `cargo-nextest` optional runner)
+- **Property tests:** `proptest`
+- **Concurrency permutation tests:** `loom` (for lock-free/atomic-sensitive code)
+- **Benchmarks:** `criterion` (or `divan` for focused microbench suites)
 
-### 4.2 Variant Model
+### Migration optics
 
-A single URI may produce multiple variants over time:
-
-- Original import variant.
-- Transcoded variant(s).
-- Metadata-edited container variant(s).
-
-Variant identity:
-
-- `variant_hash` (BLAKE3 of bytes)
-- `container_format`, `codec profile` info
-- Parent lineage edges
-
-### 4.3 Data Structures (Performance-oriented)
-
-In-memory indexes (rebuilt from JSON at startup):
-
-- `HashMap<CanonicalUri, MediaRecordRef>`
-- `HashMap<Blake3Hash, VariantRecordRef>`
-- `HashMap<CanonicalUri, SmallVec<[VariantHash; N]>>`
-- Optional derived indexes for fast query by artist/album tag for CLI views.
-
-Use compact binary hash type in memory:
-
-- `[u8; 32]` wrapper newtype for BLAKE3.
-- Avoid repeated hex string allocations in core algorithms.
+- Candidate libraries: `panproto-lens`, `karpal-optics`
+- Rule: if external optics do not cleanly satisfy bidirectional,
+  schema-evolution, and maintenance requirements, implement a lightweight
+  internal optics layer (`Lens`/`Prism`/`Traversal`) specialized for sidecar
+  migrations.
 
 ---
 
-## 5) JSON Sidecar Schema (No DB)
+## 3) Target architecture (phase-composed)
 
-### 5.1 Canonical media.json (per URI)
+`mediapm` is a three-layer composed system:
 
-```json
-{
-  "schema_version": 1,
-  "canonical_uri": "file:///...",
-  "created_at": "...",
-  "updated_at": "...",
-  "original": {
-    "original_variant_hash": "...",
-    "original_metadata": {
-      "container": {},
-      "tags": {},
-      "streams": []
-    }
-  },
-  "variants": [
-    {
-      "variant_hash": "...",
-      "object_relpath": ".mediapm/objects/blake3/ab/cdef...",
-      "byte_size": 123,
-      "container": "flac",
-      "probe": {},
-      "metadata": {},
-      "lineage": {
-        "parent_variant_hash": null,
-        "edit_event_ids": ["evt_..."]
-      }
-    }
-  ],
-  "edits": [
-    {
-      "event_id": "evt_...",
-      "timestamp": "...",
-      "kind": "revertable",
-      "operation": "metadata_update",
-      "details": {},
-      "from_variant_hash": "...",
-      "to_variant_hash": "..."
-    },
-    {
-      "event_id": "evt_...",
-      "timestamp": "...",
-      "kind": "non_revertable",
-      "operation": "transcode",
-      "details": {},
-      "from_variant_hash": "...",
-      "to_variant_hash": "..."
-    }
-  ],
-  "provider_enrichment": {
-    "musicbrainz": {
-      "matches": [],
-      "applied": {}
-    }
-  }
-}
-```
+1. **Phase 1: CAS** — content-addressed, diff-aware storage foundation.
+2. **Phase 2: Conductor** — functional orchestration over CAS.
+3. **Phase 3: mediapm** — media-domain orchestration, metadata policy,
+   hierarchy materialization, tool lifecycle.
 
-### 5.2 Required semantics
+### 3.1 Layering and boundaries
 
-- `original.original_variant_hash` never changes once set.
-- `original.original_metadata` is immutable snapshot.
-- `edits.kind` must be one of:
-  - `revertable`
-  - `non_revertable`
+Core source boundaries:
 
-### 5.3 Canonical JSON writing
+- `domain/`: pure value types, invariants, canonicalization, migration specs.
+- `application/`: pure planning + actor message contracts.
+- `infrastructure/`: persistence, filesystem, external tools, metadata providers.
+- `configuration/`: config schemas and load/save adapters.
+- `support/`: utilities shared across layers.
 
-- Write JSON deterministically (stable map ordering/canonicalization strategy).
-- Atomic write pattern: temp file -> fsync -> rename.
-
-### 5.4 Schema migration
-
-- Every sidecar carries `schema_version`.
-- On load, apply sequential **version-to-version optics migrations** to the latest model.
-
-### 5.5 Schema migration architecture (Functional Optics)
-
-For metadata sidecar upgrades, use a lens-based transformation pipeline over `serde_json::Value`.
-
-- Migration model:
-  - `vN -> vN+1` is expressed as a composed chain of optics steps.
-  - Steps focus and transform only targeted paths; non-focused data remains intact.
-  - Migrations are declarative manifests, not ad-hoc procedural rebuilds.
-
-- Optics types by use case:
-  - **Lens**: rename/update required fields.
-  - **Prism**: safely transform optional/enum-like branches.
-  - **Traversal**: map over arrays/collections.
-
-- Library strategy (2026):
-   1. **`panproto-lens`** (default/primary): schema-to-schema migration with protolenses and law-oriented behavior.
-   2. **`karpal-optics`** (secondary): profunctor-heavy functional optics composition for advanced cases.
-   3. **`focus-rs`** (ergonomic utility): macro-focused deep `serde_json::Value` path updates in lightweight migrations.
-
-Operational rules:
-
-- Keep a `MigrationChain` registry for every supported version hop.
-- Disallow skipping intermediate version transforms unless explicitly validated.
-- Preserve unknown fields by default (forward compatibility).
-- Canonicalize JSON after each successful migration write.
-- Record migration provenance (`from_version`, `to_version`, timestamp, migration id).
-
-Illustrative shape:
-
-```rust
-use panproto_lens::{lens, Migration};
-use serde_json::Value;
-
-pub fn migrate_v1_v2() -> Migration<Value> {
-      Migration::builder()
-            .step(lens!("rating").rename("user_score"))
-            .step(lens!("tags").each().map(|tag: String| tag.to_uppercase()))
-            .step(lens!("location").maybe().map(transform_location))
-            .build()
-}
-```
-
-This turns migration logic into composable "focus + transform" operations and minimizes accidental data loss during upgrades.
-
-### 5.6 Migration strategy comparison (adopted)
-
-| Feature | Old Way (Procedural) | New Way (Functional Optics) |
-| :--- | :--- | :--- |
-| **Logic** | `match version { ... }` + manual struct mapping | `MigrationChain` of composed Lenses/Prisms/Traversals |
-| **Safety** | Elevated risk of dropping fields during remaps | Focused transforms only touch addressed data paths |
-| **Boilerplate** | High (`V1`, `V2`, `V3` structs + manual conversion glue) | Lower (`serde_json::Value` + structural path optics) |
-| **Sidecars** | Manual parse/rebuild-heavy migration code | Direct, composable transforms on loaded JSON buffer |
-
-### 5.7 Internal proposal note (for team communication)
-
-Proposed migration direction:
-
-- Refactor metadata migrations to a lens-based transformation pipeline.
-- Define migration steps as declarative optics composition rather than version-specific imperative conversion code.
-- Preserve non-targeted sidecar state by default and improve maintainability as schema versions grow.
-
-Expected result:
-
-- Better upgrade safety,
-- lower migration boilerplate,
-- clearer review surface for schema evolution,
-- and stronger long-term correctness through migration invariants/tests.
+**Dependency rule:** lower-level pure modules must not depend on higher-level
+I/O modules.
 
 ---
 
-## 6) Metadata Extraction and Edit Tracking
+## 4) Actor system model (ractor-first)
 
-### 6.1 Metadata extraction goals
+All parallel and extensible behavior is actor-driven.
 
-For any common container format we support initially (MP3, FLAC, M4A/MP4, OGG, WAV):
+### 4.1 Top-level actor groups
 
-- Container-level info.
-- Stream-level technical metadata.
-- Embedded tags.
-- Optional embedded artwork references (with size/hash if extracted).
+- `CasSupervisor`
+  - `StorageActor`
+  - `IndexActor`
+  - `OptimizerActor`
+- `ConductorSupervisor`
+  - `WorkflowPlannerActor`
+  - `WorkflowExecutorActor`
+  - `ToolRegistryActor`
+  - `StateStoreActor`
+- `MediaPmSupervisor`
+  - `SourceProcessorActor`
+  - `MaterializerActor`
+  - `MetadataActor`
+  - `ToolsmithActor`
+  - `LockfileActor`
 
-### 6.2 Original metadata snapshot
+### 4.2 Supervision policy
 
-At first import per URI:
+- Explicit restart policies per child actor.
+- Distinguish recoverable operational faults from invariant violations.
+- Panic handling is explicit and consistent with runtime configuration.
 
-- Compute hash of imported bytes -> original variant hash.
-- Probe and capture raw metadata snapshot into `original.original_metadata`.
+### 4.3 Messaging constraints
 
-### 6.3 Edit classes
-
-1. **Revertable edits**
-
-   - Example: tag/title/album/artist changes.
-   - Represent as patch operations in history so they can be reapplied/reverted.
-
-2. **Non-revertable edits**
-
-   - Example: transcoding, lossy transformation, destructive transforms.
-   - Must record full operation metadata and resulting variant hash.
-   - Reversion means selecting an earlier variant, not inverse-transforming bytes.
-
-### 6.4 Transformation provenance
-
-Each edit event stores:
-
-- Tool + version used.
-- Parameters.
-- Input hash and output hash.
-- Classification (revertable/non-revertable).
-- Optional user message.
+- Message enums are versionable and documented.
+- Payloads use strongly typed newtypes (hashes, canonical URIs, normalized
+  paths, actor ids).
+- Prefer bounded message size with content references for large payloads.
 
 ---
 
-## 7) Provider Metadata Architecture (MusicBrainz-first)
+## 5) Runtime-agnostic async contract
 
-### 7.1 Provider abstraction
+### 5.1 Runtime interface boundary
 
-Define trait-like interface:
+Define runtime-facing traits for:
 
-- `search(query, context) -> candidates`
-- `fetch(entity_id) -> provider_payload`
-- `map_to_normalized(provider_payload) -> normalized_patch`
+- spawn / join tasks
+- timers / sleep / timeout
+- async fs/process adapters
+- cancellation signaling
 
-### 7.2 MusicBrainz specifics
+Tokio adapter is default; alternative adapters (e.g., async-std) implement the
+same traits.
 
-- Dedicated module for MusicBrainz API interaction.
-- Respect strict rate limiting and required user-agent policy.
-- Cache raw responses locally in `.mediapm/providers/musicbrainz/cache`.
+### 5.2 Runtime isolation rules
 
-### 7.3 Authority layering
-
-When merging metadata:
-
-Priority policy (configurable default):
-
-1. User explicit overrides in declarative spec.
-2. Manual local metadata edits.
-3. Provider metadata (MusicBrainz).
-4. Embedded source tags.
-
-Store provenance per field where practical.
+- No Tokio-specific types in domain and planner signatures.
+- Runtime-specific code only in adapters and executable shell.
+- Actor code uses `ractor` abstractions and internal runtime traits.
 
 ---
 
-## 8) Declarative Language Choice and Config Model
+## 6) Data and invariant model
 
-### 8.1 Language requirement
+## 6.1 Identity and canonicalization
 
-Need a language that:
+- URI is the canonical identity key.
+- Content identity is BLAKE3 hash newtype.
+- Paths for materialization must satisfy strict portability constraints
+  (including NFD-only requirement and rejected characters).
 
-- Expresses data declaratively.
-- Allows lightweight code expression for reducing repetition.
-- Is existing and embeddable in Rust.
+### 6.2 CAS invariants (Phase 1)
 
-### 8.2 Recommended choice: Nickel
+- Object storage path fan-out is deterministic.
+- Diff graph remains acyclic.
+- Every index entry points to existing content.
+- Optimizer never violates reconstructability.
 
-Rationale:
+### 6.3 Conductor invariants (Phase 2)
 
-- Config-focused language with compositional features.
-- Better ergonomics for modular config and merges than plain JSON/TOML.
-- Suitable for a Nix-like declarative user experience without building a DSL from scratch.
+- Tool call instance key excludes tool content map and effective persistence
+  flags (as specified in phase plan).
+- Effective persistence flags are merged deterministically.
+- Missing non-saved outputs trigger controlled re-execution.
 
-### 8.3 Config model (conceptual)
+### 6.4 mediapm invariants (Phase 3)
 
-Top-level declarations:
-
-- `sources`: URI declarations and optional hints.
-- `metadata_overrides`: explicit field overrides.
-- `links`: manual desired links from workspace paths -> selected media/variant selection rules.
-- `policies`: link strategy preferences, provider toggles, conflict policy.
-
-### 8.4 Example (illustrative pseudo-Nickel)
-
-```nickel
-{
-  sources = [
-    {
-      uri = "file:///music/inbox/song.flac",
-      tags = { mood = "focus" }
-    }
-  ],
-
-  links = [
-    {
-      path = "library/Artist/Album/01 - Song.flac",
-      from_uri = "file:///music/inbox/song.flac",
-      select = { prefer = "latest_non_lossy" }
-    }
-  ],
-
-  metadata_overrides = {
-    "file:///music/inbox/song.flac" = {
-      title = "Song",
-      artist = "Artist"
-    }
-  }
-}
-```
+- Lockfile tracks every managed materialized file and safety external data.
+- Staging is always under `.mediapm/tmp/` before atomic commit.
+- Link fallback order is deterministic and logged.
+- Permanent transcode safety references are retained and pruneable by policy.
 
 ---
 
-## 9) Link Materialization Strategy
+## 7) Migration strategy using optics (bidirectional-capable)
 
-### 9.1 User-declared links only
+Migration logic is represented as composable optics transformations.
 
-mediapm does not invent library paths automatically by default.
+### 7.1 Requirements
 
-- The user declares links in config.
-- Reconciliation creates/updates/removes links to match declaration.
+- Sequential version hops (`vN -> vN+1`) with explicit registry.
+- Each hop records provenance.
+- Forward and backward transforms are preserved where semantically possible.
+- Migration chain serves as living historical reference of schema evolution.
 
-### 9.2 Link methods and fallback policy
+### 7.2 Optics model
 
-Support:
+- `Lens`: deterministic field-level transformations.
+- `Prism`: enum/optional branch transforms.
+- `Traversal`: repeated/nested collection transforms.
 
-1. Symlink
-2. Hardlink
-3. Reflink/clone (platform/filesystem permitting)
-4. Copy (last resort)
+### 7.3 Law checks
 
-Policy:
-
-- User-configurable preferred order.
-- Per-platform capability detection.
-- Deterministic fallback with explicit log reasons.
-
-### 9.3 Idempotency
-
-If current link target already matches selected variant hash/object, no-op.
+- Enforce round-trip properties where transformations are lossless.
+- For lossy migrations, enforce documented one-way guarantees and explicit
+  complement data handling.
 
 ---
 
-## 10) Minimal Command Set (Simplicity Requirement)
+## 8) Performance engineering plan
 
-Keep commands intentionally small:
+Performance work follows a strict loop:
 
-1. `mediapm sync`
+1. profile
+2. hypothesize
+3. optimize
+4. benchmark
+5. keep or revert
 
-   - Main command.
-   - Reads config, imports/probes as needed, enriches metadata per policy, reconciles links.
+### 8.1 Hot-path rules
 
-2. `mediapm plan`
+- Prefer contiguous memory layouts and compact hot structs.
+- Minimize allocations in tight loops (`with_capacity`, workhorse buffers,
+  `SmallVec` when measured beneficial).
+- Keep common branches cheap; isolate cold paths (`#[cold]` where appropriate).
+- Avoid unnecessary cloning and intermediate allocations.
+- Use streaming and buffered I/O; avoid tiny syscalls in loops.
 
-   - Dry-run output of effects without applying.
+### 8.2 Build-profile tuning
 
-3. `mediapm verify`
+For release-quality benchmarking and production artifacts, evaluate:
 
-   - Verifies object integrity and sidecar consistency.
+- `codegen-units = 1`
+- `lto = "thin"` or `"fat"`
+- `panic = "abort"` where operationally acceptable
+- optional target tuning (`target-cpu`) based on distribution requirements
 
-4. `mediapm gc`
+All tuning changes require benchmark evidence.
 
-   - Garbage collect unreachable objects/variants not referenced by current declared graph (with safety modes).
+### 8.3 Concurrency and scheduling
 
-5. `mediapm fmt` (optional but useful)
-
-   - Formats/normalizes config and optionally canonicalizes JSON sidecars.
-
-No additional commands unless they materially reduce complexity.
-
----
-
-## 11) Rust Crate & Module Design
-
-### 11.1 Workspace layout
-
-```text
-crates/
-  mediapm-core/         # pure domain logic, models, planning
-  mediapm-fs/           # filesystem effects and path/link operations
-  mediapm-metadata/     # probing/tagging abstraction
-  mediapm-provider/     # provider trait + implementations (musicbrainz)
-  mediapm-config/       # Nickel integration and config normalization
-  mediapm-cli/          # clap-based CLI wrapper
-```
-
-### 11.2 Purity boundaries
-
-- `mediapm-core` should be IO-free.
-- IO traits/interfaces injected into executor layer.
-
-### 11.3 Suggested libraries (initial)
-
-- CLI: `clap`
-- Serialization: `serde`, `serde_json`
-- Schema migration optics: `panproto-lens` (primary), `karpal-optics` (advanced composition), `focus-rs` (ergonomic deep-path transforms)
-- Hashing: `blake3`
-- URL canonicalization: `url`
-- Error handling: `thiserror`, `miette`/`anyhow` (choose one style consistently)
-- Time: `time` or `chrono`
-- HTTP for providers: `reqwest` (with strict timeout/retry policy)
-- Async runtime (if needed): `tokio` (only where needed)
-
-Metadata/probing/tagging crates should be selected after implementation spike validation.
+- Keep actor work units small and cooperative.
+- No blocking inside async actor handlers.
+- Use dedicated bounded blocking workers for unavoidable blocking operations.
 
 ---
 
-## 12) Performance Design (No DB, Still Fast)
+## 9) Testing strategy (mandatory coverage)
 
-### 12.1 Performance goals
+### 9.1 Unit tests
 
-- Fast startup for medium libraries.
-- Efficient incremental sync.
-- Minimal redundant hashing/probing.
+- Required for all public and critical internal modules/types.
+- Validate invariants, parsing, normalization, merge logic, and key derivation.
 
-### 12.2 Tactics
+### 9.2 Integration tests (all public APIs)
 
-1. **Content hash cache hints in sidecars**
+- Every public API path has integration coverage for success + failure modes.
+- Validate side effects and persisted state semantics.
 
-   - Store file size + mtime + hash so unchanged local file imports can skip rehash if policy allows safe shortcut.
-   - Optionally strict mode always rehashes.
+### 9.3 End-to-end tests (all major features)
 
-2. **Incremental reconciliation**
+At minimum:
 
-   - Only reprocess sources affected by config or source file changes.
+- CAS store/get/constraint/optimize flow
+- Conductor tool import/run/cache/re-exec flow
+- mediapm tool lifecycle + media add/add-local + sync materialization
+- lockfile + pruning + verify workflows
 
-3. **Memory indexes from JSON on startup**
+### 9.4 Advanced correctness tests
 
-   - Build compact hash maps once.
+- Property tests for planner determinism and idempotency.
+- Loom tests for concurrency-sensitive components.
+- Golden/snapshot tests for deterministic planning output.
 
-4. **Parallelism**
+### 9.5 Performance tests
 
-   - Parallel hash/probe for independent files with bounded worker pool.
-
-5. **Avoid giant monolithic JSON**
-
-   - Per-URI sidecars keep file IO localized.
-
----
-
-## 13) Safety, Atomicity, and Recovery
-
-### 13.1 Atomic write protocol
-
-For every JSON update:
-
-1. Write to temp in same directory.
-2. Flush and fsync.
-3. Atomic rename over target.
-
-### 13.2 Crash safety
-
-- Effects should be resumable.
-- `sync` can be rerun safely after interruption.
-
-### 13.3 Integrity verification
-
-`verify` checks:
-
-- Object file hash matches path hash.
-- Sidecar references valid objects.
-- Lineage references valid hashes/events.
-- Link targets correspond to resolved declared state.
-
-### 13.4 Corruption handling
-
-- Mark corrupted entries explicitly in report.
-- Never silently delete suspicious data.
+- Benchmarks for hashing, reconstruction depth, orchestration overhead,
+  materialization throughput, and metadata pipeline costs.
+- Track regressions in CI for key benchmarks when feasible.
 
 ---
 
-## 14) Functional Data Flow (End-to-End)
+## 10) Documentation contract
 
-1. Load and evaluate Nickel config -> normalized desired declarations.
-2. Load JSON sidecars -> current state model.
-3. Compute plan in pure core:
+Every public module and API must include:
 
-   - Required imports
-   - Required probes
-   - Required provider fetches
-   - Required sidecar updates
-   - Required link operations
-   - Optional GC candidates
+- purpose
+- invariants
+- complexity/performance notes for hot paths
+- error behavior
+- examples where non-trivial
 
-4. Present plan (`plan`) or execute (`sync`).
-5. Persist updated sidecars atomically.
-6. Materialize links.
-7. Emit concise machine-readable and human-readable summary.
+Migration changes must include rationale comments and schema-hop notes.
 
 ---
 
-## 15) Detailed Roadmap (Phased)
+## 11) Tooling and quality gates
 
-### Phase 0 — Foundation & ADRs (1–2 weeks)
+### 11.1 Local quality commands
 
-Deliverables:
+Preferred aliases:
 
-- ADR: URI identity semantics.
-- ADR: JSON sidecar schema v1.
-- ADR: edit classification model.
-- ADR: functional core/effect model.
-- Skeleton Rust workspace and CI.
+- `cargo fmt-check`
+- `cargo clippy-all`
+- `cargo test-all`
 
-Exit criteria:
+### 11.2 CI quality gates
 
-- Compiles and runs basic CLI scaffolding.
-
-### Phase 1 — Core models + storage + hashing (1–2 weeks)
-
-Deliverables:
-
-- Canonical URI module.
-- BLAKE3 hashing and object store pathing.
-- Sidecar read/write with atomic persistence.
-- `verify` partial checks.
-
-Exit criteria:
-
-- Import-by-URI and store object with sidecar created.
-
-### Phase 2 — Metadata extraction + original snapshot (2–3 weeks)
-
-Deliverables:
-
-- Probe abstraction and first implementation.
-- Capture original metadata snapshot on first import.
-- Variant record creation pipeline.
-
-Exit criteria:
-
-- Supported formats produce stable metadata snapshot.
-
-### Phase 3 — Declarative config (Nickel) + planning engine (2–4 weeks)
-
-Deliverables:
-
-- Nickel config evaluation and normalized model.
-- Pure planner producing effects.
-- `plan` command complete.
-
-Exit criteria:
-
-- Dry-run accurately predicts sync actions.
-
-### Phase 4 — Link materializer + sync (2–3 weeks)
-
-Deliverables:
-
-- Cross-platform link strategy manager.
-- Idempotent reconcile engine.
-- `sync` MVP end-to-end.
-
-Exit criteria:
-
-- Declarative links reliably materialize and update.
-
-### Phase 5 — Edit history model + transformations (2–4 weeks)
-
-Deliverables:
-
-- Edit event schema with reversible/non-reversible classes.
-- Metadata edit event recording.
-- Transcode event recording API (actual transcode delegated).
-
-Exit criteria:
-
-- Full lineage trail maintained across variants.
-
-### Phase 6 — MusicBrainz provider integration (2–3 weeks)
-
-Deliverables:
-
-- Provider trait + MusicBrainz adapter.
-- Cache and rate-limited client.
-- Field-level provenance merge.
-
-Exit criteria:
-
-- Enrichment works with deterministic merge policy.
-
-### Phase 7 — GC + hardening + migration support (2–3 weeks)
-
-Deliverables:
-
-- Reachability GC.
-- Optics-based schema migration framework (`Lens`/`Prism`/`Traversal` chain manifests).
-- Version-hop migration registry and provenance recording.
-- Migration law/invariant test harness (focus-preservation and unknown-field retention checks).
-- Robust verify and repair hints.
-
-Exit criteria:
-
-- Safe cleanup and upgrade path validated.
-
-### Phase 8 — Polish, docs, and release prep (1–2 weeks)
-
-Deliverables:
-
-- User docs and examples.
-- Performance benchmarks.
-- Packaging/release artifacts.
-
-Exit criteria:
-
-- v0.1.0 release candidate.
+- Formatting must pass.
+- Clippy warnings fail the build (except explicitly justified allowances).
+- Full test suite (unit + integration + e2e) must pass.
 
 ---
 
-## 16) Testing Strategy (Implementation-Grade)
+## 12) Implementation roadmap (execution order)
 
-### 16.1 Test pyramid
+## Stage A — Architecture hardening
 
-1. Unit tests (core logic)
-2. Property tests (planner invariants/idempotency)
-3. Integration tests (filesystem + sidecars + links)
-4. Golden tests (config -> plan output snapshots)
+- Finalize actor topology and message contracts.
+- Finalize runtime abstraction traits and adapters.
+- Lock module boundaries and dependency direction.
 
-### 16.2 Critical invariants
+## Stage B — Phase 1 CAS completion
 
-- Same input state + config => same plan.
-- Running sync twice without changes => zero-op second run.
-- Original snapshot immutability.
-- Every variant hash points to existing object.
-- Every edit event references valid from/to variants.
-- Migration transforms preserve all non-focused fields unless a migration step explicitly changes them.
-- Migration chain is deterministic for identical input sidecar bytes.
-- Field-path optics used for stable fields satisfy expected Get/Put-style behavior in tests.
+- Unified diff/full storage model implementation.
+- Index + DSU + optimizer actor behavior.
+- CAS CLI/API + stress and integrity tests.
 
-### 16.3 Cross-platform CI matrix
+## Stage C — Phase 2 Conductor completion
 
-- Linux, macOS, Windows.
-- Capability-aware tests for symlink/hardlink/reflink behavior.
+- CUE dual-file model integration.
+- Tool/workflow instance dedup + persistence merge logic.
+- orchestration state migration optics + verification tests.
 
----
+## Stage D — Phase 3 mediapm completion
 
-## 17) Observability, Logs, and UX
+- policy/config schema + lockfile semantics
+- media pipelines (online/local)
+- toolsmith lifecycle (add/remove/list/update)
+- atomic materializer with strict path invariants and link fallback
 
-### 17.1 Output modes
+## Stage E — Hardening and scale
 
-- Human-readable concise mode.
-- JSON output mode for scripting.
-
-### 17.2 Plan/apply summaries
-
-Always summarize:
-
-- imports
-- metadata updates
-- provider calls/cache hits
-- link creates/updates/removals
-- errors/warnings
-
-### 17.3 Error model
-
-- Rich actionable errors (what failed, why, suggested remediation).
-- Distinguish hard errors vs partial failures.
+- large-workspace performance profiling
+- benchmark-driven optimizations
+- docs and operational playbooks
 
 ---
 
-## 18) Risk Register and Mitigations
+## 13) Definition of done
 
-1. **Metadata crate coverage gaps**
+The system is done when all of the following are true:
 
-   - Mitigation: abstraction layer + format capability matrix + fallback behavior.
-
-2. **Cross-platform link inconsistencies**
-
-   - Mitigation: explicit capability detection + deterministic fallback + tests.
-
-3. **JSON schema evolution complexity**
-
-   - Mitigation: strict versioning and migration framework from day 1.
-
-4. **Performance degradation on large libraries**
-
-   - Mitigation: incremental planning, bounded parallelism, compact indexes.
-
-5. **Provider API policy changes**
-
-   - Mitigation: provider isolation, caching, configurable disablement.
+1. Core principles in Section 1 are demonstrably enforced.
+2. All public APIs have integration tests.
+3. All major features have end-to-end tests.
+4. Determinism/idempotency invariants are tested and passing.
+5. Runtime can switch with minimal adapter-level changes.
+6. Actor supervision behavior is validated under fault scenarios.
+7. Migration chain is documented, testable, and auditable.
+8. Performance claims are benchmark-backed.
+9. `rustfmt`, `clippy`, and test gates pass in CI.
 
 ---
 
-## 19) Example Command Behavior Specs (Concise)
+## 14) Practical implementation notes
 
-### 19.1 `mediapm plan`
+- Prefer existing crates when they satisfy requirements without forcing
+  complexity.
+- Build custom components only when necessary for correctness, performance, or
+  domain invariants.
+- Keep optimization local and measurable; avoid premature global complexity.
+- When in doubt, choose the design that is easiest to reason about,
+  benchmark, and test.
 
-- Reads config/state.
-- Produces deterministic action list.
-- No side effects.
-- Exit code non-zero only on invalid config/state load errors.
-
-### 19.2 `mediapm sync`
-
-- Executes plan with side effects.
-- Atomic sidecar updates.
-- Safe rerun after interruption.
-
-### 19.3 `mediapm verify`
-
-- Full integrity scan.
-- Reports corruption/inconsistency.
-- Optional `--json` machine report.
-
-### 19.4 `mediapm gc`
-
-- Computes unreachable objects from declared roots.
-- Default dry-run.
-- `--apply` required for deletion.
-
----
-
-## 20) Implementation Checklist (Granular)
-
-### 20.1 Domain model checklist
-
-- [ ] Canonical URI type + parser + normalizer
-- [ ] Hash newtype `[u8; 32]`
-- [ ] MediaRecord/VariantRecord/EditEvent types
-- [ ] Revertable/non-revertable enum + validation
-- [ ] Schema version constants
-
-### 20.2 Storage checklist
-
-- [ ] Object path derivation
-- [ ] Object existence + integrity checks
-- [ ] Sidecar atomic read/write helpers
-- [ ] Temp/lock management
-
-### 20.3 Planner checklist
-
-- [ ] Desired-state model from config
-- [ ] Diff engine current vs desired
-- [ ] Effect enum and executor contract
-- [ ] Stable sort ordering for deterministic plans
-
-### 20.4 Metadata checklist
-
-- [ ] Probe adapter trait
-- [ ] Container/tag extraction mapping
-- [ ] Original snapshot capture
-- [ ] Metadata patch representation for revertable edits
-
-### 20.5 Provider checklist
-
-- [ ] Provider trait
-- [ ] MusicBrainz client wrapper
-- [ ] Caching
-- [ ] Merge/provenance policies
-
-### 20.6 Linker checklist
-
-- [ ] Capability detection
-- [ ] Symlink/hardlink/reflink/copy implementations
-- [ ] Idempotent reconcile logic
-
-### 20.7 Quality checklist
-
-- [ ] Unit tests + property tests
-- [ ] Integration tests across OS
-- [ ] Benchmark harness
-- [ ] User documentation
-
-### 20.8 Migration checklist (Functional Optics)
-
-- [ ] Define per-version migration chain registry (`v1->v2`, `v2->v3`, ...)
-- [ ] Implement first migrations with `panproto-lens`
-- [ ] Add Prism-based optional-field handling patterns
-- [ ] Add Traversal-based array transforms for nested tag lists
-- [ ] Add migration provenance writeback in sidecars
-- [ ] Add unknown-field preservation regression tests
-- [ ] Add migration idempotency + determinism tests
-
----
-
-## 21) Additional Technical Refinements from Research (Integrated)
-
-This section captures concrete, high-impact improvements to fold into implementation decisions.
-
-### 21.1 Crates to prioritize after spike validation
-
-- **Hashing**: `blake3` (primary content hash algorithm).
-- **Metadata probing**: `symphonia` (safe probing path).
-- **Tag read/write**: `lofty` (format tag support path).
-- **Canonical JSON**: evaluate JCS-compatible strategy (`serde_jcs` or equivalent deterministic serializer policy).
-- **Atomic file writes**: `atomic-write-file` (or equivalent robust atomic write utility).
-- **Path safety**: `path-clean`.
-- **Parallelism**: `rayon` for batch hashing/probing.
-
-### 21.2 CAS and GC hardening
-
-- Object path fan-out by leading hash bytes to avoid huge flat directories.
-- Mark-and-sweep GC rooted from active declarative link graph + sidecar references.
-- Optional quarantine folder for uncertain deletions prior to permanent removal.
-
-### 21.3 Metadata layering in sidecars
-
-Keep both:
-
-- `raw` extracted fields (loss-minimizing capture), and
-- `normalized` fields (stable app-facing schema),
-
-plus provenance of how normalized values were derived.
-
-### 21.4 MusicBrainz operational discipline
-
-- Enforce request throttling centrally.
-- Cache successful and not-found responses with TTL policy.
-- Record provider match confidence and rationale in sidecar provenance fields.
-
-### 21.5 Functional correctness tests
-
-Property-based tests for:
-
-- planner idempotency,
-- effect ordering determinism,
-- migration round-trips,
-- merge associativity constraints where intended.
-
-### 21.6 Migration implementation style
-
-- Replace ad-hoc `match version { ... }` mapping blocks with a declarative migration chain.
-- Prefer path-focused transforms over whole-struct rebuilds to reduce boilerplate and accidental field drops.
-- Keep migrations composable and reviewable as a manifest of optics steps.
-- Use `serde_json::Value`-first transforms for intermediate schema versions where full Rust types are unnecessary.
-
----
-
-## 22) Non-Goals (To Protect Scope)
-
-For initial releases, mediapm will **not**:
-
-- Implement an internal downloader ecosystem.
-- Auto-generate complex library hierarchies without explicit declarations.
-- Provide heavy GUI management interface.
-- Support every media/container edge case at v0.1.
-
----
-
-## 23) Definition of Done (for “extremely good for another agent to implement”)
-
-This plan is implementation-ready when the implementing agent can:
-
-1. Build crate skeleton exactly as outlined.
-2. Implement core models and planner without ambiguity.
-3. Implement sidecar schema and migration path deterministically.
-4. Implement link reconciliation behavior with platform fallbacks.
-5. Implement provider integration behind trait boundaries.
-6. Verify progress via explicit test and phase exit criteria.
-
----
-
-## 24) Immediate Next Step Execution Plan (Actionable)
-
-1. Create ADRs and lock decisions:
-
-   - URI canonicalization contract
-   - Sidecar schema v1
-   - Effect model
-   - Link fallback policy
-
-2. Implement Phase 0 + Phase 1 skeleton in Rust workspace.
-3. Add golden tests for `plan` output early before feature expansion.
-4. Spike metadata adapters (probe/tag) on representative music files.
-5. Finalize Nickel config schema contracts and error diagnostics.
-
----
-
-## 25) Summary
-
-mediapm will be a **Rust, declarative, workspace-local, URI-identity-first media artifact manager** with:
-
-- content-addressed variant storage,
-- JSON-only metadata state,
-- explicit provenance and edit history,
-- functional-core architecture,
-- minimal command surface,
-- and a practical path to high-quality metadata enrichment (starting with MusicBrainz).
-
-It is intentionally engineered as a reproducible media state reconciler rather than a traditional mutable media manager.
+This plan is intentionally strict: it is designed to keep `mediapm` fast,
+predictable, maintainable, and evolvable over a long lifespan.
