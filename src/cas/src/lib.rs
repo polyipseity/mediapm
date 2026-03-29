@@ -1,147 +1,83 @@
-//! Phase 1 content-addressed storage (CAS) foundation.
+//! Phase 1 high-performance unified-delta CAS.
 //!
-//! This crate defines the core identity and async API contracts for a
-//! high-performance, incremental CAS layer. The implementation included here is
-//! intentionally minimal and in-memory so later storage/index actors can be
-//! added without breaking external callers.
+//! This crate implements the core behaviors required by the Phase 1 plan:
+//!
+//! - Algorithm-tagged content identity (`HashAlgorithm` + 32-byte digest).
+//! - Deterministic fan-out object layout:
+//!   `{root}/{version}/{algorithm_name}/{h[0:2]}/{h[2:4]}/{h[4..]}`.
+//! - Full objects stored as raw data-only files (no headers).
+//! - Delta objects stored as `.diff` files with explicit reconstruction metadata.
+//! - Persistent constraint/index state with invariant checks.
+//! - Incremental optimizer pass that can rewrite stored bases.
+//! - Implicit empty-base fallback (empty-only constraints are intentionally not persisted).
+//! - Async API contracts suitable for use by higher orchestration layers.
 
-use std::collections::HashMap;
-use std::sync::RwLock;
+mod api;
+mod codec;
+mod error;
+mod hash;
+mod index;
+mod orchestration;
+mod storage;
 
-use async_trait::async_trait;
-use bytes::Bytes;
-use serde::{Deserialize, Serialize};
-use thiserror::Error;
+pub use api::{
+    CasApi, CasByteReader, CasByteStream, CasExistenceBitmap, CasMaintenanceApi, Constraint,
+    ConstraintPatch, IndexRepairConstraintSource, IndexRepairReport, ObjectInfo, OptimizeOptions,
+    OptimizePriority, OptimizeReport, PruneReport,
+};
+pub use error::{CasError, HashParseError};
+pub use hash::{Hash, HashAlgorithm, empty_content_hash};
+pub use orchestration::{
+    CasNodeActorClient, CasNodeActorMessage, CasWireCommand, CasWireResponse, IndexActorClient,
+    IndexActorMessage, OptimizerActorClient, OptimizerActorMessage, StorageActorArgs,
+    StorageActorClient, StorageActorMessage, spawn_cas_node_actor, spawn_cas_node_actor_from_refs,
+    spawn_index_actor, spawn_optimizer_actor, spawn_storage_actor,
+    spawn_storage_actor_with_dependencies,
+};
+pub use storage::{
+    CasBackendConfig, CasConfig, CasLocatorParseOptions, CasTopologyConstraint,
+    CasTopologyEncoding, CasTopologyNode, CasTopologySnapshot, ConfiguredCas, FileSystemCas,
+    FileSystemMetrics, FileSystemRecoveryOptions, InMemoryCas, IndexRecoveryMode,
+    render_topology_mermaid, render_topology_mermaid_neighborhood, topology_neighborhood_snapshot,
+};
 
-/// Fixed-size BLAKE3 hash newtype used for CAS object identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Hash([u8; 32]);
-
-impl Hash {
-    /// Builds a validated hash from raw bytes.
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// Computes a hash for arbitrary byte content.
-    pub fn from_content(content: &[u8]) -> Self {
-        Self(*blake3::hash(content).as_bytes())
-    }
-
-    /// Returns the hash bytes for storage fan-out or encoding.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-/// Returns the canonical "empty content" hash.
-pub fn empty_content_hash() -> Hash {
-    Hash::from_content(&[])
-}
-
-/// Phase 1 optimization constraint for a target object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Constraint {
-    /// Content hash whose base-candidate set is being constrained.
-    pub target_hash: Hash,
-    /// Potential base hashes, represented as a set-like vector.
-    pub potential_bases: Vec<Hash>,
-}
-
-/// Errors produced by CAS operations.
-#[derive(Debug, Error)]
-pub enum CasError {
-    /// The requested hash does not exist in the store.
-    #[error("object not found: {0:?}")]
-    NotFound(Hash),
-    /// Constraint requests must contain at least one possible base hash.
-    #[error("constraint set must contain at least one potential base")]
-    EmptyConstraintSet,
-    /// An internal synchronization or state error occurred.
-    #[error("internal CAS error: {0}")]
-    Internal(String),
-}
-
-/// Async API contract for Phase 1 CAS behavior.
-#[async_trait]
-pub trait CasApi: Send + Sync {
-    /// Stores content and returns its canonical content hash.
-    async fn put(&self, data: Bytes) -> Result<Hash, CasError>;
-
-    /// Retrieves previously stored content by hash.
-    async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
-
-    /// Updates optimization constraints for a target hash.
-    async fn set_constraint(&self, constraint: Constraint) -> Result<(), CasError>;
-}
-
-/// In-memory CAS implementation used for tests and early integration.
-#[derive(Default)]
-pub struct InMemoryCas {
-    objects: RwLock<HashMap<Hash, Bytes>>,
-    constraints: RwLock<HashMap<Hash, Vec<Hash>>>,
-}
-
-impl InMemoryCas {
-    /// Creates an empty in-memory CAS.
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-#[async_trait]
-impl CasApi for InMemoryCas {
-    async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
-        let hash = Hash::from_content(&data);
-        let mut objects =
-            self.objects.write().map_err(|err| CasError::Internal(err.to_string()))?;
-        objects.insert(hash, data);
-        Ok(hash)
-    }
-
-    async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
-        let objects = self.objects.read().map_err(|err| CasError::Internal(err.to_string()))?;
-
-        objects.get(&hash).cloned().ok_or(CasError::NotFound(hash))
-    }
-
-    async fn set_constraint(&self, constraint: Constraint) -> Result<(), CasError> {
-        if constraint.potential_bases.is_empty() {
-            return Err(CasError::EmptyConstraintSet);
-        }
-
-        let mut constraints =
-            self.constraints.write().map_err(|err| CasError::Internal(err.to_string()))?;
-        constraints.insert(constraint.target_hash, constraint.potential_bases);
-        Ok(())
-    }
-}
+pub(crate) use codec::{DeltaPatch, StoredObject};
+pub(crate) use index::{
+    BatchOperation, CasIndexDb, IndexState, ObjectEncoding, ObjectMeta, ensure_empty_record,
+    recalculate_depths,
+};
 
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
+    use tempfile::tempdir;
 
-    use crate::{CasApi, Constraint, InMemoryCas, empty_content_hash};
+    use crate::{
+        CasApi, CasNodeActorClient, CasWireCommand, CasWireResponse, FileSystemCas, Hash,
+        InMemoryCas,
+    };
 
-    #[tokio::test]
-    async fn roundtrip_put_and_get() {
-        let cas = InMemoryCas::new();
-        let original = Bytes::from_static(b"hello");
+    #[test]
+    fn public_exports_are_constructible() {
+        let _hash = Hash::from_content(b"export-smoke");
+        let _command = CasWireCommand::OptimizeOnce;
+        let _response = CasWireResponse::Ack;
 
-        let hash = cas.put(original.clone()).await.expect("must store");
-        let loaded = cas.get(hash).await.expect("must retrieve");
+        let _in_memory = InMemoryCas::new();
 
-        assert_eq!(loaded, original);
+        fn _accept_client(_client: Option<CasNodeActorClient>) {}
+        _accept_client(None);
     }
 
     #[tokio::test]
-    async fn constraint_requires_candidates() {
-        let cas = InMemoryCas::new();
-        let target_hash = cas.put(Bytes::from_static(b"target")).await.expect("must store target");
+    async fn exported_filesystem_cas_can_roundtrip() {
+        let dir = tempdir().expect("tempdir");
+        let cas = FileSystemCas::open(dir.path()).await.expect("open cas");
 
-        let result = cas.set_constraint(Constraint { target_hash, potential_bases: vec![] }).await;
+        let payload = Bytes::from_static(b"lib-export-roundtrip");
+        let hash = cas.put(payload.clone()).await.expect("put payload");
+        let restored = cas.get(hash).await.expect("get payload");
 
-        assert!(result.is_err());
-        assert_ne!(empty_content_hash(), target_hash);
+        assert_eq!(restored, payload);
     }
 }

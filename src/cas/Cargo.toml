@@ -9,10 +9,36 @@ description = "Phase 1 CAS foundation for mediapm"
 
 [dependencies]
 async-trait.workspace = true
+bitvec.workspace = true
 blake3.workspace = true
+bytemuck.workspace = true
 bytes.workspace = true
+crc32fast.workspace = true
+dashmap.workspace = true
+fp-library.workspace = true
+fs4.workspace = true
+futures-core.workspace = true
+futures-util.workspace = true
+memmap2.workspace = true
+miette.workspace = true
+multihash.workspace = true
+multihash-derive.workspace = true
+oxidelta.workspace = true
+parking_lot.workspace = true
+postcard.workspace = true
+ractor.workspace = true
+rayon.workspace = true
+redb.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+smallvec.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+url.workspace = true
+zerocopy.workspace = true
 
 [dev-dependencies]
-tokio.workspace = true
+proptest.workspace = true
