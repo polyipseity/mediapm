@@ -19,8 +19,16 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `rust-toolchain.toml` for toolchain/channel/components.
 - `rustfmt.toml` and `clippy.toml` for style and lint policy.
 - `.github/workflows/ci.yml` for canonical CI validation behavior.
-- `src/` first-level folders (`application`, `configuration`, `domain`,
-  `infrastructure`, `support`) for module boundaries.
+- `PLAN.md` for active architecture and implementation contract.
+- `src/` phase crates for current module boundaries:
+  - `src/cas/` (Phase 1)
+  - `src/conductor/` (Phase 2)
+  - `src/conductor-builtins/*/` (Phase 2 built-ins)
+  - `src/mediapm/` (Phase 3)
+
+If planning docs mention `application`, `configuration`, `domain`,
+`infrastructure`, and `support`, treat them as conceptual layering terms unless
+matching directories are explicitly introduced.
 
 ## Validation workflow
 
@@ -29,6 +37,12 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
   - `cargo clippy-all`
   - `cargo test-all`
 - Equivalent explicit forms are acceptable when aliases are unavailable.
+- CI parity reference (`.github/workflows/ci.yml`):
+  - `cargo test-all`
+  - `cargo clippy-all`
+  - `cargo fmt-check`
+  - `cargo build-all`
+  - plus `cargo bin rumdl check` as an additional project check.
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
 
 ## Editing conventions
@@ -38,6 +52,9 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
 - Keep public Rust APIs fully documented with module-level `//!` and item-level
   `///` docs so newcomers can navigate the codebase quickly.
+- Do not assume bootstrap-template structure (`Cargo.toml` +
+  `rust-toolchain.toml` + single `src/main.rs`) when changing workspace-wide
+  guidance; verify the real workspace members first.
 
 ## Core architectural constraints
 

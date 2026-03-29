@@ -31,6 +31,15 @@ applyTo: "src/**/*.rs"
 If you introduce a new file, place it in the phase crate that owns that
 concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
 
+## Conceptual layering terms in planning docs
+
+- `PLAN.md` may reference `application`, `configuration`, `domain`,
+  `infrastructure`, and `support` as architecture-layer concepts.
+- Treat those names as conceptual boundaries unless matching directories are
+  explicitly added to this workspace.
+- When implementing phase work, keep concrete file placement aligned to the
+  existing phase crates listed above.
+
 ## Layering rules
 
 - `cas` should remain runtime-agnostic at public API boundaries.

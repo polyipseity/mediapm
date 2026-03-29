@@ -68,6 +68,14 @@
 - Distinguish between what is present today and what is only part of the
   intended template contract. Do not describe absent files as if they already
   exist.
+- Treat `PLAN.md` as an active implementation contract. Do not describe it as
+  intentionally unimplemented.
+- Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only
+  minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a
+  multi-member Rust workspace with phase crates under `src/`.
+- When docs mention `application`, `configuration`, `domain`,
+  `infrastructure`, and `support`, treat them as conceptual layering terms
+  unless matching directories are explicitly introduced in the workspace.
 - Before writing stack-specific guidance, inspect concrete evidence such as
   manifests, lockfiles, source tree layout, scripts, CI workflows, editor
   settings, and dedicated config files.
@@ -78,6 +86,10 @@
   blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`,
   detailed file-specific guidance in `.agents/instructions/`.
+- Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md`
+  directly for durable repository policy. Do not keep long-lived policy only in
+  `/memories/repo/`; if temporary repo memory notes are used, merge them into
+  instruction files and remove them.
 - Preserve mirrored prompt content between `.agents/prompts/` and
   `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF;
