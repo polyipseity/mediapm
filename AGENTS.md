@@ -79,6 +79,9 @@
 - Before writing stack-specific guidance, inspect concrete evidence such as
   manifests, lockfiles, source tree layout, scripts, CI workflows, editor
   settings, and dedicated config files.
+- For Rust edits, treat detailed docstrings as mandatory in touched files:
+  document public and private items (`//!` + `///`) with semantics,
+  invariants, and side-effect notes, not just name restatements.
 - When you detect a real stack, add instructions for it carefully and
   thoroughly in a narrow, well-named instruction file whose `description` and
   `applyTo` target the relevant files.

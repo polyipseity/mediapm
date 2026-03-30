@@ -37,15 +37,36 @@ If a code change alters user-visible behavior:
 For newcomers with no codebase context:
 
 - Add `//!` module docs explaining why the module exists.
-- Add `///` docs for every public type/function touched.
-- Document assumptions, invariants, and side effects.
-- Document important field semantics in public structs.
-- In tests, add concise comments/doc lines about the user-level guarantee under test.
+- Add `///` docs for **every Rust item touched**, including private items:
+  - `struct`, `enum`, `trait`, `type`, `const`, `static`,
+  - `fn`/methods/associated functions,
+  - helper structs/enums in test modules,
+  - internal state-machine and actor message enums.
+- Use detailed docstrings where possible, not one-liners:
+  - purpose and where the item fits in the module,
+  - key invariants and assumptions,
+  - side effects, mutation, locking, persistence, or I/O behavior,
+  - error conditions and failure modes for fallible functions,
+  - performance notes when behavior is intentionally optimized.
+- Document important field semantics in structs (public and private).
+- In tests, add concise item docs/comments that state the user-level guarantee,
+  the invariant being protected, and why failure matters.
+- For touched files, prefer "document-everything in that file" completion over
+  only documenting the exact changed lines.
+
+### Strictness policy
+
+- Treat missing docs on touched private helpers as quality regressions.
+- Do not accept placeholder docs that restate names (for example,
+  "Runs optimize" without semantics).
+- If a file has many undocumented internals, continue documenting until no
+  obvious top-level helper/constant/type remains undocumented.
 
 ## Anti-patterns to avoid
 
 - Bare one-line docs that repeat the function name.
 - Public APIs without any semantic explanation.
+- Private helper functions/constants without docs in touched files.
 - Tests that only check "it runs" without asserting durable behavior.
 - Silent behavior changes without corresponding test updates.
 

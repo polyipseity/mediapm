@@ -50,11 +50,24 @@ matching directories are explicitly introduced.
 - Keep changes minimal, deterministic, and aligned with the functional-core direction in `PLAN.md`.
 - Avoid adding hidden mutable state or introducing databases unless explicitly requested.
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
-- Keep public Rust APIs fully documented with module-level `//!` and item-level
-  `///` docs so newcomers can navigate the codebase quickly.
+- Keep Rust code fully documented with module-level `//!` and item-level
+  `///` docs for public and private items in touched files.
+- Prefer detailed docstrings over brief labels; include semantics,
+  invariants, side effects, and error behavior.
 - Do not assume bootstrap-template structure (`Cargo.toml` +
   `rust-toolchain.toml` + single `src/main.rs`) when changing workspace-wide
   guidance; verify the real workspace members first.
+
+## Docstring completion bar
+
+- When editing `*.rs`, treat documentation as part of definition-of-done.
+- For touched files, document:
+  - module purpose (`//!`),
+  - top-level constants and types,
+  - helper functions and internal state structures,
+  - tests with explicit guarantee statements.
+- Avoid shallow docs that only rename symbols; write newcomer-oriented
+  explanations that clarify intent and boundaries.
 
 ## Core architectural constraints
 
