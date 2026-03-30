@@ -15,6 +15,7 @@ use mediapm_cas::{
 use tempfile::tempdir;
 
 #[tokio::test]
+/// Ensures storage actor preserves bytes across put/get RPC calls.
 async fn storage_actor_put_get_roundtrip() {
     let dir = tempdir().expect("tempdir");
     let cas = Arc::new(FileSystemCas::open_for_tests(dir.path()).await.expect("open cas"));
@@ -29,6 +30,7 @@ async fn storage_actor_put_get_roundtrip() {
 }
 
 #[tokio::test]
+/// Ensures optimizer actor executes optimize/prune without violating invariants.
 async fn optimizer_actor_runs_optimize_and_prune() {
     let dir = tempdir().expect("tempdir");
     let cas =
@@ -57,6 +59,7 @@ async fn optimizer_actor_runs_optimize_and_prune() {
 }
 
 #[tokio::test]
+/// Ensures storage actor flushes durable index when index dependency is wired.
 async fn storage_actor_with_index_dependency_flushes_redb_tables() {
     let dir = tempdir().expect("tempdir");
     let cas = Arc::new(FileSystemCas::open_for_tests(dir.path()).await.expect("open cas"));
@@ -80,6 +83,7 @@ async fn storage_actor_with_index_dependency_flushes_redb_tables() {
 }
 
 #[tokio::test]
+/// Ensures node-level repair command returns a valid repair report payload.
 async fn index_actor_and_node_command_can_repair_index() {
     let dir = tempdir().expect("tempdir");
     let cas = Arc::new(FileSystemCas::open_for_tests(dir.path()).await.expect("open cas"));
@@ -97,6 +101,7 @@ async fn index_actor_and_node_command_can_repair_index() {
 }
 
 #[tokio::test]
+/// Ensures node-level migrate command preserves object accessibility.
 async fn index_actor_and_node_command_can_migrate_index() {
     let dir = tempdir().expect("tempdir");
     let cas = Arc::new(FileSystemCas::open_for_tests(dir.path()).await.expect("open cas"));
@@ -115,6 +120,7 @@ async fn index_actor_and_node_command_can_migrate_index() {
 }
 
 #[tokio::test]
+/// Ensures constraint APIs work through storage actor RPC paths.
 async fn storage_actor_handles_constraints_via_actor_messages() {
     let dir = tempdir().expect("tempdir");
     let cas = Arc::new(FileSystemCas::open_for_tests(dir.path()).await.expect("open cas"));
@@ -133,6 +139,7 @@ async fn storage_actor_handles_constraints_via_actor_messages() {
 }
 
 #[tokio::test]
+/// Exercises full command workflow over node actor wire interface.
 async fn cas_node_actor_runs_full_command_workflow() {
     let dir = tempdir().expect("tempdir");
     let cas =
@@ -181,6 +188,7 @@ async fn cas_node_actor_runs_full_command_workflow() {
 }
 
 #[tokio::test]
+/// Ensures deleting a base through node actor preserves descendant objects.
 async fn cas_node_actor_delete_preserves_delta_descendants() {
     let dir = tempdir().expect("tempdir");
     let cas =

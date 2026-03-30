@@ -19,14 +19,18 @@ use crate::{CasError, Hash};
 
 use super::Migrate;
 
+/// Bit flag indicating "full object" encoding in packed `depth_and_tag`.
 const OBJECT_META_FULL_FLAG: u32 = 1 << 31;
+/// Bit mask selecting packed depth bits in `depth_and_tag`.
 const OBJECT_META_DEPTH_MASK: u32 = !OBJECT_META_FULL_FLAG;
 
+/// Serde bridge for fixed-width base-hash storage bytes.
 mod base_storage_serde {
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
     use super::HASH_STORAGE_KEY_BYTES;
 
+    /// Serializes fixed-width base-storage bytes as an opaque byte sequence.
     pub(super) fn serialize<S>(
         value: &[u8; HASH_STORAGE_KEY_BYTES],
         serializer: S,
@@ -37,6 +41,7 @@ mod base_storage_serde {
         serializer.serialize_bytes(value)
     }
 
+    /// Deserializes base-storage bytes and enforces exact fixed width.
     pub(super) fn deserialize<'de, D>(
         deserializer: D,
     ) -> Result<[u8; HASH_STORAGE_KEY_BYTES], D::Error>
@@ -171,6 +176,7 @@ pub(crate) struct PrimaryHeaderV1 {
     _padding: [u8; 6],
 }
 
+/// Header encode/decode and validation utilities for V1 primary rows.
 impl PrimaryHeaderV1 {
     const FLAG_FULL: u8 = 1;
 
@@ -247,6 +253,7 @@ impl PrimaryHeaderV1 {
         }
     }
 
+    /// Validates decoded header invariants against runtime depth constraints.
     fn validate(self, max_delta_depth: u32) -> Result<(), CasError> {
         if self.depth > max_delta_depth {
             return Err(CasError::corrupt_index(format!(
@@ -377,6 +384,7 @@ pub(crate) struct ObjectMetaV1 {
     base_storage: [u8; HASH_STORAGE_KEY_BYTES],
 }
 
+/// Constructors/accessors for packed V1 object metadata.
 impl ObjectMetaV1 {
     /// Constructs full-data object metadata.
     #[must_use]
@@ -431,7 +439,9 @@ pub(crate) struct IndexStateV1 {
     pub(crate) constraints: BTreeMap<Hash, BTreeSet<Hash>>,
 }
 
+/// Identity migration bridge for same-version persisted index snapshots.
 impl Migrate<IndexStateV1> for IndexStateV1 {
+    /// Identity migration for same-version index state.
     fn migrate(self) -> IndexStateV1 {
         self
     }

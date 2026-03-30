@@ -69,6 +69,7 @@ mod latest {
 }
 // END latest-version bindings
 
+/// Decodes and validates the embedded wire version from envelope magic bytes.
 fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
     if &bytes[..DIFF_STORAGE_FAMILY_PREFIX.len()] != DIFF_STORAGE_FAMILY_PREFIX {
         return Err(CasError::corrupt_object("delta envelope: magic mismatch"));
@@ -85,6 +86,7 @@ fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Internal dispatched delta envelope layout marker.
 enum DeltaEnvelopeVersion {
     V1,
 }
@@ -202,6 +204,7 @@ mod tests {
 
     use crate::Hash;
 
+    /// Collects `vN.rs` files and parsed numeric version markers in ascending order.
     fn collect_versioned_files(dir: &Path) -> Vec<(PathBuf, u32)> {
         let mut files = fs::read_dir(dir)
             .unwrap_or_else(|err| panic!("failed to read versions dir '{}': {err}", dir.display()))
@@ -224,6 +227,7 @@ mod tests {
         files
     }
 
+    /// Extracts `::vN::` style module references from source text.
     fn extract_version_module_refs(content: &str) -> Vec<u32> {
         let bytes = content.as_bytes();
         let mut refs = Vec::new();
@@ -258,6 +262,7 @@ mod tests {
         refs
     }
 
+    /// Recursively collects Rust source files under `dir`.
     fn collect_rs_files_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir)
             .unwrap_or_else(|err| panic!("failed to read source dir '{}': {err}", dir.display()))
@@ -274,11 +279,13 @@ mod tests {
         }
     }
 
+    /// Returns `true` when `path` is inside one of the versions directories.
     fn path_is_inside_versions_dir(path: &Path) -> bool {
         let normalized = path.to_string_lossy().replace('\\', "/");
         normalized.contains("/codec/versions/") || normalized.contains("/index/versions/")
     }
 
+    /// Detects direct `versions::vN` path usage in non-versions files.
     fn has_direct_versions_vx_path(content: &str) -> bool {
         let bytes = content.as_bytes();
         let needle = b"versions::v";
@@ -311,6 +318,7 @@ mod tests {
         false
     }
 
+    /// Detects leaked versioned type tokens outside version boundaries.
     fn has_known_versioned_type_leak(content: &str) -> bool {
         const LEAKED_TOKENS: &[&str] =
             &["IndexStateV", "ObjectMetaV", "PrimaryHeaderV", "V1Envelope", "DeltaStateV"];
@@ -318,6 +326,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies latest-version encoded payloads decode through dispatch path.
     fn decode_dispatches_v1_and_restores_state() {
         let state = DeltaState {
             base_hash: Hash::from_content(b"base"),
@@ -333,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies dispatch rejects payloads with invalid family magic.
     fn decode_rejects_bad_magic() {
         let state = DeltaState {
             base_hash: Hash::from_content(b"base"),
@@ -349,6 +359,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies owned decode wrapper preserves decoded runtime state.
     fn decode_owned_wrapper_restores_state() {
         let state = DeltaState {
             base_hash: Hash::from_content(b"base"),
@@ -363,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    /// Verifies dispatcher rejects unknown/unsupported wire versions.
     fn decode_rejects_unsupported_version() {
         let state = DeltaState {
             base_hash: Hash::from_content(b"base"),
@@ -380,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    /// Enforces version-folder policy guard and vN reference boundaries.
     fn versioned_files_keep_policy_guard_and_boundary_rules() {
         let versions_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/codec/versions");
         let files = collect_versioned_files(&versions_dir);
@@ -435,6 +448,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures non-version files never directly import `versions::vN` symbols.
     fn non_versions_files_never_import_versions_vx_directly() {
         let src_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut rs_files = Vec::new();
@@ -464,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures this module does not directly re-export version-specific symbols.
     fn versions_mod_must_not_reexport_versioned_symbols() {
         let mod_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/codec/versions/mod.rs");
         let content = fs::read_to_string(&mod_file)
@@ -481,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures latest-first dispatch performance guard text remains present.
     fn versions_mod_keeps_latest_first_dispatch_docstring() {
         let mod_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/codec/versions/mod.rs");
         let content = fs::read_to_string(&mod_file)
@@ -494,6 +510,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures latest-version binding block remains centralized in one section.
     fn versions_mod_centralizes_latest_bindings_block() {
         let mod_file = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/codec/versions/mod.rs");
         let full_content = fs::read_to_string(&mod_file)

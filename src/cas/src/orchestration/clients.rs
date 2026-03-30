@@ -31,6 +31,7 @@ pub struct StorageActorClient {
     pub(super) permits: Arc<Semaphore>,
 }
 
+/// Storage actor RPC convenience methods with backpressure gating.
 impl StorageActorClient {
     /// Stores bytes and returns the canonical content hash.
     ///
@@ -115,6 +116,7 @@ pub struct OptimizerActorClient {
     pub(super) timeout_ms: u64,
 }
 
+/// Optimizer actor RPC/message helpers.
 impl OptimizerActorClient {
     /// Runs a single optimize pass.
     ///
@@ -161,6 +163,7 @@ pub struct IndexActorClient {
     pub(super) timeout_ms: u64,
 }
 
+/// Index actor RPC helpers for durability and migration.
 impl IndexActorClient {
     /// Flushes the in-memory index snapshot into Redb.
     ///
@@ -210,6 +213,7 @@ pub struct CasNodeActorClient {
     pub(super) timeout_ms: u64,
 }
 
+/// Wire-command convenience helpers over node actor RPC interface.
 impl CasNodeActorClient {
     /// Executes one wire command and returns its wire response.
     ///

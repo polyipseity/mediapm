@@ -12,6 +12,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(12))]
 
     #[test]
+    /// Files persisted in filesystem backend must remain readable after reopen.
     fn prop_filesystem_roundtrip_survives_reopen(payload in prop::collection::vec(any::<u8>(), 0..4096)) {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

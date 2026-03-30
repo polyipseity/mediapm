@@ -42,6 +42,7 @@ async fn run_application_flow_from_locator(
 }
 
 #[tokio::main]
+/// Runs the locator-driven configured backend example.
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let locator = std::env::var("MEDIAPM_CAS_LOCATOR").unwrap_or_else(|_| "cas://memory".into());
     let (_hash, _len, mermaid) = run_application_flow_from_locator(&locator).await?;
@@ -57,6 +58,7 @@ mod tests {
     use mediapm_cas::CasConfig;
 
     #[tokio::test]
+    /// Verifies `cas://memory` resolves and executes the in-memory branch.
     async fn router_flow_supports_memory_locator() {
         let (_hash, len, mermaid) = run_application_flow_from_locator("cas://memory")
             .await
@@ -66,6 +68,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// Verifies explicit filesystem configuration executes filesystem-specific flow.
     async fn router_flow_supports_filesystem_backend_variant() {
         let temp = tempfile::tempdir().expect("tempdir");
         let cas = CasConfig::filesystem(temp.path()).open().await.expect("open filesystem config");

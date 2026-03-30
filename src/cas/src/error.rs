@@ -189,6 +189,7 @@ pub enum CasError {
     Internal(String),
 }
 
+/// Helper constructors for converting subsystem failures into [`CasError`].
 impl CasError {
     /// Builds an [`CasError::Io`] with operation and path context.
     #[must_use]

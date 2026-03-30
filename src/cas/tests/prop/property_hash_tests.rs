@@ -12,6 +12,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
 
     #[test]
+    /// Hash string/storage encodings must round-trip to identical hash values.
     fn prop_hash_string_and_storage_roundtrip(payload in prop::collection::vec(any::<u8>(), 0..4096)) {
         let hash = Hash::from_content(&payload);
 
@@ -25,6 +26,7 @@ proptest! {
     }
 
     #[test]
+    /// Blake3 multihash storage prefix bytes must remain stable.
     fn prop_blake3_multihash_prefix_is_stable(payload in prop::collection::vec(any::<u8>(), 0..2048)) {
         let hash = Hash::from_content(&payload);
         let storage = hash.to_storage_bytes();

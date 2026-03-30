@@ -13,6 +13,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(10))]
 
     #[test]
+    /// Pruning should preserve all still-valid explicit candidates.
     fn prop_constraint_prune_preserves_existing_candidates(
         target_seed in prop::collection::vec(any::<u8>(), 1..128),
         candidate_seeds in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..64), 0..20)

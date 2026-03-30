@@ -58,6 +58,7 @@ pub(super) struct ObjectActorRpcScope<'a> {
     started: Instant,
 }
 
+/// Constructor for object-actor RPC timing scopes.
 impl<'a> ObjectActorRpcScope<'a> {
     /// Starts a new object-actor RPC metrics scope.
     pub(super) fn new(metrics: &'a FileSystemMetricsState) -> Self {
@@ -65,6 +66,7 @@ impl<'a> ObjectActorRpcScope<'a> {
     }
 }
 
+/// Publishes elapsed timing and decrements in-flight counters on scope exit.
 impl Drop for ObjectActorRpcScope<'_> {
     fn drop(&mut self) {
         self.metrics.object_actor_inflight.fetch_sub(1, Ordering::AcqRel);

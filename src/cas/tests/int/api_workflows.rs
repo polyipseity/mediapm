@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use tempfile::tempdir;
 
 #[tokio::test]
+/// Covers a typical API workflow from put through optimize/prune/get.
 async fn workflow_store_get_constraint_prune_roundtrip() {
     // Arrange
     let dir = tempdir().expect("tempdir");

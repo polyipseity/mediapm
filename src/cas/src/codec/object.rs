@@ -38,6 +38,7 @@ pub struct DeltaState<'a> {
     pub payload: Cow<'a, [u8]>,
 }
 
+/// Delta-state ownership conversion helpers.
 impl<'a> DeltaState<'a> {
     /// Converts this state into an owned `'static` representation.
     pub fn into_owned(self) -> DeltaState<'static> {
@@ -108,6 +109,7 @@ pub(crate) enum StoredObject {
 }
 
 /// Returns a prism for the [`StoredObject::Full`] variant.
+/// Constructors and encode/decode helpers for persisted object variants.
 ///
 /// `preview` succeeds only for full payload objects, and `review` injects raw
 /// bytes back into the sum type.
@@ -138,6 +140,7 @@ pub fn stored_object_delta_prism() -> PrismPrime<'static, RcBrand, StoredObject,
     )
 }
 
+/// Constructors and encode/decode helpers for persisted object variants.
 impl StoredObject {
     /// Builds one full stored object wrapper.
     pub(crate) const fn full(payload: Vec<u8>) -> Self {
@@ -186,6 +189,10 @@ impl StoredObject {
     /// - For [`StoredObject::Full`], this returns raw payload bytes.
     /// - For [`StoredObject::Delta`], this delegates encoding to versioned
     ///   envelope modules.
+    ///
+    /// The method is deliberately version-agnostic at this layer: all binary
+    /// framing, checksums, and wire-layout details live in
+    /// `codec::versions/*`.
     pub(crate) fn encode(&self) -> Result<Cow<'_, [u8]>, CasError> {
         let Self::Delta { state } = self else {
             return Ok(Cow::Borrowed(self.payload()));
@@ -202,7 +209,8 @@ impl StoredObject {
 
     /// Decodes one delta object from `.diff` bytes and validates invariants.
     ///
-    /// Integrity checks are delegated to the versioned envelope parser.
+    /// Integrity checks are delegated to the versioned envelope parser,
+    /// including envelope magic/version validation and embedded payload checks.
     pub(crate) fn decode_delta(bytes: &[u8]) -> Result<Self, CasError> {
         let state = decode_delta_state(bytes)?;
 

@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use tempfile::tempdir;
 
 #[tokio::test]
+/// Ensures full objects are stored as raw bytes without extra framing.
 async fn full_objects_are_stored_as_data_only_without_headers() {
     // Arrange
     let dir = tempdir().expect("tempdir");
@@ -26,6 +27,7 @@ async fn full_objects_are_stored_as_data_only_without_headers() {
 }
 
 #[tokio::test]
+/// Ensures optimized delta objects are persisted with `.diff` extension.
 async fn diff_objects_use_dot_diff_extension_and_raw_path_absent() {
     // Arrange
     let dir = tempdir().expect("tempdir");
@@ -53,6 +55,7 @@ async fn diff_objects_use_dot_diff_extension_and_raw_path_absent() {
 }
 
 #[tokio::test]
+/// Ensures fan-out path splits digest hex into expected directory layout.
 async fn object_paths_use_digest_hex_fanout_layout() {
     // Arrange
     let dir = tempdir().expect("tempdir");

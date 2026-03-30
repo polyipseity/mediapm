@@ -27,50 +27,81 @@ use crate::{
 
 use super::STORAGE_VERSION;
 
+/// Directory name for serialized index backup snapshots.
 const INDEX_BACKUP_DIR_NAME: &str = "index-backups";
+/// Prefix for backup snapshot file names.
 const INDEX_BACKUP_FILE_PREFIX: &str = "index-backup-";
+/// Backup snapshot file extension.
 const INDEX_BACKUP_FILE_SUFFIX: &str = ".postcard";
+/// Current serialized backup payload format version.
 const INDEX_BACKUP_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
+/// Constraint source seed used during index rebuild.
 pub(super) struct ConstraintSeed {
+    /// Explicit constraint rows to attempt restoring.
     pub(super) constraints: BTreeMap<Hash, BTreeSet<Hash>>,
+    /// Number of backup snapshots scanned while looking for constraints.
     pub(super) backup_snapshots_considered: usize,
+    /// Provenance of restored constraints.
     pub(super) source: IndexRepairConstraintSource,
 }
 
 #[derive(Debug, Clone)]
+/// Result of rebuilding runtime index state from object-store scan.
 pub(super) struct RecoveredIndexState {
+    /// Reconstructed runtime index state.
     pub(super) state: IndexState,
+    /// User-visible repair report counters and source metadata.
     pub(super) report: IndexRepairReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Serializable snapshot payload used for backup files.
 struct IndexBackupState {
+    /// Object metadata rows by hash.
     objects: BTreeMap<Hash, ObjectMeta>,
+    /// Explicit constraint rows by target hash.
     constraints: BTreeMap<Hash, BTreeSet<Hash>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Backup file envelope with versioning and timestamp metadata.
 struct IndexBackupSnapshot {
+    /// Snapshot payload schema version.
     format_version: u32,
+    /// Snapshot creation time in milliseconds since UNIX epoch.
     created_unix_millis: u64,
+    /// Serialized index state payload.
     state: IndexBackupState,
 }
 
 #[derive(Debug, Clone)]
+/// Object-store scan catalog used as recovery input.
 struct ScannedObjectCatalog {
+    /// Parsed objects keyed by hash.
     objects: BTreeMap<Hash, StoredObject>,
+    /// Count of file entries visited during scan.
     scanned_object_files: usize,
+    /// Count of file entries skipped as invalid/corrupt/unparseable.
     skipped_object_files: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
+/// Parsed object-file kind derived from file-name extension.
 enum ParsedObjectKind {
+    /// Raw full-payload object file (`<hash>`).
     Full,
+    /// Delta-envelope object file (`<hash>.diff`).
     Delta,
 }
 
+/// Loads durable index state, recovering from object files when required.
+///
+/// Returns:
+/// - opened index database handle,
+/// - usable in-memory index state,
+/// - optional repair report when recovery was executed.
 pub(super) fn load_or_recover_primary_index(
     root: &Path,
     recovery: &FileSystemRecoveryOptions,
@@ -119,6 +150,12 @@ pub(super) fn load_or_recover_primary_index(
     }
 }
 
+/// Chooses explicit-constraint seed rows for recovery workflows.
+///
+/// Preference order:
+/// 1. caller-provided in-memory constraints,
+/// 2. newest valid backup snapshot constraints,
+/// 3. no constraints.
 pub(super) fn choose_constraint_seed(
     root: &Path,
     current_constraints: Option<BTreeMap<Hash, BTreeSet<Hash>>>,
@@ -166,6 +203,13 @@ pub(super) fn choose_constraint_seed(
     })
 }
 
+/// Rebuilds full index state by scanning object files and replaying invariants.
+///
+/// Recovery pipeline:
+/// 1. scan and parse object files,
+/// 2. validate hash/content integrity and delta dependencies,
+/// 3. restore explicit constraints from selected seed,
+/// 4. rebuild reverse maps and depth invariants.
 pub(super) fn rebuild_index_from_object_store(
     root: &Path,
     constraint_seed: ConstraintSeed,
@@ -195,6 +239,7 @@ pub(super) fn rebuild_index_from_object_store(
     })
 }
 
+/// Writes one atomic backup snapshot and prunes old snapshots by retention.
 pub(super) fn write_backup_snapshot(
     root: &Path,
     state: &IndexState,
@@ -226,6 +271,7 @@ pub(super) fn write_backup_snapshot(
     prune_old_backups(&backup_root, max_backup_snapshots)
 }
 
+/// Handles recovery flow after primary index open/load failures.
 fn recover_after_primary_failure(
     root: &Path,
     recovery: &FileSystemRecoveryOptions,
@@ -257,6 +303,7 @@ fn recover_after_primary_failure(
     Ok((db, recovered.state, Some(recovered.report)))
 }
 
+/// Builds strict-mode startup error for missing/empty primary index state.
 fn primary_index_missing_or_empty_error(root: &Path, primary_missing: bool) -> CasError {
     let reason = if primary_missing { "missing" } else { "empty" };
     CasError::corrupt_index(format!(
@@ -265,6 +312,7 @@ fn primary_index_missing_or_empty_error(root: &Path, primary_missing: bool) -> C
     ))
 }
 
+/// Recreates the primary index file from scratch.
 fn recreate_primary_index(root: &Path) -> Result<CasIndexDb, CasError> {
     let path = primary_index_path(root);
     if path.exists() {
@@ -275,14 +323,17 @@ fn recreate_primary_index(root: &Path) -> Result<CasIndexDb, CasError> {
     CasIndexDb::open(root)
 }
 
+/// Returns canonical primary index file path.
 fn primary_index_path(root: &Path) -> PathBuf {
     root.join("index.redb")
 }
 
+/// Returns canonical backup snapshot directory path.
 fn backup_snapshot_root(root: &Path) -> PathBuf {
     root.join(INDEX_BACKUP_DIR_NAME)
 }
 
+/// Returns whether object store contains at least one non-empty object file.
 fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError> {
     let storage_root = root.join(STORAGE_VERSION);
     if !storage_root.exists() {
@@ -327,6 +378,7 @@ fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError
     Ok(false)
 }
 
+/// Recursively scans object-store files and builds a best-effort object catalog.
 fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
     let storage_root = root.join(STORAGE_VERSION);
     if !storage_root.exists() {
@@ -412,6 +464,7 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
     Ok(ScannedObjectCatalog { objects, scanned_object_files, skipped_object_files })
 }
 
+/// Validates scanned catalog content integrity and converts to runtime index state.
 fn validate_catalog_into_index_state(
     catalog: &ScannedObjectCatalog,
 ) -> Result<(IndexState, usize), CasError> {
@@ -447,6 +500,9 @@ fn validate_catalog_into_index_state(
     Ok((state, invalid.len()))
 }
 
+/// Validates one object hash by recursively reconstructing/confirming its bytes.
+///
+/// Uses memoization and cycle detection to avoid repeated reconstruction.
 fn validate_hash_content(
     hash: Hash,
     objects: &BTreeMap<Hash, StoredObject>,
@@ -499,6 +555,7 @@ fn validate_hash_content(
     }
 }
 
+/// Restores explicit constraints from seed while filtering invalid rows/bases.
 fn restore_explicit_constraints(state: &mut IndexState, constraint_seed: &ConstraintSeed) -> usize {
     let mut restored = 0usize;
 
@@ -525,6 +582,7 @@ fn restore_explicit_constraints(state: &mut IndexState, constraint_seed: &Constr
     restored
 }
 
+/// Lists backup snapshot files newest-first.
 fn backup_snapshot_paths(root: &Path) -> Result<Vec<PathBuf>, CasError> {
     let backup_root = backup_snapshot_root(root);
     if !backup_root.exists() {
@@ -549,6 +607,7 @@ fn backup_snapshot_paths(root: &Path) -> Result<Vec<PathBuf>, CasError> {
     Ok(paths)
 }
 
+/// Removes stale backup snapshots beyond `keep` newest files.
 fn prune_old_backups(backup_root: &Path, keep: usize) -> Result<(), CasError> {
     let mut paths = std::fs::read_dir(backup_root)
         .map_err(|source| CasError::io("reading index backup directory", backup_root, source))?
@@ -567,6 +626,7 @@ fn prune_old_backups(backup_root: &Path, keep: usize) -> Result<(), CasError> {
     Ok(())
 }
 
+/// Atomically writes one backup file via staged temp-file rename.
 fn write_backup_file_atomic(
     backup_root: &Path,
     target: &Path,
@@ -600,6 +660,7 @@ fn write_backup_file_atomic(
     Ok(())
 }
 
+/// Parses one object file path into `(hash, kind)` when layout is recognized.
 fn parse_hash_from_object_path(root: &Path, path: &Path) -> Option<(Hash, ParsedObjectKind)> {
     let storage_root = root.join(STORAGE_VERSION);
     let relative = path.strip_prefix(storage_root).ok()?;
@@ -640,6 +701,7 @@ fn parse_hash_from_object_path(root: &Path, path: &Path) -> Option<(Hash, Parsed
     Some((hash, kind))
 }
 
+/// Decodes an even-length hexadecimal string into bytes.
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
     if !value.len().is_multiple_of(2) {
         return None;
@@ -655,6 +717,7 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// Decodes one hexadecimal nibble byte.
 const fn decode_hex_nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -664,6 +727,7 @@ const fn decode_hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
+/// Returns current UNIX epoch milliseconds, saturating on conversion bounds.
 fn unix_epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -671,6 +735,7 @@ fn unix_epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
+/// Returns current UNIX epoch nanoseconds (best-effort).
 fn unix_epoch_nanos() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_nanos()).unwrap_or(0)
 }

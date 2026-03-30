@@ -21,6 +21,7 @@ pub(crate) struct StreamBufferPool {
     buffers: Mutex<Vec<BytesMut>>,
 }
 
+/// Buffer-pool constructor, lease, and recycle operations.
 impl StreamBufferPool {
     /// Creates a new buffer pool.
     pub(crate) fn new(chunk_size: usize, max_buffers: usize) -> Arc<Self> {
@@ -64,6 +65,7 @@ pub(crate) struct PooledStreamBuffer {
     buffer: Option<BytesMut>,
 }
 
+/// Shared immutable access to leased buffer bytes.
 impl Deref for PooledStreamBuffer {
     type Target = BytesMut;
 
@@ -72,12 +74,14 @@ impl Deref for PooledStreamBuffer {
     }
 }
 
+/// Mutable access to leased buffer bytes.
 impl DerefMut for PooledStreamBuffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.buffer.as_mut().expect("pooled stream buffer must be present")
     }
 }
 
+/// Returns the leased buffer to pool on scope exit.
 impl Drop for PooledStreamBuffer {
     fn drop(&mut self) {
         if let Some(buffer) = self.buffer.take() {

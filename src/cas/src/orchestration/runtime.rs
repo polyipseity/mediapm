@@ -32,6 +32,7 @@ use super::state::{
     CasNodeActor, CasNodeActorState, IndexActor, OptimizerActor, StorageActor, StorageActorState,
 };
 
+/// Storage actor runtime handling object CRUD and constraint RPCs.
 impl Actor for StorageActor {
     type Msg = StorageActorMessage;
     type State = StorageActorState;
@@ -142,6 +143,7 @@ impl Actor for StorageActor {
     }
 }
 
+/// Optimizer actor runtime handling maintenance operations.
 impl Actor for OptimizerActor {
     type Msg = OptimizerActorMessage;
     type State = Arc<FileSystemCas>;
@@ -176,6 +178,7 @@ impl Actor for OptimizerActor {
     }
 }
 
+/// Index actor runtime handling durability and migration calls.
 impl Actor for IndexActor {
     type Msg = IndexActorMessage;
     type State = Arc<FileSystemCas>;
@@ -213,6 +216,7 @@ impl Actor for IndexActor {
     }
 }
 
+/// Node actor runtime dispatching wire commands to typed actors.
 impl Actor for CasNodeActor {
     type Msg = CasNodeActorMessage;
     type State = CasNodeActorState;
@@ -246,6 +250,10 @@ impl Actor for CasNodeActor {
     }
 }
 
+/// Handles deduplicated `put` execution with disk-pressure policy checks.
+///
+/// This helper applies pressure policy before writes and ensures the persisted
+/// hash matches caller pre-computation.
 async fn handle_storage_put(
     state: &StorageActorState,
     data: Bytes,
@@ -311,6 +319,10 @@ async fn handle_storage_put(
     Ok(hash)
 }
 
+/// Executes one wire command through typed actor dependencies.
+///
+/// Converts command/response wire envelopes into typed actor RPC calls while
+/// preserving protocol-shape validation.
 async fn execute_wire_command(
     state: &CasNodeActorState,
     command: CasWireCommand,
@@ -446,16 +458,24 @@ async fn execute_wire_command(
     }
 }
 
+/// Persists full index snapshot through index-actor call path.
 async fn persist_snapshot_via_index_actor(cas: Arc<FileSystemCas>) -> Result<(), CasError> {
     cas.flush_index_snapshot().await
 }
 
+/// Coarse disk-pressure classification for write-path policy decisions.
 enum DiskPressure {
+    /// Healthy free-space ratio.
     Normal,
+    /// Low free-space ratio; writes still allowed with compression bias.
     Soft,
+    /// Critical free space; writes are rejected.
     Hard { available_bytes: u64, cas_size_bytes: u64 },
 }
 
+/// Computes disk-pressure state from free-space and CAS-size metrics.
+///
+/// Classification thresholds are controlled by orchestration config constants.
 async fn evaluate_disk_pressure(cas: Arc<FileSystemCas>) -> Result<DiskPressure, CasError> {
     let root = cas.root_path().to_path_buf();
     let available_bytes = tokio::task::spawn_blocking(move || {

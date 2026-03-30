@@ -11,6 +11,7 @@ use mediapm_cas::{CasApi, Constraint, FileSystemCas, Hash};
 use tempfile::tempdir;
 
 #[tokio::test]
+/// Ensures self-referential constraint rows are rejected.
 async fn rejects_self_referential_constraint_candidate() {
     // Arrange
     let dir = tempdir().expect("tempdir");
@@ -30,6 +31,7 @@ async fn rejects_self_referential_constraint_candidate() {
 }
 
 #[test]
+/// Ensures hash parser rejects unsupported algorithm prefixes.
 fn parsing_rejects_unknown_algorithm_name() {
     // Arrange + Act
     let result =
@@ -40,6 +42,7 @@ fn parsing_rejects_unknown_algorithm_name() {
 }
 
 #[tokio::test]
+/// Ensures empty constraint sets are treated as implicit unconstrained rows.
 async fn empty_only_constraint_is_implicit_and_omitted() {
     // Arrange
     let dir = tempdir().expect("tempdir");
