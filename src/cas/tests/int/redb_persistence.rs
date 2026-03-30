@@ -9,10 +9,13 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 use tempfile::tempdir;
 
+/// Redb primary-index table containing object metadata rows.
 const PRIMARY_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("primary_index");
+/// Legacy/disabled delta-graph table name used for negative assertion coverage.
 const DELTA_GRAPH: TableDefinition<&[u8], &[u8]> = TableDefinition::new("delta_graph");
 
 #[tokio::test]
+/// Ensures put/constraint/optimize flows populate expected redb primary rows.
 async fn redb_primary_index_is_populated_after_put_and_constraint_workflows() {
     let dir = tempdir().expect("tempdir");
     let cas = FileSystemCas::open_with_alpha_for_tests(dir.path(), 0).await.expect("open cas");

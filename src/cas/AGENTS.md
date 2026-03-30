@@ -27,6 +27,16 @@ alone.
 - Constraints never persist an explicit empty-only candidate list; empty base is
   implicit at read time.
 
+## Documentation requirement (strict)
+
+- In `src/cas/**/*.rs`, document touched files thoroughly:
+  - module docs via `//!`,
+  - item docs via `///` for public and private items.
+- Prefer rich docs (purpose, invariants, side effects, failure behavior,
+  and performance rationale where relevant) over brief labels.
+- For tests, include concise guarantee-oriented doc/comments describing what
+  user-facing or invariant behavior the test protects.
+
 ## Codec versioning protocol
 
 - This crate is currently unreleased; backward compatibility is **not**

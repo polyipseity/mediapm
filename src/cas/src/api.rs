@@ -210,6 +210,7 @@ pub struct OptimizeOptions {
     pub priority: OptimizePriority,
 }
 
+/// Default optimizer options favor background best-effort maintenance.
 impl Default for OptimizeOptions {
     fn default() -> Self {
         Self { max_rewrites: None, timeout: None, priority: OptimizePriority::Background }

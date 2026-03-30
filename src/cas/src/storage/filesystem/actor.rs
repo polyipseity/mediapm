@@ -66,6 +66,7 @@ pub(super) struct ActiveMmapLease {
     registry: Arc<ActiveMmapRegistry>,
 }
 
+/// Lease lifecycle utilities for active-mmap registry accounting.
 impl ActiveMmapLease {
     /// Acquires one active-mmap lease for `hash` in `registry`.
     ///
@@ -85,6 +86,7 @@ impl ActiveMmapLease {
     }
 }
 
+/// Decrements active-mmap counter and wakes waiters when it reaches zero.
 impl Drop for ActiveMmapLease {
     fn drop(&mut self) {
         let mut notify = None;
@@ -117,6 +119,7 @@ pub(super) struct GuardedMmap {
     pub(super) _lease: ActiveMmapLease,
 }
 
+/// Borrows mmap bytes while keeping lease alive.
 impl AsRef<[u8]> for GuardedMmap {
     fn as_ref(&self) -> &[u8] {
         self.mmap.as_ref()
@@ -127,19 +130,24 @@ impl AsRef<[u8]> for GuardedMmap {
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct FileObjectActor;
 
+/// Filesystem-path derivation and mutation helpers for object actor state.
 impl FileObjectActorState {
+    /// Returns canonical full-object path for `hash`.
     fn object_path_for_hash(&self, hash: Hash) -> PathBuf {
         object_path(&self.root, hash)
     }
 
+    /// Returns canonical delta-object (`.diff`) path for `hash`.
     fn diff_path_for_hash(&self, hash: Hash) -> PathBuf {
         diff_object_path(&self.root, hash)
     }
 
+    /// Returns shared staging-temp root used by atomic write flows.
     fn staging_tmp_root(&self) -> PathBuf {
         self.root.join(STORAGE_VERSION).join(".tmp")
     }
 
+    /// Returns file length when path exists, otherwise zero.
     async fn file_len_if_exists(
         path: &Path,
         check_operation: &str,
@@ -158,6 +166,7 @@ impl FileObjectActorState {
         Ok(metadata.len())
     }
 
+    /// Scans on-disk object tree and computes total payload bytes.
     async fn scan_cas_store_size_bytes(&self) -> Result<u64, CasError> {
         let mut total = 0u64;
         let root = self.root.join(STORAGE_VERSION);
@@ -194,6 +203,7 @@ impl FileObjectActorState {
         Ok(total)
     }
 
+    /// Waits until no active mmap lease remains for `hash`.
     async fn wait_for_no_active_mmap(&self, hash: Hash) {
         loop {
             let wait = {
@@ -211,6 +221,7 @@ impl FileObjectActorState {
         }
     }
 
+    /// Removes one file path when present.
     async fn remove_file_if_exists(
         path: &Path,
         check_operation: &str,
@@ -228,6 +239,7 @@ impl FileObjectActorState {
         Ok(())
     }
 
+    /// Persists full/delta object variant and updates tracked byte counters.
     async fn persist_object_variant(
         &mut self,
         hash: Hash,
@@ -285,6 +297,7 @@ impl FileObjectActorState {
         Ok(())
     }
 
+    /// Deletes both full/delta file variants for `hash` and updates counters.
     async fn delete_object_files(&mut self, hash: Hash) -> Result<(), CasError> {
         self.wait_for_no_active_mmap(hash).await;
 
@@ -323,11 +336,13 @@ impl FileObjectActorState {
         Ok(())
     }
 
+    /// Returns cached total CAS store bytes tracked by actor state.
     async fn cas_store_size_bytes(&self) -> Result<u64, CasError> {
         Ok(self.total_store_size)
     }
 }
 
+/// Ractor implementation for serialized filesystem object mutations.
 impl Actor for FileObjectActor {
     type Msg = FileObjectActorMessage;
     type State = FileObjectActorState;

@@ -11,6 +11,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
+    /// Random payloads round-trip exactly through in-memory CAS put/get.
     fn prop_in_memory_put_get_roundtrip_for_many_payloads(
         payloads in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..1024), 1..48)
     ) {

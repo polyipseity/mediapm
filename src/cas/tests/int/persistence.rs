@@ -7,6 +7,7 @@ use mediapm_cas::{CasApi, FileSystemCas};
 use tempfile::tempdir;
 
 #[tokio::test]
+/// Verifies persisted objects remain readable after backend reopen.
 async fn objects_remain_accessible_after_reopen() {
     // Arrange
     let dir = tempdir().expect("tempdir");
@@ -24,6 +25,7 @@ async fn objects_remain_accessible_after_reopen() {
 }
 
 #[tokio::test]
+/// Verifies fan-out paths include algorithm segment for namespacing.
 async fn fanout_path_contains_algorithm_directory() {
     // Arrange
     let dir = tempdir().expect("tempdir");

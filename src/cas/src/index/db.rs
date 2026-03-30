@@ -58,6 +58,7 @@ use crate::{CasError, Hash, empty_content_hash};
 #[cfg(test)]
 use super::schema_marker_needs_initialization;
 
+/// Sentinel cached marker value used before schema metadata is loaded.
 const UNINITIALIZED_SCHEMA_MARKER: u32 = 0;
 
 /// Redb-backed index database wrapper.
@@ -80,32 +81,44 @@ pub(crate) enum BatchOperation {
     SetConstraintBases { target_hash: Hash, bases: BTreeSet<Hash> },
 }
 
+/// Snapshot of existing primary row key/value bytes during merge persistence.
 type ExistingPrimaryRow = ([u8; HASH_STORAGE_KEY_BYTES], Vec<u8>);
 
+/// Number of bloom probes derived from each hash digest.
 const BLOOM_HASH_PROBE_COUNT: usize = 4;
 
+/// In-memory bloom filter for fast hash existence prechecks.
 #[derive(Debug, Clone)]
 struct HashBloomFilter {
+    /// Packed bit storage.
     bits: BitVec<u64, Lsb0>,
+    /// `bit_len - 1` mask for power-of-two modulo operations.
     mask: usize,
 }
 
+/// Zero-copy view over persisted bloom payload bytes.
 #[derive(Debug, Clone, Copy)]
 struct BloomPayloadView<'a> {
+    /// `bit_len - 1` mask for power-of-two modulo operations.
     mask: usize,
+    /// Packed raw little-endian `u64` words.
     raw_words: &'a [u8],
 }
 
+/// Borrow-based bloom-query helpers over persisted table payload bytes.
 impl<'a> BloomPayloadView<'a> {
+    /// Decodes persisted payload bytes into a borrow-based view.
     fn from_payload(payload: &'a [u8], schema_marker: u32) -> Result<Self, CasError> {
         let (bit_len, raw_words) = decode_bloom_payload(schema_marker, payload)?;
         Ok(Self { mask: bit_len.saturating_sub(1), raw_words })
     }
 
+    /// Returns approximate membership for one hash.
     fn maybe_contains(&self, hash: Hash) -> bool {
         self.all_positions_set(positions_from_hash(hash, self.mask))
     }
 
+    /// Returns approximate membership for many hashes.
     fn maybe_contains_many(&self, hashes: &[Hash]) -> Vec<bool> {
         let mut out = vec![false; hashes.len()];
         let mut offset = 0;
@@ -131,6 +144,7 @@ impl<'a> BloomPayloadView<'a> {
         out
     }
 
+    /// Returns whether one bloom bit is set.
     fn bit_is_set(&self, index: usize) -> bool {
         let word_offset = (index >> 6) * size_of::<u64>();
         if word_offset + size_of::<u64>() > self.raw_words.len() {
@@ -141,6 +155,7 @@ impl<'a> BloomPayloadView<'a> {
         (word & (1u64 << (index & 63))) != 0
     }
 
+    /// Returns whether all probe positions are set.
     fn all_positions_set(&self, positions: [usize; BLOOM_HASH_PROBE_COUNT]) -> bool {
         let [a, b, c, d] = positions;
         self.bit_is_set(a) && self.bit_is_set(b) && self.bit_is_set(c) && self.bit_is_set(d)
@@ -148,6 +163,7 @@ impl<'a> BloomPayloadView<'a> {
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[target_feature(enable = "sse2")]
+    /// Computes probe positions for four hashes with SSE2 lane masking.
     unsafe fn positions_chunk4_sse2(
         &self,
         hashes: &[Hash; BLOOM_HASH_PROBE_COUNT],
@@ -176,6 +192,7 @@ impl<'a> BloomPayloadView<'a> {
     }
 }
 
+/// Derives fixed probe positions from hash digest words.
 fn positions_from_hash(hash: Hash, mask: usize) -> [usize; BLOOM_HASH_PROBE_COUNT] {
     let words = pod_read_unaligned::<[u32; 8]>(hash.as_digest_bytes());
     [
@@ -188,6 +205,7 @@ fn positions_from_hash(hash: Hash, mask: usize) -> [usize; BLOOM_HASH_PROBE_COUN
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
+/// Applies one mask to four 32-bit lanes and returns masked lane values.
 unsafe fn masked_lanes_sse2(
     values: [u32; BLOOM_HASH_PROBE_COUNT],
     mask: u32,
@@ -201,13 +219,16 @@ unsafe fn masked_lanes_sse2(
     [out[0] as usize, out[1] as usize, out[2] as usize, out[3] as usize]
 }
 
+/// In-memory bloom construction and query utilities.
 impl HashBloomFilter {
+    /// Creates a bloom filter sized for expected item count.
     fn with_capacity(expected_items: usize) -> Self {
         let target_bits = expected_items.saturating_mul(10).max(1024);
         let bit_len = target_bits.next_power_of_two();
         Self { bits: BitVec::<u64, Lsb0>::repeat(false, bit_len), mask: bit_len.saturating_sub(1) }
     }
 
+    /// Builds bloom state from all non-empty object hashes in index state.
     fn from_index_state(state: &IndexState) -> Self {
         let mut bloom = Self::with_capacity(state.objects.len().max(1));
         for hash in state.objects.keys().copied().filter(|hash| *hash != empty_content_hash()) {
@@ -216,6 +237,7 @@ impl HashBloomFilter {
         bloom
     }
 
+    /// Reconstructs bloom filter from persisted packed words.
     fn from_persisted_words(words: Vec<u64>, bit_len: usize) -> Result<Self, CasError> {
         if bit_len == 0 || !bit_len.is_power_of_two() {
             return Err(CasError::corrupt_index(format!(
@@ -235,24 +257,29 @@ impl HashBloomFilter {
         Ok(Self { bits, mask: bit_len.saturating_sub(1) })
     }
 
+    /// Inserts one hash into bloom set.
     fn insert(&mut self, hash: Hash) {
         for index in self.positions(hash) {
             self.bits.set(index, true);
         }
     }
 
+    /// Returns approximate membership for one hash.
     fn maybe_contains(&self, hash: Hash) -> bool {
         self.all_positions_set(positions_from_hash(hash, self.mask))
     }
 
+    /// Returns approximate membership for many hashes.
     fn maybe_contains_many(&self, hashes: &[Hash]) -> Vec<bool> {
         hashes.iter().copied().map(|hash| self.maybe_contains(hash)).collect()
     }
 
+    /// Encodes this bloom filter into persisted payload bytes.
     fn encode(&self, schema_marker: u32) -> Result<Vec<u8>, CasError> {
         encode_bloom_payload(schema_marker, self.bits.len(), self.bits.as_raw_slice())
     }
 
+    /// Decodes bloom filter from persisted payload bytes.
     fn decode(bytes: &[u8], schema_marker: u32) -> Result<Self, CasError> {
         let (bit_len, raw) = decode_bloom_payload(schema_marker, bytes)?;
         let words =
@@ -260,16 +287,19 @@ impl HashBloomFilter {
         Self::from_persisted_words(words, bit_len)
     }
 
+    /// Derives probe positions for one hash.
     fn positions(&self, hash: Hash) -> [usize; BLOOM_HASH_PROBE_COUNT] {
         positions_from_hash(hash, self.mask)
     }
 
+    /// Returns whether all probe positions are set.
     fn all_positions_set(&self, positions: [usize; BLOOM_HASH_PROBE_COUNT]) -> bool {
         let [a, b, c, d] = positions;
         self.bits[a] && self.bits[b] && self.bits[c] && self.bits[d]
     }
 }
 
+/// Durable index database operations, migration handling, and commit helpers.
 impl CasIndexDb {
     /// Opens or creates `<root>/index.redb`, initializes tables, and verifies
     /// persisted schema marker for the active unreleased format.
@@ -301,6 +331,7 @@ impl CasIndexDb {
     }
 
     #[inline]
+    /// Returns cached schema marker when initialized.
     fn cached_schema_marker(&self) -> Option<u32> {
         match self.schema_marker.load(Ordering::Relaxed) {
             UNINITIALIZED_SCHEMA_MARKER => None,
@@ -309,10 +340,12 @@ impl CasIndexDb {
     }
 
     #[inline]
+    /// Updates in-process cached schema marker.
     fn set_cached_schema_marker(&self, marker: u32) {
         self.schema_marker.store(marker, Ordering::Relaxed);
     }
 
+    /// Resolves schema marker for one operation, populating cache when needed.
     fn schema_marker_for_operation(&self) -> Result<u32, CasError> {
         if let Some(marker) = self.cached_schema_marker() {
             return Ok(marker);
@@ -327,6 +360,7 @@ impl CasIndexDb {
         Ok(marker)
     }
 
+    /// Acquires shared migration gate for read-path operations.
     fn lock_migration_read(
         &self,
         operation: &'static str,
@@ -336,6 +370,7 @@ impl CasIndexDb {
             .map_err(|err| CasError::poisoned_lock("index-migration-gate", operation, err))
     }
 
+    /// Acquires exclusive migration gate for schema-changing operations.
     fn lock_migration_write(
         &self,
         operation: &'static str,
@@ -745,6 +780,7 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Encodes one desired object row from runtime state.
     fn encode_desired_header(
         state: &IndexState,
         schema_marker: u32,
@@ -757,6 +793,7 @@ impl CasIndexDb {
         encode_primary_object_meta(schema_marker, meta)
     }
 
+    /// Applies one upsert operation in an open transaction.
     fn apply_upsert_object(
         primary: &mut redb::Table<&[u8], &[u8]>,
         schema_marker: u32,
@@ -774,6 +811,7 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Promotes near-limit deltas to full objects to preserve depth headroom.
     fn promote_near_limit_delta(meta: ObjectMeta) -> ObjectMeta {
         match meta.encoding() {
             ObjectEncoding::Delta { .. } if meta.depth() >= DELTA_PROMOTION_DEPTH => {
@@ -783,6 +821,7 @@ impl CasIndexDb {
         }
     }
 
+    /// Applies one object delete operation in an open transaction.
     fn apply_delete_object(
         primary: &mut redb::Table<&[u8], &[u8]>,
         constraints: &mut redb::MultimapTable<&[u8], &[u8]>,
@@ -798,6 +837,7 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Replaces explicit base set for one target hash in an open transaction.
     fn apply_set_constraint_bases(
         primary: &mut redb::Table<&[u8], &[u8]>,
         constraints: &mut redb::MultimapTable<&[u8], &[u8]>,
@@ -828,12 +868,14 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Ensures all required tables exist for one schema marker.
     fn init_tables(&self, schema_marker: u32) -> Result<(), CasError> {
         let write = self.db.begin_write().map_err(CasError::redb)?;
         initialize_tables(&write, schema_marker)?;
         write.commit().map_err(CasError::redb)
     }
 
+    /// Ensures schema marker metadata is initialized and current.
     fn ensure_schema_marker_current(&self) -> Result<(), CasError> {
         let persisted = self.read_schema_marker_value()?;
         let has_data = self.has_data_for_schema_marker(latest_schema_marker())?;
@@ -855,11 +897,13 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Reads persisted schema marker from metadata table.
     fn read_schema_marker_value(&self) -> Result<Option<u32>, CasError> {
         let read = self.db.begin_read().map_err(CasError::redb)?;
         read_schema_marker_value_from_metadata(&read)
     }
 
+    /// Writes current schema marker into metadata table.
     fn write_schema_marker_current(&self, schema_marker: u32) -> Result<(), CasError> {
         let write = self.db.begin_write().map_err(CasError::redb)?;
         {
@@ -868,6 +912,7 @@ impl CasIndexDb {
         write.commit().map_err(CasError::redb)
     }
 
+    /// Writes encoded schema marker inside an existing write transaction.
     fn set_schema_marker_current(
         write: &redb::WriteTransaction,
         schema_marker: u32,
@@ -876,6 +921,7 @@ impl CasIndexDb {
         write_schema_marker_to_metadata(write, &encoded)
     }
 
+    /// Reloads bloom state from persisted payload or rebuilds it from primary rows.
     fn refresh_bloom_filter(&self) -> Result<(), CasError> {
         let schema_marker = self.schema_marker_for_operation()?;
         if let Some(persisted) = self.load_persisted_bloom_filter()? {
@@ -898,6 +944,7 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Loads persisted bloom filter payload when available.
     fn load_persisted_bloom_filter(&self) -> Result<Option<HashBloomFilter>, CasError> {
         let schema_marker = self.schema_marker_for_operation()?;
         let read = self.db.begin_read().map_err(CasError::redb)?;
@@ -908,6 +955,7 @@ impl CasIndexDb {
         HashBloomFilter::decode(payload.as_slice(), schema_marker).map(Some)
     }
 
+    /// Persists bloom filter payload in one dedicated write transaction.
     fn store_bloom_filter(
         &self,
         schema_marker: u32,
@@ -920,6 +968,7 @@ impl CasIndexDb {
         write.commit().map_err(CasError::redb)
     }
 
+    /// Writes bloom payload into provided write transaction.
     fn persist_bloom_state_table(
         write: &redb::WriteTransaction,
         schema_marker: u32,
@@ -929,6 +978,7 @@ impl CasIndexDb {
         write_bloom_payload_to_table(write, schema_marker, payload.as_slice())
     }
 
+    /// Returns a clone of current in-memory bloom filter.
     fn snapshot_bloom_filter(&self) -> Result<HashBloomFilter, CasError> {
         self.bloom
             .read()
@@ -936,6 +986,7 @@ impl CasIndexDb {
             .map(|guard| guard.clone())
     }
 
+    /// Replaces in-memory bloom filter atomically.
     fn replace_bloom_filter(&self, bloom: HashBloomFilter) -> Result<(), CasError> {
         let mut guard = self
             .bloom
@@ -945,6 +996,7 @@ impl CasIndexDb {
         Ok(())
     }
 
+    /// Performs read-transaction bloom prefilter for one hash when payload exists.
     fn bloom_prefilter_from_read(
         &self,
         read: &redb::ReadTransaction,
@@ -959,6 +1011,7 @@ impl CasIndexDb {
         Ok(Some(view.maybe_contains(hash)))
     }
 
+    /// Performs read-transaction bloom prefilter for many hashes when payload exists.
     fn bloom_prefilter_many_from_read(
         &self,
         read: &redb::ReadTransaction,
@@ -1040,6 +1093,7 @@ pub(crate) struct CommitPipelineConfig {
 }
 
 #[allow(dead_code)]
+/// Default commit-pipeline tuning values for local workloads.
 impl Default for CommitPipelineConfig {
     fn default() -> Self {
         Self {
@@ -1051,6 +1105,7 @@ impl Default for CommitPipelineConfig {
 }
 
 #[allow(dead_code)]
+/// Commit-pipeline configuration normalization helpers.
 impl CommitPipelineConfig {
     fn normalized(self) -> Self {
         Self {
@@ -1070,6 +1125,7 @@ pub(crate) struct CommitPipelineHandle {
 }
 
 #[allow(dead_code)]
+/// RPC convenience operations for commit-pipeline actor handle.
 impl CommitPipelineHandle {
     fn timeout_ms(&self) -> u64 {
         self.rpc_timeout.as_millis().min(u128::from(u64::MAX)) as u64
@@ -1108,21 +1164,32 @@ impl CommitPipelineHandle {
 }
 
 #[derive(Debug)]
+/// Internal commit-pipeline actor message protocol.
 enum CommitPipelineMessage {
+    /// Queues operations for buffered commit.
     Enqueue(Vec<BatchOperation>, RpcReplyPort<Result<(), CasError>>),
+    /// Forces flush of buffered operations.
     Flush(RpcReplyPort<Result<(), CasError>>),
+    /// Periodic timer tick trigger.
     Tick,
+    /// Flushes and stops actor.
     Stop(RpcReplyPort<Result<(), CasError>>),
 }
 
 #[derive(Debug)]
+/// Mutable actor state for buffered index-commit batching.
 struct CommitPipelineActorState {
+    /// Backing index database handle.
     db: CasIndexDb,
+    /// Runtime buffer and timeout configuration.
     config: CommitPipelineConfig,
+    /// Pending buffered operations.
     pending: Vec<BatchOperation>,
 }
 
+/// Buffered-flush helpers for commit-pipeline actor state.
 impl CommitPipelineActorState {
+    /// Flushes buffered operations in one batch, retaining buffer on failure.
     fn flush_pending(&mut self) -> Result<(), CasError> {
         if self.pending.is_empty() {
             return Ok(());
@@ -1140,8 +1207,10 @@ impl CommitPipelineActorState {
 }
 
 #[derive(Debug, Default, Clone, Copy)]
+/// Actor implementation that batches commit operations.
 struct CommitPipelineActor;
 
+/// Ractor implementation for batched index-commit processing.
 impl Actor for CommitPipelineActor {
     type Msg = CommitPipelineMessage;
     type State = CommitPipelineActorState;
@@ -1200,6 +1269,7 @@ impl Actor for CommitPipelineActor {
     }
 }
 
+/// Validates core invariants for state loaded from durable storage.
 fn validate_loaded_state(state: &IndexState) -> Result<(), CasError> {
     let empty = empty_content_hash();
 

@@ -14,8 +14,10 @@ use tempfile::tempdir;
 
 use super::run_with_15s_timeout;
 
+/// Redb primary-index table used for direct corruption/row-removal setup.
 const PRIMARY_INDEX: TableDefinition<&[u8], &[u8]> = TableDefinition::new("primary_index");
 
+/// Opens the redb database with retry to avoid shutdown timing races.
 async fn open_redb_after_shutdown(db_path: &std::path::Path) -> Database {
     for _ in 0..30 {
         if let Ok(handle) = Database::open(db_path) {
@@ -28,6 +30,7 @@ async fn open_redb_after_shutdown(db_path: &std::path::Path) -> Database {
 }
 
 #[tokio::test]
+/// Rejects constraints that reference non-existent candidate hashes.
 async fn e2e_set_constraint_rejects_missing_candidate_entries() {
     run_with_15s_timeout(async {
         // Arrange
@@ -50,6 +53,7 @@ async fn e2e_set_constraint_rejects_missing_candidate_entries() {
 }
 
 #[tokio::test]
+/// Rebuilds durable index from objects/backups when primary index file is removed.
 async fn e2e_missing_primary_index_is_rebuilt_from_objects_and_backups() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");
@@ -92,6 +96,7 @@ async fn e2e_missing_primary_index_is_rebuilt_from_objects_and_backups() {
 }
 
 #[tokio::test]
+/// In strict mode, startup fails when index is missing but objects exist.
 async fn e2e_strict_mode_rejects_missing_primary_index_when_objects_exist() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");
@@ -123,6 +128,7 @@ async fn e2e_strict_mode_rejects_missing_primary_index_when_objects_exist() {
 }
 
 #[tokio::test]
+/// Rebuilds state when primary index file exists but is corrupted.
 async fn e2e_corrupt_primary_index_is_rebuilt_from_object_store() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");
@@ -143,6 +149,7 @@ async fn e2e_corrupt_primary_index_is_rebuilt_from_object_store() {
 }
 
 #[tokio::test]
+/// Repair API repopulates rows that were removed directly from redb.
 async fn e2e_explicit_repair_restores_rows_missing_from_primary_index() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");
@@ -182,6 +189,7 @@ async fn e2e_explicit_repair_restores_rows_missing_from_primary_index() {
 }
 
 #[tokio::test]
+/// Backup retention keeps only configured number of most recent snapshots.
 async fn e2e_backup_retention_respects_configured_limit() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");

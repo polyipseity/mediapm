@@ -19,6 +19,7 @@ pub(crate) struct DeltaPatch<'a> {
     vcdiff: Cow<'a, [u8]>,
 }
 
+/// Owned-builder helpers for constructing new delta payloads.
 impl DeltaPatch<'static> {
     /// Computes a VCDIFF patch from `base` to `target`.
     pub(crate) fn diff(base: &[u8], target: &[u8]) -> Result<Self, CasError> {
@@ -29,6 +30,10 @@ impl DeltaPatch<'static> {
     }
 }
 
+/// Borrowing/decoding/apply helpers for encoded delta payloads.
+///
+/// This impl intentionally supports borrowed payload views so call sites can
+/// validate and apply patches without forcing an immediate payload clone.
 impl<'a> DeltaPatch<'a> {
     /// Returns encoded patch bytes.
     pub(crate) fn encode(&self) -> &[u8] {
@@ -62,6 +67,10 @@ impl<'a> DeltaPatch<'a> {
     }
 
     /// Applies this VCDIFF patch to `base` and returns reconstructed target bytes.
+    ///
+    /// # Errors
+    /// Returns [`CasError::CorruptObject`] when patch decoding/apply fails,
+    /// indicating the encoded delta payload is invalid for the provided base.
     pub(crate) fn apply(&self, base: &[u8]) -> Result<Vec<u8>, CasError> {
         // `decode_memory` consumes borrowed input slices; it does not clone `base`
         // before decoding, keeping reads zero-copy on the base buffer.

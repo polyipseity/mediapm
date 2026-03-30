@@ -12,6 +12,7 @@ use tempfile::tempdir;
 
 use super::run_with_15s_timeout;
 
+/// Builds a constrained chain and returns `(hashes, payload_len)` for leaf checks.
 async fn build_chain(cas: &FileSystemCas, depth: usize) -> (Vec<mediapm_cas::Hash>, usize) {
     let mut hashes = Vec::with_capacity(depth);
     let mut previous_payload = vec![b'a'; 512];
@@ -39,6 +40,7 @@ async fn build_chain(cas: &FileSystemCas, depth: usize) -> (Vec<mediapm_cas::Has
 }
 
 #[tokio::test]
+/// Asserts retrieval latency growth remains bounded for deeper delta chains.
 async fn reconstruction_latency_profiles_chain_lengths_1_5_10() {
     run_with_15s_timeout(async {
         let dir = tempdir().expect("tempdir");

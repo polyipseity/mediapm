@@ -38,6 +38,7 @@ async fn run_manual_optimize_once(
 }
 
 #[tokio::main]
+/// Runs the manual optimize walkthrough and prints a Mermaid preview.
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let root = unique_demo_root();
     let (rewritten_objects, mermaid) = run_manual_optimize_once(&root).await?;
@@ -53,6 +54,7 @@ mod tests {
     use super::run_manual_optimize_once;
 
     #[tokio::test]
+    /// Ensures the walkthrough flow completes and emits Mermaid output.
     async fn manual_optimize_runs_successfully() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (rewritten, mermaid) =

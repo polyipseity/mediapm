@@ -24,48 +24,77 @@ use mediapm_cas::{
 use serde::Serialize;
 
 #[derive(Debug, Clone)]
+/// One deterministic input fixture written to the demo artifact tree.
 struct DemoFileSpec {
+    /// Relative path under the generated artifact root.
     relative_path: &'static str,
+    /// File bytes to write at `relative_path`.
     payload: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
+/// Manifest row describing one stored demo object.
 struct DemoFileRecord {
+    /// Relative source file path that produced this object.
     relative_path: String,
+    /// Canonical object hash string.
     hash: String,
+    /// Logical reconstructed content length.
     content_len: u64,
+    /// Persisted payload size (full or delta payload bytes).
     payload_len: u64,
+    /// `true` when object is currently stored as delta payload.
     is_delta: bool,
+    /// Optional base hash used for delta reconstruction.
     base_hash: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+/// Top-level JSON manifest emitted by this demo.
 struct DemoManifest {
+    /// UNIX epoch timestamp at manifest generation time.
     generated_unix_epoch_seconds: u64,
+    /// Filesystem CAS root directory for this demo run.
     cas_root: String,
+    /// Root directory where fixture inputs were written.
     input_files_root: String,
+    /// Canonical empty-content hash string.
     empty_content_hash: String,
+    /// On-disk path of the empty bootstrap object.
     empty_content_object_path: String,
+    /// Human-readable explanation for empty-object bootstrap semantics.
     empty_content_explanation: String,
+    /// Number of objects rewritten by optimize pass.
     optimize_rewritten_objects: usize,
+    /// Number of removed candidates reported by prune pass.
     prune_removed_candidates: usize,
+    /// Path to Mermaid topology output file.
     topology_mermaid_path: String,
+    /// Path to JSON topology snapshot output file.
     topology_json_path: String,
+    /// Per-file object metadata rows.
     files: Vec<DemoFileRecord>,
 }
 
 #[derive(Debug)]
+/// Summary of generated artifact locations printed by `main`.
 struct DemoRunSummary {
+    /// Root artifact directory containing inputs, store, and outputs.
     artifact_root: PathBuf,
+    /// CAS repository root used for this run.
     cas_root: PathBuf,
+    /// Path to generated manifest JSON.
     manifest_path: PathBuf,
+    /// Path to generated Mermaid topology file.
     topology_mermaid_path: PathBuf,
 }
 
+/// Returns the deterministic artifact root used by this demo.
 fn artifact_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join(".artifacts").join("demo")
 }
 
+/// Builds deterministic file fixtures for repeatable demo output.
 fn input_files_for_demo() -> Vec<DemoFileSpec> {
     let waveform: Vec<u8> = (0u32..2048).map(|i| ((i * 37 + 11) % 256) as u8).collect();
 
@@ -92,6 +121,7 @@ fn input_files_for_demo() -> Vec<DemoFileSpec> {
     ]
 }
 
+/// Writes fixture files for the demo run.
 fn write_demo_files(base: &Path, specs: &[DemoFileSpec]) -> Result<(), Box<dyn std::error::Error>> {
     for spec in specs {
         let path = base.join(spec.relative_path);
@@ -103,6 +133,7 @@ fn write_demo_files(base: &Path, specs: &[DemoFileSpec]) -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// Generates inspectable demo artifacts and returns output paths.
 async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std::error::Error>> {
     let root = artifact_root();
     if root.exists() {
@@ -212,6 +243,7 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
 }
 
 #[tokio::main]
+/// Runs the full filesystem demo and prints generated artifact paths.
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let summary = generate_inspectable_artifacts().await?;
     println!("generated artifacts root: {}", summary.artifact_root.display());
@@ -226,6 +258,7 @@ mod tests {
     use super::{generate_inspectable_artifacts, input_files_for_demo};
 
     #[test]
+    /// Keeps fixture count/content deterministic for stable demo artifacts.
     fn fixture_set_is_deterministic_and_non_empty() {
         let fixtures = input_files_for_demo();
         assert_eq!(fixtures.len(), 4, "fixture count should remain stable");
@@ -237,6 +270,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "creates persistent demo artifacts under src/cas/examples/.artifacts"]
+    /// Smoke-tests artifact generation end-to-end.
     async fn generates_inspectable_artifacts_and_visualization_files() {
         let summary = generate_inspectable_artifacts().await.expect("generate demo artifacts");
         assert!(summary.cas_root.join("v1").exists(), "cas version directory missing");

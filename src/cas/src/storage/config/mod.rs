@@ -16,8 +16,11 @@ use crate::{
     OptimizeReport, PruneReport,
 };
 
+/// Default optimizer depth penalty for filesystem backend.
 const DEFAULT_FILESYSTEM_ALPHA: u64 = 4;
+/// Default maximum retained index backup snapshots.
 const DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT: usize = 4;
+/// Default mutation-batch interval between backup snapshots.
 const DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS: usize = 8;
 
 /// Startup policy to apply when the primary filesystem index is missing or corrupt.
@@ -46,6 +49,7 @@ pub struct FileSystemRecoveryOptions {
     pub backup_snapshot_interval_ops: usize,
 }
 
+/// Default recovery profile used by filesystem backend constructors.
 impl Default for FileSystemRecoveryOptions {
     fn default() -> Self {
         Self {
@@ -78,7 +82,9 @@ pub enum CasBackendConfig {
     },
 }
 
+/// Locator parsing and backend-variant construction helpers.
 impl CasBackendConfig {
+    /// Constructs validated filesystem backend config with default alpha.
     fn filesystem(root: PathBuf) -> Result<Self, CasError> {
         validate_filesystem_root_writable(&root)?;
         Ok(Self::FileSystem { root, alpha: DEFAULT_FILESYSTEM_ALPHA })
@@ -166,6 +172,7 @@ pub struct CasConfig {
     filesystem_recovery: FileSystemRecoveryOptions,
 }
 
+/// Builder-style constructors and open methods for configured backends.
 impl CasConfig {
     /// Creates configuration for in-memory backend.
     pub const fn in_memory() -> Self {
@@ -267,6 +274,10 @@ pub enum ConfiguredCas {
     FileSystem(FileSystemCas),
 }
 
+/// Delegates one backend operation across configured runtime variants.
+///
+/// This macro intentionally keeps trait impls concise while preserving one
+/// exhaustiveness point for backend-variant dispatch.
 macro_rules! delegate_configured_backend {
     ($backend:expr, |$cas:ident| $operation:expr) => {
         match $backend {
@@ -277,6 +288,7 @@ macro_rules! delegate_configured_backend {
 }
 
 #[async_trait]
+/// Unified [`CasApi`] dispatch over configured backend variants.
 impl CasApi for ConfiguredCas {
     async fn exists(&self, hash: Hash) -> Result<bool, CasError> {
         delegate_configured_backend!(self, |cas| cas.exists(hash).await)
@@ -350,6 +362,7 @@ impl CasApi for ConfiguredCas {
 }
 
 #[async_trait]
+/// Unified maintenance dispatch over configured backend variants.
 impl CasMaintenanceApi for ConfiguredCas {
     async fn optimize_once(&self, options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
         delegate_configured_backend!(self, |cas| cas.optimize_once(options).await)

@@ -30,9 +30,13 @@ use crate::{
 mod reconstruction;
 use reconstruction::{build_reconstruction_plan, ensure_reconstructed_hash};
 
+/// Default cap for streamed object size in in-memory backend.
 const IN_MEMORY_DEFAULT_MAX_OBJECT_SIZE_BYTES: usize = 64 * 1024 * 1024;
+/// Stream read chunk size for incremental in-memory ingestion.
 const IN_MEMORY_STREAM_READ_CHUNK_BYTES: usize = 32 * 1024;
+/// Inline-capacity hint for dependent-hash small vectors.
 const IN_MEMORY_SMALL_DEPENDENT_INLINE: usize = 8;
+/// Maximum retained stream buffers in in-memory pool.
 const IN_MEMORY_STREAM_BUFFER_POOL_MAX_BUFFERS: usize = 64;
 
 /// In-memory CAS implementation used for tests and local integration.
@@ -45,12 +49,14 @@ pub struct InMemoryCas {
     max_object_size_bytes: usize,
 }
 
+/// Default constructor bridge for ergonomic `InMemoryCas::default()` usage.
 impl Default for InMemoryCas {
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Constructors and internal helper operations for in-memory backend state.
 impl InMemoryCas {
     /// Creates an empty in-memory CAS.
     pub fn new() -> Self {
@@ -75,6 +81,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Streams bytes into memory with incremental size checks and hashing.
     async fn put_stream_incremental(&self, mut reader: CasByteReader) -> Result<Hash, CasError> {
         let mut payload = BytesMut::with_capacity(IN_MEMORY_STREAM_READ_CHUNK_BYTES);
         let mut chunk = self.stream_buffer_pool.lease();
@@ -105,6 +112,7 @@ impl InMemoryCas {
         self.put_hashed(hash, payload.to_vec())
     }
 
+    /// Inserts object bytes under precomputed hash with collision-length guard.
     fn put_hashed(&self, hash: Hash, payload: Vec<u8>) -> Result<Hash, CasError> {
         if hash == empty_content_hash() {
             return Ok(hash);
@@ -130,6 +138,7 @@ impl InMemoryCas {
         Ok(hash)
     }
 
+    /// Reconstructs one object by replaying delta chain in memory.
     fn reconstruct_live(&self, hash: Hash) -> Result<Bytes, CasError> {
         if hash == empty_content_hash() {
             return Ok(Bytes::new());
@@ -177,6 +186,7 @@ impl InMemoryCas {
         Ok(Bytes::from(data))
     }
 
+    /// Removes `hash` from all explicit constraint rows as target/candidate.
     fn remove_constraint_references(&self, hash: Hash) {
         self.constraints.remove(&hash);
 
@@ -194,6 +204,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Computes unconstrained candidate bases under projected overlay state.
     fn unconstrained_candidate_bases_projected(
         &self,
         overlay_updates: &HashMap<Hash, StoredObject>,
@@ -218,6 +229,7 @@ impl InMemoryCas {
         candidates
     }
 
+    /// Adds one reverse-dependent link from base to child.
     fn link_dependent_to_base(&self, base_hash: Hash, dependent: Hash) {
         if base_hash == empty_content_hash() {
             return;
@@ -233,6 +245,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Removes one reverse-dependent link and prunes empty rows.
     fn unlink_dependent_from_base(&self, base_hash: Hash, dependent: Hash) {
         if base_hash == empty_content_hash() {
             return;
@@ -249,6 +262,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Reconciles reverse-dependent links after base change.
     fn sync_reverse_dependents(
         &self,
         dependent: Hash,
@@ -267,6 +281,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Upserts object and updates reverse base-dependent index.
     fn upsert_object_with_reverse_index(&self, hash: Hash, object: StoredObject) {
         let next_base = object.base_hash();
         let previous = self.objects.insert(hash, object);
@@ -274,6 +289,7 @@ impl InMemoryCas {
         self.sync_reverse_dependents(hash, previous_base, next_base);
     }
 
+    /// Removes object and updates reverse base-dependent index.
     fn remove_object_with_reverse_index(&self, hash: Hash) -> Option<StoredObject> {
         let removed = self.objects.remove(&hash).map(|(_, object)| object);
         if let Some(previous_base) = removed.as_ref().and_then(StoredObject::base_hash) {
@@ -283,6 +299,7 @@ impl InMemoryCas {
         removed
     }
 
+    /// Returns direct dependents for one base hash.
     fn direct_dependents_for_base(
         &self,
         base_hash: Hash,
@@ -307,6 +324,7 @@ impl InMemoryCas {
         listed
     }
 
+    /// Returns projected `(content_len, base_hash)` metadata for one hash.
     fn projected_object_meta(
         &self,
         hash: Hash,
@@ -325,6 +343,7 @@ impl InMemoryCas {
         Ok((object.content_len(), object.base_hash()))
     }
 
+    /// Returns projected full-payload bytes for one full object hash.
     fn projected_full_payload(
         &self,
         hash: Hash,
@@ -353,6 +372,7 @@ impl InMemoryCas {
         }
     }
 
+    /// Applies one projected delta patch in overlay context.
     fn apply_projected_delta(
         &self,
         delta_hash: Hash,
@@ -384,6 +404,7 @@ impl InMemoryCas {
         patch.apply(current)
     }
 
+    /// Reconstructs one hash against projected overlay changes.
     fn reconstruct_projected(
         &self,
         hash: Hash,
@@ -453,6 +474,7 @@ impl InMemoryCas {
         Ok(data)
     }
 
+    /// Merges one constraint patch with existing explicit candidates.
     fn merge_constraint_patch(
         existing: Option<&BTreeSet<Hash>>,
         patch: ConstraintPatch,
@@ -473,6 +495,7 @@ impl InMemoryCas {
         merged
     }
 
+    /// Writes normalized explicit constraint row or removes implicit rows.
     fn set_normalized_constraint_row(
         &self,
         target_hash: Hash,
@@ -491,6 +514,7 @@ impl InMemoryCas {
 }
 
 #[async_trait]
+/// Core CAS API implementation over in-memory maps.
 impl CasApi for InMemoryCas {
     async fn exists(&self, hash: Hash) -> Result<bool, CasError> {
         if hash == empty_content_hash() {
@@ -696,6 +720,7 @@ impl CasApi for InMemoryCas {
 }
 
 #[async_trait]
+/// Maintenance API implementation for in-memory backend.
 impl CasMaintenanceApi for InMemoryCas {
     async fn optimize_once(&self, _options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
         Ok(OptimizeReport { rewritten_objects: 0 })

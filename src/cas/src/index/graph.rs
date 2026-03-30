@@ -12,6 +12,10 @@ use super::MAX_DELTA_DEPTH;
 use super::state::{IndexState, ObjectEncoding, ensure_empty_record};
 use crate::{CasError, Hash, empty_content_hash};
 
+/// Compact sparse-row representation for reverse `base -> children` edges.
+///
+/// This structure is rebuilt per depth-recalculation pass and enables
+/// cache-friendly traversal without allocating one vector per base node.
 #[derive(Debug)]
 struct CsrChildren {
     base_slot_by_hash: HashMap<Hash, usize>,
@@ -19,7 +23,9 @@ struct CsrChildren {
     children: Vec<Hash>,
 }
 
+/// CSR construction and query helpers for frontier traversal.
 impl CsrChildren {
+    /// Builds CSR storage from `(base, child)` edge pairs.
     fn from_edges(edges: &[(Hash, Hash)]) -> Self {
         if edges.is_empty() {
             return Self { base_slot_by_hash: HashMap::new(), offsets: vec![0], children: vec![] };
@@ -58,6 +64,7 @@ impl CsrChildren {
         Self { base_slot_by_hash, offsets, children }
     }
 
+    /// Returns direct children slice for `base`.
     fn children_for(&self, base: &Hash) -> &[Hash] {
         let Some(slot) = self.base_slot_by_hash.get(base).copied() else {
             return &[];

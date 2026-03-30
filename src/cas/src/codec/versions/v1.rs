@@ -95,6 +95,7 @@ struct V1Metadata {
     checksum: Le32,
 }
 
+/// Fixed-size metadata constants for V1 envelope parsing.
 impl V1Metadata {
     const SIZE: usize = std::mem::size_of::<V1Metadata>();
 }
@@ -104,6 +105,7 @@ impl V1Metadata {
 /// Minimal multihash is 3 bytes: code-varint(1) + size-varint(1) + digest(1).
 const V1_MIN_SIZE: usize = V1Metadata::SIZE + 3;
 
+/// Parse/validate/encode helpers for V1 delta envelopes.
 impl<'a> V1Envelope<'a> {
     /// Parses V1 envelope bytes into structured fields.
     ///

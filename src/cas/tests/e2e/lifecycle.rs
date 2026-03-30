@@ -11,6 +11,7 @@ use tempfile::tempdir;
 use super::run_with_15s_timeout;
 
 #[tokio::test]
+/// Ensures optimization preserves exact target bytes for constrained objects.
 async fn e2e_optimizer_flow_preserves_reconstructability() {
     run_with_15s_timeout(async {
         // Arrange

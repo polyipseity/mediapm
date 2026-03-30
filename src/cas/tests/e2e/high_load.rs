@@ -14,12 +14,14 @@ use tokio::sync::Mutex;
 
 use super::run_with_15s_timeout;
 
+/// Global mutex to serialize high-load tests and reduce noisy contention.
 fn high_load_test_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[tokio::test]
+/// Verifies burst put/get workloads complete within bounded wall-clock time.
 async fn high_load_store_and_sample_retrieve_completes_within_reasonable_time() {
     let _guard = high_load_test_lock().lock().await;
 
@@ -49,6 +51,7 @@ async fn high_load_store_and_sample_retrieve_completes_within_reasonable_time() 
 }
 
 #[tokio::test]
+/// Verifies optimize passes keep heavily constrained targets reconstructable.
 async fn high_load_optimizer_pass_preserves_reconstructability() {
     let _guard = high_load_test_lock().lock().await;
 

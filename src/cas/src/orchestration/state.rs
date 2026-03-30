@@ -68,6 +68,7 @@ pub struct CasNodeActorState {
     pub(super) index: ActorRef<IndexActorMessage>,
 }
 
+/// Converts startup argument bundle into storage actor runtime state.
 impl From<StorageActorArgs> for StorageActorState {
     fn from(args: StorageActorArgs) -> Self {
         Self {

@@ -14,18 +14,30 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::HashParseError;
 
+/// Fixed multihash backing capacity used by this crate.
 pub(crate) const MULTIHASH_BUFFER_SIZE: usize = 64;
+/// Digest width for Blake3-256.
 const BLAKE3_DIGEST_SIZE: usize = 32;
+/// Stable algorithm token used in textual hash representation.
 const BLAKE3_NAME: &str = "blake3";
+/// Encoded multihash storage width for current algorithm set.
 const STORAGE_BYTES_LEN: usize = 2 + BLAKE3_DIGEST_SIZE;
 
 /// `blake3` hasher wrapper for `multihash_derive` code table generation.
 #[derive(Default)]
 struct Blake3MultihashHasher {
+    /// Incremental Blake3 state.
     inner: blake3::Hasher,
+    /// Reusable digest output buffer required by trait API.
     digest: [u8; BLAKE3_DIGEST_SIZE],
 }
 
+/// `multihash_derive` hasher adapter implementation for Blake3.
+///
+/// This adapter is intentionally tiny and allocation-free:
+/// - `update` forwards bytes into incremental Blake3 state,
+/// - `finalize` writes digest bytes into a reusable fixed array,
+/// - `reset` restores initial state for reuse in code-table calls.
 impl multihash_derive::Hasher for Blake3MultihashHasher {
     fn update(&mut self, input: &[u8]) {
         self.inner.update(input);
@@ -56,6 +68,7 @@ impl multihash_derive::Hasher for Blake3MultihashHasher {
     multihash_derive::MultihashDigest,
 )]
 #[mh(alloc_size = 64)]
+/// Canonical algorithm enum consumed by parse/format/hash constructors.
 pub enum HashAlgorithm {
     /// BLAKE3-256 using multicodec code `0x1e`.
     #[default]
@@ -63,6 +76,7 @@ pub enum HashAlgorithm {
     Blake3,
 }
 
+/// Algorithm-name/code conversion helpers used by parse/format paths.
 impl HashAlgorithm {
     /// Stable multicodec algorithm code.
     #[inline]
@@ -101,6 +115,7 @@ pub struct Hash {
     inner: RawMultihash<MULTIHASH_BUFFER_SIZE>,
 }
 
+/// Core constructors, parsers, and format/encoding helpers for [`Hash`].
 impl Hash {
     /// Builds a hash from default algorithm digest bytes.
     #[must_use]
@@ -261,6 +276,11 @@ impl Hash {
         &self.inner
     }
 
+    /// Validates and wraps one raw multihash into crate-level [`Hash`].
+    ///
+    /// Validation rules:
+    /// - algorithm code must map to a supported [`HashAlgorithm`],
+    /// - digest width must match the algorithm's expected fixed size.
     fn from_multihash(inner: RawMultihash<MULTIHASH_BUFFER_SIZE>) -> Result<Self, HashParseError> {
         let algorithm = HashAlgorithm::from_code(inner.code())?;
         let expected_size = BLAKE3_DIGEST_SIZE;
@@ -310,6 +330,7 @@ impl Hash {
         Ok((hash, consumed))
     }
 
+    /// Validates digest width for `algorithm` then wraps with multihash tag.
     fn from_digest_slice(algorithm: HashAlgorithm, digest: &[u8]) -> Result<Self, HashParseError> {
         let expected = BLAKE3_DIGEST_SIZE;
         if digest.len() != expected {
@@ -326,6 +347,7 @@ impl Hash {
     }
 }
 
+/// Debug formatter that prints algorithm identity and digest hex.
 impl std::fmt::Debug for Hash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -339,6 +361,7 @@ impl std::fmt::Debug for Hash {
     }
 }
 
+/// User-facing stable textual formatter: `<algorithm-name>:<digest-hex>`.
 impl Display for Hash {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:", self.algorithm_name())?;
@@ -346,6 +369,12 @@ impl Display for Hash {
     }
 }
 
+/// Parses textual hash forms accepted by this crate.
+///
+/// Supported algorithm token forms:
+/// - stable name (`blake3`),
+/// - decimal multicodec code,
+/// - hexadecimal multicodec code (`0x...`).
 impl FromStr for Hash {
     type Err = HashParseError;
 
@@ -366,6 +395,7 @@ impl FromStr for Hash {
     }
 }
 
+/// Serde string serializer using [`Display`] canonical representation.
 impl Serialize for Hash {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -375,6 +405,7 @@ impl Serialize for Hash {
     }
 }
 
+/// Serde string deserializer using [`FromStr`] parsing rules.
 impl<'de> Deserialize<'de> for Hash {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

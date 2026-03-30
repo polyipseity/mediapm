@@ -14,6 +14,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(20))]
 
     #[test]
+    /// In-memory constrained chains must reconstruct every inserted payload.
     fn prop_in_memory_delta_chain_roundtrip(
         payloads in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..256), 2..24)
     ) {
@@ -53,6 +54,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(8))]
 
     #[test]
+    /// Filesystem constrained chains must reconstruct every inserted payload.
     fn prop_filesystem_delta_chain_roundtrip(
         payloads in prop::collection::vec(prop::collection::vec(any::<u8>(), 1..256), 2..12)
     ) {

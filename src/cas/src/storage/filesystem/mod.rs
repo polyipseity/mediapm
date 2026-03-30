@@ -55,15 +55,24 @@ use crate::{
     recalculate_depths,
 };
 
+/// Filesystem object-store layout version segment.
 pub(crate) const STORAGE_VERSION: &str = "v1";
 
+/// Timeout for object-actor request/response RPC calls.
 const FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS: u64 = 8_000;
+/// Candidate cap for unconstrained base selection.
 const FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT: usize = 32;
+/// Default rewrite budget per optimize pass.
 const FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES: usize = 24;
+/// Concurrency for candidate scoring tasks.
 const FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY: usize = 8;
+/// Minimum full-object size for mmap-backed reads.
 pub(super) const FILESYSTEM_MMAP_MIN_BYTES: u64 = 64 * 1024;
+/// Chunk size used when buffering streamed writes.
 const FILESYSTEM_STREAM_READ_CHUNK_BYTES: usize = 32 * 1024;
+/// Max retained reusable stream buffers.
 const FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS: usize = 128;
+/// Inline capacity hint for small hash collections.
 const FILESYSTEM_SMALL_INLINE_HASHES: usize = 8;
 mod actor;
 mod maintenance;
@@ -109,6 +118,7 @@ struct FileSystemState {
     object_actor: ActorRef<FileObjectActorMessage>,
 }
 
+/// Internal filesystem backend runtime operations and helpers.
 impl FileSystemState {
     /// Opens a CAS repository with an explicit optimizer depth penalty.
     pub async fn open_with_alpha_and_recovery(
@@ -190,37 +200,45 @@ impl FileSystemState {
         self.max_compression_mode.load(Ordering::Relaxed)
     }
 
+    /// Acquires a shared read guard over runtime index state.
     fn lock_index_read(&self, _operation: &str) -> RwLockReadGuard<'_, IndexState> {
         self.index.read()
     }
 
+    /// Acquires an exclusive write guard over runtime index state.
     fn lock_index_write(&self, _operation: &str) -> RwLockWriteGuard<'_, IndexState> {
         self.index.write()
     }
 
+    /// Acquires content-byte cache lock for cache mutation/read operations.
     fn lock_content_cache(&self, _operation: &str) -> MutexGuard<'_, HashMap<Hash, Bytes>> {
         self.content_cache.lock()
     }
 
+    /// Removes one hash from in-process reconstructed-byte cache.
     fn invalidate_cached_object_bytes(&self, hash: Hash) -> Result<(), CasError> {
         let mut cache = self.lock_content_cache("invalidating object-byte cache");
         cache.remove(&hash);
         Ok(())
     }
 
+    /// Increments cache-hit metric counter.
     fn record_cache_hit(&self) {
         self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Accumulates delta compression accounting counters.
     fn record_delta_compression(&self, payload_len: u64, content_len: u64) {
         self.metrics.delta_payload_bytes.fetch_add(payload_len, Ordering::Relaxed);
         self.metrics.delta_content_bytes.fetch_add(content_len, Ordering::Relaxed);
     }
 
+    /// Adds elapsed optimize runtime to cumulative runtime metrics.
     fn record_optimizer_runtime_ms(&self, runtime_ms: u64) {
         self.metrics.optimizer_runtime_ms.fetch_add(runtime_ms, Ordering::Relaxed);
     }
 
+    /// Opens one object-actor RPC scope and updates inflight/peak counters.
     fn object_actor_rpc_scope(&self) -> ObjectActorRpcScope<'_> {
         let inflight = self.metrics.object_actor_inflight.fetch_add(1, Ordering::AcqRel) + 1;
         let mut peak = self.metrics.object_actor_inflight_peak.load(Ordering::Acquire);
@@ -239,6 +257,7 @@ impl FileSystemState {
         ObjectActorRpcScope::new(&self.metrics)
     }
 
+    /// Materializes immutable metrics snapshot from atomic counters.
     fn metrics_snapshot(&self) -> FileSystemMetrics {
         let cache_hits = self.metrics.cache_hits.load(Ordering::Relaxed);
         let delta_payload = self.metrics.delta_payload_bytes.load(Ordering::Relaxed);
@@ -270,6 +289,10 @@ impl FileSystemState {
         self.metrics_snapshot()
     }
 
+    /// Builds topology snapshot from current index state.
+    ///
+    /// When `include_empty` is false, the implicit empty-content node and any
+    /// edges that reference it are omitted.
     fn topology_snapshot(&self, include_empty: bool) -> Result<CasTopologySnapshot, CasError> {
         let index = self.lock_index_read("building topology snapshot");
 
@@ -323,6 +346,7 @@ impl FileSystemState {
         Ok(CasTopologySnapshot { include_empty, nodes, constraints })
     }
 
+    /// Reads bytes from cache or underlying storage, then caches result.
     async fn get_cached_object_bytes(&self, hash: Hash) -> Result<Bytes, CasError> {
         if hash == empty_content_hash() {
             return Ok(Bytes::new());
@@ -344,6 +368,7 @@ impl FileSystemState {
         Ok(bytes)
     }
 
+    /// Attempts mmap-backed read for a full-object file.
     async fn read_full_object_mmap(&self, hash: Hash) -> Result<Option<Bytes>, CasError> {
         let full_path = object_path(&self.root, hash);
         if !fs::try_exists(&full_path).await.map_err(|source| {
@@ -379,6 +404,10 @@ impl FileSystemState {
         Ok(normalize_explicit_constraint_set(explicit).unwrap_or_default().into_iter().collect())
     }
 
+    /// Builds heuristic base candidates when no explicit constraints exist.
+    ///
+    /// Candidates are ranked by content-length proximity, then depth/payload,
+    /// and always include the canonical empty-content base.
     fn unconstrained_candidate_bases_for_target(
         index: &IndexState,
         target_hash: Hash,
@@ -409,6 +438,7 @@ impl FileSystemState {
         selected
     }
 
+    /// Returns candidate bases honoring explicit constraints when present.
     fn candidate_bases_for_target(
         index: &IndexState,
         target_hash: Hash,
@@ -432,6 +462,7 @@ impl FileSystemState {
         }
     }
 
+    /// Repairs dangling index rows for missing on-disk object variants.
     async fn repair_index_file_invariant(&self) -> Result<(), CasError> {
         // AGENT_NOTE: Hard invariant for operability and maintenance:
         // if a hash exists in redb index state, at least one corresponding
@@ -478,6 +509,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Persists full index snapshot to primary store and backup snapshot.
     async fn persist_index_snapshot(&self) -> Result<(), CasError> {
         let state_snapshot = {
             let index = self.lock_index_read("snapshotting full index state for redb persistence");
@@ -496,6 +528,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Returns whether current batch counter requires periodic backup write.
     fn should_write_backup_after_batch(&self) -> bool {
         if self.recovery.max_backup_snapshots == 0 {
             return false;
@@ -506,6 +539,7 @@ impl FileSystemState {
         next.is_multiple_of(interval)
     }
 
+    /// Writes backup snapshot without mutating primary index tables.
     async fn write_backup_snapshot_only(&self) -> Result<(), CasError> {
         if self.recovery.max_backup_snapshots == 0 {
             return Ok(());
@@ -526,6 +560,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Persists incremental index operations and optional backup snapshots.
     async fn persist_index_batch(&self, operations: Vec<BatchOperation>) -> Result<(), CasError> {
         if operations.is_empty() {
             return Ok(());
@@ -547,6 +582,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Rebuilds index state from object store and publishes repaired state.
     async fn repair_index_from_object_store(&self) -> Result<IndexRepairReport, CasError> {
         let current_constraints = {
             let index = self.lock_index_read("snapshotting explicit constraints for repair");
@@ -564,6 +600,7 @@ impl FileSystemState {
         Ok(recovered.report)
     }
 
+    /// Migrates durable index schema and publishes migrated runtime state.
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         let index_db = self.index_db.clone();
         let mut migrated_state = tokio::task::spawn_blocking(move || {
@@ -607,6 +644,7 @@ impl FileSystemState {
         Err(CasError::NotFound(hash))
     }
 
+    /// Returns whether full or delta object file exists for a hash.
     async fn object_variant_exists(&self, hash: Hash) -> Result<bool, CasError> {
         let full_path = object_path(&self.root, hash);
         let diff_path = diff_object_path(&self.root, hash);
@@ -621,6 +659,7 @@ impl FileSystemState {
         Ok(has_full || has_diff)
     }
 
+    /// Deletes both full/delta object variants and invalidates cache entry.
     async fn delete_object_files(&self, hash: Hash) -> Result<(), CasError> {
         let _rpc_scope = self.object_actor_rpc_scope();
         call_t!(
@@ -638,6 +677,7 @@ impl FileSystemState {
         u128::from(meta.payload_len) + u128::from(self.effective_alpha()) * u128::from(meta.depth())
     }
 
+    /// Returns effective optimizer alpha considering max-compression mode.
     fn effective_alpha(&self) -> u64 {
         if self.max_compression_mode.load(Ordering::Relaxed) { 0 } else { self.alpha }
     }
@@ -722,6 +762,7 @@ impl FileSystemState {
         }))
     }
 
+    /// Builds a full-object candidate plan for one target payload.
     fn full_candidate_plan(&self, target_hash: Hash, target: &[u8]) -> CandidatePlan {
         let depth = u32::from(target_hash != empty_content_hash());
         let payload = target.to_vec();
@@ -849,10 +890,12 @@ impl FileSystemState {
         }
     }
 
+    /// Returns whether `base_hash` currently has direct delta dependents.
     fn has_dependents(index: &IndexState, base_hash: Hash) -> bool {
         index.delta_reverse.get(&base_hash).is_some_and(|children| !children.is_empty())
     }
 
+    /// Adds one reverse delta edge (`base_hash -> child_hash`) if absent.
     fn reverse_delta_add(index: &mut IndexState, base_hash: Hash, child_hash: Hash) {
         let children = index.delta_reverse.entry(base_hash).or_default();
         if !children.contains(&child_hash) {
@@ -861,6 +904,7 @@ impl FileSystemState {
         }
     }
 
+    /// Removes one reverse delta edge and drops empty edge rows.
     fn reverse_delta_remove(index: &mut IndexState, base_hash: Hash, child_hash: Hash) {
         let Some(children) = index.delta_reverse.get_mut(&base_hash) else {
             return;
@@ -874,6 +918,10 @@ impl FileSystemState {
         }
     }
 
+    /// Recomputes descendant depths rooted at changed objects.
+    ///
+    /// This bounded traversal avoids full recomputation unless invariant checks
+    /// fail or traversal appears cyclic.
     fn rebuild_descendant_depths_local(
         index: &mut IndexState,
         roots: &BTreeSet<Hash>,
@@ -943,6 +991,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Recomputes descendant depths, falling back to full graph recomputation.
     fn recompute_descendant_depths_with_fallback(
         index: &mut IndexState,
         roots: &BTreeSet<Hash>,
@@ -959,6 +1008,7 @@ impl FileSystemState {
         recalculate_depths(index)
     }
 
+    /// Synchronizes reverse delta edges around one object metadata update.
     fn sync_delta_reverse_for_meta_update(
         index: &mut IndexState,
         hash: Hash,
@@ -1072,6 +1122,7 @@ impl FileSystemState {
             .unwrap_or_default()
     }
 
+    /// Removes one object metadata row and verifies reverse-index cleanliness.
     fn remove_object_meta(index: &mut IndexState, hash: Hash) -> Result<(), CasError> {
         let removed = index.objects.remove(&hash).ok_or(CasError::NotFound(hash))?;
 
@@ -1090,6 +1141,7 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Adds one reverse explicit-constraint edge (`base -> target`) if absent.
     fn reverse_link_add(index: &mut IndexState, base_hash: Hash, target_hash: Hash) {
         let targets = index.constraint_reverse.entry(base_hash).or_default();
         if !targets.contains(&target_hash) {
@@ -1098,6 +1150,7 @@ impl FileSystemState {
         }
     }
 
+    /// Removes one reverse explicit-constraint edge and prunes empty rows.
     fn reverse_link_remove(index: &mut IndexState, base_hash: Hash, target_hash: Hash) {
         let Some(targets) = index.constraint_reverse.get_mut(&base_hash) else {
             return;
@@ -1111,6 +1164,7 @@ impl FileSystemState {
         }
     }
 
+    /// Applies patch semantics to an existing explicit constraint candidate set.
     fn merge_constraint_patch(
         existing: Option<&BTreeSet<Hash>>,
         patch: ConstraintPatch,
@@ -1131,6 +1185,10 @@ impl FileSystemState {
         merged
     }
 
+    /// Writes one normalized explicit constraint row and maintains reverse index.
+    ///
+    /// Returns the persisted explicit set, or `None` when row normalizes to
+    /// unconstrained semantics and is removed.
     fn set_constraint_row_optic(
         index: &mut IndexState,
         target_hash: Hash,
@@ -1175,6 +1233,7 @@ impl FileSystemState {
         }
     }
 
+    /// Computes incremental persistence operations from `before -> after` state.
     fn index_diff_operations(before: &IndexState, after: &IndexState) -> Vec<BatchOperation> {
         let mut operations = Vec::new();
 
@@ -1312,6 +1371,7 @@ impl FileSystemState {
 }
 
 #[async_trait]
+/// Core CAS API implementation over shared filesystem backend state.
 impl CasApi for FileSystemState {
     async fn exists(&self, hash: Hash) -> Result<bool, CasError> {
         if hash == empty_content_hash() {
@@ -1615,7 +1675,9 @@ impl CasApi for FileSystemState {
     }
 }
 
+/// Default actor-shutdown grace period for production constructors.
 const FILESYSTEM_DEFAULT_DROP_GRACE_PERIOD: Duration = Duration::from_secs(2);
+/// Short actor-shutdown grace period for test constructors.
 const FILESYSTEM_TEST_DROP_GRACE_PERIOD: Duration = Duration::from_millis(25);
 /// On-disk Phase 1 CAS with mutation-focused actor coordination.
 ///
@@ -1628,6 +1690,7 @@ pub struct FileSystemCas {
     drop_grace_period: Duration,
 }
 
+/// Stops object actor on drop and escalates to kill on timeout.
 impl Drop for FileSystemCas {
     fn drop(&mut self) {
         self.state.object_actor.stop(Some("filesystem cas dropped".to_string()));
@@ -1644,6 +1707,7 @@ impl Drop for FileSystemCas {
     }
 }
 
+/// Public constructor/helpers and visualization/maintenance utilities.
 impl FileSystemCas {
     /// Opens (or initializes) a CAS repository rooted at `root`.
     pub async fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
@@ -1808,6 +1872,7 @@ impl FileSystemCas {
 }
 
 #[async_trait]
+/// Delegates [`CasApi`] operations into shared filesystem runtime state.
 impl CasApi for FileSystemCas {
     async fn exists(&self, hash: Hash) -> Result<bool, CasError> {
         self.state.exists(hash).await
@@ -1896,6 +1961,7 @@ impl CasApi for FileSystemCas {
 }
 
 #[async_trait]
+/// Delegates maintenance APIs into filesystem runtime state.
 impl CasMaintenanceApi for FileSystemCas {
     async fn optimize_once(&self, options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
         if self
@@ -1926,6 +1992,7 @@ impl CasMaintenanceApi for FileSystemCas {
 }
 
 #[derive(Debug, Clone)]
+/// Candidate rewrite plan evaluated by optimizer scoring logic.
 struct CandidatePlan {
     /// Candidate object representation.
     object: StoredObject,
@@ -2049,6 +2116,10 @@ const fn ensure_no_length_collision(
     Ok(())
 }
 
+/// Applies stacked delta payloads to a full-object base payload.
+///
+/// `patch_payloads` is consumed from the end so callers can push base-to-leaf
+/// deltas during traversal and replay them in reconstruction order.
 fn apply_delta_patch_stack(
     mut base_payload: Vec<u8>,
     patch_payloads: &mut Vec<Cow<'static, [u8]>>,
@@ -2061,6 +2132,7 @@ fn apply_delta_patch_stack(
     Ok(base_payload)
 }
 
+/// Validates reconstructed payload length against optional expected size.
 fn ensure_reconstructed_size(
     hash: Hash,
     expected_len: Option<u64>,
@@ -2077,6 +2149,7 @@ fn ensure_reconstructed_size(
     Ok(())
 }
 
+/// Validates reconstructed payload hash against expected object hash.
 fn ensure_reconstructed_hash(
     expected_hash: Hash,
     content: &[u8],

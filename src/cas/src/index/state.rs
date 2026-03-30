@@ -11,21 +11,31 @@ use smallvec::SmallVec;
 
 use crate::{Hash, empty_content_hash};
 
+/// Bit flag indicating "full object" encoding in `depth_and_tag`.
 const OBJECT_META_FULL_FLAG: u32 = 1 << 31;
+/// Bit mask selecting packed depth bits in `depth_and_tag`.
 const OBJECT_META_DEPTH_MASK: u32 = !OBJECT_META_FULL_FLAG;
+/// Serialized hash-key width used by persisted index rows.
 const HASH_STORAGE_KEY_BYTES: usize = 34;
 /// Maximum allowed reconstruction depth for one object.
 pub(crate) const MAX_DELTA_DEPTH: u32 = 1_000;
 /// Depth threshold for proactively promoting deep deltas to full objects.
 pub(crate) const DELTA_PROMOTION_DEPTH: u32 = MAX_DELTA_DEPTH - 32;
+/// Inline-capacity hint for reverse constraint target lists.
 pub(crate) const CONSTRAINT_REVERSE_INLINE_TARGETS: usize = 4;
+/// Inline-capacity hint for reverse delta-child lists.
 pub(crate) const DELTA_REVERSE_INLINE_CHILDREN: usize = 4;
 
+/// Serde bridge for fixed-width base-hash storage bytes.
+///
+/// Runtime metadata stores delta base hashes as canonical fixed-width storage
+/// bytes to keep serialization deterministic across schema versions.
 mod base_storage_serde {
     use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
 
     use super::HASH_STORAGE_KEY_BYTES;
 
+    /// Serializes fixed-width base-storage bytes as an opaque byte sequence.
     pub(super) fn serialize<S>(
         value: &[u8; HASH_STORAGE_KEY_BYTES],
         serializer: S,
@@ -36,6 +46,7 @@ mod base_storage_serde {
         serializer.serialize_bytes(value)
     }
 
+    /// Deserializes base-storage bytes and enforces exact fixed width.
     pub(super) fn deserialize<'de, D>(
         deserializer: D,
     ) -> Result<[u8; HASH_STORAGE_KEY_BYTES], D::Error>
@@ -80,6 +91,7 @@ pub(crate) struct ObjectMeta {
     base_storage: [u8; HASH_STORAGE_KEY_BYTES],
 }
 
+/// Constructors and accessors for packed runtime object metadata.
 impl ObjectMeta {
     /// Constructs full-data object metadata.
     #[must_use]
@@ -163,6 +175,7 @@ pub(crate) struct IndexState {
     pub(crate) delta_reverse: BTreeMap<Hash, SmallVec<[Hash; DELTA_REVERSE_INLINE_CHILDREN]>>,
 }
 
+/// Reverse-index rebuild helpers for runtime index state.
 impl IndexState {
     /// Rebuilds reverse constraint links from forward constraint rows.
     pub(crate) fn rebuild_constraint_reverse(&mut self) {

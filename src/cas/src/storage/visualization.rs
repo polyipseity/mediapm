@@ -178,10 +178,12 @@ pub fn render_topology_mermaid_neighborhood(
     render_topology_mermaid(&neighborhood)
 }
 
+/// Builds deterministic Mermaid node identifier from object hash hex.
 fn mermaid_node_id(hash: Hash) -> String {
     format!("n{}", hash.to_hex())
 }
 
+/// Returns a compact human-readable hash label for diagram node text.
 fn short_hash(hash: Hash) -> String {
     let value = hash.to_string();
     if value.len() <= 22 {
@@ -203,6 +205,7 @@ mod tests {
     use crate::Hash;
 
     #[test]
+    /// Ensures renderer emits nodes plus base/constraint edges.
     fn mermaid_renderer_emits_nodes_base_and_constraint_edges() {
         let base = Hash::from_content(b"base");
         let target = Hash::from_content(b"target");
@@ -237,6 +240,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures node labels include readable hash and size metadata text.
     fn mermaid_renderer_uses_readable_hash_labels() {
         let hash = Hash::from_content(b"readable-hash-label");
         let snapshot = CasTopologySnapshot {
@@ -258,6 +262,7 @@ mod tests {
     }
 
     #[test]
+    /// Ensures neighborhood extraction respects configured step distance.
     fn neighborhood_snapshot_limits_nodes_by_step_distance() {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");

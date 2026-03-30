@@ -17,6 +17,7 @@ use crate::{
 use super::{FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES, FileSystemState};
 
 #[async_trait]
+/// Maintenance trait implementation for shared filesystem runtime state.
 impl CasMaintenanceApi for FileSystemState {
     #[instrument(name = "filesystem.optimize_once", skip(self, options))]
     async fn optimize_once(&self, options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
@@ -85,6 +86,15 @@ impl CasMaintenanceApi for FileSystemState {
         Ok(OptimizeReport { rewritten_objects: rewritten })
     }
 
+    /// Removes stale explicit constraint candidates and rows.
+    ///
+    /// Pruning rules:
+    /// - drop rows whose target no longer exists,
+    /// - drop candidate bases that no longer exist (except implicit empty base),
+    /// - drop rows that become unconstrained after filtering.
+    ///
+    /// The in-memory reverse-constraint index is rebuilt after pruning and the
+    /// resulting snapshot is persisted to durable storage.
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         let mut removed = 0usize;
         {
@@ -110,10 +120,18 @@ impl CasMaintenanceApi for FileSystemState {
         Ok(PruneReport { removed_candidates: removed })
     }
 
+    /// Rebuilds durable index metadata from object-store state.
+    ///
+    /// This delegates to filesystem recovery logic and persists the rebuilt
+    /// index snapshot on success.
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {
         self.repair_index_from_object_store().await
     }
 
+    /// Migrates durable index metadata to one target schema marker.
+    ///
+    /// Migration is performed by the shared index persistence layer and then
+    /// published back into runtime index state.
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         self.migrate_index_to_version(target_version).await
     }
