@@ -22,3 +22,5 @@ mod lifecycle;
 mod perf_profile;
 /// Recovery and repair scenarios.
 mod recovery;
+/// Domain-grouped long-form scenario coverage.
+mod scenarios;
