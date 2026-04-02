@@ -3,6 +3,8 @@
 //! This example creates deterministic fixture files, stores them in a
 //! filesystem CAS, runs optimization/pruning, and emits visualization artifacts
 //! you can inspect manually or through the `mediapm cas visualize` command.
+//! Before each run, the example recreates its output directory to prevent
+//! stale artifacts from previous runs from leaking into inspection results.
 //!
 //! Generated artifacts live under:
 //! `src/cas/examples/.artifacts/demo/`
@@ -94,6 +96,16 @@ fn artifact_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join(".artifacts").join("demo")
 }
 
+/// Recreates the demo output directory so stale artifacts never survive reruns.
+fn reset_demo_output_directory() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let root = artifact_root();
+    if root.exists() {
+        std::fs::remove_dir_all(&root)?;
+    }
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
 /// Builds deterministic file fixtures for repeatable demo output.
 fn input_files_for_demo() -> Vec<DemoFileSpec> {
     let waveform: Vec<u8> = (0u32..2048).map(|i| ((i * 37 + 11) % 256) as u8).collect();
@@ -133,13 +145,9 @@ fn write_demo_files(base: &Path, specs: &[DemoFileSpec]) -> Result<(), Box<dyn s
     Ok(())
 }
 
-/// Generates inspectable demo artifacts and returns output paths.
+/// Clears stale output files, then generates inspectable demo artifacts.
 async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std::error::Error>> {
-    let root = artifact_root();
-    if root.exists() {
-        std::fs::remove_dir_all(&root)?;
-    }
-    std::fs::create_dir_all(&root)?;
+    let root = reset_demo_output_directory()?;
 
     let specs = input_files_for_demo();
     write_demo_files(&root, &specs)?;
