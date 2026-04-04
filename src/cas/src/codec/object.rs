@@ -21,9 +21,6 @@
 
 use std::borrow::Cow;
 
-use fp_library::brands::RcBrand;
-use fp_library::types::optics::{LensPrime, PrismPrime};
-
 use crate::codec::versions::{decode_delta_state, encode_delta_state};
 use crate::{CasError, Hash};
 
@@ -50,52 +47,6 @@ impl<'a> DeltaState<'a> {
     }
 }
 
-/// Returns a lens focused on [`DeltaState::base_hash`].
-///
-/// This lens supports immutable optic-style updates when composing
-/// transformations over version-agnostic delta state.
-#[allow(dead_code)]
-pub fn delta_state_base_hash_lens() -> LensPrime<'static, RcBrand, DeltaState<'static>, Hash> {
-    LensPrime::from_view_set(
-        |s: DeltaState<'static>| s.base_hash,
-        |(mut s, base_hash): (DeltaState<'static>, Hash)| {
-            s.base_hash = base_hash;
-            s
-        },
-    )
-}
-
-/// Returns a lens focused on [`DeltaState::content_len`].
-///
-/// Use this when composing validated content-length adjustments without
-/// hand-writing mutable update plumbing.
-#[allow(dead_code)]
-pub fn delta_state_content_len_lens() -> LensPrime<'static, RcBrand, DeltaState<'static>, u64> {
-    LensPrime::from_view_set(
-        |s: DeltaState<'static>| s.content_len,
-        |(mut s, content_len): (DeltaState<'static>, u64)| {
-            s.content_len = content_len;
-            s
-        },
-    )
-}
-
-/// Returns a lens focused on [`DeltaState::payload`].
-///
-/// This is useful for payload transformation pipelines that preserve the
-/// surrounding delta metadata.
-#[allow(dead_code)]
-pub fn delta_state_payload_lens()
--> LensPrime<'static, RcBrand, DeltaState<'static>, Cow<'static, [u8]>> {
-    LensPrime::from_view_set(
-        |s: DeltaState<'static>| s.payload,
-        |(mut s, payload): (DeltaState<'static>, Cow<'static, [u8]>)| {
-            s.payload = payload;
-            s
-        },
-    )
-}
-
 /// Tagged union of persisted object payload variants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StoredObject {
@@ -106,38 +57,6 @@ pub(crate) enum StoredObject {
         /// Version-agnostic delta state.
         state: DeltaState<'static>,
     },
-}
-
-/// Returns a prism for the [`StoredObject::Full`] variant.
-/// Constructors and encode/decode helpers for persisted object variants.
-///
-/// `preview` succeeds only for full payload objects, and `review` injects raw
-/// bytes back into the sum type.
-#[allow(dead_code)]
-pub fn stored_object_full_prism() -> PrismPrime<'static, RcBrand, StoredObject, Vec<u8>> {
-    PrismPrime::new(
-        |obj: StoredObject| match obj {
-            StoredObject::Full { payload } => Ok(payload),
-            other => Err(other),
-        },
-        |payload: Vec<u8>| StoredObject::Full { payload },
-    )
-}
-
-/// Returns a prism for the [`StoredObject::Delta`] variant.
-///
-/// `preview` extracts version-agnostic [`DeltaState`] while preserving failure
-/// when the value is a full payload object.
-#[allow(dead_code)]
-pub fn stored_object_delta_prism() -> PrismPrime<'static, RcBrand, StoredObject, DeltaState<'static>>
-{
-    PrismPrime::new(
-        |obj: StoredObject| match obj {
-            StoredObject::Delta { state } => Ok(state),
-            other => Err(other),
-        },
-        |state: DeltaState<'static>| StoredObject::Delta { state },
-    )
 }
 
 /// Constructors and encode/decode helpers for persisted object variants.
@@ -224,7 +143,6 @@ mod tests {
     use std::collections::BTreeSet;
 
     use bytes::Bytes;
-    use fp_library::types::optics::optics_preview;
     use tempfile::tempdir;
 
     use super::*;
@@ -250,21 +168,6 @@ mod tests {
 
         assert!(matches!(encoded, Cow::Borrowed(_)));
         assert_eq!(encoded.as_ref(), [1, 2, 3]);
-    }
-
-    #[test]
-    fn stored_object_prism_preview_works() {
-        let full = StoredObject::full(vec![1, 2, 3]);
-        let delta = StoredObject::delta(Hash::from_content(b"base"), 10, vec![4, 5]);
-
-        let full_prism = stored_object_full_prism();
-        let delta_prism = stored_object_delta_prism();
-
-        assert!(optics_preview::<RcBrand, _, _>(&full_prism, full.clone()).is_some());
-        assert!(optics_preview::<RcBrand, _, _>(&delta_prism, full.clone()).is_none());
-
-        assert!(optics_preview::<RcBrand, _, _>(&delta_prism, delta.clone()).is_some());
-        assert!(optics_preview::<RcBrand, _, _>(&full_prism, delta.clone()).is_none());
     }
 
     #[tokio::test]

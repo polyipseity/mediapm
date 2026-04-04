@@ -82,24 +82,6 @@ const INDEX_METADATA_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new
 /// Schema metadata field key storing the persisted schema marker.
 const SCHEMA_VERSION_KEY: &[u8] = b"version";
 
-/// Optic-based migration trait for index persistence envelopes.
-#[allow(dead_code)]
-pub(crate) trait Migrate<To> {
-    /// Migrates `self` to `To` using composed optics through version-local state.
-    fn migrate(self) -> To;
-}
-
-/// Shared migration helper using `old_iso.view` then `new_iso.review`.
-#[allow(dead_code)]
-pub(crate) fn migrate_with_version_state<'a, From, To, State>(
-    from: From,
-    from_iso: &IsoPrime<'a, RcBrand, From, State>,
-    to_iso: &IsoPrime<'a, RcBrand, To, State>,
-) -> To {
-    let state = from_iso.from(from);
-    to_iso.to(state)
-}
-
 /// Encodes one hash into the fixed-width primary-key representation.
 #[must_use]
 pub(crate) fn index_key_from_hash(hash: Hash) -> [u8; HASH_STORAGE_KEY_BYTES] {

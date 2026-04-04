@@ -54,13 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{run_application_flow, run_application_flow_from_locator};
-    use mediapm_cas::CasConfig;
-
     #[tokio::test]
     /// Verifies `cas://memory` resolves and executes the in-memory branch.
     async fn router_flow_supports_memory_locator() {
-        let (_hash, len, mermaid) = run_application_flow_from_locator("cas://memory")
+        let (_hash, len, mermaid) = super::run_application_flow_from_locator("cas://memory")
             .await
             .expect("run from memory locator");
         assert_eq!(len, "application payload".len());
@@ -71,8 +68,11 @@ mod tests {
     /// Verifies explicit filesystem configuration executes filesystem-specific flow.
     async fn router_flow_supports_filesystem_backend_variant() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let cas = CasConfig::filesystem(temp.path()).open().await.expect("open filesystem config");
-        let (_hash, len, mermaid) = run_application_flow(&cas).await.expect("run app flow");
+        let cas = mediapm_cas::CasConfig::filesystem(temp.path())
+            .open()
+            .await
+            .expect("open filesystem config");
+        let (_hash, len, mermaid) = super::run_application_flow(&cas).await.expect("run app flow");
         assert_eq!(len, "application payload".len());
         let mermaid = mermaid.expect("filesystem flow should return visualization");
         assert!(mermaid.contains("flowchart TD"));

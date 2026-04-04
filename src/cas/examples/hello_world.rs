@@ -41,15 +41,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::run_hello_world_demo;
-
     #[tokio::test]
     /// Verifies the quickstart flow preserves exact payload bytes.
     ///
     /// This guards the teaching contract of the example: newcomers should see
     /// both a printable hash and an exact content round-trip.
     async fn hello_world_round_trips_expected_payload() {
-        let (hash, restored) = run_hello_world_demo().await.expect("run hello-world demo");
+        let (hash, restored) = super::run_hello_world_demo().await.expect("run hello-world demo");
         assert!(!hash.is_empty(), "hash should be printable and non-empty");
         assert_eq!(restored.as_ref(), b"hello world from mediapm-cas");
     }

@@ -29,11 +29,9 @@ use std::mem::size_of;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use bitvec::{order::Lsb0, vec::BitVec};
 use bytemuck::pod_read_unaligned;
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use redb::{Database, ReadableMultimapTable, ReadableTable};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -397,38 +395,7 @@ impl CasIndexDb {
         Ok(iter.next().transpose().map_err(CasError::redb)?.is_some())
     }
 
-    /// Fast existence check using in-memory bloom prefilter before B-tree lookup.
-    ///
-    /// False positives are possible; false negatives are not.
-    #[allow(dead_code)]
-    pub(crate) fn contains_hash_fast(&self, hash: Hash) -> Result<bool, CasError> {
-        if hash == empty_content_hash() {
-            return Ok(true);
-        }
-
-        let _migration_guard = self.lock_migration_read("reading index contains_hash_fast")?;
-        let schema_marker = self.schema_marker_for_operation()?;
-        let read = self.db.begin_read().map_err(CasError::redb)?;
-        let bloom_hit = match self.bloom_prefilter_from_read(&read, schema_marker, hash)? {
-            Some(hit) => hit,
-            None => self
-                .bloom
-                .read()
-                .map_err(|err| CasError::poisoned_lock("index-bloom", "reading bloom", err))?
-                .maybe_contains(hash),
-        };
-
-        if !bloom_hit {
-            return Ok(false);
-        }
-
-        let primary = open_primary_table_read(&read, schema_marker)?;
-        let key = index_key_from_hash(hash);
-        Ok(primary.get(key.as_slice()).map_err(CasError::redb)?.is_some())
-    }
-
     /// Batch fast-existence checks with optional SIMD-assisted bloom prefilter.
-    #[allow(dead_code)]
     pub(crate) fn contains_hashes_fast(&self, hashes: &[Hash]) -> Result<Vec<bool>, CasError> {
         if hashes.is_empty() {
             return Ok(Vec::new());
@@ -697,47 +664,12 @@ impl CasIndexDb {
         Ok(())
     }
 
-    /// Inserts or updates a single object metadata row while preserving constraints.
-    ///
-    /// # Errors
-    /// Returns [`CasError::Redb`] or [`CasError::CorruptIndex`].
-    #[allow(dead_code)]
-    pub(crate) fn upsert_object(&self, hash: Hash, meta: ObjectMeta) -> Result<(), CasError> {
-        self.persist_batch(std::iter::once(BatchOperation::UpsertObject { hash, meta }))
-    }
-
-    /// Deletes one object metadata row.
-    ///
-    /// # Errors
-    /// Returns [`CasError::Redb`].
-    #[allow(dead_code)]
-    pub(crate) fn delete_object(&self, hash: Hash) -> Result<(), CasError> {
-        self.persist_batch(std::iter::once(BatchOperation::DeleteObject { hash }))
-    }
-
-    /// Replaces explicit constraint bases for one object row.
-    ///
-    /// # Errors
-    /// Returns [`CasError::NotFound`] if `target_hash` has no metadata row.
-    #[allow(dead_code)]
-    pub(crate) fn set_constraint_bases(
-        &self,
-        target_hash: Hash,
-        bases: &BTreeSet<Hash>,
-    ) -> Result<(), CasError> {
-        self.persist_batch(std::iter::once(BatchOperation::SetConstraintBases {
-            target_hash,
-            bases: bases.clone(),
-        }))
-    }
-
     /// Applies multiple index updates in one redb write transaction.
     ///
     /// This is significantly faster than one-commit-per-object ingestion.
     ///
     /// # Errors
     /// Returns [`CasError::Redb`], [`CasError::NotFound`], or [`CasError::CorruptIndex`].
-    #[allow(dead_code)]
     pub(crate) fn persist_batch<I>(&self, operations: I) -> Result<(), CasError>
     where
         I: IntoIterator<Item = BatchOperation>,
@@ -996,21 +928,6 @@ impl CasIndexDb {
         Ok(())
     }
 
-    /// Performs read-transaction bloom prefilter for one hash when payload exists.
-    fn bloom_prefilter_from_read(
-        &self,
-        read: &redb::ReadTransaction,
-        schema_marker: u32,
-        hash: Hash,
-    ) -> Result<Option<bool>, CasError> {
-        let Some(payload) = read_bloom_payload_from_table(read, schema_marker)? else {
-            return Ok(None);
-        };
-
-        let view = BloomPayloadView::from_payload(payload.as_slice(), schema_marker)?;
-        Ok(Some(view.maybe_contains(hash)))
-    }
-
     /// Performs read-transaction bloom prefilter for many hashes when payload exists.
     fn bloom_prefilter_many_from_read(
         &self,
@@ -1024,248 +941,6 @@ impl CasIndexDb {
 
         let view = BloomPayloadView::from_payload(payload.as_slice(), schema_marker)?;
         Ok(Some(view.maybe_contains_many(hashes)))
-    }
-
-    /// Optionally batches a stream of operations into group-commit sized chunks.
-    ///
-    /// This supports actor integration where writes can be flushed every `chunk_size`
-    /// operations or after `flush_timeout`, whichever comes first.
-    #[allow(dead_code)]
-    pub(crate) fn persist_batch_grouped<I>(
-        &self,
-        operations: I,
-        chunk_size: usize,
-        flush_timeout: Duration,
-    ) -> Result<(), CasError>
-    where
-        I: IntoIterator<Item = BatchOperation>,
-    {
-        let chunk_size = chunk_size.max(1);
-        let mut chunk = Vec::with_capacity(chunk_size);
-        let mut chunk_started = std::time::Instant::now();
-
-        for op in operations {
-            chunk.push(op);
-            if chunk.len() >= chunk_size || chunk_started.elapsed() >= flush_timeout {
-                self.persist_batch(chunk.drain(..))?;
-                chunk_started = std::time::Instant::now();
-            }
-        }
-
-        if !chunk.is_empty() {
-            self.persist_batch(chunk)?;
-        }
-
-        Ok(())
-    }
-
-    /// Starts an optional commit pipeline actor that batches many logical
-    /// updates into fewer redb transactions.
-    #[allow(dead_code)]
-    pub(crate) async fn start_commit_pipeline(
-        &self,
-        config: CommitPipelineConfig,
-    ) -> Result<CommitPipelineHandle, CasError> {
-        let config = config.normalized();
-        let pending = Vec::with_capacity(config.max_buffered_ops);
-        let (actor, _handle) = Actor::spawn(
-            None,
-            CommitPipelineActor,
-            CommitPipelineActorState { db: self.clone(), config, pending },
-        )
-        .await
-        .map_err(|err| CasError::actor_rpc("spawning index commit pipeline actor", err))?;
-
-        Ok(CommitPipelineHandle { actor, rpc_timeout: config.rpc_timeout })
-    }
-}
-
-/// Configuration for optional asynchronous index commit pipelining.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct CommitPipelineConfig {
-    /// Maximum queued operations before an immediate flush.
-    pub(crate) max_buffered_ops: usize,
-    /// Periodic flush interval while operations are queued.
-    pub(crate) flush_interval: Duration,
-    /// RPC timeout for enqueue/flush requests.
-    pub(crate) rpc_timeout: Duration,
-}
-
-#[allow(dead_code)]
-/// Default commit-pipeline tuning values for local workloads.
-impl Default for CommitPipelineConfig {
-    fn default() -> Self {
-        Self {
-            max_buffered_ops: 512,
-            flush_interval: Duration::from_millis(25),
-            rpc_timeout: Duration::from_secs(30),
-        }
-    }
-}
-
-#[allow(dead_code)]
-/// Commit-pipeline configuration normalization helpers.
-impl CommitPipelineConfig {
-    fn normalized(self) -> Self {
-        Self {
-            max_buffered_ops: self.max_buffered_ops.max(1),
-            flush_interval: self.flush_interval.max(Duration::from_millis(1)),
-            rpc_timeout: self.rpc_timeout.max(Duration::from_millis(1)),
-        }
-    }
-}
-
-/// Handle for the optional background commit pipeline actor.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub(crate) struct CommitPipelineHandle {
-    actor: ActorRef<CommitPipelineMessage>,
-    rpc_timeout: Duration,
-}
-
-#[allow(dead_code)]
-/// RPC convenience operations for commit-pipeline actor handle.
-impl CommitPipelineHandle {
-    fn timeout_ms(&self) -> u64 {
-        self.rpc_timeout.as_millis().min(u128::from(u64::MAX)) as u64
-    }
-
-    /// Queues a single operation for grouped commit.
-    pub(crate) async fn enqueue(&self, operation: BatchOperation) -> Result<(), CasError> {
-        call_t!(self.actor, CommitPipelineMessage::Enqueue, self.timeout_ms(), vec![operation])
-            .map_err(|err| CasError::actor_rpc("enqueueing commit pipeline operation", err))?
-    }
-
-    /// Queues multiple operations for grouped commit.
-    pub(crate) async fn enqueue_many(
-        &self,
-        operations: Vec<BatchOperation>,
-    ) -> Result<(), CasError> {
-        if operations.is_empty() {
-            return Ok(());
-        }
-
-        call_t!(self.actor, CommitPipelineMessage::Enqueue, self.timeout_ms(), operations)
-            .map_err(|err| CasError::actor_rpc("enqueueing commit pipeline operations", err))?
-    }
-
-    /// Flushes all pending operations to durable storage.
-    pub(crate) async fn flush(&self) -> Result<(), CasError> {
-        call_t!(self.actor, CommitPipelineMessage::Flush, self.timeout_ms())
-            .map_err(|err| CasError::actor_rpc("flushing commit pipeline", err))?
-    }
-
-    /// Flushes pending operations and stops the background actor.
-    pub(crate) async fn stop(self) -> Result<(), CasError> {
-        call_t!(self.actor, CommitPipelineMessage::Stop, self.timeout_ms())
-            .map_err(|err| CasError::actor_rpc("stopping commit pipeline", err))?
-    }
-}
-
-#[derive(Debug)]
-/// Internal commit-pipeline actor message protocol.
-enum CommitPipelineMessage {
-    /// Queues operations for buffered commit.
-    Enqueue(Vec<BatchOperation>, RpcReplyPort<Result<(), CasError>>),
-    /// Forces flush of buffered operations.
-    Flush(RpcReplyPort<Result<(), CasError>>),
-    /// Periodic timer tick trigger.
-    Tick,
-    /// Flushes and stops actor.
-    Stop(RpcReplyPort<Result<(), CasError>>),
-}
-
-#[derive(Debug)]
-/// Mutable actor state for buffered index-commit batching.
-struct CommitPipelineActorState {
-    /// Backing index database handle.
-    db: CasIndexDb,
-    /// Runtime buffer and timeout configuration.
-    config: CommitPipelineConfig,
-    /// Pending buffered operations.
-    pending: Vec<BatchOperation>,
-}
-
-/// Buffered-flush helpers for commit-pipeline actor state.
-impl CommitPipelineActorState {
-    /// Flushes buffered operations in one batch, retaining buffer on failure.
-    fn flush_pending(&mut self) -> Result<(), CasError> {
-        if self.pending.is_empty() {
-            return Ok(());
-        }
-
-        let ops = std::mem::take(&mut self.pending);
-        match self.db.persist_batch(ops.iter().cloned()) {
-            Ok(()) => Ok(()),
-            Err(err) => {
-                self.pending = ops;
-                Err(err)
-            }
-        }
-    }
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-/// Actor implementation that batches commit operations.
-struct CommitPipelineActor;
-
-/// Ractor implementation for batched index-commit processing.
-impl Actor for CommitPipelineActor {
-    type Msg = CommitPipelineMessage;
-    type State = CommitPipelineActorState;
-    type Arguments = CommitPipelineActorState;
-
-    async fn pre_start(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
-    ) -> Result<Self::State, ActorProcessingErr> {
-        let flush_interval = args.config.flush_interval;
-        let tick_actor = myself.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(flush_interval);
-            loop {
-                interval.tick().await;
-                if tick_actor.send_message(CommitPipelineMessage::Tick).is_err() {
-                    break;
-                }
-            }
-        });
-
-        Ok(args)
-    }
-
-    async fn handle(
-        &self,
-        myself: ActorRef<Self::Msg>,
-        message: Self::Msg,
-        state: &mut Self::State,
-    ) -> Result<(), ActorProcessingErr> {
-        match message {
-            CommitPipelineMessage::Enqueue(ops, reply) => {
-                state.pending.extend(ops);
-                let result = if state.pending.len() >= state.config.max_buffered_ops {
-                    state.flush_pending()
-                } else {
-                    Ok(())
-                };
-                let _ = reply.send(result);
-            }
-            CommitPipelineMessage::Flush(reply) => {
-                let _ = reply.send(state.flush_pending());
-            }
-            CommitPipelineMessage::Tick => {
-                let _ = state.flush_pending();
-            }
-            CommitPipelineMessage::Stop(reply) => {
-                let result = state.flush_pending();
-                let _ = reply.send(result);
-                myself.stop(Some("commit pipeline stopped by caller".to_string()));
-            }
-        }
-
-        Ok(())
     }
 }
 

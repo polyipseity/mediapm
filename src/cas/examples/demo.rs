@@ -263,12 +263,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_inspectable_artifacts, input_files_for_demo};
-
     #[test]
     /// Keeps fixture count/content deterministic for stable demo artifacts.
     fn fixture_set_is_deterministic_and_non_empty() {
-        let fixtures = input_files_for_demo();
+        let fixtures = super::input_files_for_demo();
         assert_eq!(fixtures.len(), 4, "fixture count should remain stable");
         for fixture in fixtures {
             assert!(!fixture.relative_path.is_empty());
@@ -280,7 +278,8 @@ mod tests {
     #[ignore = "creates persistent demo artifacts under src/cas/examples/.artifacts"]
     /// Smoke-tests artifact generation end-to-end.
     async fn generates_inspectable_artifacts_and_visualization_files() {
-        let summary = generate_inspectable_artifacts().await.expect("generate demo artifacts");
+        let summary =
+            super::generate_inspectable_artifacts().await.expect("generate demo artifacts");
         assert!(summary.cas_root.join("v1").exists(), "cas version directory missing");
         assert!(summary.manifest_path.is_file(), "manifest should be generated");
         assert!(summary.topology_mermaid_path.is_file(), "mermaid file should be generated");

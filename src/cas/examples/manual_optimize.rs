@@ -51,14 +51,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::run_manual_optimize_once;
-
     #[tokio::test]
     /// Ensures the walkthrough flow completes and emits Mermaid output.
     async fn manual_optimize_runs_successfully() {
         let temp = tempfile::tempdir().expect("tempdir");
         let (rewritten, mermaid) =
-            run_manual_optimize_once(temp.path()).await.expect("run manual optimize flow");
+            super::run_manual_optimize_once(temp.path()).await.expect("run manual optimize flow");
         assert!(rewritten <= 24, "default max_rewrites bound should apply");
         assert!(mermaid.contains("flowchart TD"));
     }

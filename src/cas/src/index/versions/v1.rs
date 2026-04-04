@@ -8,7 +8,6 @@
 //! - Latest-version bridging to unversioned runtime structs is owned by
 //!   `index/versions/mod.rs`.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::mem::{size_of, size_of_val};
 
 use bytemuck::{Pod, Zeroable, bytes_of, pod_read_unaligned};
@@ -16,8 +15,6 @@ use redb::{MultimapTableDefinition, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::{CasError, Hash};
-
-use super::Migrate;
 
 /// Bit flag indicating "full object" encoding in packed `depth_and_tag`.
 const OBJECT_META_FULL_FLAG: u32 = 1 << 31;
@@ -427,22 +424,5 @@ impl ObjectMetaV1 {
             Hash::from_storage_bytes(&self.base_storage)
                 .expect("delta object metadata must store valid multihash-encoded base hash")
         })
-    }
-}
-
-/// Versioned runtime snapshot used for persistence migration bridges.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub(crate) struct IndexStateV1 {
-    /// Object metadata keyed by object hash.
-    pub(crate) objects: BTreeMap<Hash, ObjectMetaV1>,
-    /// Explicit constraint candidates keyed by target hash.
-    pub(crate) constraints: BTreeMap<Hash, BTreeSet<Hash>>,
-}
-
-/// Identity migration bridge for same-version persisted index snapshots.
-impl Migrate<IndexStateV1> for IndexStateV1 {
-    /// Identity migration for same-version index state.
-    fn migrate(self) -> IndexStateV1 {
-        self
     }
 }
