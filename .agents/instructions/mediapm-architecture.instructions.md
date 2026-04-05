@@ -23,13 +23,24 @@ applyTo: "src/**/*.rs"
   - deterministic instance-key and merge logic
   - workflow execution contracts
 - `src/conductor-builtins/*/` (Phase 2 built-ins)
-  - versioned built-in tool contracts such as `fs-ops`, `import`, `zip`
+  - versioned built-in tool contracts and runtime implementations such as
+    `echo`, `fs`, `import`, `export`, `archive`
 - `src/mediapm/` (Phase 3)
   - media-facing API
   - CLI shell and phase composition over conductor + CAS
 
 If you introduce a new file, place it in the phase crate that owns that
 concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
+
+When splitting one Rust module into multiple files under `src/`, prefer
+folder-module layout:
+
+- move `foo.rs` to `foo/mod.rs`,
+- place sibling module files in `foo/*.rs`,
+- place module-local unit tests in `foo/tests.rs` with `#[cfg(test)] mod tests;`.
+
+Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there
+is a narrow, documented reason.
 
 ## Conceptual layering terms in planning docs
 
@@ -44,8 +55,58 @@ concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
 
 - `cas` should remain runtime-agnostic at public API boundaries.
 - `conductor` should keep deterministic planning/keying logic explicit and testable.
+  Conductor-specific invariants to preserve in `src/conductor/**`:
+  - persisted builtin tool entries stay strict (`kind`, `name`, `version` only),
+  - `conductor.ncl`, `conductor.machine.ncl`, and the resolved runtime state
+    document path (default `.conductor/state.ncl`) must carry explicit
+    top-level numeric `version` markers,
+  - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
+    storage path fields only under one `runtime_storage` record
+    (`runtime_storage.conductor_dir`, `runtime_storage.state_ncl`,
+    `runtime_storage.cas_store_dir`),
+  - the resolved runtime state document path (default
+    `.conductor/state.ncl`) is volatile-only and may define only
+    `version`, `impure_timestamps`, and `state_pointer`,
+  - orchestration-state snapshots must keep builtin metadata strict
+    (`kind`/`name`/`version` only) and decoding must reject extra builtin
+    metadata fields,
+  - human-facing orchestration-state JSON rendering (for example CLI `state`
+    output or demo snapshot artifacts) should use the persisted wire-envelope
+    projection so builtin metadata remains strict and runtime-only optional
+    fields are not emitted for builtins,
+  - orchestration-state output persistence values stored per output must be the
+    effective merged policy across duplicate equivalent tool calls
+    (`save`: AND, `force_full`: OR),
+  - executable `tool_configs.<tool>.content_map` is sandbox-relative and uses
+    trailing `/` or `\\` keys as directory-from-ZIP unpack targets,
+  - `./` (or `.\\`) unpacks ZIP content directly at sandbox root,
+  - non-trailing `content_map` keys materialize direct file bytes,
+  - separate content-map entries must not overwrite the same file path,
+  - absolute/escaping paths are rejected.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
 - Built-ins should stay narrowly scoped and version-addressable.
+- Builtin runtime behavior must remain inside `src/conductor-builtins/*`
+  crates (not inline in `src/conductor`).
+- Each builtin crate should expose both a library API and an independently
+  runnable binary target.
+- Each builtin crate must use a uniform input contract:
+  - CLI arguments use standard Rust flags/options and all values remain strings,
+  - API arguments are `BTreeMap<String, String>` with optional raw payload
+    bytes for content-oriented operations.
+  Builtins may optionally define one default CLI option key so one value can be
+  passed without spelling the key, but explicit keyed input must remain
+  supported and must map to the same API key.
+  Builtin execution must fail fast on undeclared keys, missing required keys,
+  and invalid argument combinations; do not silently drop unknown values.
+  For builtins whose successful non-error result is pure, successful payloads
+  may be deterministic bytes or `BTreeMap<String, String>`. Impure builtins
+  may instead primarily communicate success through side effects. The only
+  allowed CLI/API difference is input ergonomics (string flag transport vs map
+  transport).
+  CLI failures may use ordinary Rust error types; do not wrap failures inside
+  string-only success objects.
+- Builtin crate `version` values should be explicit per crate in each builtin
+  crate `Cargo.toml` (do not inherit workspace package version).
 - Prefer one-directional dependencies:
   - `cas -> conductor -> mediapm` composition,
   - with built-ins consumed by conductor/mediapm as contracts,

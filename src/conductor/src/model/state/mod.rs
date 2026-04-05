@@ -1,0 +1,179 @@
+//! Runtime orchestration-state model.
+//!
+//! Runtime structs in this module are version-agnostic. Persisted representation
+//! is handled by `versions/` modules and bridged through fp-library optics.
+
+use std::collections::BTreeMap;
+
+use mediapm_cas::Hash;
+use serde::{Deserialize, Serialize};
+
+use crate::error::ConductorError;
+use crate::model::config::{ImpureTimestamp, ToolSpec};
+
+pub(crate) mod versions;
+
+/// User/machine merged persistence flags for one output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersistenceFlags {
+    /// When `false` for every equivalent caller, the output blob may be deleted.
+    pub save: bool,
+    /// When `true` for any equivalent caller, output should stay full-data preferred.
+    pub force_full: bool,
+}
+
+impl Default for PersistenceFlags {
+    fn default() -> Self {
+        Self { save: true, force_full: false }
+    }
+}
+
+/// Merges persistence flags from multiple equivalent tool-call references.
+///
+/// Invariants:
+/// - `save` is an intersection (logical AND),
+/// - `force_full` is a union (logical OR).
+#[must_use]
+pub fn merge_persistence_flags(
+    flags: impl IntoIterator<Item = PersistenceFlags>,
+) -> PersistenceFlags {
+    let mut merged = PersistenceFlags::default();
+
+    for flag in flags {
+        merged.save = merged.save && flag.save;
+        merged.force_full = merged.force_full || flag.force_full;
+    }
+
+    merged
+}
+
+/// Fully resolved input vector item used in deterministic instance keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedInput {
+    /// CAS hash identity for this resolved input payload.
+    pub hash: Hash,
+    /// Plain content consumed by the current in-memory invocation.
+    ///
+    /// This field is runtime-only execution cache and is intentionally omitted
+    /// from persisted orchestration-state snapshots.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub plain_content: Vec<u8>,
+}
+
+impl ResolvedInput {
+    /// Builds one runtime input from in-memory bytes.
+    ///
+    /// This helper computes the deterministic hash identity directly from the
+    /// provided content and is intended for tests and transient runtime values.
+    #[must_use]
+    pub fn from_plain_content(plain_content: Vec<u8>) -> Self {
+        Self { hash: Hash::from_content(plain_content.as_slice()), plain_content }
+    }
+
+    /// Builds one runtime input from an existing CAS hash.
+    ///
+    /// Persisted state decoding typically uses this constructor because
+    /// snapshots record only hash identities.
+    #[must_use]
+    pub fn from_hash(hash: Hash) -> Self {
+        Self { hash, plain_content: Vec::new() }
+    }
+}
+
+/// Output map entry for an executed instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputRef {
+    /// CAS hash for this output value.
+    pub hash: Hash,
+    /// Effective merged persistence policy for this output.
+    ///
+    /// This value is persisted after deduplicating equivalent tool-call
+    /// instances and combining duplicate caller output policies via
+    /// [`merge_persistence_flags`].
+    pub persistence: PersistenceFlags,
+}
+
+/// State record for one deterministic tool-call instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallInstance {
+    /// Immutable tool map key used by the workflow step.
+    pub tool_name: String,
+    /// Metadata used to identify tool code and behavior.
+    ///
+    /// Persistence semantics:
+    /// - executable metadata remains shape-compatible with reusable config
+    ///   `ToolSpec`,
+    /// - builtin metadata is normalized to identity-only
+    ///   (`kind`/`name`/`version`) when persisted.
+    ///
+    /// Runtime still uses `ToolSpec` for ergonomic internal handling.
+    pub metadata: ToolSpec,
+    /// Optional machine-managed timestamp for impure calls.
+    ///
+    /// Stored outside `metadata` so metadata remains byte-identical to tool
+    /// config declarations.
+    #[serde(default)]
+    pub impure_timestamp: Option<ImpureTimestamp>,
+    /// Resolved inputs participating in cache identity.
+    pub inputs: BTreeMap<String, ResolvedInput>,
+    /// Captured output CAS refs and effective persistence policies.
+    pub outputs: BTreeMap<String, OutputRef>,
+}
+
+/// Immutable orchestration-state value stored as a CAS blob.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrchestrationState {
+    /// Explicit runtime schema version marker.
+    ///
+    /// This mirrors the persisted envelope marker so tooling can perform
+    /// explicit optics/migration orchestration against in-memory snapshots.
+    pub version: u32,
+    /// Deterministic instance table keyed by derived instance key.
+    #[serde(default)]
+    pub instances: BTreeMap<String, ToolCallInstance>,
+}
+
+impl Default for OrchestrationState {
+    fn default() -> Self {
+        Self { version: versions::latest_state_version(), instances: BTreeMap::new() }
+    }
+}
+
+/// Converts runtime orchestration state into persisted wire-envelope JSON.
+///
+/// This helper centralizes projection into persistence shape so callers can
+/// inspect or serialize state exactly as it is stored:
+/// - top-level explicit numeric `version`,
+/// - deterministic `instances` table,
+/// - builtin metadata normalized to identity-only
+///   (`kind`/`name`/`version`),
+/// - resolved inputs persisted as hash identities only.
+///
+/// The runtime state is cloned to preserve ownership expectations for callers
+/// that still need the original value after serialization.
+pub fn persisted_state_json_value(
+    state: &OrchestrationState,
+) -> Result<serde_json::Value, ConductorError> {
+    let encoded = encode_state(state.clone())?;
+    serde_json::from_slice(&encoded).map_err(|err| ConductorError::Serialization(err.to_string()))
+}
+
+/// Renders runtime orchestration state as pretty persisted wire-envelope JSON.
+///
+/// This is equivalent to `serde_json::to_string_pretty` over
+/// [`persisted_state_json_value`].
+pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String, ConductorError> {
+    let json = persisted_state_json_value(state)?;
+    serde_json::to_string_pretty(&json)
+        .map_err(|err| ConductorError::Serialization(err.to_string()))
+}
+
+/// Encodes orchestration state with latest persistence version envelope.
+pub(crate) fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
+    versions::encode_state(state)
+}
+
+/// Decodes orchestration state from versioned persistence bytes.
+pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
+    versions::decode_state(bytes)
+}

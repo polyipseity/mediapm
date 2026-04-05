@@ -23,12 +23,19 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Make assertions specific and diagnostic (avoid vague boolean assertions when possible).
 - Keep tests platform-safe (normalize path separators when asserting path strings).
 - Use temporary directories for filesystem tests; avoid depending on host machine state.
+- When splitting a module into folder form (`foo/mod.rs`), place module-local
+  unit tests in `foo/tests.rs` and wire them with `#[cfg(test)] mod tests;`
+  from `foo/mod.rs`.
 
 ## When behavior changes
 
 If a code change alters user-visible behavior:
 
 - Update existing tests or add new tests in the same commit.
+- For conductor executable `content_map` changes, cover both file and
+  directory-ZIP semantics (including explicit invalid ZIP failure paths),
+  root-directory key (`./` or `.\\`) handling, and non-overwrite collision
+  rejection when separate entries target the same file path.
 - Update CLI/reporting docs if command output contract changes.
 - Keep `verify` and `gc` expectations synchronized with sidecar model updates.
 

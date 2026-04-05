@@ -2,16 +2,18 @@
 
 This plan defines **Phase 2: Conductor**, a high-performance orchestration engine. It treats every process as a functional transformation of content, using the Phase 1 CAS for absolute persistence, storage optimization, and reproducibility.
 
-## 1. Dual-File Configuration Layer (CUE)
+## 1. Dual-File Configuration Layer (Nickel)
 
-Conductor uses **CUE** to merge human intent with machine-generated state.
+Conductor uses **Nickel (`.ncl`)** to merge human intent with machine-generated state.
 
-* **`user.cue` (Human-Owned):** Defines tool schemas, workflow DAGs, and named **External Content** references.
-* **`machine.cue` (Program-Owned):**
+* **`user.ncl` (Human-Owned):** Defines tool schemas, workflow DAGs, and named **External Content** references.
+* **`machine.ncl` (Program-Owned):**
   * Stores **Tool Content Maps** (Relative Path -> Algo+Hash).
   * Stores injected **timestamps** for `is_impure` tools.
   * Stores the **State Pointer**: The Algo+Hash of the current **Orchestration State** blob in the CAS.
-* **Conflict Resolution:** During unification, if `machine.cue` and `user.cue` provide conflicting values for a field (like a manual hash override), the Conductor requires manual resolution.
+* **Conflict Resolution:** During recursive Nickel merging, if `machine.ncl` and `user.ncl` provide non-mergeable values for the same field (for example, a manual hash override that conflicts with machine state), the Conductor requires manual resolution.
+
+The Rust side embeds **`nickel-lang-core`** directly. There is no external Go-based evaluation layer and no CUE interpreter anywhere in Phase 2.
 
 ---
 
@@ -49,28 +51,54 @@ When multiple workflows or steps call the same tool with the same effective inpu
 
 ---
 
-## 4. State Migration via Functional Optics
+## 4. State Migration via Nickel + Functional Optics
 
-As the schema of the Orchestration State or Tool Metadata evolves, Conductor uses **Optics** (Lenses and Prisms) to avoid "World Rebuilds."
+As the schema of the configuration or the Orchestration State evolves, Conductor uses **Nickel migrations** for configuration documents and **Optics** (Lenses and Prisms) for Rust-side state envelopes to avoid "World Rebuilds."
 
+### Nickel Migration Ladder
+
+All `.ncl` document migrations must be authored in Nickel itself.
+
+* **Atomic Steps:** Define one function per schema hop (`v1_to_v2`, `v2_to_v3`, ...).
+* **Recursive Resolver:** A top-level `migrate` function examines `version`, applies the next hop, and recurses until the current version is reached.
+* **Contract Validation:** The result of migration is checked against the latest Nickel contract before Rust deserializes it.
+* **No Logic Duplication:** Structural reshaping stays in `.ncl`; Rust only deserializes the final upgraded structure.
 * **Bidirectional Mapping:** We define a `Lens<StateV1, StateV2>`.
-* **Lazy Migration:** When the Conductor reads the State Pointer from `machine.cue`, if the version doesn't match the current binary, it applies the Lens to transform the data in-memory.
+* **Lazy Migration:** When the Conductor reads the State Pointer from `machine.ncl`, if the version doesn't match the current binary, it applies the Lens to transform the data in-memory.
 * **Reference Preservation:** This ensures that `v1` tool call instances are still discoverable by the `v2` Orchestrator without re-calculating hashes for millions of files.
+
+For configuration documents, Rust wraps the persisted document source with a Nickel migration wrapper, evaluates it with `nickel-lang-core`, and only then deserializes it into the latest Rust struct.
 
 ---
 
 ## 5. Built-in Mini-Tools (`src/conductor-builtins/`)
 
-Independent, date-versioned crates (e.g., `unzip@2026.03.25`).
+Independent, versioned crates (for example, `builtin@v1.0.0`) with shared
+contracts: CLI args are string-valued flags/options, API args are
+`BTreeMap<String, String>` plus optional raw payload bytes for
+content-oriented operations.
 
-* **`fs-ops`**: `copy`, `delete`, `create`. Marked `is_impure` (timestamped) so side-effects can be re-triggered by resetting the timestamp in CUE.
-* **`zip`**: Supports `7z`, `zip`, `tar`.
-* **`import`**:
-  * **Input:** A raw Algo+Hash string.
-  * **Behavior:** Fetches the data for a one-time workflow use.
-  * **Impurity:** Always `is_impure`.
-  * **Use Case:** Import a 10GB dataset -> Run Tool A -> Store Output -> Delete 10GB dataset from CAS. Because the tool call is cached, the workflow remains valid. (Alternatively, the user can also choose to not delete the dataset and just let it take up space in the CAS.)
-  * **Note:** Note the output cache will have the same hash as the input, but this is okay.
+* **`echo`** (pure): reference runtime contract used for smoke tests and
+  deterministic stream behavior validation.
+* **`fs`** (impure): rooted
+  filesystem staging operations (`ensure_dir`, `write_text`, `copy`).
+* **`import`** (impure): ingress builtin with `kind=file|folder|fetch`.
+  * `file` imports one file as bytes.
+  * `folder` imports one folder as an uncompressed ZIP payload.
+  * `fetch` performs HTTP(S) ingress with required `expected_hash` pinning.
+* **`export`** (impure): filesystem egress builtin with `kind=file|folder`.
+  * `folder` expects uncompressed ZIP folder payloads.
+* **`archive`** (pure): ZIP-only content transforms.
+  * `pack`: folder payload (uncompressed ZIP) -> archive bytes.
+  * `unpack`: archive bytes -> folder payload (uncompressed ZIP).
+  * `repack`: archive bytes -> normalized archive bytes.
+
+Design boundary: builtins remain minimal "connective tissue" for bootstrap and
+cross-platform consistency. Structured data transformations and domain-heavy
+media operations remain external tools or Phase 3 concerns.
+
+Filesystem interaction boundary: builtin-side host filesystem reads/writes must
+go through `import`, `export`, or `fs` only.
 
 ---
 
@@ -88,13 +116,13 @@ Conductor exploits the relationship between inputs and outputs to save space.
 
 ### Conductor CLI
 
-* **`conductor import tool <path> --name <name>`**: Registers tool files in CAS and generates CUE metadata.
-* **`conductor import data <path> [--description <desc>]`**: Standard external content registration. If missing description, defaults to the file name. Adds to the external data.
-* **`conductor remove data <name>`**: remove external data reference from the CUE. This does not delete the blob from the CAS since it may be referenced by other workflows, but it makes it eligible for garbage collection if no workflows reference it.
+* **`conductor import tool <path> --name <name>`**: Registers tool files in CAS and updates machine-owned Nickel metadata.
+* **`conductor import data <path> [--description <desc>]`**: External data references are user-owned in `user.ncl`; Phase 2 currently expects the user to maintain these declarations explicitly.
+* **`conductor remove data <name>`**: External data references are user-owned in `user.ncl`; Phase 2 currently expects the user to remove these declarations explicitly.
 * **`conductor remove tool <name> [--metadata]`**:
-  * Default: Clears content hashes from `machine.cue`.
-  * `--metadata`: Deletes the tool definition from `user.cue`.
-* **`conductor gc`**: Prunes any CAS entry not found in the unified CUE view (External Data, Tool Content, or Orchestration State).
+  * Default: Clears content hashes from `machine.ncl`.
+  * `--metadata`: Reserved for future user-document workflows; tool metadata remains user-owned.
+* **`conductor gc`**: Prunes any CAS entry not found in the unified Nickel view (External Data, Tool Content, or Orchestration State).
 * **`conductor cas <args...>`**: Direct passthrough to Phase 1.
 
 ### API (Rust)
@@ -102,7 +130,7 @@ Conductor exploits the relationship between inputs and outputs to save space.
 ```rust
 pub trait Conductor {
     /// Executes DAG, handles caching and reverse-diff hints
-    async fn run_workflow(&self, user_cue: PathBuf, machine_cue: PathBuf) -> Result<Summary, Error>;
+  async fn run_workflow(&self, user_ncl: PathBuf, machine_ncl: PathBuf) -> Result<Summary, Error>;
 
     /// Low-level access to the migrated Orchestration State
     async fn get_state(&self) -> Result<OrchestrationState, Error>;

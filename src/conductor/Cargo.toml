@@ -10,9 +10,42 @@ description = "Phase 2 orchestration contracts and state model for mediapm"
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
+clap = { workspace = true, features = ["derive"] }
+fp-library.workspace = true
+futures-util.workspace = true
 mediapm-cas = { path = "../cas" }
+mediapm-conductor-builtin-echo = { path = "../conductor-builtins/echo" }
+mediapm-conductor-builtin-fs = { path = "../conductor-builtins/fs" }
+mediapm-conductor-builtin-import = { path = "../conductor-builtins/import" }
+mediapm-conductor-builtin-archive = { path = "../conductor-builtins/archive" }
+mediapm-conductor-builtin-export = { path = "../conductor-builtins/export" }
+nickel-lang-core.workspace = true
+ractor.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+
+[[example]]
+name = "bootstrap_defaults"
+test = true
+harness = false
+
+[[example]]
+name = "cache_and_rematerialization"
+test = true
+harness = false
+
+[[example]]
+name = "demo"
+test = true
+harness = false
+
+[[example]]
+name = "runtime_diagnostics"
+test = true
+harness = false

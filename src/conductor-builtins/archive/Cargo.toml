@@ -1,24 +1,23 @@
 [package]
-name = "mediapm-conductor-builtin-import"
+name = "mediapm-conductor-builtin-archive"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
-description = "Phase 2 built-in import tool contract"
+description = "Phase 2 built-in archive tool contract (zip/tar.gz)"
 
 [dependencies]
-blake3.workspace = true
 clap = { workspace = true, features = ["derive"] }
-mediapm-conductor-builtin-archive = { path = "../archive" }
 serde.workspace = true
 serde_json.workspace = true
+walkdir = "2.5.0"
+zip = "2.2.0"
 tempfile.workspace = true
-ureq = { version = "2.12.1", default-features = true }
-url.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 
 [[bin]]
-name = "mediapm-conductor-builtin-import"
+name = "mediapm-conductor-builtin-archive"
 path = "src/main.rs"

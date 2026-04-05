@@ -1,0 +1,1 @@
+concat-tool fixed resource line

@@ -58,6 +58,21 @@ matching directories are explicitly introduced.
   `rust-toolchain.toml` + single `src/main.rs`) when changing workspace-wide
   guidance; verify the real workspace members first.
 
+## Rust module split layout convention
+
+- When a module grows and is split into multiple files, use folder-module
+  layout by default:
+  - move `foo.rs` to `foo/mod.rs`,
+  - place submodules as `foo/<submodule>.rs`,
+  - place module-local unit tests in `foo/tests.rs`.
+- In `foo/mod.rs`, prefer conventional declarations (`mod tests;`) instead of
+  `#[path = "..."]` for routine in-folder test/module wiring.
+- Do not keep both `foo.rs` and `foo/mod.rs` for the same module.
+- Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module
+  purpose stays discoverable.
+- After a split, re-run `cargo fmt-check`, `cargo clippy-all`, and
+  `cargo test-all` to catch stale paths/imports.
+
 ## Docstring completion bar
 
 - When editing `*.rs`, treat documentation as part of definition-of-done.

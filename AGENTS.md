@@ -38,8 +38,55 @@
 - `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
 - `src/conductor/` provides the Phase 2 orchestration state model and
   persistence-merge logic.
+  Conductor schema/runtime invariants include:
+  - builtin tool definitions in persisted config remain strict
+    (`kind`, `name`, `version` only),
+  - `conductor.ncl`, `conductor.machine.ncl`, and the resolved runtime state
+    document path (default `.conductor/state.ncl`) always carry explicit
+    top-level numeric `version` markers,
+  - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
+    storage path fields under one `runtime_storage` record
+    (`runtime_storage.conductor_dir`, `runtime_storage.state_ncl`,
+    `runtime_storage.cas_store_dir`),
+  - the resolved runtime state document path (default
+    `.conductor/state.ncl`) is volatile-only and may define only
+    `version`, `impure_timestamps`, and `state_pointer`,
+  - orchestration-state snapshots carry explicit top-level `version`; each
+    instance stores immutable `tool_name`; executable `metadata` remains
+    `ToolSpec`-shape while builtin `metadata` persists only
+    `kind`/`name`/`version` and decode rejects extra builtin metadata fields;
+    output persistence stored in orchestration state is the effective merged
+    policy across duplicate equivalent tool calls (`save`: AND,
+    `force_full`: OR); instance identity is derived only from
+    `tool_name`, `metadata`, optional `impure_timestamp`, and `inputs` keyed
+    by CAS hash references,
+  - executable `tool_configs.<tool>.content_map` keys are sandbox-relative
+    paths where trailing `/` or `\\` means directory-from-ZIP unpack,
+    `./` (or `.\\`) unpacks directly at sandbox root, non-trailing keys
+    materialize regular files, and separate entries must not overwrite the
+    same target file path.
 - `src/conductor-builtins/` provides versioned built-in tool contracts such as
-  `fs-ops`, `import`, and `zip`.
+  `echo`, `fs`, `import`, `export`, and `archive`.
+  Builtin runtime behavior must live in these crates (not inline in
+  `src/conductor`), and each builtin crate should remain independently runnable
+  via its own binary target.
+  Builtin contract stability rule: all builtins must share the same input
+  conventions. CLI must use normal Rust flag/option conventions while keeping
+  all argument values as strings, and API input must use
+  `BTreeMap<String, String>` args plus optional raw payload bytes for
+  content-oriented operations. A builtin CLI may optionally define one default
+  option key so one value can be provided without spelling the option key, but
+  explicit keyed input must remain supported and map to the same API key.
+  Builtin API and CLI execution must fail fast on undeclared argument/input
+  keys, missing required keys, and invalid key combinations; do not silently
+  ignore unknown input.
+  For builtins whose successful non-error result is pure (a deterministic
+  function of inputs), the success payload may be deterministic bytes or
+  `BTreeMap<String, String>`.
+  Impure builtins may primarily communicate success through side effects and do
+  not need to force CLI success into a pure string-only payload. CLI failures
+  may use ordinary Rust error types; do not encode failures as fake success
+  payloads.
 - `src/mediapm/` composes CAS + Conductor into the Phase 3 media-facing API
   and CLI scaffold.
 
@@ -93,6 +140,11 @@
   directly for durable repository policy. Do not keep long-lived policy only in
   `/memories/repo/`; if temporary repo memory notes are used, merge them into
   instruction files and remove them.
+- When splitting one Rust module into multiple files, adopt folder-module
+  layout consistently: move `foo.rs` to `foo/mod.rs`, place sibling modules in
+  `foo/*.rs`, and place local unit tests in `foo/tests.rs` with
+  `#[cfg(test)] mod tests;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and
+  avoid `#[path = "..."]` for routine in-crate module/test placement.
 - Preserve mirrored prompt content between `.agents/prompts/` and
   `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF;
