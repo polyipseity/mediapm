@@ -18,6 +18,7 @@ applyTo: "src/**/*.rs"
   - identity/hash model
   - CAS async API contracts
   - storage/index/constraint behavior
+  - topology visualization rendering/execution helpers
 - `src/conductor/` (Phase 2)
   - orchestration state model
   - deterministic instance-key and merge logic
@@ -84,6 +85,33 @@ is a narrow, documented reason.
   - separate content-map entries must not overwrite the same file path,
   - absolute/escaping paths are rejected.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
+  For Phase 3 runtime paths, preserve these `mediapm` invariants:
+  - default runtime root is `.mediapm/`,
+  - persisted `mediapm.ncl` schema keeps explicit top-level numeric
+    `version` markers,
+  - persisted lockfile schema keeps explicit top-level numeric `version`
+    markers,
+  - `mediapm.ncl` wire-version dispatch and migrations live under
+    `src/mediapm/src/config/versions/` with version-specific wire envelopes in
+    `vN.rs`,
+  - lockfile wire-version dispatch and migrations live under
+    `src/mediapm/src/lockfile/versions/` with version-specific wire envelopes
+    in `vN.rs`,
+  - default materialized output root is the topmost `mediapm.ncl` directory
+    itself (no implicit `library/` folder),
+  - when `mediapm` invokes conductor, grouped conductor runtime-storage
+    defaults also target `.mediapm/`
+    (`conductor_dir = .mediapm`, `state_ncl = .mediapm/state.ncl`,
+    `cas_store_dir = .mediapm/store`),
+  - relative `runtime_storage.library_dir` resolves relative to the topmost
+    `mediapm.ncl` directory,
+  - relative `runtime_storage.tmp_dir` resolves relative to effective
+    `runtime_storage.mediapm_dir`,
+  - media source schema keeps local-source payload pointers in
+    `variant_hashes` (variant name -> CAS hash),
+  - remote (`http`/`https`) sources require explicit `download` configuration,
+  - transform execution order is the declared `transforms` list order,
+  - transform `options` are operation-specific and unknown keys are rejected.
 - Built-ins should stay narrowly scoped and version-addressable.
 - Builtin runtime behavior must remain inside `src/conductor-builtins/*`
   crates (not inline in `src/conductor`).
@@ -109,8 +137,11 @@ is a narrow, documented reason.
   crate `Cargo.toml` (do not inherit workspace package version).
 - Prefer one-directional dependencies:
   - `cas -> conductor -> mediapm` composition,
-  - with built-ins consumed by conductor/mediapm as contracts,
+  - with built-ins consumed by conductor runtime contracts,
   - and no circular crate dependencies.
+- `src/mediapm` should not depend directly on individual
+  `src/conductor-builtins/*` crates; use conductor exports/APIs for builtin
+  identity or behavior.
 
 ## Identity and storage invariants
 

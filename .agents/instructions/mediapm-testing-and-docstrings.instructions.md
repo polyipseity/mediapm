@@ -13,6 +13,11 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - sync idempotency,
   - sidecar/object integrity,
   - GC safety semantics.
+- For phase-crate integration tests (`src/*/tests/`), prefer one CAS-style
+  harness layout:
+  - top-level `tests/tests.rs` for wiring,
+  - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
+    `tests/prop/`.
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.

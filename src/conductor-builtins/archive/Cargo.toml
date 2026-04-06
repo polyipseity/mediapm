@@ -11,9 +11,9 @@ description = "Phase 2 built-in archive tool contract (zip/tar.gz)"
 clap = { workspace = true, features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
-walkdir = "2.5.0"
-zip = "2.2.0"
 tempfile.workspace = true
+walkdir.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -871,45 +871,37 @@ fn validate_add_tool_config_mode(
 }
 
 /// Encodes `conductor.ncl` with the latest persistence version envelope.
-pub(crate) fn encode_user_document(
-    document: UserNickelDocument,
-) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_user_document(document: UserNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_user_document(document)
 }
 
 /// Decodes `conductor.ncl` from versioned persistence bytes.
-pub(crate) fn decode_user_document(bytes: &[u8]) -> Result<UserNickelDocument, ConductorError> {
+pub fn decode_user_document(bytes: &[u8]) -> Result<UserNickelDocument, ConductorError> {
     versions::decode_user_document(bytes)
 }
 
 /// Encodes `conductor.machine.ncl` with the latest persistence version envelope.
-pub(crate) fn encode_machine_document(
-    document: MachineNickelDocument,
-) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_machine_document(document: MachineNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_machine_document(document)
 }
 
 /// Decodes `conductor.machine.ncl` from versioned persistence bytes.
-pub(crate) fn decode_machine_document(
-    bytes: &[u8],
-) -> Result<MachineNickelDocument, ConductorError> {
+pub fn decode_machine_document(bytes: &[u8]) -> Result<MachineNickelDocument, ConductorError> {
     versions::decode_machine_document(bytes)
 }
 
 /// Encodes `.conductor/state.ncl` with the latest persistence version envelope.
-pub(crate) fn encode_state_document(
-    document: StateNickelDocument,
-) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_state_document(document: StateNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state_document(document)
 }
 
 /// Decodes `.conductor/state.ncl` from versioned persistence bytes.
-pub(crate) fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument, ConductorError> {
+pub fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument, ConductorError> {
     versions::decode_state_document(bytes)
 }
 
 /// Evaluates fixed Nickel migrations/contracts plus user, machine, and state configuration.
-pub(crate) fn evaluate_total_configuration_sources(
+pub fn evaluate_total_configuration_sources(
     user_source: &str,
     machine_source: &str,
     state_source: &str,

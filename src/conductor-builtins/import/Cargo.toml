@@ -14,7 +14,7 @@ mediapm-conductor-builtin-archive = { path = "../archive" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-ureq = { version = "2.12.1", default-features = true }
+ureq.workspace = true
 url.workspace = true
 
 [dev-dependencies]

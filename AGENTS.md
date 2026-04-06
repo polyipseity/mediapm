@@ -17,6 +17,9 @@
   - `src/mediapm/` (Phase 3)
 - Integration tests currently live with the phase crates (for example,
   `src/mediapm/tests/`).
+  Prefer one shared harness shape across phase crates:
+  - top-level `tests/tests.rs` as the integration harness,
+  - grouped submodules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
 
 ## Architecture
 
@@ -36,6 +39,7 @@
 ## Rust Architecture Snapshot
 
 - `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
+  CAS topology visualization implementation also belongs in this crate.
 - `src/conductor/` provides the Phase 2 orchestration state model and
   persistence-merge logic.
   Conductor schema/runtime invariants include:

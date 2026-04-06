@@ -13,6 +13,7 @@
 //! - Async API contracts suitable for use by higher orchestration layers.
 
 mod api;
+mod cli_visualization;
 mod codec;
 mod error;
 mod hash;
@@ -25,6 +26,7 @@ pub use api::{
     ConstraintPatch, IndexRepairConstraintSource, IndexRepairReport, ObjectInfo, OptimizeOptions,
     OptimizePriority, OptimizeReport, PruneReport,
 };
+pub use cli_visualization::{CasVisualizeFormat, CasVisualizeRequest, run_visualize_command};
 pub use error::{CasError, HashParseError};
 pub use hash::{Hash, HashAlgorithm, empty_content_hash};
 pub use orchestration::{

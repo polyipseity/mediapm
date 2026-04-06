@@ -12,3 +12,5 @@ mod redb_persistence;
 mod storage_format;
 /// Input validation and parse error integration coverage.
 mod validation;
+/// CAS visualization request/output integration coverage.
+mod visualize;
