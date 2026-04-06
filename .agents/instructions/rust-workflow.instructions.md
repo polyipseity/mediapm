@@ -32,18 +32,43 @@ matching directories are explicitly introduced.
 
 ## Validation workflow
 
-- Preferred local checks:
-  - `cargo fmt-check`
-  - `cargo clippy-all`
-  - `cargo test-all`
-- Equivalent explicit forms are acceptable when aliases are unavailable.
-- CI parity reference (`.github/workflows/ci.yml`):
-  - `cargo test-all`
-  - `cargo clippy-all`
-  - `cargo fmt-check`
-  - `cargo build-all`
-  - plus `cargo bin rumdl check` as an additional project check.
+When editing Rust source, validate changes with targeted checks first:
+
+- **During development** (recommended for speed — these run in seconds):
+  - `cargo test-pkg <crate>` — test only the affected crate(s)
+  - `cargo clippy-pkg <crate>` — lint only the affected crate(s)
+  - `cargo build-pkg <crate>` — build only the affected crate(s)
+  - Examples:
+    - `cargo test-pkg mediapm` runs only mediapm tests
+    - `cargo clippy-pkg mediapm-conductor` lints only mediapm-conductor
+    - `cargo test-pkg mediapm-cas` for CAS-specific validation
+  - See `.cargo/config.toml` for the alias definitions
+
+- **Before submitting (pre-push validation)** — validate full workspace:
+  - `cargo fmt-check` (checks all Rust file formatting)
+  - `cargo clippy-all` (full workspace lint with strict warnings)
+  - `cargo test-all` (full workspace tests)
+  - These are intentionally slow and designed for CI/pre-push gates
+
+- **CI parity reference** (`.github/workflows/ci.yml`):
+  - CI runs: `cargo test-all`, `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`
+  - CI also runs: `cargo bin rumdl check` (project-specific check)
+
+- Equivalent explicit forms are acceptable when aliases are unavailable:
+  - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
+  - `cargo clippy -p mediapm --all-targets --all-features -- -D warnings` → same as `cargo clippy-pkg mediapm`
+
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
+
+### After module splits or cross-crate refactors
+
+When refactoring touches multiple crates or splits large modules:
+
+1. Run targeted checks on each affected crate first
+2. Then run full-workspace validation before pushing:
+   - `cargo fmt-check`
+   - `cargo clippy-all`
+   - `cargo test-all`
 
 ## Editing conventions
 
@@ -70,8 +95,10 @@ matching directories are explicitly introduced.
 - Do not keep both `foo.rs` and `foo/mod.rs` for the same module.
 - Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module
   purpose stays discoverable.
-- After a split, re-run `cargo fmt-check`, `cargo clippy-all`, and
-  `cargo test-all` to catch stale paths/imports.
+- After a split, run targeted validation:
+  - `cargo fmt-check` (all files)
+  - `cargo test-pkg <crate>` (affected crate tests)
+  - `cargo clippy-pkg <crate>` (affected crate lint)
 
 ## Docstring completion bar
 

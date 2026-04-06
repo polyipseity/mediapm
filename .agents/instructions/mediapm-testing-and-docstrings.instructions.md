@@ -84,8 +84,18 @@ For newcomers with no codebase context:
 
 ## Validation commands
 
-Before finishing:
+Before finishing, run targeted validation on affected crates:
 
-- `cargo fmt-check`
-- `cargo clippy-all`
-- `cargo test-all`
+**Standard development workflow:**
+
+- `cargo fmt-check` (formatting check on all Rust files)
+- `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
+- `cargo clippy-pkg <crate>` (affected crate lint; e.g., `cargo clippy-pkg mediapm`)
+
+**Before submitting (pre-push):**
+
+- `cargo fmt-check` (all files)
+- `cargo clippy-all` (full workspace)
+- `cargo test-all` (full workspace)
+
+See `.cargo/config.toml` for complete alias definitions.

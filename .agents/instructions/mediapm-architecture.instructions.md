@@ -181,10 +181,22 @@ When you add or change public APIs in `src/`:
 
 ## Validation checklist after Rust edits
 
-Run and check:
+**During development:**
+
+Run targeted validation on affected crates:
+
+- `cargo fmt-check` (formatting check on all files)
+- `cargo clippy-pkg <crate>` (e.g., `cargo clippy-pkg mediapm`)
+- `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
+
+**Before submitting (pre-push):**
+
+Run full workspace validation:
 
 - `cargo fmt-check`
 - `cargo clippy-all`
 - `cargo test-all`
+
+See `.cargo/config.toml` for all targeted aliases.
 
 If you intentionally change behavior, update tests and docs in the same change.

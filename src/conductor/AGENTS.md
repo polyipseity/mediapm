@@ -353,19 +353,28 @@ Examples live under `src/conductor/examples/`.
 
 ## Validation Workflow
 
-Prefer workspace cargo aliases from `.cargo/config.toml` where applicable:
+**For development:** Use targeted cargo aliases from `.cargo/config.toml`:
+
+- `cargo test-pkg mediapm-conductor` — test only conductor crate
+- `cargo clippy-pkg mediapm-conductor` — lint only conductor crate
+- `cargo fmt-check` — check formatting on all files
+
+Conductor-focused development loop after meaningful edits:
+
+1. `cargo fmt --all`
+2. `cargo fmt-check`
+3. `cargo test-pkg mediapm-conductor`
+4. `cargo clippy-pkg mediapm-conductor`
+5. `cargo build-pkg mediapm-conductor --all-targets --all-features`
+6. If examples changed, run representative examples (especially `demo`).
+
+**Before submitting (pre-push):** Run full workspace validation:
 
 - `cargo fmt-check`
 - `cargo clippy-all`
 - `cargo test-all`
 
-Conductor-focused loop after meaningful edits:
-
-1. `cargo fmt --all`
-2. `cargo fmt-check`
-3. `cargo test -p mediapm-conductor`
-4. `cargo build -p mediapm-conductor --examples`
-5. If examples changed, run representative examples (especially `demo`).
+See `.cargo/config.toml` for all available validation aliases and shortcuts.
 
 ## Rust Docstring Expectations
 

@@ -104,10 +104,17 @@
   `rust-toolchain.toml`, `.github/workflows/ci.yml`, and
   `.agents/instructions/rust-workflow.instructions.md` as source-of-truth
   inputs for validation commands and expectations.
-- Prefer cargo aliases from `.cargo/config.toml` for local validation:
-  - `cargo fmt-check`
-  - `cargo clippy-all`
-  - `cargo test-all`
+- Prefer targeted cargo validation by default for faster feedback:
+  - `cargo test-pkg <crate>` for specific crate testing
+  - `cargo clippy-pkg <crate>` for specific crate linting
+  - `cargo build-pkg <crate>` for specific crate building
+  - Example: `cargo test-pkg mediapm` runs only mediapm tests
+  - See `.cargo/config.toml` for available aliases and convenience shortcuts
+- Use full-workspace validation only for pre-push checks and CI:
+  - `cargo fmt-check` (checks formatting on all files)
+  - `cargo clippy-all` (lints entire workspace)
+  - `cargo test-all` (tests entire workspace)
+  - Note: these are intentionally slow; use targeted commands during development
 - When a language, framework, task runner, or test system is clearly present,
   add or refine focused instruction files for it rather than stuffing detailed
   rules into `AGENTS.md`.
