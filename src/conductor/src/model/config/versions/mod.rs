@@ -762,6 +762,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         tool_name,
                         ToolConfigSpec {
                             max_concurrent_calls: config.max_concurrent_calls,
+                            description: config.description,
                             content_map: config.content_map,
                         },
                     )
@@ -919,6 +920,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         tool_name,
                         v_latest::ToolConfigSpecLatest {
                             max_concurrent_calls: config.max_concurrent_calls,
+                            description: config.description,
                             content_map: config.content_map,
                         },
                     )
@@ -1178,6 +1180,13 @@ fn vet_latest_envelope(
         if tool_config.max_concurrent_calls == 0 || tool_config.max_concurrent_calls < -1 {
             return Err(ConductorError::Workflow(format!(
                 "{document_kind} tool_configs '{tool_name}' max_concurrent_calls must be -1 or a positive integer"
+            )));
+        }
+        if let Some(description) = &tool_config.description
+            && description.trim().is_empty()
+        {
+            return Err(ConductorError::Workflow(format!(
+                "{document_kind} tool_configs '{tool_name}' description must be non-empty when provided"
             )));
         }
 

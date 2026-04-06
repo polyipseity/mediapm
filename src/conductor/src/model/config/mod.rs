@@ -279,6 +279,12 @@ pub struct ToolConfigSpec {
     /// `0` and values smaller than `-1` are invalid.
     #[serde(default = "default_max_concurrent_calls")]
     pub max_concurrent_calls: i32,
+    /// Optional human-facing description for this tool runtime configuration.
+    ///
+    /// This field is informational only and must not affect runtime identity,
+    /// scheduling, deduplication, or CAS key computation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Optional per-tool content map (`relative_path -> hash`) for executable
     /// sandbox materialization.
     ///
@@ -304,7 +310,11 @@ pub struct ToolConfigSpec {
 
 impl Default for ToolConfigSpec {
     fn default() -> Self {
-        Self { max_concurrent_calls: default_max_concurrent_calls(), content_map: None }
+        Self {
+            max_concurrent_calls: default_max_concurrent_calls(),
+            description: None,
+            content_map: None,
+        }
     }
 }
 
@@ -1026,6 +1036,7 @@ mod tests {
         })
         .with_tool_config(ToolConfigSpec {
             max_concurrent_calls: 2,
+            description: Some("demo executable runtime config".to_string()),
             content_map: Some(BTreeMap::from([(
                 "payload.txt".to_string(),
                 Hash::from_content(b"demo-hash-a"),
@@ -1070,6 +1081,7 @@ mod tests {
                 })
                 .with_tool_config(ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    description: Some("initial executable runtime config".to_string()),
                     content_map: Some(BTreeMap::from([(
                         "payload.txt".to_string(),
                         Hash::from_content(b"demo-hash-b"),
@@ -1104,6 +1116,7 @@ mod tests {
                     overwrite_existing: false,
                     config_mode: AddToolConfigMode::Replace(ToolConfigSpec {
                         max_concurrent_calls: 1,
+                        description: Some("invalid builtin runtime config".to_string()),
                         content_map: Some(BTreeMap::from([(
                             "payload.txt".to_string(),
                             Hash::from_content(b"demo-hash-c"),

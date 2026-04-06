@@ -615,25 +615,29 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
         tool_configs: BTreeMap::from([
             (
                 "echo@1.0.0".to_string(),
-                ToolConfigSpec { max_concurrent_calls: 1, content_map: None },
+                ToolConfigSpec { max_concurrent_calls: 1, description: None, content_map: None },
             ),
-            ("fs@1.0.0".to_string(), ToolConfigSpec { max_concurrent_calls: 1, content_map: None }),
+            (
+                "fs@1.0.0".to_string(),
+                ToolConfigSpec { max_concurrent_calls: 1, description: None, content_map: None },
+            ),
             (
                 "archive@1.0.0".to_string(),
-                ToolConfigSpec { max_concurrent_calls: 2, content_map: None },
+                ToolConfigSpec { max_concurrent_calls: 2, description: None, content_map: None },
             ),
             (
                 "import@1.0.0".to_string(),
-                ToolConfigSpec { max_concurrent_calls: 1, content_map: None },
+                ToolConfigSpec { max_concurrent_calls: 1, description: None, content_map: None },
             ),
             (
                 "export@1.0.0".to_string(),
-                ToolConfigSpec { max_concurrent_calls: 1, content_map: None },
+                ToolConfigSpec { max_concurrent_calls: 1, description: None, content_map: None },
             ),
             (
                 "concat-tool@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    description: Some("demo concat executable assets".to_string()),
                     content_map: Some(BTreeMap::from([
                         ("concat-tool".to_string(), inputs.concat_tool_binary_hash),
                         ("concat-tool.exe".to_string(), inputs.concat_tool_binary_hash),

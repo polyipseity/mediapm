@@ -890,6 +890,7 @@ mod tests {
                 "unknown_tool@v9.9.9".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: -1,
+                    description: Some("unknown tool test config".to_string()),
                     content_map: Some(BTreeMap::from([(
                         "bin/tool".to_string(),
                         Hash::from_content(b"machine"),

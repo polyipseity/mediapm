@@ -146,33 +146,37 @@ When editing tool/config schema behavior, preserve these invariants:
     separate content-map entries must not overwrite the same target file path;
     absolute and escaping paths are invalid.
 
-15. Cache rematerialization checks are scoped to outputs actually referenced by
+15. `tool_configs.<tool>.description` is optional human-facing metadata only;
+
+    it must not affect instance identity, scheduler behavior, or cache keys.
+
+16. Cache rematerialization checks are scoped to outputs actually referenced by
     `${step_output...}` workflow-step inputs; missing unreferenced outputs do
     not force rerun for otherwise cache-hit instances.
 
-16. Keep step-output references minimal so independent steps can remain in
+17. Keep step-output references minimal so independent steps can remain in
     parallelizable topological levels.
 
-17. Builtin `import`/`export` path semantics for `kind=file|folder` are:
+18. Builtin `import`/`export` path semantics for `kind=file|folder` are:
     `path_mode` defaults to `relative` and resolves `path` against the
     outermost config directory, `relative` paths must not escape that root,
     and `path_mode=absolute` requires an explicit absolute `path`.
 
-18. Orchestration-state snapshots must include explicit top-level `version`.
+19. Orchestration-state snapshots must include explicit top-level `version`.
 
-19. `ToolCallInstance.metadata` is persistence-normalized: executable metadata
+20. `ToolCallInstance.metadata` is persistence-normalized: executable metadata
     remains `ToolSpec`-shape, while builtin metadata persists only
     `kind`/`name`/`version`; `impure_timestamp` belongs at instance top-level,
     not inside metadata. Decode must reject extra builtin metadata fields.
 
-20. `ToolCallInstance.inputs` persist CAS hash references (no inline
+21. `ToolCallInstance.inputs` persist CAS hash references (no inline
     `plain_content` payload and no separate `source_hash` provenance field).
 
-21. For duplicate equivalent tool-call instances merged under one instance key,
+22. For duplicate equivalent tool-call instances merged under one instance key,
     persisted output `persistence` must be the effective merged policy across all
     callers (`save`: logical AND, `force_full`: logical OR).
 
-22. Any human-facing orchestration-state JSON output (for example CLI `state`
+23. Any human-facing orchestration-state JSON output (for example CLI `state`
     output or demo artifacts) must render the persisted wire-envelope shape so
     builtin metadata stays strict (`kind`/`name`/`version`) and does not leak
     runtime-only optional fields.

@@ -13,7 +13,7 @@ Conductor uses **Nickel (`.ncl`)** to merge human intent with machine-generated 
   * Stores the **State Pointer**: The Algo+Hash of the current **Orchestration State** blob in the CAS.
 * **Conflict Resolution:** During recursive Nickel merging, if `machine.ncl` and `user.ncl` provide non-mergeable values for the same field (for example, a manual hash override that conflicts with machine state), the Conductor requires manual resolution.
 
-The Rust side embeds **`nickel-lang-core`** directly. There is no external Go-based evaluation layer and no CUE interpreter anywhere in Phase 2.
+The Rust side embeds **`nickel-lang-core`** directly. There is no external Go-based evaluation layer and no secondary schema interpreter anywhere in Phase 2.
 
 ---
 

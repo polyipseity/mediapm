@@ -262,6 +262,9 @@ pub(crate) struct ToolConfigSpecLatest {
     /// Maximum concurrent calls for this tool (`-1` means unlimited).
     #[serde(default = "default_max_concurrent_calls")]
     pub(crate) max_concurrent_calls: i32,
+    /// Optional human-facing description for runtime tool configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     /// Optional content map used for executable sandbox materialization.
     ///
     /// Key semantics are runtime-defined and mirrored from `v1.ncl` docs:

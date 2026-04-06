@@ -216,6 +216,9 @@ let ToolConfigV1 = {
   # Keep this dynamic in Nickel and enforce `-1` or positive integer in Rust
   # validation so sentinel semantics stay stable across evaluators.
   max_concurrent_calls | Dyn | optional,
+  # Optional human-facing note for runtime config context.
+  # This field is informational only and does not affect runtime identity.
+  description | String | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
   # Key semantics:
