@@ -18,6 +18,22 @@ impl<C> StepWorkerExecutor<C>
 where
     C: CasApi + Send + Sync + 'static,
 {
+    /// Parses one standalone command-argument unpack token.
+    ///
+    /// Supported form is exactly `${*<selector>}` where `<selector>` resolves
+    /// to an input key. The token must occupy the entire command argument.
+    fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
+        let prefix = "${*";
+        if !template.starts_with(prefix) || !template.ends_with('}') {
+            return None;
+        }
+        let selector = &template[prefix.len()..template.len() - 1];
+        if selector.trim().is_empty() {
+            return None;
+        }
+        Some(selector)
+    }
+
     /// Renders a map of template values using the resolved input scope.
     pub(super) fn render_templates(
         &self,
@@ -104,6 +120,12 @@ where
         inputs: &BTreeMap<String, ResolvedInput>,
         pending_file_writes: &mut Vec<TemplateFileWrite>,
     ) -> Result<String, ConductorError> {
+        if token.starts_with('*') {
+            return Err(ConductorError::Workflow(format!(
+                "unpack expression '${{{token}}}' is only valid as a standalone executable command argument token"
+            )));
+        }
+
         /// One optional trailing materialization directive.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum TemplateMaterializationDirective<'a> {
@@ -160,6 +182,12 @@ where
         let input = inputs.get(&input_key).ok_or_else(|| {
             ConductorError::Workflow(format!("template references missing input '{input_key}'"))
         })?;
+
+        if input.string_list.is_some() {
+            return Err(ConductorError::Workflow(format!(
+                "template expression '${{{token}}}' references list input '{input_key}', but list inputs are only valid in standalone command unpack tokens like '${{*inputs.{input_key}}}'"
+            )));
+        }
 
         let plain_content = if let Some(entry_path) = zip_entry_path {
             match self.extract_zip_entry_from_input(&input_key, &input.plain_content, entry_path)? {
@@ -693,19 +721,6 @@ where
         }
     }
 
-    /// Renders a list of template strings in order.
-    pub(super) fn render_template_list(
-        &self,
-        templates: &[String],
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<Vec<String>, ConductorError> {
-        templates
-            .iter()
-            .map(|value| self.render_template_value(value, inputs, pending_file_writes))
-            .collect()
-    }
-
     /// Renders a command template list and removes OS-conditional omissions.
     pub(super) fn render_template_command(
         &self,
@@ -713,8 +728,30 @@ where
         inputs: &BTreeMap<String, ResolvedInput>,
         pending_file_writes: &mut Vec<TemplateFileWrite>,
     ) -> Result<Vec<String>, ConductorError> {
-        let mut rendered = self.render_template_list(templates, inputs, pending_file_writes)?;
-        rendered.retain(|entry| !entry.is_empty());
+        let mut rendered = Vec::new();
+        for template in templates {
+            if let Some(selector) = self.parse_command_unpack_token(template) {
+                let TemplateSelectorSource::Input(input_key) =
+                    self.resolve_template_selector(selector)?;
+                let input = inputs.get(&input_key).ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "command unpack token '${{*{selector}}}' references missing input '{input_key}'"
+                    ))
+                })?;
+                let values = input.string_list.as_ref().ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "command unpack token '${{*{selector}}}' requires list input '{input_key}', but resolved input is scalar"
+                    ))
+                })?;
+                rendered.extend(values.iter().cloned());
+                continue;
+            }
+
+            let value = self.render_template_value(template, inputs, pending_file_writes)?;
+            if !value.is_empty() {
+                rendered.push(value);
+            }
+        }
         Ok(rendered)
     }
 }

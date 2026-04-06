@@ -383,9 +383,35 @@ fn default_max_concurrent_calls() -> i32 {
 }
 
 /// Tool input declaration entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolInputKind {
+    /// Scalar string input (default).
+    #[default]
+    String,
+    /// Ordered list of string arguments.
+    ///
+    /// Runtime treats this as list data and allows command-argument unpacking
+    /// only through standalone unpack tokens in executable command templates.
+    StringList,
+}
+
+fn is_default_tool_input_kind(kind: &ToolInputKind) -> bool {
+    matches!(kind, ToolInputKind::String)
+}
+
+/// Tool input declaration entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ToolInputSpec {
+    /// Declared value kind for this input.
+    ///
+    /// When omitted, runtime defaults to [`ToolInputKind::String`].
+    #[serde(default, skip_serializing_if = "is_default_tool_input_kind")]
+    pub kind: ToolInputKind,
     /// Optional default literal value used when a step omits this input.
+    ///
+    /// Defaults are scalar-string only. List defaults are intentionally not
+    /// supported by schema/runtime validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
 }
@@ -552,11 +578,14 @@ pub struct WorkflowStepSpec {
     /// - inputs provide data to the called tool (builtin or executable),
     /// - for executable tools, names are validated against declared
     ///   `ToolSpec.inputs` and defaults,
-    /// - values are always strings and support `${...}` interpolation with
-    ///   these expression forms:
+    /// - input values are either one scalar string or one list of strings,
+    /// - scalar-string values support `${...}` interpolation with these
+    ///   expression forms:
     ///   - `${external_data.<name>}`,
     ///   - `${step_output.<step_id>.<output_name>}`,
-    /// - plain text outside `${...}` spans is preserved literally,
+    /// - list values apply the same interpolation rules per list item,
+    /// - plain text outside `${...}` spans is preserved literally in each
+    ///   item,
     /// - input-binding interpolation does **not** support materialization
     ///   directives like `:file(...)` or `:folder(...)`.
     #[serde(default)]
@@ -584,9 +613,72 @@ pub struct WorkflowStepSpec {
 
 /// Input binding value for workflow steps.
 ///
-/// This is always a string. Values may include `${...}` interpolation tokens
-/// mixed with plain text, and are parsed by [`parse_input_binding`].
-pub type InputBinding = String;
+/// Bindings are either one scalar string or one list of scalar strings.
+/// Scalar string content may include `${...}` interpolation tokens mixed with
+/// plain text and is parsed by [`parse_input_binding`]. List bindings apply
+/// the same parsing to each list item independently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputBinding {
+    /// Scalar string binding.
+    String(String),
+    /// Ordered list-of-strings binding.
+    StringList(Vec<String>),
+}
+
+impl InputBinding {
+    /// Returns human-readable binding kind name for diagnostics.
+    #[must_use]
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::String(_) => "string",
+            Self::StringList(_) => "string_list",
+        }
+    }
+
+    /// Visits each scalar binding item in deterministic order.
+    ///
+    /// Scalar bindings visit exactly one item. List bindings visit each list
+    /// element in order.
+    pub fn try_for_each_scalar<F>(&self, mut callback: F) -> Result<(), ConductorError>
+    where
+        F: FnMut(usize, &str) -> Result<(), ConductorError>,
+    {
+        match self {
+            Self::String(value) => callback(0, value),
+            Self::StringList(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    callback(index, value)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl Default for InputBinding {
+    fn default() -> Self {
+        Self::String(String::new())
+    }
+}
+
+impl From<String> for InputBinding {
+    fn from(value: String) -> Self {
+        Self::String(value)
+    }
+}
+
+impl From<&str> for InputBinding {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_string())
+    }
+}
+
+impl From<Vec<String>> for InputBinding {
+    fn from(values: Vec<String>) -> Self {
+        Self::StringList(values)
+    }
+}
 
 /// Prefix for `${external_data.<name>}` interpolation expression bodies.
 const INPUT_BINDING_EXTERNAL_DATA_PREFIX: &str = "external_data.";

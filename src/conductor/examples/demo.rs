@@ -316,9 +316,9 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "import_user_relative".to_string(),
                             tool: "import@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("kind".to_string(), "file".to_string()),
-                                ("path_mode".to_string(), "relative".to_string()),
-                                ("path".to_string(), "conductor.ncl".to_string()),
+                                ("kind".to_string(), "file".to_string().into()),
+                                ("path_mode".to_string(), "relative".to_string().into()),
+                                ("path".to_string(), "conductor.ncl".to_string().into()),
                             ]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::new(),
@@ -327,9 +327,9 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "import_machine_absolute".to_string(),
                             tool: "import@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("kind".to_string(), "file".to_string()),
-                                ("path_mode".to_string(), "absolute".to_string()),
-                                ("path".to_string(), inputs.absolute_machine_path.clone()),
+                                ("kind".to_string(), "file".to_string().into()),
+                                ("path_mode".to_string(), "absolute".to_string().into()),
+                                ("path".to_string(), inputs.absolute_machine_path.clone().into()),
                             ]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::new(),
@@ -338,9 +338,9 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "fs_prepare_relative_dir".to_string(),
                             tool: "fs@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("op".to_string(), "ensure_dir".to_string()),
-                                ("path_mode".to_string(), "relative".to_string()),
-                                ("path".to_string(), "runtime/generated".to_string()),
+                                ("op".to_string(), "ensure_dir".to_string().into()),
+                                ("path_mode".to_string(), "relative".to_string().into()),
+                                ("path".to_string(), "runtime/generated".to_string().into()),
                             ]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::new(),
@@ -349,15 +349,15 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "fs_write_relative_snapshot".to_string(),
                             tool: "fs@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("op".to_string(), "write_text".to_string()),
-                                ("path_mode".to_string(), "relative".to_string()),
+                                ("op".to_string(), "write_text".to_string().into()),
+                                ("path_mode".to_string(), "relative".to_string().into()),
                                 (
                                     "path".to_string(),
-                                    "runtime/generated/user-plus-machine.txt".to_string(),
+                                    "runtime/generated/user-plus-machine.txt".to_string().into(),
                                 ),
                                 (
                                     "content".to_string(),
-                                    "${step_output.import_machine_absolute.result}".to_string(),
+                                    "${step_output.import_machine_absolute.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["import_machine_absolute".to_string()],
@@ -367,15 +367,12 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "fs_copy_absolute_side_effect".to_string(),
                             tool: "fs@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("op".to_string(), "copy".to_string()),
-                                ("path_mode".to_string(), "absolute".to_string()),
-                                (
-                                    "path".to_string(),
-                                    inputs.absolute_fs_source_path.clone(),
-                                ),
+                                ("op".to_string(), "copy".to_string().into()),
+                                ("path_mode".to_string(), "absolute".to_string().into()),
+                                ("path".to_string(), inputs.absolute_fs_source_path.clone().into()),
                                 (
                                     "dest".to_string(),
-                                    inputs.absolute_fs_copy_dest_path.clone(),
+                                    inputs.absolute_fs_copy_dest_path.clone().into(),
                                 ),
                             ]),
                             depends_on: Vec::new(),
@@ -387,7 +384,8 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
                                 "banner=${external_data.demo_banner} | import=${step_output.import_user_relative.result}"
-                                    .to_string(),
+                                    .to_string()
+                                    .into(),
                             )]),
                             depends_on: vec!["import_user_relative".to_string()],
                             outputs: BTreeMap::from([(
@@ -400,7 +398,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "concat-tool@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "payload".to_string(),
-                                "${step_output.echo_with_external_data.result}".to_string(),
+                                "${step_output.echo_with_external_data.result}".to_string().into(),
                             )]),
                             depends_on: vec!["echo_with_external_data".to_string()],
                             outputs: BTreeMap::new(),
@@ -409,12 +407,12 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "archive_pack_banner".to_string(),
                             tool: "archive@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("action".to_string(), "pack".to_string()),
-                                ("kind".to_string(), "file".to_string()),
-                                ("entry_name".to_string(), "banner.txt".to_string()),
+                                ("action".to_string(), "pack".to_string().into()),
+                                ("kind".to_string(), "file".to_string().into()),
+                                ("entry_name".to_string(), "banner.txt".to_string().into()),
                                 (
                                     "content".to_string(),
-                                    "${step_output.concat_with_fixed_resource.result}".to_string(),
+                                    "${step_output.concat_with_fixed_resource.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["concat_with_fixed_resource".to_string()],
@@ -424,10 +422,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "archive_repack_banner".to_string(),
                             tool: "archive@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("action".to_string(), "repack".to_string()),
+                                ("action".to_string(), "repack".to_string().into()),
                                 (
                                     "archive".to_string(),
-                                    "${step_output.archive_pack_banner.result}".to_string(),
+                                    "${step_output.archive_pack_banner.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["archive_pack_banner".to_string()],
@@ -437,12 +435,15 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "export_relative_archive".to_string(),
                             tool: "export@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("kind".to_string(), "file".to_string()),
-                                ("path_mode".to_string(), "relative".to_string()),
-                                ("path".to_string(), "exports/relative/showcase.zip".to_string()),
+                                ("kind".to_string(), "file".to_string().into()),
+                                ("path_mode".to_string(), "relative".to_string().into()),
+                                (
+                                    "path".to_string(),
+                                    "exports/relative/showcase.zip".to_string().into(),
+                                ),
                                 (
                                     "content".to_string(),
-                                    "${step_output.archive_repack_banner.result}".to_string(),
+                                    "${step_output.archive_repack_banner.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["archive_repack_banner".to_string()],
@@ -452,10 +453,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "archive_unpack_banner".to_string(),
                             tool: "archive@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("action".to_string(), "unpack".to_string()),
+                                ("action".to_string(), "unpack".to_string().into()),
                                 (
                                     "archive".to_string(),
-                                    "${step_output.archive_repack_banner.result}".to_string(),
+                                    "${step_output.archive_repack_banner.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["archive_repack_banner".to_string()],
@@ -465,15 +466,15 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "export_absolute_folder".to_string(),
                             tool: "export@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("kind".to_string(), "folder".to_string()),
-                                ("path_mode".to_string(), "absolute".to_string()),
+                                ("kind".to_string(), "folder".to_string().into()),
+                                ("path_mode".to_string(), "absolute".to_string().into()),
                                 (
                                     "path".to_string(),
-                                    inputs.absolute_export_folder_path.clone(),
+                                    inputs.absolute_export_folder_path.clone().into(),
                                 ),
                                 (
                                     "content".to_string(),
-                                    "${step_output.archive_unpack_banner.result}".to_string(),
+                                    "${step_output.archive_unpack_banner.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec!["archive_unpack_banner".to_string()],
@@ -483,15 +484,15 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "export_absolute_file".to_string(),
                             tool: "export@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("kind".to_string(), "file".to_string()),
-                                ("path_mode".to_string(), "absolute".to_string()),
+                                ("kind".to_string(), "file".to_string().into()),
+                                ("path_mode".to_string(), "absolute".to_string().into()),
                                 (
                                     "path".to_string(),
-                                    inputs.absolute_export_file_path.clone(),
+                                    inputs.absolute_export_file_path.clone().into(),
                                 ),
                                 (
                                     "content".to_string(),
-                                    "${step_output.echo_with_external_data.result}".to_string(),
+                                    "${step_output.echo_with_external_data.result}".to_string().into(),
                                 ),
                             ]),
                             depends_on: vec![
@@ -505,7 +506,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "side effects completed".to_string(),
+                                "side effects completed".to_string().into(),
                             )]),
                             depends_on: vec![
                                 "fs_copy_absolute_side_effect".to_string(),
@@ -526,7 +527,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "${external_data.demo_banner}".to_string(),
+                                "${external_data.demo_banner}".to_string().into(),
                             )]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
@@ -538,10 +539,13 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             id: "fs_dependency_only".to_string(),
                             tool: "fs@1.0.0".to_string(),
                             inputs: BTreeMap::from([
-                                ("op".to_string(), "write_text".to_string()),
-                                ("path_mode".to_string(), "relative".to_string()),
-                                ("path".to_string(), "runtime/cache/probe.txt".to_string()),
-                                ("content".to_string(), "cache-probe".to_string()),
+                                ("op".to_string(), "write_text".to_string().into()),
+                                ("path_mode".to_string(), "relative".to_string().into()),
+                                (
+                                    "path".to_string(),
+                                    "runtime/cache/probe.txt".to_string().into(),
+                                ),
+                                ("content".to_string(), "cache-probe".to_string().into()),
                             ]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::new(),
@@ -551,7 +555,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "consumer=${step_output.cached_source.result}".to_string(),
+                                "consumer=${step_output.cached_source.result}".to_string().into(),
                             )]),
                             depends_on: vec![
                                 "cached_source".to_string(),

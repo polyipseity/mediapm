@@ -238,7 +238,10 @@ fn build_user_document() -> UserNickelDocument {
                         WorkflowStepSpec {
                             id: "shared_a".to_string(),
                             tool: "echo@1.0.0".to_string(),
-                            inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                            inputs: BTreeMap::from([(
+                                "text".to_string(),
+                                "hello".to_string().into(),
+                            )]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
@@ -250,7 +253,7 @@ fn build_user_document() -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "consume:${step_output.shared_a.result}".to_string(),
+                                "consume:${step_output.shared_a.result}".to_string().into(),
                             )]),
                             depends_on: vec!["shared_a".to_string()],
                             outputs: BTreeMap::new(),
@@ -265,7 +268,10 @@ fn build_user_document() -> UserNickelDocument {
                         WorkflowStepSpec {
                             id: "shared_b".to_string(),
                             tool: "echo@1.0.0".to_string(),
-                            inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                            inputs: BTreeMap::from([(
+                                "text".to_string(),
+                                "hello".to_string().into(),
+                            )]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
@@ -277,7 +283,7 @@ fn build_user_document() -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "consume:${step_output.shared_b.result}".to_string(),
+                                "consume:${step_output.shared_b.result}".to_string().into(),
                             )]),
                             depends_on: vec!["shared_b".to_string()],
                             outputs: BTreeMap::new(),

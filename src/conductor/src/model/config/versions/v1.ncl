@@ -54,7 +54,17 @@ in
 
 # ||| Per-input declaration for reusable tool input contracts.
 # ||| `default` is consumed when a step omits the corresponding input key.
+# ||| `kind` defaults to `"string"` when omitted.
+let ToolInputKindV1 = std.contract.any_of [
+  std.contract.from_predicate (fun value => value == "string"),
+  std.contract.from_predicate (fun value => value == "string_list"),
+]
+in
+
+# ||| Per-input declaration for reusable tool input contracts.
+# ||| `default` applies only to scalar-string inputs.
 let ToolInputSpecV1 = {
+  kind | ToolInputKindV1 | optional,
   default | String | optional,
 }
 in
@@ -159,14 +169,18 @@ let ExternalContentRefV1 = {
 in
 
 # ||| Workflow-step input binding value.
-# ||| Input bindings are always strings.
+# ||| Input bindings are scalar strings or list-of-strings.
 # ||| Supported interpolation expressions inside `${...}` (validated in Rust):
 # ||| - `external_data.<name>`
 # ||| - `step_output.<step_id>.<output_name>`
 # ||| Plain text outside `${...}` is preserved as literal input content.
+# ||| For list bindings, interpolation rules apply per list item.
 # ||| Input-binding interpolation does not support materialization directives
 # ||| such as `:file(...)` or `:folder(...)`.
-let InputBindingV1 = String
+let InputBindingV1 = std.contract.any_of [
+  String,
+  Array String,
+]
 in
 
 # ||| One workflow step record.

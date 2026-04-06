@@ -529,7 +529,8 @@ fn build_user_document() -> UserNickelDocument {
                         inputs: BTreeMap::from([(
                             "text".to_string(),
                             "${step_output.alpha.result}-${step_output.beta.result}-${step_output.gamma.result}"
-                                .to_string(),
+                                .to_string()
+                                .into(),
                         )]),
                         depends_on: vec![
                             "alpha".to_string(),
@@ -550,7 +551,7 @@ fn fanout_step(step_id: &str, literal: &str) -> WorkflowStepSpec {
     WorkflowStepSpec {
         id: step_id.to_string(),
         tool: "fanout@1.0.0".to_string(),
-        inputs: BTreeMap::from([("text".to_string(), format!("branch={literal}"))]),
+        inputs: BTreeMap::from([("text".to_string(), format!("branch={literal}").into())]),
         depends_on: Vec::new(),
         outputs: BTreeMap::new(),
     }

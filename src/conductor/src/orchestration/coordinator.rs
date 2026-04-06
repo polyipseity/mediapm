@@ -18,7 +18,8 @@ use crate::api::{
 };
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec, parse_input_binding,
+    ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec,
+    parse_input_binding,
 };
 use crate::model::state::{OrchestrationState, merge_persistence_flags};
 
@@ -537,19 +538,29 @@ where
     ) -> Result<BTreeSet<String>, ConductorError> {
         let mut referenced = BTreeSet::new();
 
-        for binding in step.inputs.values() {
-            let parsed_segments = parse_input_binding(binding).map_err(|err| {
-                ConductorError::Workflow(format!(
-                    "workflow '{workflow_name}' step '{}' has invalid input binding '{binding}' while evaluating {context}: {err}",
-                    step.id
-                ))
-            })?;
+        for (input_name, binding) in &step.inputs {
+            binding.try_for_each_scalar(|item_index, binding_item| {
+                let parsed_segments = parse_input_binding(binding_item).map_err(|err| {
+                    ConductorError::Workflow(format!(
+                        "workflow '{workflow_name}' step '{}' input '{input_name}' has invalid {}binding '{}' while evaluating {context}: {err}",
+                        step.id,
+                        if matches!(binding, InputBinding::StringList(_)) {
+                            format!("list item {item_index} ")
+                        } else {
+                            String::new()
+                        },
+                        binding_item,
+                    ))
+                })?;
 
-            for segment in parsed_segments {
-                if let ParsedInputBindingSegment::StepOutput { step_id, .. } = segment {
-                    referenced.insert(step_id.to_string());
+                for segment in parsed_segments {
+                    if let ParsedInputBindingSegment::StepOutput { step_id, .. } = segment {
+                        referenced.insert(step_id.to_string());
+                    }
                 }
-            }
+
+                Ok(())
+            })?;
         }
 
         Ok(referenced)
@@ -565,18 +576,31 @@ where
 
         for step in &workflow.steps {
             for (input_name, binding) in &step.inputs {
-                let parsed_segments = parse_input_binding(binding).map_err(|err| {
-                    ConductorError::Workflow(format!(
-                        "workflow '{workflow_name}' step '{}' input '{input_name}' has invalid binding '{binding}': {err}",
-                        step.id
-                    ))
-                })?;
+                binding.try_for_each_scalar(|item_index, binding_item| {
+                    let parsed_segments = parse_input_binding(binding_item).map_err(|err| {
+                        ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input '{input_name}' has invalid {}binding '{}': {err}",
+                            step.id,
+                            if matches!(binding, InputBinding::StringList(_)) {
+                                format!("list item {item_index} ")
+                            } else {
+                                String::new()
+                            },
+                            binding_item,
+                        ))
+                    })?;
 
-                for segment in parsed_segments {
-                    if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
-                        required.entry(step_id.to_string()).or_default().insert(output.to_string());
+                    for segment in parsed_segments {
+                        if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
+                            required
+                                .entry(step_id.to_string())
+                                .or_default()
+                                .insert(output.to_string());
+                        }
                     }
-                }
+
+                    Ok(())
+                })?;
             }
         }
 

@@ -35,10 +35,11 @@ use serde_json::Value;
 
 use crate::error::ConductorError;
 use crate::model::config::{
-    ExternalContentRef, ImpureTimestamp, MachineNickelDocument, NickelDocumentMetadata,
-    OutputCaptureSpec, OutputPolicy, ParsedInputBindingSegment, StateNickelDocument,
-    ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
-    WorkflowSpec, WorkflowStepSpec, parse_input_binding,
+    ExternalContentRef, ImpureTimestamp, InputBinding, MachineNickelDocument,
+    NickelDocumentMetadata, OutputCaptureSpec, OutputPolicy, ParsedInputBindingSegment,
+    StateNickelDocument, ToolConfigSpec, ToolInputKind, ToolInputSpec, ToolKindSpec,
+    ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    parse_input_binding,
 };
 
 /// Latest-version Nickel contract bindings.
@@ -648,7 +649,20 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                             inputs: inputs
                                 .into_iter()
                                 .map(|(input_name, input_spec)| {
-                                    (input_name, ToolInputSpec { default: input_spec.default })
+                                    (
+                                        input_name,
+                                        ToolInputSpec {
+                                            kind: match input_spec.kind {
+                                                v_latest::ToolInputKindLatest::String => {
+                                                    ToolInputKind::String
+                                                }
+                                                v_latest::ToolInputKindLatest::StringList => {
+                                                    ToolInputKind::StringList
+                                                }
+                                            },
+                                            default: input_spec.default,
+                                        },
+                                    )
                                 })
                                 .collect(),
                             kind: ToolKindSpec::Executable { command, env_vars, success_codes },
@@ -703,7 +717,23 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                 .map(|step| WorkflowStepSpec {
                                     id: step.id,
                                     tool: step.tool,
-                                    inputs: step.inputs.into_iter().collect(),
+                                    inputs: step
+                                        .inputs
+                                        .into_iter()
+                                        .map(|(input_name, binding)| {
+                                            (
+                                                input_name,
+                                                match binding {
+                                                    v_latest::InputBindingLatest::String(value) => {
+                                                        InputBinding::String(value)
+                                                    }
+                                                    v_latest::InputBindingLatest::StringList(
+                                                        values,
+                                                    ) => InputBinding::StringList(values),
+                                                },
+                                            )
+                                        })
+                                        .collect(),
                                     depends_on: step.depends_on,
                                     outputs: step
                                         .outputs
@@ -774,6 +804,14 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                     (
                                         input_name,
                                         v_latest::ToolInputSpecLatest {
+                                            kind: match input_spec.kind {
+                                                ToolInputKind::String => {
+                                                    v_latest::ToolInputKindLatest::String
+                                                }
+                                                ToolInputKind::StringList => {
+                                                    v_latest::ToolInputKindLatest::StringList
+                                                }
+                                            },
                                             default: input_spec.default,
                                         },
                                     )
@@ -834,7 +872,25 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                 .map(|step| v_latest::WorkflowStepSpecLatest {
                                     id: step.id,
                                     tool: step.tool,
-                                    inputs: step.inputs.into_iter().collect(),
+                                    inputs: step
+                                        .inputs
+                                        .into_iter()
+                                        .map(|(input_name, binding)| {
+                                            (
+                                                input_name,
+                                                match binding {
+                                                    InputBinding::String(value) => {
+                                                        v_latest::InputBindingLatest::String(value)
+                                                    }
+                                                    InputBinding::StringList(values) => {
+                                                        v_latest::InputBindingLatest::StringList(
+                                                            values,
+                                                        )
+                                                    }
+                                                },
+                                            )
+                                        })
+                                        .collect(),
                                     depends_on: step.depends_on,
                                     outputs: step
                                         .outputs
@@ -1188,7 +1244,45 @@ fn vet_latest_envelope(
                 }
 
                 for (input_name, input_spec) in inputs {
-                    if !step.inputs.contains_key(input_name) && input_spec.default.is_none() {
+                    if matches!(input_spec.kind, v_latest::ToolInputKindLatest::StringList)
+                        && input_spec.default.is_some()
+                    {
+                        return Err(ConductorError::Workflow(format!(
+                            "{document_kind} tool '{}' input '{input_name}' declares kind 'string_list' but also defines scalar default; list defaults are not supported",
+                            step.tool,
+                        )));
+                    }
+
+                    if let Some(binding) = step.inputs.get(input_name) {
+                        match (&input_spec.kind, binding) {
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::String(_),
+                            ) => {}
+                            (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {}
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string' for tool '{}', but received 'string_list'",
+                                    step.id, step.tool,
+                                )));
+                            }
+                            (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::String(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string_list' for tool '{}', but received 'string'",
+                                    step.id, step.tool,
+                                )));
+                            }
+                        }
+                    } else if input_spec.default.is_none() {
                         return Err(ConductorError::Workflow(format!(
                             "{document_kind} workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
                             step.id, step.tool,
@@ -1198,43 +1292,59 @@ fn vet_latest_envelope(
             }
 
             for (input_name, binding) in &step.inputs {
-                let parsed_segments = parse_input_binding(binding).map_err(|err| {
-                    ConductorError::Workflow(format!(
-                        "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' has invalid binding '{binding}': {err}",
-                        step.id
-                    ))
-                })?;
+                let binding_items: Vec<(usize, &str)> = match binding {
+                    v_latest::InputBindingLatest::String(value) => vec![(0, value.as_str())],
+                    v_latest::InputBindingLatest::StringList(values) => {
+                        values.iter().enumerate().map(|(idx, item)| (idx, item.as_str())).collect()
+                    }
+                };
 
-                for segment in parsed_segments {
-                    if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
-                        if !explicit_dependencies.contains(step_id) {
-                            return Err(ConductorError::Workflow(format!(
-                                "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references '${{step_output.{step_id}.{output}}}' but step '{step_id}' is missing from depends_on",
-                                step.id
-                            )));
-                        }
+                for (item_index, binding_item) in binding_items {
+                    let parsed_segments = parse_input_binding(binding_item).map_err(|err| {
+                        ConductorError::Workflow(format!(
+                            "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' has invalid {}binding '{}': {err}",
+                            step.id,
+                            if matches!(binding, v_latest::InputBindingLatest::StringList(_)) {
+                                format!("list item {item_index} ")
+                            } else {
+                                String::new()
+                            },
+                            binding_item,
+                        ))
+                    })?;
 
-                        let Some(producer_tool_name) = step_tool_by_id.get(step_id) else {
-                            return Err(ConductorError::Workflow(format!(
-                                "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references unknown dependency step '{step_id}'",
-                                step.id
-                            )));
-                        };
+                    for segment in parsed_segments {
+                        if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
+                            if !explicit_dependencies.contains(step_id) {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references '${{step_output.{step_id}.{output}}}' but step '{step_id}' is missing from depends_on",
+                                    step.id
+                                )));
+                            }
 
-                        let Some(producer_tool) = envelope.tools.get(*producer_tool_name) else {
-                            continue;
-                        };
+                            let Some(producer_tool_name) = step_tool_by_id.get(step_id) else {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references unknown dependency step '{step_id}'",
+                                    step.id
+                                )));
+                            };
 
-                        let producer_outputs = match producer_tool {
-                            v_latest::ToolSpecLatest::Executable { outputs, .. } => outputs,
-                            v_latest::ToolSpecLatest::Builtin { .. } => continue,
-                        };
+                            let Some(producer_tool) = envelope.tools.get(*producer_tool_name)
+                            else {
+                                continue;
+                            };
 
-                        if !producer_outputs.contains_key(output) {
-                            return Err(ConductorError::Workflow(format!(
-                                "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references missing output '{output}' on dependency step '{step_id}'",
-                                step.id
-                            )));
+                            let producer_outputs = match producer_tool {
+                                v_latest::ToolSpecLatest::Executable { outputs, .. } => outputs,
+                                v_latest::ToolSpecLatest::Builtin { .. } => continue,
+                            };
+
+                            if !producer_outputs.contains_key(output) {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references missing output '{output}' on dependency step '{step_id}'",
+                                    step.id
+                                )));
+                            }
                         }
                     }
                 }
@@ -1263,7 +1373,9 @@ mod tests {
     };
     use super::{evaluate_main_file_as, resolve_version_contract, write_nickel_file};
     use super::{latest, v_latest};
-    use crate::model::config::{ImpureTimestamp, MachineNickelDocument, UserNickelDocument};
+    use crate::model::config::{
+        ImpureTimestamp, InputBinding, MachineNickelDocument, ToolInputKind, UserNickelDocument,
+    };
     use serde::Deserialize;
 
     /// One declared one-hop migration edge from Nickel migration metadata.
@@ -1714,7 +1826,10 @@ version.validate_document (migration.migrate_atomic {} {} document)
 
         let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
         let step = &decoded.workflows["wf"].steps[0];
-        assert_eq!(step.inputs.get("path"), Some(&"${external_data.config_root}".to_string()));
+        assert_eq!(
+            step.inputs.get("path"),
+            Some(&InputBinding::String("${external_data.config_root}".to_string()))
+        );
     }
 
     /// Verifies workflow-step input bindings support mixed literal +
@@ -1751,8 +1866,137 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let step = &decoded.workflows["wf"].steps[0];
         assert_eq!(
             step.inputs.get("path"),
-            Some(&"prefix-${external_data.config_root}/artifact.txt".to_string())
+            Some(&InputBinding::String(
+                "prefix-${external_data.config_root}/artifact.txt".to_string()
+            ))
         );
+    }
+
+    /// Verifies executable input declarations default to scalar `string` kind.
+    #[test]
+    fn decode_user_document_defaults_input_kind_to_string() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "tool_exec@1.0.0" = {
+            kind = "executable",
+            command = ["bin/tool"],
+            inputs = {
+                text = {},
+            },
+            outputs = {
+                out = { capture = { kind = "stdout" } },
+            },
+        },
+    },
+    workflows = {
+        wf = {
+            steps = [
+                {
+                    id = "step-1",
+                    tool = "tool_exec@1.0.0",
+                    inputs = { text = "hello" },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
+        let tool = decoded.tools.get("tool_exec@1.0.0").expect("tool should exist");
+        let text_input = tool.inputs.get("text").expect("input should exist");
+        assert_eq!(text_input.kind, ToolInputKind::String);
+    }
+
+    /// Verifies executable input declarations support explicit `string_list`
+    /// kind and workflow steps can provide list-valued bindings.
+    #[test]
+    fn decode_user_document_accepts_string_list_input_declaration_and_binding() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "tool_exec@1.0.0" = {
+            kind = "executable",
+            command = ["bin/tool", "${*inputs.args}"],
+            inputs = {
+                args = { kind = "string_list" },
+            },
+            outputs = {
+                out = { capture = { kind = "stdout" } },
+            },
+        },
+    },
+    workflows = {
+        wf = {
+            steps = [
+                {
+                    id = "step-1",
+                    tool = "tool_exec@1.0.0",
+                    inputs = {
+                        args = ["--one", "--two"],
+                    },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
+        let tool = decoded.tools.get("tool_exec@1.0.0").expect("tool should exist");
+        let args_input = tool.inputs.get("args").expect("args input should exist");
+        assert_eq!(args_input.kind, ToolInputKind::StringList);
+
+        let step = &decoded.workflows["wf"].steps[0];
+        assert_eq!(
+            step.inputs.get("args"),
+            Some(&InputBinding::StringList(vec!["--one".to_string(), "--two".to_string()]))
+        );
+    }
+
+    /// Verifies executable step input values must match the declared input
+    /// kind.
+    #[test]
+    fn decode_user_document_rejects_executable_step_input_kind_mismatch() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "tool_exec@1.0.0" = {
+            kind = "executable",
+            command = ["bin/tool", "${*inputs.args}"],
+            inputs = {
+                args = { kind = "string_list" },
+            },
+            outputs = {
+                out = { capture = { kind = "stdout" } },
+            },
+        },
+    },
+    workflows = {
+        wf = {
+            steps = [
+                {
+                    id = "step-1",
+                    tool = "tool_exec@1.0.0",
+                    inputs = {
+                        args = "--not-a-list",
+                    },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        let err = decode_user_document(source.as_bytes())
+            .expect_err("mismatched executable input kind should be rejected");
+        let message = err.to_string();
+        assert!(message.contains("expects kind 'string_list'"));
+        assert!(message.contains("received 'string'"));
     }
 
     /// Verifies unsupported `${...}` workflow-step input expressions fail fast.

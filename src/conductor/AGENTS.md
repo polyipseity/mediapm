@@ -115,12 +115,14 @@ When editing tool/config schema behavior, preserve these invariants:
 7. For builtin tools, step inputs are pass-through bindings and builtin crates
    enforce their own strict argument/input contracts.
 
-8. Workflow-step input bindings are always strings and support `${...}`
-   interpolation with these expression forms:
-   `${external_data.<name>}` and `${step_output.<step_id>.<output_name>}`.
-   Input-binding interpolation is text-oriented and does not support
-   materialization directives such as `:file(...)` or `:folder(...)`;
-   unsupported `${...}` expressions are invalid.
+8. Workflow-step input bindings are typed call-site values:
+   scalar `string` or `string_list` (list-of-strings). Both forms support
+   `${...}` interpolation with expression forms
+   `${external_data.<name>}` and `${step_output.<step_id>.<output_name>}`;
+   list bindings apply interpolation per item. Input-binding interpolation is
+   text-oriented and does not support materialization directives such as
+   `:file(...)` or `:folder(...)`; unsupported `${...}` expressions are
+   invalid.
 
 9. `${step_output.<step_id>.<output_name>}` references define the workflow DAG
    implicitly; there is no explicit `depends_on` field.
@@ -194,6 +196,11 @@ Supported token forms:
   - Decodes input bytes with lossy UTF-8 conversion and injects text.
 - `${inputs["<name>"]}` / `${inputs['<name>']}`
   - JavaScript-like bracket notation for input keys.
+- `${*inputs.<name>}`
+  - Standalone executable command-argument unpack token for
+    `string_list` inputs only.
+  - The token must occupy the full command argument entry.
+  - Runtime expands the token into one argv entry per list item.
 - `${<selector>:file(<relative_path>)}`
   - Uses one selector form above, queues bytes for `<relative_path>`, then
     injects that path string.
@@ -221,6 +228,9 @@ Rules:
 
 - Absolute file paths in `file(...)` are rejected.
 - Unknown inputs fail workflow resolution.
+- List-typed inputs are invalid in normal `${...}` interpolation and are only
+  valid in standalone unpack tokens (`${*...}`) inside executable command
+  argument arrays.
 - `${...` without a closing `}` fails workflow resolution.
 - Unsupported/trailing escape sequences fail workflow resolution.
 - Malformed `:file(...)` tokens (for example missing closing `)`) fail workflow

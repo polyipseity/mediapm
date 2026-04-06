@@ -17,8 +17,8 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 
 use crate::error::ConductorError;
 use crate::model::config::{
-    OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolKindSpec, ToolSpec,
-    WorkflowStepSpec, parse_input_binding,
+    InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
+    ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{
     OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance, merge_persistence_flags,
@@ -399,8 +399,16 @@ where
         if matches!(tool.process, ProcessSpec::Builtin { .. }) {
             let mut passthrough = BTreeMap::new();
             for (input_name, binding) in &step.inputs {
+                let InputBinding::String(binding_text) = binding else {
+                    return Err(ConductorError::Workflow(format!(
+                        "workflow '{workflow_name}' step '{}' input '{input_name}' has kind '{}' but builtin tool '{}' accepts only scalar string step inputs",
+                        step.id,
+                        binding.kind_name(),
+                        step.tool,
+                    )));
+                };
                 let input = self
-                    .resolve_input_binding(unified, workflow_name, step, binding, step_outputs)
+                    .resolve_input_binding(unified, workflow_name, step, binding_text, step_outputs)
                     .await?;
                 passthrough.insert(input_name.clone(), input);
             }
@@ -420,14 +428,52 @@ where
 
         for (input_name, input_spec) in &tool.inputs {
             if let Some(binding) = step.inputs.get(input_name) {
-                let input = self
-                    .resolve_input_binding(unified, workflow_name, step, binding, step_outputs)
-                    .await?;
+                let input = match (input_spec.kind, binding) {
+                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
+                        self.resolve_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            binding_text,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
+                        self.resolve_list_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string' for tool '{}', but received 'string_list'",
+                            step.id, step.tool,
+                        )));
+                    }
+                    (ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string_list' for tool '{}', but received 'string'",
+                            step.id, step.tool,
+                        )));
+                    }
+                };
                 resolved.insert(input_name.clone(), input);
                 continue;
             }
 
             if let Some(default_literal) = &input_spec.default {
+                if matches!(input_spec.kind, ToolInputKind::StringList) {
+                    return Err(ConductorError::Workflow(format!(
+                        "tool '{}' input '{input_name}' declares kind 'string_list' but also provides a scalar default; list defaults are not supported",
+                        step.tool,
+                    )));
+                }
                 let resolved_input =
                     self.persist_resolved_input(default_literal.as_bytes().to_vec()).await?;
                 resolved.insert(input_name.clone(), resolved_input);
@@ -461,6 +507,27 @@ where
         binding: &str,
         step_outputs: &StepOutputs,
     ) -> Result<ResolvedInput, ConductorError> {
+        let plain_content = self
+            .resolve_input_binding_plain_content(
+                unified,
+                workflow_name,
+                step,
+                binding,
+                step_outputs,
+            )
+            .await?;
+        self.persist_resolved_input(plain_content).await
+    }
+
+    /// Resolves one string input binding into concrete payload bytes.
+    async fn resolve_input_binding_plain_content(
+        &self,
+        unified: &UnifiedNickelDocument,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        binding: &str,
+        step_outputs: &StepOutputs,
+    ) -> Result<Vec<u8>, ConductorError> {
         let parsed_segments = parse_input_binding(binding).map_err(|err| {
             ConductorError::Workflow(format!(
                 "workflow '{workflow_name}' step '{}' has invalid input binding '{binding}': {err}",
@@ -506,7 +573,41 @@ where
             }
         }
 
-        self.persist_resolved_input(plain_content).await
+        Ok(plain_content)
+    }
+
+    /// Resolves one list-of-strings input binding into deterministic runtime
+    /// list payload plus CAS identity.
+    async fn resolve_list_input_binding(
+        &self,
+        unified: &UnifiedNickelDocument,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        input_name: &str,
+        binding_list: &[String],
+        step_outputs: &StepOutputs,
+    ) -> Result<ResolvedInput, ConductorError> {
+        let mut resolved_values = Vec::with_capacity(binding_list.len());
+        for (item_index, binding_item) in binding_list.iter().enumerate() {
+            let plain_content = self
+                .resolve_input_binding_plain_content(
+                    unified,
+                    workflow_name,
+                    step,
+                    binding_item,
+                    step_outputs,
+                )
+                .await
+                .map_err(|error| match error {
+                    ConductorError::Workflow(message) => ConductorError::Workflow(format!(
+                        "{message} (while resolving list item {item_index} for input '{input_name}')"
+                    )),
+                    other => other,
+                })?;
+            resolved_values.push(String::from_utf8_lossy(&plain_content).to_string());
+        }
+
+        self.persist_resolved_list_input(resolved_values).await
     }
 
     /// Persists one resolved input payload into CAS and returns the runtime
@@ -516,7 +617,19 @@ where
         plain_content: Vec<u8>,
     ) -> Result<ResolvedInput, ConductorError> {
         let hash = self.cas.put(plain_content.clone()).await?;
-        Ok(ResolvedInput { hash, plain_content })
+        Ok(ResolvedInput { hash, plain_content, string_list: None })
+    }
+
+    /// Persists one resolved list input payload and preserves list values for
+    /// runtime command-argument unpack rendering.
+    async fn persist_resolved_list_input(
+        &self,
+        string_list: Vec<String>,
+    ) -> Result<ResolvedInput, ConductorError> {
+        let plain_content = serde_json::to_vec(&string_list)
+            .map_err(|err| ConductorError::Serialization(err.to_string()))?;
+        let hash = self.cas.put(plain_content.clone()).await?;
+        Ok(ResolvedInput { hash, plain_content, string_list: Some(string_list) })
     }
 
     /// Resolves the process definition that should be executed for one step.

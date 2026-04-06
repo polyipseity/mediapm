@@ -40,7 +40,7 @@ async fn deterministic_workflow_hits_cache_on_second_run() {
                 steps: vec![WorkflowStepSpec {
                     id: "s1".to_string(),
                     tool: "echo@1.0.0".to_string(),
-                    inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                    inputs: BTreeMap::from([("text".to_string(), "hello".to_string().into())]),
                     depends_on: Vec::new(),
                     outputs: BTreeMap::new(),
                 }],

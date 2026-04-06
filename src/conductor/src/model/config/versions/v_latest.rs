@@ -37,10 +37,30 @@ pub(crate) struct OutputPolicyLatest {
     pub(crate) force_full: Option<bool>,
 }
 
+/// Persisted kind selector for one declared tool input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ToolInputKindLatest {
+    /// Scalar string input (default).
+    #[default]
+    String,
+    /// Ordered list-of-strings input.
+    StringList,
+}
+
+fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
+    matches!(kind, ToolInputKindLatest::String)
+}
+
 /// Declared tool input entry in the latest persisted schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct ToolInputSpecLatest {
+    /// Declared input value kind.
+    #[serde(default, skip_serializing_if = "is_default_tool_input_kind_latest")]
+    pub(crate) kind: ToolInputKindLatest,
     /// Optional default literal value used when input binding is omitted.
+    ///
+    /// List defaults are intentionally unsupported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) default: Option<String>,
 }
@@ -270,8 +290,8 @@ pub(crate) struct WorkflowStepSpecLatest {
     /// Input bindings by logical input name.
     ///
     /// Step inputs represent tool-call input data for both builtin and
-    /// executable tools. Values are always strings; `${...}` forms are parsed
-    /// by runtime/schema validation.
+    /// executable tools. Values are scalar strings or list-of-strings;
+    /// `${...}` forms are parsed by runtime/schema validation.
     #[serde(default)]
     pub(crate) inputs: BTreeMap<String, InputBindingLatest>,
     /// Explicit ordering dependencies on prior step ids.
@@ -288,7 +308,14 @@ pub(crate) struct WorkflowStepSpecLatest {
 ///
 /// Special forms are string-based, for example `${external_data.<name>}` and
 /// `${step_output.<step_id>.<output_name>}`.
-pub(crate) type InputBindingLatest = String;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum InputBindingLatest {
+    /// Scalar string binding.
+    String(String),
+    /// Ordered list-of-strings binding.
+    StringList(Vec<String>),
+}
 
 /// Latest shared configuration state shape used by the Rust bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

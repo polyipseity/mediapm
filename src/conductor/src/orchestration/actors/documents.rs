@@ -11,7 +11,7 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use crate::api::RunWorkflowOptions;
 use crate::error::ConductorError;
 use crate::model::config::{
-    MachineNickelDocument, NickelDocumentMetadata, OutputCaptureSpec, ProcessSpec,
+    InputBinding, MachineNickelDocument, NickelDocumentMetadata, OutputCaptureSpec, ProcessSpec,
     RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec, ToolKindSpec, ToolOutputSpec,
     ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec, decode_machine_document,
     decode_state_document, decode_user_document, encode_machine_document, encode_state_document,
@@ -581,11 +581,11 @@ impl DocumentLoaderActor {
             tool: tool_name.clone(),
             inputs: BTreeMap::from([(
                 "text".to_string(),
-                format!(
+                InputBinding::String(format!(
                     "bootstrap user_ncl={} machine_ncl={}",
                     user_ncl.display(),
                     machine_ncl.display()
-                ),
+                )),
             )]),
             depends_on: Vec::new(),
             outputs: BTreeMap::new(),

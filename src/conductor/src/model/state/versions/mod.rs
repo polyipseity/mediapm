@@ -414,7 +414,10 @@ mod tests {
                         is_impure: true,
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            ToolInputSpec { default: Some("fallback".to_string()) },
+                            ToolInputSpec {
+                                default: Some("fallback".to_string()),
+                                ..ToolInputSpec::default()
+                            },
                         )]),
                         kind: ToolKindSpec::Builtin {
                             name: "echo".to_string(),

@@ -10,10 +10,11 @@ use mediapm_cas::{CasApi, InMemoryCas};
 
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowStepSpec,
+    ImpureTimestamp, InputBinding, ProcessSpec, ToolInputKind, ToolInputSpec, ToolKindSpec,
+    ToolOutputSpec, ToolSpec, WorkflowStepSpec,
 };
 use crate::model::state::{PersistenceFlags, ResolvedInput};
-use crate::orchestration::protocol::UnifiedNickelDocument;
+use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 
 use super::{ResolvedOutputCapture, ResolvedOutputSpec, StepWorkerExecutor, ToolExecutionCapture};
 
@@ -105,7 +106,7 @@ fn derived_keys_for_builtin_ignore_non_identity_metadata_fields() {
         is_impure: true,
         inputs: BTreeMap::from([(
             "text".to_string(),
-            ToolInputSpec { default: Some("fallback".to_string()) },
+            ToolInputSpec { default: Some("fallback".to_string()), ..ToolInputSpec::default() },
         )]),
         kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
         outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
@@ -342,6 +343,161 @@ fn command_render_omits_non_matching_os_conditional_entry() {
         .expect("command rendering should succeed");
 
     assert_eq!(rendered, vec!["tool".to_string(), "--always".to_string()]);
+}
+
+/// Protects standalone command unpack token expansion for list-of-strings
+/// inputs.
+#[test]
+fn command_render_expands_standalone_unpack_token_for_list_input() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_string_list(vec!["--alpha".to_string(), "--beta".to_string()])
+            .expect("build list input"),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let command = vec!["tool".to_string(), "${*inputs.argv}".to_string(), "--tail".to_string()];
+    let rendered = executor
+        .render_template_command(&command, &inputs, &mut pending_file_writes)
+        .expect("command unpack token should expand");
+
+    assert_eq!(
+        rendered,
+        vec!["tool".to_string(), "--alpha".to_string(), "--beta".to_string(), "--tail".to_string(),]
+    );
+}
+
+/// Protects fail-fast validation when unpack tokens target scalar inputs.
+#[test]
+fn command_render_rejects_unpack_token_for_scalar_input() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_plain_content(b"--single".to_vec()),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let error = executor
+        .render_template_command(
+            &["tool".to_string(), "${*inputs.argv}".to_string()],
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect_err("scalar input unpack token should fail");
+
+    match error {
+        ConductorError::Workflow(message) => {
+            assert!(message.contains("requires list input"));
+            assert!(message.contains("inputs.argv"));
+        }
+        other => panic!("expected workflow error, got {other:?}"),
+    }
+}
+
+/// Protects syntax rule that `${*...}` unpack expressions must occupy the
+/// entire command argument (standalone token only).
+#[test]
+fn command_render_rejects_non_standalone_unpack_expression() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let error = executor
+        .render_template_command(
+            &["tool".to_string(), "prefix-${*inputs.argv}".to_string()],
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect_err("non-standalone unpack expression should fail");
+
+    match error {
+        ConductorError::Workflow(message) => {
+            assert!(message.contains("only valid as a standalone executable command argument"));
+            assert!(message.contains("${*inputs.argv}"));
+        }
+        other => panic!("expected workflow error, got {other:?}"),
+    }
+}
+
+/// Protects policy that list-typed inputs are invalid in normal `${...}`
+/// interpolation and must use standalone unpack tokens.
+#[test]
+fn template_interpolation_rejects_list_input_outside_unpack_token() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let error = executor
+        .render_template_value("prefix-${inputs.argv}", &inputs, &mut pending_file_writes)
+        .expect_err("list interpolation outside unpack token should fail");
+
+    match error {
+        ConductorError::Workflow(message) => {
+            assert!(
+                message.contains("list inputs are only valid in standalone command unpack tokens")
+            );
+            assert!(message.contains("inputs.argv"));
+        }
+        other => panic!("expected workflow error, got {other:?}"),
+    }
+}
+
+/// Protects runtime executable input-kind validation when programmatic callers
+/// bypass config decoding helpers.
+#[tokio::test]
+async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let unified = UnifiedNickelDocument {
+        external_data: BTreeMap::new(),
+        tools: BTreeMap::new(),
+        workflows: BTreeMap::new(),
+        tool_content_hashes: BTreeSet::new(),
+    };
+    let tool = UnifiedToolSpec {
+        is_impure: false,
+        max_concurrent_calls: -1,
+        inputs: BTreeMap::from([(
+            "argv".to_string(),
+            ToolInputSpec { kind: ToolInputKind::StringList, default: None },
+        )]),
+        process: ProcessSpec::Executable {
+            command: vec!["bin/tool".to_string(), "${*inputs.argv}".to_string()],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
+        tool_content_map: BTreeMap::new(),
+    };
+    let step = WorkflowStepSpec {
+        id: "step".to_string(),
+        tool: "tool_exec@1.0.0".to_string(),
+        inputs: BTreeMap::from([(
+            "argv".to_string(),
+            InputBinding::String("--scalar-value".to_string()),
+        )]),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+
+    let error = executor
+        .resolve_inputs(&unified, &tool, "wf", &step, &BTreeMap::new())
+        .await
+        .expect_err("kind mismatch should fail");
+
+    match error {
+        ConductorError::Workflow(message) => {
+            assert!(message.contains("expects kind 'string_list'"));
+            assert!(message.contains("received 'string'"));
+        }
+        other => panic!("expected workflow error, got {other:?}"),
+    }
 }
 
 /// Protects JavaScript-style escape decoding in literal template spans.

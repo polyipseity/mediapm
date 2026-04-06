@@ -13,8 +13,8 @@ use tempfile::tempdir;
 use crate::api::SchedulerTraceKind;
 use crate::error::ConductorError;
 use crate::model::config::{
-    MachineNickelDocument, OutputCaptureSpec, OutputPolicy, ToolInputSpec, ToolKindSpec,
-    ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    InputBinding, MachineNickelDocument, OutputCaptureSpec, OutputPolicy, ToolInputSpec,
+    ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     encode_machine_document, encode_user_document,
 };
 use crate::model::state::{PersistenceFlags, merge_persistence_flags};
@@ -88,7 +88,10 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                     steps: vec![WorkflowStepSpec {
                         id: "s1".to_string(),
                         tool: "echo@1.0.0".to_string(),
-                        inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("hello".to_string()),
+                        )]),
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
@@ -103,7 +106,10 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                     steps: vec![WorkflowStepSpec {
                         id: "s2".to_string(),
                         tool: "echo@1.0.0".to_string(),
-                        inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("hello".to_string()),
+                        )]),
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
@@ -191,7 +197,10 @@ async fn rematerializes_when_referenced_output_is_missing() {
                     WorkflowStepSpec {
                         id: "producer".to_string(),
                         tool: "echo@1.0.0".to_string(),
-                        inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("hello".to_string()),
+                        )]),
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
@@ -203,7 +212,7 @@ async fn rematerializes_when_referenced_output_is_missing() {
                         tool: "echo@1.0.0".to_string(),
                         inputs: BTreeMap::from([(
                             "text".to_string(),
-                            "${step_output.producer.result}".to_string(),
+                            InputBinding::String("${step_output.producer.result}".to_string()),
                         )]),
                         depends_on: vec!["producer".to_string()],
                         outputs: BTreeMap::new(),
@@ -439,7 +448,7 @@ fn step_output_reference_requires_matching_depends_on() {
                 tool: "echo@1.0.0".to_string(),
                 inputs: BTreeMap::from([(
                     "text".to_string(),
-                    "${step_output.produce.result}".to_string(),
+                    InputBinding::String("${step_output.produce.result}".to_string()),
                 )]),
                 depends_on: Vec::new(),
                 outputs: BTreeMap::new(),
