@@ -144,7 +144,7 @@ impl FileObjectActorState {
 
     /// Returns shared staging-temp root used by atomic write flows.
     fn staging_tmp_root(&self) -> PathBuf {
-        self.root.join(STORAGE_VERSION).join(".tmp")
+        self.root.join(STORAGE_VERSION).join("tmp")
     }
 
     /// Returns file length when path exists, otherwise zero.
@@ -190,7 +190,7 @@ impl FileObjectActorState {
                     CasError::io("reading cas entry metadata", path.clone(), source)
                 })?;
                 if metadata.is_dir() {
-                    if path.file_name().map(|name| name == ".tmp").unwrap_or(false) {
+                    if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
                         continue;
                     }
                     stack.push(path);

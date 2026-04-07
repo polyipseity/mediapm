@@ -356,7 +356,7 @@ fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError
                 CasError::io("reading object store entry type", path.clone(), source)
             })?;
             if file_type.is_dir() {
-                if path.file_name().map(|name| name == ".tmp").unwrap_or(false) {
+                if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
                     continue;
                 }
                 stack.push(path);
@@ -405,7 +405,7 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
                 CasError::io("reading object store entry type", path.clone(), source)
             })?;
             if file_type.is_dir() {
-                if path.file_name().map(|name| name == ".tmp").unwrap_or(false) {
+                if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
                     continue;
                 }
                 stack.push(path);
@@ -632,7 +632,7 @@ fn write_backup_file_atomic(
     target: &Path,
     bytes: &[u8],
 ) -> Result<(), CasError> {
-    let staging_root = backup_root.join(".tmp");
+    let staging_root = backup_root.join("tmp");
     std::fs::create_dir_all(&staging_root).map_err(|source| {
         CasError::io("creating index backup staging directory", &staging_root, source)
     })?;

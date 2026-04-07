@@ -2015,7 +2015,7 @@ async fn bootstrap_empty_object(root: &Path) -> Result<(), CasError> {
         return Ok(());
     }
 
-    let staging_root = root.join(STORAGE_VERSION).join(".tmp");
+    let staging_root = root.join(STORAGE_VERSION).join("tmp");
     write_object_atomic(&staging_root, &path, &[]).await
 }
 
@@ -2046,7 +2046,7 @@ async fn write_atomic(
             .map_err(|source| CasError::io("creating parent directories", parent, source))?;
 
         std::fs::create_dir_all(&staging_root).map_err(|source| {
-            CasError::io("creating shared staging .tmp directory", staging_root.clone(), source)
+            CasError::io("creating shared staging tmp directory", staging_root.clone(), source)
         })?;
 
         let mut temp = tempfile::Builder::new()
@@ -2308,8 +2308,8 @@ mod tests {
         cas.put(Bytes::from_static(b"staging tmp regression payload")).await.expect("put payload");
 
         let storage_root = dir.path().join(super::STORAGE_VERSION);
-        let expected_tmp = storage_root.join(".tmp");
-        assert!(expected_tmp.exists(), "shared staging .tmp should exist under storage root");
+        let expected_tmp = storage_root.join("tmp");
+        assert!(expected_tmp.exists(), "shared staging tmp should exist under storage root");
 
         let mut stack = vec![storage_root.clone()];
         let mut tmp_dirs = Vec::new();
@@ -2318,7 +2318,7 @@ mod tests {
                 let entry = entry.expect("dir entry");
                 let child = entry.path();
                 if child.is_dir() {
-                    if child.file_name().map(|name| name == ".tmp").unwrap_or(false) {
+                    if child.file_name().map(|name| name == "tmp").unwrap_or(false) {
                         tmp_dirs.push(child.clone());
                     }
                     stack.push(child);
