@@ -660,7 +660,16 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     ToolInputKind::StringList
                                                 }
                                             },
-                                            default: input_spec.default,
+                                            default: input_spec.default.map(|default_binding| {
+                                                match default_binding {
+                                                    v_latest::InputBindingLatest::String(value) => {
+                                                        InputBinding::String(value)
+                                                    }
+                                                    v_latest::InputBindingLatest::StringList(
+                                                        values,
+                                                    ) => InputBinding::StringList(values),
+                                                }
+                                            }),
                                         },
                                     )
                                 })
@@ -763,6 +772,23 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         ToolConfigSpec {
                             max_concurrent_calls: config.max_concurrent_calls,
                             description: config.description,
+                            input_defaults: config
+                                .input_defaults
+                                .into_iter()
+                                .map(|(input_name, binding)| {
+                                    (
+                                        input_name,
+                                        match binding {
+                                            v_latest::InputBindingLatest::String(value) => {
+                                                InputBinding::String(value)
+                                            }
+                                            v_latest::InputBindingLatest::StringList(values) => {
+                                                InputBinding::StringList(values)
+                                            }
+                                        },
+                                    )
+                                })
+                                .collect(),
                             content_map: config.content_map,
                         },
                     )
@@ -813,7 +839,18 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     v_latest::ToolInputKindLatest::StringList
                                                 }
                                             },
-                                            default: input_spec.default,
+                                            default: input_spec.default.map(|default_binding| {
+                                                match default_binding {
+                                                    InputBinding::String(value) => {
+                                                        v_latest::InputBindingLatest::String(value)
+                                                    }
+                                                    InputBinding::StringList(values) => {
+                                                        v_latest::InputBindingLatest::StringList(
+                                                            values,
+                                                        )
+                                                    }
+                                                }
+                                            }),
                                         },
                                     )
                                 })
@@ -921,6 +958,23 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         v_latest::ToolConfigSpecLatest {
                             max_concurrent_calls: config.max_concurrent_calls,
                             description: config.description,
+                            input_defaults: config
+                                .input_defaults
+                                .into_iter()
+                                .map(|(input_name, binding)| {
+                                    (
+                                        input_name,
+                                        match binding {
+                                            InputBinding::String(value) => {
+                                                v_latest::InputBindingLatest::String(value)
+                                            }
+                                            InputBinding::StringList(values) => {
+                                                v_latest::InputBindingLatest::StringList(values)
+                                            }
+                                        },
+                                    )
+                                })
+                                .collect(),
                             content_map: config.content_map,
                         },
                     )
@@ -1198,6 +1252,54 @@ fn vet_latest_envelope(
                 "{document_kind} tool_configs '{tool_name}' content_map is invalid for builtin tools"
             )));
         }
+
+        if let Some(tool) = envelope.tools.get(tool_name) {
+            match tool {
+                v_latest::ToolSpecLatest::Builtin { .. } => {
+                    if !tool_config.input_defaults.is_empty() {
+                        return Err(ConductorError::Workflow(format!(
+                            "{document_kind} tool_configs '{tool_name}' input_defaults is invalid for builtin tools"
+                        )));
+                    }
+                }
+                v_latest::ToolSpecLatest::Executable { inputs, .. } => {
+                    for (input_name, binding) in &tool_config.input_defaults {
+                        let Some(input_spec) = inputs.get(input_name) else {
+                            return Err(ConductorError::Workflow(format!(
+                                "{document_kind} tool_configs '{tool_name}' input_defaults references undeclared tool input '{input_name}'"
+                            )));
+                        };
+
+                        match (&input_spec.kind, binding) {
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::String(_),
+                            )
+                            | (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {}
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} tool_configs '{tool_name}' input_defaults['{input_name}'] expects kind 'string' but received 'string_list'"
+                                )));
+                            }
+                            (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::String(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} tool_configs '{tool_name}' input_defaults['{input_name}'] expects kind 'string_list' but received 'string'"
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     for (workflow_id, steps) in &envelope.impure_timestamps {
@@ -1253,13 +1355,35 @@ fn vet_latest_envelope(
                 }
 
                 for (input_name, input_spec) in inputs {
-                    if matches!(input_spec.kind, v_latest::ToolInputKindLatest::StringList)
-                        && input_spec.default.is_some()
-                    {
-                        return Err(ConductorError::Workflow(format!(
-                            "{document_kind} tool '{}' input '{input_name}' declares kind 'string_list' but also defines scalar default; list defaults are not supported",
-                            step.tool,
-                        )));
+                    if let Some(default_binding) = &input_spec.default {
+                        match (&input_spec.kind, default_binding) {
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::String(_),
+                            )
+                            | (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {}
+                            (
+                                v_latest::ToolInputKindLatest::String,
+                                v_latest::InputBindingLatest::StringList(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} tool '{}' input '{input_name}' declares kind 'string' but default has kind 'string_list'",
+                                    step.tool,
+                                )));
+                            }
+                            (
+                                v_latest::ToolInputKindLatest::StringList,
+                                v_latest::InputBindingLatest::String(_),
+                            ) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} tool '{}' input '{input_name}' declares kind 'string_list' but default has kind 'string'",
+                                    step.tool,
+                                )));
+                            }
+                        }
                     }
 
                     if let Some(binding) = step.inputs.get(input_name) {
@@ -1291,11 +1415,49 @@ fn vet_latest_envelope(
                                 )));
                             }
                         }
-                    } else if input_spec.default.is_none() {
-                        return Err(ConductorError::Workflow(format!(
-                            "{document_kind} workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
-                            step.id, step.tool,
-                        )));
+                    } else {
+                        let tool_config_default = envelope
+                            .tool_configs
+                            .get(&step.tool)
+                            .and_then(|tool_config| tool_config.input_defaults.get(input_name));
+
+                        if input_spec.default.is_none() && tool_config_default.is_none() {
+                            return Err(ConductorError::Workflow(format!(
+                                "{document_kind} workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
+                                step.id, step.tool,
+                            )));
+                        }
+
+                        if let Some(default_binding) = tool_config_default {
+                            match (&input_spec.kind, default_binding) {
+                                (
+                                    v_latest::ToolInputKindLatest::String,
+                                    v_latest::InputBindingLatest::String(_),
+                                )
+                                | (
+                                    v_latest::ToolInputKindLatest::StringList,
+                                    v_latest::InputBindingLatest::StringList(_),
+                                ) => {}
+                                (
+                                    v_latest::ToolInputKindLatest::String,
+                                    v_latest::InputBindingLatest::StringList(_),
+                                ) => {
+                                    return Err(ConductorError::Workflow(format!(
+                                        "{document_kind} workflow '{workflow_name}' step '{}' uses tool_config input default '{input_name}' with kind 'string_list', but tool '{}' expects kind 'string'",
+                                        step.id, step.tool,
+                                    )));
+                                }
+                                (
+                                    v_latest::ToolInputKindLatest::StringList,
+                                    v_latest::InputBindingLatest::String(_),
+                                ) => {
+                                    return Err(ConductorError::Workflow(format!(
+                                        "{document_kind} workflow '{workflow_name}' step '{}' uses tool_config input default '{input_name}' with kind 'string', but tool '{}' expects kind 'string_list'",
+                                        step.id, step.tool,
+                                    )));
+                                }
+                            }
+                        }
                     }
                 }
             }

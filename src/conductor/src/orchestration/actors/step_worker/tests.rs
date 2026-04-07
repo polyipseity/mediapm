@@ -106,7 +106,10 @@ fn derived_keys_for_builtin_ignore_non_identity_metadata_fields() {
         is_impure: true,
         inputs: BTreeMap::from([(
             "text".to_string(),
-            ToolInputSpec { default: Some("fallback".to_string()), ..ToolInputSpec::default() },
+            ToolInputSpec {
+                default: Some(InputBinding::String("fallback".to_string())),
+                ..ToolInputSpec::default()
+            },
         )]),
         kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
         outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
@@ -467,6 +470,7 @@ async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
             "argv".to_string(),
             ToolInputSpec { kind: ToolInputKind::StringList, default: None },
         )]),
+        default_inputs: BTreeMap::new(),
         process: ProcessSpec::Executable {
             command: vec!["bin/tool".to_string(), "${*inputs.argv}".to_string()],
             env_vars: BTreeMap::new(),

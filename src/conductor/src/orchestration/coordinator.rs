@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, Hash};
+use pulsebar::ProgressBar;
 
 use crate::api::{
     RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics,
@@ -196,6 +197,10 @@ where
     }
 
     /// Executes all unified workflows level by level using the execution-hub actor.
+    ///
+    /// Progress-bar labels intentionally stay compact (task name only) so
+    /// pulsebar's built-in counters and percentage display remain readable
+    /// without duplicate text.
     async fn execute_workflows(
         &self,
         execution_hub: ExecutionHubClient,
@@ -219,17 +224,27 @@ where
             }
 
             let levels = Self::topological_levels(workflow_name, workflow)?;
+            let total_steps = workflow.steps.len();
+            let workflow_progress =
+                ProgressBar::new(total_steps.max(1) as u64).with_message(workflow_name);
+
+            if total_steps == 0 {
+                workflow_progress.finish_success(&format!("{workflow_name} complete"));
+                continue;
+            }
+
             let required_outputs_by_step =
                 Self::collect_required_outputs_by_step(workflow_name, workflow)?;
             let mut step_outputs: StepOutputs = BTreeMap::new();
 
             for (level_index, level) in levels.into_iter().enumerate() {
+                let level_step_count = level.len();
                 let state_snapshot = Arc::new(state.clone());
                 let step_outputs_snapshot = Arc::new(step_outputs.clone());
                 let impure_timestamps =
                     Self::plan_impure_timestamps(unified, state_document, workflow_name, &level)?;
 
-                let dispatch_outcomes = execution_hub
+                let dispatch_outcomes = match execution_hub
                     .execute_level(LevelExecutionRequest {
                         workflow_name: workflow_name.clone(),
                         level_index,
@@ -242,7 +257,14 @@ where
                         required_outputs_by_step: required_outputs_by_step.clone(),
                         impure_timestamps,
                     })
-                    .await?;
+                    .await
+                {
+                    Ok(outcomes) => outcomes,
+                    Err(error) => {
+                        workflow_progress.finish_error(&format!("{workflow_name} failed"));
+                        return Err(error);
+                    }
+                };
 
                 for outcome in dispatch_outcomes {
                     let result = outcome.result;
@@ -261,7 +283,11 @@ where
                     let step_hashes = Self::merge_step_result_into_state(state, result)?;
                     step_outputs.insert(step_id, step_hashes);
                 }
+
+                workflow_progress.advance(level_step_count as u64);
             }
+
+            workflow_progress.finish_success(&format!("{workflow_name} complete"));
         }
 
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes })

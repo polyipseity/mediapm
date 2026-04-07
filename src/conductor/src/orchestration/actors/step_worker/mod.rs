@@ -467,15 +467,84 @@ where
                 continue;
             }
 
-            if let Some(default_literal) = &input_spec.default {
-                if matches!(input_spec.kind, ToolInputKind::StringList) {
-                    return Err(ConductorError::Workflow(format!(
-                        "tool '{}' input '{input_name}' declares kind 'string_list' but also provides a scalar default; list defaults are not supported",
-                        step.tool,
-                    )));
-                }
-                let resolved_input =
-                    self.persist_resolved_input(default_literal.as_bytes().to_vec()).await?;
+            if let Some(default_binding) = tool.default_inputs.get(input_name) {
+                let resolved_input = match (input_spec.kind, default_binding) {
+                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
+                        self.resolve_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            binding_text,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
+                        self.resolve_list_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input default '{input_name}' expects kind 'string' for tool '{}', but tool_configs default provides 'string_list'",
+                            step.id, step.tool,
+                        )));
+                    }
+                    (ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input default '{input_name}' expects kind 'string_list' for tool '{}', but tool_configs default provides 'string'",
+                            step.id, step.tool,
+                        )));
+                    }
+                };
+
+                resolved.insert(input_name.clone(), resolved_input);
+                continue;
+            }
+
+            if let Some(default_binding) = &input_spec.default {
+                let resolved_input = match (input_spec.kind, default_binding) {
+                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
+                        self.resolve_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            binding_text,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
+                        self.resolve_list_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "tool '{}' input '{input_name}' declares kind 'string' but default provides 'string_list'",
+                            step.tool,
+                        )));
+                    }
+                    (ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "tool '{}' input '{input_name}' declares kind 'string_list' but default provides 'string'",
+                            step.tool,
+                        )));
+                    }
+                };
+
                 resolved.insert(input_name.clone(), resolved_input);
                 continue;
             }
@@ -716,14 +785,14 @@ where
     /// Creates one ad hoc sandbox directory only when a step actually needs to
     /// execute.
     ///
-    /// Sandboxes are always nested under `<runtime_storage_dir>/.tmp`, where
+    /// Sandboxes are always nested under `<runtime_storage_dir>/tmp`, where
     /// `runtime_storage_dir` is resolved from
     /// `RunWorkflowOptions.runtime_storage_paths.conductor_dir`.
     fn create_execution_temp_cwd(
         &self,
         runtime_storage_dir: &Path,
     ) -> Result<tempfile::TempDir, ConductorError> {
-        let scratch_root = runtime_storage_dir.join(".tmp");
+        let scratch_root = runtime_storage_dir.join("tmp");
         std::fs::create_dir_all(&scratch_root).map_err(|source| ConductorError::Io {
             operation: "creating tool sandbox root directory".to_string(),
             path: scratch_root.clone(),

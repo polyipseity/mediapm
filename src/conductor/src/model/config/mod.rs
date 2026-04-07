@@ -285,6 +285,14 @@ pub struct ToolConfigSpec {
     /// scheduling, deduplication, or CAS key computation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Optional per-tool default input bindings applied when workflow steps
+    /// omit matching input keys.
+    ///
+    /// This allows operator-managed runtime defaults (for example list-style
+    /// CLI argument bundles) to live beside tool runtime config rather than
+    /// being repeated across workflow steps.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub input_defaults: BTreeMap<String, InputBinding>,
     /// Optional per-tool content map (`relative_path -> hash`) for executable
     /// sandbox materialization.
     ///
@@ -313,6 +321,7 @@ impl Default for ToolConfigSpec {
         Self {
             max_concurrent_calls: default_max_concurrent_calls(),
             description: None,
+            input_defaults: BTreeMap::new(),
             content_map: None,
         }
     }
@@ -418,12 +427,11 @@ pub struct ToolInputSpec {
     /// When omitted, runtime defaults to [`ToolInputKind::String`].
     #[serde(default, skip_serializing_if = "is_default_tool_input_kind")]
     pub kind: ToolInputKind,
-    /// Optional default literal value used when a step omits this input.
+    /// Optional default binding value used when a step omits this input.
     ///
-    /// Defaults are scalar-string only. List defaults are intentionally not
-    /// supported by schema/runtime validation.
+    /// Runtime validates that this default binding kind matches [`Self::kind`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<InputBinding>,
 }
 
 /// Unified process selector for one tool.
@@ -969,6 +977,20 @@ fn validate_add_tool_config_mode(
         )));
     }
 
+    let has_input_defaults = match config_mode {
+        AddToolConfigMode::KeepExisting => {
+            existing_configs.get(tool_name).is_some_and(|config| !config.input_defaults.is_empty())
+        }
+        AddToolConfigMode::Replace(config) => !config.input_defaults.is_empty(),
+        AddToolConfigMode::Remove => false,
+    };
+
+    if has_input_defaults && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{tool_name}' is builtin and cannot have tool_configs.input_defaults"
+        )));
+    }
+
     Ok(())
 }
 
@@ -1037,6 +1059,7 @@ mod tests {
         .with_tool_config(ToolConfigSpec {
             max_concurrent_calls: 2,
             description: Some("demo executable runtime config".to_string()),
+            input_defaults: BTreeMap::new(),
             content_map: Some(BTreeMap::from([(
                 "payload.txt".to_string(),
                 Hash::from_content(b"demo-hash-a"),
@@ -1082,6 +1105,7 @@ mod tests {
                 .with_tool_config(ToolConfigSpec {
                     max_concurrent_calls: 1,
                     description: Some("initial executable runtime config".to_string()),
+                    input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "payload.txt".to_string(),
                         Hash::from_content(b"demo-hash-b"),
@@ -1117,6 +1141,7 @@ mod tests {
                     config_mode: AddToolConfigMode::Replace(ToolConfigSpec {
                         max_concurrent_calls: 1,
                         description: Some("invalid builtin runtime config".to_string()),
+                        input_defaults: BTreeMap::new(),
                         content_map: Some(BTreeMap::from([(
                             "payload.txt".to_string(),
                             Hash::from_content(b"demo-hash-c"),

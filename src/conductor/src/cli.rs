@@ -465,6 +465,7 @@ fn register_or_merge_imported_tool(
                     "Imported by conductor CLI from '{}'",
                     import_path.display()
                 )),
+                input_defaults: BTreeMap::new(),
                 content_map: Some(imported_content_map),
             }),
         )?;
@@ -772,7 +773,7 @@ mod tests {
         schema_export_dir,
     };
     use crate::model::config::{
-        MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
+        InputBinding, MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
     };
     use crate::model::state::{OrchestrationState, ToolCallInstance};
     use clap::Parser;
@@ -960,7 +961,7 @@ mod tests {
                         inputs: BTreeMap::from([(
                             "text".to_string(),
                             ToolInputSpec {
-                                default: Some("fallback".to_string()),
+                                default: Some(InputBinding::String("fallback".to_string())),
                                 ..ToolInputSpec::default()
                             },
                         )]),

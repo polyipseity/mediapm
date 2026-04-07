@@ -455,6 +455,7 @@ mod tests {
                         is_impure: false,
                         max_concurrent_calls,
                         inputs: BTreeMap::<String, ToolInputSpec>::new(),
+                        default_inputs: BTreeMap::new(),
                         process: ProcessSpec::Builtin {
                             name: "echo".to_string(),
                             version: "1.0.0".to_string(),

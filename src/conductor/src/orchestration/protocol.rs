@@ -11,8 +11,8 @@ use std::sync::Arc;
 use mediapm_cas::Hash;
 
 use crate::model::config::{
-    ExternalContentRef, ImpureTimestamp, MachineNickelDocument, ProcessSpec, StateNickelDocument,
-    ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
+    ExternalContentRef, ImpureTimestamp, InputBinding, MachineNickelDocument, ProcessSpec,
+    StateNickelDocument, ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
 };
 use crate::model::state::{OrchestrationState, ToolCallInstance};
 
@@ -30,6 +30,8 @@ pub(super) struct UnifiedToolSpec {
     pub max_concurrent_calls: i32,
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
+    /// Per-tool default input bindings contributed by merged tool config.
+    pub default_inputs: BTreeMap<String, InputBinding>,
     /// Fully merged process definition.
     pub process: ProcessSpec,
     /// Declared output contract keyed by output name.

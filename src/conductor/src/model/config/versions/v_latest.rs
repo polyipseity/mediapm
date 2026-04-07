@@ -58,11 +58,9 @@ pub(crate) struct ToolInputSpecLatest {
     /// Declared input value kind.
     #[serde(default, skip_serializing_if = "is_default_tool_input_kind_latest")]
     pub(crate) kind: ToolInputKindLatest,
-    /// Optional default literal value used when input binding is omitted.
-    ///
-    /// List defaults are intentionally unsupported.
+    /// Optional default binding value used when input binding is omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) default: Option<String>,
+    pub(crate) default: Option<InputBindingLatest>,
 }
 
 /// Tool definition persisted in the latest Nickel schema.
@@ -265,6 +263,9 @@ pub(crate) struct ToolConfigSpecLatest {
     /// Optional human-facing description for runtime tool configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
+    /// Optional per-tool default input bindings.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) input_defaults: BTreeMap<String, InputBindingLatest>,
     /// Optional content map used for executable sandbox materialization.
     ///
     /// Key semantics are runtime-defined and mirrored from `v1.ncl` docs:

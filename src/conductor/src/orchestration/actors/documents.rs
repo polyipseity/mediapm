@@ -376,6 +376,22 @@ impl DocumentLoaderActor {
                         )));
                     }
 
+                    for (input_name, machine_binding) in &machine_config.input_defaults {
+                        match user_config.input_defaults.get(input_name) {
+                            None => {
+                                user_config
+                                    .input_defaults
+                                    .insert(input_name.clone(), machine_binding.clone());
+                            }
+                            Some(user_binding) if user_binding == machine_binding => {}
+                            Some(_) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.input_defaults.{input_name}' is defined differently in both documents"
+                                )));
+                            }
+                        }
+                    }
+
                     match (&mut user_config.content_map, &machine_config.content_map) {
                         (None, None) => {}
                         (None, Some(machine_map)) => {
@@ -755,6 +771,40 @@ impl DocumentLoaderActor {
                 )));
             }
 
+            if matches!(tool_spec.kind, ToolKindSpec::Builtin { .. })
+                && !merged_config.input_defaults.is_empty()
+            {
+                return Err(ConductorError::Workflow(format!(
+                    "tool '{tool_name}' input_defaults is invalid for builtin tools"
+                )));
+            }
+
+            for (input_name, binding) in &merged_config.input_defaults {
+                let Some(input_spec) = tool_spec.inputs.get(input_name) else {
+                    return Err(ConductorError::Workflow(format!(
+                        "tool '{tool_name}' input_defaults references undeclared input '{input_name}'"
+                    )));
+                };
+
+                match (input_spec.kind, binding) {
+                    (crate::model::config::ToolInputKind::String, InputBinding::String(_))
+                    | (
+                        crate::model::config::ToolInputKind::StringList,
+                        InputBinding::StringList(_),
+                    ) => {}
+                    (crate::model::config::ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "tool '{tool_name}' input_defaults['{input_name}'] expects kind 'string' but received 'string_list'"
+                        )));
+                    }
+                    (crate::model::config::ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "tool '{tool_name}' input_defaults['{input_name}'] expects kind 'string_list' but received 'string'"
+                        )));
+                    }
+                }
+            }
+
             let merged_map = merged_config.content_map.unwrap_or_default();
             tool_content_hashes.extend(merged_map.values().copied());
             tools.insert(
@@ -763,6 +813,7 @@ impl DocumentLoaderActor {
                     is_impure: tool_spec.is_impure,
                     max_concurrent_calls: merged_config.max_concurrent_calls,
                     inputs: tool_spec.inputs.clone(),
+                    default_inputs: merged_config.input_defaults,
                     process,
                     outputs: tool_spec.outputs.clone(),
                     tool_content_map: merged_map,
@@ -891,6 +942,7 @@ mod tests {
                 ToolConfigSpec {
                     max_concurrent_calls: -1,
                     description: Some("unknown tool test config".to_string()),
+                    input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "bin/tool".to_string(),
                         Hash::from_content(b"machine"),
