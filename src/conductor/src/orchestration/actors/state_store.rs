@@ -167,7 +167,7 @@ where
             }
         }
 
-        protected.extend(unified.external_data.values().map(|external| external.hash));
+        protected.extend(unified.external_data.keys().copied());
         protected.extend(unified.tool_content_hashes.iter().copied());
         protected.insert(current_state_pointer);
         if let Some(pointer) = machine_state_pointer {

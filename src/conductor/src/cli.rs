@@ -156,8 +156,8 @@ pub struct RemoveArgs {
 pub enum RemoveCommand {
     /// Removes one external-data reference from `conductor.machine.ncl`.
     Data {
-        /// External data name.
-        name: String,
+        /// External data CAS hash key.
+        hash: String,
     },
     /// Removes one tool content map from `conductor.machine.ncl`.
     Tool {
@@ -330,7 +330,7 @@ fn handle_remove(
     args: RemoveArgs,
 ) -> Result<(), ConductorError> {
     match args.command {
-        RemoveCommand::Data { name } => remove_data(machine_ncl, &name),
+        RemoveCommand::Data { hash } => remove_data(machine_ncl, &hash),
         RemoveCommand::Tool { name, metadata } => remove_tool(machine_ncl, &name, metadata),
     }
 }
@@ -397,7 +397,7 @@ async fn import_data(
         source,
     })?;
     let hash = cas.put(bytes).await?;
-    let name = path
+    let default_description = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
@@ -409,12 +409,11 @@ async fn import_data(
         .to_string();
 
     machine.add_external_data(
-        name.clone(),
+        hash,
         AddExternalDataOptions::new(ExternalContentRef {
-            hash,
             description: description
                 .map(std::string::ToString::to_string)
-                .or_else(|| Some(name.clone())),
+                .or_else(|| Some(default_description.clone())),
         })
         .overwrite_existing(true),
     )?;
@@ -491,6 +490,8 @@ fn register_or_merge_imported_tool(
         map.insert(relative_path, hash);
     }
 
+    machine.sync_tool_content_external_data_roots();
+
     Ok(())
 }
 
@@ -526,14 +527,21 @@ fn resolve_import_process_name(
 }
 
 /// Removes one external-data reference from the program-edited document.
-fn remove_data(machine_ncl: &Path, name: &str) -> Result<(), ConductorError> {
+fn remove_data(machine_ncl: &Path, hash: &str) -> Result<(), ConductorError> {
+    let hash = hash.parse::<Hash>().map_err(|source| {
+        ConductorError::Workflow(format!(
+            "external data key '{hash}' is not a valid CAS hash: {source}"
+        ))
+    })?;
     let mut machine = load_machine_document(machine_ncl)?;
-    let removed = machine.external_data.remove(name);
+    let removed = machine.external_data.remove(&hash);
     if removed.is_none() {
         return Err(ConductorError::Workflow(format!(
-            "external data '{name}' is not present in conductor.machine.ncl"
+            "external data '{hash}' is not present in conductor.machine.ncl"
         )));
     }
+
+    machine.sync_tool_content_external_data_roots();
 
     save_machine_document(machine_ncl, &machine)
 }
@@ -553,6 +561,8 @@ fn remove_tool(
         )));
     }
 
+    machine.sync_tool_content_external_data_roots();
+
     save_machine_document(machine_ncl, &machine)?;
 
     Ok(())
@@ -570,8 +580,8 @@ async fn run_gc(
     let state = load_state_document(state_ncl)?;
 
     let mut roots: BTreeSet<Hash> = BTreeSet::new();
-    roots.extend(user.external_data.values().map(|entry| entry.hash));
-    roots.extend(machine.external_data.values().map(|entry| entry.hash));
+    roots.extend(user.external_data.keys().copied());
+    roots.extend(machine.external_data.keys().copied());
     roots.extend(
         user.tool_configs
             .values()
@@ -773,7 +783,7 @@ mod tests {
         schema_export_dir,
     };
     use crate::model::config::{
-        InputBinding, MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
+        MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
     };
     use crate::model::state::{OrchestrationState, ToolCallInstance};
     use clap::Parser;
@@ -900,6 +910,7 @@ mod tests {
             panic!("bootstrapped tool should be executable");
         };
         assert_eq!(command, &vec!["demo.exe".to_string()]);
+        assert!(machine.external_data.contains_key(&Hash::from_content(b"demo-a")));
     }
 
     #[test]
@@ -934,6 +945,7 @@ mod tests {
             .and_then(|config| config.content_map.as_ref())
             .expect("content_map should exist after merge");
         assert!(content_map.contains_key("payload.txt"));
+        assert!(machine.external_data.contains_key(&Hash::from_content(b"demo-b")));
     }
 
     #[test]
@@ -958,13 +970,7 @@ mod tests {
                     tool_name: "echo@1.0.0".to_string(),
                     metadata: ToolSpec {
                         is_impure: true,
-                        inputs: BTreeMap::from([(
-                            "text".to_string(),
-                            ToolInputSpec {
-                                default: Some(InputBinding::String("fallback".to_string())),
-                                ..ToolInputSpec::default()
-                            },
-                        )]),
+                        inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
                         kind: ToolKindSpec::Builtin {
                             name: "echo".to_string(),
                             version: "1.0.0".to_string(),

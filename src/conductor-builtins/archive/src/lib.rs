@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use clap::{ArgAction, Parser};
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "mediapm.builtin.archive@1.0.0";
+pub const TOOL_ID: &str = "builtins.archive@1.0.0";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = "archive";
@@ -518,6 +518,6 @@ mod tests {
     #[test]
     fn descriptor_json_contains_tool_id() {
         let json = describe_json().expect("descriptor serialization should succeed");
-        assert!(json.contains("mediapm.builtin.archive@1.0.0"));
+        assert!(json.contains("builtins.archive@1.0.0"));
     }
 }

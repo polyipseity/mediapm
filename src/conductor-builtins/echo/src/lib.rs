@@ -37,7 +37,7 @@ use clap::{Parser, ValueEnum};
 pub const TOOL_NAME: &str = "echo";
 
 /// Stable builtin identifier registered in phase topology surfaces.
-pub const TOOL_ID: &str = "echo@1.0.0";
+pub const TOOL_ID: &str = "builtins.echo@1.0.0";
 
 /// Canonical semantic version for this builtin implementation.
 pub const TOOL_VERSION: &str = "1.0.0";

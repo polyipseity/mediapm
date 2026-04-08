@@ -621,14 +621,8 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
             external_data: state
                 .external_data
                 .into_iter()
-                .map(|(name, reference)| {
-                    (
-                        name,
-                        ExternalContentRef {
-                            hash: reference.hash,
-                            description: reference.description,
-                        },
-                    )
+                .map(|(hash, reference)| {
+                    (hash, ExternalContentRef { description: reference.description })
                 })
                 .collect(),
             tools: state
@@ -660,16 +654,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     ToolInputKind::StringList
                                                 }
                                             },
-                                            default: input_spec.default.map(|default_binding| {
-                                                match default_binding {
-                                                    v_latest::InputBindingLatest::String(value) => {
-                                                        InputBinding::String(value)
-                                                    }
-                                                    v_latest::InputBindingLatest::StringList(
-                                                        values,
-                                                    ) => InputBinding::StringList(values),
-                                                }
-                                            }),
                                         },
                                     )
                                 })
@@ -806,13 +790,10 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
             external_data: runtime
                 .external_data
                 .into_iter()
-                .map(|(name, reference)| {
+                .map(|(hash, reference)| {
                     (
-                        name,
-                        v_latest::ExternalContentRefLatest {
-                            hash: reference.hash,
-                            description: reference.description,
-                        },
+                        hash,
+                        v_latest::ExternalContentRefLatest { description: reference.description },
                     )
                 })
                 .collect(),
@@ -839,18 +820,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     v_latest::ToolInputKindLatest::StringList
                                                 }
                                             },
-                                            default: input_spec.default.map(|default_binding| {
-                                                match default_binding {
-                                                    InputBinding::String(value) => {
-                                                        v_latest::InputBindingLatest::String(value)
-                                                    }
-                                                    InputBinding::StringList(values) => {
-                                                        v_latest::InputBindingLatest::StringList(
-                                                            values,
-                                                        )
-                                                    }
-                                                }
-                                            }),
                                         },
                                     )
                                 })
@@ -1230,6 +1199,8 @@ fn vet_latest_envelope(
         }
     }
 
+    let external_hashes = envelope.external_data.keys().copied().collect::<BTreeSet<_>>();
+
     for (tool_name, tool_config) in &envelope.tool_configs {
         if tool_config.max_concurrent_calls == 0 || tool_config.max_concurrent_calls < -1 {
             return Err(ConductorError::Workflow(format!(
@@ -1263,13 +1234,22 @@ fn vet_latest_envelope(
                     }
                 }
                 v_latest::ToolSpecLatest::Executable { inputs, .. } => {
+                    if let Some(content_map) = &tool_config.content_map {
+                        for (relative_path, hash) in content_map {
+                            if !external_hashes.contains(hash) {
+                                return Err(ConductorError::Workflow(format!(
+                                    "{document_kind} tool_configs '{tool_name}' content_map '{relative_path}' references hash '{hash}' that is missing from external_data"
+                                )));
+                            }
+                        }
+                    }
+
                     for (input_name, binding) in &tool_config.input_defaults {
                         let Some(input_spec) = inputs.get(input_name) else {
                             return Err(ConductorError::Workflow(format!(
                                 "{document_kind} tool_configs '{tool_name}' input_defaults references undeclared tool input '{input_name}'"
                             )));
                         };
-
                         match (&input_spec.kind, binding) {
                             (
                                 v_latest::ToolInputKindLatest::String,
@@ -1355,37 +1335,6 @@ fn vet_latest_envelope(
                 }
 
                 for (input_name, input_spec) in inputs {
-                    if let Some(default_binding) = &input_spec.default {
-                        match (&input_spec.kind, default_binding) {
-                            (
-                                v_latest::ToolInputKindLatest::String,
-                                v_latest::InputBindingLatest::String(_),
-                            )
-                            | (
-                                v_latest::ToolInputKindLatest::StringList,
-                                v_latest::InputBindingLatest::StringList(_),
-                            ) => {}
-                            (
-                                v_latest::ToolInputKindLatest::String,
-                                v_latest::InputBindingLatest::StringList(_),
-                            ) => {
-                                return Err(ConductorError::Workflow(format!(
-                                    "{document_kind} tool '{}' input '{input_name}' declares kind 'string' but default has kind 'string_list'",
-                                    step.tool,
-                                )));
-                            }
-                            (
-                                v_latest::ToolInputKindLatest::StringList,
-                                v_latest::InputBindingLatest::String(_),
-                            ) => {
-                                return Err(ConductorError::Workflow(format!(
-                                    "{document_kind} tool '{}' input '{input_name}' declares kind 'string_list' but default has kind 'string'",
-                                    step.tool,
-                                )));
-                            }
-                        }
-                    }
-
                     if let Some(binding) = step.inputs.get(input_name) {
                         match (&input_spec.kind, binding) {
                             (
@@ -1421,7 +1370,7 @@ fn vet_latest_envelope(
                             .get(&step.tool)
                             .and_then(|tool_config| tool_config.input_defaults.get(input_name));
 
-                        if input_spec.default.is_none() && tool_config_default.is_none() {
+                        if tool_config_default.is_none() {
                             return Err(ConductorError::Workflow(format!(
                                 "{document_kind} workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
                                 step.id, step.tool,
@@ -1899,8 +1848,8 @@ version.validate_document (migration.migrate_atomic {} {} document)
         cas_store_dir = ".runtime/store",
     },
     external_data = {
-        item = {
-            hash = "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "fixture root",
         },
     },
     tools = {
@@ -1934,9 +1883,17 @@ version.validate_document (migration.migrate_atomic {} {} document)
         state_ncl = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
+    external_data = {
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "tool content root",
+        },
+    },
     tool_configs = {
         "tool_a@1.0.0" = {
             max_concurrent_calls = -1,
+            input_defaults = {
+                "args" = ["--flag", "value"],
+            },
             content_map = {
                 "bin/tool" = "blake3:0000000000000000000000000000000000000000000000000000000000000000",
             },
@@ -1958,7 +1915,14 @@ version.validate_document (migration.migrate_atomic {} {} document)
         assert_eq!(decoded.runtime_storage.conductor_dir.as_deref(), Some(".runtime"));
         assert_eq!(decoded.runtime_storage.state_ncl.as_deref(), Some(".runtime/state.ncl"));
         assert_eq!(decoded.runtime_storage.cas_store_dir.as_deref(), Some(".runtime/store"));
+        assert_eq!(decoded.external_data.len(), 1);
         assert_eq!(decoded.tool_configs.len(), 1);
+        assert!(
+            decoded
+                .tool_configs
+                .get("tool_a@1.0.0")
+                .is_some_and(|config| config.input_defaults.contains_key("args"))
+        );
         assert_eq!(
             decoded.impure_timestamps.get("wf").and_then(|steps| steps.get("step")).copied(),
             Some(ImpureTimestamp { epoch_seconds: 123, subsec_nanos: 456 })
@@ -1966,7 +1930,46 @@ version.validate_document (migration.migrate_atomic {} {} document)
         assert!(decoded.state_pointer.is_some());
     }
 
-    /// Verifies workflow-step string bindings accept `${external_data.<name>}`.
+    /// Verifies tool-config content-map hashes must be rooted in external_data.
+    #[test]
+    fn decode_user_document_rejects_content_map_hash_missing_external_data_root() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "tool_a@1.0.0" = {
+            kind = "executable",
+            is_impure = false,
+            command = ["bin/tool"],
+            env_vars = {},
+            success_codes = [0],
+            inputs = {},
+            outputs = {
+                stdout = {
+                    capture = {
+                        kind = "stdout",
+                    },
+                },
+            },
+        },
+    },
+    tool_configs = {
+        "tool_a@1.0.0" = {
+            max_concurrent_calls = -1,
+            content_map = {
+                "bin/tool" = "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+            },
+        },
+    },
+}
+"#;
+
+        let err = decode_user_document(source.as_bytes())
+            .expect_err("content_map hash without external_data root should be rejected");
+        assert!(err.to_string().contains("missing from external_data"));
+    }
+
+    /// Verifies workflow-step string bindings accept `${external_data.<hash>}`.
     #[test]
     fn decode_user_document_accepts_external_data_input_binding() {
         let source = r#"
@@ -1986,7 +1989,7 @@ version.validate_document (migration.migrate_atomic {} {} document)
                     id = "step-1",
                     tool = "echo@1.0.0",
                     inputs = {
-                        path = "${external_data.config_root}",
+                        path = "${external_data.blake3:0000000000000000000000000000000000000000000000000000000000000000}",
                     },
                 },
             ],
@@ -1999,7 +2002,10 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let step = &decoded.workflows["wf"].steps[0];
         assert_eq!(
             step.inputs.get("path"),
-            Some(&InputBinding::String("${external_data.config_root}".to_string()))
+            Some(&InputBinding::String(
+                "${external_data.blake3:0000000000000000000000000000000000000000000000000000000000000000}"
+                    .to_string()
+            ))
         );
     }
 
@@ -2024,7 +2030,7 @@ version.validate_document (migration.migrate_atomic {} {} document)
                     id = "step-1",
                     tool = "echo@1.0.0",
                     inputs = {
-                        path = "prefix-${external_data.config_root}/artifact.txt",
+                        path = "prefix-${external_data.blake3:0000000000000000000000000000000000000000000000000000000000000000}/artifact.txt",
                     },
                 },
             ],
@@ -2038,7 +2044,8 @@ version.validate_document (migration.migrate_atomic {} {} document)
         assert_eq!(
             step.inputs.get("path"),
             Some(&InputBinding::String(
-                "prefix-${external_data.config_root}/artifact.txt".to_string()
+                "prefix-${external_data.blake3:0000000000000000000000000000000000000000000000000000000000000000}/artifact.txt"
+                    .to_string()
             ))
         );
     }
@@ -2079,6 +2086,46 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let tool = decoded.tools.get("tool_exec@1.0.0").expect("tool should exist");
         let text_input = tool.inputs.get("text").expect("input should exist");
         assert_eq!(text_input.kind, ToolInputKind::String);
+    }
+
+    /// Verifies tool-level executable input defaults are rejected and callers
+    /// must use `tool_configs.<tool>.input_defaults` instead.
+    #[test]
+    fn decode_user_document_rejects_tool_level_input_default_field() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "tool_exec@1.0.0" = {
+            kind = "executable",
+            command = ["bin/tool"],
+            inputs = {
+                text = {
+                    default = "fallback",
+                },
+            },
+            outputs = {
+                out = { capture = { kind = "stdout" } },
+            },
+        },
+    },
+    workflows = {
+        wf = {
+            steps = [
+                {
+                    id = "step-1",
+                    tool = "tool_exec@1.0.0",
+                    inputs = { text = "hello" },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        let err = decode_user_document(source.as_bytes())
+            .expect_err("tool-level input defaults should be rejected");
+        assert!(err.to_string().contains("default"));
     }
 
     /// Verifies executable input declarations support explicit `string_list`

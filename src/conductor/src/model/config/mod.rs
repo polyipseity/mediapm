@@ -11,7 +11,8 @@
 //!   and migration contracts remain Nickel-based, even though the module path
 //!   is now `model::config`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
 
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
@@ -132,9 +133,9 @@ pub struct UserNickelDocument {
     /// `runtime_storage`.
     #[serde(default, skip_serializing_if = "RuntimeStorageConfig::is_empty")]
     pub runtime_storage: RuntimeStorageConfig,
-    /// Named external content references.
+    /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
-    pub external_data: BTreeMap<String, ExternalContentRef>,
+    pub external_data: BTreeMap<Hash, ExternalContentRef>,
     /// Tool definitions keyed by logical tool name.
     #[serde(default)]
     pub tools: BTreeMap<String, ToolSpec>,
@@ -157,8 +158,6 @@ pub struct UserNickelDocument {
 /// External content reference resolved through CAS.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalContentRef {
-    /// Stable hash identity for the external content blob.
-    pub hash: Hash,
     /// Optional human description.
     #[serde(default)]
     pub description: Option<String>,
@@ -174,8 +173,8 @@ pub struct AddExternalDataOptions {
     pub reference: ExternalContentRef,
     /// Existing-entry conflict policy.
     ///
-    /// - `false` (default): adding an existing name fails fast.
-    /// - `true`: existing entries with the same name are replaced.
+    /// - `false` (default): adding an existing hash fails fast.
+    /// - `true`: existing entries for the same hash are replaced.
     pub overwrite_existing: bool,
 }
 
@@ -310,6 +309,9 @@ pub struct ToolConfigSpec {
     ///   separate entries would materialize the same file path; sibling files
     ///   in the same folders are allowed and merged.
     /// - Absolute paths and escaping paths (for example `..`) are rejected.
+    /// - Every referenced CAS hash must also appear in top-level
+    ///   `external_data` so configuration-owned tool payload roots remain
+    ///   visible to pruning logic.
     ///
     /// This configuration is invalid for builtin tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -427,11 +429,6 @@ pub struct ToolInputSpec {
     /// When omitted, runtime defaults to [`ToolInputKind::String`].
     #[serde(default, skip_serializing_if = "is_default_tool_input_kind")]
     pub kind: ToolInputKind,
-    /// Optional default binding value used when a step omits this input.
-    ///
-    /// Runtime validates that this default binding kind matches [`Self::kind`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<InputBinding>,
 }
 
 /// Unified process selector for one tool.
@@ -599,7 +596,7 @@ pub struct WorkflowStepSpec {
     /// - input values are either one scalar string or one list of strings,
     /// - scalar-string values support `${...}` interpolation with these
     ///   expression forms:
-    ///   - `${external_data.<name>}`,
+    ///   - `${external_data.<hash>}`,
     ///   - `${step_output.<step_id>.<output_name>}`,
     /// - list values apply the same interpolation rules per list item,
     /// - plain text outside `${...}` spans is preserved literally in each
@@ -698,7 +695,7 @@ impl From<Vec<String>> for InputBinding {
     }
 }
 
-/// Prefix for `${external_data.<name>}` interpolation expression bodies.
+/// Prefix for `${external_data.<hash>}` interpolation expression bodies.
 const INPUT_BINDING_EXTERNAL_DATA_PREFIX: &str = "external_data.";
 
 /// Prefix for `${step_output.<step_id>.<output_name>}` expression bodies.
@@ -715,8 +712,8 @@ pub(crate) enum ParsedInputBindingSegment<'a> {
     /// Interpolated external-data reference looked up from top-level
     /// `external_data`.
     ExternalData {
-        /// External-data reference name.
-        name: &'a str,
+        /// External-data reference hash key.
+        hash: Hash,
     },
     /// Interpolated prior-step output reference.
     StepOutput {
@@ -734,17 +731,23 @@ fn parse_input_binding_expression<'a>(
 ) -> Result<ParsedInputBindingSegment<'a>, ConductorError> {
     if expression.contains(":file(") || expression.contains(":folder(") {
         return Err(ConductorError::Workflow(format!(
-            "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<name>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
+            "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
         )));
     }
 
-    if let Some(name) = expression.strip_prefix(INPUT_BINDING_EXTERNAL_DATA_PREFIX) {
-        if name.trim().is_empty() {
+    if let Some(hash_text) = expression.strip_prefix(INPUT_BINDING_EXTERNAL_DATA_PREFIX) {
+        let hash_text = hash_text.trim();
+        if hash_text.is_empty() {
             return Err(ConductorError::Workflow(
-                "input binding '${external_data.<name>}' requires a non-empty <name>".to_string(),
+                "input binding '${external_data.<hash>}' requires a non-empty <hash>".to_string(),
             ));
         }
-        return Ok(ParsedInputBindingSegment::ExternalData { name });
+        let hash = Hash::from_str(hash_text).map_err(|error| {
+            ConductorError::Workflow(format!(
+                "input binding '${{external_data.{hash_text}}}' must reference a valid CAS hash key: {error}"
+            ))
+        })?;
+        return Ok(ParsedInputBindingSegment::ExternalData { hash });
     }
 
     if let Some(selector) = expression.strip_prefix(INPUT_BINDING_STEP_OUTPUT_PREFIX) {
@@ -764,7 +767,7 @@ fn parse_input_binding_expression<'a>(
     }
 
     Err(ConductorError::Workflow(format!(
-        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<name>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
+        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
     )))
 }
 
@@ -772,7 +775,7 @@ fn parse_input_binding_expression<'a>(
 ///
 /// Rules:
 /// - plain text outside `${...}` tokens is preserved as literal content,
-/// - supported interpolation expressions are `${external_data.<name>}`,
+/// - supported interpolation expressions are `${external_data.<hash>}`,
 ///   and `${step_output.<step_id>.<output_name>}`,
 /// - unsupported `${...}` expressions fail fast with explicit errors,
 /// - `${...` without a closing `}` fails fast.
@@ -824,9 +827,9 @@ pub struct MachineNickelDocument {
     /// `runtime_storage`.
     #[serde(default, skip_serializing_if = "RuntimeStorageConfig::is_empty")]
     pub runtime_storage: RuntimeStorageConfig,
-    /// Named external content references.
+    /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
-    pub external_data: BTreeMap<String, ExternalContentRef>,
+    pub external_data: BTreeMap<Hash, ExternalContentRef>,
     /// Tool definitions keyed by logical tool name.
     #[serde(default)]
     pub tools: BTreeMap<String, ToolSpec>,
@@ -867,13 +870,30 @@ impl UserNickelDocument {
     /// Validation rules:
     /// - `tool_name` must be non-empty after trimming,
     /// - duplicates fail unless `overwrite_existing = true`,
-    /// - builtin tools cannot end up with `content_map` in effective config.
+    /// - builtin tools cannot end up with `content_map` in effective config,
+    /// - content-map hashes are reconciled into managed `external_data` roots.
     pub fn add_tool(
         &mut self,
         tool_name: impl Into<String>,
         options: AddToolOptions,
     ) -> Result<(), ConductorError> {
-        add_tool_to_maps(&mut self.tools, &mut self.tool_configs, tool_name.into(), options)
+        add_tool_to_maps(
+            &mut self.tools,
+            &mut self.tool_configs,
+            &mut self.external_data,
+            tool_name.into(),
+            options,
+        )
+    }
+
+    /// Reconciles managed external-data CAS roots with current tool content maps.
+    ///
+    /// This helper guarantees that every hash referenced from
+    /// `tool_configs.<tool>.content_map` appears in `external_data` and removes
+    /// stale managed tool-content root entries when no configured tool refers
+    /// to those hashes anymore.
+    pub fn sync_tool_content_external_data_roots(&mut self) {
+        sync_tool_content_external_data_roots(&mut self.external_data, &self.tool_configs);
     }
 }
 
@@ -886,34 +906,89 @@ impl MachineNickelDocument {
         tool_name: impl Into<String>,
         options: AddToolOptions,
     ) -> Result<(), ConductorError> {
-        add_tool_to_maps(&mut self.tools, &mut self.tool_configs, tool_name.into(), options)
+        add_tool_to_maps(
+            &mut self.tools,
+            &mut self.tool_configs,
+            &mut self.external_data,
+            tool_name.into(),
+            options,
+        )
+    }
+
+    /// Reconciles managed external-data CAS roots with current tool content maps.
+    ///
+    /// This helper guarantees that every hash referenced from
+    /// `tool_configs.<tool>.content_map` appears in `external_data` and removes
+    /// stale managed tool-content root entries when no configured tool refers
+    /// to those hashes anymore.
+    pub fn sync_tool_content_external_data_roots(&mut self) {
+        sync_tool_content_external_data_roots(&mut self.external_data, &self.tool_configs);
     }
 
     /// Adds one external-data entry to machine document state.
     ///
     /// Validation rules:
-    /// - `name` must be non-empty after trimming,
+    /// - `hash` is the external-data map key,
     /// - duplicates fail unless `overwrite_existing = true`.
     pub fn add_external_data(
         &mut self,
-        name: impl Into<String>,
+        hash: Hash,
         options: AddExternalDataOptions,
     ) -> Result<(), ConductorError> {
-        let name = name.into();
-        if name.trim().is_empty() {
-            return Err(ConductorError::Workflow(
-                "external data name cannot be empty when adding machine external data".to_string(),
-            ));
-        }
-
-        if !options.overwrite_existing && self.external_data.contains_key(&name) {
+        if !options.overwrite_existing && self.external_data.contains_key(&hash) {
             return Err(ConductorError::Workflow(format!(
-                "external data '{name}' already exists in machine config; set overwrite_existing=true to replace it"
+                "external data '{hash}' already exists in machine config; set overwrite_existing=true to replace it"
             )));
         }
 
-        self.external_data.insert(name, options.reference);
+        self.external_data.insert(hash, options.reference);
         Ok(())
+    }
+}
+
+/// Prefix reserved for managed external-data descriptions that root tool
+/// content-map CAS hashes against pruning.
+const MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX: &str = "managed tool content CAS root for";
+
+/// Collects all CAS hashes referenced by configured tool content maps.
+fn collect_tool_content_map_hashes(
+    tool_configs: &BTreeMap<String, ToolConfigSpec>,
+) -> BTreeSet<Hash> {
+    tool_configs
+        .values()
+        .flat_map(|config| config.content_map.iter().flat_map(|map| map.values().copied()))
+        .collect()
+}
+
+/// Returns true when one external-data description marks managed tool content.
+fn is_managed_tool_content_description(description: Option<&str>) -> bool {
+    description.is_some_and(|text| text.starts_with(MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX))
+}
+
+/// Reconciles managed external-data roots against current tool content-map hashes.
+///
+/// Behavior:
+/// - ensures each referenced content-map hash appears at least once in
+///   `external_data`,
+/// - removes stale managed tool-content entries whose hash no longer appears
+///   in any configured tool content map,
+/// - preserves non-managed `external_data` entries even when their hashes are
+///   unrelated to tool content maps.
+fn sync_tool_content_external_data_roots(
+    external_data: &mut BTreeMap<Hash, ExternalContentRef>,
+    tool_configs: &BTreeMap<String, ToolConfigSpec>,
+) {
+    let referenced_hashes = collect_tool_content_map_hashes(tool_configs);
+
+    external_data.retain(|hash, reference| {
+        referenced_hashes.contains(hash)
+            || !is_managed_tool_content_description(reference.description.as_deref())
+    });
+
+    for hash in referenced_hashes {
+        external_data.entry(hash).or_insert_with(|| ExternalContentRef {
+            description: Some(format!("{MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX} {hash}")),
+        });
     }
 }
 
@@ -923,6 +998,7 @@ impl MachineNickelDocument {
 fn add_tool_to_maps(
     tools: &mut BTreeMap<String, ToolSpec>,
     tool_configs: &mut BTreeMap<String, ToolConfigSpec>,
+    external_data: &mut BTreeMap<Hash, ExternalContentRef>,
     tool_name: String,
     options: AddToolOptions,
 ) -> Result<(), ConductorError> {
@@ -952,6 +1028,8 @@ fn add_tool_to_maps(
             tool_configs.remove(&tool_name);
         }
     }
+
+    sync_tool_content_external_data_roots(external_data, tool_configs);
 
     Ok(())
 }
@@ -1070,6 +1148,7 @@ mod tests {
 
         assert!(document.tools.contains_key("demo@1.0.0"));
         assert!(document.tool_configs.contains_key("demo@1.0.0"));
+        assert!(document.external_data.contains_key(&Hash::from_content(b"demo-hash-a")));
     }
 
     /// Verifies duplicate insertion fails unless overwrite policy is enabled.
@@ -1125,6 +1204,7 @@ mod tests {
 
         assert!(document.tools.contains_key("tool@1.0.0"));
         assert!(!document.tool_configs.contains_key("tool@1.0.0"));
+        assert!(!document.external_data.contains_key(&Hash::from_content(b"demo-hash-b")));
     }
 
     /// Verifies builtin entries reject `content_map` at add-tool validation time.
@@ -1154,47 +1234,82 @@ mod tests {
         assert!(error.to_string().contains("cannot have tool_configs.content_map"));
     }
 
-    /// Verifies machine external-data insertion succeeds for new names.
+    /// Verifies machine external-data insertion succeeds for new hash keys.
     #[test]
     fn add_machine_external_data_inserts_entry() {
         let mut machine = MachineNickelDocument::default();
+        let fixture_hash = Hash::from_content(b"fixture");
         machine
             .add_external_data(
-                "fixture.txt",
+                fixture_hash,
                 AddExternalDataOptions::new(ExternalContentRef {
-                    hash: Hash::from_content(b"fixture"),
                     description: Some("fixture payload".to_string()),
                 }),
             )
             .expect("machine external data insert should succeed");
 
-        assert!(machine.external_data.contains_key("fixture.txt"));
+        assert!(machine.external_data.contains_key(&fixture_hash));
     }
 
     /// Verifies duplicate machine external-data insertion fails unless overwrite mode is enabled.
     #[test]
     fn add_machine_external_data_rejects_duplicate_without_overwrite() {
         let mut machine = MachineNickelDocument::default();
+        let fixture_hash = Hash::from_content(b"fixture-a");
         machine
             .add_external_data(
-                "fixture.txt",
-                AddExternalDataOptions::new(ExternalContentRef {
-                    hash: Hash::from_content(b"fixture-a"),
-                    description: None,
-                }),
+                fixture_hash,
+                AddExternalDataOptions::new(ExternalContentRef { description: None }),
             )
             .expect("first insert should succeed");
 
         let error = machine
             .add_external_data(
-                "fixture.txt",
-                AddExternalDataOptions::new(ExternalContentRef {
-                    hash: Hash::from_content(b"fixture-b"),
-                    description: None,
-                }),
+                fixture_hash,
+                AddExternalDataOptions::new(ExternalContentRef { description: None }),
             )
             .expect_err("duplicate insert without overwrite should fail");
 
         assert!(error.to_string().contains("already exists"));
+    }
+
+    /// Verifies stale managed tool-content roots are removed while non-managed
+    /// external-data entries are preserved.
+    #[test]
+    fn sync_tool_content_external_data_roots_prunes_only_managed_entries() {
+        let stale_hash = Hash::from_content(b"stale-tool-content");
+        let kept_hash = Hash::from_content(b"kept-user-entry");
+        let active_hash = Hash::from_content(b"active-tool-content");
+
+        let mut machine = MachineNickelDocument {
+            external_data: BTreeMap::from([
+                (
+                    stale_hash,
+                    ExternalContentRef {
+                        description: Some("managed tool content CAS root for stale".to_string()),
+                    },
+                ),
+                (
+                    kept_hash,
+                    ExternalContentRef { description: Some("user-managed fixture".to_string()) },
+                ),
+            ]),
+            tool_configs: BTreeMap::from([(
+                "tool@1.0.0".to_string(),
+                ToolConfigSpec {
+                    max_concurrent_calls: -1,
+                    description: None,
+                    input_defaults: BTreeMap::new(),
+                    content_map: Some(BTreeMap::from([("bin/tool".to_string(), active_hash)])),
+                },
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        machine.sync_tool_content_external_data_roots();
+
+        assert!(machine.external_data.contains_key(&kept_hash));
+        assert!(!machine.external_data.contains_key(&stale_hash));
+        assert!(machine.external_data.contains_key(&active_hash));
     }
 }

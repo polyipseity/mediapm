@@ -4,6 +4,7 @@
 //! can sequence workflows without also carrying parsing and merge logic inline.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
@@ -216,12 +217,13 @@ impl DocumentLoaderActor {
     }
 
     /// Merges two named maps and rejects conflicting duplicate definitions.
-    fn merge_named_maps<T>(
+    fn merge_named_maps<K, T>(
         field_name: &str,
-        user: &BTreeMap<String, T>,
-        machine: &BTreeMap<String, T>,
-    ) -> Result<BTreeMap<String, T>, ConductorError>
+        user: &BTreeMap<K, T>,
+        machine: &BTreeMap<K, T>,
+    ) -> Result<BTreeMap<K, T>, ConductorError>
     where
+        K: Ord + Clone + Display,
         T: Clone + PartialEq,
     {
         let mut merged = user.clone();
@@ -242,13 +244,14 @@ impl DocumentLoaderActor {
     }
 
     /// Merges three named maps and rejects conflicting duplicate definitions.
-    fn merge_three_named_maps<T>(
+    fn merge_three_named_maps<K, T>(
         field_name: &str,
-        user: &BTreeMap<String, T>,
-        machine: &BTreeMap<String, T>,
-        state: &BTreeMap<String, T>,
-    ) -> Result<BTreeMap<String, T>, ConductorError>
+        user: &BTreeMap<K, T>,
+        machine: &BTreeMap<K, T>,
+        state: &BTreeMap<K, T>,
+    ) -> Result<BTreeMap<K, T>, ConductorError>
     where
+        K: Ord + Clone + Display,
         T: Clone + PartialEq,
     {
         let merged_user_machine = Self::merge_named_maps(field_name, user, machine)?;
@@ -697,6 +700,7 @@ impl DocumentLoaderActor {
     ) -> Result<(UnifiedNickelDocument, BTreeMap<String, ToolSpec>), ConductorError> {
         let external_data =
             Self::merge_named_maps("external_data", &user.external_data, &machine.external_data)?;
+        let external_hashes = external_data.keys().copied().collect::<BTreeSet<_>>();
         let merged_tools = Self::merge_tools(&user.tools, &machine.tools, options)?;
         let workflows = Self::merge_named_maps("workflows", &user.workflows, &machine.workflows)?;
         let tool_configs = Self::merge_tool_configs(&user.tool_configs, &machine.tool_configs)?;
@@ -806,6 +810,13 @@ impl DocumentLoaderActor {
             }
 
             let merged_map = merged_config.content_map.unwrap_or_default();
+            for (relative_path, hash) in &merged_map {
+                if !external_hashes.contains(hash) {
+                    return Err(ConductorError::Workflow(format!(
+                        "tool '{tool_name}' content_map '{relative_path}' references hash '{hash}' that is missing from merged external_data"
+                    )));
+                }
+            }
             tool_content_hashes.extend(merged_map.values().copied());
             tools.insert(
                 tool_name.clone(),
@@ -885,8 +896,8 @@ mod tests {
 {
     version = 1,
     external_data = {
-        subject = {
-            hash = "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "user value",
         },
     },
 }
@@ -899,8 +910,8 @@ mod tests {
 {
     version = 1,
     external_data = {
-        subject = {
-            hash = "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "machine value",
         },
     },
 }
@@ -916,7 +927,9 @@ mod tests {
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
-                assert!(message.contains("external_data.subject"));
+                assert!(message.contains(
+                    "external_data.blake3:0000000000000000000000000000000000000000000000000000000000000000"
+                ));
             }
             other => panic!("expected workflow merge conflict, got {other:?}"),
         }
@@ -937,6 +950,12 @@ mod tests {
         };
 
         let machine = MachineNickelDocument {
+            external_data: BTreeMap::from([(
+                Hash::from_content(b"machine"),
+                crate::model::config::ExternalContentRef {
+                    description: Some("fixture root".to_string()),
+                },
+            )]),
             tool_configs: BTreeMap::from([(
                 "unknown_tool@v9.9.9".to_string(),
                 ToolConfigSpec {

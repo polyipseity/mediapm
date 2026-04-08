@@ -142,7 +142,7 @@ struct DemoRunPaths {
 /// Inputs used to build one feature-rich demo user document.
 #[derive(Debug, Clone)]
 struct DemoWorkflowBuildInputs {
-    /// External-data hash used by `${external_data.demo_banner}` interpolation.
+    /// External-data hash used by `${external_data.<hash>}` interpolation.
     banner_hash: Hash,
     /// Absolute machine-document path used for absolute import.
     absolute_machine_path: String,
@@ -282,6 +282,8 @@ fn unix_timestamp_seconds() -> u64 {
 
 /// Builds a user document that showcases broad conductor behavior.
 fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
+    let banner_binding = format!("${{external_data.{}}}", inputs.banner_hash);
+
     UserNickelDocument {
         metadata: NickelDocumentMetadata {
             id: "demo-conductor-feature-showcase".to_string(),
@@ -299,11 +301,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             )),
         },
         external_data: BTreeMap::from([(
-            "demo_banner".to_string(),
+            inputs.banner_hash,
             ExternalContentRef {
-                hash: inputs.banner_hash,
                 description: Some(
-                    "banner payload used by ${external_data.demo_banner} bindings".to_string(),
+                    format!("banner payload used by {banner_binding} bindings"),
                 ),
             },
         )]),
@@ -383,9 +384,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "banner=${external_data.demo_banner} | import=${step_output.import_user_relative.result}"
-                                    .to_string()
-                                    .into(),
+                                format!(
+                                    "banner={banner_binding} | import=${{step_output.import_user_relative.result}}"
+                                )
+                                .into(),
                             )]),
                             depends_on: vec!["import_user_relative".to_string()],
                             outputs: BTreeMap::from([(
@@ -527,7 +529,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             tool: "echo@1.0.0".to_string(),
                             inputs: BTreeMap::from([(
                                 "text".to_string(),
-                                "${external_data.demo_banner}".to_string().into(),
+                                banner_binding.clone().into(),
                             )]),
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
@@ -604,6 +606,20 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
             id: "demo-machine".to_string(),
             identity: NickelIdentity { first: "demo".to_string(), last: "machine".to_string() },
         },
+        external_data: BTreeMap::from([
+            (
+                inputs.concat_tool_binary_hash,
+                ExternalContentRef {
+                    description: Some("concat-tool executable payload root".to_string()),
+                },
+            ),
+            (
+                inputs.concat_tool_resource_hash,
+                ExternalContentRef {
+                    description: Some("concat-tool fixed resource payload root".to_string()),
+                },
+            ),
+        ]),
         tools: BTreeMap::from([
             ("echo@1.0.0".to_string(), builtin_tool("echo", "1.0.0", false)),
             ("fs@1.0.0".to_string(), builtin_tool("fs", "1.0.0", true)),
@@ -896,9 +912,7 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
 
     let cas = FileSystemCas::open(&cas_root).await?;
     let banner_hash = cas
-        .put(
-            "demo banner payload resolved through ${external_data.demo_banner}".as_bytes().to_vec(),
-        )
+        .put("demo banner payload resolved through ${external_data.<hash>}".as_bytes().to_vec())
         .await?;
     let concat_tool_binary_hash = cas.put(fs::read(&concat_binary_path)?).await?;
     let concat_tool_resource_hash = cas.put(fs::read(&concat_resource_path)?).await?;

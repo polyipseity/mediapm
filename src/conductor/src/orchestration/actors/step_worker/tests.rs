@@ -104,13 +104,7 @@ fn derived_keys_for_builtin_ignore_non_identity_metadata_fields() {
     };
     let builtin_verbose = ToolSpec {
         is_impure: true,
-        inputs: BTreeMap::from([(
-            "text".to_string(),
-            ToolInputSpec {
-                default: Some(InputBinding::String("fallback".to_string())),
-                ..ToolInputSpec::default()
-            },
-        )]),
+        inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
         kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
         outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
     };
@@ -468,7 +462,7 @@ async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
         max_concurrent_calls: -1,
         inputs: BTreeMap::from([(
             "argv".to_string(),
-            ToolInputSpec { kind: ToolInputKind::StringList, default: None },
+            ToolInputSpec { kind: ToolInputKind::StringList },
         )]),
         default_inputs: BTreeMap::new(),
         process: ProcessSpec::Executable {
@@ -1080,6 +1074,33 @@ async fn builtin_import_dispatch_exports_folder_as_zip() {
     .expect("unpack imported folder zip");
 
     assert!(temp.path().join("unzipped").join("a.txt").exists());
+}
+
+/// Protects builtin import `cas_hash` dispatch that reads payload bytes from CAS.
+#[tokio::test]
+async fn builtin_import_dispatch_supports_cas_hash_kind() {
+    let cas = Arc::new(InMemoryCas::new());
+    let hash = cas.put(b"from-cas".to_vec()).await.expect("seed CAS payload");
+    let executor = StepWorkerExecutor { cas };
+    let temp = tempfile::tempdir().expect("tempdir");
+
+    let capture = executor
+        .execute_builtin_tool(
+            mediapm_conductor_builtin_import::TOOL_NAME,
+            mediapm_conductor_builtin_import::TOOL_VERSION,
+            &BTreeMap::from([
+                ("kind".to_string(), "cas_hash".to_string()),
+                ("hash".to_string(), hash.to_string()),
+            ]),
+            &BTreeMap::new(),
+            temp.path(),
+            temp.path(),
+        )
+        .await
+        .expect("builtin import cas_hash dispatch should succeed");
+
+    assert_eq!(capture.stdout, b"from-cas");
+    assert_eq!(capture.process_code, 0);
 }
 
 /// Protects builtin fs dispatch and rooted file-write behavior.

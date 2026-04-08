@@ -51,8 +51,8 @@ pub(super) struct UnifiedToolSpec {
 /// The runtime view of the merged conductor documents.
 #[derive(Debug, Clone)]
 pub(super) struct UnifiedNickelDocument {
-    /// External CAS-backed inputs keyed by logical name.
-    pub external_data: BTreeMap<String, ExternalContentRef>,
+    /// External CAS-backed inputs keyed by CAS hash identity.
+    pub external_data: BTreeMap<Hash, ExternalContentRef>,
     /// Unified tool catalog keyed by immutable tool name.
     pub tools: BTreeMap<String, UnifiedToolSpec>,
     /// Unified workflow catalog keyed by workflow name.

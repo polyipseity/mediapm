@@ -508,47 +508,6 @@ where
                 continue;
             }
 
-            if let Some(default_binding) = &input_spec.default {
-                let resolved_input = match (input_spec.kind, default_binding) {
-                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
-                        self.resolve_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            binding_text,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
-                        self.resolve_list_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            input_name,
-                            binding_list,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::String, InputBinding::StringList(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "tool '{}' input '{input_name}' declares kind 'string' but default provides 'string_list'",
-                            step.tool,
-                        )));
-                    }
-                    (ToolInputKind::StringList, InputBinding::String(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "tool '{}' input '{input_name}' declares kind 'string_list' but default provides 'string'",
-                            step.tool,
-                        )));
-                    }
-                };
-
-                resolved.insert(input_name.clone(), resolved_input);
-                continue;
-            }
-
             return Err(ConductorError::Workflow(format!(
                 "workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
                 step.id, step.tool,
@@ -563,7 +522,7 @@ where
     ///
     /// Input bindings support `${...}` interpolation mixed with literal text.
     /// Supported expression forms are:
-    /// - `${external_data.<name>}`,
+    /// - `${external_data.<hash>}`,
     /// - `${step_output.<step_id>.<output_name>}`,
     ///
     /// Every resolved input payload is persisted to CAS and represented by the
@@ -608,14 +567,14 @@ where
 
         for segment in parsed_segments {
             match segment {
-                ParsedInputBindingSegment::ExternalData { name } => {
-                    let external = unified.external_data.get(name).ok_or_else(|| {
-                        ConductorError::Workflow(format!(
-                            "workflow '{workflow_name}' step '{}' references unknown external data '{name}'",
+                ParsedInputBindingSegment::ExternalData { hash } => {
+                    if !unified.external_data.contains_key(&hash) {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' references unknown external data hash '{hash}'",
                             step.id
-                        ))
-                    })?;
-                    let bytes = self.cas.get(external.hash).await?;
+                        )));
+                    }
+                    let bytes = self.cas.get(hash).await?;
                     plain_content.extend_from_slice(bytes.as_ref());
                 }
                 ParsedInputBindingSegment::Literal(content) => {
@@ -1384,10 +1343,33 @@ where
                 mediapm_conductor_builtin_import::TOOL_NAME,
                 mediapm_conductor_builtin_import::TOOL_VERSION,
             ) => {
-                let payload = mediapm_conductor_builtin_import::execute_content_map(
+                let mut resolved_hash_payloads = BTreeMap::new();
+                if matches!(resolved_args.get("kind").map(String::as_str), Some("cas_hash")) {
+                    let hash_text = resolved_args.get("hash").ok_or_else(|| {
+                        ConductorError::Workflow(
+                            "builtin 'import@1.0.0' kind='cas_hash' requires 'hash'".to_string(),
+                        )
+                    })?;
+                    let hash = hash_text.parse::<Hash>().map_err(|_| {
+                        ConductorError::Workflow(format!(
+                            "builtin 'import@1.0.0' kind='cas_hash' received invalid hash '{hash_text}'"
+                        ))
+                    })?;
+                    let bytes = self.cas.get(hash).await?;
+                    resolved_hash_payloads.insert(hash_text.clone(), bytes.as_ref().to_vec());
+                }
+
+                let payload = mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
                     outermost_config_dir,
                     resolved_args,
                     &BTreeMap::new(),
+                    |hash_text| {
+                        resolved_hash_payloads.get(hash_text).cloned().ok_or_else(|| {
+                            format!(
+                                "import kind='cas_hash' hash '{hash_text}' was not preloaded from CAS"
+                            )
+                        })
+                    },
                 )
                 .map_err(|err| {
                     ConductorError::Workflow(format!(

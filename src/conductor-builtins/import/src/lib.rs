@@ -9,6 +9,7 @@
 //! - `kind=folder`: read one directory and emit folder payload bytes as
 //!   uncompressed ZIP,
 //! - `kind=fetch`: download URL bytes with integrity pinning and emit bytes.
+//! - `kind=cas_hash`: resolve one CAS hash and emit referenced bytes.
 //!
 //! For `kind=fetch`, destination file paths are not accepted; output bytes are
 //! returned directly.
@@ -23,7 +24,7 @@ use clap::{ArgAction, Parser};
 use ureq::Error as UreqError;
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "mediapm.builtin.import@1.0.0";
+pub const TOOL_ID: &str = "builtins.import@1.0.0";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = "import";
@@ -66,7 +67,8 @@ pub fn describe() -> StringMap {
         ("is_impure".to_string(), IS_IMPURE.to_string()),
         (
             "summary".to_string(),
-            "import builtin that ingests file/folder/fetch sources into pure bytes".to_string(),
+            "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes"
+                .to_string(),
         ),
     ])
 }
@@ -84,17 +86,56 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 /// - `kind=folder` with `path=<source path>` and optional
 ///   `path_mode=relative|absolute`,
 /// - `kind=fetch` with `url` + `expected_hash`.
+/// - `kind=cas_hash` with `hash=<blake3:...>`.
 ///
 /// Path-mode semantics for `kind=file|folder`:
 /// - default `path_mode` is `relative`,
 /// - `relative` resolves `path` under `import_root_dir` and rejects traversal
 ///   outside that root,
 /// - `absolute` requires `path` to be absolute.
+///
+/// `kind=cas_hash` requires the caller to use
+/// [`execute_content_map_with_hash_resolver`] so hash lookups can be provided
+/// by runtime context (for example conductor CAS state).
 pub fn execute_content_map(
     import_root_dir: &Path,
     params: &StringMap,
     inputs: &StringMap,
 ) -> Result<Vec<u8>, String> {
+    execute_content_map_internal::<fn(&str) -> Result<Vec<u8>, String>>(
+        import_root_dir,
+        params,
+        inputs,
+        None,
+    )
+}
+
+/// Executes one import request with a hash resolver for `kind=cas_hash`.
+///
+/// The resolver is called only when `kind=cas_hash` is selected and receives
+/// the exact `hash` argument value.
+pub fn execute_content_map_with_hash_resolver<F>(
+    import_root_dir: &Path,
+    params: &StringMap,
+    inputs: &StringMap,
+    hash_resolver: F,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str) -> Result<Vec<u8>, String>,
+{
+    execute_content_map_internal(import_root_dir, params, inputs, Some(hash_resolver))
+}
+
+/// Executes one import request and optionally resolves CAS hashes.
+fn execute_content_map_internal<F>(
+    import_root_dir: &Path,
+    params: &StringMap,
+    inputs: &StringMap,
+    mut hash_resolver: Option<F>,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut(&str) -> Result<Vec<u8>, String>,
+{
     validate_argument_contract(params, inputs)?;
 
     let kind = params.get("kind").ok_or_else(|| "import requires 'kind'".to_string())?;
@@ -126,6 +167,15 @@ pub fn execute_content_map(
             )
         }
         "fetch" => execute_fetch(params),
+        "cas_hash" => {
+            let hash_text = params
+                .get("hash")
+                .ok_or_else(|| "import kind='cas_hash' requires 'hash'".to_string())?;
+            let resolver = hash_resolver.as_mut().ok_or_else(|| {
+                "import kind='cas_hash' requires caller-provided hash resolver support".to_string()
+            })?;
+            resolver(hash_text)
+        }
         other => Err(format!("unsupported import kind '{other}'")),
     }
 }
@@ -263,7 +313,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
     let kind = params
         .get("kind")
-        .ok_or_else(|| "import builtin requires 'kind' (file|folder|fetch)".to_string())?;
+        .ok_or_else(|| "import builtin requires 'kind' (file|folder|fetch|cas_hash)".to_string())?;
 
     match kind.as_str() {
         "file" | "folder" => {
@@ -301,7 +351,31 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
             Ok(())
         }
-        other => Err(format!("import builtin requires kind=file|folder|fetch, got '{other}'")),
+        "cas_hash" => {
+            for key in params.keys() {
+                if key != "kind" && key != "hash" {
+                    return Err(format!("import kind='cas_hash' does not accept arg '{key}'"));
+                }
+            }
+
+            let Some(value) = params.get("hash") else {
+                return Err("import kind='cas_hash' requires 'hash'".to_string());
+            };
+            if value.trim().is_empty() {
+                return Err("import kind='cas_hash' requires non-empty 'hash'".to_string());
+            }
+            if !is_valid_blake3_digest(value) {
+                return Err(
+                    "import kind='cas_hash' requires 'hash' in form 'blake3:<64 lowercase hex chars>'"
+                        .to_string(),
+                );
+            }
+
+            Ok(())
+        }
+        other => {
+            Err(format!("import builtin requires kind=file|folder|fetch|cas_hash, got '{other}'"))
+        }
     }
 }
 
@@ -402,7 +476,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{describe_json, execute_content_map};
+    use super::{describe_json, execute_content_map, execute_content_map_with_hash_resolver};
 
     /// Verifies importing a local file by default relative mode returns bytes.
     #[test]
@@ -524,10 +598,53 @@ mod tests {
         assert!(err.contains("does not accept arg 'dest_path'"));
     }
 
+    /// Verifies `cas_hash` mode resolves payload bytes via caller hash loader.
+    #[test]
+    fn execute_cas_hash_uses_hash_resolver_payload() {
+        let temp = tempdir().expect("tempdir");
+        let hash = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let payload = execute_content_map_with_hash_resolver(
+            temp.path(),
+            &BTreeMap::from([
+                ("kind".to_string(), "cas_hash".to_string()),
+                ("hash".to_string(), hash.to_string()),
+            ]),
+            &BTreeMap::new(),
+            |requested| {
+                if requested == hash {
+                    Ok(b"payload-from-cas".to_vec())
+                } else {
+                    Err("unexpected hash requested".to_string())
+                }
+            },
+        )
+        .expect("cas_hash import should succeed");
+
+        assert_eq!(payload, b"payload-from-cas");
+    }
+
+    /// Verifies `cas_hash` mode fails fast when no hash resolver is available.
+    #[test]
+    fn execute_cas_hash_rejects_missing_hash_resolver() {
+        let temp = tempdir().expect("tempdir");
+        let hash = "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let err = execute_content_map(
+            temp.path(),
+            &BTreeMap::from([
+                ("kind".to_string(), "cas_hash".to_string()),
+                ("hash".to_string(), hash.to_string()),
+            ]),
+            &BTreeMap::new(),
+        )
+        .expect_err("cas_hash mode should require runtime hash resolver");
+
+        assert!(err.contains("requires caller-provided hash resolver support"));
+    }
+
     /// Verifies descriptor serialization keeps the stable builtin identifier.
     #[test]
     fn descriptor_json_contains_tool_id() {
         let json = describe_json().expect("descriptor serialization should succeed");
-        assert!(json.contains("mediapm.builtin.import@1.0.0"));
+        assert!(json.contains("builtins.import@1.0.0"));
     }
 }

@@ -270,9 +270,7 @@ pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, Conductor
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::model::config::{
-        InputBinding, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
-    };
+    use crate::model::config::{ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec};
     use crate::model::state::OrchestrationState;
 
     /// Verifies encoded state uses flattened top-level `instances` shape.
@@ -414,13 +412,7 @@ mod tests {
                     tool_name: "echo@1.0.0".to_string(),
                     metadata: ToolSpec {
                         is_impure: true,
-                        inputs: BTreeMap::from([(
-                            "text".to_string(),
-                            ToolInputSpec {
-                                default: Some(InputBinding::String("fallback".to_string())),
-                                ..ToolInputSpec::default()
-                            },
-                        )]),
+                        inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
                         kind: ToolKindSpec::Builtin {
                             name: "echo".to_string(),
                             version: "1.0.0".to_string(),

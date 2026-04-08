@@ -109,8 +109,9 @@ When editing tool/config schema behavior, preserve these invariants:
    executable and builtin tools).
 
 6. For executable tools, workflow step inputs must reference declared
-   executable tool inputs; missing required inputs (without defaults) are
-   errors.
+   executable tool inputs; missing required inputs are errors unless
+   `tool_configs.<tool>.input_defaults` provides the input. Tool-level
+   defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
 
 7. For builtin tools, step inputs are pass-through bindings and builtin crates
    enforce their own strict argument/input contracts.
@@ -118,7 +119,8 @@ When editing tool/config schema behavior, preserve these invariants:
 8. Workflow-step input bindings are typed call-site values:
    scalar `string` or `string_list` (list-of-strings). Both forms support
    `${...}` interpolation with expression forms
-   `${external_data.<name>}` and `${step_output.<step_id>.<output_name>}`;
+
+   `${external_data.<hash>}` and `${step_output.<step_id>.<output_name>}`;
    list bindings apply interpolation per item. Input-binding interpolation is
    text-oriented and does not support materialization directives such as
    `:file(...)` or `:folder(...)`; unsupported `${...}` expressions are
@@ -143,8 +145,10 @@ When editing tool/config schema behavior, preserve these invariants:
     whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a
     trailing slash/backslash mean destination files whose mapped bytes are
     written directly; `./` (or `.\\`) is valid and means sandbox-root unpack;
+
     separate content-map entries must not overwrite the same target file path;
-    absolute and escaping paths are invalid.
+    every referenced hash must be rooted in top-level `external_data`; absolute
+    and escaping paths are invalid.
 
 15. `tool_configs.<tool>.description` is optional human-facing metadata only;
 

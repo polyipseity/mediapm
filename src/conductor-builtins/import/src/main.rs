@@ -3,6 +3,8 @@
 //! `import` is impure and reads external file/folder/fetch sources.
 //! For `kind=file|folder`, `path_mode` defaults to `relative` and resolves
 //! `path` under the configured root directory.
+//! `kind=cas_hash` is intended for conductor runtime dispatch where the caller
+//! can resolve hash bytes from CAS state.
 //! Successful runs emit imported payload bytes directly, while failures are
 //! surfaced via ordinary Rust errors.
 //! This crate currently requires explicit keyed flags and does not define a

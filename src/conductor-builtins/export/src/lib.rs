@@ -23,7 +23,7 @@ use std::path::{Component, Path, PathBuf};
 use clap::{ArgAction, Parser};
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "mediapm.builtin.export@1.0.0";
+pub const TOOL_ID: &str = "builtins.export@1.0.0";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = "export";

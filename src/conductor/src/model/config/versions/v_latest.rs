@@ -54,13 +54,11 @@ fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
 
 /// Declared tool input entry in the latest persisted schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolInputSpecLatest {
     /// Declared input value kind.
     #[serde(default, skip_serializing_if = "is_default_tool_input_kind_latest")]
     pub(crate) kind: ToolInputKindLatest,
-    /// Optional default binding value used when input binding is omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) default: Option<InputBindingLatest>,
 }
 
 /// Tool definition persisted in the latest Nickel schema.
@@ -244,11 +242,9 @@ pub(crate) struct ToolOutputSpecLatest {
     pub(crate) capture: OutputCaptureLatest,
 }
 
-/// External content reference persisted in the latest Nickel schema.
+/// External content metadata persisted in the latest Nickel schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExternalContentRefLatest {
-    /// CAS hash identity for the referenced content.
-    pub(crate) hash: Hash,
     /// Optional human description.
     #[serde(default)]
     pub(crate) description: Option<String>,
@@ -310,7 +306,7 @@ pub(crate) struct WorkflowStepSpecLatest {
 
 /// Persisted workflow input binding value.
 ///
-/// Special forms are string-based, for example `${external_data.<name>}` and
+/// Special forms are string-based, for example `${external_data.<hash>}` and
 /// `${step_output.<step_id>.<output_name>}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -327,9 +323,9 @@ pub(crate) struct NickelStateLatest {
     /// Grouped runtime storage-path configuration.
     #[serde(default, skip_serializing_if = "RuntimeStorageLatest::is_empty")]
     pub(crate) runtime_storage: RuntimeStorageLatest,
-    /// External content references.
+    /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
-    pub(crate) external_data: BTreeMap<String, ExternalContentRefLatest>,
+    pub(crate) external_data: BTreeMap<Hash, ExternalContentRefLatest>,
     /// Tool definitions.
     #[serde(default)]
     pub(crate) tools: BTreeMap<String, ToolSpecLatest>,
@@ -355,9 +351,9 @@ pub(crate) struct NickelEnvelopeLatest {
     /// Grouped runtime storage-path configuration.
     #[serde(default, skip_serializing_if = "RuntimeStorageLatest::is_empty")]
     pub(crate) runtime_storage: RuntimeStorageLatest,
-    /// External content references.
+    /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
-    pub(crate) external_data: BTreeMap<String, ExternalContentRefLatest>,
+    pub(crate) external_data: BTreeMap<Hash, ExternalContentRefLatest>,
     /// Tool definitions.
     #[serde(default)]
     pub(crate) tools: BTreeMap<String, ToolSpecLatest>,

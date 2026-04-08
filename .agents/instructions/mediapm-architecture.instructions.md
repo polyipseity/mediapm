@@ -83,6 +83,8 @@ is a narrow, documented reason.
   - `./` (or `.\\`) unpacks ZIP content directly at sandbox root,
   - non-trailing `content_map` keys materialize direct file bytes,
   - separate content-map entries must not overwrite the same file path,
+  - every hash referenced by `tool_configs.<tool>.content_map` must also be
+    present in top-level `external_data`,
   - absolute/escaping paths are rejected.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
   For Phase 3 runtime paths, preserve these `mediapm` invariants:

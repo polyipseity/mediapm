@@ -53,7 +53,6 @@ let OutputPolicyV1 = {
 in
 
 # ||| Per-input declaration for reusable tool input contracts.
-# ||| `default` is consumed when a step omits the corresponding input key.
 # ||| `kind` defaults to `"string"` when omitted.
 let ToolInputKindV1 = std.contract.any_of [
   std.contract.from_predicate (fun value => value == "string"),
@@ -62,10 +61,8 @@ let ToolInputKindV1 = std.contract.any_of [
 in
 
 # ||| Per-input declaration for reusable tool input contracts.
-# ||| `default` applies only to scalar-string inputs.
 let ToolInputSpecV1 = {
   kind | ToolInputKindV1 | optional,
-  default | String | optional,
 }
 in
 
@@ -160,10 +157,9 @@ let ToolOutputSpecV1 = {
 }
 in
 
-# ||| External content entry resolved through CAS.
-# ||| `hash` points to immutable content addressed by CAS identity rules.
+# ||| External content metadata resolved through CAS.
+# ||| Hash identity is represented by the map key in `external_data`.
 let ExternalContentRefV1 = {
-  hash | HashStringV1,
   description | String | optional,
 }
 in
@@ -171,7 +167,7 @@ in
 # ||| Workflow-step input binding value.
 # ||| Input bindings are scalar strings or list-of-strings.
 # ||| Supported interpolation expressions inside `${...}` (validated in Rust):
-# ||| - `external_data.<name>`
+# ||| - `external_data.<hash>`
 # ||| - `step_output.<step_id>.<output_name>`
 # ||| Plain text outside `${...}` is preserved as literal input content.
 # ||| For list bindings, interpolation rules apply per list item.
@@ -219,6 +215,9 @@ let ToolConfigV1 = {
   # Optional human-facing note for runtime config context.
   # This field is informational only and does not affect runtime identity.
   description | String | optional,
+  # Optional per-tool default input bindings used when one workflow step omits
+  # matching input keys.
+  input_defaults | {_ : InputBindingV1} | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
   # Key semantics:
@@ -248,6 +247,7 @@ let NickelDocumentV1 = {
   # Grouped runtime storage path configuration.
   # Defaults are resolved by runtime when fields are omitted.
   runtime_storage | RuntimeStorageV1 | optional,
+  # External-data map keys are CAS hash strings parsed by Rust.
   external_data | {_ : ExternalContentRefV1} | optional,
   tools | {_ : ToolSpecV1} | optional,
   workflows | {_ : WorkflowSpecV1} | optional,
