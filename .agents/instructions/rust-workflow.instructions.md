@@ -58,6 +58,16 @@ When editing Rust source, validate changes with targeted checks first:
   - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
   - `cargo clippy -p mediapm --all-targets --all-features -- -D warnings` → same as `cargo clippy-pkg mediapm`
 
+- For edits under `src/mediapm/**`, include one final runtime validation run:
+  - `cargo run --package mediapm --example demo_online`
+  - Run this after targeted crate tests/lints so generated managed-tool
+    workflows are exercised end to end.
+  - This is a strict gate: do not downgrade failures into skip manifests,
+    placeholder payload acceptance, or "soft-success" status.
+  - If external network/tool providers prevent success, report that blocker
+    explicitly and treat the change as blocked until the run succeeds or the
+    reviewer accepts the transient failure.
+
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
 
 ### After module splits or cross-crate refactors

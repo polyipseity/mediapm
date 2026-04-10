@@ -18,6 +18,16 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - top-level `tests/tests.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
     `tests/prop/`.
+- For examples that depend on external tools/network/media providers, prefer
+  compile-only coverage (`[[example]] ... test = false`) with explicit rustdoc
+  notes explaining why runtime execution is intentionally excluded from
+  automated test runs (for example `cargo run -p mediapm --example demo_online`).
+- Even when CI keeps these examples compile-only, changes under
+  `src/mediapm/**` must still run
+  `cargo run --package mediapm --example demo_online` as the final local
+  validation gate.
+  This gate is strict: do not mark runs as passed via skip manifests,
+  placeholder payload acceptance, or fallback success markers.
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.
@@ -91,6 +101,11 @@ Before finishing, run targeted validation on affected crates:
 - `cargo fmt-check` (formatting check on all Rust files)
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
 - `cargo clippy-pkg <crate>` (affected crate lint; e.g., `cargo clippy-pkg mediapm`)
+- For edits under `src/mediapm/**`, run
+  `cargo run --package mediapm --example demo_online` last and report
+  transient external-provider failures explicitly if encountered.
+  Treat those failures as blockers until the run succeeds or the reviewer
+  accepts the transient failure.
 
 **Before submitting (pre-push):**
 

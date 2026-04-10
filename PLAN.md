@@ -346,7 +346,17 @@ Migration changes must include rationale comments and schema-hop notes.
 
 ### 11.1 Local quality commands
 
-Preferred aliases:
+**For development (recommended starting point):**
+
+Use targeted aliases from `.cargo/config.toml` to validate only affected crates:
+
+- `cargo test-pkg <crate>` — test specific crate(s) (e.g., `cargo test-pkg mediapm`)
+- `cargo clippy-pkg <crate>` — lint specific crate(s) (e.g., `cargo clippy-pkg mediapm-conductor`)
+- `cargo build-pkg <crate>` — build specific crate(s)
+
+**Before submitting (pre-push validation):**
+
+Run workspace-wide validation:
 
 - `cargo fmt-check`
 - `cargo clippy-all`

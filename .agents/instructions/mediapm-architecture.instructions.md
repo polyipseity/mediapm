@@ -89,6 +89,16 @@ is a narrow, documented reason.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
   For Phase 3 runtime paths, preserve these `mediapm` invariants:
   - default runtime root is `.mediapm/`,
+  - `mediapm.ncl` `runtime` may optionally override
+    `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
+    `conductor_state`, `lockfile`, `library_dir`, `tmp_dir`, and
+    `use_user_download_cache`,
+  - defaults for those paths are:
+    `mediapm_dir = .mediapm`,
+    `conductor_config = mediapm.conductor.ncl`,
+    `conductor_machine_config = mediapm.conductor.machine.ncl`,
+    `conductor_state = <mediapm_dir>/state.ncl`,
+    `lockfile = <mediapm_dir>/lock.jsonc`,
   - persisted `mediapm.ncl` schema keeps explicit top-level numeric
     `version` markers,
   - persisted lockfile schema keeps explicit top-level numeric `version`
@@ -102,18 +112,79 @@ is a narrow, documented reason.
   - default materialized output root is the topmost `mediapm.ncl` directory
     itself (no implicit `library/` folder),
   - when `mediapm` invokes conductor, grouped conductor runtime-storage
-    defaults also target `.mediapm/`
-    (`conductor_dir = .mediapm`, `state_ncl = .mediapm/state.ncl`,
-    `cas_store_dir = .mediapm/store`),
-  - relative `runtime_storage.library_dir` resolves relative to the topmost
+    defaults also target effective `mediapm_dir`
+    (`conductor_dir = <mediapm_dir>`, `state_config = <mediapm_dir>/state.ncl`,
+    `cas_store_dir = <mediapm_dir>/store`),
+  - `mediapm` workflow execution must pass grouped runtime-storage paths
+    derived from effective phase-3 path resolution so volatile state writes do
+    not regress to standalone `.conductor/state.ncl` defaults,
+  - relative `runtime.library_dir` resolves relative to the topmost
     `mediapm.ncl` directory,
-  - relative `runtime_storage.tmp_dir` resolves relative to effective
-    `runtime_storage.mediapm_dir`,
-  - media source schema keeps local-source payload pointers in
+  - relative `runtime.tmp_dir` resolves relative to effective
+    `runtime.mediapm_dir`,
+  - `runtime.use_user_download_cache` defaults to enabled when omitted
+    and controls one shared user-level global managed-tool download cache with
+    fixed layout `tool-cache/store/` + `tool-cache/index.jsonc` and fixed
+    30-day eviction,
+  - relative `runtime.conductor_config`,
+    `runtime.conductor_machine_config`,
+    `runtime.conductor_state`, and `runtime.lockfile` resolve
+    relative to the topmost `mediapm.ncl` directory,
+  - local-source ingest created by `mediapm media add-local` is represented as
+    an `import` step (`options.kind = "cas_hash"`, `options.hash =
+    "blake3:<hex>"`),
+  - media source schema may additionally keep manual payload pointers in
     `variant_hashes` (variant name -> CAS hash),
-  - remote (`http`/`https`) sources require explicit `download` configuration,
-  - transform execution order is the declared `transforms` list order,
-  - transform `options` are operation-specific and unknown keys are rejected.
+  - each media source may optionally define explicit `workflow_id` override,
+  - media processing uses one ordered `steps` list where each step defines
+    `tool` (`yt-dlp`, `import`, `ffmpeg`, `rsgain`, `picard`),
+    `input_variants`, `output_variants`, strict tool-specific
+    `options`, and optional low-level `input_options` bindings,
+  - online source URLs are declared by downloader steps via `options.uri`
+    (not by top-level media fields),
+  - step low-level list input bindings can be provided through
+    `input_options` for `leading_args` and `trailing_args`,
+  - default tool reconciliation sets `yt-dlp` to one active concurrent call
+    (`tool_configs.<yt-dlp-tool-id>.max_concurrent_calls = 1`) unless users
+    explicitly choose a different value,
+  - each media source must reconcile to exactly one managed workflow id
+    (`mediapm.media.<media-id>` by default, overrideable with `workflow_id`),
+  - managed workflow metadata may include optional informational `name` and
+    `description`;
+    `name` defaults to `<media-id>` (without the `mediapm.media.` prefix)
+    and `description` may mirror `media.<id>.description`,
+  - workflow identity remains the workflow map key and runtime semantics/cache
+    keys must not depend on workflow `name`/`description`,
+  - transform variant dependencies must be expressed with explicit
+    `${step_output...}` input bindings and matching `depends_on` edges,
+  - managed executable media tool specs must expose comprehensive IO contracts,
+    including `leading_args` and `trailing_args` `string_list` inputs,
+    source/operation payload input (`source_url` or `input_content`), and
+    outputs (`output_content`, `stdout`, `stderr`, `process_code`),
+  - `mediapm sync` and `mediapm tools sync` must keep tool provisioning
+    workspace-local under `.mediapm/tools/`,
+  - default tag-update policy differs by command (`sync` skips remote checks
+    for tag-only selectors unless overridden; `tools sync` checks by default),
+  - tool source/release-track defaults are catalog-driven (source is not
+    required in `mediapm.ncl`),
+  - each `mediapm.ncl` tool entry must declare `version` or `tag` (or both),
+  - when both `version` and `tag` are provided they must resolve to the same
+    release selector,
+  - immutable tool ids include source identifiers and resolve with precedence
+    `mediapm.tools.<name>+source@git-hash` ->
+    `mediapm.tools.<name>+source@version` ->
+    `mediapm.tools.<name>+source@tag`; resolution must fail if none are
+    available,
+  - catalog defaults are: `ffmpeg` preferring GitHub Releases (BtbN on
+    Windows) with platform fallbacks, `yt-dlp` from GitHub Releases on
+    `latest`, `rsgain` from GitHub Releases on `latest` ZIP assets, and
+     `picard` from GitHub Releases on `latest` with headless CLI (`-e "load … ; quit"`),
+    `QT_QPA_PLATFORM=offscreen`, and custom `PICARD_INI`,
+  - archive-backed managed tool payloads should prefer compact
+    directory-form `content_map` entries (trailing `/` keys with ZIP bytes)
+    over one-entry-per-file maps when possible,
+  - step execution order is the declared `steps` list order,
+  - step `options` are tool-specific and unknown keys are rejected.
 - Built-ins should stay narrowly scoped and version-addressable.
 - Builtin runtime behavior must remain inside `src/conductor-builtins/*`
   crates (not inline in `src/conductor`).
@@ -190,6 +261,12 @@ Run targeted validation on affected crates:
 - `cargo fmt-check` (formatting check on all files)
 - `cargo clippy-pkg <crate>` (e.g., `cargo clippy-pkg mediapm`)
 - `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
+- If changes touch `src/mediapm/**`, run
+  `cargo run --package mediapm --example demo_online` as the final runtime
+  gate after targeted test/lint checks.
+  Treat this as a hard gate: do not replace failures with placeholder or
+  skip-success behavior; report transient external-provider failures as
+  blockers until run success or explicit reviewer acceptance.
 
 **Before submitting (pre-push):**
 

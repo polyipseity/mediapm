@@ -15,16 +15,34 @@ This plan defines **Phase 3: `mediapm`**, a specialized media manager built on t
 
 ### `mediapm.ncl` (Nickel) — Policy & Hierarchy
 
-* **Media Registry:** Defines URIs and desired variants.
-  * **Online:** Must use `http/s`.
-  * **Local:** Uses a special URI schema (e.g., `local:<randomly generated UUID>`).
+* **Media Registry:** Defines URIs and desired variants. Online sources must
+   use `http/s`; local sources use `local:<id>` URIs.
+* **Per-Media Shape:** Optional `description`; remote sources use explicit
+   `download` config; local sources store `variant_hashes` (variant -> CAS hash
+   pointer).
 * **Hierarchy Definition:** Maps filesystem paths to media variants.
-* **Metadata Provider IDs:** Allows manual override of metadata sources.
+* **Transform Pipeline:** Ordered `transforms` list where each step declares
+   `operation`, `targets`, and operation-specific `options` that reject unknown
+   keys.
+* **Runtime Storage Resolution:** `runtime_storage.mediapm_dir` defaults to
+   `.mediapm` and resolves relative to the outermost `mediapm.ncl` directory
+   when provided as a relative path. Relative
+   `runtime_storage.library_dir` resolves relative to the outermost
+   `mediapm.ncl` directory, while relative `runtime_storage.tmp_dir` resolves
+   relative to the effective `mediapm_dir`.
 
-### `mediapm.conductor.cue` (CUE) — Tooling & DAGs
+### `mediapm.conductor.ncl` / `mediapm.conductor.machine.ncl` (Nickel) — Tooling & DAGs
 
 * **Tool Wrappers:** High-performance schemas for `ffmpeg`, `yt-dlp`, etc.
 * **Workflow Templates:** Defines the functional pipelines for local and online sources.
+* **Mediapm-managed Conductor Defaults:** Phase 3 writes grouped runtime
+   storage defaults as `conductor_dir = .mediapm`,
+   `state_ncl = .mediapm/state.ncl`, and `cas_store_dir = .mediapm/store`.
+
+### Materialization Root Default
+
+* By default, materialized output is written directly under the directory that
+   contains the topmost `mediapm.ncl` (no implicit `library/` wrapper folder).
 
 ### `.mediapm/lock.jsonc` — The Ground Truth
 
@@ -55,10 +73,38 @@ Note, for a local source, you need to first import the data via the conductor to
 
 ## 4. Automated Tool Lifecycle (The Toolsmith)
 
-* **Commit-Pinning:** Tools are added using Git commit hashes for absolute determinism.
-* **Persistent Metadata:** Tool metadata is never removed unless no workflows reference it.
-* **Version Fallback:** If a workflow's specific tool version is missing, `mediapm` promotes the workflow to the latest version and retries.
-* **Lifecycle:** Updating a tool deletes the old binary reference but keeps the metadata for cache-lookup.
+### Decoupled Tool Management Protocol
+
+* **`mediapm` (Declarative Frontend):** `mediapm.ncl` contains desired tool requirements (`tools.<name>` with required `version` or `tag`, optional matching pair).
+* **`conductor` (Operational Backend):** Conductor machine state stores executable metadata and installed binary content-map references.
+
+### Reconciliation (`mediapm sync`)
+
+1. **Read `mediapm.ncl`:** Parse desired tools and versions.
+2. **List registered tools:** Query conductor machine registry state.
+3. **Reconcile:**
+   * Missing tool -> add new immutable tool id (`<name>@<version>`).
+   * Version mismatch -> register new immutable tool id and promote it as active in lock state.
+4. **Activate:** Persist active tool pointer in `.mediapm/lock.jsonc` (`active_tools`).
+
+### Upgrade & Pruning Semantics
+
+* **Upgrade (default through `sync`):** Adds new desired version and keeps historical metadata.
+* **Pruning (optional):** `mediapm tools prune --id <tool_id>` removes binary content references and underlying CAS blobs when possible, but retains metadata and marks tool status as `pruned`.
+
+### Specialized Tool Integration Defaults
+
+* **FFmpeg (`8.1`, source=`Evermeet`):** Prefer Evermeet static distribution metadata for macOS flows.
+* **yt-dlp (`2026.03.17+`):** Track latest GitHub release by desired-state selector.
+* **rsgain (`3.7`):** Prefer portable archive distributions.
+* **Picard (`2.13.3+`):** Run headless with `-e "load … ; quit"`, `QT_QPA_PLATFORM=offscreen`, and generate workspace-local `Picard.ini`.
+
+### Validation Rule
+
+Before finalizing a tool registration, Phase 3 verifies:
+
+* registry fingerprint can be represented as a deterministic Rust CAS hash string,
+* executable responds successfully to `--version`.
 
 ---
 
@@ -82,13 +128,11 @@ Note, for a local source, you need to first import the data via the conductor to
 
 ### CLI Commands
 
-* **`mediapm tool add <name> [--tag <tag>] [--commit <hash>]`**: Provisions a binary to the conductor. Both tag or commit is optional. If missing, default to latest release tag. If both are provided, the commit must match the tag. The tool name passed to conductor is `<name>@<commit>`. For tags, resolve the commit hash at the time of addition and use that for the tool name to ensure immutability.
-* **`mediapm tool remove <name> [--commit <hash>]`**: Removes a tool binary reference from the conductor. The metadata is kept for cache lookup, but the binary is removed to save space, regardless if it is still referenced by any workflow.
-* **`mediapm tool list`**: Lists all registered tools with their metadata.
-* **`mediapm tool update <name> [--tag <tag>] [--commit <hash>]`**: Updates a tool to a new version. This is effectively an add of the new version followed by a remove of the old version. The old version's metadata is kept for cache lookup, but the binary is removed to save space, regardless if it is still referenced by any workflow.
+* **`mediapm sync`**: Reconciles desired tool/media state from `mediapm.ncl`, executes conductor workflows, and materializes hierarchy via staging.
+* **`mediapm tools list`**: Lists all registered tools with lifecycle status (`active`/`pruned`) and binary presence.
+* **`mediapm tools prune --id <tool_id>`**: Removes one tool binary reference from conductor/CAS while preserving metadata.
 * **`mediapm media add <URI>`**: Adds a media source to the `mediapm.ncl`. Note this does not configure any variants or hierarchy, just registers the source.
 * **`mediapm media add-local <path>`**: Imports a local source and assigns a local URI. This also imports the media into the conductor as an external data. This does not configure any variants or hierarchy, just registers the source.
-* **`mediapm sync`**: Computes the diff between `.ncl` and `.lock.jsonc` and materializes via `.tmp/`.
 * **`mediapm cas <args...>`**: Direct passthrough to Phase 1.
 * **`mediapm conductor <args...>`**: Direct passthrough to Phase 2.
 
