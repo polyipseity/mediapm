@@ -49,9 +49,9 @@
     document path (default `.conductor/state.ncl`) always carry explicit
     top-level numeric `version` markers,
   - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
-    storage path fields under one `runtime_storage` record
-    (`runtime_storage.conductor_dir`, `runtime_storage.state_ncl`,
-    `runtime_storage.cas_store_dir`),
+    storage path fields under one `runtime` record
+    (`runtime.conductor_dir`, `runtime.state_config`,
+    `runtime.cas_store_dir`),
   - the resolved runtime state document path (default
     `.conductor/state.ncl`) is volatile-only and may define only
     `version`, `impure_timestamps`, and `state_pointer`,
@@ -59,16 +59,23 @@
     instance stores immutable `tool_name`; executable `metadata` remains
     `ToolSpec`-shape while builtin `metadata` persists only
     `kind`/`name`/`version` and decode rejects extra builtin metadata fields;
+    executable tool input defaults are runtime-only and must be declared under
+    `tool_configs.<tool>.input_defaults` (tool-level
+    `tools.<tool>.inputs.<input>.default` is unsupported);
     output persistence stored in orchestration state is the effective merged
     policy across duplicate equivalent tool calls (`save`: AND,
     `force_full`: OR); instance identity is derived only from
     `tool_name`, `metadata`, optional `impure_timestamp`, and `inputs` keyed
     by CAS hash references,
+  - workflow specs may include optional informational `name` and
+    `description`; workflow identity remains the workflow map key,
+    and runtime semantics/cache keys must not depend on those metadata fields,
   - executable `tool_configs.<tool>.content_map` keys are sandbox-relative
     paths where trailing `/` or `\\` means directory-from-ZIP unpack,
     `./` (or `.\\`) unpacks directly at sandbox root, non-trailing keys
-    materialize regular files, and separate entries must not overwrite the
-    same target file path.
+    materialize regular files, separate entries must not overwrite the same
+    target file path, and every referenced content-map hash must also be
+    present in `external_data`.
 - `src/conductor-builtins/` provides versioned built-in tool contracts such as
   `echo`, `fs`, `import`, `export`, and `archive`.
   Builtin runtime behavior must live in these crates (not inline in

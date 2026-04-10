@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 const DEMO_DEFAULT_CONDUCTOR_DIR: &str = ".conductor";
 
 /// Default volatile runtime state filename under `DEMO_DEFAULT_CONDUCTOR_DIR`.
-const DEMO_DEFAULT_STATE_NCL_FILE: &str = "state.ncl";
+const DEMO_DEFAULT_STATE_CONFIG_FILE: &str = "state.ncl";
 
 /// Default CAS store folder name under `DEMO_DEFAULT_CONDUCTOR_DIR`.
 const DEMO_DEFAULT_CAS_STORE_DIR: &str = "store";
@@ -289,11 +289,11 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             id: "demo-conductor-feature-showcase".to_string(),
             identity: NickelIdentity { first: "demo".to_string(), last: "conductor".to_string() },
         },
-        runtime_storage: RuntimeStorageConfig {
+        runtime: RuntimeStorageConfig {
             conductor_dir: Some(DEMO_DEFAULT_CONDUCTOR_DIR.to_string()),
-            state_ncl: Some(format!(
+            state_config: Some(format!(
                 "{}/{}",
-                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_STATE_NCL_FILE
+                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_STATE_CONFIG_FILE
             )),
             cas_store_dir: Some(format!(
                 "{}/{}",
@@ -312,6 +312,11 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             (
                 "01_feature_showcase".to_string(),
                 WorkflowSpec {
+                    name: Some("feature showcase".to_string()),
+                    description: Some(
+                        "Demonstrates all official builtins and one executable support tool"
+                            .to_string(),
+                    ),
                     steps: vec![
                         WorkflowStepSpec {
                             id: "import_user_relative".to_string(),
@@ -523,6 +528,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             (
                 "02_cache_and_depends_on".to_string(),
                 WorkflowSpec {
+                    name: Some("cache and depends_on".to_string()),
+                    description: Some(
+                        "Demonstrates cache reuse and explicit side-effect ordering".to_string(),
+                    ),
                     steps: vec![
                         WorkflowStepSpec {
                             id: "cached_source".to_string(),
@@ -590,7 +599,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
         inputs: BTreeMap::from([("payload".to_string(), ToolInputSpec::default())]),
         kind: ToolKindSpec::Executable {
             command: vec![
-                "${os.windows?concat-tool.exe}${os.linux?concat-tool}${os.macos?concat-tool}"
+                "${context.os == \"windows\" ? concat-tool.exe | ''}${context.os == \"linux\" ? concat-tool | ''}${context.os == \"macos\" ? concat-tool | ''}"
                     .to_string(),
                 "--input-file".to_string(),
                 "${inputs.payload:file(payload.txt)}".to_string(),
@@ -713,13 +722,13 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("version".to_string(), json!(1));
 
-    if !document.runtime_storage.is_empty() {
+    if !document.runtime.is_empty() {
         object.insert(
-            "runtime_storage".to_string(),
+            "runtime".to_string(),
             json!({
-                "conductor_dir": document.runtime_storage.conductor_dir.clone(),
-                "state_ncl": document.runtime_storage.state_ncl.clone(),
-                "cas_store_dir": document.runtime_storage.cas_store_dir.clone(),
+                "conductor_dir": document.runtime.conductor_dir.clone(),
+                "state_config": document.runtime.state_config.clone(),
+                "cas_store_dir": document.runtime.cas_store_dir.clone(),
             }),
         );
     }
@@ -753,13 +762,13 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
 fn machine_document_to_json(document: &MachineNickelDocument) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("version".to_string(), json!(1));
-    if !document.runtime_storage.is_empty() {
+    if !document.runtime.is_empty() {
         object.insert(
-            "runtime_storage".to_string(),
+            "runtime".to_string(),
             json!({
-                "conductor_dir": document.runtime_storage.conductor_dir.clone(),
-                "state_ncl": document.runtime_storage.state_ncl.clone(),
-                "cas_store_dir": document.runtime_storage.cas_store_dir.clone(),
+                "conductor_dir": document.runtime.conductor_dir.clone(),
+                "state_config": document.runtime.state_config.clone(),
+                "cas_store_dir": document.runtime.cas_store_dir.clone(),
             }),
         );
     }

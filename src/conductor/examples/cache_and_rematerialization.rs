@@ -234,6 +234,10 @@ fn build_user_document() -> UserNickelDocument {
             (
                 "workflow_a".to_string(),
                 WorkflowSpec {
+                    name: Some("workflow a".to_string()),
+                    description: Some(
+                        "Produces and consumes a shared output with save=false policy".to_string(),
+                    ),
                     steps: vec![
                         WorkflowStepSpec {
                             id: "shared_a".to_string(),
@@ -264,6 +268,10 @@ fn build_user_document() -> UserNickelDocument {
             (
                 "workflow_b".to_string(),
                 WorkflowSpec {
+                    name: Some("workflow b".to_string()),
+                    description: Some(
+                        "Produces and consumes a shared output with save=true policy".to_string(),
+                    ),
                     steps: vec![
                         WorkflowStepSpec {
                             id: "shared_b".to_string(),

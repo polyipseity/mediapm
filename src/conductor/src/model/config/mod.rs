@@ -81,7 +81,7 @@ pub struct ImpureTimestamp {
 
 /// Runtime storage path defaults persisted in user/machine config documents.
 ///
-/// This shape is persisted as a grouped `runtime_storage` record in
+/// This shape is persisted as a grouped `runtime` record in
 /// `conductor.ncl` and `conductor.machine.ncl`.
 ///
 /// Paths are stored as strings so runtime can resolve relative values against
@@ -93,7 +93,7 @@ pub struct RuntimeStorageConfig {
     pub conductor_dir: Option<String>,
     /// Optional override path for the volatile state document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_ncl: Option<String>,
+    pub state_config: Option<String>,
     /// Optional override path for filesystem CAS storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cas_store_dir: Option<String>,
@@ -103,7 +103,7 @@ impl RuntimeStorageConfig {
     /// Returns whether all runtime-storage override fields are absent.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.conductor_dir.is_none() && self.state_ncl.is_none() && self.cas_store_dir.is_none()
+        self.conductor_dir.is_none() && self.state_config.is_none() && self.cas_store_dir.is_none()
     }
 }
 
@@ -129,10 +129,9 @@ pub struct UserNickelDocument {
     /// Runtime-only metadata (not persisted in `v1.ncl`).
     #[serde(default)]
     pub metadata: NickelDocumentMetadata,
-    /// Grouped runtime storage path configuration persisted under
-    /// `runtime_storage`.
+    /// Grouped runtime storage path configuration persisted under `runtime`.
     #[serde(default, skip_serializing_if = "RuntimeStorageConfig::is_empty")]
-    pub runtime_storage: RuntimeStorageConfig,
+    pub runtime: RuntimeStorageConfig,
     /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
     pub external_data: BTreeMap<Hash, ExternalContentRef>,
@@ -476,9 +475,12 @@ pub enum ProcessSpec {
         ///   extracts one ZIP entry and queues that extracted content for
         ///   materialization at `<relative_path>`, then injects the path
         ///   string.
-        /// - `${os.<target>?<value>}` → includes `<value>` only when host OS
-        ///   matches `<target>` (`windows`, `linux`, or `macos`), otherwise
-        ///   renders empty content.
+        /// - `${context.os}` → injects host platform text
+        ///   (`windows`, `linux`, or `macos`).
+        /// - `${<left> <op> <right> ? <true> | <false>}` → comparison
+        ///   conditional with operators `==`, `!=`, `<`, `<=`, `>`, `>=`; the
+        ///   selected branch is rendered recursively and may include selector
+        ///   or materialization forms.
         /// - `\${...}` escapes interpolation start and renders literal
         ///   `${...}`.
         /// - JavaScript-like string escapes in literal spans are supported,
@@ -575,6 +577,18 @@ fn default_success_codes() -> Vec<i32> {
 /// One workflow DAG.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WorkflowSpec {
+    /// Optional human-facing workflow label.
+    ///
+    /// This metadata is informational only and must not affect deterministic
+    /// instance identity, topological ordering, or caching behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional human-facing workflow description.
+    ///
+    /// This metadata is informational only and must not affect deterministic
+    /// instance identity, topological ordering, or caching behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Ordered steps before topological sorting.
     #[serde(default)]
     pub steps: Vec<WorkflowStepSpec>,
@@ -823,10 +837,9 @@ pub struct MachineNickelDocument {
     /// Runtime-only metadata (not persisted in `v1.ncl`).
     #[serde(default)]
     pub metadata: NickelDocumentMetadata,
-    /// Grouped runtime storage path configuration persisted under
-    /// `runtime_storage`.
+    /// Grouped runtime storage path configuration persisted under `runtime`.
     #[serde(default, skip_serializing_if = "RuntimeStorageConfig::is_empty")]
-    pub runtime_storage: RuntimeStorageConfig,
+    pub runtime: RuntimeStorageConfig,
     /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
     pub external_data: BTreeMap<Hash, ExternalContentRef>,

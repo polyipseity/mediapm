@@ -85,6 +85,8 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
             (
                 "a".to_string(),
                 WorkflowSpec {
+                    name: None,
+                    description: None,
                     steps: vec![WorkflowStepSpec {
                         id: "s1".to_string(),
                         tool: "echo@1.0.0".to_string(),
@@ -103,6 +105,8 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
             (
                 "b".to_string(),
                 WorkflowSpec {
+                    name: None,
+                    description: None,
                     steps: vec![WorkflowStepSpec {
                         id: "s2".to_string(),
                         tool: "echo@1.0.0".to_string(),
@@ -193,6 +197,8 @@ async fn rematerializes_when_referenced_output_is_missing() {
         workflows: BTreeMap::from([(
             "wf".to_string(),
             WorkflowSpec {
+                name: None,
+                description: None,
                 steps: vec![
                     WorkflowStepSpec {
                         id: "producer".to_string(),
@@ -404,6 +410,8 @@ async fn diagnostics_include_worker_queue_metrics_and_trace_events() {
 #[test]
 fn explicit_depends_on_creates_topological_edge() {
     let workflow = WorkflowSpec {
+        name: None,
+        description: None,
         steps: vec![
             WorkflowStepSpec {
                 id: "prepare".to_string(),
@@ -435,6 +443,8 @@ fn explicit_depends_on_creates_topological_edge() {
 #[test]
 fn step_output_reference_requires_matching_depends_on() {
     let workflow = WorkflowSpec {
+        name: None,
+        description: None,
         steps: vec![
             WorkflowStepSpec {
                 id: "produce".to_string(),
@@ -464,4 +474,25 @@ fn step_output_reference_requires_matching_depends_on() {
         }
         other => panic!("expected explicit depends_on validation failure, got {other:?}"),
     }
+}
+
+/// Protects user-facing workflow label selection when metadata provides a
+/// display name.
+#[test]
+fn workflow_display_name_prefers_metadata_name_when_present() {
+    let named = WorkflowSpec {
+        name: Some("friendly workflow".to_string()),
+        description: Some("demo description".to_string()),
+        steps: Vec::new(),
+    };
+    let unnamed = WorkflowSpec { name: None, description: None, steps: Vec::new() };
+
+    assert_eq!(
+        WorkflowCoordinator::<InMemoryCas>::workflow_display_name("wf.id", &named),
+        "friendly workflow"
+    );
+    assert_eq!(
+        WorkflowCoordinator::<InMemoryCas>::workflow_display_name("wf.id", &unnamed),
+        "wf.id"
+    );
 }

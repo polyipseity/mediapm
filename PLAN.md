@@ -376,7 +376,7 @@ Preferred aliases:
 
 ## Stage C — Phase 2 Conductor completion
 
-- CUE dual-file model integration.
+- Nickel dual-file model integration.
 - Tool/workflow instance dedup + persistence merge logic.
 - orchestration state migration optics + verification tests.
 

@@ -519,6 +519,10 @@ fn build_user_document() -> UserNickelDocument {
         workflows: BTreeMap::from([(
             "diagnostics_dag".to_string(),
             WorkflowSpec {
+                name: Some("diagnostics dag".to_string()),
+                description: Some(
+                    "Fan-out/fan-in workflow used to showcase scheduler diagnostics".to_string(),
+                ),
                 steps: vec![
                     fanout_step("alpha", "A"),
                     fanout_step("beta", "B"),

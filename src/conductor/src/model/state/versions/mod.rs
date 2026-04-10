@@ -85,6 +85,37 @@ impl Migrate<latest::Envelope> for latest::Envelope {
     }
 }
 
+/// Decodes one orchestration-state envelope using one already-dispatched
+/// version marker.
+fn decode_envelope_for_version(
+    bytes: &[u8],
+    version: u32,
+) -> Result<latest::Envelope, ConductorError> {
+    match dispatch_state_version(version)? {
+        OrchestrationStateLayoutVersion::V1 => serde_json::from_slice(bytes)
+            .map_err(|err| ConductorError::Serialization(err.to_string())),
+    }
+}
+
+/// Migrates one parsed orchestration-state envelope from `from_version` to
+/// `target_version`.
+///
+/// This function is the central migration gateway used by decode flows.
+fn migrate_envelope_to_version(
+    envelope: latest::Envelope,
+    from_version: u32,
+    target_version: u32,
+) -> Result<latest::Envelope, ConductorError> {
+    let from_layout = dispatch_state_version(from_version)?;
+    let to_layout = dispatch_state_version(target_version)?;
+
+    match (from_layout, to_layout) {
+        (OrchestrationStateLayoutVersion::V1, OrchestrationStateLayoutVersion::V1) => {
+            Ok(envelope.migrate())
+        }
+    }
+}
+
 fn persistence_flags_iso() -> IsoPrime<'static, RcBrand, latest::PersistenceFlags, PersistenceFlags>
 {
     IsoPrime::new(
@@ -254,15 +285,10 @@ pub(crate) fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, Conduct
 pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
     let marker = decode_version_marker(bytes)?;
 
-    let envelope = match dispatch_state_version(marker)? {
-        OrchestrationStateLayoutVersion::V1 => {
-            let envelope: latest::Envelope = serde_json::from_slice(bytes)
-                .map_err(|err| ConductorError::Serialization(err.to_string()))?;
-            envelope.migrate()
-        }
-    };
+    let envelope = decode_envelope_for_version(bytes, marker)?;
+    let migrated = migrate_envelope_to_version(envelope, marker, latest_state_version())?;
 
-    let state = latest::version_iso().from(envelope);
+    let state = latest::version_iso().from(migrated);
     Ok(state_runtime_iso().from(state))
 }
 

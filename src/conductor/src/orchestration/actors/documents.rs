@@ -40,7 +40,7 @@ impl DocumentLoaderClient {
         &self,
         user_ncl: &Path,
         machine_ncl: &Path,
-        state_ncl: &Path,
+        state_config: &Path,
         options: RunWorkflowOptions,
     ) -> Result<LoadedDocuments, ConductorError> {
         call_t!(
@@ -49,7 +49,7 @@ impl DocumentLoaderClient {
             DEFAULT_RPC_TIMEOUT_MS,
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
-            state_ncl.to_path_buf(),
+            state_config.to_path_buf(),
             options
         )
         .map_err(|err| {
@@ -153,14 +153,14 @@ impl Actor for DocumentLoaderActor {
             DocumentLoaderMessage::LoadAndUnify(
                 user_ncl,
                 machine_ncl,
-                state_ncl,
+                state_config,
                 options,
                 reply,
             ) => {
                 let _ = reply.send(Self::load_and_unify_documents(
                     &user_ncl,
                     &machine_ncl,
-                    &state_ncl,
+                    &state_config,
                     options,
                 ));
             }
@@ -180,21 +180,19 @@ impl DocumentLoaderActor {
     fn load_and_unify_documents(
         user_ncl: &Path,
         machine_ncl: &Path,
-        state_ncl: &Path,
+        state_config: &Path,
         options: RunWorkflowOptions,
     ) -> Result<LoadedDocuments, ConductorError> {
         let user_source = Self::load_user_source(user_ncl, machine_ncl)?;
         let machine_source = Self::load_machine_source(machine_ncl)?;
-        let state_source = Self::load_state_source(state_ncl)?;
+        let state_source = Self::load_state_source(state_config)?;
         evaluate_total_configuration_sources(&user_source, &machine_source, &state_source)?;
 
         let user_document = Self::load_user_document(user_ncl, machine_ncl)?;
         let (mut machine_document, _machine_existed) = Self::load_machine_document(machine_ncl)?;
-        let mut state_document = Self::load_state_document(state_ncl)?;
-        let _validated_runtime_storage = Self::merge_runtime_storage(
-            &user_document.runtime_storage,
-            &machine_document.runtime_storage,
-        )?;
+        let mut state_document = Self::load_state_document(state_config)?;
+        let _validated_runtime_storage =
+            Self::merge_runtime_storage(&user_document.runtime, &machine_document.runtime)?;
         let (unified, merged_tools) =
             Self::unify_documents(&user_document, &machine_document, options)?;
         machine_document.tools = merged_tools;
@@ -454,11 +452,11 @@ impl DocumentLoaderActor {
         {
             conflict_fields.push("conductor_dir");
         }
-        if user.state_ncl.is_some()
-            && machine.state_ncl.is_some()
-            && user.state_ncl != machine.state_ncl
+        if user.state_config.is_some()
+            && machine.state_config.is_some()
+            && user.state_config != machine.state_config
         {
-            conflict_fields.push("state_ncl");
+            conflict_fields.push("state_config");
         }
         if user.cas_store_dir.is_some()
             && machine.cas_store_dir.is_some()
@@ -476,7 +474,7 @@ impl DocumentLoaderActor {
 
         Ok(RuntimeStorageConfig {
             conductor_dir: user.conductor_dir.clone().or_else(|| machine.conductor_dir.clone()),
-            state_ncl: user.state_ncl.clone().or_else(|| machine.state_ncl.clone()),
+            state_config: user.state_config.clone().or_else(|| machine.state_config.clone()),
             cas_store_dir: user.cas_store_dir.clone().or_else(|| machine.cas_store_dir.clone()),
         })
     }
@@ -555,8 +553,8 @@ impl DocumentLoaderActor {
 
     /// Loads the volatile state source text, returning a default empty
     /// state document when the file is missing or empty.
-    fn load_state_source(state_ncl: &Path) -> Result<String, ConductorError> {
-        if !state_ncl.exists() {
+    fn load_state_source(state_config: &Path) -> Result<String, ConductorError> {
+        if !state_config.exists() {
             let encoded = encode_state_document(StateNickelDocument::default())?;
             return String::from_utf8(encoded).map_err(|err| {
                 ConductorError::Serialization(format!(
@@ -565,11 +563,12 @@ impl DocumentLoaderActor {
             });
         }
 
-        let content = std::fs::read_to_string(state_ncl).map_err(|source| ConductorError::Io {
-            operation: "reading .conductor/state.ncl".to_string(),
-            path: state_ncl.to_path_buf(),
-            source,
-        })?;
+        let content =
+            std::fs::read_to_string(state_config).map_err(|source| ConductorError::Io {
+                operation: "reading .conductor/state.ncl".to_string(),
+                path: state_config.to_path_buf(),
+                source,
+            })?;
 
         if content.trim().is_empty() {
             let encoded = encode_state_document(StateNickelDocument::default())?;
@@ -629,7 +628,13 @@ impl DocumentLoaderActor {
             )]),
             workflows: BTreeMap::from([(
                 "default".to_string(),
-                WorkflowSpec { steps: vec![step] },
+                WorkflowSpec {
+                    name: Some("default".to_string()),
+                    description: Some(
+                        "Bootstrap workflow generated when conductor.ncl is missing".to_string(),
+                    ),
+                    steps: vec![step],
+                },
             )]),
             ..UserNickelDocument::default()
         }
@@ -645,8 +650,8 @@ impl DocumentLoaderActor {
     }
 
     /// Parses the volatile state document from effective source text.
-    fn load_state_document(state_ncl: &Path) -> Result<StateNickelDocument, ConductorError> {
-        let content = Self::load_state_source(state_ncl)?;
+    fn load_state_document(state_config: &Path) -> Result<StateNickelDocument, ConductorError> {
+        let content = Self::load_state_source(state_config)?;
         decode_state_document(content.as_bytes())
     }
 
@@ -1185,9 +1190,9 @@ mod tests {
         let state_path = dir.path().join(".conductor").join("state.ncl");
 
         let user = UserNickelDocument {
-            runtime_storage: RuntimeStorageConfig {
+            runtime: RuntimeStorageConfig {
                 conductor_dir: Some(".runtime".to_string()),
-                state_ncl: Some(".runtime/state.ncl".to_string()),
+                state_config: Some(".runtime/state.ncl".to_string()),
                 cas_store_dir: Some(".runtime/store".to_string()),
             },
             tools: BTreeMap::from([(
@@ -1224,6 +1229,6 @@ mod tests {
         )
         .expect("documents should load and unify");
 
-        assert!(loaded.machine_document.runtime_storage.is_empty());
+        assert!(loaded.machine_document.runtime.is_empty());
     }
 }

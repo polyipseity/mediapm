@@ -151,7 +151,7 @@ where
         }
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
-        let state_ncl = resolved_runtime_paths.config_state.clone();
+        let state_config = resolved_runtime_paths.config_state.clone();
 
         self.ensure_runtime_support().await?;
         let document_loader = self.document_loader.clone().ok_or_else(|| {
@@ -165,7 +165,7 @@ where
         })?;
 
         let LoadedDocuments { machine_document, mut state_document, prior_state_pointer, unified } =
-            document_loader.load_and_unify(user_ncl, machine_ncl, &state_ncl, options).await?;
+            document_loader.load_and_unify(user_ncl, machine_ncl, &state_config, options).await?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
@@ -191,7 +191,7 @@ where
             .await?;
         state_document.state_pointer = Some(current_state_pointer);
         document_loader.persist_machine_document(machine_ncl, machine_document).await?;
-        document_loader.persist_state_document(&state_ncl, state_document).await?;
+        document_loader.persist_state_document(&state_config, state_document).await?;
 
         Ok(outcome.summary)
     }
@@ -215,6 +215,8 @@ where
         let mut pending_unsaved_hashes = BTreeSet::new();
 
         for (workflow_name, workflow) in &unified.workflows {
+            let workflow_display_name = Self::workflow_display_name(workflow_name, workflow);
+
             for warning in Self::collect_unnecessary_depends_on_warnings(
                 workflow_name,
                 workflow,
@@ -226,10 +228,10 @@ where
             let levels = Self::topological_levels(workflow_name, workflow)?;
             let total_steps = workflow.steps.len();
             let workflow_progress =
-                ProgressBar::new(total_steps.max(1) as u64).with_message(workflow_name);
+                ProgressBar::new(total_steps.max(1) as u64).with_message(workflow_display_name);
 
             if total_steps == 0 {
-                workflow_progress.finish_success(&format!("{workflow_name} complete"));
+                workflow_progress.finish_success("complete");
                 continue;
             }
 
@@ -261,7 +263,7 @@ where
                 {
                     Ok(outcomes) => outcomes,
                     Err(error) => {
-                        workflow_progress.finish_error(&format!("{workflow_name} failed"));
+                        workflow_progress.finish_error("failed");
                         return Err(error);
                     }
                 };
@@ -287,10 +289,19 @@ where
                 workflow_progress.advance(level_step_count as u64);
             }
 
-            workflow_progress.finish_success(&format!("{workflow_name} complete"));
+            workflow_progress.finish_success("complete");
         }
 
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes })
+    }
+
+    /// Returns the user-facing workflow label used by progress UI rendering.
+    ///
+    /// When workflow metadata declares a display `name`, that label is shown
+    /// instead of the map-key workflow id. Runtime identity and state storage
+    /// still use the workflow id key.
+    fn workflow_display_name<'a>(workflow_id: &'a str, workflow: &'a WorkflowSpec) -> &'a str {
+        workflow.name.as_deref().unwrap_or(workflow_id)
     }
 
     /// Preallocates impure timestamps for one level before execution begins.

@@ -137,7 +137,7 @@ pub struct RunWorkflowOptions {
     ///
     /// Defaults:
     /// - `conductor_dir = .conductor`
-    /// - `state_ncl = <conductor_dir>/state.ncl`
+    /// - `state_config = <conductor_dir>/state.ncl`
     /// - `cas_store_dir = <conductor_dir>/store`
     pub runtime_storage_paths: RuntimeStoragePaths,
 }
@@ -219,20 +219,6 @@ pub fn resolve_runtime_storage_paths(
     runtime_storage_paths: &RuntimeStoragePaths,
 ) -> ResolvedRuntimeStoragePaths {
     runtime_storage_paths.resolve_for(user_ncl, machine_ncl)
-}
-
-/// Returns the default volatile state document path for one user/machine pair.
-#[must_use]
-pub fn default_volatile_state_path(user_ncl: &Path, machine_ncl: &Path) -> PathBuf {
-    resolve_runtime_storage_paths(user_ncl, machine_ncl, &RuntimeStoragePaths::default())
-        .config_state
-}
-
-/// Returns the default filesystem CAS store root path for one user/machine pair.
-#[must_use]
-pub fn default_cas_store_path(user_ncl: &Path, machine_ncl: &Path) -> PathBuf {
-    resolve_runtime_storage_paths(user_ncl, machine_ncl, &RuntimeStoragePaths::default())
-        .cas_store_dir
 }
 
 /// Snapshot of conductor runtime diagnostics and scheduling telemetry.
@@ -378,10 +364,7 @@ pub enum SchedulerTraceKind {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{
-        RuntimeStoragePaths, default_cas_store_path, default_volatile_state_path,
-        resolve_runtime_storage_paths,
-    };
+    use super::{RuntimeStoragePaths, resolve_runtime_storage_paths};
 
     /// Protects grouped-runtime default resolution rooted at `.conductor`.
     #[test]
@@ -426,23 +409,6 @@ mod tests {
         assert_eq!(
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("runtime-root").join("store")
-        );
-    }
-
-    /// Protects legacy convenience helpers by asserting they now delegate to
-    /// grouped runtime-path defaults.
-    #[test]
-    fn legacy_default_helpers_match_grouped_defaults() {
-        let user_ncl = PathBuf::from("conductor.ncl");
-        let machine_ncl = PathBuf::from("conductor.machine.ncl");
-
-        assert_eq!(
-            default_volatile_state_path(&user_ncl, &machine_ncl),
-            PathBuf::from(".conductor").join("state.ncl")
-        );
-        assert_eq!(
-            default_cas_store_path(&user_ncl, &machine_ncl),
-            PathBuf::from(".conductor").join("store")
         );
     }
 

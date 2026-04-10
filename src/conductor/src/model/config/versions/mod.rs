@@ -613,10 +613,10 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
     IsoPrime::new(
         |state: latest::State| UserNickelDocument {
             metadata: NickelDocumentMetadata::default(),
-            runtime_storage: crate::model::config::RuntimeStorageConfig {
-                conductor_dir: state.runtime_storage.conductor_dir,
-                state_ncl: state.runtime_storage.state_ncl,
-                cas_store_dir: state.runtime_storage.cas_store_dir,
+            runtime: crate::model::config::RuntimeStorageConfig {
+                conductor_dir: state.runtime.conductor_dir,
+                state_config: state.runtime.state_config,
+                cas_store_dir: state.runtime.cas_store_dir,
             },
             external_data: state
                 .external_data
@@ -704,6 +704,8 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                     (
                         name,
                         WorkflowSpec {
+                            name: workflow.name,
+                            description: workflow.description,
                             steps: workflow
                                 .steps
                                 .into_iter()
@@ -782,10 +784,10 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
             state_pointer: state.state_pointer,
         },
         |runtime: UserNickelDocument| latest::State {
-            runtime_storage: v_latest::RuntimeStorageLatest {
-                conductor_dir: runtime.runtime_storage.conductor_dir,
-                state_ncl: runtime.runtime_storage.state_ncl,
-                cas_store_dir: runtime.runtime_storage.cas_store_dir,
+            runtime: v_latest::RuntimeStorageLatest {
+                conductor_dir: runtime.runtime.conductor_dir,
+                state_config: runtime.runtime.state_config,
+                cas_store_dir: runtime.runtime.cas_store_dir,
             },
             external_data: runtime
                 .external_data
@@ -873,6 +875,8 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                     (
                         name,
                         v_latest::WorkflowSpecLatest {
+                            name: workflow.name,
+                            description: workflow.description,
                             steps: workflow
                                 .steps
                                 .into_iter()
@@ -962,7 +966,7 @@ fn machine_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, MachineNic
             let runtime = user_runtime_iso().from(state);
             MachineNickelDocument {
                 metadata: NickelDocumentMetadata::default(),
-                runtime_storage: runtime.runtime_storage,
+                runtime: runtime.runtime,
                 external_data: runtime.external_data,
                 tools: runtime.tools,
                 workflows: runtime.workflows,
@@ -974,7 +978,7 @@ fn machine_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, MachineNic
         |runtime: MachineNickelDocument| {
             user_runtime_iso().to(UserNickelDocument {
                 metadata: NickelDocumentMetadata::default(),
-                runtime_storage: runtime.runtime_storage,
+                runtime: runtime.runtime,
                 external_data: runtime.external_data,
                 tools: runtime.tools,
                 workflows: runtime.workflows,
@@ -995,7 +999,7 @@ fn state_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, StateNickelD
             state_pointer: state.state_pointer,
         },
         |runtime: StateNickelDocument| latest::State {
-            runtime_storage: v_latest::RuntimeStorageLatest::default(),
+            runtime: v_latest::RuntimeStorageLatest::default(),
             external_data: std::collections::BTreeMap::new(),
             tools: std::collections::BTreeMap::new(),
             workflows: std::collections::BTreeMap::new(),
@@ -1137,21 +1141,21 @@ fn vet_latest_envelope(
         )));
     }
 
-    if let Some(conductor_dir) = &envelope.runtime_storage.conductor_dir
+    if let Some(conductor_dir) = &envelope.runtime.conductor_dir
         && conductor_dir.trim().is_empty()
     {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} conductor_dir must be non-empty"
         )));
     }
-    if let Some(state_ncl) = &envelope.runtime_storage.state_ncl
-        && state_ncl.trim().is_empty()
+    if let Some(state_config) = &envelope.runtime.state_config
+        && state_config.trim().is_empty()
     {
         return Err(ConductorError::Workflow(format!(
-            "{document_kind} state_ncl must be non-empty when provided"
+            "{document_kind} state_config must be non-empty when provided"
         )));
     }
-    if let Some(cas_store_dir) = &envelope.runtime_storage.cas_store_dir
+    if let Some(cas_store_dir) = &envelope.runtime.cas_store_dir
         && cas_store_dir.trim().is_empty()
     {
         return Err(ConductorError::Workflow(format!(
@@ -1656,6 +1660,8 @@ version.validate_document (migration.migrate_atomic {} {} document)
     },
     workflows = {
         wf = {
+            name = "workflow label",
+            description = "workflow description",
             steps = [
                 {
                     id = "step-1",
@@ -1685,6 +1691,9 @@ version.validate_document (migration.migrate_atomic {} {} document)
         assert_eq!(decoded.version, latest::VERSION);
         assert_eq!(decoded.tools.len(), 2);
         assert_eq!(decoded.workflows.len(), 1);
+        let workflow = decoded.workflows.get("wf").expect("workflow should exist");
+        assert_eq!(workflow.name.as_deref(), Some("workflow label"));
+        assert_eq!(workflow.description.as_deref(), Some("workflow description"));
     }
 
     /// Verifies legacy builtin-only extras are rejected by the strict v1 shape.
@@ -1842,9 +1851,9 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let source = r#"
 {
     version = 1,
-    runtime_storage = {
+    runtime = {
         conductor_dir = ".runtime",
-        state_ncl = ".runtime/state.ncl",
+        state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
@@ -1864,11 +1873,28 @@ version.validate_document (migration.migrate_atomic {} {} document)
 
         let decoded =
             decode_machine_document(source.as_bytes()).expect("machine document should decode");
-        assert_eq!(decoded.runtime_storage.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime_storage.state_ncl.as_deref(), Some(".runtime/state.ncl"));
-        assert_eq!(decoded.runtime_storage.cas_store_dir.as_deref(), Some(".runtime/store"));
+        assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
+        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
         assert_eq!(decoded.tools.len(), 1);
+    }
+
+    /// Verifies legacy `runtime_storage` key spelling is rejected.
+    #[test]
+    fn decode_machine_document_rejects_legacy_runtime_storage_key() {
+        let source = r#"
+{
+    version = 1,
+    runtime_storage = {
+        conductor_dir = ".runtime",
+    },
+}
+"#;
+
+        let error = decode_machine_document(source.as_bytes())
+            .expect_err("legacy runtime_storage key should be rejected");
+        assert!(error.to_string().contains("runtime_storage"));
     }
 
     /// Verifies that `conductor.ncl` preserves the same full schema as
@@ -1878,9 +1904,9 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let source = r#"
 {
     version = 1,
-    runtime_storage = {
+    runtime = {
         conductor_dir = ".runtime",
-        state_ncl = ".runtime/state.ncl",
+        state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
@@ -1912,9 +1938,9 @@ version.validate_document (migration.migrate_atomic {} {} document)
 "#;
 
         let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
-        assert_eq!(decoded.runtime_storage.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime_storage.state_ncl.as_deref(), Some(".runtime/state.ncl"));
-        assert_eq!(decoded.runtime_storage.cas_store_dir.as_deref(), Some(".runtime/store"));
+        assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
+        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
         assert_eq!(decoded.tool_configs.len(), 1);
         assert!(
@@ -2007,6 +2033,43 @@ version.validate_document (migration.migrate_atomic {} {} document)
                     .to_string()
             ))
         );
+    }
+
+    /// Verifies optional workflow metadata fields survive user-document decode.
+    #[test]
+    fn decode_user_document_preserves_workflow_metadata_fields() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "echo@1.0.0" = {
+            kind = "builtin",
+            name = "echo",
+            version = "1.0.0",
+        },
+    },
+    workflows = {
+        wf = {
+            name = "friendly workflow",
+            description = "informational metadata",
+            steps = [
+                {
+                    id = "step-1",
+                    tool = "echo@1.0.0",
+                    inputs = {
+                        text = "hello",
+                    },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
+        let workflow = decoded.workflows.get("wf").expect("workflow should exist");
+        assert_eq!(workflow.name.as_deref(), Some("friendly workflow"));
+        assert_eq!(workflow.description.as_deref(), Some("informational metadata"));
     }
 
     /// Verifies workflow-step input bindings support mixed literal +

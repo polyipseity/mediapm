@@ -21,6 +21,7 @@ for the three major phases defined in `PLAN.md`:
 - `src/conductor-builtins/export/` — impure filesystem materialization builtin (`file`/`folder` kinds)
 - `src/conductor-builtins/archive/` — pure archive transform builtin (ZIP-only content transforms)
 - `src/mediapm/` — phase-3 media API + CLI scaffold composed over phase 1/2
+  (`mediapm-cas` + `mediapm-conductor`; builtins are reached via conductor)
 - `scripts/cargo-bin/` — helper binary used by repo tooling
 
 ## Status
@@ -51,7 +52,7 @@ Conductor runtime storage defaults (CLI/API):
 
 These grouped runtime paths are also part of the persisted user/machine
 configuration schema (`conductor.ncl` and `conductor.machine.ncl`) via
-one grouped optional `runtime_storage` field containing
+one grouped optional `runtime` field containing
 `conductor_dir`, `state_ncl`, and `cas_store_dir`.
 
 The conductor CLI exposes grouped path flags (`--conductor-dir`,

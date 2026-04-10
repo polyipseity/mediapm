@@ -221,7 +221,7 @@ pub(crate) struct RuntimeStorageLatest {
     pub(crate) conductor_dir: Option<String>,
     /// Optional volatile state document path override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state_ncl: Option<String>,
+    pub(crate) state_config: Option<String>,
     /// Optional filesystem CAS store directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cas_store_dir: Option<String>,
@@ -231,7 +231,7 @@ impl RuntimeStorageLatest {
     /// Returns whether the grouped runtime-storage record has no overrides.
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        self.conductor_dir.is_none() && self.state_ncl.is_none() && self.cas_store_dir.is_none()
+        self.conductor_dir.is_none() && self.state_config.is_none() && self.cas_store_dir.is_none()
     }
 }
 
@@ -275,6 +275,12 @@ pub(crate) struct ToolConfigSpecLatest {
 /// Workflow specification persisted in the latest Nickel schema.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct WorkflowSpecLatest {
+    /// Optional human-facing workflow label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    /// Optional human-facing workflow description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     /// Ordered workflow step list.
     #[serde(default)]
     pub(crate) steps: Vec<WorkflowStepSpecLatest>,
@@ -322,7 +328,7 @@ pub(crate) enum InputBindingLatest {
 pub(crate) struct NickelStateLatest {
     /// Grouped runtime storage-path configuration.
     #[serde(default, skip_serializing_if = "RuntimeStorageLatest::is_empty")]
-    pub(crate) runtime_storage: RuntimeStorageLatest,
+    pub(crate) runtime: RuntimeStorageLatest,
     /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
     pub(crate) external_data: BTreeMap<Hash, ExternalContentRefLatest>,
@@ -350,7 +356,7 @@ pub(crate) struct NickelEnvelopeLatest {
     pub(crate) version: u32,
     /// Grouped runtime storage-path configuration.
     #[serde(default, skip_serializing_if = "RuntimeStorageLatest::is_empty")]
-    pub(crate) runtime_storage: RuntimeStorageLatest,
+    pub(crate) runtime: RuntimeStorageLatest,
     /// External content metadata keyed by CAS hash identity.
     #[serde(default)]
     pub(crate) external_data: BTreeMap<Hash, ExternalContentRefLatest>,
@@ -377,7 +383,7 @@ pub(crate) fn nickel_latest_iso()
 -> IsoPrime<'static, RcBrand, NickelEnvelopeLatest, NickelStateLatest> {
     IsoPrime::new(
         |envelope: NickelEnvelopeLatest| NickelStateLatest {
-            runtime_storage: envelope.runtime_storage,
+            runtime: envelope.runtime,
             external_data: envelope.external_data,
             tools: envelope.tools,
             workflows: envelope.workflows,
@@ -387,7 +393,7 @@ pub(crate) fn nickel_latest_iso()
         },
         |state: NickelStateLatest| NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
-            runtime_storage: state.runtime_storage,
+            runtime: state.runtime,
             external_data: state.external_data,
             tools: state.tools,
             workflows: state.workflows,

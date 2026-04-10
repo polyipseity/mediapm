@@ -194,8 +194,12 @@ let WorkflowStepSpecV1 = {
 in
 
 # ||| One workflow definition.
+# ||| `name` and `description` are informational only and do not affect
+# ||| workflow identity, topological ordering, or cache keys.
 # ||| Empty or omitted `steps` means no work for that workflow key.
 let WorkflowSpecV1 = {
+  name | String | optional,
+  description | String | optional,
   steps | Array WorkflowStepSpecV1 | optional,
 }
 in
@@ -234,7 +238,7 @@ in
 # ||| Grouped runtime storage-path configuration.
 let RuntimeStorageV1 = {
   conductor_dir | NonEmptyStringV1 | optional,
-  state_ncl | NonEmptyStringV1 | optional,
+  state_config | NonEmptyStringV1 | optional,
   cas_store_dir | NonEmptyStringV1 | optional,
 }
 in
@@ -246,7 +250,7 @@ let NickelDocumentV1 = {
   version | VersionOneV1,
   # Grouped runtime storage path configuration.
   # Defaults are resolved by runtime when fields are omitted.
-  runtime_storage | RuntimeStorageV1 | optional,
+  runtime | RuntimeStorageV1 | optional,
   # External-data map keys are CAS hash strings parsed by Rust.
   external_data | {_ : ExternalContentRefV1} | optional,
   tools | {_ : ToolSpecV1} | optional,

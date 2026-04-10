@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
-    ConductorApi, MachineNickelDocument, OutputCaptureSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
-    UserNickelDocument, WorkflowSpec, WorkflowStepSpec, default_volatile_state_path,
-    encode_machine_document, encode_user_document,
+    ConductorApi, MachineNickelDocument, OutputCaptureSpec, RuntimeStoragePaths, ToolKindSpec,
+    ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    encode_machine_document, encode_user_document, resolve_runtime_storage_paths,
 };
 use tempfile::tempdir;
 
@@ -37,6 +37,8 @@ async fn deterministic_workflow_hits_cache_on_second_run() {
         workflows: BTreeMap::from([(
             "default".to_string(),
             WorkflowSpec {
+                name: None,
+                description: None,
                 steps: vec![WorkflowStepSpec {
                     id: "s1".to_string(),
                     tool: "echo@1.0.0".to_string(),
@@ -65,6 +67,8 @@ async fn deterministic_workflow_hits_cache_on_second_run() {
     assert_eq!(second.executed_instances, 0);
     assert_eq!(second.cached_instances, 1);
 
-    let state_path = default_volatile_state_path(&user_path, &machine_path);
+    let state_path =
+        resolve_runtime_storage_paths(&user_path, &machine_path, &RuntimeStoragePaths::default())
+            .config_state;
     assert!(state_path.exists(), "state document should be persisted on run");
 }

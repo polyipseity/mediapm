@@ -266,33 +266,28 @@ fn template_interpolation_supports_js_escape_for_literal_start() {
     assert!(pending_file_writes.is_empty());
 }
 
-/// Protects `${os.<target>?...}` conditional inclusion semantics.
+/// Protects `${<left> <op> <right>?<true>|<false>}` conditional semantics.
 #[test]
-fn template_interpolation_supports_os_conditional_expression() {
+fn template_interpolation_supports_comparison_conditional_expression() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
-    let current = if cfg!(windows) {
-        "${os.windows?win}"
-    } else if cfg!(target_os = "macos") {
-        "${os.macos?mac}"
-    } else {
-        "${os.linux?linux}"
-    };
+    let current = "${context.os == \"windows\" ? win | nonwin}";
 
     let rendered = executor
         .render_template_value(current, &inputs, &mut pending_file_writes)
-        .expect("matching os conditional should render value");
+        .expect("comparison conditional should render selected branch");
 
-    assert!(!rendered.is_empty());
+    let expected = if cfg!(windows) { "win" } else { "nonwin" };
+    assert_eq!(rendered, expected);
     assert!(pending_file_writes.is_empty());
 }
 
-/// Protects recursive selector/materialization support inside os-conditional
+/// Protects recursive selector/materialization support inside comparison
 /// values.
 #[test]
-fn template_interpolation_supports_special_forms_inside_os_conditional_value() {
+fn template_interpolation_supports_special_forms_inside_conditional_branches() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
@@ -300,38 +295,34 @@ fn template_interpolation_supports_special_forms_inside_os_conditional_value() {
     )]);
     let mut pending_file_writes = Vec::new();
 
-    let current = if cfg!(windows) {
-        "${os.windows?subject:file(runtime/subject.txt)}"
-    } else if cfg!(target_os = "macos") {
-        "${os.macos?subject:file(runtime/subject.txt)}"
-    } else {
-        "${os.linux?subject:file(runtime/subject.txt)}"
-    };
+    let current = "${context.os == \"windows\" ? subject:file(runtime/windows-subject.txt) | subject:file(runtime/other-subject.txt)}";
 
     let rendered = executor
         .render_template_value(current, &inputs, &mut pending_file_writes)
-        .expect("matching os-conditional should resolve special-form value recursively");
+        .expect("matching conditional should resolve special-form value recursively");
 
-    assert_eq!(rendered.replace('\\', "/"), "runtime/subject.txt");
+    let expected_path =
+        if cfg!(windows) { "runtime/windows-subject.txt" } else { "runtime/other-subject.txt" };
+    assert_eq!(rendered.replace('\\', "/"), expected_path);
     assert_eq!(pending_file_writes.len(), 1);
     assert_eq!(
-        pending_file_writes[0].relative_path,
-        std::path::PathBuf::from("runtime").join("subject.txt")
+        pending_file_writes[0].relative_path.to_string_lossy().replace('\\', "/"),
+        expected_path
     );
     assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
 }
 
-/// Protects omission of non-matching OS conditionals in executable command lists.
+/// Protects omission of conditional branches that resolve to empty output.
 #[test]
-fn command_render_omits_non_matching_os_conditional_entry() {
+fn command_render_omits_conditionals_with_empty_false_branch() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
     let non_matching = if cfg!(windows) {
-        "${os.linux?--linux-only}".to_string()
+        "${context.os == \"linux\" ? --linux-only | ''}".to_string()
     } else {
-        "${os.windows?--windows-only}".to_string()
+        "${context.os == \"windows\" ? --windows-only | ''}".to_string()
     };
     let command = vec!["tool".to_string(), non_matching, "--always".to_string()];
 
@@ -365,9 +356,9 @@ fn command_render_expands_standalone_unpack_token_for_list_input() {
     );
 }
 
-/// Protects fail-fast validation when unpack tokens target scalar inputs.
+/// Protects scalar unpack behavior for standalone command tokens.
 #[test]
-fn command_render_rejects_unpack_token_for_scalar_input() {
+fn command_render_expands_unpack_token_for_scalar_input() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
     let inputs = BTreeMap::from([(
         "argv".to_string(),
@@ -375,21 +366,36 @@ fn command_render_rejects_unpack_token_for_scalar_input() {
     )]);
     let mut pending_file_writes = Vec::new();
 
-    let error = executor
+    let rendered = executor
         .render_template_command(
-            &["tool".to_string(), "${*inputs.argv}".to_string()],
+            &["tool".to_string(), "${*inputs.argv}".to_string(), "--tail".to_string()],
             &inputs,
             &mut pending_file_writes,
         )
-        .expect_err("scalar input unpack token should fail");
+        .expect("scalar unpack token should expand to one argument");
 
-    match error {
-        ConductorError::Workflow(message) => {
-            assert!(message.contains("requires list input"));
-            assert!(message.contains("inputs.argv"));
-        }
-        other => panic!("expected workflow error, got {other:?}"),
-    }
+    assert_eq!(rendered, vec!["tool".to_string(), "--single".to_string(), "--tail".to_string()]);
+}
+
+/// Protects plain `context.os` selector rendering.
+#[test]
+fn template_interpolation_supports_context_os_selector() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::new();
+    let mut pending_file_writes = Vec::new();
+
+    let rendered = executor
+        .render_template_value("${context.os}", &inputs, &mut pending_file_writes)
+        .expect("context selector should render");
+
+    let expected = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    assert_eq!(rendered, expected);
 }
 
 /// Protects syntax rule that `${*...}` unpack expressions must occupy the
@@ -981,6 +987,28 @@ fn success_code_membership_checks_configured_set() {
 
     assert!(StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(2, &success_codes));
     assert!(!StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(1, &success_codes));
+}
+
+/// Protects workflow-error diagnostics by preserving ANSI styling bytes.
+#[test]
+fn format_process_failure_stderr_preserves_ansi_sequences() {
+    let raw = "\u{001b}[31merror\u{001b}[0m from tool \u{001b}]8;;https://example.com\u{0007}link\u{001b}]8;;\u{0007}";
+
+    let formatted =
+        StepWorkerExecutor::<InMemoryCas>::format_process_failure_stderr(raw.as_bytes());
+
+    assert_eq!(formatted, raw);
+}
+
+/// Protects fallback message when stderr contains only whitespace.
+#[test]
+fn format_process_failure_stderr_uses_default_for_empty_text() {
+    let raw = "\n\t\r";
+
+    let formatted =
+        StepWorkerExecutor::<InMemoryCas>::format_process_failure_stderr(raw.as_bytes());
+
+    assert_eq!(formatted, "no stderr output");
 }
 
 /// Protects crate-owned builtin echo dispatch and stream payload shape.

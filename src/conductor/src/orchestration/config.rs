@@ -3,7 +3,12 @@
 use std::num::NonZeroUsize;
 
 /// Default RPC timeout for actor request/response calls.
-pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 30_000;
+///
+/// Workflow execution can include managed tool downloads and online processing
+/// that routinely exceed short interactive RPC windows. Keep this timeout long
+/// enough for end-to-end workflow calls while still bounded for failed actor
+/// paths.
+pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 1_800_000;
 
 /// Default EWMA alpha for adaptive tool runtime estimation.
 pub const DEFAULT_SCHEDULER_EWMA_ALPHA: f64 = 0.35;

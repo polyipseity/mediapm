@@ -62,9 +62,9 @@ is a narrow, documented reason.
     document path (default `.conductor/state.ncl`) must carry explicit
     top-level numeric `version` markers,
   - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
-    storage path fields only under one `runtime_storage` record
-    (`runtime_storage.conductor_dir`, `runtime_storage.state_ncl`,
-    `runtime_storage.cas_store_dir`),
+    storage path fields only under one `runtime` record
+    (`runtime.conductor_dir`, `runtime.state_config`,
+    `runtime.cas_store_dir`),
   - the resolved runtime state document path (default
     `.conductor/state.ncl`) is volatile-only and may define only
     `version`, `impure_timestamps`, and `state_pointer`,

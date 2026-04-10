@@ -573,11 +573,11 @@ async fn run_gc(
     cas: ConfiguredCas,
     user_ncl: &Path,
     machine_ncl: &Path,
-    state_ncl: &Path,
+    state_config: &Path,
 ) -> Result<(), ConductorError> {
     let user = load_user_document(user_ncl)?;
     let machine = load_machine_document(machine_ncl)?;
-    let state = load_state_document(state_ncl)?;
+    let state = load_state_document(state_config)?;
 
     let mut roots: BTreeSet<Hash> = BTreeSet::new();
     roots.extend(user.external_data.keys().copied());

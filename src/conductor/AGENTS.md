@@ -58,9 +58,9 @@ Document contract:
 - `conductor.ncl` is treated as user-edited input and is not machine-mutated.
 - `conductor.machine.ncl` stores machine-managed setup/config declarations.
 - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
-  storage fields under one `runtime_storage` record:
-  `runtime_storage.conductor_dir`, `runtime_storage.state_ncl`,
-  `runtime_storage.cas_store_dir`. The `cas_store_dir` field accepts any CAS
+  storage fields under one `runtime` record:
+  `runtime.conductor_dir`, `runtime.state_config`,
+  `runtime.cas_store_dir`. The `cas_store_dir` field accepts any CAS
   locator string (filesystem path or URL).
 - resolved state path (default `.conductor/state.ncl`) stores volatile runtime state only and may define
   only `version`, `impure_timestamps`, and `state_pointer`.
@@ -154,33 +154,38 @@ When editing tool/config schema behavior, preserve these invariants:
 
     it must not affect instance identity, scheduler behavior, or cache keys.
 
-16. Cache rematerialization checks are scoped to outputs actually referenced by
+16. Workflow `name` and `description` are optional human-facing metadata only;
+
+    workflow identity remains the workflow map key and runtime behavior/cache
+    keys must not depend on those fields.
+
+17. Cache rematerialization checks are scoped to outputs actually referenced by
     `${step_output...}` workflow-step inputs; missing unreferenced outputs do
     not force rerun for otherwise cache-hit instances.
 
-17. Keep step-output references minimal so independent steps can remain in
+18. Keep step-output references minimal so independent steps can remain in
     parallelizable topological levels.
 
-18. Builtin `import`/`export` path semantics for `kind=file|folder` are:
+19. Builtin `import`/`export` path semantics for `kind=file|folder` are:
     `path_mode` defaults to `relative` and resolves `path` against the
     outermost config directory, `relative` paths must not escape that root,
     and `path_mode=absolute` requires an explicit absolute `path`.
 
-19. Orchestration-state snapshots must include explicit top-level `version`.
+20. Orchestration-state snapshots must include explicit top-level `version`.
 
-20. `ToolCallInstance.metadata` is persistence-normalized: executable metadata
+21. `ToolCallInstance.metadata` is persistence-normalized: executable metadata
     remains `ToolSpec`-shape, while builtin metadata persists only
     `kind`/`name`/`version`; `impure_timestamp` belongs at instance top-level,
     not inside metadata. Decode must reject extra builtin metadata fields.
 
-21. `ToolCallInstance.inputs` persist CAS hash references (no inline
+22. `ToolCallInstance.inputs` persist CAS hash references (no inline
     `plain_content` payload and no separate `source_hash` provenance field).
 
-22. For duplicate equivalent tool-call instances merged under one instance key,
+23. For duplicate equivalent tool-call instances merged under one instance key,
     persisted output `persistence` must be the effective merged policy across all
     callers (`save`: logical AND, `force_full`: logical OR).
 
-23. Any human-facing orchestration-state JSON output (for example CLI `state`
+24. Any human-facing orchestration-state JSON output (for example CLI `state`
     output or demo artifacts) must render the persisted wire-envelope shape so
     builtin metadata stays strict (`kind`/`name`/`version`) and does not leak
     runtime-only optional fields.
@@ -205,21 +210,23 @@ Supported token forms:
 - `${inputs["<name>"]}` / `${inputs['<name>']}`
   - JavaScript-like bracket notation for input keys.
 - `${*inputs.<name>}`
-  - Standalone executable command-argument unpack token for
-    `string_list` inputs only.
+  - Standalone executable command-argument unpack token.
   - The token must occupy the full command argument entry.
-  - Runtime expands the token into one argv entry per list item.
+  - Runtime expands list inputs into one argv entry per list item.
+  - Scalar inputs expand into one argv entry when non-empty.
 - `${<selector>:file(<relative_path>)}`
   - Uses one selector form above, queues bytes for `<relative_path>`, then
     injects that path string.
 - `${inputs.<name>:file(<relative_path>)}`
   - Queues input bytes for `<relative_path>` under an ad hoc temporary
     execution directory, then injects that relative path string.
-- `${os.<target>?<value>}`
-  - Includes `<value>` only on matching host OS (`windows`, `linux`, or
-    `macos`), otherwise renders empty content.
-  - `<value>` resolves recursively and supports selector/materialization
-    special forms (for example `inputs.payload:file(payload.txt)`).
+- `${context.os}`
+  - Injects host platform text (`windows`, `linux`, or `macos`).
+- `${<left> <op> <right> ? <true> | <false>}`
+  - Comparison conditional with operators `==`, `!=`, `<`, `<=`, `>`, `>=`.
+  - Branch values resolve recursively and support
+    selector/materialization special forms (for example
+    `inputs.payload:file(payload.txt)`).
 - `\${...}`
   - Escapes interpolation start and renders literal `${...}`.
 - JavaScript-like string escapes in literal spans are supported.
@@ -347,7 +354,7 @@ Examples live under `src/conductor/examples/`.
 - `demo.rs` should keep generated `conductor.ncl` newcomer-friendly by
   including explicit default grouped runtime storage values as schema fields
   (not comments):
-  `conductor_dir = .conductor`, `state_ncl = .conductor/state.ncl`,
+  `conductor_dir = .conductor`, `state_config = .conductor/state.ncl`,
   `cas_store_dir = .conductor/store/`.
 - When demonstrating filesystem flows in `demo.rs`, prefer compact pipelines
   that keep builtin `import` at the beginning and builtin `export` at the end,

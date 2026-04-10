@@ -14,6 +14,23 @@ use crate::model::state::ResolvedInput;
 
 use super::{ExtractedZipSelection, StepWorkerExecutor, TemplateFileWrite, TemplateSelectorSource};
 
+/// Supported comparison operators for `${<left> <op> <right> ? ... | ...}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateComparisonOperator {
+    /// Equality (`==`).
+    Equal,
+    /// Inequality (`!=`).
+    NotEqual,
+    /// Lexicographic less-than (`<`).
+    LessThan,
+    /// Lexicographic less-than-or-equal (`<=`).
+    LessThanOrEqual,
+    /// Lexicographic greater-than (`>`).
+    GreaterThan,
+    /// Lexicographic greater-than-or-equal (`>=`).
+    GreaterThanOrEqual,
+}
+
 impl<C> StepWorkerExecutor<C>
 where
     C: CasApi + Send + Sync + 'static,
@@ -22,6 +39,8 @@ where
     ///
     /// Supported form is exactly `${*<selector>}` where `<selector>` resolves
     /// to an input key. The token must occupy the entire command argument.
+    /// List inputs unpack to multiple arguments, while scalar inputs unpack to
+    /// one argument when non-empty.
     fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
         let prefix = "${*";
         if !template.starts_with(prefix) || !template.ends_with('}') {
@@ -143,7 +162,7 @@ where
         }
 
         if let Some(conditional_rendered) =
-            self.resolve_os_conditional_token(token, inputs, pending_file_writes)?
+            self.resolve_comparison_conditional_token(token, inputs, pending_file_writes)?
         {
             return Ok(conditional_rendered);
         }
@@ -178,59 +197,77 @@ where
             selector = selector_prefix;
         }
 
-        let TemplateSelectorSource::Input(input_key) = self.resolve_template_selector(selector)?;
-        let input = inputs.get(&input_key).ok_or_else(|| {
-            ConductorError::Workflow(format!("template references missing input '{input_key}'"))
-        })?;
+        let plain_content = match self.resolve_template_selector(selector)? {
+            TemplateSelectorSource::Input(input_key) => {
+                let input = inputs.get(&input_key).ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "template references missing input '{input_key}'"
+                    ))
+                })?;
 
-        if input.string_list.is_some() {
+                if input.string_list.is_some() {
+                    return Err(ConductorError::Workflow(format!(
+                        "template expression '${{{token}}}' references list input '{input_key}', but list inputs are only valid in standalone command unpack tokens like '${{*inputs.{input_key}}}'"
+                    )));
+                }
+
+                if let Some(entry_path) = zip_entry_path {
+                    match self.extract_zip_entry_from_input(
+                        &input_key,
+                        &input.plain_content,
+                        entry_path,
+                    )? {
+                        ExtractedZipSelection::File(file_content) => {
+                            if let Some(TemplateMaterializationDirective::Folder(_)) =
+                                materialization_directive
+                            {
+                                return Err(ConductorError::Workflow(format!(
+                                    "template zip selector for input '{input_key}' resolved '{entry_path}' to a file; expected a directory for :folder(...)"
+                                )));
+                            }
+                            file_content
+                        }
+                        ExtractedZipSelection::Directory(directory_files) => {
+                            let Some(TemplateMaterializationDirective::Folder(relative_path)) =
+                                materialization_directive
+                            else {
+                                return Err(ConductorError::Workflow(format!(
+                                    "template zip selector for input '{input_key}' resolved '{entry_path}' to a directory; use :folder(<relative_path>) to materialize directory entries"
+                                )));
+                            };
+
+                            let normalized_relative = self.normalized_relative_tool_path(
+                                relative_path,
+                                "template folder materialization",
+                            )?;
+                            for (entry_relative_path, entry_content) in directory_files {
+                                pending_file_writes.push(TemplateFileWrite {
+                                    relative_path: normalized_relative.join(entry_relative_path),
+                                    plain_content: entry_content,
+                                });
+                            }
+                            return Ok(normalized_relative.to_string_lossy().to_string());
+                        }
+                    }
+                } else {
+                    input.plain_content.clone()
+                }
+            }
+            TemplateSelectorSource::ContextOs => {
+                if zip_entry_path.is_some() {
+                    return Err(ConductorError::Workflow(format!(
+                        "template expression '${{{token}}}' cannot apply :zip(...) to 'context.os'"
+                    )));
+                }
+                self.current_os_text().as_bytes().to_vec()
+            }
+        };
+
+        if let Some(TemplateMaterializationDirective::Folder(_)) = materialization_directive {
             return Err(ConductorError::Workflow(format!(
-                "template expression '${{{token}}}' references list input '{input_key}', but list inputs are only valid in standalone command unpack tokens like '${{*inputs.{input_key}}}'"
+                "template folder materialization only supports ZIP selectors on input values, not '${{{token}}}'"
             )));
         }
-
-        let plain_content = if let Some(entry_path) = zip_entry_path {
-            match self.extract_zip_entry_from_input(&input_key, &input.plain_content, entry_path)? {
-                ExtractedZipSelection::File(file_content) => {
-                    if let Some(TemplateMaterializationDirective::Folder(_)) =
-                        materialization_directive
-                    {
-                        return Err(ConductorError::Workflow(format!(
-                            "template zip selector for input '{input_key}' resolved '{entry_path}' to a file; expected a directory for :folder(...)"
-                        )));
-                    }
-                    file_content
-                }
-                ExtractedZipSelection::Directory(directory_files) => {
-                    let Some(TemplateMaterializationDirective::Folder(relative_path)) =
-                        materialization_directive
-                    else {
-                        return Err(ConductorError::Workflow(format!(
-                            "template zip selector for input '{input_key}' resolved '{entry_path}' to a directory; use :folder(<relative_path>) to materialize directory entries"
-                        )));
-                    };
-
-                    let normalized_relative = self.normalized_relative_tool_path(
-                        relative_path,
-                        "template folder materialization",
-                    )?;
-                    for (entry_relative_path, entry_content) in directory_files {
-                        pending_file_writes.push(TemplateFileWrite {
-                            relative_path: normalized_relative.join(entry_relative_path),
-                            plain_content: entry_content,
-                        });
-                    }
-                    return Ok(normalized_relative.to_string_lossy().to_string());
-                }
-            }
-        } else {
-            if let Some(TemplateMaterializationDirective::Folder(_)) = materialization_directive {
-                return Err(ConductorError::Workflow(format!(
-                    "template folder materialization only supports ZIP selectors on input values, not '${{{token}}}'"
-                )));
-            }
-            input.plain_content.clone()
-        };
 
         if let Some(TemplateMaterializationDirective::File(relative_path)) =
             materialization_directive
@@ -313,78 +350,301 @@ where
         Ok(Some((selector, argument)))
     }
 
-    /// Resolves `${os.<target>?<value>}` conditionals.
+    /// Resolves one `${<left> <op> <right> ? <true> | <false>}` comparison.
     ///
-    /// Supported `<target>` values are `windows`, `linux`, and `macos`.
-    ///
-    /// When current host OS matches `<target>`, `<value>` is resolved
-    /// recursively and supports the same selector/materialization special forms
-    /// accepted by other template tokens (for example
-    /// `inputs.payload:file(payload.txt)`). Otherwise the token renders as
-    /// empty content.
-    fn resolve_os_conditional_token(
+    /// Supported operators are `==`, `!=`, `<`, `<=`, `>`, and `>=` and
+    /// operands compare using lexicographic string ordering.
+    fn resolve_comparison_conditional_token(
         &self,
         token: &str,
         inputs: &BTreeMap<String, ResolvedInput>,
         pending_file_writes: &mut Vec<TemplateFileWrite>,
     ) -> Result<Option<String>, ConductorError> {
-        let Some(remainder) = token.strip_prefix("os.") else {
+        let Some((condition_expression, true_branch, false_branch)) =
+            self.split_conditional_token_branches(token)?
+        else {
             return Ok(None);
         };
 
-        let Some((target_os, value)) = remainder.split_once('?') else {
+        let (left_operand, operator, right_operand) =
+            self.parse_conditional_comparison(condition_expression, token)?;
+        let left_value = self.resolve_conditional_operand(left_operand, inputs)?;
+        let right_value = self.resolve_conditional_operand(right_operand, inputs)?;
+
+        let matches = match operator {
+            TemplateComparisonOperator::Equal => left_value == right_value,
+            TemplateComparisonOperator::NotEqual => left_value != right_value,
+            TemplateComparisonOperator::LessThan => left_value < right_value,
+            TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
+            TemplateComparisonOperator::GreaterThan => left_value > right_value,
+            TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
+        };
+
+        let selected_branch = if matches { true_branch } else { false_branch };
+        self.resolve_conditional_branch_value(selected_branch, inputs, pending_file_writes)
+            .map(Some)
+    }
+
+    /// Returns host platform value used by `context.os` selectors.
+    #[must_use]
+    fn current_os_text(&self) -> &'static str {
+        match std::env::consts::OS {
+            "windows" => "windows",
+            "linux" => "linux",
+            "macos" => "macos",
+            other => other,
+        }
+    }
+
+    /// Splits one conditional token into condition + true/false branches.
+    fn split_conditional_token_branches<'a>(
+        &self,
+        token: &'a str,
+    ) -> Result<Option<(&'a str, &'a str, &'a str)>, ConductorError> {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let mut condition_separator_index = None;
+        let mut branch_separator_index = None;
+
+        for (index, character) in token.char_indices() {
+            if let Some(active_quote) = quote {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if character == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if character == active_quote {
+                    quote = None;
+                }
+                continue;
+            }
+
+            match character {
+                '\'' | '"' => quote = Some(character),
+                '(' => paren_depth = paren_depth.saturating_add(1),
+                ')' => paren_depth = paren_depth.saturating_sub(1),
+                '[' => bracket_depth = bracket_depth.saturating_add(1),
+                ']' => bracket_depth = bracket_depth.saturating_sub(1),
+                '{' => brace_depth = brace_depth.saturating_add(1),
+                '}' => brace_depth = brace_depth.saturating_sub(1),
+                '?' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    if condition_separator_index.is_none() {
+                        condition_separator_index = Some(index);
+                    }
+                }
+                '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    if condition_separator_index.is_some() {
+                        branch_separator_index = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(condition_separator_index) = condition_separator_index else {
+            return Ok(None);
+        };
+        let Some(branch_separator_index) = branch_separator_index else {
             return Err(ConductorError::Workflow(format!(
-                "invalid os-conditional template expression '${{{token}}}'; expected '${{os.<target>?<value>}}'"
+                "invalid conditional template expression '${{{token}}}'; expected '${{<left> <op> <right>?<true>|<false>}}'"
             )));
         };
 
-        let normalized_target = target_os.trim().to_ascii_lowercase();
-        let current_os = std::env::consts::OS;
-        let matches_target = match normalized_target.as_str() {
-            "windows" => current_os == "windows",
-            "linux" => current_os == "linux",
-            "macos" | "darwin" => current_os == "macos",
-            other => {
+        let condition = token[..condition_separator_index].trim();
+        let true_branch = token[condition_separator_index + 1..branch_separator_index].trim();
+        let false_branch = token[branch_separator_index + 1..].trim();
+
+        if condition.is_empty() || true_branch.is_empty() || false_branch.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "invalid conditional template expression '${{{token}}}'; condition and both branches must be non-empty"
+            )));
+        }
+
+        Ok(Some((condition, true_branch, false_branch)))
+    }
+
+    /// Parses one conditional comparison expression into operands + operator.
+    fn parse_conditional_comparison<'a>(
+        &self,
+        condition_expression: &'a str,
+        token: &str,
+    ) -> Result<(&'a str, TemplateComparisonOperator, &'a str), ConductorError> {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+
+        for (index, character) in condition_expression.char_indices() {
+            if let Some(active_quote) = quote {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if character == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if character == active_quote {
+                    quote = None;
+                }
+                continue;
+            }
+
+            match character {
+                '\'' | '"' => {
+                    quote = Some(character);
+                    continue;
+                }
+                '(' => {
+                    paren_depth = paren_depth.saturating_add(1);
+                    continue;
+                }
+                ')' => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                    continue;
+                }
+                '[' => {
+                    bracket_depth = bracket_depth.saturating_add(1);
+                    continue;
+                }
+                ']' => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                    continue;
+                }
+                '{' => {
+                    brace_depth = brace_depth.saturating_add(1);
+                    continue;
+                }
+                '}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    continue;
+                }
+                _ => {}
+            }
+
+            if paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 {
+                continue;
+            }
+
+            let tail = &condition_expression[index..];
+            let (operator_token, operator) = if tail.starts_with("==") {
+                ("==", TemplateComparisonOperator::Equal)
+            } else if tail.starts_with("!=") {
+                ("!=", TemplateComparisonOperator::NotEqual)
+            } else if tail.starts_with(">=") {
+                (">=", TemplateComparisonOperator::GreaterThanOrEqual)
+            } else if tail.starts_with("<=") {
+                ("<=", TemplateComparisonOperator::LessThanOrEqual)
+            } else if tail.starts_with('>') {
+                (">", TemplateComparisonOperator::GreaterThan)
+            } else if tail.starts_with('<') {
+                ("<", TemplateComparisonOperator::LessThan)
+            } else {
+                continue;
+            };
+
+            let left_operand = condition_expression[..index].trim();
+            let right_operand = condition_expression[index + operator_token.len()..].trim();
+            if left_operand.is_empty() || right_operand.is_empty() {
                 return Err(ConductorError::Workflow(format!(
-                    "unsupported os-conditional target '{other}' in template expression '${{{token}}}'"
+                    "invalid conditional template expression '${{{token}}}'; comparison operands must be non-empty"
                 )));
             }
-        };
 
-        if !matches_target {
-            return Ok(Some(String::new()));
+            return Ok((left_operand, operator, right_operand));
         }
 
-        let conditional_value = value.trim();
-        if conditional_value.is_empty() {
-            return Ok(Some(String::new()));
+        Err(ConductorError::Workflow(format!(
+            "invalid conditional template expression '${{{token}}}'; expected one comparison operator among ==, !=, <, <=, >, >="
+        )))
+    }
+
+    /// Resolves one conditional operand into its comparable string value.
+    fn resolve_conditional_operand(
+        &self,
+        operand: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<String, ConductorError> {
+        if (operand.starts_with('"') && operand.ends_with('"'))
+            || (operand.starts_with('\'') && operand.ends_with('\''))
+        {
+            return self.decode_js_quoted_string(operand, operand);
         }
 
-        if conditional_value.contains("${") || conditional_value.contains(r"\${") {
-            return self
-                .render_template_value(conditional_value, inputs, pending_file_writes)
-                .map(Some);
+        if operand == "context.os" {
+            return Ok(self.current_os_text().to_string());
         }
 
-        let should_attempt_selector_resolution = conditional_value.contains(':')
-            || conditional_value.contains('.')
-            || conditional_value.contains('[')
-            || conditional_value.contains(']')
-            || conditional_value.contains('(')
-            || conditional_value.contains(')')
-            || conditional_value.chars().any(char::is_whitespace)
-            || inputs.contains_key(conditional_value);
+        let should_attempt_selector = operand.starts_with("inputs.")
+            || operand.starts_with("inputs[")
+            || inputs.contains_key(operand);
+        if !should_attempt_selector {
+            return Ok(operand.to_string());
+        }
+
+        match self.resolve_template_selector(operand)? {
+            TemplateSelectorSource::Input(input_key) => {
+                let input = inputs.get(&input_key).ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "conditional expression references missing input '{input_key}'"
+                    ))
+                })?;
+                if input.string_list.is_some() {
+                    return Err(ConductorError::Workflow(format!(
+                        "conditional expression references list input '{input_key}', but comparison operands must be scalar"
+                    )));
+                }
+                Ok(String::from_utf8_lossy(&input.plain_content).to_string())
+            }
+            TemplateSelectorSource::ContextOs => Ok(self.current_os_text().to_string()),
+        }
+    }
+
+    /// Resolves one conditional branch into rendered output content.
+    fn resolve_conditional_branch_value(
+        &self,
+        branch: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+        pending_file_writes: &mut Vec<TemplateFileWrite>,
+    ) -> Result<String, ConductorError> {
+        if branch.contains("${") || branch.contains(r"\${") {
+            return self.render_template_value(branch, inputs, pending_file_writes);
+        }
+
+        if (branch.starts_with('"') && branch.ends_with('"'))
+            || (branch.starts_with('\'') && branch.ends_with('\''))
+        {
+            return self.decode_js_quoted_string(branch, branch);
+        }
+
+        let should_attempt_selector_resolution = branch.contains(':')
+            || branch.contains('.')
+            || branch.contains('[')
+            || branch.contains(']')
+            || branch.contains('(')
+            || branch.contains(')')
+            || branch.chars().any(char::is_whitespace)
+            || branch == "context.os"
+            || inputs.contains_key(branch);
 
         if !should_attempt_selector_resolution {
-            return Ok(Some(conditional_value.to_string()));
+            return Ok(branch.to_string());
         }
 
-        match self.resolve_template_token(conditional_value, inputs, pending_file_writes) {
-            Ok(rendered) => Ok(Some(rendered)),
+        match self.resolve_template_token(branch, inputs, pending_file_writes) {
+            Ok(rendered) => Ok(rendered),
             Err(ConductorError::Workflow(message))
                 if message.contains("unsupported template expression") =>
             {
-                Ok(Some(conditional_value.to_string()))
+                Ok(branch.to_string())
             }
             Err(err) => Err(err),
         }
@@ -531,7 +791,7 @@ where
         Ok(())
     }
 
-    /// Resolves one interpolation selector to an input key.
+    /// Resolves one interpolation selector to an input key or context value.
     fn resolve_template_selector(
         &self,
         selector: &str,
@@ -564,6 +824,10 @@ where
             return Err(ConductorError::Workflow(format!(
                 "unsupported template expression '{selector}'"
             )));
+        }
+
+        if selector == "context.os" {
+            return Ok(TemplateSelectorSource::ContextOs);
         }
 
         let looks_like_expression = selector.contains('.')
@@ -721,7 +985,7 @@ where
         }
     }
 
-    /// Renders a command template list and removes OS-conditional omissions.
+    /// Renders a command template list and removes empty conditional results.
     pub(super) fn render_template_command(
         &self,
         templates: &[String],
@@ -731,19 +995,27 @@ where
         let mut rendered = Vec::new();
         for template in templates {
             if let Some(selector) = self.parse_command_unpack_token(template) {
-                let TemplateSelectorSource::Input(input_key) =
-                    self.resolve_template_selector(selector)?;
+                let input_key = match self.resolve_template_selector(selector)? {
+                    TemplateSelectorSource::Input(input_key) => input_key,
+                    TemplateSelectorSource::ContextOs => {
+                        return Err(ConductorError::Workflow(format!(
+                            "command unpack token '${{*{selector}}}' only supports step inputs, not 'context.os'"
+                        )));
+                    }
+                };
                 let input = inputs.get(&input_key).ok_or_else(|| {
                     ConductorError::Workflow(format!(
                         "command unpack token '${{*{selector}}}' references missing input '{input_key}'"
                     ))
                 })?;
-                let values = input.string_list.as_ref().ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "command unpack token '${{*{selector}}}' requires list input '{input_key}', but resolved input is scalar"
-                    ))
-                })?;
-                rendered.extend(values.iter().cloned());
+                if let Some(values) = input.string_list.as_ref() {
+                    rendered.extend(values.iter().cloned());
+                } else {
+                    let scalar = String::from_utf8_lossy(&input.plain_content).to_string();
+                    if !scalar.is_empty() {
+                        rendered.push(scalar);
+                    }
+                }
                 continue;
             }
 

@@ -175,6 +175,8 @@ enum PlannedToolContentPayload {
 enum TemplateSelectorSource {
     /// Selector resolves from step input bindings (`inputs.*`).
     Input(String),
+    /// Selector resolves to current host platform text (`windows`/`linux`/`macos`).
+    ContextOs,
 }
 
 /// Helper object that executes one step against one CAS implementation.
@@ -986,11 +988,10 @@ where
         };
 
         if !Self::is_success_exit_code(process_code, success_codes) {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stderr = Self::format_process_failure_stderr(&output.stderr);
             return Err(ConductorError::Workflow(format!(
                 "process '{executable_name}' exited with code {process_code}, expected one of {:?}: {}",
-                success_codes,
-                if stderr.is_empty() { "no stderr output".to_string() } else { stderr }
+                success_codes, stderr
             )));
         }
 
@@ -1428,7 +1429,7 @@ where
     /// Selects binary-input keys that each builtin contract accepts.
     ///
     /// Builtin step inputs are mirrored into string args for deterministic
-    /// instance-key derivation and backward-compatible arg transport.
+    /// instance-key derivation and explicit arg transport.
     /// Some builtins additionally accept raw binary payload inputs for
     /// content-oriented fields. This helper filters `resolved_inputs` so we do
     /// not pass structural keys (for example `kind` or `path`) as binary inputs
@@ -1630,6 +1631,18 @@ where
     /// Returns whether one process exit code should be treated as success.
     fn is_success_exit_code(process_code: i32, success_codes: &BTreeSet<i32>) -> bool {
         success_codes.contains(&process_code)
+    }
+
+    /// Formats process `stderr` for workflow-failure diagnostics.
+    ///
+    /// ANSI/control bytes are intentionally preserved so callers that render
+    /// terminal styling (for example colorized diagnostics) can display the
+    /// original formatting. The only normalization performed is an
+    /// `is_empty`-style fallback check after trimming whitespace.
+    #[must_use]
+    fn format_process_failure_stderr(stderr_bytes: &[u8]) -> String {
+        let stderr = String::from_utf8_lossy(stderr_bytes);
+        if stderr.trim().is_empty() { "no stderr output".to_string() } else { stderr.into_owned() }
     }
 }
 

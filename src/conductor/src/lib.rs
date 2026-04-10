@@ -15,8 +15,8 @@ pub mod orchestration;
 pub use api::{
     ConductorApi, ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
     RuntimeStoragePaths, SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind,
-    ToolRuntimeEstimate, WorkerQueueDiagnostics, default_cas_store_path, default_state_paths,
-    default_volatile_state_path, resolve_runtime_storage_paths,
+    ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths,
+    resolve_runtime_storage_paths,
 };
 pub use error::ConductorError;
 pub use model::config::{
