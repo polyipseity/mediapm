@@ -284,6 +284,78 @@ fn template_interpolation_supports_comparison_conditional_expression() {
     assert!(pending_file_writes.is_empty());
 }
 
+/// Protects truthiness conditional semantics for `${<operand>?<true>|<false>}`
+/// template expressions.
+#[test]
+fn template_interpolation_supports_truthy_conditional_expression() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "subject".to_string(),
+        ResolvedInput::from_plain_content(b"world".to_vec()),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let rendered = executor
+        .render_template_value(
+            "${inputs.subject ? has-subject | no-subject}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("truthy conditional should render selected branch");
+
+    assert_eq!(rendered, "has-subject");
+    assert!(pending_file_writes.is_empty());
+}
+
+/// Protects comparison conditional support for single-item list inputs used by
+/// value-centric option transport.
+#[test]
+fn template_interpolation_supports_comparison_against_single_item_list_input() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "switch".to_string(),
+        ResolvedInput::from_string_list(vec!["true".to_string()]).expect("build list input"),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let rendered = executor
+        .render_template_value(
+            "${inputs.switch == \"true\" ? enabled | disabled}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("single-item list comparison should render selected branch");
+
+    assert_eq!(rendered, "enabled");
+    assert!(pending_file_writes.is_empty());
+}
+
+/// Protects deterministic errors for ambiguous comparison operands sourced
+/// from multi-item list inputs.
+#[test]
+fn template_interpolation_rejects_comparison_against_multi_item_list_input() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([(
+        "switch".to_string(),
+        ResolvedInput::from_string_list(vec!["true".to_string(), "false".to_string()])
+            .expect("build list input"),
+    )]);
+    let mut pending_file_writes = Vec::new();
+
+    let error = executor
+        .render_template_value(
+            "${inputs.switch == \"true\" ? enabled | disabled}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect_err("multi-item list comparison should fail");
+
+    assert!(
+        format!("{error}").contains("comparisons support at most one list item"),
+        "error should describe list-size comparison constraint"
+    );
+}
+
 /// Protects recursive selector/materialization support inside comparison
 /// values.
 #[test]
@@ -375,6 +447,38 @@ fn command_render_expands_unpack_token_for_scalar_input() {
         .expect("scalar unpack token should expand to one argument");
 
     assert_eq!(rendered, vec!["tool".to_string(), "--single".to_string(), "--tail".to_string()]);
+}
+
+/// Protects conditional unpack support so command templates can include
+/// optional key/value argv pairs without mediapm-specific preprocessing.
+#[test]
+fn command_render_supports_conditional_unpack_key_value_pair() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let mut pending_file_writes = Vec::new();
+
+    let with_value_inputs = BTreeMap::from([(
+        "test".to_string(),
+        ResolvedInput::from_plain_content(b"alpha".to_vec()),
+    )]);
+    let command = vec![
+        "tool".to_string(),
+        "${*inputs.test ? --test | ''}".to_string(),
+        "${*inputs.test}".to_string(),
+    ];
+    let rendered_with_value = executor
+        .render_template_command(&command, &with_value_inputs, &mut pending_file_writes)
+        .expect("conditional unpack command should render key/value pair when value is present");
+    assert_eq!(
+        rendered_with_value,
+        vec!["tool".to_string(), "--test".to_string(), "alpha".to_string()]
+    );
+
+    let empty_value_inputs =
+        BTreeMap::from([("test".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+    let rendered_without_value = executor
+        .render_template_command(&command, &empty_value_inputs, &mut pending_file_writes)
+        .expect("conditional unpack command should omit key/value pair when value is empty");
+    assert_eq!(rendered_without_value, vec!["tool".to_string()]);
 }
 
 /// Protects plain `context.os` selector rendering.

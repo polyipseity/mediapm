@@ -214,6 +214,11 @@ Supported token forms:
   - The token must occupy the full command argument entry.
   - Runtime expands list inputs into one argv entry per list item.
   - Scalar inputs expand into one argv entry when non-empty.
+- `${*<condition> ? <true> | <false>}`
+  - Standalone executable command-argument conditional unpack token.
+  - The token must occupy the full command argument entry.
+  - Runtime evaluates one conditional expression and emits one argv entry when
+    the selected branch renders non-empty.
 - `${<selector>:file(<relative_path>)}`
   - Uses one selector form above, queues bytes for `<relative_path>`, then
     injects that path string.
@@ -227,6 +232,9 @@ Supported token forms:
   - Branch values resolve recursively and support
     selector/materialization special forms (for example
     `inputs.payload:file(payload.txt)`).
+- `${<operand> ? <true> | <false>}` / `${!<operand> ? <true> | <false>}`
+  - Truthiness conditional where non-empty scalar values and non-empty list
+    values are truthy.
 - `\${...}`
   - Escapes interpolation start and renders literal `${...}`.
 - JavaScript-like string escapes in literal spans are supported.

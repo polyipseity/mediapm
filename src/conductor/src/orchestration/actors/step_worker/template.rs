@@ -37,10 +37,14 @@ where
 {
     /// Parses one standalone command-argument unpack token.
     ///
-    /// Supported form is exactly `${*<selector>}` where `<selector>` resolves
-    /// to an input key. The token must occupy the entire command argument.
-    /// List inputs unpack to multiple arguments, while scalar inputs unpack to
-    /// one argument when non-empty.
+    /// Supported form is exactly `${*<token>}` where `<token>` is either:
+    /// - one selector that resolves to an input key, or
+    /// - one conditional expression in `${<condition>?<true>|<false>}` form.
+    ///
+    /// The token must occupy the entire command argument. Selector unpack
+    /// tokens expand list inputs to multiple arguments and scalar inputs to one
+    /// argument when non-empty. Conditional unpack tokens evaluate to one
+    /// rendered branch argument when non-empty.
     fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
         let prefix = "${*";
         if !template.starts_with(prefix) || !template.ends_with('}') {
@@ -350,10 +354,12 @@ where
         Ok(Some((selector, argument)))
     }
 
-    /// Resolves one `${<left> <op> <right> ? <true> | <false>}` comparison.
+    /// Resolves one `${<condition> ? <true> | <false>}` conditional token.
     ///
-    /// Supported operators are `==`, `!=`, `<`, `<=`, `>`, and `>=` and
-    /// operands compare using lexicographic string ordering.
+    /// Supported conditions are either one comparison expression
+    /// (`<left> <op> <right>`) with operators `==`, `!=`, `<`, `<=`, `>`,
+    /// and `>=`, or one truthiness expression (`<operand>` or `!<operand>`).
+    /// Comparison operands use lexicographic string ordering.
     fn resolve_comparison_conditional_token(
         &self,
         token: &str,
@@ -366,18 +372,22 @@ where
             return Ok(None);
         };
 
-        let (left_operand, operator, right_operand) =
-            self.parse_conditional_comparison(condition_expression, token)?;
-        let left_value = self.resolve_conditional_operand(left_operand, inputs)?;
-        let right_value = self.resolve_conditional_operand(right_operand, inputs)?;
+        let matches = if let Some((left_operand, operator, right_operand)) =
+            self.parse_conditional_comparison(condition_expression, token)?
+        {
+            let left_value = self.resolve_conditional_operand(left_operand, inputs)?;
+            let right_value = self.resolve_conditional_operand(right_operand, inputs)?;
 
-        let matches = match operator {
-            TemplateComparisonOperator::Equal => left_value == right_value,
-            TemplateComparisonOperator::NotEqual => left_value != right_value,
-            TemplateComparisonOperator::LessThan => left_value < right_value,
-            TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
-            TemplateComparisonOperator::GreaterThan => left_value > right_value,
-            TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
+            match operator {
+                TemplateComparisonOperator::Equal => left_value == right_value,
+                TemplateComparisonOperator::NotEqual => left_value != right_value,
+                TemplateComparisonOperator::LessThan => left_value < right_value,
+                TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
+                TemplateComparisonOperator::GreaterThan => left_value > right_value,
+                TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
+            }
+        } else {
+            self.resolve_conditional_truthiness(condition_expression, inputs)?
         };
 
         let selected_branch = if matches { true_branch } else { false_branch };
@@ -453,7 +463,7 @@ where
         };
         let Some(branch_separator_index) = branch_separator_index else {
             return Err(ConductorError::Workflow(format!(
-                "invalid conditional template expression '${{{token}}}'; expected '${{<left> <op> <right>?<true>|<false>}}'"
+                "invalid conditional template expression '${{{token}}}'; expected '${{<condition>?<true>|<false>}}'"
             )));
         };
 
@@ -471,11 +481,14 @@ where
     }
 
     /// Parses one conditional comparison expression into operands + operator.
+    ///
+    /// Returns `Ok(None)` when no comparison operator is present so callers can
+    /// fall back to truthiness evaluation.
     fn parse_conditional_comparison<'a>(
         &self,
         condition_expression: &'a str,
         token: &str,
-    ) -> Result<(&'a str, TemplateComparisonOperator, &'a str), ConductorError> {
+    ) -> Result<Option<(&'a str, TemplateComparisonOperator, &'a str)>, ConductorError> {
         let mut quote: Option<char> = None;
         let mut escaped = false;
         let mut paren_depth = 0usize;
@@ -559,12 +572,91 @@ where
                 )));
             }
 
-            return Ok((left_operand, operator, right_operand));
+            return Ok(Some((left_operand, operator, right_operand)));
         }
 
-        Err(ConductorError::Workflow(format!(
-            "invalid conditional template expression '${{{token}}}'; expected one comparison operator among ==, !=, <, <=, >, >="
-        )))
+        let contains_operator_like_character = condition_expression
+            .chars()
+            .any(|character| matches!(character, '=' | '!' | '<' | '>'));
+        if contains_operator_like_character {
+            return Err(ConductorError::Workflow(format!(
+                "invalid conditional template expression '${{{token}}}'; expected one comparison operator among ==, !=, <, <=, >, >="
+            )));
+        }
+
+        Ok(None)
+    }
+
+    /// Evaluates one non-comparison conditional expression using truthiness.
+    ///
+    /// Truthy operands are non-empty string payloads, non-empty string lists,
+    /// and non-empty literal values. A leading `!` negates that truthiness.
+    fn resolve_conditional_truthiness(
+        &self,
+        condition_expression: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<bool, ConductorError> {
+        let expression = condition_expression.trim();
+        if expression.is_empty() {
+            return Err(ConductorError::Workflow(
+                "conditional truthiness expression cannot be empty".to_string(),
+            ));
+        }
+
+        if let Some(operand) = expression.strip_prefix('!') {
+            let operand = operand.trim();
+            if operand.is_empty() {
+                return Err(ConductorError::Workflow(
+                    "conditional truthiness negation requires one operand".to_string(),
+                ));
+            }
+            return self
+                .resolve_conditional_truthiness_operand(operand, inputs)
+                .map(|value| !value);
+        }
+
+        self.resolve_conditional_truthiness_operand(expression, inputs)
+    }
+
+    /// Resolves one conditional truthiness operand into a boolean value.
+    fn resolve_conditional_truthiness_operand(
+        &self,
+        operand: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<bool, ConductorError> {
+        if (operand.starts_with('"') && operand.ends_with('"'))
+            || (operand.starts_with('\'') && operand.ends_with('\''))
+        {
+            return self.decode_js_quoted_string(operand, operand).map(|value| !value.is_empty());
+        }
+
+        if operand == "context.os" {
+            return Ok(!self.current_os_text().is_empty());
+        }
+
+        let should_attempt_selector = operand.starts_with("inputs.")
+            || operand.starts_with("inputs[")
+            || inputs.contains_key(operand);
+        if !should_attempt_selector {
+            return Ok(!operand.is_empty());
+        }
+
+        match self.resolve_template_selector(operand)? {
+            TemplateSelectorSource::Input(input_key) => {
+                let input = inputs.get(&input_key).ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "conditional expression references missing input '{input_key}'"
+                    ))
+                })?;
+
+                if let Some(values) = input.string_list.as_ref() {
+                    Ok(!values.is_empty())
+                } else {
+                    Ok(!input.plain_content.is_empty())
+                }
+            }
+            TemplateSelectorSource::ContextOs => Ok(!self.current_os_text().is_empty()),
+        }
     }
 
     /// Resolves one conditional operand into its comparable string value.
@@ -597,10 +689,14 @@ where
                         "conditional expression references missing input '{input_key}'"
                     ))
                 })?;
-                if input.string_list.is_some() {
-                    return Err(ConductorError::Workflow(format!(
-                        "conditional expression references list input '{input_key}', but comparison operands must be scalar"
-                    )));
+                if let Some(values) = input.string_list.as_ref() {
+                    if values.len() > 1 {
+                        return Err(ConductorError::Workflow(format!(
+                            "conditional expression references list input '{input_key}' with {} items, but comparisons support at most one list item",
+                            values.len()
+                        )));
+                    }
+                    return Ok(values.first().cloned().unwrap_or_default());
                 }
                 Ok(String::from_utf8_lossy(&input.plain_content).to_string())
             }
@@ -995,6 +1091,17 @@ where
         let mut rendered = Vec::new();
         for template in templates {
             if let Some(selector) = self.parse_command_unpack_token(template) {
+                if let Some(conditional_value) = self.resolve_comparison_conditional_token(
+                    selector,
+                    inputs,
+                    pending_file_writes,
+                )? {
+                    if !conditional_value.is_empty() {
+                        rendered.push(conditional_value);
+                    }
+                    continue;
+                }
+
                 let input_key = match self.resolve_template_selector(selector)? {
                     TemplateSelectorSource::Input(input_key) => input_key,
                     TemplateSelectorSource::ContextOs => {
