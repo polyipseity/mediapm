@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, CasError, Hash};
 use pulsebar::ProgressBar;
 
 use crate::api::{
@@ -216,6 +216,7 @@ where
 
         for (workflow_name, workflow) in &unified.workflows {
             let workflow_display_name = Self::workflow_display_name(workflow_name, workflow);
+            let workflow_is_pure = Self::workflow_is_pure(workflow_name, workflow, &unified.tools)?;
 
             for warning in Self::collect_unnecessary_depends_on_warnings(
                 workflow_name,
@@ -225,74 +226,214 @@ where
                 eprintln!("warning: {warning}");
             }
 
-            let levels = Self::topological_levels(workflow_name, workflow)?;
             let total_steps = workflow.steps.len();
-            let workflow_progress =
-                ProgressBar::new(total_steps.max(1) as u64).with_message(workflow_display_name);
-
             if total_steps == 0 {
-                workflow_progress.finish_success("complete");
+                ProgressBar::new(1).with_message(workflow_display_name).finish_success("complete");
                 continue;
             }
 
             let required_outputs_by_step =
                 Self::collect_required_outputs_by_step(workflow_name, workflow)?;
-            let mut step_outputs: StepOutputs = BTreeMap::new();
+            let mut recovery_attempted = false;
 
-            for (level_index, level) in levels.into_iter().enumerate() {
-                let level_step_count = level.len();
-                let state_snapshot = Arc::new(state.clone());
-                let step_outputs_snapshot = Arc::new(step_outputs.clone());
-                let impure_timestamps =
-                    Self::plan_impure_timestamps(unified, state_document, workflow_name, &level)?;
+            'workflow_retry: loop {
+                let levels = Self::topological_levels(workflow_name, workflow)?;
+                let workflow_progress =
+                    ProgressBar::new(total_steps.max(1) as u64).with_message(workflow_display_name);
+                let mut step_outputs: StepOutputs = BTreeMap::new();
+                let mut workflow_summary = RunSummary::new();
+                let mut workflow_pending_unsaved_hashes = BTreeSet::new();
 
-                let dispatch_outcomes = match execution_hub
-                    .execute_level(LevelExecutionRequest {
-                        workflow_name: workflow_name.clone(),
-                        level_index,
-                        level: level.into_iter().cloned().collect(),
-                        unified: unified_shared.clone(),
-                        state_snapshot,
-                        runtime_storage_dir: runtime_storage_dir.to_path_buf(),
-                        outermost_config_dir: outermost_config_dir.to_path_buf(),
-                        step_outputs: step_outputs_snapshot,
-                        required_outputs_by_step: required_outputs_by_step.clone(),
-                        impure_timestamps,
-                    })
-                    .await
-                {
-                    Ok(outcomes) => outcomes,
-                    Err(error) => {
-                        workflow_progress.finish_error("failed");
-                        return Err(error);
-                    }
-                };
+                for (level_index, level) in levels.into_iter().enumerate() {
+                    let level_step_count = level.len();
+                    let state_snapshot = Arc::new(state.clone());
+                    let step_outputs_snapshot = Arc::new(step_outputs.clone());
+                    let impure_timestamps = Self::plan_impure_timestamps(
+                        unified,
+                        state_document,
+                        workflow_name,
+                        &level,
+                    )?;
 
-                for outcome in dispatch_outcomes {
-                    let result = outcome.result;
-                    if result.executed {
-                        summary.executed_instances = summary.executed_instances.saturating_add(1);
-                        if result.rematerialized {
-                            summary.rematerialized_instances =
-                                summary.rematerialized_instances.saturating_add(1);
+                    let dispatch_outcomes = match execution_hub
+                        .execute_level(LevelExecutionRequest {
+                            workflow_name: workflow_name.clone(),
+                            level_index,
+                            level: level.into_iter().cloned().collect(),
+                            unified: unified_shared.clone(),
+                            state_snapshot,
+                            runtime_storage_dir: runtime_storage_dir.to_path_buf(),
+                            outermost_config_dir: outermost_config_dir.to_path_buf(),
+                            step_outputs: step_outputs_snapshot,
+                            required_outputs_by_step: required_outputs_by_step.clone(),
+                            impure_timestamps,
+                        })
+                        .await
+                    {
+                        Ok(outcomes) => outcomes,
+                        Err(error) => {
+                            let recoverable =
+                                Self::recoverable_corrupt_output_context(workflow_name, &error);
+                            let Some((
+                                consumer_step_id,
+                                producer_step_id,
+                                output_name,
+                                output_hash,
+                            )) = recoverable
+                            else {
+                                workflow_progress.finish_error("failed");
+                                return Err(error);
+                            };
+
+                            if !workflow_is_pure {
+                                workflow_progress.finish_error("failed");
+                                return Err(ConductorError::Workflow(format!(
+                                    "{error}; workflow '{workflow_name}' is impure, so automatic corruption recovery is disabled"
+                                )));
+                            }
+
+                            if recovery_attempted {
+                                workflow_progress.finish_error("failed");
+                                return Err(error);
+                            }
+
+                            recovery_attempted = true;
+                            let removed_instances = self
+                                .recover_from_corrupt_output_hash(
+                                    state,
+                                    output_hash,
+                                    &mut workflow_pending_unsaved_hashes,
+                                )
+                                .await?;
+
+                            eprintln!(
+                                "warning: workflow '{workflow_name}' detected corrupted cached output '{producer_step_id}.{output_name}' (hash '{output_hash}') while resolving step '{consumer_step_id}'; dropped {removed_instances} cached instance(s), removed corrupt CAS object, and retrying pure workflow once"
+                            );
+
+                            workflow_progress.finish_error("retrying");
+                            continue 'workflow_retry;
                         }
-                    } else {
-                        summary.cached_instances = summary.cached_instances.saturating_add(1);
+                    };
+
+                    for outcome in dispatch_outcomes {
+                        let result = outcome.result;
+                        if result.executed {
+                            workflow_summary.executed_instances =
+                                workflow_summary.executed_instances.saturating_add(1);
+                            if result.rematerialized {
+                                workflow_summary.rematerialized_instances =
+                                    workflow_summary.rematerialized_instances.saturating_add(1);
+                            }
+                        } else {
+                            workflow_summary.cached_instances =
+                                workflow_summary.cached_instances.saturating_add(1);
+                        }
+
+                        workflow_pending_unsaved_hashes
+                            .extend(result.pending_unsaved_hashes.iter().copied());
+                        let step_id = result.step_id.clone();
+                        let step_hashes = Self::merge_step_result_into_state(
+                            state,
+                            result,
+                            &mut workflow_pending_unsaved_hashes,
+                        )?;
+                        step_outputs.insert(step_id, step_hashes);
                     }
 
-                    pending_unsaved_hashes.extend(result.pending_unsaved_hashes.iter().copied());
-                    let step_id = result.step_id.clone();
-                    let step_hashes = Self::merge_step_result_into_state(state, result)?;
-                    step_outputs.insert(step_id, step_hashes);
+                    workflow_progress.advance(level_step_count as u64);
                 }
 
-                workflow_progress.advance(level_step_count as u64);
-            }
+                summary.executed_instances =
+                    summary.executed_instances.saturating_add(workflow_summary.executed_instances);
+                summary.cached_instances =
+                    summary.cached_instances.saturating_add(workflow_summary.cached_instances);
+                summary.rematerialized_instances = summary
+                    .rematerialized_instances
+                    .saturating_add(workflow_summary.rematerialized_instances);
+                pending_unsaved_hashes.extend(workflow_pending_unsaved_hashes);
 
-            workflow_progress.finish_success("complete");
+                workflow_progress.finish_success("complete");
+                break;
+            }
         }
 
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes })
+    }
+
+    /// Returns whether every step tool in one workflow is pure.
+    fn workflow_is_pure(
+        workflow_name: &str,
+        workflow: &WorkflowSpec,
+        tools: &BTreeMap<String, UnifiedToolSpec>,
+    ) -> Result<bool, ConductorError> {
+        for step in &workflow.steps {
+            let tool = tools.get(&step.tool).ok_or_else(|| {
+                ConductorError::Workflow(format!(
+                    "workflow '{workflow_name}' step '{}' references unknown tool '{}'",
+                    step.id, step.tool
+                ))
+            })?;
+            if tool.is_impure {
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Extracts structured corruption context when one workflow output read failed integrity checks.
+    fn recoverable_corrupt_output_context(
+        workflow_name: &str,
+        error: &ConductorError,
+    ) -> Option<(String, String, String, Hash)> {
+        let ConductorError::CorruptWorkflowOutput(context) = error else {
+            return None;
+        };
+
+        let error_workflow = &context.workflow_name;
+
+        if error_workflow != workflow_name {
+            return None;
+        }
+
+        Some((
+            context.consumer_step_id.clone(),
+            context.producer_step_id.clone(),
+            context.output_name.clone(),
+            context.output_hash,
+        ))
+    }
+
+    /// Drops cached instances that reference one corrupt output hash and removes that object from CAS.
+    async fn recover_from_corrupt_output_hash(
+        &self,
+        state: &mut OrchestrationState,
+        output_hash: Hash,
+        pending_unsaved_hashes: &mut BTreeSet<Hash>,
+    ) -> Result<usize, ConductorError> {
+        let affected_keys = state
+            .instances
+            .iter()
+            .filter_map(|(key, instance)| {
+                instance
+                    .outputs
+                    .values()
+                    .any(|output| output.hash == output_hash)
+                    .then_some(key.clone())
+            })
+            .collect::<Vec<_>>();
+
+        for key in &affected_keys {
+            state.instances.remove(key);
+        }
+
+        pending_unsaved_hashes.insert(output_hash);
+        match self.cas.delete(output_hash).await {
+            Ok(()) | Err(CasError::NotFound(_)) => {}
+            Err(source) => return Err(ConductorError::Cas(source)),
+        }
+
+        Ok(affected_keys.len())
     }
 
     /// Returns the user-facing workflow label used by progress UI rendering.
@@ -340,9 +481,16 @@ where
     /// key, this merge computes effective output persistence using
     /// [`merge_persistence_flags`] so persisted orchestration state reflects
     /// the combined caller intent (`save`: AND, `force_full`: OR).
+    ///
+    /// When one merge replaces an existing output hash with a new hash for the
+    /// same deterministic instance/output slot, the displaced hash is queued in
+    /// `pending_unsaved_hashes` for post-commit cleanup eligibility. Cleanup is
+    /// still centralized in the state-store commit path, so displaced hashes
+    /// are never deleted if workflow execution fails before commit.
     fn merge_step_result_into_state(
         state: &mut OrchestrationState,
         result: StepExecutionBundle,
+        pending_unsaved_hashes: &mut BTreeSet<Hash>,
     ) -> Result<BTreeMap<String, Hash>, ConductorError> {
         let StepExecutionBundle {
             step_id: _,
@@ -371,6 +519,9 @@ where
                 for (output_name, next_output) in instance.outputs {
                     match existing.outputs.get_mut(&output_name) {
                         Some(current_output) => {
+                            if current_output.hash != next_output.hash {
+                                pending_unsaved_hashes.insert(current_output.hash);
+                            }
                             current_output.hash = next_output.hash;
                             current_output.persistence = merge_persistence_flags([
                                 current_output.persistence,

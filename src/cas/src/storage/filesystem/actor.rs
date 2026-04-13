@@ -231,9 +231,57 @@ impl FileObjectActorState {
             .await
             .map_err(|source| CasError::io(check_operation, path, source))?
         {
+            Self::clear_file_readonly_if_set(path)?;
             fs::remove_file(path)
                 .await
                 .map_err(|source| CasError::io(remove_operation, path, source))?;
+        }
+
+        Ok(())
+    }
+
+    /// Clears read-only attribute on one object file before actor-owned deletion.
+    fn clear_file_readonly_if_set(path: &Path) -> Result<(), CasError> {
+        let metadata = std::fs::metadata(path).map_err(|source| {
+            CasError::io("reading object metadata before deletion", path, source)
+        })?;
+
+        let permissions = metadata.permissions();
+        if permissions.readonly() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mode = permissions.mode();
+                let writable_mode = mode | 0o200;
+                if writable_mode != mode {
+                    let mut writable_permissions = permissions;
+                    writable_permissions.set_mode(writable_mode);
+                    std::fs::set_permissions(path, writable_permissions).map_err(|source| {
+                        CasError::io(
+                            "clearing readonly bit before deleting object file",
+                            path,
+                            source,
+                        )
+                    })?;
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                #[allow(clippy::permissions_set_readonly_false)]
+                {
+                    let mut writable_permissions = permissions;
+                    writable_permissions.set_readonly(false);
+                    std::fs::set_permissions(path, writable_permissions).map_err(|source| {
+                        CasError::io(
+                            "clearing readonly bit before deleting object file",
+                            path,
+                            source,
+                        )
+                    })?;
+                }
+            }
         }
 
         Ok(())

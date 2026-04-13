@@ -2070,8 +2070,12 @@ async fn write_atomic(
         drop(staged_file);
 
         match std::fs::rename(&staged_path, &path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                enforce_file_readonly(&path)?;
+                Ok(())
+            }
             Err(_first_rename_error) if path.exists() => {
+                clear_file_readonly_if_set(&path)?;
                 std::fs::remove_file(&path).map_err(|source| {
                     CasError::io(
                         "removing existing target before rename fallback",
@@ -2080,8 +2084,11 @@ async fn write_atomic(
                     )
                 })?;
 
-                std::fs::rename(&staged_path, &path)
-                    .map_err(|source| CasError::io("renaming staged file into place", path, source))
+                std::fs::rename(&staged_path, &path).map_err(|source| {
+                    CasError::io("renaming staged file into place", path.clone(), source)
+                })?;
+                enforce_file_readonly(&path)?;
+                Ok(())
             }
             Err(first_rename_error) => {
                 let _ = std::fs::remove_file(&staged_path);
@@ -2096,6 +2103,61 @@ async fn write_atomic(
     })
     .await
     .map_err(|err| CasError::task_join("atomically writing filesystem object bytes", err))?
+}
+
+/// Marks one object file as read-only after CAS-owned writes complete.
+fn enforce_file_readonly(path: &Path) -> Result<(), CasError> {
+    let metadata = std::fs::metadata(path).map_err(|source| {
+        CasError::io("reading object metadata for readonly enforcement", path, source)
+    })?;
+    let mut permissions = metadata.permissions();
+    if !permissions.readonly() {
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions).map_err(|source| {
+            CasError::io("marking object file readonly after atomic commit", path, source)
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Clears read-only bit on one object file so CAS can replace/remove it.
+fn clear_file_readonly_if_set(path: &Path) -> Result<(), CasError> {
+    let metadata = std::fs::metadata(path).map_err(|source| {
+        CasError::io("reading existing object metadata before overwrite", path, source)
+    })?;
+
+    let permissions = metadata.permissions();
+    if permissions.readonly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = permissions.mode();
+            let writable_mode = mode | 0o200;
+            if writable_mode != mode {
+                let mut writable_permissions = permissions;
+                writable_permissions.set_mode(writable_mode);
+                std::fs::set_permissions(path, writable_permissions).map_err(|source| {
+                    CasError::io("clearing readonly bit before object overwrite", path, source)
+                })?;
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            #[allow(clippy::permissions_set_readonly_false)]
+            {
+                let mut writable_permissions = permissions;
+                writable_permissions.set_readonly(false);
+                std::fs::set_permissions(path, writable_permissions).map_err(|source| {
+                    CasError::io("clearing readonly bit before object overwrite", path, source)
+                })?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Applies hash-collision length guard for existing hash keys.
@@ -2602,6 +2664,18 @@ mod tests {
         assert!(!cas.diff_path_for_hash(hash).exists());
     }
 
+    /// Protects readonly enforcement for persisted full-object payload files.
+    #[tokio::test]
+    async fn filesystem_put_marks_object_file_readonly() {
+        let (_dir, cas) = open_temp_filesystem_cas().await;
+
+        let hash = cas.put(Bytes::from_static(b"readonly-object")).await.expect("put object");
+        let object_path = cas.object_path_for_hash(hash);
+        let metadata = std::fs::metadata(&object_path).expect("object metadata");
+
+        assert!(metadata.permissions().readonly());
+    }
+
     #[tokio::test]
     async fn filesystem_optimize_once_rewrites_unconstrained_objects() {
         let (_dir, cas) = open_temp_filesystem_cas().await;
@@ -2650,6 +2724,8 @@ mod tests {
         let hash = cas.put(original).await.expect("put payload");
 
         let object_path = cas.object_path_for_hash(hash);
+        super::clear_file_readonly_if_set(&object_path)
+            .expect("clear readonly flag before intentional corruption");
         tokio::fs::write(&object_path, b"mutated-bytes").await.expect("mutate object bytes");
 
         let err = cas.get(hash).await.expect_err("corrupt payload must fail verification");

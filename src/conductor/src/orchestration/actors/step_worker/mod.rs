@@ -12,10 +12,10 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 use std::time::Instant;
 
-use mediapm_cas::{CasApi, Constraint, ConstraintPatch, Hash, empty_content_hash};
+use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 
-use crate::error::ConductorError;
+use crate::error::{ConductorError, CorruptWorkflowOutputContext};
 use crate::model::config::{
     InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
     ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
@@ -597,7 +597,22 @@ where
                             step.id, output, step_id
                         ))
                     })?;
-                    let bytes = self.cas.get(output_hash).await?;
+                    let bytes = match self.cas.get(output_hash).await {
+                        Ok(bytes) => bytes,
+                        Err(source) if Self::is_cas_corruption_read_error(&source) => {
+                            return Err(ConductorError::CorruptWorkflowOutput(Box::new(
+                                CorruptWorkflowOutputContext {
+                                    workflow_name: workflow_name.to_string(),
+                                    consumer_step_id: step.id.clone(),
+                                    producer_step_id: step_id.to_string(),
+                                    output_name: output.to_string(),
+                                    output_hash,
+                                    detail: source.to_string(),
+                                },
+                            )));
+                        }
+                        Err(source) => return Err(ConductorError::Cas(source)),
+                    };
                     plain_content.extend_from_slice(bytes.as_ref());
                 }
             }
@@ -1626,6 +1641,14 @@ where
     /// Normalizes one success-code list into a deterministic set.
     fn normalize_success_codes(codes: &[i32]) -> BTreeSet<i32> {
         codes.iter().copied().collect()
+    }
+
+    /// Returns whether one CAS read error indicates persistent payload corruption.
+    fn is_cas_corruption_read_error(error: &CasError) -> bool {
+        matches!(
+            error,
+            CasError::CorruptObject(_) | CasError::CorruptIndex(_) | CasError::InvalidDelta(_)
+        )
     }
 
     /// Returns whether one process exit code should be treated as success.

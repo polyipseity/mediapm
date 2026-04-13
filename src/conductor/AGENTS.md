@@ -190,6 +190,12 @@ When editing tool/config schema behavior, preserve these invariants:
     builtin metadata stays strict (`kind`/`name`/`version`) and does not leak
     runtime-only optional fields.
 
+25. If a cached referenced `${step_output...}` payload fails CAS integrity
+
+    checks, conductor may auto-recover only for pure workflows by warning,
+    dropping affected cached instances, deleting the corrupt hash, and retrying
+    the workflow once. Impure workflows must fail without auto-retry.
+
 If adding validation, apply it both where practical:
 
 - schema bridge validation (`model/config/versions/mod.rs`)

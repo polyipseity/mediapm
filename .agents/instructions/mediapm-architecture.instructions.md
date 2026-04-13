@@ -85,7 +85,11 @@ is a narrow, documented reason.
   - separate content-map entries must not overwrite the same file path,
   - every hash referenced by `tool_configs.<tool>.content_map` must also be
     present in top-level `external_data`,
-  - absolute/escaping paths are rejected.
+  - absolute/escaping paths are rejected,
+  - when cached `${step_output...}` CAS payloads fail integrity checks,
+    conductor may auto-recover only for pure workflows by warning, dropping
+    affected cached instances, deleting corrupt hashes, and retrying once;
+    impure workflows fail without auto-retry.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
   For Phase 3 runtime paths, preserve these `mediapm` invariants:
   - default runtime root is `.mediapm/`,
@@ -221,7 +225,7 @@ is a narrow, documented reason.
 - Canonical identity key is URI (`canonical_uri`), not path display strings.
 - Content identity is BLAKE3 hash and object fan-out path under `.mediapm/objects/blake3/<2-char>/<rest>`.
 - Sidecar paths are derived from canonical URI digest under `.mediapm/media/<media-id>/media.json`.
-- Object files are immutable once imported.
+- CAS object files are immutable once imported and persisted as read-only by default.
 
 ## Sidecar schema and history expectations
 

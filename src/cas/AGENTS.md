@@ -23,6 +23,10 @@ alone.
 - Full objects are stored as raw payload bytes with no headers.
 - Delta objects are stored as `.diff` files using the oxidelta-backed payload
   format.
+- Persisted object payload files are read-only by default after successful CAS
+  writes (`<hash>` and `<hash>.diff`).
+- CAS-owned overwrite/delete paths may temporarily clear read-only bits before
+  replacing or removing object files.
 - Delete is transitive for delta descendants to avoid orphan reconstruction paths.
 - Constraints never persist an explicit empty-only candidate list; empty base is
   implicit at read time.

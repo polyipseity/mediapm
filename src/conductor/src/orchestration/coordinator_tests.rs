@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, InMemoryCas};
+use mediapm_cas::{CasApi, CasError, FileSystemCas, InMemoryCas};
 use tempfile::tempdir;
 
 use crate::api::SchedulerTraceKind;
@@ -20,6 +20,45 @@ use crate::model::config::{
 use crate::model::state::{PersistenceFlags, merge_persistence_flags};
 
 use super::WorkflowCoordinator;
+
+/// Mutates persisted CAS object bytes for one hash so integrity verification fails on next read.
+fn corrupt_filesystem_cas_object(cas: &FileSystemCas, hash: mediapm_cas::Hash) {
+    for path in [cas.object_path_for_hash(hash), cas.diff_path_for_hash(hash)] {
+        if !path.exists() {
+            continue;
+        }
+
+        let permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        if permissions.readonly() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mode = permissions.mode();
+                let writable_mode = mode | 0o200;
+                if writable_mode != mode {
+                    let mut writable_permissions = permissions;
+                    writable_permissions.set_mode(writable_mode);
+                    std::fs::set_permissions(&path, writable_permissions)
+                        .expect("clear readonly (unix mode)");
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                #[allow(clippy::permissions_set_readonly_false)]
+                {
+                    let mut writable_permissions = permissions;
+                    writable_permissions.set_readonly(false);
+                    std::fs::set_permissions(&path, writable_permissions)
+                        .expect("clear readonly (platform fallback)");
+                }
+            }
+        }
+
+        std::fs::write(&path, b"corrupted-by-test").expect("mutate CAS payload");
+    }
+}
 
 /// Protects persistence-flag merge semantics used throughout output handling.
 #[test]
@@ -250,6 +289,232 @@ async fn rematerializes_when_referenced_output_is_missing() {
     assert_eq!(summary_2.executed_instances, 1);
     assert_eq!(summary_2.cached_instances, 1);
     assert_eq!(summary_2.rematerialized_instances, 1);
+}
+
+/// Protects pure-workflow recovery when referenced cached step outputs are corrupted in CAS.
+#[tokio::test]
+async fn pure_workflow_recovers_when_referenced_output_is_corrupted() {
+    let temp = tempdir().expect("tempdir");
+    let cas =
+        Arc::new(FileSystemCas::open_for_tests(temp.path().join("cas")).await.expect("open cas"));
+    let mut coordinator = WorkflowCoordinator::new(cas.clone());
+    let user_path = temp.path().join("conductor.ncl");
+    let machine_path = temp.path().join("conductor.machine.ncl");
+
+    let user = UserNickelDocument {
+        tools: BTreeMap::from([(
+            "echo@1.0.0".to_string(),
+            ToolSpec {
+                is_impure: false,
+                inputs: BTreeMap::new(),
+                kind: ToolKindSpec::Builtin {
+                    name: "echo".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                outputs: BTreeMap::from([(
+                    "result".to_string(),
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                )]),
+            },
+        )]),
+        workflows: BTreeMap::from([(
+            "wf".to_string(),
+            WorkflowSpec {
+                name: None,
+                description: None,
+                steps: vec![
+                    WorkflowStepSpec {
+                        id: "producer".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("hello".to_string()),
+                        )]),
+                        depends_on: Vec::new(),
+                        outputs: BTreeMap::new(),
+                    },
+                    WorkflowStepSpec {
+                        id: "consumer".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("${step_output.producer.result}".to_string()),
+                        )]),
+                        depends_on: vec!["producer".to_string()],
+                        outputs: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..UserNickelDocument::default()
+    };
+
+    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+        .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    let summary_1 = coordinator
+        .run_workflow(&user_path, &machine_path)
+        .await
+        .expect("first run should execute");
+    assert_eq!(summary_1.executed_instances, 2);
+
+    let state = coordinator.current_state().await.expect("load current state");
+    let mut corrupted_hashes = Vec::new();
+    for output_hash in state
+        .instances
+        .values()
+        .flat_map(|instance| instance.inputs.values().map(|input| input.hash))
+    {
+        if corrupted_hashes.contains(&output_hash) {
+            continue;
+        }
+        corrupt_filesystem_cas_object(cas.as_ref(), output_hash);
+        corrupted_hashes.push(output_hash);
+    }
+
+    assert!(!corrupted_hashes.is_empty(), "workflow should reference at least one output hash");
+
+    let first_corrupted = *corrupted_hashes.first().expect("at least one output hash");
+    let corruption = cas.get(first_corrupted).await.expect_err("corrupted hash should fail read");
+    assert!(matches!(corruption, CasError::CorruptObject(_) | CasError::InvalidDelta(_)));
+
+    let summary_2 = coordinator
+        .run_workflow(&user_path, &machine_path)
+        .await
+        .expect("pure workflow should recover from corruption and retry");
+
+    assert!(summary_2.executed_instances >= 1);
+    let post_recovery = cas.get(first_corrupted).await;
+    assert!(
+        matches!(post_recovery, Ok(_) | Err(CasError::NotFound(_))),
+        "recovery should not leave corrupted bytes readable: {post_recovery:?}"
+    );
+}
+
+/// Protects impure-workflow fail-fast behavior when cached referenced outputs are corrupted.
+#[tokio::test]
+async fn impure_workflow_does_not_auto_recover_corrupted_output() {
+    let temp = tempdir().expect("tempdir");
+    let cas =
+        Arc::new(FileSystemCas::open_for_tests(temp.path().join("cas")).await.expect("open cas"));
+    let mut coordinator = WorkflowCoordinator::new(cas.clone());
+    let user_path = temp.path().join("conductor.ncl");
+    let machine_path = temp.path().join("conductor.machine.ncl");
+    std::fs::write(temp.path().join("impure-source.txt"), b"hello")
+        .expect("write import source fixture");
+
+    let import_tool_id = format!(
+        "{}@{}",
+        mediapm_conductor_builtin_import::TOOL_NAME,
+        mediapm_conductor_builtin_import::TOOL_VERSION
+    );
+    let echo_tool_id = format!(
+        "{}@{}",
+        mediapm_conductor_builtin_echo::TOOL_NAME,
+        mediapm_conductor_builtin_echo::TOOL_VERSION
+    );
+
+    let user = UserNickelDocument {
+        tools: BTreeMap::from([
+            (
+                import_tool_id.clone(),
+                ToolSpec {
+                    is_impure: true,
+                    inputs: BTreeMap::new(),
+                    kind: ToolKindSpec::Builtin {
+                        name: mediapm_conductor_builtin_import::TOOL_NAME.to_string(),
+                        version: mediapm_conductor_builtin_import::TOOL_VERSION.to_string(),
+                    },
+                    outputs: BTreeMap::from([(
+                        "result".to_string(),
+                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    )]),
+                },
+            ),
+            (
+                echo_tool_id.clone(),
+                ToolSpec {
+                    is_impure: false,
+                    inputs: BTreeMap::new(),
+                    kind: ToolKindSpec::Builtin {
+                        name: mediapm_conductor_builtin_echo::TOOL_NAME.to_string(),
+                        version: mediapm_conductor_builtin_echo::TOOL_VERSION.to_string(),
+                    },
+                    outputs: BTreeMap::from([(
+                        "result".to_string(),
+                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    )]),
+                },
+            ),
+        ]),
+        workflows: BTreeMap::from([(
+            "wf".to_string(),
+            WorkflowSpec {
+                name: None,
+                description: None,
+                steps: vec![
+                    WorkflowStepSpec {
+                        id: "producer".to_string(),
+                        tool: import_tool_id.clone(),
+                        inputs: BTreeMap::from([
+                            ("kind".to_string(), InputBinding::String("file".to_string())),
+                            ("path_mode".to_string(), InputBinding::String("relative".to_string())),
+                            (
+                                "path".to_string(),
+                                InputBinding::String("impure-source.txt".to_string()),
+                            ),
+                        ]),
+                        depends_on: Vec::new(),
+                        outputs: BTreeMap::new(),
+                    },
+                    WorkflowStepSpec {
+                        id: "consumer".to_string(),
+                        tool: echo_tool_id,
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("${step_output.producer.result}".to_string()),
+                        )]),
+                        depends_on: vec!["producer".to_string()],
+                        outputs: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..UserNickelDocument::default()
+    };
+
+    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+        .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    coordinator.run_workflow(&user_path, &machine_path).await.expect("first run should execute");
+
+    let state = coordinator.current_state().await.expect("load current state");
+    let output_hash = state
+        .instances
+        .values()
+        .find(|instance| instance.tool_name == import_tool_id.as_str())
+        .and_then(|instance| instance.outputs.get("result").map(|output| output.hash))
+        .expect("workflow should expose producer output hash");
+    corrupt_filesystem_cas_object(cas.as_ref(), output_hash);
+
+    let corruption = cas.get(output_hash).await.expect_err("corrupted hash should fail read");
+    assert!(matches!(corruption, CasError::CorruptObject(_) | CasError::InvalidDelta(_)));
+
+    let error = coordinator
+        .run_workflow(&user_path, &machine_path)
+        .await
+        .expect_err("impure workflow should fail on corrupt referenced output");
+    assert!(error.to_string().contains("impure"));
 }
 
 /// Protects state-schema validation when machine state pointers reference unsupported blobs.
