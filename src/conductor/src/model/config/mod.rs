@@ -277,6 +277,17 @@ pub struct ToolConfigSpec {
     /// `0` and values smaller than `-1` are invalid.
     #[serde(default = "default_max_concurrent_calls")]
     pub max_concurrent_calls: i32,
+    /// Maximum retry count for one tool call after the initial attempt.
+    ///
+    /// Semantics:
+    /// - `-1`: use runtime default retry behavior,
+    /// - `0`: execute once with no retries,
+    /// - positive integer: retry at most that many times after the first
+    ///   failed attempt.
+    ///
+    /// Values smaller than `-1` are invalid.
+    #[serde(default = "default_max_retries")]
+    pub max_retries: i32,
     /// Optional human-facing description for this tool runtime configuration.
     ///
     /// This field is informational only and must not affect runtime identity,
@@ -321,6 +332,7 @@ impl Default for ToolConfigSpec {
     fn default() -> Self {
         Self {
             max_concurrent_calls: default_max_concurrent_calls(),
+            max_retries: default_max_retries(),
             description: None,
             input_defaults: BTreeMap::new(),
             content_map: None,
@@ -399,6 +411,10 @@ impl AddToolOptions {
 }
 
 fn default_max_concurrent_calls() -> i32 {
+    -1
+}
+
+fn default_max_retries() -> i32 {
     -1
 }
 
@@ -735,7 +751,48 @@ pub(crate) enum ParsedInputBindingSegment<'a> {
         step_id: &'a str,
         /// Output name on the dependency step.
         output: &'a str,
+        /// Optional ZIP member selector extracted from output bytes.
+        zip_member: Option<&'a str>,
     },
+}
+
+/// Parses one optional trailing `:zip(<member>)` selector.
+fn parse_optional_zip_selector(expression: &str) -> Result<(&str, Option<&str>), ConductorError> {
+    if !expression.contains(":zip(") {
+        return Ok((expression, None));
+    }
+
+    let Some(without_suffix) = expression.strip_suffix(')') else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid input binding expression '${{{expression}}}'; malformed :zip(...) selector"
+        )));
+    };
+
+    let Some((selector, member)) = without_suffix.rsplit_once(":zip(") else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid input binding expression '${{{expression}}}'; malformed :zip(...) selector"
+        )));
+    };
+
+    let member = member.trim();
+    if member.is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "invalid input binding expression '${{{expression}}}'; :zip(...) requires one non-empty member key"
+        )));
+    }
+    if member.contains('/') || member.contains('\\') {
+        return Err(ConductorError::Workflow(format!(
+            "invalid input binding expression '${{{expression}}}'; :zip(...) member key must be flat and must not contain path separators"
+        )));
+    }
+
+    if selector.trim().is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "invalid input binding expression '${{{expression}}}'; :zip(...) requires one non-empty selector prefix"
+        )));
+    }
+
+    Ok((selector.trim(), Some(member)))
 }
 
 /// Parses one `${...}` expression body from a workflow-step input binding.
@@ -749,7 +806,9 @@ fn parse_input_binding_expression<'a>(
         )));
     }
 
-    if let Some(hash_text) = expression.strip_prefix(INPUT_BINDING_EXTERNAL_DATA_PREFIX) {
+    let (selector_expression, zip_member) = parse_optional_zip_selector(expression)?;
+
+    if let Some(hash_text) = selector_expression.strip_prefix(INPUT_BINDING_EXTERNAL_DATA_PREFIX) {
         let hash_text = hash_text.trim();
         if hash_text.is_empty() {
             return Err(ConductorError::Workflow(
@@ -761,10 +820,15 @@ fn parse_input_binding_expression<'a>(
                 "input binding '${{external_data.{hash_text}}}' must reference a valid CAS hash key: {error}"
             ))
         })?;
+        if zip_member.is_some() {
+            return Err(ConductorError::Workflow(format!(
+                "unsupported input binding expression '${{{expression}}}' in '{binding}'; :zip(...) is currently supported only for step_output references"
+            )));
+        }
         return Ok(ParsedInputBindingSegment::ExternalData { hash });
     }
 
-    if let Some(selector) = expression.strip_prefix(INPUT_BINDING_STEP_OUTPUT_PREFIX) {
+    if let Some(selector) = selector_expression.strip_prefix(INPUT_BINDING_STEP_OUTPUT_PREFIX) {
         let Some((step_id, output)) = selector.split_once('.') else {
             return Err(ConductorError::Workflow(
                 "input binding '${step_output.<step_id>.<output_name>}' requires both step id and output name"
@@ -777,11 +841,11 @@ fn parse_input_binding_expression<'a>(
                     .to_string(),
             ));
         }
-        return Ok(ParsedInputBindingSegment::StepOutput { step_id, output });
+        return Ok(ParsedInputBindingSegment::StepOutput { step_id, output, zip_member });
     }
 
     Err(ConductorError::Workflow(format!(
-        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
+        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}', '${{step_output.<step_id>.<output_name>}}', and '${{step_output.<step_id>.<output_name>:zip(<member>)}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
     )))
 }
 
@@ -791,6 +855,8 @@ fn parse_input_binding_expression<'a>(
 /// - plain text outside `${...}` tokens is preserved as literal content,
 /// - supported interpolation expressions are `${external_data.<hash>}`,
 ///   and `${step_output.<step_id>.<output_name>}`,
+/// - `${step_output.<step_id>.<output_name>:zip(<member>)}` additionally
+///   selects one ZIP member from the referenced output bytes,
 /// - unsupported `${...}` expressions fail fast with explicit errors,
 /// - `${...` without a closing `}` fails fast.
 pub(crate) fn parse_input_binding(
@@ -1149,6 +1215,7 @@ mod tests {
         })
         .with_tool_config(ToolConfigSpec {
             max_concurrent_calls: 2,
+            max_retries: -1,
             description: Some("demo executable runtime config".to_string()),
             input_defaults: BTreeMap::new(),
             content_map: Some(BTreeMap::from([(
@@ -1196,6 +1263,7 @@ mod tests {
                 })
                 .with_tool_config(ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: Some("initial executable runtime config".to_string()),
                     input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
@@ -1233,6 +1301,7 @@ mod tests {
                     overwrite_existing: false,
                     config_mode: AddToolConfigMode::Replace(ToolConfigSpec {
                         max_concurrent_calls: 1,
+                        max_retries: -1,
                         description: Some("invalid builtin runtime config".to_string()),
                         input_defaults: BTreeMap::new(),
                         content_map: Some(BTreeMap::from([(
@@ -1311,6 +1380,7 @@ mod tests {
                 "tool@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: -1,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([("bin/tool".to_string(), active_hash)])),

@@ -132,6 +132,25 @@ where
         }
     }
 
+    /// Resolves one tool-call retry budget from unified tool metadata.
+    fn tool_call_max_retries(
+        unified: &UnifiedNickelDocument,
+        tool_name: &str,
+    ) -> Result<usize, ConductorError> {
+        let tool = unified.tools.get(tool_name).ok_or_else(|| {
+            ConductorError::Workflow(format!("unknown tool '{tool_name}' while planning dispatch"))
+        })?;
+
+        if tool.max_retries < 0 {
+            return Err(ConductorError::Workflow(format!(
+                "tool '{tool_name}' has invalid max_retries={}; expected a non-negative integer",
+                tool.max_retries
+            )));
+        }
+
+        Ok(tool.max_retries as usize)
+    }
+
     /// Selects one dispatch batch that respects each tool's concurrency cap.
     fn select_concurrency_limited_batch(
         pending: &mut VecDeque<(usize, StepWorkerAssignment)>,
@@ -197,69 +216,91 @@ where
                 let worker_index = assignment.worker_index;
                 let step = assignment.step;
                 let actor = self.workers[worker_index].clone();
-                let step_request = StepExecutionRequest {
-                    unified: request.unified.clone(),
-                    step: step.clone(),
-                    impure_timestamp: request
-                        .impure_timestamps
-                        .get(&step.id)
-                        .cloned()
-                        .unwrap_or(None),
-                    workflow_name: request.workflow_name.clone(),
-                    state_snapshot: request.state_snapshot.clone(),
-                    runtime_storage_dir: request.runtime_storage_dir.clone(),
-                    outermost_config_dir: request.outermost_config_dir.clone(),
-                    step_outputs: request.step_outputs.clone(),
-                    required_output_names: request
-                        .required_outputs_by_step
-                        .get(&step.id)
-                        .cloned()
-                        .unwrap_or_default(),
-                };
-                let fallback_request = step_request.clone();
                 let cas = self.cas.clone();
                 let step_id = step.id.clone();
+                let tool_name = step.tool.clone();
+                let unified = request.unified.clone();
+                let workflow_name = request.workflow_name.clone();
+                let state_snapshot = request.state_snapshot.clone();
+                let runtime_storage_dir = request.runtime_storage_dir.clone();
+                let outermost_config_dir = request.outermost_config_dir.clone();
+                let step_outputs = request.step_outputs.clone();
+                let required_output_names = request
+                    .required_outputs_by_step
+                    .get(&step.id)
+                    .cloned()
+                    .unwrap_or_default();
+                let impure_timestamp = request.impure_timestamps.get(&step.id).cloned().unwrap_or(None);
 
                 async move {
-                    let rpc_result = call_t!(
-                        actor,
-                        StepWorkerMessage::ExecuteStep,
-                        DEFAULT_RPC_TIMEOUT_MS,
-                        Box::new(step_request)
-                    );
-                    let outcome = match rpc_result {
-                        Ok(worker_reply) => {
-                            let mut result = worker_reply?;
-                            result.worker_index = worker_index;
-                            result.fallback_used = false;
-                            Ok(StepDispatchOutcome {
-                                result,
-                                rpc_failed: false,
-                                rpc_failure_reason: None,
-                            })
-                        }
-                        Err(err) => {
-                            let rpc_error_text = err.to_string();
-                            execute_step_direct(cas, fallback_request)
-                                .await
-                                .map(|mut result| {
-                                    result.worker_index = worker_index;
-                                    result.fallback_used = true;
-                                    StepDispatchOutcome {
-                                        result,
-                                        rpc_failed: true,
-                                        rpc_failure_reason: Some(rpc_error_text),
-                                    }
-                                })
-                                .map_err(|fallback_err| {
-                                    ConductorError::Internal(format!(
-                                        "step worker RPC failed for '{step_id}'; fallback execution failed: {fallback_err}"
-                                    ))
-                                })
-                        }
-                    }?;
+                    let max_retries =
+                        Self::tool_call_max_retries(unified.as_ref(), tool_name.as_str())?;
+                    let mut retries_remaining = max_retries;
 
-                    Ok::<(usize, StepDispatchOutcome), ConductorError>((assignment_index, outcome))
+                    loop {
+                        let step_request = StepExecutionRequest {
+                            unified: unified.clone(),
+                            step: step.clone(),
+                            impure_timestamp,
+                            workflow_name: workflow_name.clone(),
+                            state_snapshot: state_snapshot.clone(),
+                            runtime_storage_dir: runtime_storage_dir.clone(),
+                            outermost_config_dir: outermost_config_dir.clone(),
+                            step_outputs: step_outputs.clone(),
+                            required_output_names: required_output_names.clone(),
+                        };
+                        let fallback_request = step_request.clone();
+
+                        let attempt = match call_t!(
+                            actor.clone(),
+                            StepWorkerMessage::ExecuteStep,
+                            DEFAULT_RPC_TIMEOUT_MS,
+                            Box::new(step_request)
+                        ) {
+                            Ok(worker_reply) => {
+                                let mut result = worker_reply?;
+                                result.worker_index = worker_index;
+                                result.fallback_used = false;
+                                Ok(StepDispatchOutcome {
+                                    result,
+                                    rpc_failed: false,
+                                    rpc_failure_reason: None,
+                                })
+                            }
+                            Err(err) => {
+                                let rpc_error_text = err.to_string();
+                                execute_step_direct(cas.clone(), fallback_request)
+                                    .await
+                                    .map(|mut result| {
+                                        result.worker_index = worker_index;
+                                        result.fallback_used = true;
+                                        StepDispatchOutcome {
+                                            result,
+                                            rpc_failed: true,
+                                            rpc_failure_reason: Some(rpc_error_text),
+                                        }
+                                    })
+                                    .map_err(|fallback_err| {
+                                        ConductorError::Internal(format!(
+                                            "step worker RPC failed for '{step_id}'; fallback execution failed: {fallback_err}"
+                                        ))
+                                    })
+                            }
+                        };
+
+                        match attempt {
+                            Ok(outcome) => {
+                                break Ok::<(usize, StepDispatchOutcome), ConductorError>((
+                                    assignment_index,
+                                    outcome,
+                                ));
+                            }
+                            Err(_err) if retries_remaining > 0 => {
+                                retries_remaining -= 1;
+                        }
+                            Err(err) => break Err(err),
+                        }
+                    }
                 }
             });
 
@@ -444,6 +485,21 @@ mod tests {
         assert!(message.contains("max_concurrent_calls=0"));
     }
 
+    /// Protects validation of impossible tool retry settings.
+    #[test]
+    fn invalid_tool_retry_value_is_rejected() {
+        let mut unified = test_unified_document(BTreeMap::from([("echo@1.0.0".to_string(), 1)]));
+        let tool = unified.tools.get_mut("echo@1.0.0").expect("tool fixture");
+        tool.max_retries = -1;
+        let error = ExecutionHubState::<mediapm_cas::InMemoryCas>::tool_call_max_retries(
+            &unified,
+            "echo@1.0.0",
+        )
+        .expect_err("invalid retry setting should fail");
+
+        assert!(error.to_string().contains("max_retries=-1"));
+    }
+
     /// Builds one minimal unified document for execution-hub batch-selection tests.
     fn test_unified_document(per_tool_limits: BTreeMap<String, i32>) -> UnifiedNickelDocument {
         let tools = per_tool_limits
@@ -454,6 +510,7 @@ mod tests {
                     UnifiedToolSpec {
                         is_impure: false,
                         max_concurrent_calls,
+                        max_retries: 0,
                         inputs: BTreeMap::<String, ToolInputSpec>::new(),
                         default_inputs: BTreeMap::new(),
                         process: ProcessSpec::Builtin {

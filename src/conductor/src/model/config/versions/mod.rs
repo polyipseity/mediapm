@@ -757,6 +757,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         tool_name,
                         ToolConfigSpec {
                             max_concurrent_calls: config.max_concurrent_calls,
+                            max_retries: config.max_retries,
                             description: config.description,
                             input_defaults: config
                                 .input_defaults
@@ -930,6 +931,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                         tool_name,
                         v_latest::ToolConfigSpecLatest {
                             max_concurrent_calls: config.max_concurrent_calls,
+                            max_retries: config.max_retries,
                             description: config.description,
                             input_defaults: config
                                 .input_defaults
@@ -1211,6 +1213,11 @@ fn vet_latest_envelope(
                 "{document_kind} tool_configs '{tool_name}' max_concurrent_calls must be -1 or a positive integer"
             )));
         }
+        if tool_config.max_retries < -1 {
+            return Err(ConductorError::Workflow(format!(
+                "{document_kind} tool_configs '{tool_name}' max_retries must be -1 or a non-negative integer"
+            )));
+        }
         if let Some(description) = &tool_config.description
             && description.trim().is_empty()
         {
@@ -1438,7 +1445,9 @@ fn vet_latest_envelope(
                     })?;
 
                     for segment in parsed_segments {
-                        if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
+                        if let ParsedInputBindingSegment::StepOutput { step_id, output, .. } =
+                            segment
+                        {
                             if !explicit_dependencies.contains(step_id) {
                                 return Err(ConductorError::Workflow(format!(
                                     "{document_kind} workflow '{workflow_name}' step '{}' input '{input_name}' references '${{step_output.{step_id}.{output}}}' but step '{step_id}' is missing from depends_on",
@@ -1917,6 +1926,7 @@ version.validate_document (migration.migrate_atomic {} {} document)
     tool_configs = {
         "tool_a@1.0.0" = {
             max_concurrent_calls = -1,
+            max_retries = 1,
             input_defaults = {
                 "args" = ["--flag", "value"],
             },
@@ -1943,12 +1953,9 @@ version.validate_document (migration.migrate_atomic {} {} document)
         assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
         assert_eq!(decoded.tool_configs.len(), 1);
-        assert!(
-            decoded
-                .tool_configs
-                .get("tool_a@1.0.0")
-                .is_some_and(|config| config.input_defaults.contains_key("args"))
-        );
+        assert!(decoded.tool_configs.get("tool_a@1.0.0").is_some_and(|config| {
+            config.input_defaults.contains_key("args") && config.max_retries == 1
+        }));
         assert_eq!(
             decoded.impure_timestamps.get("wf").and_then(|steps| steps.get("step")).copied(),
             Some(ImpureTimestamp { epoch_seconds: 123, subsec_nanos: 456 })
@@ -1993,6 +2000,32 @@ version.validate_document (migration.migrate_atomic {} {} document)
         let err = decode_user_document(source.as_bytes())
             .expect_err("content_map hash without external_data root should be rejected");
         assert!(err.to_string().contains("missing from external_data"));
+    }
+
+    /// Verifies tool-config retry policy rejects values smaller than `-1`.
+    #[test]
+    fn decode_user_document_rejects_invalid_max_retries() {
+        let source = r#"
+{
+    version = 1,
+    tools = {
+        "echo@1.0.0" = {
+            kind = "builtin",
+            name = "echo",
+            version = "1.0.0",
+        },
+    },
+    tool_configs = {
+        "echo@1.0.0" = {
+            max_retries = -2,
+        },
+    },
+}
+"#;
+
+        let err =
+            decode_user_document(source.as_bytes()).expect_err("invalid max_retries should fail");
+        assert!(err.to_string().contains("max_retries must be -1 or a non-negative integer"));
     }
 
     /// Verifies workflow-step string bindings accept `${external_data.<hash>}`.

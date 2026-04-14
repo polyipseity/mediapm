@@ -779,7 +779,12 @@ where
                     })?;
 
                     for segment in parsed_segments {
-                        if let ParsedInputBindingSegment::StepOutput { step_id, output } = segment {
+                        if let ParsedInputBindingSegment::StepOutput {
+                            step_id,
+                            output,
+                            ..
+                        } = segment
+                        {
                             required
                                 .entry(step_id.to_string())
                                 .or_default()

@@ -28,6 +28,11 @@ pub(super) struct UnifiedToolSpec {
     ///
     /// `-1` means unlimited.
     pub max_concurrent_calls: i32,
+    /// Maximum retry count after the initial failed call.
+    ///
+    /// This value is already normalized to a non-negative integer in the
+    /// unified runtime view.
+    pub max_retries: i32,
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
     /// Per-tool default input bindings contributed by merged tool config.

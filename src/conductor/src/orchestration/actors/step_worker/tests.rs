@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use mediapm_cas::{CasApi, InMemoryCas};
+use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
 
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -481,6 +481,46 @@ fn command_render_supports_conditional_unpack_key_value_pair() {
     assert_eq!(rendered_without_value, vec!["tool".to_string()]);
 }
 
+/// Protects standalone conditional-unpack semantics for list-valued inputs so
+/// `${*...}` remains compatible with both scalar and list bindings.
+#[test]
+fn command_render_supports_conditional_unpack_with_list_input() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let mut pending_file_writes = Vec::new();
+    let command = vec![
+        "tool".to_string(),
+        "${*inputs.argv ? --has-args | ''}".to_string(),
+        "${*inputs.argv}".to_string(),
+    ];
+
+    let list_inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_string_list(vec!["--alpha".to_string(), "--beta".to_string()])
+            .expect("build list input"),
+    )]);
+    let rendered_with_list = executor
+        .render_template_command(&command, &list_inputs, &mut pending_file_writes)
+        .expect("conditional unpack should render list flag and unpacked list values");
+    assert_eq!(
+        rendered_with_list,
+        vec![
+            "tool".to_string(),
+            "--has-args".to_string(),
+            "--alpha".to_string(),
+            "--beta".to_string(),
+        ]
+    );
+
+    let empty_list_inputs = BTreeMap::from([(
+        "argv".to_string(),
+        ResolvedInput::from_string_list(Vec::new()).expect("build empty list input"),
+    )]);
+    let rendered_without_list = executor
+        .render_template_command(&command, &empty_list_inputs, &mut pending_file_writes)
+        .expect("conditional unpack should omit list flag and values when list input is empty");
+    assert_eq!(rendered_without_list, vec!["tool".to_string()]);
+}
+
 /// Protects plain `context.os` selector rendering.
 #[test]
 fn template_interpolation_supports_context_os_selector() {
@@ -570,6 +610,7 @@ async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
     let tool = UnifiedToolSpec {
         is_impure: false,
         max_concurrent_calls: -1,
+        max_retries: 0,
         inputs: BTreeMap::from([(
             "argv".to_string(),
             ToolInputSpec { kind: ToolInputKind::StringList },
@@ -1091,6 +1132,28 @@ fn success_code_membership_checks_configured_set() {
 
     assert!(StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(2, &success_codes));
     assert!(!StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(1, &success_codes));
+}
+
+/// Protects reverse-diff hinting by skipping CAS constraint patches for the
+/// empty-content root input hash.
+#[tokio::test]
+async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
+    let cas = Arc::new(InMemoryCas::new());
+    let output_hash = cas.put(b"output".to_vec()).await.expect("put output payload");
+    let executor = StepWorkerExecutor { cas: cas.clone() };
+
+    let inputs =
+        BTreeMap::from([("empty".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+
+    executor
+        .apply_reverse_diff_hints(output_hash, &inputs)
+        .await
+        .expect("reverse-diff hinting should skip empty-content root input hash");
+
+    assert!(
+        cas.get_constraint(empty_content_hash()).await.expect("query empty constraint").is_none(),
+        "empty-content root should remain unconstrained"
+    );
 }
 
 /// Protects workflow-error diagnostics by preserving ANSI styling bytes.

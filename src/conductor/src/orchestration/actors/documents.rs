@@ -376,6 +376,11 @@ impl DocumentLoaderActor {
                             "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.max_concurrent_calls' is defined differently in both documents"
                         )));
                     }
+                    if user_config.max_retries != machine_config.max_retries {
+                        return Err(ConductorError::Workflow(format!(
+                            "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.max_retries' is defined differently in both documents"
+                        )));
+                    }
 
                     for (input_name, machine_binding) in &machine_config.input_defaults {
                         match user_config.input_defaults.get(input_name) {
@@ -771,6 +776,11 @@ impl DocumentLoaderActor {
                     "tool '{tool_name}' max_concurrent_calls must be -1 or a positive integer"
                 )));
             }
+            if merged_config.max_retries < -1 {
+                return Err(ConductorError::Workflow(format!(
+                    "tool '{tool_name}' max_retries must be -1 or a non-negative integer"
+                )));
+            }
 
             if merged_config.content_map.is_some()
                 && matches!(tool_spec.kind, ToolKindSpec::Builtin { .. })
@@ -828,6 +838,11 @@ impl DocumentLoaderActor {
                 UnifiedToolSpec {
                     is_impure: tool_spec.is_impure,
                     max_concurrent_calls: merged_config.max_concurrent_calls,
+                    max_retries: if merged_config.max_retries == -1 {
+                        0
+                    } else {
+                        merged_config.max_retries
+                    },
                     inputs: tool_spec.inputs.clone(),
                     default_inputs: merged_config.input_defaults,
                     process,
@@ -965,6 +980,7 @@ mod tests {
                 "unknown_tool@v9.9.9".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: -1,
+                    max_retries: -1,
                     description: Some("unknown tool test config".to_string()),
                     input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
@@ -1042,6 +1058,58 @@ mod tests {
         match result {
             Err(ConductorError::Workflow(message)) => {
                 assert!(message.contains("max_concurrent_calls must be -1 or a positive integer"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects the invariant that tool config retry values must be `-1` or non-negative.
+    #[test]
+    fn invalid_tool_config_max_retries_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let user_path = dir.path().join("conductor.ncl");
+        let machine_path = dir.path().join("conductor.machine.ncl");
+        let state_path = dir.path().join(".conductor").join("state.ncl");
+
+        std::fs::write(
+            &user_path,
+            r#"
+{
+    version = 1,
+    tools = {
+        "bad_tool@1.0.0" = {
+            kind = "builtin",
+            name = "echo",
+            version = "1.0.0",
+        },
+    },
+    tool_configs = {
+        "bad_tool@1.0.0" = {
+            max_retries = -2,
+        },
+    },
+    workflows = {
+        w = { steps = [] },
+    },
+}
+"#,
+        )
+        .expect("write user");
+        std::fs::write(
+            &machine_path,
+            encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+        )
+        .expect("write machine");
+
+        let result = DocumentLoaderActor::load_and_unify_documents(
+            &user_path,
+            &machine_path,
+            &state_path,
+            RunWorkflowOptions::default(),
+        );
+        match result {
+            Err(ConductorError::Workflow(message)) => {
+                assert!(message.contains("max_retries must be -1 or a non-negative integer"));
             }
             other => panic!("expected workflow error, got {other:?}"),
         }

@@ -642,6 +642,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "echo@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: None,
@@ -651,6 +652,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "fs@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: None,
@@ -660,6 +662,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "archive@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 2,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: None,
@@ -669,6 +672,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "import@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: None,
@@ -678,6 +682,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "export@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
                     content_map: None,
@@ -687,6 +692,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 "concat-tool@1.0.0".to_string(),
                 ToolConfigSpec {
                     max_concurrent_calls: 1,
+                    max_retries: -1,
                     description: Some("demo concat executable assets".to_string()),
                     input_defaults: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([

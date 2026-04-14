@@ -133,6 +133,10 @@ fn default_max_concurrent_calls() -> i32 {
     -1
 }
 
+fn default_max_retries() -> i32 {
+    -1
+}
+
 fn deserialize_integral_codes<'de, D>(deserializer: D) -> Result<Vec<i32>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -256,6 +260,10 @@ pub(crate) struct ToolConfigSpecLatest {
     /// Maximum concurrent calls for this tool (`-1` means unlimited).
     #[serde(default = "default_max_concurrent_calls")]
     pub(crate) max_concurrent_calls: i32,
+    /// Maximum retries after the first failed call (`-1` means use runtime
+    /// default retry behavior).
+    #[serde(default = "default_max_retries")]
+    pub(crate) max_retries: i32,
     /// Optional human-facing description for runtime tool configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,

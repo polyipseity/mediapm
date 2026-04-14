@@ -265,7 +265,13 @@ where
             &resolved_inputs,
             &mut template_file_writes,
         )?;
-        for required_output_name in &request.required_output_names {
+
+        let mut effective_output_names = request.required_output_names.clone();
+        effective_output_names.extend(request.step.outputs.keys().cloned());
+        if effective_output_names.is_empty() {
+            effective_output_names.extend(output_specs.keys().cloned());
+        }
+        for required_output_name in &effective_output_names {
             if !output_specs.contains_key(required_output_name) {
                 return Err(ConductorError::Workflow(format!(
                     "workflow '{}' step '{}' requires unknown output '{}'",
@@ -273,8 +279,7 @@ where
                 )));
             }
         }
-        let requested_output_names: Vec<String> =
-            request.required_output_names.iter().cloned().collect();
+        let requested_output_names: Vec<String> = effective_output_names.iter().cloned().collect();
 
         let existing_instance = request.state_snapshot.instances.get(&instance_key).cloned();
         let mut rematerialized = false;
@@ -325,7 +330,13 @@ where
                 )
                 .await?;
 
-            for (output_name, output_spec) in &output_specs {
+            for output_name in &effective_output_names {
+                let output_spec = output_specs.get(output_name).ok_or_else(|| {
+                    ConductorError::Internal(format!(
+                        "output '{}' disappeared from resolved output spec map",
+                        output_name
+                    ))
+                })?;
                 let payload = self.capture_output_payload(output_spec, &capture, execution_cwd)?;
                 let hash = self.cas.put(payload).await?;
                 instance.outputs.insert(
@@ -336,7 +347,13 @@ where
         }
 
         let mut pending_unsaved_hashes = BTreeSet::new();
-        for (output_name, output_spec) in &output_specs {
+        for output_name in &effective_output_names {
+            let output_spec = output_specs.get(output_name).ok_or_else(|| {
+                ConductorError::Internal(format!(
+                    "output '{}' disappeared from resolved output spec map",
+                    output_name
+                ))
+            })?;
             let output_ref = instance.outputs.get_mut(output_name).ok_or_else(|| {
                 ConductorError::Internal(format!(
                     "instance '{}' missing output '{}' after execution",
@@ -526,6 +543,7 @@ where
     /// Supported expression forms are:
     /// - `${external_data.<hash>}`,
     /// - `${step_output.<step_id>.<output_name>}`,
+    /// - `${step_output.<step_id>.<output_name>:zip(<member>)}`,
     ///
     /// Every resolved input payload is persisted to CAS and represented by the
     /// resulting hash identity in persisted orchestration state.
@@ -584,7 +602,7 @@ where
                         plain_content.extend_from_slice(content.as_bytes());
                     }
                 }
-                ParsedInputBindingSegment::StepOutput { step_id, output } => {
+                ParsedInputBindingSegment::StepOutput { step_id, output, zip_member } => {
                     let producer = step_outputs.get(step_id).ok_or_else(|| {
                         ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' references output '{}' from step '{}' before it is available",
@@ -613,12 +631,85 @@ where
                         }
                         Err(source) => return Err(ConductorError::Cas(source)),
                     };
-                    plain_content.extend_from_slice(bytes.as_ref());
+
+                    if let Some(member) = zip_member {
+                        let member_bytes = self.extract_zip_member_from_output(
+                            workflow_name,
+                            &step.id,
+                            step_id,
+                            output,
+                            member,
+                            bytes.as_ref(),
+                        )?;
+                        plain_content.extend_from_slice(member_bytes.as_slice());
+                    } else {
+                        plain_content.extend_from_slice(bytes.as_ref());
+                    }
                 }
             }
         }
 
         Ok(plain_content)
+    }
+
+    /// Extracts one file member from ZIP bytes referenced by a step-output binding.
+    fn extract_zip_member_from_output(
+        &self,
+        workflow_name: &str,
+        consumer_step_id: &str,
+        producer_step_id: &str,
+        output_name: &str,
+        zip_member: &str,
+        zip_bytes: &[u8],
+    ) -> Result<Vec<u8>, ConductorError> {
+        let normalized_member =
+            self.normalized_relative_tool_path(zip_member, "step_output zip member selector")?;
+
+        let extraction_workspace = tempfile::Builder::new()
+            .prefix("step-output-zip-")
+            .tempdir()
+            .map_err(|source| ConductorError::Io {
+                operation: "creating temporary ZIP extraction workspace for step_output binding"
+                    .to_string(),
+                path: std::env::temp_dir(),
+                source,
+            })?;
+
+        let extraction_root = extraction_workspace.path().join("extracted");
+        std::fs::create_dir_all(&extraction_root).map_err(|source| ConductorError::Io {
+            operation: "creating temporary ZIP extraction directory for step_output binding"
+                .to_string(),
+            path: extraction_root.clone(),
+            source,
+        })?;
+
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(zip_bytes, &extraction_root)
+            .map_err(|error| {
+                ConductorError::Workflow(format!(
+                    "workflow '{workflow_name}' step '{consumer_step_id}' failed extracting ZIP member '{zip_member}' from '${{step_output.{producer_step_id}.{output_name}}}': {error}"
+                ))
+            })?;
+
+        let member_path = extraction_root.join(&normalized_member);
+        if !member_path.exists() {
+            return Err(ConductorError::Workflow(format!(
+                "workflow '{workflow_name}' step '{consumer_step_id}' references ZIP member '{zip_member}' from '${{step_output.{producer_step_id}.{output_name}}}', but no such member exists"
+            )));
+        }
+        if member_path.is_dir() {
+            return Err(ConductorError::Workflow(format!(
+                "workflow '{workflow_name}' step '{consumer_step_id}' references ZIP member '{zip_member}' from '${{step_output.{producer_step_id}.{output_name}}}', but the selected entry is a directory"
+            )));
+        }
+
+        std::fs::read(&member_path).map_err(|source| ConductorError::Io {
+            operation: format!(
+                "reading extracted ZIP member '{}' from step_output binding",
+                normalized_member.to_string_lossy()
+            ),
+            path: member_path,
+            source,
+        })
     }
 
     /// Resolves one list-of-strings input binding into deterministic runtime
@@ -1534,13 +1625,17 @@ where
     }
 
     /// Applies reverse-diff hints from each source input toward the produced output.
+    ///
+    /// The canonical empty-content root hash is intentionally skipped because
+    /// CAS constraint rules do not allow explicit base sets on that root node.
     async fn apply_reverse_diff_hints(
         &self,
         output_hash: Hash,
         inputs: &BTreeMap<String, ResolvedInput>,
     ) -> Result<(), ConductorError> {
+        let empty_hash = empty_content_hash();
         for input_hash in inputs.values().map(|input| input.hash) {
-            if input_hash == output_hash {
+            if input_hash == output_hash || input_hash == empty_hash {
                 continue;
             }
             let patch = ConstraintPatch {

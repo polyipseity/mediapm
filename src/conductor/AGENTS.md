@@ -196,6 +196,12 @@ When editing tool/config schema behavior, preserve these invariants:
     dropping affected cached instances, deleting the corrupt hash, and retrying
     the workflow once. Impure workflows must fail without auto-retry.
 
+26. `tool_configs.<tool>.max_retries` controls per-tool outer retry budget
+
+    after the initial failed call. Valid values are `-1` (use runtime default)
+    or non-negative integers. Runtime unified execution normalizes `-1` to the
+    current default retry policy.
+
 If adding validation, apply it both where practical:
 
 - schema bridge validation (`model/config/versions/mod.rs`)

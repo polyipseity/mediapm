@@ -460,6 +460,7 @@ fn register_or_merge_imported_tool(
             })
             .with_tool_config(ToolConfigSpec {
                 max_concurrent_calls: -1,
+                max_retries: -1,
                 description: Some(format!(
                     "Imported by conductor CLI from '{}'",
                     import_path.display()
