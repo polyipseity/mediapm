@@ -24,8 +24,9 @@ pub use model::config::{
     MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, OutputPolicy,
     ProcessSpec, RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec, ToolInputSpec,
     ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
-    decode_machine_document, decode_state_document, decode_user_document, encode_machine_document,
-    encode_state_document, encode_user_document, evaluate_total_configuration_sources,
+    decode_machine_document, decode_state_document, decode_user_document,
+    default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_state_document,
+    encode_user_document, evaluate_total_configuration_sources,
 };
 pub use model::state::{
     OrchestrationState, OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance,

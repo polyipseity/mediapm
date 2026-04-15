@@ -22,6 +22,13 @@ use crate::model::state::PersistenceFlags;
 
 pub(crate) mod versions;
 
+/// Platform-keyed inherited environment-variable names.
+///
+/// Keys are normalized case-insensitively at merge/read time so user-authored
+/// casing (`windows`, `Windows`, `WINDOWS`, ...) does not change runtime
+/// behavior.
+pub type PlatformInheritedEnvVars = BTreeMap<String, Vec<String>>;
+
 /// Split identity representation used by runtime Nickel metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NickelIdentity {
@@ -97,13 +104,120 @@ pub struct RuntimeStorageConfig {
     /// Optional override path for filesystem CAS storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cas_store_dir: Option<String>,
+    /// Optional additional inherited host environment-variable names keyed by
+    /// platform.
+    ///
+    /// Runtime always includes one host-default baseline for safety-sensitive
+    /// process execution (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP` on Windows;
+    /// empty baseline on other platforms). When this field is present, runtime
+    /// reads only the active host-platform entry (`windows`, `linux`,
+    /// `macos`, ...) and merges names onto that baseline in declaration order
+    /// with case-insensitive deduplication.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
+}
+
+/// Returns host-specific default inherited environment-variable names keyed by
+/// platform.
+///
+/// These names are merged into executable runtime environments before
+/// `tools.<tool>.env_vars` and `tool_configs.<tool>.env_vars` so callers can
+/// keep baseline process invariants without repeating them per tool.
+#[must_use]
+pub fn default_runtime_inherited_env_vars_for_host() -> PlatformInheritedEnvVars {
+    if cfg!(windows) {
+        BTreeMap::from([(
+            "windows".to_string(),
+            vec![
+                "SYSTEMROOT".to_string(),
+                "WINDIR".to_string(),
+                "TEMP".to_string(),
+                "TMP".to_string(),
+            ],
+        )])
+    } else {
+        BTreeMap::new()
+    }
+}
+
+/// Returns one normalized host platform key used by runtime env-var mapping.
+#[must_use]
+fn host_platform_key() -> String {
+    std::env::consts::OS.to_ascii_lowercase()
+}
+
+/// Normalizes one platform key authored in runtime inherited env-var config.
+#[must_use]
+fn normalize_runtime_platform_key(raw_platform: &str) -> Option<String> {
+    let trimmed = raw_platform.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_ascii_lowercase()) }
+}
+
+fn append_unique_env_var_names(target: &mut Vec<String>, source: impl IntoIterator<Item = String>) {
+    for raw_name in source {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if target.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+            continue;
+        }
+
+        target.push(trimmed.to_string());
+    }
+}
+
+/// Appends one platform-scoped inherited env-var list for the active host.
+fn append_platform_inherited_env_var_names_for_host(
+    target: &mut Vec<String>,
+    source: &PlatformInheritedEnvVars,
+    host_platform: &str,
+) {
+    for (platform_key, names) in source {
+        if normalize_runtime_platform_key(platform_key).as_deref() == Some(host_platform) {
+            append_unique_env_var_names(target, names.iter().cloned());
+        }
+    }
 }
 
 impl RuntimeStorageConfig {
     /// Returns whether all runtime-storage override fields are absent.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.conductor_dir.is_none() && self.state_config.is_none() && self.cas_store_dir.is_none()
+        self.conductor_dir.is_none()
+            && self.state_config.is_none()
+            && self.cas_store_dir.is_none()
+            && self.inherited_env_vars.is_none()
+    }
+
+    /// Returns inherited runtime environment names merged with host defaults.
+    ///
+    /// Runtime reads only the active host-platform entry from configured
+    /// `runtime.inherited_env_vars` values.
+    ///
+    /// Ordering is deterministic: host defaults first, then configured host
+    /// values. Duplicate names are removed using case-insensitive matching.
+    #[must_use]
+    pub fn inherited_env_vars_with_defaults(&self) -> Vec<String> {
+        let host_platform = host_platform_key();
+        let mut merged = Vec::new();
+
+        append_platform_inherited_env_var_names_for_host(
+            &mut merged,
+            &default_runtime_inherited_env_vars_for_host(),
+            &host_platform,
+        );
+
+        if let Some(configured) = &self.inherited_env_vars {
+            append_platform_inherited_env_var_names_for_host(
+                &mut merged,
+                configured,
+                &host_platform,
+            );
+        }
+
+        merged
     }
 }
 
@@ -306,12 +420,15 @@ pub struct ToolConfigSpec {
     ///
     /// This map contributes process environment variables at runtime without
     /// changing reusable tool identity. Runtime merges these entries with
-    /// executable `tools.<tool>.env_vars` and rejects duplicate keys across
-    /// the two sources.
+    /// runtime inherited env vars and executable `tools.<tool>.env_vars`.
+    ///
+    /// Duplicate keys are rejected only between explicit maps
+    /// (`tools.<tool>.env_vars` and `tool_configs.<tool>.env_vars`) so
+    /// operators can still override inherited host values intentionally.
     ///
     /// This configuration is invalid for builtin tools.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub env_var: BTreeMap<String, String>,
+    pub env_vars: BTreeMap<String, String>,
     /// Optional per-tool content map (`relative_path -> hash`) for executable
     /// sandbox materialization.
     ///
@@ -345,7 +462,7 @@ impl Default for ToolConfigSpec {
             max_retries: default_max_retries(),
             description: None,
             input_defaults: BTreeMap::new(),
-            env_var: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
             content_map: None,
         }
     }
@@ -1159,17 +1276,17 @@ fn validate_add_tool_config_mode(
         )));
     }
 
-    let has_env_var = match config_mode {
+    let has_env_vars = match config_mode {
         AddToolConfigMode::KeepExisting => {
-            existing_configs.get(tool_name).is_some_and(|config| !config.env_var.is_empty())
+            existing_configs.get(tool_name).is_some_and(|config| !config.env_vars.is_empty())
         }
-        AddToolConfigMode::Replace(config) => !config.env_var.is_empty(),
+        AddToolConfigMode::Replace(config) => !config.env_vars.is_empty(),
         AddToolConfigMode::Remove => false,
     };
 
-    if has_env_var && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
+    if has_env_vars && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
         return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' is builtin and cannot have tool_configs.env_var"
+            "tool '{tool_name}' is builtin and cannot have tool_configs.env_vars"
         )));
     }
 
@@ -1243,7 +1360,7 @@ mod tests {
             max_retries: -1,
             description: Some("demo executable runtime config".to_string()),
             input_defaults: BTreeMap::new(),
-            env_var: BTreeMap::new(),
+            env_vars: BTreeMap::new(),
             content_map: Some(BTreeMap::from([(
                 "payload.txt".to_string(),
                 Hash::from_content(b"demo-hash-a"),
@@ -1292,7 +1409,7 @@ mod tests {
                     max_retries: -1,
                     description: Some("initial executable runtime config".to_string()),
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "payload.txt".to_string(),
                         Hash::from_content(b"demo-hash-b"),
@@ -1331,7 +1448,7 @@ mod tests {
                         max_retries: -1,
                         description: Some("invalid builtin runtime config".to_string()),
                         input_defaults: BTreeMap::new(),
-                        env_var: BTreeMap::new(),
+                        env_vars: BTreeMap::new(),
                         content_map: Some(BTreeMap::from([(
                             "payload.txt".to_string(),
                             Hash::from_content(b"demo-hash-c"),
@@ -1411,7 +1528,7 @@ mod tests {
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([("bin/tool".to_string(), active_hash)])),
                 },
             )]),

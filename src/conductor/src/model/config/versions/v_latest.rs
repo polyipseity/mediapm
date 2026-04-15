@@ -229,13 +229,20 @@ pub(crate) struct RuntimeStorageLatest {
     /// Optional filesystem CAS store directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cas_store_dir: Option<String>,
+    /// Optional additional inherited host environment-variable names keyed by
+    /// platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
 }
 
 impl RuntimeStorageLatest {
     /// Returns whether the grouped runtime-storage record has no overrides.
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
-        self.conductor_dir.is_none() && self.state_config.is_none() && self.cas_store_dir.is_none()
+        self.conductor_dir.is_none()
+            && self.state_config.is_none()
+            && self.cas_store_dir.is_none()
+            && self.inherited_env_vars.is_none()
     }
 }
 
@@ -272,7 +279,7 @@ pub(crate) struct ToolConfigSpecLatest {
     pub(crate) input_defaults: BTreeMap<String, InputBindingLatest>,
     /// Optional explicit runtime environment map merged during tool execution.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) env_var: BTreeMap<String, String>,
+    pub(crate) env_vars: BTreeMap<String, String>,
     /// Optional content map used for executable sandbox materialization.
     ///
     /// Key semantics are runtime-defined and mirrored from `v1.ncl` docs:

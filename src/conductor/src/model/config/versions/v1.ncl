@@ -227,11 +227,12 @@ let ToolConfigV1 = {
   input_defaults | {_ : InputBindingV1} | optional,
   # Optional runtime environment additions for executable process execution.
   #
-  # Runtime merges these keys with `tools.<tool>.env_vars` and rejects
-  # duplicate keys across the two sources.
+  # Runtime merges inherited host names first, then merges
+  # `tools.<tool>.env_vars` with `tool_configs.<tool>.env_vars` and rejects
+  # duplicate keys across those two explicit maps.
   #
   # This field is invalid for builtin tools.
-  env_var | {_ : String} | optional,
+  env_vars | {_ : String} | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
   # Key semantics:
@@ -245,11 +246,29 @@ let ToolConfigV1 = {
 }
 in
 
+# ||| Platform-keyed inherited host environment-variable names.
+# ||| Keys are platform names (`windows`, `linux`, `macos`, ...), and values
+# ||| are ordered environment-variable-name lists for that platform.
+let PlatformInheritedEnvVarsV1 = {
+  windows | Array NonEmptyStringV1 | optional,
+  linux | Array NonEmptyStringV1 | optional,
+  macos | Array NonEmptyStringV1 | optional,
+}
+in
+
 # ||| Grouped runtime storage-path configuration.
 let RuntimeStorageV1 = {
   conductor_dir | NonEmptyStringV1 | optional,
   state_config | NonEmptyStringV1 | optional,
   cas_store_dir | NonEmptyStringV1 | optional,
+  # Optional additional inherited host environment-variable names keyed by
+  # platform.
+  #
+  # Runtime always includes host defaults (`SYSTEMROOT`, `WINDIR`, `TEMP`,
+  # `TMP` on Windows; empty default elsewhere). Runtime reads only the active
+  # host platform entry from this map and merges those names after defaults
+  # with case-insensitive de-duplication.
+  inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
 }
 in
 

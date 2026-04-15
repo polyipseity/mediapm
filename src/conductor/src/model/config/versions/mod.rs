@@ -618,6 +618,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_dir: state.runtime.conductor_dir,
                 state_config: state.runtime.state_config,
                 cas_store_dir: state.runtime.cas_store_dir,
+                inherited_env_vars: state.runtime.inherited_env_vars,
             },
             external_data: state
                 .external_data
@@ -777,7 +778,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                     )
                                 })
                                 .collect(),
-                            env_var: config.env_var,
+                            env_vars: config.env_vars,
                             content_map: config.content_map,
                         },
                     )
@@ -791,6 +792,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_dir: runtime.runtime.conductor_dir,
                 state_config: runtime.runtime.state_config,
                 cas_store_dir: runtime.runtime.cas_store_dir,
+                inherited_env_vars: runtime.runtime.inherited_env_vars,
             },
             external_data: runtime
                 .external_data
@@ -952,7 +954,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                     )
                                 })
                                 .collect(),
-                            env_var: config.env_var,
+                            env_vars: config.env_vars,
                             content_map: config.content_map,
                         },
                     )

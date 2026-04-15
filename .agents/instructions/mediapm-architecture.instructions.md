@@ -64,7 +64,11 @@ is a narrow, documented reason.
   - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
     storage path fields only under one `runtime` record
     (`runtime.conductor_dir`, `runtime.state_config`,
-    `runtime.cas_store_dir`),
+    `runtime.cas_store_dir`) plus optional platform-keyed inherited host
+    env-name map (`runtime.inherited_env_vars`),
+  - runtime inherited env-name defaults are host-specific (`SYSTEMROOT`,
+    `WINDIR`, `TEMP`, `TMP` on Windows; empty list elsewhere) and merge user,
+    machine, and invocation-option values with case-insensitive de-duplication,
   - the resolved runtime state document path (default
     `.conductor/state.ncl`) is volatile-only and may define only
     `version`, `impure_timestamps`, and `state_pointer`,
@@ -95,8 +99,11 @@ is a narrow, documented reason.
   - default runtime root is `.mediapm/`,
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
-    `conductor_state`, `lockfile`, `library_dir`, `tmp_dir`, and
-    `use_user_download_cache`,
+    `conductor_state`, `inherited_env_vars`, `lockfile`, `library_dir`,
+    `tmp_dir`, and `use_user_download_cache`,
+  - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
+    `macos`, ...) and each platform key maps to an ordered list of
+    inherited environment-variable names,
   - defaults for those paths are:
     `mediapm_dir = .mediapm`,
     `conductor_config = mediapm.conductor.ncl`,

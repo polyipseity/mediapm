@@ -299,6 +299,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                 "{}/{}",
                 DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_CAS_STORE_DIR
             )),
+            inherited_env_vars: None,
         },
         external_data: BTreeMap::from([(
             inputs.banner_hash,
@@ -645,7 +646,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: None,
                 },
             ),
@@ -656,7 +657,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: None,
                 },
             ),
@@ -667,7 +668,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: None,
                 },
             ),
@@ -678,7 +679,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: None,
                 },
             ),
@@ -689,7 +690,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: None,
                 },
             ),
@@ -700,7 +701,7 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                     max_retries: -1,
                     description: Some("demo concat executable assets".to_string()),
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([
                         ("concat-tool".to_string(), inputs.concat_tool_binary_hash),
                         ("concat-tool.exe".to_string(), inputs.concat_tool_binary_hash),
@@ -735,14 +736,20 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
     object.insert("version".to_string(), json!(1));
 
     if !document.runtime.is_empty() {
-        object.insert(
-            "runtime".to_string(),
-            json!({
-                "conductor_dir": document.runtime.conductor_dir.clone(),
-                "state_config": document.runtime.state_config.clone(),
-                "cas_store_dir": document.runtime.cas_store_dir.clone(),
-            }),
-        );
+        let mut runtime = serde_json::Map::new();
+        if let Some(conductor_dir) = &document.runtime.conductor_dir {
+            runtime.insert("conductor_dir".to_string(), json!(conductor_dir));
+        }
+        if let Some(state_config) = &document.runtime.state_config {
+            runtime.insert("state_config".to_string(), json!(state_config));
+        }
+        if let Some(cas_store_dir) = &document.runtime.cas_store_dir {
+            runtime.insert("cas_store_dir".to_string(), json!(cas_store_dir));
+        }
+        if let Some(inherited_env_vars) = &document.runtime.inherited_env_vars {
+            runtime.insert("inherited_env_vars".to_string(), json!(inherited_env_vars));
+        }
+        object.insert("runtime".to_string(), Value::Object(runtime));
     }
 
     if !document.external_data.is_empty() {
@@ -775,14 +782,20 @@ fn machine_document_to_json(document: &MachineNickelDocument) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("version".to_string(), json!(1));
     if !document.runtime.is_empty() {
-        object.insert(
-            "runtime".to_string(),
-            json!({
-                "conductor_dir": document.runtime.conductor_dir.clone(),
-                "state_config": document.runtime.state_config.clone(),
-                "cas_store_dir": document.runtime.cas_store_dir.clone(),
-            }),
-        );
+        let mut runtime = serde_json::Map::new();
+        if let Some(conductor_dir) = &document.runtime.conductor_dir {
+            runtime.insert("conductor_dir".to_string(), json!(conductor_dir));
+        }
+        if let Some(state_config) = &document.runtime.state_config {
+            runtime.insert("state_config".to_string(), json!(state_config));
+        }
+        if let Some(cas_store_dir) = &document.runtime.cas_store_dir {
+            runtime.insert("cas_store_dir".to_string(), json!(cas_store_dir));
+        }
+        if let Some(inherited_env_vars) = &document.runtime.inherited_env_vars {
+            runtime.insert("inherited_env_vars".to_string(), json!(inherited_env_vars));
+        }
+        object.insert("runtime".to_string(), Value::Object(runtime));
     }
     object.insert("external_data".to_string(), json!(document.external_data));
     object.insert("tools".to_string(), json!(tool_specs_to_wire_json(&document.tools)));

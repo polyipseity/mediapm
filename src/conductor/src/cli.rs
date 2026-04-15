@@ -288,7 +288,11 @@ async fn run_workflow(
         .run_workflow_with_options(
             user_ncl,
             machine_ncl,
-            RunWorkflowOptions { allow_tool_redefinition, runtime_storage_paths },
+            RunWorkflowOptions {
+                allow_tool_redefinition,
+                runtime_storage_paths,
+                runtime_inherited_env_vars: Vec::new(),
+            },
         )
         .await?;
     println!("executed_instances={}", summary.executed_instances);
@@ -466,7 +470,7 @@ fn register_or_merge_imported_tool(
                     import_path.display()
                 )),
                 input_defaults: BTreeMap::new(),
-                env_var: BTreeMap::new(),
+                env_vars: BTreeMap::new(),
                 content_map: Some(imported_content_map),
             }),
         )?;

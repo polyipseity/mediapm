@@ -140,6 +140,12 @@ pub struct RunWorkflowOptions {
     /// - `state_config = <conductor_dir>/state.ncl`
     /// - `cas_store_dir = <conductor_dir>/store`
     pub runtime_storage_paths: RuntimeStoragePaths,
+    /// Additional host environment variable names inherited into executable
+    /// runtime process environments.
+    ///
+    /// This list is merged with runtime document defaults and host-specific
+    /// baseline names (for example `SYSTEMROOT`/`WINDIR` on Windows).
+    pub runtime_inherited_env_vars: Vec<String>,
 }
 
 impl RunWorkflowOptions {
@@ -149,6 +155,7 @@ impl RunWorkflowOptions {
         Self {
             allow_tool_redefinition: false,
             runtime_storage_paths: RuntimeStoragePaths::default(),
+            runtime_inherited_env_vars: Vec::new(),
         }
     }
 }

@@ -12,10 +12,11 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use crate::api::RunWorkflowOptions;
 use crate::error::ConductorError;
 use crate::model::config::{
-    InputBinding, MachineNickelDocument, NickelDocumentMetadata, OutputCaptureSpec, ProcessSpec,
-    RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec, ToolKindSpec, ToolOutputSpec,
-    ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec, decode_machine_document,
-    decode_state_document, decode_user_document, encode_machine_document, encode_state_document,
+    InputBinding, MachineNickelDocument, NickelDocumentMetadata, OutputCaptureSpec,
+    PlatformInheritedEnvVars, ProcessSpec, RuntimeStorageConfig, StateNickelDocument,
+    ToolConfigSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
+    WorkflowStepSpec, decode_machine_document, decode_state_document, decode_user_document,
+    default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_state_document,
     encode_user_document, evaluate_total_configuration_sources,
 };
 use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
@@ -191,10 +192,18 @@ impl DocumentLoaderActor {
         let user_document = Self::load_user_document(user_ncl, machine_ncl)?;
         let (mut machine_document, _machine_existed) = Self::load_machine_document(machine_ncl)?;
         let mut state_document = Self::load_state_document(state_config)?;
-        let _validated_runtime_storage =
-            Self::merge_runtime_storage(&user_document.runtime, &machine_document.runtime)?;
-        let (unified, merged_tools) =
-            Self::unify_documents(&user_document, &machine_document, options)?;
+        let merged_runtime_storage = Self::merge_runtime_storage(
+            &user_document.runtime,
+            &machine_document.runtime,
+            &options.runtime_inherited_env_vars,
+        )?;
+        Self::materialize_machine_runtime_inherited_env_var_defaults(&mut machine_document);
+        let (unified, merged_tools) = Self::unify_documents(
+            &user_document,
+            &machine_document,
+            &merged_runtime_storage,
+            options,
+        )?;
         machine_document.tools = merged_tools;
         state_document.impure_timestamps = Self::merge_three_named_maps(
             "impure_timestamps",
@@ -398,17 +407,17 @@ impl DocumentLoaderActor {
                         }
                     }
 
-                    for (env_key, machine_env_value) in &machine_config.env_var {
-                        match user_config.env_var.get(env_key) {
+                    for (env_key, machine_env_value) in &machine_config.env_vars {
+                        match user_config.env_vars.get(env_key) {
                             None => {
                                 user_config
-                                    .env_var
+                                    .env_vars
                                     .insert(env_key.clone(), machine_env_value.clone());
                             }
                             Some(user_env_value) if user_env_value == machine_env_value => {}
                             Some(_) => {
                                 return Err(ConductorError::Workflow(format!(
-                                    "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.env_var.{env_key}' is defined differently in both documents"
+                                    "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.env_vars.{env_key}' is defined differently in both documents"
                                 )));
                             }
                         }
@@ -463,18 +472,37 @@ impl DocumentLoaderActor {
     /// Merges executable tool environment from tool declaration and
     /// `tool_configs` runtime config.
     ///
-    /// Duplicate keys are always rejected, even when values match, so one
-    /// source of truth exists for each environment variable key.
+    /// Runtime inherited host keys are merged first and can be intentionally
+    /// overridden by explicit map entries.
+    ///
+    /// Duplicate keys are rejected only across explicit maps
+    /// (`tools.<tool>.env_vars` and `tool_configs.<tool>.env_vars`), even when
+    /// values match, so one source of truth exists for explicit tool config.
     fn merge_executable_runtime_env_vars(
         tool_name: &str,
         declared_env_vars: &BTreeMap<String, String>,
-        config_env_var: &BTreeMap<String, String>,
+        config_env_vars: &BTreeMap<String, String>,
+        inherited_env_var_names: &[String],
     ) -> Result<BTreeMap<String, String>, ConductorError> {
-        let mut merged = declared_env_vars.clone();
-        for (env_key, env_value) in config_env_var {
-            if merged.contains_key(env_key) {
+        let mut merged = BTreeMap::new();
+
+        for inherited_name in inherited_env_var_names {
+            if let Some(value) = std::env::var_os(inherited_name) {
+                merged.insert(
+                    inherited_name.clone(),
+                    Self::escape_template_literal(value.to_string_lossy().as_ref()),
+                );
+            }
+        }
+
+        for (env_key, env_value) in declared_env_vars {
+            merged.insert(env_key.clone(), env_value.clone());
+        }
+
+        for (env_key, env_value) in config_env_vars {
+            if declared_env_vars.contains_key(env_key) {
                 return Err(ConductorError::Workflow(format!(
-                    "tool '{tool_name}' has duplicate environment key '{env_key}' across tools.{tool_name}.env_vars and tool_configs.{tool_name}.env_var"
+                    "tool '{tool_name}' has duplicate environment key '{env_key}' across tools.{tool_name}.env_vars and tool_configs.{tool_name}.env_vars"
                 )));
             }
             merged.insert(env_key.clone(), env_value.clone());
@@ -482,11 +510,58 @@ impl DocumentLoaderActor {
         Ok(merged)
     }
 
+    /// Appends trimmed environment-variable names from `source` into `target`
+    /// while preserving order and removing case-insensitive duplicates.
+    fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
+        for raw_name in source {
+            let trimmed = raw_name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if target.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+                continue;
+            }
+
+            target.push(trimmed.to_string());
+        }
+    }
+
+    /// Normalizes one authored platform key for inherited env-var mapping.
+    fn normalize_runtime_platform_key(raw_platform: &str) -> Option<String> {
+        let trimmed = raw_platform.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_ascii_lowercase()) }
+    }
+
+    /// Appends one platform-keyed inherited env-var map into the target map
+    /// with case-insensitive key normalization and per-platform de-duplication.
+    fn append_platform_inherited_env_var_map(
+        target: &mut PlatformInheritedEnvVars,
+        source: &PlatformInheritedEnvVars,
+    ) {
+        for (platform_key, names) in source {
+            let Some(normalized_platform) = Self::normalize_runtime_platform_key(platform_key)
+            else {
+                continue;
+            };
+
+            let target_names = target.entry(normalized_platform).or_default();
+            Self::append_unique_env_var_names(target_names, names);
+        }
+    }
+
+    /// Escapes plain string literals for conductor template rendering.
+    #[must_use]
+    fn escape_template_literal(value: &str) -> String {
+        value.replace('\\', "\\\\")
+    }
+
     /// Merges grouped runtime-storage path settings from user and machine
     /// documents and rejects conflicting duplicates.
     fn merge_runtime_storage(
         user: &RuntimeStorageConfig,
         machine: &RuntimeStorageConfig,
+        runtime_inherited_env_vars: &[String],
     ) -> Result<RuntimeStorageConfig, ConductorError> {
         let mut conflict_fields = Vec::new();
         if user.conductor_dir.is_some()
@@ -515,11 +590,49 @@ impl DocumentLoaderActor {
             )));
         }
 
+        let mut inherited_env_vars = PlatformInheritedEnvVars::new();
+        if let Some(user_map) = user.inherited_env_vars.as_ref() {
+            Self::append_platform_inherited_env_var_map(&mut inherited_env_vars, user_map);
+        }
+        if let Some(machine_map) = machine.inherited_env_vars.as_ref() {
+            Self::append_platform_inherited_env_var_map(&mut inherited_env_vars, machine_map);
+        }
+
+        let host_platform = std::env::consts::OS.to_ascii_lowercase();
+        if !runtime_inherited_env_vars.is_empty() {
+            let target_names = inherited_env_vars.entry(host_platform).or_default();
+            Self::append_unique_env_var_names(target_names, runtime_inherited_env_vars);
+        }
+
+        inherited_env_vars.retain(|_, names| !names.is_empty());
+
+        let inherited_env_vars =
+            if inherited_env_vars.is_empty() { None } else { Some(inherited_env_vars) };
+
         Ok(RuntimeStorageConfig {
             conductor_dir: user.conductor_dir.clone().or_else(|| machine.conductor_dir.clone()),
             state_config: user.state_config.clone().or_else(|| machine.state_config.clone()),
             cas_store_dir: user.cas_store_dir.clone().or_else(|| machine.cas_store_dir.clone()),
+            inherited_env_vars,
         })
+    }
+
+    /// Ensures machine runtime storage materializes host-default inherited
+    /// environment names when omitted.
+    ///
+    /// This makes default inheritance explicit in `conductor.machine.ncl`
+    /// without copying user-authored runtime overrides.
+    fn materialize_machine_runtime_inherited_env_var_defaults(machine: &mut MachineNickelDocument) {
+        if machine.runtime.inherited_env_vars.is_some() {
+            return;
+        }
+
+        let defaults = default_runtime_inherited_env_vars_for_host();
+        if defaults.is_empty() {
+            return;
+        }
+
+        machine.runtime.inherited_env_vars = Some(defaults);
     }
 
     /// Merges optional state pointers across user, machine, and state
@@ -744,6 +857,7 @@ impl DocumentLoaderActor {
     fn unify_documents(
         user: &UserNickelDocument,
         machine: &MachineNickelDocument,
+        runtime_storage: &RuntimeStorageConfig,
         options: RunWorkflowOptions,
     ) -> Result<(UnifiedNickelDocument, BTreeMap<String, ToolSpec>), ConductorError> {
         let external_data =
@@ -837,19 +951,23 @@ impl DocumentLoaderActor {
             }
 
             if matches!(tool_spec.kind, ToolKindSpec::Builtin { .. })
-                && !merged_config.env_var.is_empty()
+                && !merged_config.env_vars.is_empty()
             {
                 return Err(ConductorError::Workflow(format!(
-                    "tool '{tool_name}' env_var is invalid for builtin tools"
+                    "tool '{tool_name}' env_vars is invalid for builtin tools"
                 )));
             }
+
+            let runtime_inherited_env_var_names =
+                runtime_storage.inherited_env_vars_with_defaults();
 
             let execution_env_vars = match &tool_spec.kind {
                 ToolKindSpec::Executable { env_vars, .. } => {
                     Self::merge_executable_runtime_env_vars(
                         tool_name,
                         env_vars,
-                        &merged_config.env_var,
+                        &merged_config.env_vars,
+                        &runtime_inherited_env_var_names,
                     )?
                 }
                 ToolKindSpec::Builtin { .. } => BTreeMap::new(),
@@ -955,7 +1073,7 @@ mod tests {
     use crate::model::config::{
         MachineNickelDocument, OutputCaptureSpec, RuntimeStorageConfig, ToolConfigSpec,
         ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
-        encode_machine_document, encode_user_document,
+        default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_user_document,
     };
 
     use super::DocumentLoaderActor;
@@ -1041,7 +1159,7 @@ mod tests {
                     max_retries: -1,
                     description: Some("unknown tool test config".to_string()),
                     input_defaults: BTreeMap::new(),
-                    env_var: BTreeMap::new(),
+                    env_vars: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "bin/tool".to_string(),
                         Hash::from_content(b"machine"),
@@ -1177,7 +1295,7 @@ mod tests {
     /// Protects invariant that builtin tools cannot receive runtime env maps
     /// from `tool_configs`.
     #[test]
-    fn builtin_tool_config_env_var_is_rejected() {
+    fn builtin_tool_config_env_vars_is_rejected() {
         let dir = tempdir().expect("tempdir");
         let user_path = dir.path().join("conductor.ncl");
         let machine_path = dir.path().join("conductor.machine.ncl");
@@ -1197,7 +1315,7 @@ mod tests {
     },
     tool_configs = {
         "echo@1.0.0" = {
-            env_var = { DEMO = "1" },
+            env_vars = { DEMO = "1" },
         },
     },
     workflows = {
@@ -1222,8 +1340,8 @@ mod tests {
         match result {
             Err(ConductorError::Workflow(message)) => {
                 assert!(
-                    message.contains("env_var is invalid for builtin tools")
-                        || message.contains("tool_configs.env_var"),
+                    message.contains("env_vars is invalid for builtin tools")
+                        || message.contains("tool_configs.env_vars"),
                     "unexpected error message: {message}"
                 );
             }
@@ -1233,7 +1351,7 @@ mod tests {
 
     /// Protects invariant that executable environment keys must not be
     /// duplicated across `tools.<tool>.env_vars` and
-    /// `tool_configs.<tool>.env_var`.
+    /// `tool_configs.<tool>.env_vars`.
     #[test]
     fn duplicate_env_key_across_tool_and_tool_config_is_rejected() {
         let dir = tempdir().expect("tempdir");
@@ -1262,7 +1380,7 @@ mod tests {
     },
     tool_configs = {
         "runner@1.0.0" = {
-            env_var = {
+            env_vars = {
                 DUPLICATE = "from_config",
             },
         },
@@ -1296,7 +1414,7 @@ mod tests {
         match result {
             Err(ConductorError::Workflow(message)) => {
                 assert!(message.contains("duplicate environment key 'DUPLICATE'"));
-                assert!(message.contains("tool_configs.runner@1.0.0.env_var"));
+                assert!(message.contains("tool_configs.runner@1.0.0.env_vars"));
             }
             other => panic!("expected workflow error, got {other:?}"),
         }
@@ -1435,8 +1553,9 @@ mod tests {
         assert_eq!(version, "1.0.0");
     }
 
-    /// Protects invariant that runtime-storage settings are validated but not
-    /// auto-backfilled into `conductor.machine.ncl`.
+    /// Protects invariant that user-declared runtime storage path overrides are
+    /// not copied into `conductor.machine.ncl`, while host-default inherited
+    /// env names are materialized when omitted.
     #[test]
     fn machine_document_is_not_backfilled_with_user_runtime_storage() {
         let dir = tempdir().expect("tempdir");
@@ -1449,6 +1568,7 @@ mod tests {
                 conductor_dir: Some(".runtime".to_string()),
                 state_config: Some(".runtime/state.ncl".to_string()),
                 cas_store_dir: Some(".runtime/store".to_string()),
+                inherited_env_vars: None,
             },
             tools: BTreeMap::from([(
                 "echo@1.0.0".to_string(),
@@ -1484,6 +1604,15 @@ mod tests {
         )
         .expect("documents should load and unify");
 
-        assert!(loaded.machine_document.runtime.is_empty());
+        assert!(loaded.machine_document.runtime.conductor_dir.is_none());
+        assert!(loaded.machine_document.runtime.state_config.is_none());
+        assert!(loaded.machine_document.runtime.cas_store_dir.is_none());
+
+        let expected_defaults = default_runtime_inherited_env_vars_for_host();
+        if expected_defaults.is_empty() {
+            assert!(loaded.machine_document.runtime.inherited_env_vars.is_none());
+        } else {
+            assert_eq!(loaded.machine_document.runtime.inherited_env_vars, Some(expected_defaults));
+        }
     }
 }
