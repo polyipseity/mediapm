@@ -351,6 +351,10 @@ For config schema files under
 - This repository may intentionally evolve `v1` directly when requested.
 - Do not add compatibility shims unless explicitly requested.
 - Keep Rust bridge structs synchronized with `.ncl` contracts.
+- Keep unversioned/latest Nickel contract aliases (`validate_document` and
+  `envelope_contract`) in `mod.ncl`; versioned files (`vN.ncl`) should expose
+  only version-suffixed contracts (`validate_document_vN`,
+  `envelope_contract_vN`).
 - Keep test fixtures aligned with current schema semantics.
 
 If schema shape changes, update together:

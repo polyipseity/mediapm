@@ -466,6 +466,7 @@ fn register_or_merge_imported_tool(
                     import_path.display()
                 )),
                 input_defaults: BTreeMap::new(),
+                env_var: BTreeMap::new(),
                 content_map: Some(imported_content_map),
             }),
         )?;

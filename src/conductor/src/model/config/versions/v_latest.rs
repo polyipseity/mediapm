@@ -270,6 +270,9 @@ pub(crate) struct ToolConfigSpecLatest {
     /// Optional per-tool default input bindings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) input_defaults: BTreeMap<String, InputBindingLatest>,
+    /// Optional explicit runtime environment map merged during tool execution.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) env_var: BTreeMap<String, String>,
     /// Optional content map used for executable sandbox materialization.
     ///
     /// Key semantics are runtime-defined and mirrored from `v1.ncl` docs:

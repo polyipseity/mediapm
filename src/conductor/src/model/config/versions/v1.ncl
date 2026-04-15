@@ -225,6 +225,13 @@ let ToolConfigV1 = {
   # Optional per-tool default input bindings used when one workflow step omits
   # matching input keys.
   input_defaults | {_ : InputBindingV1} | optional,
+  # Optional runtime environment additions for executable process execution.
+  #
+  # Runtime merges these keys with `tools.<tool>.env_vars` and rejects
+  # duplicate keys across the two sources.
+  #
+  # This field is invalid for builtin tools.
+  env_var | {_ : String} | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
   # Key semantics:
@@ -272,12 +279,4 @@ in
   # ||| Exposes the v1 envelope contract directly.
   # ||| Rust bridge may inspect this contract shape for diagnostics.
   envelope_contract_v1 = NickelDocumentV1,
-
-  # ||| Latest validation entrypoint (currently aliases v1).
-  # ||| Keep this alias stable so callers avoid version branching.
-  validate_document = validate_document_v1,
-
-  # ||| Latest envelope contract entrypoint (currently aliases v1).
-  # ||| Keep synchronized with `validate_document` alias target.
-  envelope_contract = envelope_contract_v1,
 }

@@ -518,6 +518,7 @@ mod tests {
                             version: "1.0.0".to_string(),
                             args: BTreeMap::new(),
                         },
+                        execution_env_vars: BTreeMap::new(),
                         outputs: BTreeMap::<String, ToolOutputSpec>::new(),
                         tool_content_map: BTreeMap::new(),
                     },

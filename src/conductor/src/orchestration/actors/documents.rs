@@ -398,6 +398,22 @@ impl DocumentLoaderActor {
                         }
                     }
 
+                    for (env_key, machine_env_value) in &machine_config.env_var {
+                        match user_config.env_var.get(env_key) {
+                            None => {
+                                user_config
+                                    .env_var
+                                    .insert(env_key.clone(), machine_env_value.clone());
+                            }
+                            Some(user_env_value) if user_env_value == machine_env_value => {}
+                            Some(_) => {
+                                return Err(ConductorError::Workflow(format!(
+                                    "conflict while merging conductor.ncl and conductor.machine.ncl: 'tool_configs.{tool_name}.env_var.{env_key}' is defined differently in both documents"
+                                )));
+                            }
+                        }
+                    }
+
                     match (&mut user_config.content_map, &machine_config.content_map) {
                         (None, None) => {}
                         (None, Some(machine_map)) => {
@@ -442,6 +458,28 @@ impl DocumentLoaderActor {
                     .to_string(),
             )),
         }
+    }
+
+    /// Merges executable tool environment from tool declaration and
+    /// `tool_configs` runtime config.
+    ///
+    /// Duplicate keys are always rejected, even when values match, so one
+    /// source of truth exists for each environment variable key.
+    fn merge_executable_runtime_env_vars(
+        tool_name: &str,
+        declared_env_vars: &BTreeMap<String, String>,
+        config_env_var: &BTreeMap<String, String>,
+    ) -> Result<BTreeMap<String, String>, ConductorError> {
+        let mut merged = declared_env_vars.clone();
+        for (env_key, env_value) in config_env_var {
+            if merged.contains_key(env_key) {
+                return Err(ConductorError::Workflow(format!(
+                    "tool '{tool_name}' has duplicate environment key '{env_key}' across tools.{tool_name}.env_vars and tool_configs.{tool_name}.env_var"
+                )));
+            }
+            merged.insert(env_key.clone(), env_value.clone());
+        }
+        Ok(merged)
     }
 
     /// Merges grouped runtime-storage path settings from user and machine
@@ -798,6 +836,25 @@ impl DocumentLoaderActor {
                 )));
             }
 
+            if matches!(tool_spec.kind, ToolKindSpec::Builtin { .. })
+                && !merged_config.env_var.is_empty()
+            {
+                return Err(ConductorError::Workflow(format!(
+                    "tool '{tool_name}' env_var is invalid for builtin tools"
+                )));
+            }
+
+            let execution_env_vars = match &tool_spec.kind {
+                ToolKindSpec::Executable { env_vars, .. } => {
+                    Self::merge_executable_runtime_env_vars(
+                        tool_name,
+                        env_vars,
+                        &merged_config.env_var,
+                    )?
+                }
+                ToolKindSpec::Builtin { .. } => BTreeMap::new(),
+            };
+
             for (input_name, binding) in &merged_config.input_defaults {
                 let Some(input_spec) = tool_spec.inputs.get(input_name) else {
                     return Err(ConductorError::Workflow(format!(
@@ -846,6 +903,7 @@ impl DocumentLoaderActor {
                     inputs: tool_spec.inputs.clone(),
                     default_inputs: merged_config.input_defaults,
                     process,
+                    execution_env_vars,
                     outputs: tool_spec.outputs.clone(),
                     tool_content_map: merged_map,
                 },
@@ -983,6 +1041,7 @@ mod tests {
                     max_retries: -1,
                     description: Some("unknown tool test config".to_string()),
                     input_defaults: BTreeMap::new(),
+                    env_var: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "bin/tool".to_string(),
                         Hash::from_content(b"machine"),
@@ -1110,6 +1169,134 @@ mod tests {
         match result {
             Err(ConductorError::Workflow(message)) => {
                 assert!(message.contains("max_retries must be -1 or a non-negative integer"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects invariant that builtin tools cannot receive runtime env maps
+    /// from `tool_configs`.
+    #[test]
+    fn builtin_tool_config_env_var_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let user_path = dir.path().join("conductor.ncl");
+        let machine_path = dir.path().join("conductor.machine.ncl");
+        let state_path = dir.path().join(".conductor").join("state.ncl");
+
+        std::fs::write(
+            &user_path,
+            r#"
+{
+    version = 1,
+    tools = {
+        "echo@1.0.0" = {
+            kind = "builtin",
+            name = "echo",
+            version = "1.0.0",
+        },
+    },
+    tool_configs = {
+        "echo@1.0.0" = {
+            env_var = { DEMO = "1" },
+        },
+    },
+    workflows = {
+        w = { steps = [] },
+    },
+}
+"#,
+        )
+        .expect("write user");
+        std::fs::write(
+            &machine_path,
+            encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+        )
+        .expect("write machine");
+
+        let result = DocumentLoaderActor::load_and_unify_documents(
+            &user_path,
+            &machine_path,
+            &state_path,
+            RunWorkflowOptions::default(),
+        );
+        match result {
+            Err(ConductorError::Workflow(message)) => {
+                assert!(
+                    message.contains("env_var is invalid for builtin tools")
+                        || message.contains("tool_configs.env_var"),
+                    "unexpected error message: {message}"
+                );
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects invariant that executable environment keys must not be
+    /// duplicated across `tools.<tool>.env_vars` and
+    /// `tool_configs.<tool>.env_var`.
+    #[test]
+    fn duplicate_env_key_across_tool_and_tool_config_is_rejected() {
+        let dir = tempdir().expect("tempdir");
+        let user_path = dir.path().join("conductor.ncl");
+        let machine_path = dir.path().join("conductor.machine.ncl");
+        let state_path = dir.path().join(".conductor").join("state.ncl");
+
+        std::fs::write(
+            &user_path,
+            r#"
+{
+    version = 1,
+    tools = {
+        "runner@1.0.0" = {
+            kind = "executable",
+            command = ["bin/tool"],
+            env_vars = {
+                DUPLICATE = "from_tool",
+            },
+            outputs = {
+                result = {
+                    capture = { kind = "stdout" },
+                },
+            },
+        },
+    },
+    tool_configs = {
+        "runner@1.0.0" = {
+            env_var = {
+                DUPLICATE = "from_config",
+            },
+        },
+    },
+    workflows = {
+        w = {
+            steps = [
+                {
+                    id = "s",
+                    tool = "runner@1.0.0",
+                },
+            ],
+        },
+    },
+}
+"#,
+        )
+        .expect("write user");
+        std::fs::write(
+            &machine_path,
+            encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+        )
+        .expect("write machine");
+
+        let result = DocumentLoaderActor::load_and_unify_documents(
+            &user_path,
+            &machine_path,
+            &state_path,
+            RunWorkflowOptions::default(),
+        );
+        match result {
+            Err(ConductorError::Workflow(message)) => {
+                assert!(message.contains("duplicate environment key 'DUPLICATE'"));
+                assert!(message.contains("tool_configs.runner@1.0.0.env_var"));
             }
             other => panic!("expected workflow error, got {other:?}"),
         }

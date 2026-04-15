@@ -39,6 +39,15 @@ pub(super) struct UnifiedToolSpec {
     pub default_inputs: BTreeMap<String, InputBinding>,
     /// Fully merged process definition.
     pub process: ProcessSpec,
+    /// Fully merged execution environment for executable tools.
+    ///
+    /// This map is runtime-only and intentionally separate from
+    /// `process.env_vars` so state metadata and instance-key identity can
+    /// continue to reflect only reusable tool declarations while execution
+    /// still receives merged tool-config environment overrides.
+    ///
+    /// Builtin tools always carry an empty map here.
+    pub execution_env_vars: BTreeMap<String, String>,
     /// Declared output contract keyed by output name.
     pub outputs: BTreeMap<String, ToolOutputSpec>,
     /// Per-tool content-map entries to materialize into the execution sandbox.

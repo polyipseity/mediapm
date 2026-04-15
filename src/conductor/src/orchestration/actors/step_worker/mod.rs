@@ -776,7 +776,7 @@ where
         pending_file_writes: &mut Vec<TemplateFileWrite>,
     ) -> Result<ResolvedProcessExecution, ConductorError> {
         match &tool.process {
-            ProcessSpec::Executable { command, env_vars, success_codes } => {
+            ProcessSpec::Executable { command, env_vars: _declared_env_vars, success_codes } => {
                 let rendered_command =
                     self.render_template_command(command, inputs, pending_file_writes)?;
                 let Some(executable) = rendered_command.first() else {
@@ -787,7 +787,11 @@ where
                 Ok(ResolvedProcessExecution::Executable {
                     executable: executable.clone(),
                     args: rendered_command.into_iter().skip(1).collect(),
-                    env_vars: self.render_templates(env_vars, inputs, pending_file_writes)?,
+                    env_vars: self.render_templates(
+                        &tool.execution_env_vars,
+                        inputs,
+                        pending_file_writes,
+                    )?,
                     success_codes: Self::normalize_success_codes(success_codes),
                 })
             }
@@ -1080,6 +1084,7 @@ where
             command.arg(arg);
         }
         command.current_dir(tool_cwd);
+        command.env_clear();
         command.envs(env_vars);
         let output = command.output().map_err(|source| ConductorError::Io {
             operation: format!("executing executable process '{executable_name}'"),

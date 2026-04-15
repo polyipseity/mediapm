@@ -414,6 +414,7 @@ where
 {
     let (version_file_name, version_contract_source) =
         resolve_version_contract(requested_version, document_kind)?;
+    let validator_name = format!("validate_document_v{requested_version}");
 
     let workspace = TempNickelWorkspace::new()?;
     write_nickel_file(
@@ -437,7 +438,7 @@ where
 let migration = import "mod.ncl" in
 let version = import "{version_file_name}" in
 let document = import "document_input.ncl" in
-version.validate_document (migration.migrate_to {requested_version} document)
+version.{validator_name} (migration.migrate_to {requested_version} document)
 "#
     );
     let wrapper_path = workspace.path().join("decode_document.ncl");
@@ -554,6 +555,7 @@ pub(crate) fn evaluate_total_configuration_sources(
     let target_version = latest_version_among_sources(user_source, machine_source, state_source)?;
     let (target_file_name, target_contract_source) =
         resolve_version_contract(target_version, "Nickel configuration")?;
+    let validator_name = format!("validate_document_v{target_version}");
 
     let workspace = TempNickelWorkspace::new()?;
     write_nickel_file(
@@ -586,9 +588,9 @@ pub(crate) fn evaluate_total_configuration_sources(
         r#"
 let migration = import "mod.ncl" in
 let version = import "{target_file_name}" in
-let user = version.validate_document (migration.migrate_to {} (import "user_input.ncl")) in
-let machine = version.validate_document (migration.migrate_to {} (import "machine_input.ncl")) in
-let state = version.validate_document (migration.migrate_to {} (import "state_input.ncl")) in
+let user = version.{validator_name} (migration.migrate_to {target_version} (import "user_input.ncl")) in
+let machine = version.{validator_name} (migration.migrate_to {target_version} (import "machine_input.ncl")) in
+let state = version.{validator_name} (migration.migrate_to {target_version} (import "state_input.ncl")) in
 {{
     validated_user = user,
     validated_machine = machine,
@@ -596,7 +598,6 @@ let state = version.validate_document (migration.migrate_to {} (import "state_in
     total = {{ include [user, machine, state] }},
 }}
 "#,
-        target_version, target_version, target_version,
     );
     let validate_path = workspace.path().join("validate_total.ncl");
     write_nickel_file(
@@ -776,6 +777,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                     )
                                 })
                                 .collect(),
+                            env_var: config.env_var,
                             content_map: config.content_map,
                         },
                     )
@@ -950,6 +952,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                     )
                                 })
                                 .collect(),
+                            env_var: config.env_var,
                             content_map: config.content_map,
                         },
                     )
@@ -1539,6 +1542,11 @@ mod tests {
             MOD_NCL_SOURCE,
             "writing temporary Nickel migration helper for metadata test",
         )?;
+        write_nickel_file(
+            &workspace.path().join(latest::NCL_FILE_NAME),
+            latest::NCL_SOURCE,
+            "writing temporary latest Nickel contract for migration metadata test",
+        )?;
 
         let wrapper_source = r#"
 let migration = import "mod.ncl" in
@@ -1570,6 +1578,7 @@ let migration = import "mod.ncl" in
         T: serde::de::DeserializeOwned,
     {
         let (_, version_contract_source) = resolve_version_contract(to_version, document_kind)?;
+        let validator_name = format!("validate_document_v{to_version}");
         let workspace = TempNickelWorkspace::new()?;
 
         write_nickel_file(
@@ -1593,7 +1602,7 @@ let migration = import "mod.ncl" in
 let migration = import "mod.ncl" in
 let version = import "{}" in
 let document = import "document_input.ncl" in
-version.validate_document (migration.migrate_atomic {} {} document)
+version.{validator_name} (migration.migrate_atomic {} {} document)
 "#,
             latest::NCL_FILE_NAME,
             from_version,

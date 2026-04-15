@@ -168,4 +168,12 @@ in
   # ||| Canonical migration entrypoint to the latest schema.
   # ||| Preferred default entrypoint used during normal runtime loading.
   migrate = migrate_to_version 1,
+
+  # ||| Latest validation entrypoint (currently aliases v1).
+  # ||| Keep this alias stable so callers avoid version branching.
+  validate_document = (import "v1.ncl").validate_document_v1,
+
+  # ||| Latest envelope contract entrypoint (currently aliases v1).
+  # ||| Keep synchronized with `validate_document` alias target.
+  envelope_contract = (import "v1.ncl").envelope_contract_v1,
 }

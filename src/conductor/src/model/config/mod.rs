@@ -302,6 +302,16 @@ pub struct ToolConfigSpec {
     /// being repeated across workflow steps.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_defaults: BTreeMap<String, InputBinding>,
+    /// Optional explicit runtime environment map for tool execution.
+    ///
+    /// This map contributes process environment variables at runtime without
+    /// changing reusable tool identity. Runtime merges these entries with
+    /// executable `tools.<tool>.env_vars` and rejects duplicate keys across
+    /// the two sources.
+    ///
+    /// This configuration is invalid for builtin tools.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env_var: BTreeMap<String, String>,
     /// Optional per-tool content map (`relative_path -> hash`) for executable
     /// sandbox materialization.
     ///
@@ -335,6 +345,7 @@ impl Default for ToolConfigSpec {
             max_retries: default_max_retries(),
             description: None,
             input_defaults: BTreeMap::new(),
+            env_var: BTreeMap::new(),
             content_map: None,
         }
     }
@@ -1148,6 +1159,20 @@ fn validate_add_tool_config_mode(
         )));
     }
 
+    let has_env_var = match config_mode {
+        AddToolConfigMode::KeepExisting => {
+            existing_configs.get(tool_name).is_some_and(|config| !config.env_var.is_empty())
+        }
+        AddToolConfigMode::Replace(config) => !config.env_var.is_empty(),
+        AddToolConfigMode::Remove => false,
+    };
+
+    if has_env_var && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
+        return Err(ConductorError::Workflow(format!(
+            "tool '{tool_name}' is builtin and cannot have tool_configs.env_var"
+        )));
+    }
+
     Ok(())
 }
 
@@ -1218,6 +1243,7 @@ mod tests {
             max_retries: -1,
             description: Some("demo executable runtime config".to_string()),
             input_defaults: BTreeMap::new(),
+            env_var: BTreeMap::new(),
             content_map: Some(BTreeMap::from([(
                 "payload.txt".to_string(),
                 Hash::from_content(b"demo-hash-a"),
@@ -1266,6 +1292,7 @@ mod tests {
                     max_retries: -1,
                     description: Some("initial executable runtime config".to_string()),
                     input_defaults: BTreeMap::new(),
+                    env_var: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([(
                         "payload.txt".to_string(),
                         Hash::from_content(b"demo-hash-b"),
@@ -1304,6 +1331,7 @@ mod tests {
                         max_retries: -1,
                         description: Some("invalid builtin runtime config".to_string()),
                         input_defaults: BTreeMap::new(),
+                        env_var: BTreeMap::new(),
                         content_map: Some(BTreeMap::from([(
                             "payload.txt".to_string(),
                             Hash::from_content(b"demo-hash-c"),
@@ -1383,6 +1411,7 @@ mod tests {
                     max_retries: -1,
                     description: None,
                     input_defaults: BTreeMap::new(),
+                    env_var: BTreeMap::new(),
                     content_map: Some(BTreeMap::from([("bin/tool".to_string(), active_hash)])),
                 },
             )]),

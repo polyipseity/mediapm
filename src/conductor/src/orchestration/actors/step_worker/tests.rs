@@ -621,6 +621,7 @@ async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
             env_vars: BTreeMap::new(),
             success_codes: vec![0],
         },
+        execution_env_vars: BTreeMap::new(),
         outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
         tool_content_map: BTreeMap::new(),
     };
