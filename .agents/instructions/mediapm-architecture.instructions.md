@@ -279,7 +279,7 @@ is a narrow, documented reason.
     Windows) with platform fallbacks, `yt-dlp` from GitHub Releases on
     `latest`, `rsgain` from GitHub Releases on `latest` ZIP assets, and
     `media-tagger` from the built-in internal launcher
-    (`mediapm internal media-tagger`) using Chromaprint + AcoustID +
+    (`mediapm builtins media-tagger`) using Chromaprint + AcoustID +
     MusicBrainz + FFmetadata + FFmpeg,
   - archive-backed managed tool payloads should prefer compact
     directory-form `content_map` entries (trailing `/` keys with ZIP bytes)

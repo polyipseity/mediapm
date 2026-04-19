@@ -61,7 +61,7 @@ Conductor uses two config documents plus one runtime state document:
 Grouped runtime path defaults:
 
 - runtime root (`conductor_dir`): `.conductor`
-- volatile state path (`config_state`): `<conductor_dir>/state.ncl`
+- volatile state path (`state_config`): `<conductor_dir>/state.ncl`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
 
 Document contract:
@@ -279,6 +279,8 @@ Supported token forms:
     execution directory, then injects that relative path string.
 - `${context.os}`
   - Injects host platform text (`windows`, `linux`, or `macos`).
+- `${context.working_directory}`
+  - Injects the current process working directory as a text path string.
 - `${<left> <op> <right> ? <true> | <false>}`
   - Comparison conditional with operators `==`, `!=`, `<`, `<=`, `>`, `>=`.
   - Branch values resolve recursively and support

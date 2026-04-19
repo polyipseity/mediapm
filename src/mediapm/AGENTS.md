@@ -321,4 +321,3 @@ Internal module-boundary policy for this crate:
 - `.agents/instructions/mediapm-architecture.instructions.md`
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md`
 - `.agents/instructions/rust-workflow.instructions.md`
-- `.agents/instructions/markdown-and-customizations.instructions.md`
