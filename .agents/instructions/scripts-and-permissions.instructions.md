@@ -52,6 +52,8 @@ applyTo: "scripts/**"
 ## Tooling alignment
 
 - Keep script behavior consistent with CI, `AGENTS.md`, and prompt guidance.
+- Keep script-level policies in active instruction files; do not rely on
+  deleted standalone planning docs for operational requirements.
 - If a script wraps project tooling, keep the underlying canonical commands
   discoverable in docs and config instead of hiding the real workflow.
 - When script location or behavior changes, re-check `.github/workflows/ci.yml`,

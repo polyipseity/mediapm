@@ -3,7 +3,8 @@
 `mediapm` is now organized as a **Rust workspace of phase-focused crates**.
 
 The current implementation establishes compile-ready contracts and scaffolding
-for the three major phases defined in `PLAN.md`:
+for the three major phases captured in the active instruction set (`AGENTS.md`
+plus `.agents/instructions/*.instructions.md`):
 
 - Phase 1 CAS in `src/cas/`
 - Phase 2 Conductor in `src/conductor/`
@@ -385,7 +386,7 @@ non-identity fields.
 
 This repository now matches the requested multi-crate phase topology, but it is
 still an implementation scaffold rather than the full feature-complete system
-described in `PLAN.md`.
+described by the active agent-guidance contract files.
 
 Builtin runtime policy (mandatory):
 

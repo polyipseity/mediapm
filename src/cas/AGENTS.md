@@ -3,6 +3,18 @@
 This guide captures implementation context that is easy to miss from signatures
 alone.
 
+## Phase-1 model contract
+
+- Treat CAS as an "everything is a diff" system at planning/index level:
+  full blobs are logically diff-from-empty identity roots even when persisted
+  as raw full payload bytes for fast reads.
+- Keep storage/index behavior deterministic and reconstructable:
+  - hash identity uses validated BLAKE3 values,
+  - object fan-out pathing is deterministic,
+  - diff lineage must remain acyclic.
+- Preserve runtime-agnostic async boundaries in API contracts; runtime-specific
+  scheduling details remain adapter-side.
+
 ## Context map
 
 - `StorageActor` is the write/read gateway for `put/get/delete/set_constraint`.
@@ -30,6 +42,25 @@ alone.
 - Delete is transitive for delta descendants to avoid orphan reconstruction paths.
 - Constraints never persist an explicit empty-only candidate list; empty base is
   implicit at read time.
+- Optimizer candidate scoring must preserve the depth/size tradeoff contract:
+  minimize $Cost = Size(Delta) + \alpha \cdot Depth(Chain)$ and avoid changes
+  that collapse storage size at the expense of pathological reconstruction
+  depth.
+
+## Storage and retrieval behavior
+
+- Keep root empty-content identity bootstrap behavior stable.
+- Retrieval must resolve base ancestry deterministically before applying delta
+  reconstruction.
+- Keep full-object and delta-object persistence semantics explicit in index and
+  runtime code paths so read behavior remains predictable.
+
+## Failure resilience
+
+- Writes stay atomic (`tempfile` on same mount + atomic rename).
+- Under disk pressure, preserve soft/hard-threshold behavior:
+  - soft threshold enables compression-first optimization behavior,
+  - hard threshold rejects writes and surfaces explicit out-of-space errors.
 
 ## Documentation requirement (strict)
 

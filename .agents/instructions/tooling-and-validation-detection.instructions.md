@@ -44,6 +44,9 @@ applyTo: "AGENTS.md, .agents/instructions/**/*.md, opencode.json, .vscode/settin
   - where the commands are defined
   - what files act as the source of truth
   - what should be avoided when the stack is only partially initialized
+- When retiring standalone plan docs, ensure their mandatory validation
+  expectations (format/lint/tests plus any required runtime gates) are migrated
+  into active instruction files in the same change.
 - When no runnable validation exists yet, say that explicitly and point to the
   files that would need to be added before validation can be automated.
 

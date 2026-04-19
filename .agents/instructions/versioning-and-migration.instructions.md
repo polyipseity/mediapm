@@ -11,6 +11,10 @@ applyTo: "src/**/*.rs"
 - Apply this guidance when introducing versioned data structures, wire formats,
   or state migrations anywhere in `src/`.
 - Keep wire/transport concerns versioned and isolated from functional core state.
+- Model migrations as composable optics where practical:
+  - `Lens` for deterministic field transforms,
+  - `Prism` for enum/optional branch transforms,
+  - `Traversal` for repeated/nested collection transforms.
 
 ## Required structure
 
@@ -56,6 +60,10 @@ applyTo: "src/**/*.rs"
   `from_state` conversions for version envelopes.
 - Implement envelope migration by optic composition through the version-agnostic
   state (`old_iso.view` then `new_iso.review`).
+- Keep migration ladders sequential (`vN -> vN+1`) with explicit provenance in
+  comments/docs/tests so schema evolution remains auditable.
+- For lossless migrations, add round-trip checks where feasible; for lossy
+  migrations, document one-way guarantees and preserved complement data.
 
 ## Hash and checksum safety
 

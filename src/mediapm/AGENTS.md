@@ -11,6 +11,15 @@ instruction files in `.agents/instructions/`.
 - If rules conflict, prefer root `AGENTS.md` for global policy and this file
   for mediapm-specific implementation details.
 
+## Phase-3 orchestration contract
+
+- Treat `mediapm` as specialized media orchestration over conductor + CAS:
+  deterministic planning/state reconciliation first, side effects second.
+- Keep sync behavior atomic through staging under effective `.mediapm/tmp`
+  before commit into materialized output roots.
+- Preserve strict cross-platform path safety and deterministic link fallback
+  behavior.
+
 ## Source of truth (mediapm)
 
 Use concrete files as canonical references:
@@ -79,6 +88,28 @@ Keep these Phase 3 defaults and path rules intact:
 - `tools.ffmpeg.max_input_slots` and
   `tools.ffmpeg.max_output_slots` default to `64` when omitted and
   bound generated ffmpeg indexed input/output slot fan-out.
+
+## Media workflow pipeline expectations
+
+Online-source pipeline contract:
+
+1. downloader ingest,
+2. optional transcode,
+3. metadata application (default enabled).
+
+Local-source pipeline contract:
+
+1. import/import-once ingest,
+2. optional transcode,
+3. metadata application (default enabled).
+
+Permanent-transcode policy:
+
+- online defaults to enabled; local defaults to disabled,
+- when enabled, pre-transcode source payload is not retained as primary cached
+  product,
+- transcode result becomes the cache product and is tracked as safety external
+  data in lock state for controlled pruning.
 
 ## Versioning and migration policy
 
@@ -192,6 +223,19 @@ For `media.<id>` semantics and runtime reconciliation:
   (`tool_configs.<yt-dlp-tool-id>.max_retries = 1`) because yt-dlp already
   has internal network retry controls.
 
+Toolsmith reconciliation flow (`mediapm sync` / `mediapm tools sync`):
+
+1. read desired tools from `mediapm.ncl`,
+2. query registered tool state,
+3. register/promote immutable tool identities for missing/mismatched versions,
+4. persist active selection in lock state.
+
+Before finalizing tool registration, keep validation deterministic:
+
+- resolved tool identity must serialize to deterministic CAS-hashable metadata,
+- executable validation should include a successful version probe (for example
+  `--version`) where applicable.
+
 ## Conductor integration boundary
 
 When mediapm invokes conductor, always pass grouped runtime-storage paths
@@ -223,6 +267,10 @@ Effective grouped defaults:
 - Keep schema version explicit and migrations sequential.
 - Lockfile `managed_files` provenance stores per-file `media_id` (not source
   URI strings) together with `variant` and `last_synced_unix_millis`.
+- Materializer verification enforces NFD-only filenames and rejects reserved
+  path characters (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`).
+- Link/write fallback ordering remains deterministic: hardlink -> symlink ->
+  reflink -> copy.
 
 ## Testing, validation, and docs bar
 

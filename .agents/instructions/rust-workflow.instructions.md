@@ -19,7 +19,8 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `rust-toolchain.toml` for toolchain/channel/components.
 - `rustfmt.toml` and `clippy.toml` for style and lint policy.
 - `.github/workflows/ci.yml` for canonical CI validation behavior.
-- `PLAN.md` for active architecture and implementation contract.
+- `AGENTS.md` + `.agents/instructions/*.instructions.md` for active
+  architecture and implementation contract.
 - `src/` phase crates for current module boundaries:
   - `src/cas/` (Phase 1)
   - `src/conductor/` (Phase 2)
@@ -82,7 +83,8 @@ When refactoring touches multiple crates or splits large modules:
 
 ## Editing conventions
 
-- Keep changes minimal, deterministic, and aligned with the functional-core direction in `PLAN.md`.
+- Keep changes minimal, deterministic, and aligned with the repository's
+  functional-core direction documented in active instruction files.
 - Avoid adding hidden mutable state or introducing databases unless explicitly requested.
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
 - Keep Rust code fully documented with module-level `//!` and item-level

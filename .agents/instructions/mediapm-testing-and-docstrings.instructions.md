@@ -35,6 +35,28 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.
+- Treat test coverage as a phased contract:
+  - Phase 1 CAS: store/get/constraint/optimize coverage,
+  - Phase 2 Conductor: tool import/run/cache/re-exec coverage,
+  - Phase 3 mediapm: tool lifecycle + media add/add-local + sync/materialize
+    - lockfile/prune/verify coverage.
+
+## Advanced correctness coverage
+
+- Add property tests (`proptest`) for determinism/idempotency-sensitive logic
+  such as planning/keying/merge functions.
+- Add concurrency-permutation tests (`loom`) for lock/atomic-sensitive
+  components when race safety is a core invariant.
+- Add deterministic golden/snapshot assertions where rendered planning output
+  or state projections must remain stable.
+
+## Performance validation expectations
+
+- Benchmark hot paths (for example hashing throughput, reconstruction depth
+  impact, orchestration overhead, materialization throughput) when making
+  performance claims.
+- Follow evidence-first loop: profile -> hypothesize -> optimize -> benchmark,
+  and revert optimizations that do not produce measured wins.
 
 ## Required test qualities
 

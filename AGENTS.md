@@ -36,6 +36,46 @@
 - Formatting and newline behavior come from `.editorconfig`, `.gitattributes`,
   `.markdownlint.jsonc`, and `.agents/.markdownlint.jsonc`.
 
+## Core Engineering Contract
+
+- This repository now treats `AGENTS.md` + `.agents/instructions/*.instructions.md`
+  as the durable implementation contract (the legacy phase-plan markdown files
+  are intentionally retired after policy migration).
+- Hard principles for all phase crates:
+  - simplicity first;
+  - performance is a user-visible feature;
+  - functional core, imperative shell;
+  - incremental by default with explicit content-addressed cache keys;
+  - async I/O/orchestration with runtime adapters (Tokio default);
+  - actor-first concurrency with explicit supervision behavior;
+  - type-system-enforced invariants where practical;
+  - pragmatic macro usage (reduce boilerplate, do not hide critical flow);
+  - documentation is part of the API contract.
+- Technology baseline:
+  - actor/orchestration: `ractor`,
+  - hashing: `blake3`,
+  - async contracts: `futures` (+ `async-trait` where useful),
+  - tracing/diagnostics: `tracing` + `tracing-subscriber`,
+  - serialization: `serde` + deterministic `serde_json` policy.
+- Performance engineering loop is mandatory:
+  1. profile,
+  2. hypothesize,
+  3. optimize,
+  4. benchmark,
+  5. keep-or-revert based on evidence.
+- Hot-path expectations:
+  - prefer contiguous data layouts and bounded allocations,
+  - avoid hidden clones and tiny-syscall loops,
+  - keep async handlers non-blocking and route unavoidable blocking work
+    through bounded worker boundaries.
+- Definition-of-done expectations across phases:
+  - public APIs have integration coverage,
+  - major features have end-to-end coverage,
+  - determinism/idempotency behavior is tested,
+  - migration behavior is documented and auditable,
+  - performance claims are benchmark-backed,
+  - formatting/lint/tests pass in CI.
+
 ## Rust Architecture Snapshot
 
 - `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
@@ -297,8 +337,9 @@
 - Distinguish between what is present today and what is only part of the
   intended template contract. Do not describe absent files as if they already
   exist.
-- Treat `PLAN.md` as an active implementation contract. Do not describe it as
-  intentionally unimplemented.
+- Treat this file and focused `.agents/instructions/*.instructions.md` files
+  as the active implementation contract. Keep these files in sync with code
+  and avoid reviving deleted standalone phase-plan documents.
 - Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only
   minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a
   multi-member Rust workspace with phase crates under `src/`.

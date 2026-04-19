@@ -12,6 +12,19 @@ applyTo: "src/**/*.rs"
 - Preserve determinism and auditability of media state transitions.
 - Keep boundaries between planning logic and side effects clear.
 
+## Cross-phase engineering principles
+
+- Keep planning/diffing/key-derivation logic pure and deterministic.
+- Keep side effects (filesystem/process/network) in explicit boundary modules.
+- Prefer incremental updates over full rebuilds; cache keys remain explicit and
+  content-addressed.
+- Keep async boundaries runtime-agnostic in domain/application layers (Tokio is
+  default runtime adapter, not a domain-level dependency).
+- Use actors for concurrency orchestration with explicit supervision and typed
+  messages.
+- Use type-level modeling (newtypes/strong enums/constrained constructors) so
+  invalid states are hard to represent.
+
 ## Module layout (source of truth)
 
 - `src/cas/` (Phase 1)
@@ -43,10 +56,10 @@ folder-module layout:
 Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there
 is a narrow, documented reason.
 
-## Conceptual layering terms in planning docs
+## Conceptual layering terms
 
-- `PLAN.md` may reference `application`, `configuration`, `domain`,
-  `infrastructure`, and `support` as architecture-layer concepts.
+- Architecture guidance may reference `application`, `configuration`,
+  `domain`, `infrastructure`, and `support` as architecture-layer concepts.
 - Treat those names as conceptual boundaries unless matching directories are
   explicitly added to this workspace.
 - When implementing phase work, keep concrete file placement aligned to the
@@ -55,8 +68,18 @@ is a narrow, documented reason.
 ## Layering rules
 
 - `cas` should remain runtime-agnostic at public API boundaries.
+  CAS-specific invariants to preserve in `src/cas/**`:
+  - storage follows an "everything is a diff" logical model where full blobs
+    are treated as diff-from-empty identity in planning/index semantics,
+  - diff graph/index relationships stay acyclic and reconstructable,
+  - optimizer candidate selection balances delta size against chain depth cost
+    (avoid regressions that optimize bytes while making reconstruction
+    pathologically deep),
+  - storage fan-out and hash identity behavior stay deterministic.
 - `conductor` should keep deterministic planning/keying logic explicit and testable.
   Conductor-specific invariants to preserve in `src/conductor/**`:
+  - `conductor.ncl` (user intent) and `conductor.machine.ncl`
+    (machine-managed state) remain separate ownership surfaces,
   - persisted builtin tool entries stay strict (`kind`, `name`, `version` only),
   - `conductor.ncl`, `conductor.machine.ncl`, and the resolved runtime state
     document path (default `.conductor/state.ncl`) must carry explicit
@@ -82,6 +105,10 @@ is a narrow, documented reason.
   - orchestration-state output persistence values stored per output must be the
     effective merged policy across duplicate equivalent tool calls
     (`save`: AND, `force_full`: OR),
+  - instance identity excludes tool content-map payload materialization details
+    and excludes merged output-persistence flags,
+  - reverse-diff optimization hints should continue to prefer frequently-read
+    outputs as fast retrieval roots when safe to do so,
   - executable `tool_configs.<tool>.content_map` is sandbox-relative and uses
     trailing `/` or `\\` keys as directory-from-ZIP unpack targets,
   - `./` (or `.\\`) unpacks ZIP content directly at sandbox root,
@@ -258,7 +285,16 @@ is a narrow, documented reason.
     directory-form `content_map` entries (trailing `/` keys with ZIP bytes)
     over one-entry-per-file maps when possible,
   - step execution order is the declared `steps` list order,
-  - step `options` are tool-specific and unknown keys are rejected.
+  - step `options` are tool-specific and unknown keys are rejected,
+  - materialization uses stage -> verify -> commit semantics with staging under
+    effective `.mediapm/tmp` and atomic commit into library roots,
+  - materializer path validation enforces NFD-only filenames and rejects
+    reserved characters (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`),
+  - materializer link fallback order remains deterministic: hardlink ->
+    symlink -> reflink -> copy,
+  - online/local source pipelines keep explicit ingest -> optional transcode ->
+    metadata-application sequencing, and permanent-transcode safety external
+    data remains lockfile-tracked/pruneable.
 - Built-ins should stay narrowly scoped and version-addressable.
 - Builtin runtime behavior must remain inside `src/conductor-builtins/*`
   crates (not inline in `src/conductor`).

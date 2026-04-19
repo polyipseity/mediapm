@@ -84,6 +84,9 @@ applyTo: "AGENTS.md, README.md, .agents/**/*.md, .opencode/**/*.md, .github/**/*
 - Prefer writing durable policy updates directly into `AGENTS.md` or
   `.agents/instructions/*.instructions.md` rather than storing them only in
   `/memories/repo/`.
+- If project plan docs are intentionally retired, migrate normative rules into
+  active instruction files in the same change and remove stale references so
+  docs never point to deleted policy sources.
 - If temporary repo memory notes are created while drafting, merge their
   durable content into instruction files and remove those notes in the same
   workflow.

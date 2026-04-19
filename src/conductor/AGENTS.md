@@ -12,6 +12,17 @@ Follow this together with the workspace root `AGENTS.md` and relevant
 - If rules conflict, prefer root `AGENTS.md` for global policy and this file for
   conductor-specific design/behavior details.
 
+## Phase-2 orchestration contract
+
+- Keep conductor as a functional orchestration engine over CAS:
+  deterministic planning/keying in pure logic, with process/filesystem effects
+  isolated to execution boundaries.
+- Keep user intent and machine-managed runtime state separated across
+  `conductor.ncl` and `conductor.machine.ncl`; unresolved non-mergeable
+  conflicts fail fast and require manual resolution.
+- Runtime orchestration remains async + actor-oriented (`ractor`) with explicit
+  message contracts and predictable supervision behavior.
+
 ## Current Stack and Entry Points
 
 Use concrete files as source of truth:
@@ -79,6 +90,14 @@ Document contract:
   `conductor.machine.ncl`.
 - Once setup is recorded through machine-document automation, do not require
   duplicate tool declarations in `conductor.ncl` just to make workflows runnable.
+
+Dual-file ownership model summary:
+
+- `conductor.ncl` is human-owned intent and workflow/tool declarations.
+- `conductor.machine.ncl` is machine-owned operational state such as content
+  maps and machine-derived runtime metadata.
+- Conductor embeds Nickel evaluation in-process (`nickel-lang-core`) and does
+  not delegate schema evaluation to an out-of-process secondary interpreter.
 
 ## Conductor Builtin Tool Strategy
 
@@ -189,6 +208,11 @@ When editing tool/config schema behavior, preserve these invariants:
     persisted output `persistence` must be the effective merged policy across all
     callers (`save`: logical AND, `force_full`: logical OR).
 
+    Merge rationale:
+    - `save` remains enabled unless every equivalent caller opts out,
+    - `force_full` remains enabled if any equivalent caller requires full-data
+      persistence.
+
 24. Any human-facing orchestration-state JSON output (for example CLI `state`
     output or demo artifacts) must render the persisted wire-envelope shape so
     builtin metadata stays strict (`kind`/`name`/`version`) and does not leak
@@ -205,6 +229,18 @@ When editing tool/config schema behavior, preserve these invariants:
     after the initial failed call. Valid values are `-1` (use runtime default)
     or non-negative integers. Runtime unified execution normalizes `-1` to the
     current default retry policy.
+
+Instance-key rationale to preserve:
+
+- Equivalent-call dedup identity excludes tool content-map payload details and
+  excludes merged persistence flags so metadata/content-map churn does not
+  invalidate logically equivalent historical executions.
+
+## Reverse-diff optimization intent
+
+- Preserve conductor-to-CAS optimization hints that bias storage so frequently
+  consumed outputs remain fast-access roots while related inputs may be stored
+  as diffs when safe.
 
 If adding validation, apply it both where practical:
 
