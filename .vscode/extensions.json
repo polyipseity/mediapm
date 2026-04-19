@@ -1,6 +1,14 @@
 {
   "recommendations": [
+    "christian-kohler.path-intellisense",
+    "DavidAnson.vscode-markdownlint",
+    "EditorConfig.EditorConfig",
+    "esbenp.prettier-vscode",
+    "GitHub.copilot-chat",
+    "redhat.vscode-yaml",
     "rust-lang.rust-analyzer",
+    "streetsidesoftware.code-spell-checker",
+    "tamasfe.even-better-toml",
     "vadimcn.vscode-lldb"
   ]
 }
