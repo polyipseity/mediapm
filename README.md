@@ -111,21 +111,39 @@ tool distribution endpoints and third-party media/network availability.
 
 `demo_online` declares one managed media workflow over
 `https://www.youtube.com/watch?v=dQw4w9WgXcQ` with a downloader/transcode
-sequence (`yt-dlp -> ffmpeg -> rsgain -> picard`), runs full `mediapm sync`
+sequence (`yt-dlp -> ffmpeg -> ffmpeg -> rsgain -> media-tagger`), runs full `mediapm sync`
 (`MediaPmService::sync_library_with_tag_update_checks`) to provision tools and
 execute the pipeline, then validates managed-tool registration,
-managed-workflow shape, and the materialized `demo/rickroll.mp3` output.
-The example also verifies that the materialized output starts with an MP3
-signature (`ID3` or MPEG frame header) so the emitted `.mp3` is real audio
-content rather than a mislabeled artifact.
+managed-workflow shape, and materialized outputs under one metadata-resolved
+hierarchy root `demo/Rickroll Demo/dQw4w9WgXcQ/`: transcoded
+`rickroll-144p.mp4`, normalized/tagged `rickroll-144p-tagged.mp4`, plus
+full downloader sidecar families (subtitles, auto subtitles, thumbnails,
+description, infojson, comments, links, chapter files, and playlist sidecars).
+The example also verifies that the transcoded output starts with an MP4
+container signature (`ftyp`) so the emitted video variant is real MP4 content.
 
 The online demo writes artifacts under
 `src/mediapm/examples/.artifacts/demo-online/` and uses that directory directly
 as the example workspace root (no extra nested `workspace/` folder).
+On Windows, if that canonical directory is temporarily locked (for example by
+an external process holding a transient sharing lock), the demo creates a
+unique sibling fallback workspace directory named
+`demo-online-fallback-<pid>-<timestamp>` and continues execution.
 
 The persistent phase-3 demo writes artifacts under
 `src/mediapm/examples/.artifacts/demo/` and uses that `demo/` directory
 directly as the example workspace root.
+
+The persistent phase-3 demo ingests the bundled binary fixture
+`src/mediapm/examples/assets/sample-av.mp4` by importing it into CAS and then
+configuring the source step as `import-once` (`kind = "cas_hash"`,
+`hash = "blake3:..."`). This keeps demo source ingest fully local and removes
+the old local-HTTP-fixture dependency for source setup.
+
+`cargo run -p mediapm --example demo` still defaults to full sync execution.
+Automated tests run the real demo entrypoint in configuration-only mode by
+setting `MEDIAPM_DEMO_RUN_SYNC=false`, so the example itself is executed during
+`mediapm` test runs without depending on network/tool-download availability.
 
 `mediapm` runtime defaults:
 
@@ -134,23 +152,45 @@ directly as the example workspace root.
 - conductor machine config (`conductor_machine_config`):
   `mediapm.conductor.machine.ncl`
 - conductor volatile state (`conductor_state`): `<mediapm_dir>/state.ncl`
+- inherited host env names (`inherited_env_vars`):
+  platform-keyed object (`windows`, `linux`, `macos`, ...) where each value is
+  an ordered list of inherited environment-variable names for that platform;
+  runtime merges only the active host platform entry with host defaults
+  (`SYSTEMROOT`, `WINDIR`, `TEMP`, and `TMP` on Windows; empty on other
+  platforms)
 - lockfile (`lockfile`): `<mediapm_dir>/lock.jsonc`
 - materialized output root (`library_dir`): top-level `mediapm.ncl` directory
 - staging directory (`tmp_dir`): `.mediapm/tmp`
 - shared user-level tool download cache toggle (`use_user_download_cache`):
   enabled by default (`true` when omitted)
+- ffmpeg generated input-slot limit (`tools.ffmpeg.max_input_slots`):
+  `64`
+- ffmpeg generated output-slot limit (`tools.ffmpeg.max_output_slots`):
+  `64`
+
+Runtime dotenv bootstrap behavior:
+
+- `mediapm` creates `<mediapm_dir>/.env` when missing and loads it on sync/tool
+  operations,
+- generated default environment-variable lines are intentionally commented
+  (`# ...`) so shell/user-level environment values remain visible by default,
+- users can opt in to file-based values by uncommenting the specific lines.
 
 When `mediapm` composes conductor, it writes conductor runtime storage defaults
 into `mediapm.conductor.machine.ncl` as:
 
 - `conductor_dir = <mediapm_dir>`
-- `state_ncl = <mediapm_dir>/state.ncl`
+- `state_config = <mediapm_dir>/state.ncl`
 - `cas_store_dir = <mediapm_dir>/store`
+- `inherited_env_vars = { <host-platform> = <host default list> }`
 
 `mediapm sync` also passes these grouped runtime paths directly to conductor
 workflow execution, so volatile state persists at the resolved
 `conductor_state` path (default `<mediapm_dir>/state.ncl`) instead of the
-standalone conductor fallback `.conductor/state.ncl`.
+standalone conductor fallback `.conductor/state.ncl`. `runtime.inherited_env_vars`
+values from `mediapm.ncl` are merged from the active host platform entry and
+forwarded to conductor run options. Those inherited names are intentionally not
+duplicated into generated `tool_configs.<tool>.env_vars`.
 
 Relative `runtime.library_dir` values in `mediapm.ncl` resolve
 relative to the outermost `mediapm.ncl` directory. Relative
@@ -161,7 +201,8 @@ relative to the outermost `mediapm.ncl` directory. Relative
 `runtime.conductor_state`, and `runtime.lockfile` values
 resolve relative to the outermost `mediapm.ncl` directory.
 `runtime.use_user_download_cache` controls whether managed-tool payload
-downloads use a shared global user cache across all local `mediapm` workspaces.
+downloads and release-metadata responses use a shared global user cache across
+all local `mediapm` workspaces.
 When enabled (default), cache files are stored in one user cache root
 (`%APPDATA%/mediapm/tool-cache` on Windows,
 `$XDG_DATA_HOME/mediapm/tool-cache` or `$HOME/.local/share/mediapm/tool-cache`
@@ -175,29 +216,57 @@ Cache rows are evicted automatically after 30 days of inactivity.
 
 Media source schema highlights in `mediapm.ncl`:
 
-- each `media.<id>` can include optional `description`
+- each `media.<id>` can include optional `description` and optional strict
+  `metadata` object
+- `metadata` keys support exactly two forms:
+  - literal: `<key> = "value"`
+  - variant binding:
+    `<key> = { variant = "<file-variant>", metadata_key = "<json-key>" }`
+  Metadata bindings must target file variants (not folder captures), and
+  runtime expects JSON-object payloads with string values at `metadata_key`.
+- hierarchy paths may interpolate metadata through
+  `${media.metadata.<key>}` placeholders; unknown/missing keys fail fast.
 - each `media.<id>` may optionally override managed workflow id via
   `workflow_id`; when omitted, default is `mediapm.media.<id>`
 - default runtime policy limits `yt-dlp` to one active call by setting
   `tool_configs.<yt-dlp-tool-id>.max_concurrent_calls = 1`
 - local sources added via `media add-local` are modeled as one managed
-  `import` step with `options.kind = "cas_hash"` and `options.hash =
+  `import-once` step with `options.kind = "cas_hash"` and `options.hash =
   "blake3:..."`
 - manually seeded variant pointers may still be declared via `variant_hashes`
   (map of variant name -> CAS hash pointer)
 - all media processing is declared in one ordered `steps` list where each step
   declares:
-  - `tool` (`yt-dlp`, `import`, `ffmpeg`, `rsgain`, `picard`)
-  - `input_variants` and `output_variants` (paired left-to-right)
-  - `options` (tool-specific; unknown keys are rejected at load time)
-  - optional low-level `input_options` list bindings:
-    - `leading_args` (inserted immediately after executable)
-    - `trailing_args` (appended at end of args)
+  - `tool` (`yt-dlp`, `import`, `import-once`, `ffmpeg`, `rsgain`,
+    `media-tagger`)
+  - `input_variants` for non-source-ingest transforms; source-ingest tools
+    (`yt-dlp`, `import`, `import-once`) keep `input_variants` empty
+  - `output_variants` as a map keyed by output variant name where values
+    optionally override output-policy flags (`save`, `save_full`), with
+    defaults `save = true` and `save_full = false`; hierarchy file paths must
+    select file variants whose latest producer keeps `save = true` and
+    `save_full = true`, while hierarchy directory paths may keep folder
+    variants at default `save_full = false`
+    (`yt-dlp` also uses this map to expose non-primary artifact families like
+    subtitles, thumbnails, descriptions, infojson, comments, link files,
+    chapter splits, and playlist sidecars)
+  - `options` (tool-specific; unknown keys are rejected at load time), where
+    values are scalar strings by default and list values are reserved for
+    low-level bindings `option_args`, `leading_args` (inserted immediately
+    after executable), and `trailing_args` (appended at end of args)
 - online media URIs now live in downloader step options (`options.uri`) rather
   than one top-level source URI field
 - supported option families include downloader controls
-  (`uri`, `keep_all_metadata`), plus transform controls for `ffmpeg`, `rsgain`,
-  and `picard`
+  (`uri`, `format`, `write_description`, `write_info_json`, `ffmpeg_location`),
+  plus transform controls for `ffmpeg`, `rsgain`, and `media-tagger`
+- managed `media-tagger` tool defaults `strict_identification` to `"true"`
+  unless explicitly overridden in step options
+- when `media-tagger` needs AcoustID lookup (no explicit
+  `recording_mbid` override), missing/empty credentials now fail immediately;
+  when credentials are provided via CLI `--acoustid-api-key` or
+  `ACOUSTID_API_KEY`, lookup/authentication failures are surfaced as errors.
+  For `mediapm sync` workflow execution, include `ACOUSTID_API_KEY` in
+  `runtime.inherited_env_vars` when relying on environment-based key lookup
 
 Managed conductor workflow/runtime invariants for `mediapm`:
 
@@ -207,8 +276,8 @@ Managed conductor workflow/runtime invariants for `mediapm`:
   bindings plus matching `depends_on` edges so independent branches can run
   ASAP
 - generated executable tool contracts for downloaded media tools declare
-  comprehensive IO, including list inputs:
-  - `leading_args` and `trailing_args` (`string_list`),
+  comprehensive IO, including list inputs (`leading_args`, `trailing_args`,
+  and option `option_args`) plus scalar option/source inputs:
   - operation/source inputs (`input_content` or `source_url`),
   - outputs (`output_content`, `stdout`, `stderr`, `process_code`)
 
@@ -227,11 +296,20 @@ Built-in tool download catalog used by `mediapm` reconciliation:
 | `ffmpeg` | GitHub Releases (BtbN preferred; Evermeet used for macOS fallback) | `latest` | Uses platform-native archives for workspace-local installs (`.zip` on Windows/macOS, `.tar.xz` on Linux). |
 | `yt-dlp` | GitHub Releases | `latest` track available | Supports pinned release selectors or moving `latest` selector. |
 | `rsgain` | GitHub Releases | `latest` | Prefers portable ZIP assets for workspace-local installs. |
-| `picard` | GitHub Releases | `latest` | Headless mode (`-e "load … ; quit"`, `QT_QPA_PLATFORM=offscreen`) with custom `PICARD_INI`. |
+| `media-tagger` | Built-in `mediapm` launcher (`mediapm internal media-tagger`) | `latest` | Native tagging flow using Chromaprint + AcoustID + MusicBrainz + FFmetadata + FFmpeg. |
+
+For `media-tagger`, moving `latest` selectors are resolved to the currently
+running `mediapm` package version so immutable tool ids always match the
+actual builtin implementation being executed.
 
 `mediapm.ncl` tool declarations require at least one release selector per
 logical tool: `tools.<name>.version` or `tools.<name>.tag` (or both).
 When both selectors are provided, they must match the same resolved release.
+`tools.<name>.recheck_seconds` is optional and controls how long cached release
+metadata can be reused before `mediapm` refreshes from upstream release APIs.
+When omitted, release metadata is refreshed on each reconciliation attempt.
+If refresh fails and cached metadata exists, `mediapm` emits a warning and
+continues with cached metadata; if no cache exists, reconciliation fails.
 
 Resolved immutable tool ids are derived in this precedence order:
 
@@ -258,13 +336,14 @@ user.
 Standalone conductor runtime storage defaults (CLI/API):
 
 - runtime root (`conductor_dir`): `.conductor`
-- volatile state document (`state_ncl`): `.conductor/state.ncl`
+- volatile state document (`state_config`): `.conductor/state.ncl`
 - filesystem CAS store (`cas_store_dir`): `.conductor/store/`
 
 These grouped runtime paths are also part of the persisted user/machine
 configuration schema (`conductor.ncl` and `conductor.machine.ncl`) via
 one grouped optional `runtime` field containing
-`conductor_dir`, `state_ncl`, and `cas_store_dir`.
+`conductor_dir`, `state_config`, `cas_store_dir`, and optional
+platform-keyed `inherited_env_vars`.
 
 The conductor CLI exposes grouped path flags (`--conductor-dir`,
 `--config-state`, `--cas-store-dir`). `--cas-store-dir` accepts any CAS
@@ -299,7 +378,8 @@ non-identity fields.
 - version-specific wire envelopes live in `vN.rs` modules and runtime structs
   stay outside the versioned wire layer
 - lockfile managed-file sync timestamps persist as Unix-epoch milliseconds via
-  `managed_files.<path>.last_synced_unix_millis`
+  `managed_files.<path>.last_synced_unix_millis`; per-file provenance stores
+  `managed_files.<path>.media_id`
 
 ## Notes
 

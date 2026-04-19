@@ -97,7 +97,7 @@ Note, for a local source, you need to first import the data via the conductor to
 * **FFmpeg (`8.1`, source=`Evermeet`):** Prefer Evermeet static distribution metadata for macOS flows.
 * **yt-dlp (`2026.03.17+`):** Track latest GitHub release by desired-state selector.
 * **rsgain (`3.7`):** Prefer portable archive distributions.
-* **Picard (`2.13.3+`):** Run headless with `-e "load … ; quit"`, `QT_QPA_PLATFORM=offscreen`, and generate workspace-local `Picard.ini`.
+* **media-tagger (`latest`):** Invoke built-in launcher (`mediapm internal media-tagger`) to run Chromaprint + AcoustID + MusicBrainz + FFmetadata + FFmpeg.
 
 ### Validation Rule
 

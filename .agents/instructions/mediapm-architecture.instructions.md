@@ -96,6 +96,13 @@ is a narrow, documented reason.
     impure workflows fail without auto-retry.
 - `mediapm` should compose phase 1/2 APIs rather than bypassing them.
   For Phase 3 runtime paths, preserve these `mediapm` invariants:
+  - crate-level error taxonomy remains centralized in
+    `src/mediapm/src/error.rs` and is re-exported via `lib.rs`,
+  - media tagger implementation remains under
+    `src/mediapm/src/builtins/media_tagger.rs` (do not reintroduce a second
+    root-level `src/mediapm/src/media_tagger.rs`),
+  - `config` and `lockfile` stay folder modules rooted at
+    `src/mediapm/src/config/mod.rs` and `src/mediapm/src/lockfile/mod.rs`,
   - default runtime root is `.mediapm/`,
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
@@ -122,10 +129,15 @@ is a narrow, documented reason.
     in `vN.rs`,
   - default materialized output root is the topmost `mediapm.ncl` directory
     itself (no implicit `library/` folder),
+  - mediapm-managed materialized outputs are marked read-only after sync
+    commit; runtime may clear read-only only for managed
+    replacement/removal operations,
   - when `mediapm` invokes conductor, grouped conductor runtime-storage
     defaults also target effective `mediapm_dir`
     (`conductor_dir = <mediapm_dir>`, `state_config = <mediapm_dir>/state.ncl`,
-    `cas_store_dir = <mediapm_dir>/store`),
+    `cas_store_dir = <mediapm_dir>/store`) with inherited env-name defaults
+    matching conductor host defaults; managed tool-config env-vars should not
+    redundantly restate those inherited names,
   - `mediapm` workflow execution must pass grouped runtime-storage paths
     derived from effective phase-3 path resolution so volatile state writes do
     not regress to standalone `.conductor/state.ncl` defaults,
@@ -137,24 +149,73 @@ is a narrow, documented reason.
     and controls one shared user-level global managed-tool download cache with
     fixed layout `tool-cache/store/` + `tool-cache/index.jsonc` and fixed
     30-day eviction,
+  - `tools.ffmpeg.max_input_slots` and
+    `tools.ffmpeg.max_output_slots` default to `64` when omitted and
+    bound generated ffmpeg indexed input/output slot fan-out,
+  - runtime dotenv loading uses effective `runtime.env_file`
+    (default `<mediapm_dir>/.env`), keeps a colocated `.gitignore` containing
+    only `/.env`, and generated default dotenv environment-variable lines stay
+    commented (`# ...`) so ambient shell/user environment variables are not
+    shadowed by placeholder file values,
   - relative `runtime.conductor_config`,
     `runtime.conductor_machine_config`,
     `runtime.conductor_state`, and `runtime.lockfile` resolve
     relative to the topmost `mediapm.ncl` directory,
   - local-source ingest created by `mediapm media add-local` is represented as
-    an `import` step (`options.kind = "cas_hash"`, `options.hash =
+    an `import-once` step (`options.kind = "cas_hash"`, `options.hash =
     "blake3:<hex>"`),
   - media source schema may additionally keep manual payload pointers in
     `variant_hashes` (variant name -> CAS hash),
   - each media source may optionally define explicit `workflow_id` override,
+  - media source `metadata` is strict when present:
+    each key maps to either a literal string value or to one
+    `{ variant = "<file-variant>", metadata_key = "<json-key>" }` binding;
+    metadata bindings must target file variants (not folder captures), and
+    hierarchy placeholders `${media.metadata.<key>}` must fail fast when
+    referenced keys are undefined or unresolved,
   - media processing uses one ordered `steps` list where each step defines
-    `tool` (`yt-dlp`, `import`, `ffmpeg`, `rsgain`, `picard`),
-    `input_variants`, `output_variants`, strict tool-specific
-    `options`, and optional low-level `input_options` bindings,
+    `tool` (`yt-dlp`, `import`, `import-once`, `ffmpeg`, `rsgain`,
+    `media-tagger`), `input_variants` for non-source-ingest transforms
+    (source-ingest tools `yt-dlp`, `import`, and `import-once` keep
+    `input_variants` empty), `output_variants` as a map keyed
+    by output variant name with optional
+    per-variant policy overrides (`save`, `save_full`) where defaults are
+    `save = true` and `save_full = false`; hierarchy file-path variants must
+    resolve to file outputs with latest-producer `save = true` and
+    `save_full = true`, while hierarchy directory-path variants may use folder
+    outputs with default `save_full = false`; strict tool-specific `options`,
+  - managed media-tool step `options` must stay value-centric:
+    values represent option payloads (not raw CLI option-name tokens);
+    runtime command templates expand values into CLI arguments via conductor
+    conditional + unpack syntax and must omit both option key and option
+    value when the configured value is empty,
+  - option values are scalar strings by default; ordered string-list values
+    are only valid for `option_args`, `leading_args`, and `trailing_args`,
+  - for generated boolean-style media option inputs, runtime templates must
+    treat only the exact value `"true"` as enabled and treat every other value
+    as disabled,
+  - managed `media-tagger` defaults should keep
+    `strict_identification = "true"` unless callers explicitly override it,
+  - when `media-tagger` runs on the AcoustID lookup path (no explicit
+    recording MBID override), missing/empty AcoustID credentials must fail
+    immediately; key sources remain CLI `--acoustid-api-key` or
+    `ACOUSTID_API_KEY`, and provided-credential lookup/auth failures surface as
+    runtime errors; for `mediapm sync` workflow execution, include
+    `ACOUSTID_API_KEY` in `runtime.inherited_env_vars` when relying on
+    environment-key lookup,
+  - `yt-dlp` non-primary artifact families (for example subtitles,
+    thumbnails, descriptions, infojson, comments, links, chapter splits, and
+    playlist sidecars) are exposed via `output_variants`; description/infojson
+    should bind to file captures while folder families map to artifact-capture
+    outputs in generated tool/workflow specs,
+  - yt-dlp per-variant `filename_template` values are supported only for
+    folder-style output variants and are filename templates only; runtime owns
+    sandbox directories (for example `downloads/`), so directory prefixes must
+    not appear in config values,
   - online source URLs are declared by downloader steps via `options.uri`
     (not by top-level media fields),
-  - step low-level list input bindings can be provided through
-    `input_options` for `leading_args` and `trailing_args`,
+  - step low-level list input bindings use `options.option_args`,
+    `options.leading_args`, and `options.trailing_args`,
   - default tool reconciliation sets `yt-dlp` to one active concurrent call
     (`tool_configs.<yt-dlp-tool-id>.max_concurrent_calls = 1`) unless users
     explicitly choose a different value,
@@ -169,9 +230,10 @@ is a narrow, documented reason.
   - transform variant dependencies must be expressed with explicit
     `${step_output...}` input bindings and matching `depends_on` edges,
   - managed executable media tool specs must expose comprehensive IO contracts,
-    including `leading_args` and `trailing_args` `string_list` inputs,
-    source/operation payload input (`source_url` or `input_content`), and
-    outputs (`output_content`, `stdout`, `stderr`, `process_code`),
+    including list inputs (`leading_args`, `trailing_args`, and option
+    `option_args`), scalar option/source inputs (`source_url` or
+    `input_content`),
+    and outputs (`output_content`, `stdout`, `stderr`, `process_code`),
   - `mediapm sync` and `mediapm tools sync` must keep tool provisioning
     workspace-local under `.mediapm/tools/`,
   - default tag-update policy differs by command (`sync` skips remote checks
@@ -189,8 +251,9 @@ is a narrow, documented reason.
   - catalog defaults are: `ffmpeg` preferring GitHub Releases (BtbN on
     Windows) with platform fallbacks, `yt-dlp` from GitHub Releases on
     `latest`, `rsgain` from GitHub Releases on `latest` ZIP assets, and
-     `picard` from GitHub Releases on `latest` with headless CLI (`-e "load … ; quit"`),
-    `QT_QPA_PLATFORM=offscreen`, and custom `PICARD_INI`,
+    `media-tagger` from the built-in internal launcher
+    (`mediapm internal media-tagger`) using Chromaprint + AcoustID +
+    MusicBrainz + FFmetadata + FFmpeg,
   - archive-backed managed tool payloads should prefer compact
     directory-form `content_map` entries (trailing `/` keys with ZIP bytes)
     over one-entry-per-file maps when possible,

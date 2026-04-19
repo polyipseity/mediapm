@@ -51,7 +51,16 @@
   - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
     storage path fields under one `runtime` record
     (`runtime.conductor_dir`, `runtime.state_config`,
-    `runtime.cas_store_dir`),
+    `runtime.cas_store_dir`) plus optional platform-keyed inherited host
+    env-name map (`runtime.inherited_env_vars`),
+  - runtime inherited env-name defaults are host-specific (`SYSTEMROOT`,
+    `WINDIR`, `TEMP`, `TMP` on Windows; empty list elsewhere) and runtime
+    merges user + machine + invocation options with case-insensitive
+    de-duplication,
+  - unversioned/latest Nickel contract aliases (`validate_document` and
+    `envelope_contract`) live in
+    `src/conductor/src/model/config/versions/mod.ncl`; versioned schema files
+    (`vN.ncl`) should expose only version-suffixed contract names,
   - the resolved runtime state document path (default
     `.conductor/state.ncl`) is volatile-only and may define only
     `version`, `impure_timestamps`, and `state_pointer`,
@@ -75,7 +84,11 @@
     `./` (or `.\\`) unpacks directly at sandbox root, non-trailing keys
     materialize regular files, separate entries must not overwrite the same
     target file path, and every referenced content-map hash must also be
-    present in `external_data`.
+    present in `external_data`,
+  - when a cached `${step_output...}` CAS payload fails integrity checks,
+    conductor may auto-recover only for pure workflows by warning, dropping
+    affected cached instances, deleting the corrupt hash, and retrying once;
+    impure workflows fail without auto-retry.
 - `src/conductor-builtins/` provides versioned built-in tool contracts such as
   `echo`, `fs`, `import`, `export`, and `archive`.
   Builtin runtime behavior must live in these crates (not inline in
@@ -109,26 +122,40 @@
     version-boundary layout used in `cas` and `conductor`
     (`src/mediapm/src/config/versions/` holds version dispatch and
     `vN.rs` wire-envelope modules),
+  - unversioned/latest Nickel contract aliases (`validate_document` and
+    `envelope_contract`) live in `src/mediapm/src/config/versions/mod.ncl`;
+    versioned schema files (`vN.ncl`) should expose only version-suffixed
+    contract names,
   - lockfile persistence is versioned with the same layout under
     `src/mediapm/src/lockfile/versions/`,
   - runtime state root defaults to `.mediapm/`,
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
-    `conductor_state`, `lockfile`, `library_dir`, `tmp_dir`, and
-    `use_user_download_cache`,
+    `conductor_state`, `inherited_env_vars`, `lockfile`, `env_file`,
+    `library_dir`, `tmp_dir`, and `use_user_download_cache`,
+  - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
+    `macos`, ...) with each value as an ordered list of environment-variable
+    names for that platform; at runtime `mediapm` reads only the active host
+    platform entry,
   - defaults for those paths are:
     `mediapm_dir = .mediapm`,
     `conductor_config = mediapm.conductor.ncl`,
     `conductor_machine_config = mediapm.conductor.machine.ncl`,
     `conductor_state = <mediapm_dir>/state.ncl`,
     `lockfile = <mediapm_dir>/lock.jsonc`,
+    `env_file = <mediapm_dir>/.env`,
   - materialized output root defaults directly to the directory that contains
     the topmost `mediapm.ncl` (no implicit `library/` folder),
+  - mediapm-managed materialized outputs are marked read-only after sync
+    commit; runtime may clear read-only temporarily only for managed
+    replacement/removal operations,
   - when `mediapm` invokes conductor, conductor runtime storage defaults also
     resolve under effective `mediapm_dir`
     (`conductor_dir = <mediapm_dir>`,
     `state_config = <mediapm_dir>/state.ncl`,
-    `cas_store_dir = <mediapm_dir>/store`),
+    `cas_store_dir = <mediapm_dir>/store`), and default inherited env names
+    match conductor host defaults; those inherited names should not be
+    redundantly copied into generated `tool_configs.<tool>.env_vars`,
   - `mediapm` must pass grouped runtime-storage paths derived from effective
     `mediapm` path resolution into conductor workflow execution so runtime
     volatile state writes do not fall back to standalone `.conductor/state.ncl`,
@@ -136,20 +163,60 @@
     `mediapm.ncl` directory,
   - relative `runtime.tmp_dir` resolves relative to effective
     `runtime.mediapm_dir`,
+  - runtime dotenv loading uses effective `runtime.env_file`
+    (default `<mediapm_dir>/.env`), and mediapm ensures a colocated
+    `.gitignore` containing only `/.env`; generated default dotenv
+    environment-variable lines remain commented (`# ...`) so ambient
+    shell/user environment variables are not shadowed by placeholder file
+    values,
   - `runtime.use_user_download_cache` defaults to enabled when omitted
     and controls one shared user-level global managed-tool download cache,
     with fixed layout `tool-cache/store/` + `tool-cache/index.jsonc` and
     fixed 30-day eviction,
+  - `tools.ffmpeg.max_input_slots` and
+    `tools.ffmpeg.max_output_slots` default to `64` when omitted and
+    bound generated ffmpeg tool/workflow indexed input/output slot fan-out,
   - `media.<id>` schema uses optional `description`, optional managed
-    `workflow_id` override, ordered unified `steps`, and optional manual
-    `variant_hashes` CAS pointers by variant key; local-source ingest created
-    by `mediapm media add-local` should be represented as an `import` step
-    with `options.kind = cas_hash` + `options.hash = blake3:<hex>`; each step
-    declares `tool`,
-    `input_variants`, `output_variants`, strict operation-specific `options`,
-    and optional low-level list input bindings via `input_options` for
-    `leading_args` and `trailing_args`; online source URLs are declared via
-    downloader step `options.uri` (not a top-level media field).
+    `workflow_id` override, optional strict object `metadata`, ordered unified
+    `steps`, and optional manual `variant_hashes` CAS pointers by variant key;
+    metadata entries are strict (`<key> = "literal"` or
+    `<key> = { variant = "<file-variant>", metadata_key = "<json-key>" }`);
+    metadata variant bindings must target file variants (not folder captures),
+    and hierarchy placeholders `${media.metadata.<key>}` must fail fast when
+    referenced keys are undefined or unavailable,
+    local-source ingest created
+    by `mediapm media add-local` should be represented as an `import-once`
+    step with `options.kind = cas_hash` + `options.hash = blake3:<hex>`; each
+    step declares `tool`, `input_variants` for non-source-ingest transforms
+    (source-ingest tools `yt-dlp`, `import`, and `import-once` keep
+    `input_variants` empty), `output_variants` as a map
+    keyed by output variant name with optional
+    per-variant output policy overrides (`save`, `save_full`) where defaults
+    are `save = true` and `save_full = false`; hierarchy file paths require
+    file variants whose latest producer keeps `save = true` and
+    `save_full = true` while hierarchy directory paths may use folder variants
+    with default `save_full = false`; operation-specific `options`; option
+    values are scalar strings by default,
+    with list values reserved for low-level list bindings
+    (`option_args`, `leading_args`, `trailing_args`) in the same `options`
+    map; online
+    source URLs are declared via downloader step `options.uri` (not a top-level
+    media field). For `yt-dlp`, non-primary artifact families (subtitles,
+    thumbnails, descriptions, infojson, playlist sidecars, etc.) are exposed
+    through `output_variants`; description/infojson bind to file captures while
+    folder families bind to artifact-capture outputs.
+  - generated boolean-style media step option inputs are strict true-only:
+    runtime templates treat only the exact value `"true"` as enabled and
+    treat every other value as disabled.
+  - managed `media-tagger` tool defaults keep `strict_identification = "true"`
+    unless callers explicitly override that input.
+  - when `media-tagger` runs on the AcoustID lookup path (no explicit
+    recording MBID override), missing/empty AcoustID credentials must fail
+    immediately; valid key sources remain CLI `--acoustid-api-key` or
+    `ACOUSTID_API_KEY`, and provided-credential lookup/auth failures surface as
+    runtime errors. In `mediapm sync` workflow execution, ensure
+    `runtime.inherited_env_vars` includes `ACOUSTID_API_KEY` when relying on
+    environment-key lookup.
   - each `media.<id>` must reconcile to exactly one managed conductor workflow
     (`mediapm.media.<id>` by default, overrideable via `workflow_id`), with
     managed workflow `name` defaulting to `<id>` (without the
@@ -159,12 +226,15 @@
     variant-flow `${step_output...}` bindings and matching `depends_on` edges
     so branches can execute as soon as dependencies are satisfied.
   - managed executable tool specs for media tools should declare
-    comprehensive IO contracts including `leading_args`/`trailing_args`
-    `string_list` inputs plus `output_content`, `stdout`, `stderr`, and
+    comprehensive IO contracts including list inputs
+    (`leading_args`, `trailing_args`, and option `option_args`), scalar string
+    option/source inputs, plus `output_content`, `stdout`, `stderr`, and
     `process_code` outputs.
   - `mediapm` tool-reconciliation defaults constrain `yt-dlp` execution to one
     active call (`tool_configs.<yt-dlp-tool-id>.max_concurrent_calls = 1`)
-    unless users explicitly override that value.
+    and one outer conductor retry
+    (`tool_configs.<yt-dlp-tool-id>.max_retries = 1`) unless users
+    explicitly override those values.
   - `mediapm sync` and `mediapm tools sync` both drive workspace-local tool
     provisioning under `.mediapm/tools/` via a built-in downloader catalog;
     default tag-update policy differs by command (`sync` defaults to skipping
@@ -173,14 +243,20 @@
     current default source/release tracks are:
     `ffmpeg` from GitHub Releases (BtbN preferred on Windows, with platform
     fallback sources), `yt-dlp` from GitHub Releases on `latest`, `rsgain`
-    from GitHub Releases on `latest` ZIP assets, and `picard` from GitHub
-    Releases on `latest` with headless CLI (`-e "load … ; quit"`),
-    `QT_QPA_PLATFORM=offscreen`, and custom `PICARD_INI`; `mediapm.ncl`
+    from GitHub Releases on `latest` ZIP assets, and `media-tagger` from the
+    built-in `mediapm` launcher (`mediapm builtins media-tagger`)
+    using Chromaprint + AcoustID + MusicBrainz + FFmetadata + FFmpeg;
+    `mediapm.ncl`
     `tools.<name>` entries do not require source fields but must define
-    `version` or `tag` (or both matching), and immutable tool ids resolve by
+    `version` or `tag` (or both matching);
+    `tools.<name>.recheck_seconds` is optional and controls release-metadata
+    refresh cadence; when refresh fails and cache exists mediapm warns and
+    uses cached metadata (otherwise it fails); immutable tool ids resolve by
     precedence `mediapm.tools.<name>+source@git-hash` ->
     `mediapm.tools.<name>+source@version` ->
-    `mediapm.tools.<name>+source@tag`.
+    `mediapm.tools.<name>+source@tag`; internal `media-tagger` launcher
+    resolution always pins to the running `mediapm` package version so
+    immutable ids match the builtin implementation in use.
 
 ## Build and Test
 

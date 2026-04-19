@@ -6,20 +6,35 @@ rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
 description = "Phase 3 media orchestration facade over conductor and CAS"
-build = "../../scripts/build.rs"
 
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+chromaprint-next.workspace = true
 clap.workspace = true
+dotenvy.workspace = true
+ffmetadata.workspace = true
+fp-library.workspace = true
 mediapm-cas = { path = "../cas" }
 mediapm-conductor = { path = "../conductor" }
-mediapm-conductor-builtin-fs-ops = { path = "../conductor-builtins/fs-ops" }
-mediapm-conductor-builtin-import = { path = "../conductor-builtins/import" }
-mediapm-conductor-builtin-zip = { path = "../conductor-builtins/zip" }
+musicbrainz_rs.workspace = true
+nickel-lang-core.workspace = true
+pulsebar.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tar.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 url.workspace = true
+unicode-normalization.workspace = true
+xz2.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true
+
+[[example]]
+name = "demo_online"
+test = false

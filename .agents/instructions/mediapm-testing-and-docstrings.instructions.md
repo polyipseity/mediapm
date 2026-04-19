@@ -22,6 +22,10 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   compile-only coverage (`[[example]] ... test = false`) with explicit rustdoc
   notes explaining why runtime execution is intentionally excluded from
   automated test runs (for example `cargo run -p mediapm --example demo_online`).
+- Keep `src/mediapm/examples/demo.rs` executable within automated tests:
+  source ingest should stay local (`import-once` + bundled fixture bytes), and
+  tests may force configuration-only execution via
+  `MEDIAPM_DEMO_RUN_SYNC=false`.
 - Even when CI keeps these examples compile-only, changes under
   `src/mediapm/**` must still run
   `cargo run --package mediapm --example demo_online` as the final local
