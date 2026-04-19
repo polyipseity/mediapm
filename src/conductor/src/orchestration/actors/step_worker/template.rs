@@ -265,6 +265,14 @@ where
                 }
                 self.current_os_text().as_bytes().to_vec()
             }
+            TemplateSelectorSource::ContextWorkingDirectory => {
+                if zip_entry_path.is_some() {
+                    return Err(ConductorError::Workflow(format!(
+                        "template expression '${{{token}}}' cannot apply :zip(...) to 'context.working_directory'"
+                    )));
+                }
+                self.current_working_directory_text()?.into_bytes()
+            }
         };
 
         if let Some(TemplateMaterializationDirective::Folder(_)) = materialization_directive {
@@ -404,6 +412,18 @@ where
             "macos" => "macos",
             other => other,
         }
+    }
+
+    /// Returns current process working-directory text used by
+    /// `context.working_directory` selectors.
+    fn current_working_directory_text(&self) -> Result<String, ConductorError> {
+        std::env::current_dir().map(|path| path.to_string_lossy().to_string()).map_err(|source| {
+            ConductorError::Io {
+                operation: "resolving current working directory for template context".to_string(),
+                path: Path::new(".").to_path_buf(),
+                source,
+            }
+        })
     }
 
     /// Splits one conditional token into condition + true/false branches.
@@ -633,6 +653,9 @@ where
         if operand == "context.os" {
             return Ok(!self.current_os_text().is_empty());
         }
+        if operand == "context.working_directory" {
+            return Ok(!self.current_working_directory_text()?.is_empty());
+        }
 
         let should_attempt_selector = operand.starts_with("inputs.")
             || operand.starts_with("inputs[")
@@ -656,6 +679,9 @@ where
                 }
             }
             TemplateSelectorSource::ContextOs => Ok(!self.current_os_text().is_empty()),
+            TemplateSelectorSource::ContextWorkingDirectory => {
+                Ok(!self.current_working_directory_text()?.is_empty())
+            }
         }
     }
 
@@ -673,6 +699,9 @@ where
 
         if operand == "context.os" {
             return Ok(self.current_os_text().to_string());
+        }
+        if operand == "context.working_directory" {
+            return self.current_working_directory_text();
         }
 
         let should_attempt_selector = operand.starts_with("inputs.")
@@ -701,6 +730,9 @@ where
                 Ok(String::from_utf8_lossy(&input.plain_content).to_string())
             }
             TemplateSelectorSource::ContextOs => Ok(self.current_os_text().to_string()),
+            TemplateSelectorSource::ContextWorkingDirectory => {
+                self.current_working_directory_text()
+            }
         }
     }
 
@@ -729,6 +761,7 @@ where
             || branch.contains(')')
             || branch.chars().any(char::is_whitespace)
             || branch == "context.os"
+            || branch == "context.working_directory"
             || inputs.contains_key(branch);
 
         if !should_attempt_selector_resolution {
@@ -925,6 +958,9 @@ where
         if selector == "context.os" {
             return Ok(TemplateSelectorSource::ContextOs);
         }
+        if selector == "context.working_directory" {
+            return Ok(TemplateSelectorSource::ContextWorkingDirectory);
+        }
 
         let looks_like_expression = selector.contains('.')
             || selector.contains('(')
@@ -1104,9 +1140,10 @@ where
 
                 let input_key = match self.resolve_template_selector(selector)? {
                     TemplateSelectorSource::Input(input_key) => input_key,
-                    TemplateSelectorSource::ContextOs => {
+                    TemplateSelectorSource::ContextOs
+                    | TemplateSelectorSource::ContextWorkingDirectory => {
                         return Err(ConductorError::Workflow(format!(
-                            "command unpack token '${{*{selector}}}' only supports step inputs, not 'context.os'"
+                            "command unpack token '${{*{selector}}}' only supports step inputs, not context selectors"
                         )));
                     }
                 };

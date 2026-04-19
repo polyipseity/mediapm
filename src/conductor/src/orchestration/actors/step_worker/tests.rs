@@ -165,7 +165,7 @@ fn template_interpolation_supports_inputs_bracket_notation() {
     assert!(pending_file_writes.is_empty());
 }
 
-/// Protects policy that context selectors are no longer supported.
+/// Protects policy that unsupported context selectors are rejected.
 #[test]
 fn template_interpolation_rejects_context_selector() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
@@ -540,6 +540,21 @@ fn template_interpolation_supports_context_os_selector() {
         "linux"
     };
     assert_eq!(rendered, expected);
+}
+
+/// Protects plain `context.working_directory` selector rendering.
+#[test]
+fn template_interpolation_supports_context_working_directory_selector() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::new();
+    let mut pending_file_writes = Vec::new();
+
+    let rendered = executor
+        .render_template_value("${context.working_directory}", &inputs, &mut pending_file_writes)
+        .expect("context working-directory selector should render");
+
+    let expected = std::env::current_dir().expect("current directory");
+    assert_eq!(rendered, expected.to_string_lossy());
 }
 
 /// Protects syntax rule that `${*...}` unpack expressions must occupy the

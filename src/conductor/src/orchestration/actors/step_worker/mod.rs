@@ -177,6 +177,8 @@ enum TemplateSelectorSource {
     Input(String),
     /// Selector resolves to current host platform text (`windows`/`linux`/`macos`).
     ContextOs,
+    /// Selector resolves to the current process working-directory path.
+    ContextWorkingDirectory,
 }
 
 /// Helper object that executes one step against one CAS implementation.
