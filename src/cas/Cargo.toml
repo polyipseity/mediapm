@@ -29,7 +29,6 @@ oxidelta.workspace = true
 parking_lot.workspace = true
 postcard.workspace = true
 ractor.workspace = true
-rayon.workspace = true
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
