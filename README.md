@@ -1,15 +1,15 @@
 # mediapm
 
-`mediapm` is now organized as a **Rust workspace of phase-focused crates**.
+`mediapm` is now organized as a **Rust workspace of capability-focused crates**.
 
 The current implementation establishes compile-ready contracts and scaffolding
-for the three major phases captured in the active instruction set (`AGENTS.md`
-plus `.agents/instructions/*.instructions.md`):
+for the core crate responsibilities captured in the active instruction set
+(`AGENTS.md` plus `.agents/instructions/*.instructions.md`):
 
-- Phase 1 CAS in `src/cas/`
-- Phase 2 Conductor in `src/conductor/`
-- Phase 2 built-ins in `src/conductor-builtins/*/`
-- Phase 3 mediapm facade/CLI in `src/mediapm/`
+- CAS in `src/cas/`
+- Conductor in `src/conductor/`
+- Conductor built-ins in `src/conductor-builtins/*/`
+- mediapm facade/CLI in `src/mediapm/`
 
 ## Workspace layout
 
@@ -21,7 +21,7 @@ plus `.agents/instructions/*.instructions.md`):
 - `src/conductor-builtins/import/` — impure source-ingest builtin (`file`/`folder`/`fetch` kinds)
 - `src/conductor-builtins/export/` — impure filesystem materialization builtin (`file`/`folder` kinds)
 - `src/conductor-builtins/archive/` — pure archive transform builtin (ZIP-only content transforms)
-- `src/mediapm/` — phase-3 media API + CLI scaffold composed over phase 1/2
+- `src/mediapm/` — media API + CLI scaffold composed over CAS + Conductor
   (`mediapm-cas` + `mediapm-conductor`; builtins are reached via conductor)
 - `scripts/cargo-bin/` — helper binary used by repo tooling
 
@@ -29,7 +29,7 @@ plus `.agents/instructions/*.instructions.md`):
 
 - Workspace split and inter-crate wiring are in place.
 - Public APIs are documented and covered by baseline tests.
-- Runtime behavior is intentionally minimal scaffolding for incremental phase
+- Runtime behavior is intentionally minimal scaffolding for incremental
   implementation.
 
 ## Commands
@@ -54,7 +54,7 @@ Run full workspace validation:
 
 These workspace-wide commands are intentionally slow and best suited for pre-push gates.
 
-Integration tests across phase crates use one shared harness shape:
+Integration tests across workspace crates use one shared harness shape:
 
 - top-level `tests/tests.rs` entrypoint,
 - grouped modules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
@@ -62,7 +62,7 @@ Integration tests across phase crates use one shared harness shape:
 CAS topology-visualization integration tests live in
 `src/cas/tests/int/cas_visualize.rs`.
 
-Run the phase-3 CLI:
+Run the `mediapm` CLI:
 
 - `cargo run -p mediapm -- sync`
 - `cargo run -p mediapm -- sync --check-tag-updates`
@@ -84,7 +84,7 @@ Tag-update default policy:
 - both commands expose `--check-tag-updates` / `--no-check-tag-updates`
   overrides
 
-Optional phase-3 path overrides can be supplied per command:
+Optional runtime path overrides can be supplied per command:
 
 - `--mediapm-dir <path>`
 - `--conductor-config <path>`
@@ -94,7 +94,7 @@ Optional phase-3 path overrides can be supplied per command:
 
 CLI overrides take precedence over `mediapm.ncl` `runtime` values.
 
-Run phase-3 examples:
+Run `mediapm` examples:
 
 - `cargo run -p mediapm --example bootstrap_defaults`
 - `cargo run -p mediapm --example demo`
@@ -131,11 +131,11 @@ an external process holding a transient sharing lock), the demo creates a
 unique sibling fallback workspace directory named
 `demo-online-fallback-<pid>-<timestamp>` and continues execution.
 
-The persistent phase-3 demo writes artifacts under
+The persistent demo writes artifacts under
 `src/mediapm/examples/.artifacts/demo/` and uses that `demo/` directory
 directly as the example workspace root.
 
-The persistent phase-3 demo ingests the bundled binary fixture
+The persistent demo ingests the bundled binary fixture
 `src/mediapm/examples/assets/sample-av.mp4` by importing it into CAS and then
 configuring the source step as `import-once` (`kind = "cas_hash"`,
 `hash = "blake3:..."`). This keeps demo source ingest fully local and removes
@@ -287,7 +287,7 @@ CAS visualization ownership:
 - topology visualization rendering/execution helpers live in `src/cas/`
 - `mediapm` CLI `cas ...` commands passthrough to the standalone
   `mediapm-cas` CLI
-- Phase 1 CAS commands can also be run directly via
+- CAS commands can also be run directly via
   `cargo run -p mediapm-cas -- <cas-args>`
 
 Built-in tool download catalog used by `mediapm` reconciliation:
@@ -384,7 +384,7 @@ non-identity fields.
 
 ## Notes
 
-This repository now matches the requested multi-crate phase topology, but it is
+This repository now matches the requested multi-crate workspace topology, but it is
 still an implementation scaffold rather than the full feature-complete system
 described by the active agent-guidance contract files.
 

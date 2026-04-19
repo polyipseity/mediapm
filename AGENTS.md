@@ -4,20 +4,20 @@
 
 - Root `AGENTS.md` is the workspace-wide source of truth. Do not add
   `.github/copilot-instructions.md`.
-- Treat this repository as a Rust workspace that is evolving toward the
-  mediapm phase architecture. Keep guidance aligned to concrete files and
+- Treat this repository as a Rust workspace organized around mediapm's
+  crate-oriented architecture. Keep guidance aligned to concrete files and
   current implementation state.
 - Keep this file short and durable. Put file-type and workflow-specific rules
   in `.agents/instructions/*.instructions.md`, reusable workflows in
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
 - `src/` now contains workspace member crates:
-  - `src/cas/` (Phase 1)
-  - `src/conductor/` (Phase 2)
-  - `src/conductor-builtins/*/` (Phase 2 built-ins)
-  - `src/mediapm/` (Phase 3)
-- Integration tests currently live with the phase crates (for example,
+  - `src/cas/` (CAS)
+  - `src/conductor/` (Conductor)
+  - `src/conductor-builtins/*/` (conductor built-ins)
+  - `src/mediapm/` (mediapm application)
+- Integration tests currently live with workspace crates (for example,
   `src/mediapm/tests/`).
-  Prefer one shared harness shape across phase crates:
+  Prefer one shared harness shape across crates:
   - top-level `tests/tests.rs` as the integration harness,
   - grouped submodules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
 
@@ -39,9 +39,9 @@
 ## Core Engineering Contract
 
 - This repository now treats `AGENTS.md` + `.agents/instructions/*.instructions.md`
-  as the durable implementation contract (the legacy phase-plan markdown files
+  as the durable implementation contract (the legacy planning markdown files
   are intentionally retired after policy migration).
-- Hard principles for all phase crates:
+- Hard principles for all workspace crates:
   - simplicity first;
   - performance is a user-visible feature;
   - functional core, imperative shell;
@@ -68,7 +68,7 @@
   - avoid hidden clones and tiny-syscall loops,
   - keep async handlers non-blocking and route unavoidable blocking work
     through bounded worker boundaries.
-- Definition-of-done expectations across phases:
+- Definition-of-done expectations across crates:
   - public APIs have integration coverage,
   - major features have end-to-end coverage,
   - determinism/idempotency behavior is tested,
@@ -78,9 +78,9 @@
 
 ## Rust Architecture Snapshot
 
-- `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
+- `src/cas/` provides the CAS identity model and async API contracts.
   CAS topology visualization implementation also belongs in this crate.
-- `src/conductor/` provides the Phase 2 orchestration state model and
+- `src/conductor/` provides the orchestration state model and
   persistence-merge logic.
   Key cross-crate invariants:
   - `conductor.ncl` is user-owned intent; `conductor.machine.ncl` is
@@ -121,7 +121,7 @@
   not need to force CLI success into a pure string-only payload. CLI failures
   may use ordinary Rust error types; do not encode failures as fake success
   payloads.
-- `src/mediapm/` composes CAS + Conductor into the Phase 3 media-facing API
+- `src/mediapm/` composes CAS + Conductor into the media-facing API
   and CLI scaffold.
   `src/mediapm/` should depend directly on `mediapm-cas` and
   `mediapm-conductor`; do not add direct dependencies on individual
@@ -185,10 +185,10 @@
   exist.
 - Treat this file and focused `.agents/instructions/*.instructions.md` files
   as the active implementation contract. Keep these files in sync with code
-  and avoid reviving deleted standalone phase-plan documents.
+  and avoid reviving deleted standalone planning documents.
 - Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only
   minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a
-  multi-member Rust workspace with phase crates under `src/`.
+  multi-member Rust workspace with crate members under `src/`.
 - When docs mention `application`, `configuration`, `domain`,
   `infrastructure`, and `support`, treat them as conceptual layering terms
   unless matching directories are explicitly introduced in the workspace.
@@ -233,7 +233,7 @@
   `clippy.toml` — Rust package and quality configuration
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and
   validation guidance
-- `.agents/instructions/mediapm-architecture.instructions.md` — phase boundaries
+- `.agents/instructions/mediapm-architecture.instructions.md` — crate boundaries
   and cross-crate invariants
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test
   expectations and Rustdoc/docstring depth requirements

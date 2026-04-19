@@ -8,11 +8,11 @@ applyTo: "src/**/*.rs"
 
 ## Purpose
 
-- Keep code aligned with mediapm's phase-based architecture and explicit state model.
+- Keep code aligned with mediapm's crate-oriented architecture and explicit state model.
 - Preserve determinism and auditability of media state transitions.
 - Keep boundaries between planning logic and side effects clear.
 
-## Cross-phase engineering principles
+## Cross-crate engineering principles
 
 - Keep planning/diffing/key-derivation logic pure and deterministic.
 - Keep side effects (filesystem/process/network) in explicit boundary modules.
@@ -27,23 +27,23 @@ applyTo: "src/**/*.rs"
 
 ## Module layout (source of truth)
 
-- `src/cas/` (Phase 1)
+- `src/cas/` (CAS)
   - identity/hash model
   - CAS async API contracts
   - storage/index/constraint behavior
   - topology visualization rendering/execution helpers
-- `src/conductor/` (Phase 2)
+- `src/conductor/` (Conductor)
   - orchestration state model
   - deterministic instance-key and merge logic
   - workflow execution contracts
-- `src/conductor-builtins/*/` (Phase 2 built-ins)
+- `src/conductor-builtins/*/` (conductor built-ins)
   - versioned built-in tool contracts and runtime implementations such as
     `echo`, `fs`, `import`, `export`, `archive`
-- `src/mediapm/` (Phase 3)
+- `src/mediapm/` (mediapm application crate)
   - media-facing API
-  - CLI shell and phase composition over conductor + CAS
+  - CLI shell and composition over conductor + CAS
 
-If you introduce a new file, place it in the phase crate that owns that
+If you introduce a new file, place it in the crate that owns that
 concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
 
 When splitting one Rust module into multiple files under `src/`, prefer
@@ -62,8 +62,8 @@ is a narrow, documented reason.
   `domain`, `infrastructure`, and `support` as architecture-layer concepts.
 - Treat those names as conceptual boundaries unless matching directories are
   explicitly added to this workspace.
-- When implementing phase work, keep concrete file placement aligned to the
-  existing phase crates listed above.
+- When implementing crate-level work, keep concrete file placement aligned to
+  the existing crates listed above.
 
 ## Layering rules
 
@@ -121,8 +121,8 @@ is a narrow, documented reason.
     conductor may auto-recover only for pure workflows by warning, dropping
     affected cached instances, deleting corrupt hashes, and retrying once;
     impure workflows fail without auto-retry.
-- `mediapm` should compose phase 1/2 APIs rather than bypassing them.
-  For Phase 3 runtime paths, preserve these `mediapm` invariants:
+- `mediapm` should compose CAS and conductor APIs rather than bypassing them.
+  For `mediapm` runtime paths, preserve these invariants:
   - crate-level error taxonomy remains centralized in
     `src/mediapm/src/error.rs` and is re-exported via `lib.rs`,
   - media tagger implementation remains under
@@ -166,7 +166,7 @@ is a narrow, documented reason.
     matching conductor host defaults; managed tool-config env-vars should not
     redundantly restate those inherited names,
   - `mediapm` workflow execution must pass grouped runtime-storage paths
-    derived from effective phase-3 path resolution so volatile state writes do
+    derived from effective runtime path resolution so volatile state writes do
     not regress to standalone `.conductor/state.ncl` defaults,
   - relative `runtime.library_dir` resolves relative to the topmost
     `mediapm.ncl` directory,

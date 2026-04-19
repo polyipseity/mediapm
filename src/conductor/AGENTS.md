@@ -12,7 +12,7 @@ Follow this together with the workspace root `AGENTS.md` and relevant
 - If rules conflict, prefer root `AGENTS.md` for global policy and this file for
   conductor-specific design/behavior details.
 
-## Phase-2 orchestration contract
+## Orchestration contract
 
 - Keep conductor as a functional orchestration engine over CAS:
   deterministic planning/keying in pure logic, with process/filesystem effects
@@ -111,7 +111,7 @@ official baseline set is:
 - `export` (`kind=file|folder` filesystem materialization)
 - `archive` (pure ZIP-only pack/unpack/repack transforms)
 
-All other domain logic remains external tooling or Phase 3 workflow behavior.
+All other domain logic remains external tooling or mediapm workflow behavior.
 
 ## Tool Schema and Runtime Invariants
 

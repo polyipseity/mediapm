@@ -13,7 +13,7 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - sync idempotency,
   - sidecar/object integrity,
   - GC safety semantics.
-- For phase-crate integration tests (`src/*/tests/`), prefer one CAS-style
+- For workspace-crate integration tests (`src/*/tests/`), prefer one CAS-style
   harness layout:
   - top-level `tests/tests.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
@@ -35,10 +35,10 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.
-- Treat test coverage as a phased contract:
-  - Phase 1 CAS: store/get/constraint/optimize coverage,
-  - Phase 2 Conductor: tool import/run/cache/re-exec coverage,
-  - Phase 3 mediapm: tool lifecycle + media add/add-local + sync/materialize
+- Treat test coverage as a crate-scoped contract:
+  - `mediapm-cas`: store/get/constraint/optimize coverage,
+  - `mediapm-conductor`: tool import/run/cache/re-exec coverage,
+  - `mediapm`: tool lifecycle + media add/add-local + sync/materialize
     - lockfile/prune/verify coverage.
 
 ## Advanced correctness coverage

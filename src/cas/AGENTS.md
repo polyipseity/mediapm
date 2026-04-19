@@ -3,7 +3,7 @@
 This guide captures implementation context that is easy to miss from signatures
 alone.
 
-## Phase-1 model contract
+## Core model contract
 
 - Treat CAS as an "everything is a diff" system at planning/index level:
   full blobs are logically diff-from-empty identity roots even when persisted

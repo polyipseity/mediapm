@@ -21,11 +21,11 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `.github/workflows/ci.yml` for canonical CI validation behavior.
 - `AGENTS.md` + `.agents/instructions/*.instructions.md` for active
   architecture and implementation contract.
-- `src/` phase crates for current module boundaries:
-  - `src/cas/` (Phase 1)
-  - `src/conductor/` (Phase 2)
-  - `src/conductor-builtins/*/` (Phase 2 built-ins)
-  - `src/mediapm/` (Phase 3)
+- `src/` workspace member crates for current module boundaries:
+  - `src/cas/` (CAS)
+  - `src/conductor/` (Conductor)
+  - `src/conductor-builtins/*/` (conductor built-ins)
+  - `src/mediapm/` (mediapm application)
 
 If planning docs mention `application`, `configuration`, `domain`,
 `infrastructure`, and `support`, treat them as conceptual layering terms unless

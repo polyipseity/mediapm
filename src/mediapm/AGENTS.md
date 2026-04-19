@@ -7,11 +7,11 @@ instruction files in `.agents/instructions/`.
 ## Scope
 
 - Applies to all files under `src/mediapm/`.
-- Use this file for Phase 3 behavior and integration policy.
+- Use this file for mediapm behavior and integration policy.
 - If rules conflict, prefer root `AGENTS.md` for global policy and this file
   for mediapm-specific implementation details.
 
-## Phase-3 orchestration contract
+## Orchestration contract
 
 - Treat `mediapm` as specialized media orchestration over conductor + CAS:
   deterministic planning/state reconciliation first, side effects second.
@@ -37,13 +37,13 @@ Use concrete files as canonical references:
 
 Core dependency boundary:
 
-- Compose Phase 1 + 2 via `mediapm-cas` and `mediapm-conductor`.
+- Compose CAS and Conductor via `mediapm-cas` and `mediapm-conductor`.
 - Do not add direct dependencies from `src/mediapm/` to
   `src/conductor-builtins/*` crates.
 
 ## Runtime paths and resolution invariants
 
-Keep these Phase 3 defaults and path rules intact:
+Keep these mediapm defaults and path rules intact:
 
 - Runtime root defaults to `.mediapm/`.
 - `mediapm.ncl` may optionally override runtime fields:
@@ -309,7 +309,7 @@ Rust docs quality bar for touched files:
 
 Internal module-boundary policy for this crate:
 
-- Keep Phase 3 crate errors centralized in `src/mediapm/src/error.rs` and
+- Keep mediapm crate errors centralized in `src/mediapm/src/error.rs` and
   re-export them from `lib.rs`.
 - Keep the media tagger implementation only under `builtins/` (do not create
   a second root-level `src/mediapm/src/media_tagger.rs`).
