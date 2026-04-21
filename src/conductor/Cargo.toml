@@ -22,6 +22,7 @@ mediapm-conductor-builtin-export = { path = "../conductor-builtins/export" }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 ractor.workspace = true
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
+use regex::Regex;
 
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -1139,6 +1140,97 @@ fn folder_capture_emits_zip_payload_with_optional_top_folder() {
             .join("a.txt")
             .exists()
     );
+}
+
+/// Protects regex file-capture behavior for dynamic output filenames.
+#[test]
+fn file_regex_capture_selects_single_matching_file() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+        .expect("write infojson");
+    std::fs::write(sandbox.path().join("downloads").join("video.description"), b"desc")
+        .expect("write description");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FileRegex {
+            path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+            pattern: "^downloads/.+\\.description$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex file capture should select one match");
+
+    assert_eq!(payload, b"desc");
+}
+
+/// Protects strict ambiguity checks for regex file-capture declarations.
+#[test]
+fn file_regex_capture_rejects_multiple_matches() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("first.description"), b"first")
+        .expect("write first description");
+    std::fs::write(sandbox.path().join("downloads").join("second.description"), b"second")
+        .expect("write second description");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FileRegex {
+            path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+            pattern: "^downloads/.+\\.description$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let err = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect_err("regex file capture with multiple matches should fail");
+
+    let ConductorError::Workflow(message) = err else {
+        panic!("expected workflow error");
+    };
+    assert!(message.contains("ambiguous"), "unexpected message: {message}");
+}
+
+/// Protects regex folder-capture behavior by zipping matched descendants.
+#[test]
+fn folder_regex_capture_packages_matched_directory_descendants() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads").join("nested"))
+        .expect("create nested downloads");
+    std::fs::create_dir_all(sandbox.path().join("logs")).expect("create logs");
+    std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+        .expect("write infojson");
+    std::fs::write(sandbox.path().join("downloads").join("nested").join("clip.mp4"), b"media")
+        .expect("write media");
+    std::fs::write(sandbox.path().join("logs").join("debug.txt"), b"noise")
+        .expect("write unrelated file");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads$").expect("compile regex"),
+            pattern: "^downloads$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture should succeed");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack regex folder zip");
+
+    assert!(unzip_dir.join("downloads").join("video.info.json").exists());
+    assert!(unzip_dir.join("downloads").join("nested").join("clip.mp4").exists());
+    assert!(!unzip_dir.join("logs").join("debug.txt").exists());
 }
 
 /// Protects executable success-code membership logic.

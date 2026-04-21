@@ -115,6 +115,8 @@ pub(crate) enum OutputCaptureLatest {
     ProcessCode {},
     /// Capture bytes from one relative file path.
     File { path: String },
+    /// Capture bytes from one regex-selected relative file path.
+    FileRegex { path_regex: String },
     /// Capture directory contents as one ZIP payload.
     Folder {
         /// Relative directory path that should be zipped.
@@ -123,6 +125,8 @@ pub(crate) enum OutputCaptureLatest {
         #[serde(default)]
         include_topmost_folder: bool,
     },
+    /// Capture one ZIP payload containing files selected by regex.
+    FolderRegex { path_regex: String },
 }
 
 fn default_success_codes() -> Vec<i32> {

@@ -680,6 +680,9 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                 v_latest::OutputCaptureLatest::File { path } => {
                                                     OutputCaptureSpec::File { path }
                                                 }
+                                                v_latest::OutputCaptureLatest::FileRegex {
+                                                    path_regex,
+                                                } => OutputCaptureSpec::FileRegex { path_regex },
                                                 v_latest::OutputCaptureLatest::Folder {
                                                     path,
                                                     include_topmost_folder,
@@ -687,6 +690,9 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     path,
                                                     include_topmost_folder,
                                                 },
+                                                v_latest::OutputCaptureLatest::FolderRegex {
+                                                    path_regex,
+                                                } => OutputCaptureSpec::FolderRegex { path_regex },
                                             },
                                         },
                                     )
@@ -854,6 +860,11 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                 OutputCaptureSpec::File { path } => {
                                                     v_latest::OutputCaptureLatest::File { path }
                                                 }
+                                                OutputCaptureSpec::FileRegex { path_regex } => {
+                                                    v_latest::OutputCaptureLatest::FileRegex {
+                                                        path_regex,
+                                                    }
+                                                }
                                                 OutputCaptureSpec::Folder {
                                                     path,
                                                     include_topmost_folder,
@@ -861,6 +872,11 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     path,
                                                     include_topmost_folder,
                                                 },
+                                                OutputCaptureSpec::FolderRegex { path_regex } => {
+                                                    v_latest::OutputCaptureLatest::FolderRegex {
+                                                        path_regex,
+                                                    }
+                                                }
                                             },
                                         },
                                     )

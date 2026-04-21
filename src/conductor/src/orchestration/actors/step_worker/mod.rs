@@ -8,12 +8,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
+use regex::Regex;
 
 use crate::error::{ConductorError, CorruptWorkflowOutputContext};
 use crate::model::config::{
@@ -77,13 +78,28 @@ enum ResolvedOutputCapture {
     /// Capture process exit code as UTF-8 text bytes.
     ProcessCode,
     /// Capture bytes from one file relative to the execution sandbox.
-    File { relative_path: std::path::PathBuf },
+    File { relative_path: PathBuf },
+    /// Capture bytes from one file selected by regex against sandbox-relative
+    /// normalized paths.
+    FileRegex {
+        /// Compiled regex for matching sandbox-relative file paths.
+        path_regex: Regex,
+        /// Original regex pattern for diagnostics.
+        pattern: String,
+    },
     /// Capture one directory by zipping descendants into one ZIP payload.
     FolderAsZip {
         /// Relative directory path inside the execution sandbox.
-        relative_path: std::path::PathBuf,
+        relative_path: PathBuf,
         /// Whether the top-level folder node is included in the ZIP payload.
         include_topmost_folder: bool,
+    },
+    /// Capture one ZIP payload containing all files selected by regex.
+    FolderRegexAsZip {
+        /// Compiled regex for matching sandbox-relative file/dir paths.
+        path_regex: Regex,
+        /// Original regex pattern for diagnostics.
+        pattern: String,
     },
 }
 
@@ -926,6 +942,26 @@ where
         Ok(tool_cwd.join(normalized))
     }
 
+    /// Compiles one output-capture regex pattern after template rendering.
+    fn compile_output_capture_regex(
+        &self,
+        pattern: &str,
+        context: &str,
+    ) -> Result<Regex, ConductorError> {
+        let trimmed = pattern.trim();
+        if trimmed.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "{context} regex pattern must be non-empty"
+            )));
+        }
+
+        Regex::new(trimmed).map_err(|err| {
+            ConductorError::Workflow(format!(
+                "{context} regex pattern '{trimmed}' is invalid: {err}"
+            ))
+        })
+    }
+
     /// Resolves output capture specifications after template rendering and policy overrides.
     fn resolve_output_specs(
         &self,
@@ -949,6 +985,13 @@ where
                             self.normalized_relative_tool_path(&rendered, "output capture")?;
                         ResolvedOutputCapture::File { relative_path }
                     }
+                    OutputCaptureSpec::FileRegex { path_regex } => {
+                        let rendered =
+                            self.render_template_value(path_regex, inputs, pending_file_writes)?;
+                        let regex =
+                            self.compile_output_capture_regex(&rendered, "output file capture")?;
+                        ResolvedOutputCapture::FileRegex { path_regex: regex, pattern: rendered }
+                    }
                     OutputCaptureSpec::Folder { path, include_topmost_folder } => {
                         let rendered =
                             self.render_template_value(path, inputs, pending_file_writes)?;
@@ -957,6 +1000,16 @@ where
                         ResolvedOutputCapture::FolderAsZip {
                             relative_path,
                             include_topmost_folder: *include_topmost_folder,
+                        }
+                    }
+                    OutputCaptureSpec::FolderRegex { path_regex } => {
+                        let rendered =
+                            self.render_template_value(path_regex, inputs, pending_file_writes)?;
+                        let regex =
+                            self.compile_output_capture_regex(&rendered, "output folder capture")?;
+                        ResolvedOutputCapture::FolderRegexAsZip {
+                            path_regex: regex,
+                            pattern: rendered,
                         }
                     }
                 };
@@ -1590,8 +1643,68 @@ where
                     source,
                 })
             }
+            ResolvedOutputCapture::FileRegex { path_regex, pattern } => {
+                self.capture_regex_file_output(path_regex, pattern, tool_cwd)
+            }
             ResolvedOutputCapture::FolderAsZip { relative_path, include_topmost_folder } => {
                 self.capture_folder_output_as_zip(relative_path, *include_topmost_folder, tool_cwd)
+            }
+            ResolvedOutputCapture::FolderRegexAsZip { path_regex, pattern } => {
+                self.capture_regex_folder_output_as_zip(path_regex, pattern, tool_cwd)
+            }
+        }
+    }
+
+    /// Captures one file output selected by regex from the execution sandbox.
+    fn capture_regex_file_output(
+        &self,
+        path_regex: &Regex,
+        pattern: &str,
+        tool_cwd: &Path,
+    ) -> Result<Vec<u8>, ConductorError> {
+        let mut relative_files = BTreeSet::new();
+        let mut relative_dirs = BTreeSet::new();
+        self.collect_capture_candidate_paths(
+            tool_cwd,
+            tool_cwd,
+            &mut relative_files,
+            &mut relative_dirs,
+        )?;
+
+        let matches: Vec<PathBuf> = relative_files
+            .into_iter()
+            .filter(|relative| {
+                let normalized = Self::normalize_relative_path_for_regex(relative);
+                path_regex.is_match(&normalized)
+            })
+            .collect();
+
+        match matches.len() {
+            0 => Err(ConductorError::Workflow(format!(
+                "capturing declared file output by regex '{pattern}' failed: no sandbox file matched"
+            ))),
+            1 => {
+                let matched_path = matches[0].clone();
+                let path = tool_cwd.join(&matched_path);
+                std::fs::read(&path).map_err(|source| ConductorError::Io {
+                    operation: format!(
+                        "capturing declared file output by regex '{pattern}' from '{}'",
+                        Self::normalize_relative_path_for_regex(&matched_path)
+                    ),
+                    path,
+                    source,
+                })
+            }
+            _ => {
+                let joined = matches
+                    .iter()
+                    .map(|path| Self::normalize_relative_path_for_regex(path.as_path()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(ConductorError::Workflow(format!(
+                    "capturing declared file output by regex '{pattern}' was ambiguous: matched {} files ({joined})",
+                    matches.len()
+                )))
             }
         }
     }
@@ -1618,6 +1731,174 @@ where
                 relative_path.to_string_lossy()
             ))
         })
+    }
+
+    /// Captures one ZIP payload containing files selected by regex.
+    fn capture_regex_folder_output_as_zip(
+        &self,
+        path_regex: &Regex,
+        pattern: &str,
+        tool_cwd: &Path,
+    ) -> Result<Vec<u8>, ConductorError> {
+        let mut relative_files = BTreeSet::new();
+        let mut relative_dirs = BTreeSet::new();
+        self.collect_capture_candidate_paths(
+            tool_cwd,
+            tool_cwd,
+            &mut relative_files,
+            &mut relative_dirs,
+        )?;
+
+        let matched_files: BTreeSet<PathBuf> = relative_files
+            .iter()
+            .filter(|relative| {
+                let normalized = Self::normalize_relative_path_for_regex(relative);
+                path_regex.is_match(&normalized)
+            })
+            .cloned()
+            .collect();
+
+        let matched_dirs: BTreeSet<PathBuf> = relative_dirs
+            .iter()
+            .filter(|relative| {
+                let normalized = Self::normalize_relative_path_for_regex(relative);
+                path_regex.is_match(&normalized)
+            })
+            .cloned()
+            .collect();
+
+        if matched_files.is_empty() && matched_dirs.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "capturing declared folder output by regex '{pattern}' failed: no sandbox path matched"
+            )));
+        }
+
+        let mut selected_files = matched_files;
+        for matched_dir in &matched_dirs {
+            selected_files.extend(
+                relative_files
+                    .iter()
+                    .filter(|candidate| candidate.starts_with(matched_dir))
+                    .cloned(),
+            );
+        }
+
+        if selected_files.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "capturing declared folder output by regex '{pattern}' matched only empty directories"
+            )));
+        }
+
+        let staging = tempfile::tempdir().map_err(|source| ConductorError::Io {
+            operation: "creating temporary regex folder-capture staging directory".to_string(),
+            path: std::env::temp_dir(),
+            source,
+        })?;
+
+        for relative_file in &selected_files {
+            let source_path = tool_cwd.join(relative_file);
+            let staged_path = staging.path().join(relative_file);
+
+            if let Some(parent) = staged_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
+                    operation: format!(
+                        "creating parent directories for regex folder capture staging path '{}'",
+                        staged_path.display()
+                    ),
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+
+            std::fs::copy(&source_path, &staged_path).map_err(|source| ConductorError::Io {
+                operation: format!(
+                    "staging regex folder capture file '{}'",
+                    Self::normalize_relative_path_for_regex(relative_file)
+                ),
+                path: source_path,
+                source,
+            })?;
+        }
+
+        mediapm_conductor_builtin_archive::pack_directory_to_uncompressed_zip_bytes(
+            staging.path(),
+            false,
+        )
+        .map_err(|err| {
+            ConductorError::Workflow(format!(
+                "capturing declared folder output by regex '{pattern}' as ZIP failed: {err}"
+            ))
+        })
+    }
+
+    /// Collects sandbox-relative file and directory candidates for regex output
+    /// capture matching.
+    fn collect_capture_candidate_paths(
+        &self,
+        root_dir: &Path,
+        scan_dir: &Path,
+        relative_files: &mut BTreeSet<PathBuf>,
+        relative_dirs: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), ConductorError> {
+        if !scan_dir.exists() {
+            return Ok(());
+        }
+
+        let entries = std::fs::read_dir(scan_dir).map_err(|source| ConductorError::Io {
+            operation: "reading output-capture candidate directory".to_string(),
+            path: scan_dir.to_path_buf(),
+            source,
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|source| ConductorError::Io {
+                operation: "iterating output-capture candidate directory".to_string(),
+                path: scan_dir.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|source| ConductorError::Io {
+                operation: "reading output-capture candidate type".to_string(),
+                path: path.clone(),
+                source,
+            })?;
+
+            let relative = path.strip_prefix(root_dir).map_err(|err| {
+                ConductorError::Internal(format!(
+                    "failed deriving sandbox-relative output-capture path for '{}': {err}",
+                    path.display()
+                ))
+            })?;
+            let relative_path = relative.to_path_buf();
+
+            if file_type.is_dir() {
+                relative_dirs.insert(relative_path);
+                self.collect_capture_candidate_paths(
+                    root_dir,
+                    &path,
+                    relative_files,
+                    relative_dirs,
+                )?;
+                continue;
+            }
+
+            if file_type.is_file() {
+                relative_files.insert(relative_path);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Normalizes one relative path to forward-slash form for regex matching.
+    fn normalize_relative_path_for_regex(path: &Path) -> String {
+        path.components()
+            .filter_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     /// Applies the force-full CAS hint for outputs that must keep a complete base.

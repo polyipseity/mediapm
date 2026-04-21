@@ -679,6 +679,16 @@ pub enum OutputCaptureSpec {
         /// directory.
         path: String,
     },
+    /// Capture bytes from one file selected by a regex against the
+    /// sandbox-relative path.
+    ///
+    /// The runtime evaluates this regex against normalized relative paths
+    /// using forward slashes (`/`) regardless of host platform. Exactly one
+    /// regular file must match.
+    FileRegex {
+        /// Regex matched against normalized sandbox-relative file paths.
+        path_regex: String,
+    },
     /// Capture one directory snapshot by zipping it recursively.
     ///
     /// The runtime uses the builtin archive/zip implementation to build a ZIP
@@ -696,6 +706,16 @@ pub enum OutputCaptureSpec {
         #[serde(default)]
         include_topmost_folder: bool,
     },
+    /// Capture one ZIP payload containing all files selected by regex.
+    ///
+    /// The runtime evaluates this regex against normalized sandbox-relative
+    /// file and directory paths using forward slashes (`/`). Matched
+    /// directories contribute all descendant files. The resulting ZIP always
+    /// preserves paths relative to the sandbox root.
+    FolderRegex {
+        /// Regex matched against normalized sandbox-relative paths.
+        path_regex: String,
+    },
 }
 
 /// Declared output contract for one tool output.
@@ -703,8 +723,10 @@ pub enum OutputCaptureSpec {
 pub struct ToolOutputSpec {
     /// Capture source for this output.
     ///
-    /// For `kind = "file"`, the configured `path` supports `${...}` template
-    /// interpolation using the same rules as process/runtime template values.
+    /// For `kind = "file"` and `kind = "folder"`, the configured `path`
+    /// supports `${...}` template interpolation using the same rules as
+    /// process/runtime template values. Regex capture kinds evaluate the final
+    /// regex pattern against normalized sandbox-relative paths.
     pub capture: OutputCaptureSpec,
 }
 

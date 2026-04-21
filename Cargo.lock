@@ -2360,6 +2360,7 @@ dependencies = [
  "nickel-lang-core",
  "pulsebar",
  "ractor",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

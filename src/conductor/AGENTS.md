@@ -384,6 +384,11 @@ Guidance:
 - Reject absolute/traversal paths (`..`, rooted/prefixed paths); do not allow
   sandbox escape.
 - Keep output capture behavior explicit and per-output.
+- `capture.kind = "file"|"folder"` stays path-template based;
+  `capture.kind = "file_regex"|"folder_regex"` evaluates regex against
+  normalized sandbox-relative paths (`/` separators on all hosts).
+- Regex file capture must resolve to exactly one file; zero or multiple
+  matches are workflow errors.
 
 ## Versioned Schema Editing Policy
 

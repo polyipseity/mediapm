@@ -101,7 +101,9 @@ let OutputCaptureKindV1 = std.contract.any_of [
   std.contract.from_predicate (fun value => value == "stdout"),
   std.contract.from_predicate (fun value => value == "stderr"),
   std.contract.from_predicate (fun value => value == "file"),
+  std.contract.from_predicate (fun value => value == "file_regex"),
   std.contract.from_predicate (fun value => value == "folder"),
+  std.contract.from_predicate (fun value => value == "folder_regex"),
   std.contract.from_predicate (fun value => value == "process_code"),
 ]
 in
@@ -131,11 +133,25 @@ let OutputCaptureFileV1 = {
 }
 in
 
+# ||| Output capture variant for `kind = "file_regex"`.
+let OutputCaptureFileRegexV1 = {
+  kind | std.contract.from_predicate (fun value => value == "file_regex"),
+  path_regex | NonEmptyStringV1,
+}
+in
+
 # ||| Output capture variant for `kind = "folder"`.
 let OutputCaptureFolderV1 = {
   kind | std.contract.from_predicate (fun value => value == "folder"),
   path | NonEmptyStringV1,
   include_topmost_folder | Bool | optional,
+}
+in
+
+# ||| Output capture variant for `kind = "folder_regex"`.
+let OutputCaptureFolderRegexV1 = {
+  kind | std.contract.from_predicate (fun value => value == "folder_regex"),
+  path_regex | NonEmptyStringV1,
 }
 in
 
@@ -147,7 +163,9 @@ let OutputCaptureV1 = std.contract.any_of [
   OutputCaptureStderrV1,
   OutputCaptureProcessCodeV1,
   OutputCaptureFileV1,
+  OutputCaptureFileRegexV1,
   OutputCaptureFolderV1,
+  OutputCaptureFolderRegexV1,
 ]
 in
 
