@@ -57,7 +57,7 @@ When editing Rust source, validate changes with targeted checks first:
 
 - Equivalent explicit forms are acceptable when aliases are unavailable:
   - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
-  - `cargo clippy -p mediapm --all-targets --all-features -- -D warnings` → same as `cargo clippy-pkg mediapm`
+  - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
 
 - For edits under `src/mediapm/**`, include one final runtime validation run:
   - `cargo run --package mediapm --example demo_online`

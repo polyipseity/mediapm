@@ -7,6 +7,9 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 2 built-in export tool contract"
 
+[lints]
+workspace = true
+
 [dependencies]
 clap = { workspace = true, features = ["derive"] }
 mediapm-conductor-builtin-archive = { path = "../archive" }

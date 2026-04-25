@@ -7,6 +7,9 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 2 orchestration contracts and state model for mediapm"
 
+[lints]
+workspace = true
+
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true

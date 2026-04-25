@@ -2290,6 +2290,7 @@ dependencies = [
  "musicbrainz_rs",
  "nickel-lang-core",
  "pulsebar",
+ "regex",
  "reqwest 0.11.27",
  "serde",
  "serde_json",

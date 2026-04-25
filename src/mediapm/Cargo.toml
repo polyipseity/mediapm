@@ -7,6 +7,9 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 3 media orchestration facade over conductor and CAS"
 
+[lints]
+workspace = true
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true

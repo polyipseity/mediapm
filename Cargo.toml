@@ -23,6 +23,14 @@ license-file = "LICENSE.txt"
 publish = false
 # build = "scripts/build.rs"
 
+[workspace.lints.clippy]
+all = "deny"
+pedantic = "warn"
+warnings = "deny"
+
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.dependencies]
 anyhow = "1.0.100"
 async-trait = "0.1.89"
