@@ -21,7 +21,8 @@ use fp_library::types::optics::IsoPrime;
 use crate::error::ConductorError;
 use crate::model::config::{ImpureTimestamp, ToolKindSpec, ToolSpec};
 use crate::model::state::{
-    OrchestrationState, OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance,
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    ToolCallInstance,
 };
 
 pub(crate) mod v1;
@@ -41,6 +42,7 @@ mod latest {
     pub(super) type Envelope = v1::OrchestrationStateEnvelopeV1;
     pub(super) type State = v1::OrchestrationStateV1;
     pub(super) type PersistenceFlags = v1::PersistenceFlagsV1;
+    pub(super) type OutputSaveMode = v1::OutputSaveModeV1;
     pub(super) type ResolvedInput = v1::ResolvedInputV1;
     pub(super) type OutputRef = v1::OutputRefV1;
     pub(super) type ToolMetadata = v1::ToolMetadataV1;
@@ -120,12 +122,18 @@ fn persistence_flags_iso() -> IsoPrime<'static, RcBrand, latest::PersistenceFlag
 {
     IsoPrime::new(
         |versioned: latest::PersistenceFlags| PersistenceFlags {
-            save: versioned.save,
-            force_full: versioned.force_full,
+            save: match versioned.save {
+                latest::OutputSaveMode::Bool(false) => OutputSaveMode::Unsaved,
+                latest::OutputSaveMode::Bool(true) => OutputSaveMode::Saved,
+                latest::OutputSaveMode::Full => OutputSaveMode::Full,
+            },
         },
         |runtime: PersistenceFlags| latest::PersistenceFlags {
-            save: runtime.save,
-            force_full: runtime.force_full,
+            save: match runtime.save {
+                OutputSaveMode::Unsaved => latest::OutputSaveMode::Bool(false),
+                OutputSaveMode::Saved => latest::OutputSaveMode::Bool(true),
+                OutputSaveMode::Full => latest::OutputSaveMode::Full,
+            },
         },
     )
 }
@@ -297,7 +305,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::model::config::{ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec};
-    use crate::model::state::OrchestrationState;
+    use crate::model::state::{OrchestrationState, OutputSaveMode};
 
     /// Verifies encoded state uses flattened top-level `instances` shape.
     #[test]
@@ -499,5 +507,91 @@ mod tests {
         .expect_err("builtin metadata extra fields should be rejected");
 
         assert!(err.to_string().contains("is_impure") || err.to_string().contains("builtin"));
+    }
+
+    /// Verifies decode accepts persisted lowercase `"full"` wire values for
+    /// output persistence mode.
+    #[test]
+    fn decode_state_accepts_lowercase_full_persistence_mode() {
+        let encoded = serde_json::json!({
+            "version": super::latest_state_version(),
+            "instances": {
+                "instance-a": {
+                    "tool_name": "echo@1.0.0",
+                    "metadata": {
+                        "kind": "builtin",
+                        "name": "echo",
+                        "version": "1.0.0"
+                    },
+                    "impure_timestamp": null,
+                    "inputs": {},
+                    "outputs": {
+                        "result": {
+                            "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+                            "persistence": { "save": "full" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let decoded = super::decode_state(
+            serde_json::to_vec(&encoded)
+                .expect("serialize encoded lowercase-full persistence shape")
+                .as_slice(),
+        )
+        .expect("lowercase full persistence should decode");
+
+        let output = &decoded
+            .instances
+            .get("instance-a")
+            .expect("decoded instance should exist")
+            .outputs
+            .get("result")
+            .expect("decoded output should exist");
+        assert_eq!(output.persistence.save, OutputSaveMode::Full);
+    }
+
+    /// Verifies decode accepts runtime-enum persistence strings produced by
+    /// legacy direct serde serialization (`"Saved"`).
+    #[test]
+    fn decode_state_accepts_runtime_saved_persistence_string() {
+        let encoded = serde_json::json!({
+            "version": super::latest_state_version(),
+            "instances": {
+                "instance-a": {
+                    "tool_name": "echo@1.0.0",
+                    "metadata": {
+                        "kind": "builtin",
+                        "name": "echo",
+                        "version": "1.0.0"
+                    },
+                    "impure_timestamp": null,
+                    "inputs": {},
+                    "outputs": {
+                        "result": {
+                            "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
+                            "persistence": { "save": "Saved" }
+                        }
+                    }
+                }
+            }
+        });
+
+        let decoded = super::decode_state(
+            serde_json::to_vec(&encoded)
+                .expect("serialize encoded runtime-saved persistence shape")
+                .as_slice(),
+        )
+        .expect("runtime saved persistence string should decode");
+
+        let output = &decoded
+            .instances
+            .get("instance-a")
+            .expect("decoded instance should exist")
+            .outputs
+            .get("result")
+            .expect("decoded output should exist");
+        assert_eq!(output.persistence.save, OutputSaveMode::Saved);
     }
 }

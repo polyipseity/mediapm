@@ -8,12 +8,13 @@
 //!   via optic composition.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use fp_library::brands::RcBrand;
 use fp_library::types::optics::IsoPrime;
 use mediapm_cas::Hash;
-use serde::de::Error as _;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::de::{self, Error as _, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::model::config::{ToolKindSpec, ToolSpec};
 
@@ -29,10 +30,83 @@ pub const fn is_orchestration_state_version_v1(marker: u32) -> bool {
 /// V1 persistence flags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceFlagsV1 {
-    /// Save policy.
-    pub save: bool,
-    /// Force-full policy.
-    pub force_full: bool,
+    /// Effective tri-state save policy.
+    pub save: OutputSaveModeV1,
+}
+
+/// V1 persisted tri-state save mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputSaveModeV1 {
+    /// Boolean save policy (`false` or `true`).
+    Bool(bool),
+    /// Full-save policy keyword.
+    Full,
+}
+
+impl Serialize for OutputSaveModeV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Full => serializer.serialize_str("full"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputSaveModeV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OutputSaveModeV1Visitor;
+
+        impl Visitor<'_> for OutputSaveModeV1Visitor {
+            type Value = OutputSaveModeV1;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(
+                    "a boolean save mode, or one of the strings \"full\", \"saved\", \"unsaved\"",
+                )
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OutputSaveModeV1::Bool(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value.eq_ignore_ascii_case("full") {
+                    return Ok(OutputSaveModeV1::Full);
+                }
+
+                if value.eq_ignore_ascii_case("saved") || value.eq_ignore_ascii_case("true") {
+                    return Ok(OutputSaveModeV1::Bool(true));
+                }
+
+                if value.eq_ignore_ascii_case("unsaved") || value.eq_ignore_ascii_case("false") {
+                    return Ok(OutputSaveModeV1::Bool(false));
+                }
+
+                Err(E::invalid_value(de::Unexpected::Str(value), &self))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(OutputSaveModeV1Visitor)
+    }
 }
 
 /// Structured timezone-independent impure timestamp used by the latest V1 wire shape.

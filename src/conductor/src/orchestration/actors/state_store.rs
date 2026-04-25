@@ -161,7 +161,7 @@ where
         let mut protected = BTreeSet::new();
         for instance in state.instances.values() {
             for output in instance.outputs.values() {
-                if output.persistence.save {
+                if output.persistence.save.should_persist() {
                     protected.insert(output.hash);
                 }
             }
@@ -177,7 +177,7 @@ where
         let mut deletion_candidates: BTreeSet<Hash> = pending_unsaved_hashes.clone();
         for instance in state.instances.values() {
             for output in instance.outputs.values() {
-                if !output.persistence.save {
+                if !output.persistence.save.should_persist() {
                     deletion_candidates.insert(output.hash);
                 }
             }

@@ -41,6 +41,7 @@ use crate::model::config::{
     ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     parse_input_binding,
 };
+use crate::model::state::OutputSaveMode;
 
 /// Latest-version Nickel contract bindings.
 ///
@@ -745,8 +746,17 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                             (
                                                 output_name,
                                                 OutputPolicy {
-                                                    save: policy.save,
-                                                    force_full: policy.force_full,
+                                                    save: policy.save.map(|save| match save {
+                                                        v_latest::OutputSaveLatest::Bool(false) => {
+                                                            OutputSaveMode::Unsaved
+                                                        }
+                                                        v_latest::OutputSaveLatest::Bool(true) => {
+                                                            OutputSaveMode::Saved
+                                                        }
+                                                        v_latest::OutputSaveLatest::Full => {
+                                                            OutputSaveMode::Full
+                                                        }
+                                                    }),
                                                 },
                                             )
                                         })
@@ -931,8 +941,17 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                             (
                                                 output_name,
                                                 v_latest::OutputPolicyLatest {
-                                                    save: policy.save,
-                                                    force_full: policy.force_full,
+                                                    save: policy.save.map(|save| match save {
+                                                        OutputSaveMode::Unsaved => {
+                                                            v_latest::OutputSaveLatest::Bool(false)
+                                                        }
+                                                        OutputSaveMode::Saved => {
+                                                            v_latest::OutputSaveLatest::Bool(true)
+                                                        }
+                                                        OutputSaveMode::Full => {
+                                                            v_latest::OutputSaveLatest::Full
+                                                        }
+                                                    }),
                                                 },
                                             )
                                         })
@@ -1528,8 +1547,10 @@ mod tests {
     use super::{evaluate_main_file_as, resolve_version_contract, write_nickel_file};
     use super::{latest, v_latest};
     use crate::model::config::{
-        ImpureTimestamp, InputBinding, MachineNickelDocument, ToolInputKind, UserNickelDocument,
+        ImpureTimestamp, InputBinding, MachineNickelDocument, OutputPolicy, ToolInputKind,
+        UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     };
+    use crate::model::state::OutputSaveMode;
     use serde::Deserialize;
 
     /// One declared one-hop migration edge from Nickel migration metadata.
@@ -1730,6 +1751,43 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         let workflow = decoded.workflows.get("wf").expect("workflow should exist");
         assert_eq!(workflow.name.as_deref(), Some("workflow label"));
         assert_eq!(workflow.description.as_deref(), Some("workflow description"));
+    }
+
+    /// Verifies that `save = false` round-trips through encode/decode without
+    /// being coerced to default `save = true`.
+    #[test]
+    fn output_policy_unsaved_round_trips_through_latest_schema() {
+        let document = UserNickelDocument {
+            workflows: std::collections::BTreeMap::from([(
+                "wf".to_string(),
+                WorkflowSpec {
+                    name: None,
+                    description: None,
+                    steps: vec![WorkflowStepSpec {
+                        id: "step".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: std::collections::BTreeMap::new(),
+                        depends_on: Vec::new(),
+                        outputs: std::collections::BTreeMap::from([(
+                            "result".to_string(),
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
+                        )]),
+                    }],
+                },
+            )]),
+            ..UserNickelDocument::default()
+        };
+
+        let encoded = encode_user_document(document).expect("encode user document");
+        let decoded = decode_user_document(&encoded).expect("decode user document");
+        let save = decoded
+            .workflows
+            .get("wf")
+            .and_then(|workflow| workflow.steps.first())
+            .and_then(|step| step.outputs.get("result"))
+            .and_then(|policy| policy.save);
+
+        assert_eq!(save, Some(OutputSaveMode::Unsaved));
     }
 
     /// Verifies legacy builtin-only extras are rejected by the strict v1 shape.

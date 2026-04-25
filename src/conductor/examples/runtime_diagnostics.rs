@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
-    ConductorApi, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity,
+    ConductorApi, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputSaveMode,
     RuntimeDiagnostics, SchedulerTraceKind, SimpleConductor, ToolKindSpec, ToolSpec,
     UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
 };
@@ -92,7 +92,7 @@ fn render_user_document(document: &UserNickelDocument) -> ExampleResult<String> 
         "version": 1,
         "external_data": document.external_data,
         "tools": tool_specs_to_wire_json(&document.tools),
-        "workflows": document.workflows,
+        "workflows": workflow_specs_to_wire_json(&document.workflows),
         "tool_configs": document.tool_configs,
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
@@ -106,7 +106,7 @@ fn render_machine_document(document: &MachineNickelDocument) -> ExampleResult<St
         "version": 1,
         "external_data": document.external_data,
         "tools": tool_specs_to_wire_json(&document.tools),
-        "workflows": document.workflows,
+        "workflows": workflow_specs_to_wire_json(&document.workflows),
         "tool_configs": document.tool_configs,
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
@@ -134,6 +134,63 @@ fn tool_specs_to_wire_json(tools: &BTreeMap<String, ToolSpec>) -> BTreeMap<Strin
                 }),
             };
             (tool_name.clone(), wire_value)
+        })
+        .collect()
+}
+
+/// Converts runtime workflow specs into strict persisted v1 wire-shape JSON.
+fn workflow_specs_to_wire_json(
+    workflows: &BTreeMap<String, WorkflowSpec>,
+) -> BTreeMap<String, Value> {
+    workflows
+        .iter()
+        .map(|(workflow_name, workflow)| {
+            let mut workflow_object = serde_json::Map::new();
+            if let Some(name) = &workflow.name {
+                workflow_object.insert("name".to_string(), json!(name));
+            }
+            if let Some(description) = &workflow.description {
+                workflow_object.insert("description".to_string(), json!(description));
+            }
+            workflow_object.insert(
+                "steps".to_string(),
+                Value::Array(
+                    workflow
+                        .steps
+                        .iter()
+                        .map(|step| {
+                            let mut step_object = serde_json::Map::new();
+                            step_object.insert("id".to_string(), json!(step.id));
+                            step_object.insert("tool".to_string(), json!(step.tool));
+                            step_object.insert("inputs".to_string(), json!(step.inputs));
+                            step_object.insert("depends_on".to_string(), json!(step.depends_on));
+                            let outputs = step
+                                .outputs
+                                .iter()
+                                .map(|(output_name, policy)| {
+                                    let mut output_policy = serde_json::Map::new();
+                                    if let Some(save) = policy.save {
+                                        output_policy.insert(
+                                            "save".to_string(),
+                                            match save {
+                                                OutputSaveMode::Unsaved => Value::Bool(false),
+                                                OutputSaveMode::Saved => Value::Bool(true),
+                                                OutputSaveMode::Full => {
+                                                    Value::String("full".to_string())
+                                                }
+                                            },
+                                        );
+                                    }
+                                    (output_name.clone(), Value::Object(output_policy))
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            step_object.insert("outputs".to_string(), json!(outputs));
+                            Value::Object(step_object)
+                        })
+                        .collect(),
+                ),
+            );
+            (workflow_name.clone(), Value::Object(workflow_object))
         })
         .collect()
 }

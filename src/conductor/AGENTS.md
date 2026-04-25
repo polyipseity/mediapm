@@ -63,6 +63,7 @@ Grouped runtime path defaults:
 - runtime root (`conductor_dir`): `.conductor`
 - volatile state path (`state_config`): `<conductor_dir>/state.ncl`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
+- schema export directory: `<conductor_dir>/config/conductor`
 
 Document contract:
 

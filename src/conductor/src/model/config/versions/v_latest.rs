@@ -11,11 +11,14 @@
 //!   Rust structs here, and the corresponding latest `vX.ncl` together.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use fp_library::brands::RcBrand;
 use fp_library::types::optics::IsoPrime;
 use mediapm_cas::Hash;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
 pub(crate) const NICKEL_VERSION_LATEST: u32 = 1;
@@ -29,12 +32,101 @@ pub(crate) const fn is_nickel_version_latest(marker: u32) -> bool {
 /// Optional per-output persistence override in the latest persisted schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct OutputPolicyLatest {
-    /// Optional `save` override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) save: Option<bool>,
-    /// Optional `force_full` override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) force_full: Option<bool>,
+    /// Optional tri-state `save` override.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_output_save_latest"
+    )]
+    pub(crate) save: Option<OutputSaveLatest>,
+}
+
+/// Persisted tri-state save mode for output-policy fields.
+///
+/// Wire shape intentionally remains compact:
+/// - `false` => unsaved,
+/// - `true` => saved,
+/// - `"full"` => full-data preferred save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputSaveLatest {
+    /// Boolean save mode (`false` or `true`).
+    Bool(bool),
+    /// Full-save mode keyword.
+    Full,
+}
+
+impl Serialize for OutputSaveLatest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Full => serializer.serialize_str("full"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputSaveLatest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OutputSaveLatestVisitor;
+
+        impl Visitor<'_> for OutputSaveLatestVisitor {
+            type Value = OutputSaveLatest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a boolean save mode or the string \"full\"")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OutputSaveLatest::Bool(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "full" {
+                    Ok(OutputSaveLatest::Full)
+                } else {
+                    Err(E::invalid_value(de::Unexpected::Str(value), &self))
+                }
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(OutputSaveLatestVisitor)
+    }
+}
+
+/// Deserializes optional tri-state save values from persisted config records.
+fn deserialize_optional_output_save_latest<'de, D>(
+    deserializer: D,
+) -> Result<Option<OutputSaveLatest>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(OutputSaveLatest::Bool(value))),
+        Some(Value::String(value)) if value == "full" => Ok(Some(OutputSaveLatest::Full)),
+        Some(other) => {
+            Err(de::Error::custom(format!("save must be false, true, or \"full\"; got {other}")))
+        }
+    }
 }
 
 /// Persisted kind selector for one declared tool input.
@@ -126,6 +218,10 @@ pub(crate) enum OutputCaptureLatest {
         include_topmost_folder: bool,
     },
     /// Capture one ZIP payload containing files selected by regex.
+    ///
+    /// When regex capture groups match a selected file path, the capture
+    /// strings are joined and used as the ZIP member path. If no capture
+    /// groups match, the original sandbox-relative path is preserved.
     FolderRegex { path_regex: String },
 }
 

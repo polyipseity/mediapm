@@ -29,8 +29,9 @@ pub use model::config::{
     encode_user_document, evaluate_total_configuration_sources,
 };
 pub use model::state::{
-    OrchestrationState, OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance,
-    merge_persistence_flags, persisted_state_json_pretty, persisted_state_json_value,
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    ToolCallInstance, decode_state, encode_state, merge_persistence_flags,
+    persisted_state_json_pretty, persisted_state_json_value,
 };
 pub use orchestration::SimpleConductor;
 

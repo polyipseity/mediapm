@@ -480,7 +480,8 @@ where
     /// If multiple workflow steps resolve to the same deterministic instance
     /// key, this merge computes effective output persistence using
     /// [`merge_persistence_flags`] so persisted orchestration state reflects
-    /// the combined caller intent (`save`: AND, `force_full`: OR).
+    /// the combined caller intent (`save` uses tri-state max ordering:
+    /// `unsaved < saved < full`).
     ///
     /// When one merge replaces an existing output hash with a new hash for the
     /// same deterministic instance/output slot, the displaced hash is queued in

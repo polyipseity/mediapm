@@ -17,7 +17,7 @@ use crate::model::config::{
     ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     encode_machine_document, encode_user_document,
 };
-use crate::model::state::{PersistenceFlags, merge_persistence_flags};
+use crate::model::state::{OutputSaveMode, PersistenceFlags, merge_persistence_flags};
 
 use super::WorkflowCoordinator;
 
@@ -62,15 +62,14 @@ fn corrupt_filesystem_cas_object(cas: &FileSystemCas, hash: mediapm_cas::Hash) {
 
 /// Protects persistence-flag merge semantics used throughout output handling.
 #[test]
-fn persistence_flags_follow_intersection_and_union_rules() {
+fn persistence_flags_follow_tri_state_max_ordering() {
     let merged = merge_persistence_flags([
-        PersistenceFlags { save: true, force_full: false },
-        PersistenceFlags { save: false, force_full: false },
-        PersistenceFlags { save: true, force_full: true },
+        PersistenceFlags { save: OutputSaveMode::Saved },
+        PersistenceFlags { save: OutputSaveMode::Unsaved },
+        PersistenceFlags { save: OutputSaveMode::Full },
     ]);
 
-    assert!(!merged.save);
-    assert!(merged.force_full);
+    assert_eq!(merged.save, OutputSaveMode::Full);
 }
 
 /// Protects bootstrap execution when no Nickel files exist yet.
@@ -136,7 +135,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(false), force_full: Some(false) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     }],
                 },
@@ -156,7 +155,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(true), force_full: Some(true) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     }],
                 },
@@ -190,8 +189,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
         .get("result")
         .expect("result output");
 
-    assert!(!output_ref.persistence.save);
-    assert!(output_ref.persistence.force_full);
+    assert_eq!(output_ref.persistence.save, OutputSaveMode::Unsaved);
     assert!(
         !cas.exists(output_ref.hash).await.expect("exists check should succeed"),
         "save=false output should be dropped from CAS after run"
@@ -249,7 +247,7 @@ async fn rematerializes_when_referenced_output_is_missing() {
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(false), force_full: Some(false) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     },
                     WorkflowStepSpec {

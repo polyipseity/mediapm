@@ -3,7 +3,7 @@
 //! This example mirrors the conductor's persistence semantics in a small,
 //! inspectable setup:
 //! - two workflows resolve to the same deterministic instance key,
-//! - one caller wants `save = false`, the other wants `force_full = true`,
+//! - one caller wants `save = false`, the other wants `save = "full"`,
 //! - both workflows include a downstream step that reads
 //!   `${step_output...}` from the shared producer,
 //! - the first run deduplicates execution,
@@ -23,7 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mediapm_cas::{CasApi, FileSystemCas};
 use mediapm_conductor::{
     ConductorApi, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputPolicy,
-    SimpleConductor, ToolKindSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    OutputSaveMode, SimpleConductor, ToolKindSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
+    WorkflowStepSpec,
 };
 use serde_json::{Value, json};
 
@@ -96,7 +97,7 @@ fn render_user_document(document: &UserNickelDocument) -> ExampleResult<String> 
         "version": 1,
         "external_data": document.external_data,
         "tools": tool_specs_to_wire_json(&document.tools),
-        "workflows": document.workflows,
+        "workflows": workflow_specs_to_wire_json(&document.workflows),
         "tool_configs": document.tool_configs,
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
@@ -110,7 +111,7 @@ fn render_machine_document(document: &MachineNickelDocument) -> ExampleResult<St
         "version": 1,
         "external_data": document.external_data,
         "tools": tool_specs_to_wire_json(&document.tools),
-        "workflows": document.workflows,
+        "workflows": workflow_specs_to_wire_json(&document.workflows),
         "tool_configs": document.tool_configs,
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
@@ -138,6 +139,63 @@ fn tool_specs_to_wire_json(tools: &BTreeMap<String, ToolSpec>) -> BTreeMap<Strin
                 }),
             };
             (tool_name.clone(), wire_value)
+        })
+        .collect()
+}
+
+/// Converts runtime workflow specs into strict persisted v1 wire-shape JSON.
+fn workflow_specs_to_wire_json(
+    workflows: &BTreeMap<String, WorkflowSpec>,
+) -> BTreeMap<String, Value> {
+    workflows
+        .iter()
+        .map(|(workflow_name, workflow)| {
+            let mut workflow_object = serde_json::Map::new();
+            if let Some(name) = &workflow.name {
+                workflow_object.insert("name".to_string(), json!(name));
+            }
+            if let Some(description) = &workflow.description {
+                workflow_object.insert("description".to_string(), json!(description));
+            }
+            workflow_object.insert(
+                "steps".to_string(),
+                Value::Array(
+                    workflow
+                        .steps
+                        .iter()
+                        .map(|step| {
+                            let mut step_object = serde_json::Map::new();
+                            step_object.insert("id".to_string(), json!(step.id));
+                            step_object.insert("tool".to_string(), json!(step.tool));
+                            step_object.insert("inputs".to_string(), json!(step.inputs));
+                            step_object.insert("depends_on".to_string(), json!(step.depends_on));
+                            let outputs = step
+                                .outputs
+                                .iter()
+                                .map(|(output_name, policy)| {
+                                    let mut output_policy = serde_json::Map::new();
+                                    if let Some(save) = policy.save {
+                                        output_policy.insert(
+                                            "save".to_string(),
+                                            match save {
+                                                OutputSaveMode::Unsaved => Value::Bool(false),
+                                                OutputSaveMode::Saved => Value::Bool(true),
+                                                OutputSaveMode::Full => {
+                                                    Value::String("full".to_string())
+                                                }
+                                            },
+                                        );
+                                    }
+                                    (output_name.clone(), Value::Object(output_policy))
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            step_object.insert("outputs".to_string(), json!(outputs));
+                            Value::Object(step_object)
+                        })
+                        .collect(),
+                ),
+            );
+            (workflow_name.clone(), Value::Object(workflow_object))
         })
         .collect()
 }
@@ -249,7 +307,7 @@ fn build_user_document() -> UserNickelDocument {
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(false), force_full: Some(false) },
+                                OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                             )]),
                         },
                         WorkflowStepSpec {
@@ -270,7 +328,8 @@ fn build_user_document() -> UserNickelDocument {
                 WorkflowSpec {
                     name: Some("workflow b".to_string()),
                     description: Some(
-                        "Produces and consumes a shared output with save=true policy".to_string(),
+                        "Produces and consumes a shared output with save=\"full\" policy"
+                            .to_string(),
                     ),
                     steps: vec![
                         WorkflowStepSpec {
@@ -283,7 +342,7 @@ fn build_user_document() -> UserNickelDocument {
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(true), force_full: Some(true) },
+                                OutputPolicy { save: Some(OutputSaveMode::Full) },
                             )]),
                         },
                         WorkflowStepSpec {

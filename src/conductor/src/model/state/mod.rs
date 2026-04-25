@@ -13,38 +13,70 @@ use crate::model::config::{ImpureTimestamp, ToolSpec};
 
 pub(crate) mod versions;
 
+/// Effective persistence mode for one captured output.
+///
+/// Ordering is intentional and semantic:
+/// - `Unsaved < Saved < Full`.
+///
+/// This allows merge behavior to be expressed as a simple maximum across
+/// equivalent callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub enum OutputSaveMode {
+    /// Output can be dropped after execution when no equivalent caller requires
+    /// persistence.
+    Unsaved,
+    /// Output is persisted with regular incremental behavior.
+    #[default]
+    Saved,
+    /// Output is persisted and treated as full-data preferred.
+    Full,
+}
+
+impl OutputSaveMode {
+    /// Returns whether this mode keeps output bytes persisted.
+    #[must_use]
+    pub const fn should_persist(self) -> bool {
+        !matches!(self, Self::Unsaved)
+    }
+
+    /// Returns whether this mode requires full-data persistence hints.
+    #[must_use]
+    pub const fn prefers_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 /// User/machine merged persistence flags for one output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceFlags {
-    /// When `false` for every equivalent caller, the output blob may be deleted.
-    pub save: bool,
-    /// When `true` for any equivalent caller, output should stay full-data preferred.
-    pub force_full: bool,
+    /// Effective tri-state persistence mode.
+    pub save: OutputSaveMode,
 }
 
 impl Default for PersistenceFlags {
     fn default() -> Self {
-        Self { save: true, force_full: false }
+        Self { save: OutputSaveMode::Saved }
     }
 }
 
 /// Merges persistence flags from multiple equivalent tool-call references.
 ///
 /// Invariants:
-/// - `save` is an intersection (logical AND),
-/// - `force_full` is a union (logical OR).
+/// - merge uses maximum ordering over `OutputSaveMode` where
+///   `Unsaved < Saved < Full`.
 #[must_use]
 pub fn merge_persistence_flags(
     flags: impl IntoIterator<Item = PersistenceFlags>,
 ) -> PersistenceFlags {
-    let mut merged = PersistenceFlags::default();
+    let mut merged = OutputSaveMode::Unsaved;
+    let mut seen = false;
 
     for flag in flags {
-        merged.save = merged.save && flag.save;
-        merged.force_full = merged.force_full || flag.force_full;
+        merged = merged.max(flag.save);
+        seen = true;
     }
 
-    merged
+    if seen { PersistenceFlags { save: merged } } else { PersistenceFlags::default() }
 }
 
 /// Fully resolved input vector item used in deterministic instance keys.
@@ -194,11 +226,11 @@ pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String,
 }
 
 /// Encodes orchestration state with latest persistence version envelope.
-pub(crate) fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state(state)
 }
 
 /// Decodes orchestration state from versioned persistence bytes.
-pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
+pub fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
     versions::decode_state(bytes)
 }

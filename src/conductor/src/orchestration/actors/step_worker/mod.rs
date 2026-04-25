@@ -359,7 +359,7 @@ where
                 let hash = self.cas.put(payload).await?;
                 instance.outputs.insert(
                     output_name.clone(),
-                    OutputRef { hash, persistence: PersistenceFlags::default() },
+                    OutputRef { hash, persistence: output_spec.persistence },
                 );
             }
         }
@@ -388,16 +388,16 @@ where
                         output_name, instance_key
                     )));
                 }
-                if !merged.save {
+                if !merged.save.should_persist() {
                     pending_unsaved_hashes.insert(output_ref.hash);
                 }
                 continue;
             }
-            if merged.force_full {
-                self.apply_force_full_hint(output_ref.hash).await?;
+            if merged.save.prefers_full() {
+                self.apply_full_save_hint(output_ref.hash).await?;
             }
             self.apply_reverse_diff_hints(output_ref.hash, &resolved_inputs).await?;
-            if !merged.save {
+            if !merged.save.should_persist() {
                 pending_unsaved_hashes.insert(output_ref.hash);
             }
         }
@@ -1768,9 +1768,7 @@ where
             .collect();
 
         if matched_files.is_empty() && matched_dirs.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "capturing declared folder output by regex '{pattern}' failed: no sandbox path matched"
-            )));
+            return Self::capture_empty_regex_folder_output_as_zip(pattern);
         }
 
         let mut selected_files = matched_files;
@@ -1784,9 +1782,7 @@ where
         }
 
         if selected_files.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "capturing declared folder output by regex '{pattern}' matched only empty directories"
-            )));
+            return Self::capture_empty_regex_folder_output_as_zip(pattern);
         }
 
         let staging = tempfile::tempdir().map_err(|source| ConductorError::Io {
@@ -1795,9 +1791,24 @@ where
             source,
         })?;
 
+        let mut staged_target_sources = BTreeMap::<PathBuf, PathBuf>::new();
+
         for relative_file in &selected_files {
             let source_path = tool_cwd.join(relative_file);
-            let staged_path = staging.path().join(relative_file);
+            let staged_relative_path =
+                self.resolve_regex_capture_renamed_path(relative_file, path_regex, pattern)?;
+            if let Some(previous_source) =
+                staged_target_sources.insert(staged_relative_path.clone(), relative_file.clone())
+            {
+                let previous = Self::normalize_relative_path_for_regex(&previous_source);
+                let current = Self::normalize_relative_path_for_regex(relative_file);
+                let target = Self::normalize_relative_path_for_regex(&staged_relative_path);
+                return Err(ConductorError::Workflow(format!(
+                    "capturing declared folder output by regex '{pattern}' produced renamed-path conflict '{target}' from '{previous}' and '{current}'"
+                )));
+            }
+
+            let staged_path = staging.path().join(&staged_relative_path);
 
             if let Some(parent) = staged_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
@@ -1829,6 +1840,66 @@ where
                 "capturing declared folder output by regex '{pattern}' as ZIP failed: {err}"
             ))
         })
+    }
+
+    /// Captures an empty ZIP payload for regex folder captures with no files.
+    ///
+    /// Some output families are optional at runtime (for example provider-side
+    /// sidecar generation that may legally emit no files). Returning a stable
+    /// empty archive keeps output contracts deterministic without forcing
+    /// caller-specific failure handling for "missing optional family" cases.
+    fn capture_empty_regex_folder_output_as_zip(pattern: &str) -> Result<Vec<u8>, ConductorError> {
+        let staging = tempfile::tempdir().map_err(|source| ConductorError::Io {
+            operation: "creating temporary empty regex folder-capture staging directory"
+                .to_string(),
+            path: std::env::temp_dir(),
+            source,
+        })?;
+
+        mediapm_conductor_builtin_archive::pack_directory_to_uncompressed_zip_bytes(
+            staging.path(),
+            false,
+        )
+        .map_err(|err| {
+            ConductorError::Workflow(format!(
+                "capturing declared folder output by regex '{pattern}' as ZIP failed: {err}"
+            ))
+        })
+    }
+
+    /// Resolves the staged relative path for one regex-captured folder file.
+    ///
+    /// Rename policy:
+    /// - when regex matching yields zero capture groups, keep the full
+    ///   sandbox-relative path unchanged,
+    /// - when one or more capture groups are present and matched, join all
+    ///   capture strings in order to produce the staged relative path.
+    fn resolve_regex_capture_renamed_path(
+        &self,
+        relative_file: &Path,
+        path_regex: &Regex,
+        pattern: &str,
+    ) -> Result<PathBuf, ConductorError> {
+        let normalized_relative = Self::normalize_relative_path_for_regex(relative_file);
+        let Some(captures) = path_regex.captures(&normalized_relative) else {
+            return Ok(relative_file.to_path_buf());
+        };
+
+        let capture_parts =
+            captures.iter().skip(1).flatten().map(|capture| capture.as_str()).collect::<Vec<_>>();
+
+        if capture_parts.is_empty() {
+            return Ok(relative_file.to_path_buf());
+        }
+
+        let renamed_relative = capture_parts.join("");
+        if renamed_relative.trim().is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "capturing declared folder output by regex '{pattern}' produced an empty renamed path for '{normalized_relative}'"
+            )));
+        }
+
+        self.normalized_relative_tool_path(&renamed_relative, "output folder regex capture rename")
     }
 
     /// Collects sandbox-relative file and directory candidates for regex output
@@ -1901,8 +1972,9 @@ where
             .join("/")
     }
 
-    /// Applies the force-full CAS hint for outputs that must keep a complete base.
-    async fn apply_force_full_hint(&self, target_hash: Hash) -> Result<(), ConductorError> {
+    /// Applies the full-save CAS hint for outputs that must keep a complete
+    /// base snapshot.
+    async fn apply_full_save_hint(&self, target_hash: Hash) -> Result<(), ConductorError> {
         let empty_hash = empty_content_hash();
         if target_hash == empty_hash {
             return Ok(());

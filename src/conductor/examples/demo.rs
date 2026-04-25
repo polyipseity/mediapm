@@ -18,15 +18,17 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
     ConductorApi, ExternalContentRef, MachineNickelDocument, NickelDocumentMetadata,
-    NickelIdentity, OrchestrationState, OutputPolicy, RunSummary, RuntimeDiagnostics,
-    RuntimeStorageConfig, SimpleConductor, ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolSpec,
-    UserNickelDocument, WorkflowSpec, WorkflowStepSpec, persisted_state_json_pretty,
+    NickelIdentity, OrchestrationState, OutputPolicy, OutputSaveMode, RunSummary,
+    RuntimeDiagnostics, RuntimeStorageConfig, SimpleConductor, ToolConfigSpec, ToolInputSpec,
+    ToolKindSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    persisted_state_json_pretty,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -124,6 +126,10 @@ struct DemoManifest {
     diagnostics_after_first_run: DiagnosticsSnapshot,
     /// Diagnostics after second run.
     diagnostics_after_second_run: DiagnosticsSnapshot,
+    /// Logical CAS store footprint without delta compression (bytes).
+    store_size_without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    store_size_with_delta_bytes: u64,
 }
 
 /// Output paths printed to stdout when the demo finishes.
@@ -270,6 +276,70 @@ where
     Ok(())
 }
 
+/// Returns whether one path segment is a hexadecimal fragment.
+#[must_use]
+fn is_hex_segment(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Collects all persisted object hashes currently present in one CAS root.
+fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>> {
+    let mut hashes = BTreeSet::new();
+    let objects_root = cas_root.join("v1");
+    if !objects_root.exists() {
+        return Ok(hashes);
+    }
+
+    for shard_entry in fs::read_dir(&objects_root)? {
+        let shard_entry = shard_entry?;
+        if !shard_entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let shard_name = shard_entry.file_name();
+        let shard_name = shard_name.to_string_lossy();
+        if shard_name.len() != 2 || !is_hex_segment(&shard_name) {
+            continue;
+        }
+
+        for object_entry in fs::read_dir(shard_entry.path())? {
+            let object_entry = object_entry?;
+            if !object_entry.file_type()?.is_file() {
+                continue;
+            }
+
+            let file_name = object_entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let stem = file_name.strip_suffix(".diff").unwrap_or(&file_name);
+            if stem.len() != 62 || !is_hex_segment(stem) {
+                continue;
+            }
+
+            let hash_text = format!("blake3:{shard_name}{stem}");
+            if let Ok(hash) = Hash::from_str(&hash_text) {
+                let _ = hashes.insert(hash);
+            }
+        }
+    }
+
+    Ok(hashes)
+}
+
+/// Computes logical and effective store-size totals from all persisted objects.
+async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<(u64, u64)> {
+    let cas = FileSystemCas::open(cas_root).await?;
+    let mut without_delta = 0u64;
+    let mut with_delta = 0u64;
+
+    for hash in collect_store_object_hashes(cas_root)? {
+        let info = cas.info(hash).await?;
+        without_delta = without_delta.saturating_add(info.content_len);
+        with_delta = with_delta.saturating_add(info.payload_len);
+    }
+
+    Ok((without_delta, with_delta))
+}
+
 /// Converts one filesystem path into a normalized display string.
 fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
@@ -398,7 +468,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             depends_on: vec!["import_user_relative".to_string()],
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(true), force_full: Some(true) },
+                                OutputPolicy { save: Some(OutputSaveMode::Full) },
                             )]),
                         },
                         WorkflowStepSpec {
@@ -544,7 +614,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(false), force_full: Some(false) },
+                                OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                             )]),
                         },
                         WorkflowStepSpec {
@@ -575,7 +645,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             ],
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(true), force_full: Some(true) },
+                                OutputPolicy { save: Some(OutputSaveMode::Full) },
                             )]),
                         },
                     ],
@@ -760,7 +830,7 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
         object.insert("tools".to_string(), json!(tool_specs_to_wire_json(&document.tools)));
     }
 
-    object.insert("workflows".to_string(), json!(document.workflows));
+    object.insert("workflows".to_string(), json!(workflow_specs_to_wire_json(&document.workflows)));
 
     if !document.tool_configs.is_empty() {
         object.insert("tool_configs".to_string(), json!(document.tool_configs));
@@ -799,7 +869,7 @@ fn machine_document_to_json(document: &MachineNickelDocument) -> Value {
     }
     object.insert("external_data".to_string(), json!(document.external_data));
     object.insert("tools".to_string(), json!(tool_specs_to_wire_json(&document.tools)));
-    object.insert("workflows".to_string(), json!(document.workflows));
+    object.insert("workflows".to_string(), json!(workflow_specs_to_wire_json(&document.workflows)));
     object.insert("tool_configs".to_string(), json!(document.tool_configs));
     object.insert("impure_timestamps".to_string(), json!(document.impure_timestamps));
     object.insert("state_pointer".to_string(), json!(document.state_pointer));
@@ -811,6 +881,63 @@ fn tool_specs_to_wire_json(tools: &BTreeMap<String, ToolSpec>) -> BTreeMap<Strin
     tools
         .iter()
         .map(|(tool_name, tool_spec)| (tool_name.clone(), tool_spec_to_wire_json(tool_spec)))
+        .collect()
+}
+
+/// Converts runtime workflow specs into strict persisted v1 wire-shape JSON.
+fn workflow_specs_to_wire_json(
+    workflows: &BTreeMap<String, WorkflowSpec>,
+) -> BTreeMap<String, Value> {
+    workflows
+        .iter()
+        .map(|(workflow_name, workflow)| {
+            let mut workflow_object = serde_json::Map::new();
+            if let Some(name) = &workflow.name {
+                workflow_object.insert("name".to_string(), json!(name));
+            }
+            if let Some(description) = &workflow.description {
+                workflow_object.insert("description".to_string(), json!(description));
+            }
+            workflow_object.insert(
+                "steps".to_string(),
+                Value::Array(
+                    workflow
+                        .steps
+                        .iter()
+                        .map(|step| {
+                            let mut step_object = serde_json::Map::new();
+                            step_object.insert("id".to_string(), json!(step.id));
+                            step_object.insert("tool".to_string(), json!(step.tool));
+                            step_object.insert("inputs".to_string(), json!(step.inputs));
+                            step_object.insert("depends_on".to_string(), json!(step.depends_on));
+                            let outputs = step
+                                .outputs
+                                .iter()
+                                .map(|(output_name, policy)| {
+                                    let mut output_policy = serde_json::Map::new();
+                                    if let Some(save) = policy.save {
+                                        output_policy.insert(
+                                            "save".to_string(),
+                                            match save {
+                                                OutputSaveMode::Unsaved => Value::Bool(false),
+                                                OutputSaveMode::Saved => Value::Bool(true),
+                                                OutputSaveMode::Full => {
+                                                    Value::String("full".to_string())
+                                                }
+                                            },
+                                        );
+                                    }
+                                    (output_name.clone(), Value::Object(output_policy))
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            step_object.insert("outputs".to_string(), json!(outputs));
+                            Value::Object(step_object)
+                        })
+                        .collect(),
+                ),
+            );
+            (workflow_name.clone(), Value::Object(workflow_object))
+        })
         .collect()
 }
 
@@ -1022,6 +1149,9 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
         }
     }
 
+    let (store_size_without_delta_bytes, store_size_with_delta_bytes) =
+        summarize_store_sizes(&cas_root).await?;
+
     let manifest = DemoManifest {
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
         artifact_root: display_path(&root),
@@ -1040,6 +1170,8 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
         second_run,
         diagnostics_after_first_run,
         diagnostics_after_second_run,
+        store_size_without_delta_bytes,
+        store_size_with_delta_bytes,
     };
 
     let manifest_path = root.join("manifest.json");

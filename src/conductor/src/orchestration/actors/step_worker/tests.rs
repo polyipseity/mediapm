@@ -1233,6 +1233,94 @@ fn folder_regex_capture_packages_matched_directory_descendants() {
     assert!(!unzip_dir.join("logs").join("debug.txt").exists());
 }
 
+/// Protects optional-family behavior by emitting an empty ZIP payload when a
+/// folder-regex capture matches no sandbox paths.
+#[test]
+fn folder_regex_capture_returns_empty_zip_when_no_paths_match() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("video.mp4"), b"media")
+        .expect("write primary output");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/.+\.comments\.json$").expect("compile regex"),
+            pattern: "^downloads/.+\\.comments\\.json$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture with no matches should succeed with empty zip");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex_empty");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack empty regex folder zip");
+
+    let mut entries = std::fs::read_dir(&unzip_dir).expect("read empty unzip root");
+    assert!(entries.next().is_none(), "empty capture should unpack to an empty directory tree");
+}
+
+/// Protects regex folder-capture rename semantics driven by capture groups.
+#[test]
+fn folder_regex_capture_renames_zip_members_from_capture_groups() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("clip__mediapm__.en.srt"), b"subtitle")
+        .expect("write subtitle sidecar");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/(.+?)__mediapm__(\..+)$").expect("compile regex"),
+            pattern: "^downloads/(.+?)__mediapm__(\\..+)$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture should succeed");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex_renamed");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack regex folder zip");
+
+    assert!(unzip_dir.join("clip.en.srt").exists());
+    assert!(!unzip_dir.join("downloads").join("clip__mediapm__.en.srt").exists());
+}
+
+/// Protects regex folder-capture rename conflict detection.
+#[test]
+fn folder_regex_capture_rejects_renamed_path_conflicts() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.mp3"), b"a")
+        .expect("write first media output");
+    std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.flac"), b"b")
+        .expect("write second media output");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/(.+?)__mediapm__\..+$").expect("compile regex"),
+            pattern: "^downloads/(.+?)__mediapm__\\..+$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+    };
+
+    let error = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect_err("regex folder capture conflict should fail");
+
+    let ConductorError::Workflow(message) = error else {
+        panic!("expected workflow error");
+    };
+    assert!(message.contains("renamed-path conflict"), "unexpected message: {message}");
+}
+
 /// Protects executable success-code membership logic.
 #[test]
 fn success_code_membership_checks_configured_set() {

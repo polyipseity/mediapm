@@ -18,7 +18,7 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
-use crate::model::state::PersistenceFlags;
+use crate::model::state::{OutputSaveMode, PersistenceFlags};
 
 pub(crate) mod versions;
 
@@ -65,12 +65,10 @@ impl Default for NickelDocumentMetadata {
 /// Optional policy overrides for one named output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OutputPolicy {
-    /// Optional save override; falls back to inherited/default value when `None`.
+    /// Optional tri-state save override; falls back to inherited/default value
+    /// when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub save: Option<bool>,
-    /// Optional force-full override; falls back to inherited/default value when `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub force_full: Option<bool>,
+    pub save: Option<OutputSaveMode>,
 }
 
 /// Timezone-independent impure-execution timestamp.
@@ -225,10 +223,7 @@ impl OutputPolicy {
     /// Resolves optional overrides against a concrete base policy.
     #[must_use]
     pub fn resolve(self, base: PersistenceFlags) -> PersistenceFlags {
-        PersistenceFlags {
-            save: self.save.unwrap_or(base.save),
-            force_full: self.force_full.unwrap_or(base.force_full),
-        }
+        PersistenceFlags { save: self.save.unwrap_or(base.save) }
     }
 }
 
@@ -324,7 +319,7 @@ pub struct ToolSpec {
     ///
     /// Each output specifies only capture source (stdout/stderr/file).
     ///
-    /// Persistence policy (`save`, `force_full`) belongs to workflow tool-call
+    /// Persistence policy (`save`) belongs to workflow tool-call
     /// sites via [`WorkflowStepSpec::outputs`] and [`OutputPolicy`], not the
     /// reusable tool definition.
     #[serde(default)]
@@ -711,7 +706,10 @@ pub enum OutputCaptureSpec {
     /// The runtime evaluates this regex against normalized sandbox-relative
     /// file and directory paths using forward slashes (`/`). Matched
     /// directories contribute all descendant files. The resulting ZIP always
-    /// preserves paths relative to the sandbox root.
+    /// preserves paths relative to the sandbox root unless regex capture
+    /// groups are present: when one or more captures match, their strings are
+    /// joined and used as the ZIP member relative path; when no capture groups
+    /// match, the original sandbox-relative path is kept.
     FolderRegex {
         /// Regex matched against normalized sandbox-relative paths.
         path_regex: String,

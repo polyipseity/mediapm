@@ -13,8 +13,7 @@
 # ||| Non-empty string contract used for IDs, names, and required text fields.
 # ||| Centralizing this avoids tiny drift across repeated string predicates.
 let NonEmptyStringV1 =
-  std.contract.from_predicate
-    (fun value => std.is_string value && std.string.length value > 0)
+  std.contract.from_predicate (fun value => std.is_string value && std.string.length value > 0)
 in
 # ||| Hashes are stored as normalized hash strings and decoded by Rust.
 # ||| Keep this broad (`String`) here; algorithm/encoding validation is done in
@@ -23,15 +22,13 @@ let HashStringV1 = String
 in
 # ||| Schema marker contract for the v1 envelope.
 let VersionOneV1 =
-  std.contract.from_predicate
-    (fun value => value == 1)
+  std.contract.from_predicate (fun value => value == 1)
 in
 # ||| Integer contract used for numeric fields that must be whole numbers.
 # ||| Nickel numbers are floating-point; this predicate guards integer-only
 # ||| fields such as process success exit codes.
 let IntegerNumberV1 =
-  std.contract.from_predicate
-    (fun value => std.is_number value && value == std.number.floor value)
+  std.contract.from_predicate (fun value => std.is_number value && value == std.number.floor value)
 in
 
 # ||| Timezone-independent impure execution timestamp.
@@ -44,20 +41,30 @@ let ImpureTimestampV1 = {
 in
 
 # ||| Optional per-step output persistence overrides.
-# ||| - `save`: if true, persist this output after capture.
-# ||| - `force_full`: bypass incremental/optimized persistence strategies.
+# ||| - `save`: tri-state output persistence mode.
+# |||   - `false`: do not persist output bytes.
+# |||   - `true`: persist output with regular incremental behavior.
+# |||   - `"full"`: persist output and prefer full-data storage behavior.
+# ||| Keep this tri-state ordering aligned with Rust merge semantics:
+# ||| `false < true < "full"`.
+let OutputSaveModeV1 =
+  std.contract.any_of [
+    Bool,
+    std.contract.from_predicate (fun value => value == "full"),
+  ]
+in
 let OutputPolicyV1 = {
-  save | Bool | optional,
-  force_full | Bool | optional,
+  save | OutputSaveModeV1 | optional,
 }
 in
 
 # ||| Per-input declaration for reusable tool input contracts.
 # ||| `kind` defaults to `"string"` when omitted.
-let ToolInputKindV1 = std.contract.any_of [
-  std.contract.from_predicate (fun value => value == "string"),
-  std.contract.from_predicate (fun value => value == "string_list"),
-]
+let ToolInputKindV1 =
+  std.contract.any_of [
+    std.contract.from_predicate (fun value => value == "string"),
+    std.contract.from_predicate (fun value => value == "string_list"),
+  ]
 in
 
 # ||| Per-input declaration for reusable tool input contracts.
@@ -76,11 +83,11 @@ let ExecutableToolSpecV1 = {
   kind
     | std.contract.from_predicate (fun value => value == "executable"),
   is_impure | Bool | optional,
-  inputs | {_ : ToolInputSpecV1} | optional,
+  inputs | { _ : ToolInputSpecV1 } | optional,
   command | Array String | optional,
-  env_vars | {_ : String} | optional,
+  env_vars | { _ : String } | optional,
   success_codes | Array IntegerNumberV1 | optional,
-  outputs | {_ : Dyn} | optional,
+  outputs | { _ : Dyn } | optional,
 }
 in
 
@@ -97,15 +104,16 @@ in
 
 # ||| Allowed capture kinds for declared tool outputs.
 # ||| `process_code` captures the exit status as a string-typed payload value.
-let OutputCaptureKindV1 = std.contract.any_of [
-  std.contract.from_predicate (fun value => value == "stdout"),
-  std.contract.from_predicate (fun value => value == "stderr"),
-  std.contract.from_predicate (fun value => value == "file"),
-  std.contract.from_predicate (fun value => value == "file_regex"),
-  std.contract.from_predicate (fun value => value == "folder"),
-  std.contract.from_predicate (fun value => value == "folder_regex"),
-  std.contract.from_predicate (fun value => value == "process_code"),
-]
+let OutputCaptureKindV1 =
+  std.contract.any_of [
+    std.contract.from_predicate (fun value => value == "stdout"),
+    std.contract.from_predicate (fun value => value == "stderr"),
+    std.contract.from_predicate (fun value => value == "file"),
+    std.contract.from_predicate (fun value => value == "file_regex"),
+    std.contract.from_predicate (fun value => value == "folder"),
+    std.contract.from_predicate (fun value => value == "folder_regex"),
+    std.contract.from_predicate (fun value => value == "process_code"),
+  ]
 in
 
 # ||| Output capture variant for `kind = "stdout"`.
@@ -149,6 +157,9 @@ let OutputCaptureFolderV1 = {
 in
 
 # ||| Output capture variant for `kind = "folder_regex"`.
+# ||| When regex capture groups match selected file paths, captured strings are
+# ||| joined to form ZIP member paths; otherwise original sandbox-relative paths
+# ||| are preserved.
 let OutputCaptureFolderRegexV1 = {
   kind | std.contract.from_predicate (fun value => value == "folder_regex"),
   path_regex | NonEmptyStringV1,
@@ -158,15 +169,16 @@ in
 # ||| Capture source contract for one output declaration.
 # ||| Variant records are strict by kind: stream captures cannot declare
 # ||| path-only fields and file/folder captures must satisfy required fields.
-let OutputCaptureV1 = std.contract.any_of [
-  OutputCaptureStdoutV1,
-  OutputCaptureStderrV1,
-  OutputCaptureProcessCodeV1,
-  OutputCaptureFileV1,
-  OutputCaptureFileRegexV1,
-  OutputCaptureFolderV1,
-  OutputCaptureFolderRegexV1,
-]
+let OutputCaptureV1 =
+  std.contract.any_of [
+    OutputCaptureStdoutV1,
+    OutputCaptureStderrV1,
+    OutputCaptureProcessCodeV1,
+    OutputCaptureFileV1,
+    OutputCaptureFileRegexV1,
+    OutputCaptureFolderV1,
+    OutputCaptureFolderRegexV1,
+  ]
 in
 
 # ||| Tool output declaration (capture-only; persistence is call-level policy).
@@ -191,10 +203,11 @@ in
 # ||| For list bindings, interpolation rules apply per list item.
 # ||| Input-binding interpolation does not support materialization directives
 # ||| such as `:file(...)` or `:folder(...)`.
-let InputBindingV1 = std.contract.any_of [
-  String,
-  Array String,
-]
+let InputBindingV1 =
+  std.contract.any_of [
+    String,
+    Array String,
+  ]
 in
 
 # ||| One workflow step record.
@@ -203,11 +216,11 @@ in
 let WorkflowStepSpecV1 = {
   id | NonEmptyStringV1,
   tool | NonEmptyStringV1,
-  inputs | {_ : InputBindingV1} | optional,
+  inputs | { _ : InputBindingV1 } | optional,
   depends_on | Array NonEmptyStringV1 | optional,
   # `outputs` configures persistence policy only; it does not declare
   # available outputs, which always come from the referenced tool definition.
-  outputs | {_ : OutputPolicyV1} | optional,
+  outputs | { _ : OutputPolicyV1 } | optional,
 }
 in
 
@@ -242,7 +255,7 @@ let ToolConfigV1 = {
   description | String | optional,
   # Optional per-tool default input bindings used when one workflow step omits
   # matching input keys.
-  input_defaults | {_ : InputBindingV1} | optional,
+  input_defaults | { _ : InputBindingV1 } | optional,
   # Optional runtime environment additions for executable process execution.
   #
   # Runtime merges inherited host names first, then merges
@@ -250,7 +263,7 @@ let ToolConfigV1 = {
   # duplicate keys across those two explicit maps.
   #
   # This field is invalid for builtin tools.
-  env_vars | {_ : String} | optional,
+  env_vars | { _ : String } | optional,
   # Executable sandbox materialization map (`relative_path -> hash`).
   #
   # Key semantics:
@@ -260,7 +273,7 @@ let ToolConfigV1 = {
   #   written directly to that file.
   #
   # Runtime rejects absolute paths and escaping paths (`..`).
-  content_map | {_ : HashStringV1} | optional,
+  content_map | { _ : HashStringV1 } | optional,
 }
 in
 
@@ -299,11 +312,11 @@ let NickelDocumentV1 = {
   # Defaults are resolved by runtime when fields are omitted.
   runtime | RuntimeStorageV1 | optional,
   # External-data map keys are CAS hash strings parsed by Rust.
-  external_data | {_ : ExternalContentRefV1} | optional,
-  tools | {_ : ToolSpecV1} | optional,
-  workflows | {_ : WorkflowSpecV1} | optional,
-  tool_configs | {_ : ToolConfigV1} | optional,
-  impure_timestamps | {_ : {_ : ImpureTimestampV1}} | optional,
+  external_data | { _ : ExternalContentRefV1 } | optional,
+  tools | { _ : ToolSpecV1 } | optional,
+  workflows | { _ : WorkflowSpecV1 } | optional,
+  tool_configs | { _ : ToolConfigV1 } | optional,
+  impure_timestamps | { _ : { _ : ImpureTimestampV1 } } | optional,
   state_pointer | Dyn | optional,
 }
 in
