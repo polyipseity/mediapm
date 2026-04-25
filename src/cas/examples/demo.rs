@@ -17,6 +17,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{
@@ -74,6 +75,10 @@ struct DemoManifest {
     topology_mermaid_path: String,
     /// Path to JSON topology snapshot output file.
     topology_json_path: String,
+    /// Logical CAS store footprint without delta compression (bytes).
+    store_size_without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    store_size_with_delta_bytes: u64,
     /// Per-file object metadata rows.
     files: Vec<DemoFileRecord>,
 }
@@ -145,6 +150,74 @@ fn write_demo_files(base: &Path, specs: &[DemoFileSpec]) -> Result<(), Box<dyn s
     Ok(())
 }
 
+/// Returns whether one path segment is a lower-level hexadecimal fragment.
+#[must_use]
+fn is_hex_segment(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Collects all object hashes currently present under one filesystem CAS root.
+fn collect_store_object_hashes(
+    cas_root: &Path,
+) -> Result<BTreeSet<Hash>, Box<dyn std::error::Error>> {
+    let mut hashes = BTreeSet::new();
+    let objects_root = cas_root.join("v1");
+    if !objects_root.exists() {
+        return Ok(hashes);
+    }
+
+    for shard_entry in std::fs::read_dir(&objects_root)? {
+        let shard_entry = shard_entry?;
+        if !shard_entry.file_type()?.is_dir() {
+            continue;
+        }
+
+        let shard_name = shard_entry.file_name();
+        let shard_name = shard_name.to_string_lossy();
+        if shard_name.len() != 2 || !is_hex_segment(&shard_name) {
+            continue;
+        }
+
+        for object_entry in std::fs::read_dir(shard_entry.path())? {
+            let object_entry = object_entry?;
+            if !object_entry.file_type()?.is_file() {
+                continue;
+            }
+
+            let file_name = object_entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            let stem = file_name.strip_suffix(".diff").unwrap_or(&file_name);
+            if stem.len() != 62 || !is_hex_segment(stem) {
+                continue;
+            }
+
+            let hash_text = format!("blake3:{shard_name}{stem}");
+            if let Ok(hash) = Hash::from_str(&hash_text) {
+                let _ = hashes.insert(hash);
+            }
+        }
+    }
+
+    Ok(hashes)
+}
+
+/// Computes logical and effective store-size totals from all persisted objects.
+async fn summarize_store_sizes(
+    cas: &FileSystemCas,
+    cas_root: &Path,
+) -> Result<(u64, u64), Box<dyn std::error::Error>> {
+    let mut without_delta = 0u64;
+    let mut with_delta = 0u64;
+
+    for hash in collect_store_object_hashes(cas_root)? {
+        let info = cas.info(hash).await?;
+        without_delta = without_delta.saturating_add(info.content_len);
+        with_delta = with_delta.saturating_add(info.payload_len);
+    }
+
+    Ok((without_delta, with_delta))
+}
+
 /// Clears stale output files, then generates inspectable demo artifacts.
 async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std::error::Error>> {
     let root = reset_demo_output_directory()?;
@@ -202,6 +275,8 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
 
     let generated_unix_epoch_seconds =
         SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let (store_size_without_delta_bytes, store_size_with_delta_bytes) =
+        summarize_store_sizes(&cas, &cas_root).await?;
 
     let input_root = root.join("inputs");
     let empty_hash = empty_content_hash();
@@ -218,6 +293,8 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
         prune_removed_candidates: removed_candidates,
         topology_mermaid_path: topology_mermaid_path.display().to_string(),
         topology_json_path: topology_json_path.display().to_string(),
+        store_size_without_delta_bytes,
+        store_size_with_delta_bytes,
         files: records,
     };
 
