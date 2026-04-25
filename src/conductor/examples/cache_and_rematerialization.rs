@@ -83,16 +83,16 @@ fn write_text_file(path: &Path, content: &str) -> ExampleResult<()> {
 
 /// Writes one public user document as latest-schema Nickel source.
 fn write_user_document(path: &Path, document: &UserNickelDocument) -> ExampleResult<()> {
-    write_text_file(path, &render_user_document(document)?)
+    write_text_file(path, &render_user_document(document))
 }
 
 /// Writes one public machine document as latest-schema Nickel source.
 fn write_machine_document(path: &Path, document: &MachineNickelDocument) -> ExampleResult<()> {
-    write_text_file(path, &render_machine_document(document)?)
+    write_text_file(path, &render_machine_document(document))
 }
 
 /// Renders one public user document into latest-schema Nickel source.
-fn render_user_document(document: &UserNickelDocument) -> ExampleResult<String> {
+fn render_user_document(document: &UserNickelDocument) -> String {
     let envelope = json!({
         "version": 1,
         "external_data": document.external_data,
@@ -102,11 +102,11 @@ fn render_user_document(document: &UserNickelDocument) -> ExampleResult<String> 
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
     });
-    Ok(format!("{}\n", render_nickel_value(&envelope, 0)))
+    format!("{}\n", render_nickel_value(&envelope, 0))
 }
 
 /// Renders one public machine document into latest-schema Nickel source.
-fn render_machine_document(document: &MachineNickelDocument) -> ExampleResult<String> {
+fn render_machine_document(document: &MachineNickelDocument) -> String {
     let envelope = json!({
         "version": 1,
         "external_data": document.external_data,
@@ -116,7 +116,7 @@ fn render_machine_document(document: &MachineNickelDocument) -> ExampleResult<St
         "impure_timestamps": document.impure_timestamps,
         "state_pointer": document.state_pointer,
     });
-    Ok(format!("{}\n", render_nickel_value(&envelope, 0)))
+    format!("{}\n", render_nickel_value(&envelope, 0))
 }
 
 /// Converts runtime tool specs into strict persisted v1 wire-shape JSON.
@@ -397,8 +397,7 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
             instance
                 .inputs
                 .get("text")
-                .map(|input| input.plain_content.as_slice() == b"hello")
-                .unwrap_or(false)
+                .is_some_and(|input| input.plain_content.as_slice() == b"hello")
         })
         .and_then(|instance| instance.outputs.get("result"))
         .map(|output| output.hash)

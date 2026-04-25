@@ -1,5 +1,6 @@
 //! Public API contracts for the conductor crate.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -15,6 +16,12 @@ const DEFAULT_STATE_FILE_NAME: &str = "state.ncl";
 
 /// Default filesystem CAS store directory name under the resolved conductor directory.
 const DEFAULT_CAS_STORE_DIR_NAME: &str = "store";
+
+/// Default schema export directory under one resolved runtime root.
+const DEFAULT_SCHEMA_EXPORT_DIR_NAME: &str = "conductor";
+
+/// Default schema export parent folder under one resolved runtime root.
+const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 
 /// Grouped runtime storage-path configuration for one conductor invocation.
 ///
@@ -62,16 +69,14 @@ impl RuntimeStoragePaths {
     pub fn resolve_for(&self, user_ncl: &Path, machine_ncl: &Path) -> ResolvedRuntimeStoragePaths {
         let anchor = user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or(Path::new("."));
         let conductor_dir = Self::resolve_path(anchor, &self.conductor_dir);
-        let config_state = self
-            .config_state
-            .as_ref()
-            .map(|path| Self::resolve_path(anchor, path))
-            .unwrap_or_else(|| conductor_dir.join(DEFAULT_STATE_FILE_NAME));
-        let cas_store_dir = self
-            .cas_store_dir
-            .as_ref()
-            .map(|path| Self::resolve_path(anchor, path))
-            .unwrap_or_else(|| conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME));
+        let config_state = self.config_state.as_ref().map_or_else(
+            || conductor_dir.join(DEFAULT_STATE_FILE_NAME),
+            |path| Self::resolve_path(anchor, path),
+        );
+        let cas_store_dir = self.cas_store_dir.as_ref().map_or_else(
+            || conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
+            |path| Self::resolve_path(anchor, path),
+        );
 
         ResolvedRuntimeStoragePaths { conductor_dir, config_state, cas_store_dir }
     }
@@ -228,6 +233,50 @@ pub fn resolve_runtime_storage_paths(
     runtime_storage_paths.resolve_for(user_ncl, machine_ncl)
 }
 
+/// Resolves the conductor schema export directory under one runtime root.
+///
+/// The default runtime export target is:
+/// `<runtime_root>/config/conductor`.
+#[must_use]
+pub fn schema_export_dir(runtime_root: &Path) -> PathBuf {
+    runtime_root.join(DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME).join(DEFAULT_SCHEMA_EXPORT_DIR_NAME)
+}
+
+/// Exports embedded conductor Nickel schemas into one resolved runtime root.
+///
+/// This writes `mod.ncl` and `v1.ncl` under
+/// `<runtime_root>/config/conductor`, creating the directory tree when
+/// needed.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Io`] when creating the export directory or
+/// writing schema files fails.
+pub fn export_nickel_config_schemas(runtime_root: &Path) -> Result<(), ConductorError> {
+    let export_dir = schema_export_dir(runtime_root);
+    fs::create_dir_all(&export_dir).map_err(|source| ConductorError::Io {
+        operation: "creating runtime schema export directory".to_string(),
+        path: export_dir.clone(),
+        source,
+    })?;
+
+    let schemas = [
+        ("mod.ncl", include_str!("model/config/versions/mod.ncl")),
+        ("v1.ncl", include_str!("model/config/versions/v1.ncl")),
+    ];
+
+    for (file_name, content) in schemas {
+        let path = export_dir.join(file_name);
+        fs::write(&path, content).map_err(|source| ConductorError::Io {
+            operation: format!("writing exported Nickel schema '{file_name}'"),
+            path,
+            source,
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Snapshot of conductor runtime diagnostics and scheduling telemetry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuntimeDiagnostics {
@@ -370,8 +419,12 @@ pub enum SchedulerTraceKind {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
-    use super::{RuntimeStoragePaths, resolve_runtime_storage_paths};
+    use super::{
+        RuntimeStoragePaths, export_nickel_config_schemas, resolve_runtime_storage_paths,
+        schema_export_dir,
+    };
 
     /// Protects grouped-runtime default resolution rooted at `.conductor`.
     #[test]
@@ -441,5 +494,33 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("config").join(".conductor").join("store")
         );
+    }
+
+    /// Protects schema-export path resolution under runtime root.
+    #[test]
+    fn schema_export_dir_uses_runtime_root() {
+        let runtime_root = PathBuf::from("workspace");
+        assert_eq!(
+            schema_export_dir(&runtime_root),
+            PathBuf::from("workspace").join("config").join("conductor")
+        );
+    }
+
+    /// Protects embedded schema export into runtime-managed defaults.
+    #[test]
+    fn export_nickel_config_schemas_writes_schema_files() {
+        let root = tempdir().expect("tempdir");
+        let runtime_root = root.path().join("runtime");
+
+        export_nickel_config_schemas(&runtime_root).expect("schema export should succeed");
+
+        let export_dir = runtime_root.join("config").join("conductor");
+        let mod_schema = export_dir.join("mod.ncl");
+        let v1_schema = export_dir.join("v1.ncl");
+
+        assert!(mod_schema.exists(), "mod.ncl should be exported");
+        assert!(v1_schema.exists(), "v1.ncl should be exported");
+        assert!(!std::fs::read(mod_schema).expect("mod schema").is_empty());
+        assert!(!std::fs::read(v1_schema).expect("v1 schema").is_empty());
     }
 }

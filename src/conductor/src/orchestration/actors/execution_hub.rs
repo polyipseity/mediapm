@@ -125,7 +125,11 @@ where
 
         match tool.max_concurrent_calls {
             -1 => Ok(None),
-            value if value > 0 => Ok(Some(value as usize)),
+            value if value > 0 => usize::try_from(value).map(Some).map_err(|_| {
+                ConductorError::Workflow(format!(
+                    "tool '{tool_name}' has invalid max_concurrent_calls={value}; expected -1 or positive integer"
+                ))
+            }),
             value => Err(ConductorError::Workflow(format!(
                 "tool '{tool_name}' has invalid max_concurrent_calls={value}; expected -1 or positive integer"
             ))),
@@ -148,7 +152,12 @@ where
             )));
         }
 
-        Ok(tool.max_retries as usize)
+        usize::try_from(tool.max_retries).map_err(|_| {
+            ConductorError::Workflow(format!(
+                "tool '{tool_name}' has invalid max_retries={}; expected a non-negative integer",
+                tool.max_retries
+            ))
+        })
     }
 
     /// Selects one dispatch batch that respects each tool's concurrency cap.
@@ -188,6 +197,7 @@ where
     }
 
     /// Executes one workflow level by planning assignments, dispatching workers, and recording completion facts.
+    #[allow(clippy::too_many_lines)]
     async fn execute_level(
         &self,
         request: LevelExecutionRequest,
@@ -230,7 +240,7 @@ where
                     .get(&step.id)
                     .cloned()
                     .unwrap_or_default();
-                let impure_timestamp = request.impure_timestamps.get(&step.id).cloned().unwrap_or(None);
+                let impure_timestamp = request.impure_timestamps.get(&step.id).copied().flatten();
 
                 async move {
                     let max_retries =

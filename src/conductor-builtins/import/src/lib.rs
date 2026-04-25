@@ -74,6 +74,11 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
+///
+/// # Errors
+///
+/// Returns a serialization error when the descriptor map cannot be rendered
+/// as valid JSON.
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -97,6 +102,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 /// `kind=cas_hash` requires the caller to use
 /// [`execute_content_map_with_hash_resolver`] so hash lookups can be provided
 /// by runtime context (for example conductor CAS state).
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, source payload loading fails, URL fetch/integrity checks fail,
+/// or `cas_hash` is requested without a resolver.
 pub fn execute_content_map(
     import_root_dir: &Path,
     params: &StringMap,
@@ -114,6 +125,12 @@ pub fn execute_content_map(
 ///
 /// The resolver is called only when `kind=cas_hash` is selected and receives
 /// the exact `hash` argument value.
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, source payload loading fails, URL fetch/integrity checks fail,
+/// or the resolver reports an unknown/invalid hash payload.
 pub fn execute_content_map_with_hash_resolver<F>(
     import_root_dir: &Path,
     params: &StringMap,
@@ -192,6 +209,12 @@ enum PathMode {
 /// Runs the standalone CLI command using a normal clap-parsed option structure.
 ///
 /// Successful execution writes imported payload bytes directly to stdout.
+///
+/// # Errors
+///
+/// Returns an error when CLI key/value pairs are malformed, import execution
+/// fails, descriptor serialization fails, or writing output to the provided
+/// writer fails.
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -276,7 +299,7 @@ fn resolve_file_or_folder_source(
     import_root_dir: &Path,
     params: &StringMap,
 ) -> Result<PathBuf, String> {
-    let kind = params.get("kind").map(String::as_str).unwrap_or("file_or_folder");
+    let kind = params.get("kind").map_or("file_or_folder", String::as_str);
     let path = params.get("path").ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
     let mode = parse_path_mode(params, kind)?;
     resolve_path_for_import_root(import_root_dir, kind, path, mode)
@@ -292,7 +315,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -319,15 +342,15 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
         "file" | "folder" => {
             for key in params.keys() {
                 if key != "kind" && key != "path" && key != "path_mode" {
-                    return Err(format!("import kind='{}' does not accept arg '{key}'", kind));
+                    return Err(format!("import kind='{kind}' does not accept arg '{key}'"));
                 }
             }
 
             let path = params
                 .get("path")
-                .ok_or_else(|| format!("import kind='{}' requires 'path'", kind))?;
+                .ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
             if path.trim().is_empty() {
-                return Err(format!("import kind='{}' requires non-empty 'path'", kind));
+                return Err(format!("import kind='{kind}' requires non-empty 'path'"));
             }
 
             let _ = parse_path_mode(params, kind)?;
@@ -381,7 +404,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 /// Parses and validates path-mode selector for file/folder import kinds.
 fn parse_path_mode(params: &StringMap, kind: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => Err(format!(

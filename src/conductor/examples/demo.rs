@@ -49,20 +49,23 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RunSummarySnapshot {
     /// Number of instances executed in this run.
-    executed_instances: usize,
+    #[serde(rename = "executed_instances")]
+    executed: usize,
     /// Number of instances served from cache in this run.
-    cached_instances: usize,
+    #[serde(rename = "cached_instances")]
+    cached: usize,
     /// Number of instances re-materialized in this run.
-    rematerialized_instances: usize,
+    #[serde(rename = "rematerialized_instances")]
+    rematerialized: usize,
 }
 
 impl From<RunSummary> for RunSummarySnapshot {
     /// Converts a public runtime summary into a manifest-friendly snapshot.
     fn from(value: RunSummary) -> Self {
         Self {
-            executed_instances: value.executed_instances,
-            cached_instances: value.cached_instances,
-            rematerialized_instances: value.rematerialized_instances,
+            executed: value.executed_instances,
+            cached: value.cached_instances,
+            rematerialized: value.rematerialized_instances,
         }
     }
 }
@@ -351,6 +354,7 @@ fn unix_timestamp_seconds() -> u64 {
 }
 
 /// Builds a user document that showcases broad conductor behavior.
+#[allow(clippy::too_many_lines)]
 fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
     let banner_binding = format!("${{external_data.{}}}", inputs.banner_hash);
 
@@ -362,12 +366,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
         runtime: RuntimeStorageConfig {
             conductor_dir: Some(DEMO_DEFAULT_CONDUCTOR_DIR.to_string()),
             state_config: Some(format!(
-                "{}/{}",
-                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_STATE_CONFIG_FILE
+                "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_STATE_CONFIG_FILE}"
             )),
             cas_store_dir: Some(format!(
-                "{}/{}",
-                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_CAS_STORE_DIR
+                "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_CAS_STORE_DIR}"
             )),
             inherited_env_vars: None,
         },
@@ -658,6 +660,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
 
 /// Builds a machine document that registers required demo builtins and
 /// per-tool runtime execution limits.
+#[allow(clippy::too_many_lines)]
 fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocument {
     let builtin_tool = |name: &str, version: &str, is_impure: bool| ToolSpec {
         is_impure,
@@ -1052,6 +1055,7 @@ fn collect_tool_names(state: &OrchestrationState) -> Vec<String> {
 }
 
 /// Executes the demo workflows and writes persistent artifacts.
+#[allow(clippy::too_many_lines)]
 async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
     let root = reset_artifact_root()?;
     let workspace_root = workspace_root()?;
@@ -1112,7 +1116,7 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
     let tool_names_after_second_run = collect_tool_names(&state_after_second_run);
     let state_instance_count_after_second_run = state_after_second_run.instances.len();
 
-    if second_run.cached_instances == 0 {
+    if second_run.cached == 0 {
         return Err("expected second run to include cache hits".into());
     }
 

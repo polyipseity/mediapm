@@ -246,6 +246,7 @@ where
     C: CasApi + Send + Sync + 'static,
 {
     /// Executes one planned step request and returns the bundle needed for state merge.
+    #[allow(clippy::too_many_lines)]
     async fn execute_step(
         &self,
         request: StepExecutionRequest,
@@ -351,8 +352,7 @@ where
             for output_name in &effective_output_names {
                 let output_spec = output_specs.get(output_name).ok_or_else(|| {
                     ConductorError::Internal(format!(
-                        "output '{}' disappeared from resolved output spec map",
-                        output_name
+                        "output '{output_name}' disappeared from resolved output spec map"
                     ))
                 })?;
                 let payload = self.capture_output_payload(output_spec, &capture, execution_cwd)?;
@@ -368,14 +368,12 @@ where
         for output_name in &effective_output_names {
             let output_spec = output_specs.get(output_name).ok_or_else(|| {
                 ConductorError::Internal(format!(
-                    "output '{}' disappeared from resolved output spec map",
-                    output_name
+                    "output '{output_name}' disappeared from resolved output spec map"
                 ))
             })?;
             let output_ref = instance.outputs.get_mut(output_name).ok_or_else(|| {
                 ConductorError::Internal(format!(
-                    "instance '{}' missing output '{}' after execution",
-                    instance_key, output_name
+                    "instance '{instance_key}' missing output '{output_name}' after execution"
                 ))
             })?;
             let merged = merge_persistence_flags([output_ref.persistence, output_spec.persistence]);
@@ -384,8 +382,7 @@ where
             if !output_exists {
                 if request.required_output_names.contains(output_name) {
                     return Err(ConductorError::Internal(format!(
-                        "required output '{}' for instance '{}' is missing from CAS after execution planning",
-                        output_name, instance_key
+                        "required output '{output_name}' for instance '{instance_key}' is missing from CAS after execution planning"
                     )));
                 }
                 if !merged.save.should_persist() {
@@ -425,6 +422,7 @@ where
     /// Executable tools additionally enforce declared input/default contracts,
     /// while builtin tools accept pass-through key/value bindings and delegate
     /// strict argument validation to builtin implementations.
+    #[allow(clippy::too_many_lines)]
     async fn resolve_inputs(
         &self,
         unified: &UnifiedNickelDocument,
@@ -877,6 +875,7 @@ where
     /// Sandboxes are always nested under `<runtime_storage_dir>/tmp`, where
     /// `runtime_storage_dir` is resolved from
     /// `RunWorkflowOptions.runtime_storage_paths.conductor_dir`.
+    #[allow(clippy::unused_self)]
     fn create_execution_temp_cwd(
         &self,
         runtime_storage_dir: &Path,
@@ -897,6 +896,7 @@ where
     }
 
     /// Normalizes one tool-relative path and rejects absolute or escaping paths.
+    #[allow(clippy::unused_self)]
     fn normalized_relative_tool_path(
         &self,
         relative_path: &str,
@@ -943,6 +943,7 @@ where
     }
 
     /// Compiles one output-capture regex pattern after template rendering.
+    #[allow(clippy::unused_self)]
     fn compile_output_capture_regex(
         &self,
         pattern: &str,
@@ -1066,6 +1067,7 @@ where
     }
 
     /// Materializes deferred template file writes into one execution sandbox.
+    #[allow(clippy::unused_self)]
     fn materialize_template_file_writes(
         &self,
         pending_file_writes: &[TemplateFileWrite],
@@ -1092,6 +1094,7 @@ where
     }
 
     /// Spawns one executable process inside the step sandbox and captures its streams.
+    #[allow(clippy::unused_async)]
     async fn execute_executable_tool(
         &self,
         executable_name: &str,
@@ -1156,8 +1159,7 @@ where
         if !Self::is_success_exit_code(process_code, success_codes) {
             let stderr = Self::format_process_failure_stderr(&output.stderr);
             return Err(ConductorError::Workflow(format!(
-                "process '{executable_name}' exited with code {process_code}, expected one of {:?}: {}",
-                success_codes, stderr
+                "process '{executable_name}' exited with code {process_code}, expected one of {success_codes:?}: {stderr}"
             )));
         }
 
@@ -1285,6 +1287,7 @@ where
     ///
     /// This uses the same archive unpack path as runtime execution to ensure
     /// collision checks reflect real unpack behavior.
+    #[allow(clippy::unused_async)]
     async fn list_tool_content_directory_target_files(
         &self,
         raw_relative_path: &str,
@@ -1325,6 +1328,7 @@ where
     }
 
     /// Collects all regular files under one directory as sandbox-relative paths.
+    #[allow(clippy::self_only_used_in_recursion)]
     fn collect_relative_files_recursive(
         &self,
         root_dir: &Path,
@@ -1414,6 +1418,7 @@ where
     /// `relative_dir` is already normalized and guaranteed to stay inside
     /// `tool_cwd`. The referenced CAS payload must be a ZIP archive; invalid
     /// archives fail fast with an actionable workflow error.
+    #[allow(clippy::unused_async)]
     async fn materialize_tool_content_directory_from_zip(
         &self,
         raw_relative_path: &str,
@@ -1456,6 +1461,7 @@ where
     /// CLI ergonomics may optionally define one default option key so one value
     /// can be provided without spelling a key, but explicit keyed input remains
     /// supported and maps to the same API key.
+    #[allow(clippy::too_many_lines)]
     async fn execute_builtin_tool(
         &self,
         builtin_name: &str,
@@ -1477,8 +1483,7 @@ where
                     mediapm_conductor_builtin_echo::execute_echo(resolved_args, &BTreeMap::new())
                         .map_err(|err| {
                         ConductorError::Workflow(format!(
-                            "builtin '{}@{}' failed: {err}",
-                            builtin_name, builtin_version
+                            "builtin '{builtin_name}@{builtin_version}' failed: {err}"
                         ))
                     })?;
 
@@ -1499,8 +1504,7 @@ where
                 )
                 .map_err(|err| {
                     ConductorError::Workflow(format!(
-                        "builtin '{}@{}' failed: {err}",
-                        builtin_name, builtin_version
+                        "builtin '{builtin_name}@{builtin_version}' failed: {err}"
                     ))
                 })?;
 
@@ -1540,8 +1544,7 @@ where
                 )
                 .map_err(|err| {
                     ConductorError::Workflow(format!(
-                        "builtin '{}@{}' failed: {err}",
-                        builtin_name, builtin_version
+                        "builtin '{builtin_name}@{builtin_version}' failed: {err}"
                     ))
                 })?;
 
@@ -1557,8 +1560,7 @@ where
                 )
                 .map_err(|err| {
                     ConductorError::Workflow(format!(
-                        "builtin '{}@{}' failed: {err}",
-                        builtin_name, builtin_version
+                        "builtin '{builtin_name}@{builtin_version}' failed: {err}"
                     ))
                 })?;
 
@@ -1575,8 +1577,7 @@ where
                 )
                 .map_err(|err| {
                     ConductorError::Workflow(format!(
-                        "builtin '{}@{}' failed: {err}",
-                        builtin_name, builtin_version
+                        "builtin '{builtin_name}@{builtin_version}' failed: {err}"
                     ))
                 })?;
 
@@ -1586,8 +1587,7 @@ where
                 Ok(ToolExecutionCapture { stdout: payload, stderr: Vec::new(), process_code: 0 })
             }
             _ => Err(ConductorError::Workflow(format!(
-                "unsupported builtin tool '{}@{}'",
-                builtin_name, builtin_version
+                "unsupported builtin tool '{builtin_name}@{builtin_version}'"
             ))),
         }
     }
@@ -1714,6 +1714,7 @@ where
     /// The implementation delegates packing to the builtin archive/zip crate,
     /// using stored (no-compression) ZIP entries to preserve exact payload
     /// bytes and avoid compression nondeterminism.
+    #[allow(clippy::unused_self)]
     fn capture_folder_output_as_zip(
         &self,
         relative_path: &std::path::Path,
@@ -1904,6 +1905,7 @@ where
 
     /// Collects sandbox-relative file and directory candidates for regex output
     /// capture matching.
+    #[allow(clippy::self_only_used_in_recursion)]
     fn collect_capture_candidate_paths(
         &self,
         root_dir: &Path,

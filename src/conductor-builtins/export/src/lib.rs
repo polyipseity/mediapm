@@ -76,6 +76,11 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
+///
+/// # Errors
+///
+/// Returns a serialization error when the descriptor map cannot be rendered
+/// as valid JSON.
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -98,6 +103,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 /// - `kind=file` writes `content` bytes to resolved destination.
 /// - `kind=folder` interprets `content` as one ZIP payload and unpacks it into
 ///   resolved destination.
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, folder ZIP payloads are invalid, destination directories/files
+/// cannot be created, or write/unpack operations fail.
 pub fn execute_string_map(
     export_root_dir: &Path,
     params: &StringMap,
@@ -179,6 +190,12 @@ fn payload_bytes_from_maps<'a>(
 ///
 /// CLI `--input` values are UTF-8 and are converted to bytes before API
 /// execution.
+///
+/// # Errors
+///
+/// Returns an error when CLI key/value pairs are malformed, export execution
+/// fails, descriptor serialization fails, or writing output to the provided
+/// writer fails.
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -214,7 +231,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -266,7 +283,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
 
 /// Parses export destination path-mode selector.
 fn parse_path_mode(params: &StringMap) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => Err(format!("export path_mode must be 'relative' or 'absolute', got '{other}'")),

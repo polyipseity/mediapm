@@ -88,6 +88,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
+///
+/// # Errors
+///
+/// Returns a serialization error when descriptor map encoding to JSON fails.
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -110,6 +114,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 ///
 /// Successful execution returns no payload bytes because the primary result is
 /// side effects on the filesystem.
+///
+/// # Errors
+///
+/// Returns an error when args/inputs violate the builtin contract, path-mode
+/// validation fails, path resolution fails, or the requested filesystem
+/// operation fails.
 pub fn execute_string_map(
     fs_root_dir: &Path,
     params: &StringMap,
@@ -158,6 +168,11 @@ pub fn execute_string_map(
 ///
 /// On success this command completes through filesystem side effects and emits
 /// no payload bytes.
+///
+/// # Errors
+///
+/// Returns an error when descriptor JSON writing fails, key/value pair parsing
+/// fails, or filesystem operation execution fails.
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -191,7 +206,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -246,7 +261,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 /// Parses and validates path-mode selector for one fs operation.
 fn parse_path_mode(params: &StringMap, op: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => {

@@ -126,6 +126,11 @@ impl ResolvedInput {
     /// Builds one runtime list input from ordered string values.
     ///
     /// Hash identity is derived from canonical JSON encoding of the full list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ordered list cannot be serialized into its
+    /// canonical JSON byte representation.
     pub fn from_string_list(string_list: Vec<String>) -> Result<Self, ConductorError> {
         let plain_content = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
@@ -208,6 +213,11 @@ impl Default for OrchestrationState {
 ///
 /// The runtime state is cloned to preserve ownership expectations for callers
 /// that still need the original value after serialization.
+///
+/// # Errors
+///
+/// Returns an error when state envelope encoding fails or when the encoded
+/// payload cannot be parsed back into JSON.
 pub fn persisted_state_json_value(
     state: &OrchestrationState,
 ) -> Result<serde_json::Value, ConductorError> {
@@ -219,6 +229,11 @@ pub fn persisted_state_json_value(
 ///
 /// This is equivalent to `serde_json::to_string_pretty` over
 /// [`persisted_state_json_value`].
+///
+/// # Errors
+///
+/// Returns an error when persisted-state projection fails or when pretty JSON
+/// serialization fails.
 pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String, ConductorError> {
     let json = persisted_state_json_value(state)?;
     serde_json::to_string_pretty(&json)
@@ -226,11 +241,21 @@ pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String,
 }
 
 /// Encodes orchestration state with latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the runtime state cannot be converted into or
+/// serialized as the latest persistence envelope.
 pub fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state(state)
 }
 
 /// Decodes orchestration state from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when version dispatch, migration, or envelope
+/// deserialization fails.
 pub fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
     versions::decode_state(bytes)
 }

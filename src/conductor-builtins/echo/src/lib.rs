@@ -90,15 +90,16 @@ pub struct EchoEmission {
 /// Validation rules:
 /// - unknown keys fail,
 /// - if both `params` and `inputs` provide the same key, execution fails.
+///
+/// # Errors
+///
+/// Returns an error when argument contract validation fails or when `stream`
+/// is not one of `stdout`, `stderr`, or `both`.
 pub fn execute_echo(params: &StringMap, inputs: &StringMap) -> Result<EchoEmission, String> {
     validate_argument_contract(params, inputs)?;
 
     let stream = parse_stream(
-        params
-            .get("stream")
-            .or_else(|| inputs.get("stream"))
-            .map(|value| value.as_str())
-            .unwrap_or("stdout"),
+        params.get("stream").or_else(|| inputs.get("stream")).map_or("stdout", String::as_str),
     )?;
 
     let text = params.get("text").or_else(|| inputs.get("text")).cloned().unwrap_or_default();
@@ -118,6 +119,10 @@ pub fn execute_echo(params: &StringMap, inputs: &StringMap) -> Result<EchoEmissi
 /// Keys:
 /// - `stdout`: emitted stdout text,
 /// - `stderr`: emitted stderr text.
+///
+/// # Errors
+///
+/// Returns the same execution/validation errors as [`execute_echo`].
 pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<StringMap, String> {
     let emission = execute_echo(params, inputs)?;
     Ok(StringMap::from([
@@ -130,6 +135,10 @@ pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<Stri
 ///
 /// This behaves like shell `echo`: positional text is joined with spaces,
 /// then terminated by a newline and written to the selected stream(s).
+///
+/// # Errors
+///
+/// Returns an error when writing to the selected output stream(s) fails.
 pub fn run_cli_command<WOut: Write, WErr: Write>(
     cli: &BuiltinCliArgs,
     stdout_writer: &mut WOut,
@@ -269,7 +278,7 @@ mod tests {
         .expect("compatibility api should succeed");
 
         assert_eq!(payload.get("stdout"), Some(&"hello\n".to_string()));
-        assert_eq!(payload.get("stderr"), Some(&"".to_string()));
+        assert_eq!(payload.get("stderr"), Some(&String::new()));
     }
 
     /// Verifies CLI echoes positional text to selected streams.

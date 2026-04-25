@@ -77,6 +77,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
+///
+/// # Errors
+///
+/// Returns a serialization error when descriptor map encoding to JSON fails.
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -90,6 +94,11 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 ///
 /// Optional params:
 /// - `entry_name` when `action=pack` and `kind=file`.
+///
+/// # Errors
+///
+/// Returns an error when required keys are missing, unknown keys are present,
+/// action/kind values are invalid, or payload transformation fails.
 pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Result<Vec<u8>, String> {
     validate_argument_contract(params, inputs)?;
 
@@ -107,8 +116,7 @@ pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Resul
 
             match kind.as_str() {
                 "file" => {
-                    let entry_name =
-                        params.get("entry_name").map(String::as_str).unwrap_or("content.bin");
+                    let entry_name = params.get("entry_name").map_or("content.bin", String::as_str);
                     pack_single_file_to_uncompressed_zip_bytes(payload, entry_name)
                 }
                 "folder" => normalize_archive_zip_bytes_to_folder_zip_bytes(payload),
@@ -135,6 +143,11 @@ pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Resul
 ///
 /// CLI `--input` values are UTF-8 and are converted to bytes before API
 /// execution.
+///
+/// # Errors
+///
+/// Returns an error when CLI pair parsing fails, descriptor JSON writing fails,
+/// archive execution fails, or output writing fails.
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -162,6 +175,11 @@ pub fn run_cli_command<W: Write>(
 ///
 /// This helper exists for conductor-runtime internals that need deterministic
 /// folder payload construction.
+///
+/// # Errors
+///
+/// Returns an error when the source directory is missing/invalid, directory
+/// walking fails, ZIP entry writes fail, or ZIP finalization fails.
 pub fn pack_directory_to_uncompressed_zip_bytes(
     source_dir: &Path,
     include_source_dir: bool,
@@ -241,13 +259,18 @@ pub fn pack_directory_to_uncompressed_zip_bytes(
     writer
         .finish()
         .map_err(|err| format!("finalizing zip payload failed: {err}"))
-        .map(|cursor| cursor.into_inner())
+        .map(std::io::Cursor::into_inner)
 }
 
 /// Unpacks ZIP payload bytes into one destination directory.
 ///
 /// The implementation rejects escaping ZIP entries (`../`) through
 /// `enclosed_name` checks.
+///
+/// # Errors
+///
+/// Returns an error when destination creation fails, ZIP decoding fails,
+/// entries attempt path escape, or extracted file writes fail.
 pub fn unpack_zip_bytes_to_directory(zip_bytes: &[u8], dest_dir: &Path) -> Result<usize, String> {
     std::fs::create_dir_all(dest_dir)
         .map_err(|err| format!("creating destination '{}' failed: {err}", dest_dir.display()))?;
@@ -290,6 +313,11 @@ pub fn unpack_zip_bytes_to_directory(zip_bytes: &[u8], dest_dir: &Path) -> Resul
 /// Converts one archive ZIP payload into canonical folder ZIP payload bytes.
 ///
 /// The resulting bytes always use uncompressed (stored) ZIP entries.
+///
+/// # Errors
+///
+/// Returns an error when temporary workspace setup fails, archive unpacking
+/// fails, or canonical repacking fails.
 pub fn normalize_archive_zip_bytes_to_folder_zip_bytes(
     archive_bytes: &[u8],
 ) -> Result<Vec<u8>, String> {
@@ -333,7 +361,7 @@ fn pack_single_file_to_uncompressed_zip_bytes(
     writer
         .finish()
         .map_err(|err| format!("finalizing file-pack zip payload failed: {err}"))
-        .map(|cursor| cursor.into_inner())
+        .map(std::io::Cursor::into_inner)
 }
 
 /// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
@@ -346,7 +374,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }

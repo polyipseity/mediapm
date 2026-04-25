@@ -140,6 +140,7 @@ pub(crate) enum ToolInputKindLatest {
     StringList,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
     matches!(kind, ToolInputKindLatest::String)
 }
@@ -256,10 +257,13 @@ where
             "expected integral success code, got {value}"
         )));
     }
-    if value < i32::MIN as f64 || value > i32::MAX as f64 {
+    if value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
         return Err(serde::de::Error::custom(format!("success code {value} is outside i32 range")));
     }
-    Ok(value as i32)
+
+    format!("{value:.0}")
+        .parse::<i32>()
+        .map_err(|_| serde::de::Error::custom(format!("success code {value} is outside i32 range")))
 }
 
 fn deserialize_integral_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -285,25 +289,19 @@ where
             "expected non-negative integral {field}, got {value}"
         )));
     }
-    if value > u64::MAX as f64 {
-        return Err(serde::de::Error::custom(format!("{field} {value} exceeds u64 range")));
-    }
-    Ok(value as u64)
+
+    format!("{value:.0}")
+        .parse::<u64>()
+        .map_err(|_| serde::de::Error::custom(format!("{field} {value} exceeds u64 range")))
 }
 
 fn parse_integral_u32<E>(value: f64, field: &str) -> Result<u32, E>
 where
     E: serde::de::Error,
 {
-    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 {
-        return Err(serde::de::Error::custom(format!(
-            "expected non-negative integral {field}, got {value}"
-        )));
-    }
-    if value > u32::MAX as f64 {
-        return Err(serde::de::Error::custom(format!("{field} {value} exceeds u32 range")));
-    }
-    Ok(value as u32)
+    let parsed = parse_integral_u64::<E>(value, field)?;
+    u32::try_from(parsed)
+        .map_err(|_| serde::de::Error::custom(format!("{field} {value} exceeds u32 range")))
 }
 
 /// Timezone-independent impure execution timestamp in persisted schema.

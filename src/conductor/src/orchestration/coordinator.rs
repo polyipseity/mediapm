@@ -201,6 +201,7 @@ where
     /// Progress-bar labels intentionally stay compact (task name only) so
     /// pulsebar's built-in counters and percentage display remain readable
     /// without duplicate text.
+    #[allow(clippy::too_many_lines)]
     async fn execute_workflows(
         &self,
         execution_hub: ExecutionHubClient,

@@ -65,6 +65,12 @@ Grouped runtime path defaults:
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
 - schema export directory: `<conductor_dir>/config/conductor`
 
+Schema export behavior contract:
+
+- both CLI workflow entrypoints and API workflow execution must export
+  conductor schemas to `<conductor_dir>/config/conductor` before runtime
+  execution continues.
+
 Document contract:
 
 - `conductor.ncl` is treated as user-edited input and is not machine-mutated.
@@ -231,6 +237,10 @@ When editing tool/config schema behavior, preserve these invariants:
     or non-negative integers. Runtime unified execution normalizes `-1` to the
     current default retry policy.
 
+  1. Newly captured output references must initialize persistence from the
+    resolved output specification policy before equivalent-call merge logic is
+    applied; do not seed new output entries with unconditional saved defaults.
+
 Instance-key rationale to preserve:
 
 - Equivalent-call dedup identity excludes tool content-map payload details and
@@ -242,6 +252,8 @@ Instance-key rationale to preserve:
 - Preserve conductor-to-CAS optimization hints that bias storage so frequently
   consumed outputs remain fast-access roots while related inputs may be stored
   as diffs when safe.
+- Constraint patch planning must skip the CAS empty-content root identity so
+  optimization does not emit invalid reverse-diff constraint updates.
 
 If adding validation, apply it both where practical:
 
@@ -313,6 +325,12 @@ Rules:
 - Unsupported/trailing escape sequences fail workflow resolution.
 - Malformed `:file(...)` tokens (for example missing closing `)`) fail workflow
   resolution.
+- `path_regex` template literals should avoid raw bracket escapes (`\[`/`\]`);
+  prefer regex-safe literals such as `\x5B` and `\x5D` when matching
+  bracketed markers.
+- Conditional branches that include literal `?` or `|` content must quote that
+  content as a string (for example `"2:v:0?"`) so parser control tokens are
+  not misinterpreted.
 
 When changing parser/templating logic, update Rust docstrings in:
 
@@ -390,6 +408,8 @@ Guidance:
   normalized sandbox-relative paths (`/` separators on all hosts).
 - Regex file capture must resolve to exactly one file; zero or multiple
   matches are workflow errors.
+- `folder_regex` capture rename expansions (capture-group based) must remain
+  deterministic and fail fast on post-rename path collisions.
 
 ## Versioned Schema Editing Policy
 

@@ -247,7 +247,12 @@ fn read_document_version_marker(source: &str, document_kind: &str) -> Result<u32
                 "{document_kind} top-level 'version' must be a non-negative integer"
             )));
         }
-        version as u64
+
+        format!("{version:.0}").parse::<u64>().map_err(|_| {
+            ConductorError::Workflow(format!(
+                "{document_kind} top-level 'version' value {version} exceeds supported range"
+            ))
+        })?
     } else {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} top-level 'version' must be numeric"
@@ -270,6 +275,8 @@ fn read_document_version_marker(source: &str, document_kind: &str) -> Result<u32
 /// - `version`
 /// - `impure_timestamps`
 /// - `state_pointer`
+const ALLOWED_STATE_DOCUMENT_KEYS: [&str; 3] = ["version", "impure_timestamps", "state_pointer"];
+
 fn validate_state_document_source_shape(source: &str) -> Result<(), ConductorError> {
     let value = evaluate_document_source_value(source, ".conductor/state.ncl")?;
     let object = value.as_object().ok_or_else(|| {
@@ -278,9 +285,8 @@ fn validate_state_document_source_shape(source: &str) -> Result<(), ConductorErr
         )
     })?;
 
-    const ALLOWED_KEYS: [&str; 3] = ["version", "impure_timestamps", "state_pointer"];
     for key in object.keys() {
-        if !ALLOWED_KEYS.contains(&key.as_str()) {
+        if !ALLOWED_STATE_DOCUMENT_KEYS.contains(&key.as_str()) {
             return Err(ConductorError::Workflow(format!(
                 "state document '.conductor/state.ncl' may only define version, impure_timestamps, and state_pointer (found '{key}')"
             )));
@@ -611,6 +617,7 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
 }
 
 /// Optic bridge from latest persisted Nickel state to runtime user document.
+#[allow(clippy::too_many_lines)]
 fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDocument> {
     IsoPrime::new(
         |state: latest::State| UserNickelDocument {
@@ -1171,6 +1178,7 @@ pub(crate) fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument,
 }
 
 /// Performs structural invariant checks on one latest persisted Nickel envelope.
+#[allow(clippy::too_many_lines)]
 fn vet_latest_envelope(
     envelope: &latest::Envelope,
     document_kind: &str,
@@ -1391,8 +1399,8 @@ fn vet_latest_envelope(
                             (
                                 v_latest::ToolInputKindLatest::String,
                                 v_latest::InputBindingLatest::String(_),
-                            ) => {}
-                            (
+                            )
+                            | (
                                 v_latest::ToolInputKindLatest::StringList,
                                 v_latest::InputBindingLatest::StringList(_),
                             ) => {}
@@ -2048,7 +2056,7 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         assert!(decoded.state_pointer.is_some());
     }
 
-    /// Verifies tool-config content-map hashes must be rooted in external_data.
+    /// Verifies tool-config content-map hashes must be rooted in `external_data`.
     #[test]
     fn decode_user_document_rejects_content_map_hash_missing_external_data_root() {
         let source = r#"
@@ -2507,7 +2515,7 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// Verifies impure timestamp nanosecond components stay within one second.
     #[test]
     fn decode_user_document_rejects_out_of_range_subsec_nanos() {
-        let source = r#"
+        let source = r"
 {
     version = 1,
     impure_timestamps = {
@@ -2519,7 +2527,7 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         },
     },
 }
-"#;
+";
 
         let err = decode_user_document(source.as_bytes()).expect_err(
             "user document should reject impure timestamp subsec_nanos >= 1_000_000_000",
@@ -2531,14 +2539,14 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// those fields are empty maps.
     #[test]
     fn decode_state_document_rejects_non_volatile_top_level_fields() {
-        let source = r#"
+        let source = r"
 {
     version = 1,
     impure_timestamps = {},
     state_pointer = null,
     tools = {},
 }
-"#;
+    ";
 
         let err = super::decode_state_document(source.as_bytes())
             .expect_err("state document with non-volatile fields should fail");
@@ -2570,9 +2578,9 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// `version` markers in all three configuration documents.
     #[test]
     fn evaluate_total_configuration_sources_rejects_missing_version_marker() {
-        let user = r#"{ version = 1, workflows = {} }"#;
-        let machine = r#"{ version = 1, tools = {} }"#;
-        let state = r#"{ impure_timestamps = {}, state_pointer = null }"#;
+        let user = r"{ version = 1, workflows = {} }";
+        let machine = r"{ version = 1, tools = {} }";
+        let state = r"{ impure_timestamps = {}, state_pointer = null }";
 
         let err = super::evaluate_total_configuration_sources(user, machine, state)
             .expect_err("missing state version marker should fail");

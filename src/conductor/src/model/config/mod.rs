@@ -555,6 +555,7 @@ pub enum ToolInputKind {
     StringList,
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_tool_input_kind(kind: &ToolInputKind) -> bool {
     matches!(kind, ToolInputKind::String)
 }
@@ -833,6 +834,10 @@ impl InputBinding {
     ///
     /// Scalar bindings visit exactly one item. List bindings visit each list
     /// element in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by `callback` for one visited scalar item.
     pub fn try_for_each_scalar<F>(&self, mut callback: F) -> Result<(), ConductorError>
     where
         F: FnMut(usize, &str) -> Result<(), ConductorError>,
@@ -1099,6 +1104,12 @@ impl UserNickelDocument {
     /// - duplicates fail unless `overwrite_existing = true`,
     /// - builtin tools cannot end up with `content_map` in effective config,
     /// - content-map hashes are reconciled into managed `external_data` roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation fails (for example empty tool names,
+    /// conflicting entries without overwrite mode, or invalid builtin/config
+    /// combinations).
     pub fn add_tool(
         &mut self,
         tool_name: impl Into<String>,
@@ -1128,6 +1139,12 @@ impl MachineNickelDocument {
     /// Adds one tool definition (and optional tool config) to machine document state.
     ///
     /// Validation rules mirror [`UserNickelDocument::add_tool`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation fails (for example empty tool names,
+    /// conflicting entries without overwrite mode, or invalid builtin/config
+    /// combinations).
     pub fn add_tool(
         &mut self,
         tool_name: impl Into<String>,
@@ -1157,6 +1174,11 @@ impl MachineNickelDocument {
     /// Validation rules:
     /// - `hash` is the external-data map key,
     /// - duplicates fail unless `overwrite_existing = true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `hash` already exists and overwrite mode is not
+    /// enabled.
     pub fn add_external_data(
         &mut self,
         hash: Hash,
@@ -1314,36 +1336,71 @@ fn validate_add_tool_config_mode(
 }
 
 /// Encodes `conductor.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be converted into the latest
+/// versioned envelope or serialized as Nickel source.
 pub fn encode_user_document(document: UserNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_user_document(document)
 }
 
 /// Decodes `conductor.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, Nickel migration/validation, or
+/// bridge deserialization fails.
 pub fn decode_user_document(bytes: &[u8]) -> Result<UserNickelDocument, ConductorError> {
     versions::decode_user_document(bytes)
 }
 
 /// Encodes `conductor.machine.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be converted into the latest
+/// versioned envelope or serialized as Nickel source.
 pub fn encode_machine_document(document: MachineNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_machine_document(document)
 }
 
 /// Decodes `conductor.machine.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, Nickel migration/validation, or
+/// bridge deserialization fails.
 pub fn decode_machine_document(bytes: &[u8]) -> Result<MachineNickelDocument, ConductorError> {
     versions::decode_machine_document(bytes)
 }
 
 /// Encodes `.conductor/state.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the state document cannot be converted into the
+/// latest envelope or serialized as Nickel source.
 pub fn encode_state_document(document: StateNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state_document(document)
 }
 
 /// Decodes `.conductor/state.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, volatile-shape validation, Nickel
+/// migration/validation, or bridge deserialization fails.
 pub fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument, ConductorError> {
     versions::decode_state_document(bytes)
 }
 
 /// Evaluates fixed Nickel migrations/contracts plus user, machine, and state configuration.
+///
+/// # Errors
+///
+/// Returns an error when any document fails version checks, schema validation,
+/// or merged configuration evaluation.
 pub fn evaluate_total_configuration_sources(
     user_source: &str,
     machine_source: &str,

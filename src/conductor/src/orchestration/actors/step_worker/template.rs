@@ -31,6 +31,15 @@ enum TemplateComparisonOperator {
     GreaterThanOrEqual,
 }
 
+/// One optional trailing materialization directive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateMaterializationDirective<'a> {
+    /// Defer materialization to one concrete file path.
+    File(&'a str),
+    /// Defer materialization to one concrete directory path.
+    Folder(&'a str),
+}
+
 impl<C> StepWorkerExecutor<C>
 where
     C: CasApi + Send + Sync + 'static,
@@ -45,6 +54,7 @@ where
     /// tokens expand list inputs to multiple arguments and scalar inputs to one
     /// argument when non-empty. Conditional unpack tokens evaluate to one
     /// rendered branch argument when non-empty.
+    #[allow(clippy::unused_self)]
     fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
         let prefix = "${*";
         if !template.starts_with(prefix) || !template.ends_with('}') {
@@ -137,6 +147,7 @@ where
     ///
     /// `:folder(...)` is only valid when combined with `:zip(...)`, and ZIP
     /// selectors that resolve to directories must use `:folder(...)`.
+    #[allow(clippy::too_many_lines)]
     fn resolve_template_token(
         &self,
         token: &str,
@@ -147,15 +158,6 @@ where
             return Err(ConductorError::Workflow(format!(
                 "unpack expression '${{{token}}}' is only valid as a standalone executable command argument token"
             )));
-        }
-
-        /// One optional trailing materialization directive.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum TemplateMaterializationDirective<'a> {
-            /// Defer materialization to one concrete file path.
-            File(&'a str),
-            /// Defer materialization to one concrete directory path.
-            Folder(&'a str),
         }
 
         let token = token.trim();
@@ -300,6 +302,7 @@ where
     ///
     /// Returns the token prefix before the directive plus the trimmed argument
     /// when the trailing suffix matches exactly; otherwise returns `None`.
+    #[allow(clippy::unused_self)]
     fn split_trailing_template_directive<'a>(
         &self,
         token: &'a str,
@@ -405,6 +408,7 @@ where
 
     /// Returns host platform value used by `context.os` selectors.
     #[must_use]
+    #[allow(clippy::unused_self)]
     fn current_os_text(&self) -> &'static str {
         match std::env::consts::OS {
             "windows" => "windows",
@@ -416,6 +420,7 @@ where
 
     /// Returns current process working-directory text used by
     /// `context.working_directory` selectors.
+    #[allow(clippy::unused_self)]
     fn current_working_directory_text(&self) -> Result<String, ConductorError> {
         std::env::current_dir().map(|path| path.to_string_lossy().to_string()).map_err(|source| {
             ConductorError::Io {
@@ -427,6 +432,7 @@ where
     }
 
     /// Splits one conditional token into condition + true/false branches.
+    #[allow(clippy::unused_self)]
     fn split_conditional_token_branches<'a>(
         &self,
         token: &'a str,
@@ -504,6 +510,7 @@ where
     ///
     /// Returns `Ok(None)` when no comparison operator is present so callers can
     /// fall back to truthiness evaluation.
+    #[allow(clippy::unused_self)]
     fn parse_conditional_comparison<'a>(
         &self,
         condition_expression: &'a str,
@@ -858,6 +865,7 @@ where
     }
 
     /// Recursively collects one directory tree into relative-file payloads.
+    #[allow(clippy::self_only_used_in_recursion)]
     fn collect_directory_file_payloads_recursive(
         &self,
         root_directory: &Path,
@@ -1013,6 +1021,7 @@ where
     }
 
     /// Decodes one JavaScript-like escape sequence from a template or selector.
+    #[allow(clippy::unused_self)]
     fn decode_js_escape(
         &self,
         escaped_tail: &str,

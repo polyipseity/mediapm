@@ -49,6 +49,11 @@ impl ConductorActorClient {
 
     /// Executes workflows from user/machine config paths plus runtime storage
     /// path options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or when workflow
+    /// evaluation/execution fails in the coordinator.
     pub async fn run_workflow(
         &self,
         user_ncl: &Path,
@@ -69,6 +74,11 @@ impl ConductorActorClient {
     }
 
     /// Returns the actor's current in-memory orchestration-state snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or state retrieval fails
+    /// in the coordinator.
     pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
         call_t!(self.actor, ConductorNodeMessage::GetState, DEFAULT_RPC_TIMEOUT_MS).map_err(
             |err| ConductorError::Internal(format!("conductor actor get_state RPC failed: {err}")),
@@ -76,6 +86,11 @@ impl ConductorActorClient {
     }
 
     /// Returns runtime diagnostics including worker queue metrics and scheduler traces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or diagnostics collection
+    /// fails in the coordinator.
     pub async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
         call_t!(self.actor, ConductorNodeMessage::GetRuntimeDiagnostics, DEFAULT_RPC_TIMEOUT_MS)
             .map_err(|err| {
@@ -145,6 +160,10 @@ where
 }
 
 /// Spawns a conductor node actor and returns a typed client.
+///
+/// # Errors
+///
+/// Returns an error when the node actor cannot be spawned.
 pub async fn spawn_conductor_actor<C>(cas: Arc<C>) -> Result<ConductorActorClient, ConductorError>
 where
     C: CasApi + Send + Sync + 'static,

@@ -188,8 +188,7 @@ where
                 continue;
             }
             match self.cas.delete(candidate).await {
-                Ok(()) => {}
-                Err(CasError::NotFound(_)) => {}
+                Ok(()) | Err(CasError::NotFound(_)) => {}
                 Err(other) => return Err(ConductorError::Cas(other)),
             }
         }

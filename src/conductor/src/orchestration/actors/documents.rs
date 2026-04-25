@@ -162,7 +162,7 @@ impl Actor for DocumentLoaderActor {
                     &user_ncl,
                     &machine_ncl,
                     &state_config,
-                    options,
+                    &options,
                 ));
             }
             DocumentLoaderMessage::PersistMachineDocument(path, document, reply) => {
@@ -182,7 +182,7 @@ impl DocumentLoaderActor {
         user_ncl: &Path,
         machine_ncl: &Path,
         state_config: &Path,
-        options: RunWorkflowOptions,
+        options: &RunWorkflowOptions,
     ) -> Result<LoadedDocuments, ConductorError> {
         let user_source = Self::load_user_source(user_ncl, machine_ncl)?;
         let machine_source = Self::load_machine_source(machine_ncl)?;
@@ -269,7 +269,7 @@ impl DocumentLoaderActor {
     fn merge_tools(
         user: &BTreeMap<String, ToolSpec>,
         machine: &BTreeMap<String, ToolSpec>,
-        options: RunWorkflowOptions,
+        options: &RunWorkflowOptions,
     ) -> Result<BTreeMap<String, ToolSpec>, ConductorError> {
         let mut merged = machine.clone();
 
@@ -424,11 +424,10 @@ impl DocumentLoaderActor {
                     }
 
                     match (&mut user_config.content_map, &machine_config.content_map) {
-                        (None, None) => {}
+                        (_, None) => {}
                         (None, Some(machine_map)) => {
                             user_config.content_map = Some(machine_map.clone());
                         }
-                        (Some(_), None) => {}
                         (Some(user_map), Some(machine_map)) => {
                             for (relative_path, machine_hash) in machine_map {
                                 match user_map.get(relative_path) {
@@ -854,11 +853,12 @@ impl DocumentLoaderActor {
     }
 
     /// Produces the merged runtime representation from the two parsed documents.
+    #[allow(clippy::too_many_lines)]
     fn unify_documents(
         user: &UserNickelDocument,
         machine: &MachineNickelDocument,
         runtime_storage: &RuntimeStorageConfig,
-        options: RunWorkflowOptions,
+        options: &RunWorkflowOptions,
     ) -> Result<(UnifiedNickelDocument, BTreeMap<String, ToolSpec>), ConductorError> {
         let external_data =
             Self::merge_named_maps("external_data", &user.external_data, &machine.external_data)?;
@@ -1119,7 +1119,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1178,7 +1178,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1230,7 +1230,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1282,7 +1282,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1335,7 +1335,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1409,7 +1409,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1473,7 +1473,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1538,7 +1538,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions { allow_tool_redefinition: true, ..RunWorkflowOptions::default() },
+            &RunWorkflowOptions { allow_tool_redefinition: true, ..RunWorkflowOptions::default() },
         )
         .expect("override option should allow redefinition");
 
@@ -1600,7 +1600,7 @@ mod tests {
             &user_path,
             &machine_path,
             &state_path,
-            RunWorkflowOptions::default(),
+            &RunWorkflowOptions::default(),
         )
         .expect("documents should load and unify");
 

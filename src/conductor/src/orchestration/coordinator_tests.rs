@@ -396,6 +396,7 @@ async fn pure_workflow_recovers_when_referenced_output_is_corrupted() {
 
 /// Protects impure-workflow fail-fast behavior when cached referenced outputs are corrupted.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn impure_workflow_does_not_auto_recover_corrupted_output() {
     let temp = tempdir().expect("tempdir");
     let cas =

@@ -22,7 +22,7 @@ use mediapm_cas::{
 
 use crate::api::{
     ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, default_state_paths,
-    resolve_runtime_storage_paths,
+    export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -178,12 +178,22 @@ pub struct PassthroughArgs {
 }
 
 /// Parses CLI from process arguments and executes it.
+///
+/// # Errors
+///
+/// Returns any workflow, I/O, CAS, or serialization error surfaced while
+/// executing the parsed CLI command.
 pub async fn run_from_env() -> Result<(), ConductorError> {
     let cli = Cli::parse();
     run(cli).await
 }
 
 /// Executes one parsed CLI command.
+///
+/// # Errors
+///
+/// Returns any workflow, I/O, CAS, or serialization error produced by the
+/// selected subcommand.
 pub async fn run(cli: Cli) -> Result<(), ConductorError> {
     let (default_user, default_machine) = default_state_paths();
     let user_ncl = cli.config.unwrap_or(default_user);
@@ -231,35 +241,6 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
             }
         }
     }
-}
-
-fn export_nickel_config_schemas(runtime_root: &Path) -> Result<(), ConductorError> {
-    let export_dir = schema_export_dir(runtime_root);
-    std::fs::create_dir_all(&export_dir).map_err(|source| ConductorError::Io {
-        operation: "creating runtime schema export directory".to_string(),
-        path: export_dir.clone(),
-        source,
-    })?;
-
-    let schemas = [
-        ("mod.ncl", include_str!("model/config/versions/mod.ncl")),
-        ("v1.ncl", include_str!("model/config/versions/v1.ncl")),
-    ];
-
-    for (file_name, content) in schemas {
-        let path = export_dir.join(file_name);
-        std::fs::write(&path, content).map_err(|source| ConductorError::Io {
-            operation: format!("writing exported Nickel schema '{file_name}'"),
-            path,
-            source,
-        })?;
-    }
-
-    Ok(())
-}
-
-fn schema_export_dir(runtime_root: &Path) -> PathBuf {
-    runtime_root.join("config").join("conductor")
 }
 
 /// Opens configured CAS backend from locator string.
@@ -785,9 +766,8 @@ fn normalized_relative_path(base_dir: &Path, file: &Path) -> Result<String, Cond
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CliCommand, ImportArgs, ImportCommand, export_nickel_config_schemas,
-        persisted_state_json_pretty, register_or_merge_imported_tool, resolve_import_process_name,
-        schema_export_dir,
+        Cli, CliCommand, ImportArgs, ImportCommand, persisted_state_json_pretty,
+        register_or_merge_imported_tool, resolve_import_process_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -797,7 +777,6 @@ mod tests {
     use mediapm_cas::Hash;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn parse_cas_passthrough_preserves_trailing_args() {
@@ -849,51 +828,6 @@ mod tests {
         assert_eq!(cli.runtime_paths.conductor_dir, PathBuf::from("runtime/.conductor-custom"));
         assert_eq!(cli.runtime_paths.config_state, Some(PathBuf::from("runtime/state.custom.ncl")));
         assert_eq!(cli.runtime_paths.cas_store_dir, Some("runtime/cas-root".to_string()));
-    }
-
-    #[test]
-    fn schema_export_dir_uses_runtime_root() {
-        let runtime_root = PathBuf::from(".");
-        assert_eq!(
-            schema_export_dir(&runtime_root),
-            PathBuf::from(".").join("config").join("conductor")
-        );
-    }
-
-    #[test]
-    fn schema_export_dir_nests_under_custom_runtime_root() {
-        let runtime_root = PathBuf::from("workspace");
-        assert_eq!(
-            schema_export_dir(&runtime_root),
-            PathBuf::from("workspace").join("config").join("conductor")
-        );
-    }
-
-    #[test]
-    fn export_nickel_config_schemas_writes_schema_files() {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be monotonic")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("mediapm-conductor-cli-schema-{unique}"));
-        let runtime_root = root.join("workspace");
-
-        export_nickel_config_schemas(&runtime_root).expect("schema export should succeed");
-
-        let export_dir = root.join("workspace").join("config").join("conductor");
-        let mod_schema = export_dir.join("mod.ncl");
-        let v1_schema = export_dir.join("v1.ncl");
-
-        assert!(mod_schema.exists(), "mod.ncl should be exported");
-        assert!(v1_schema.exists(), "v1.ncl should be exported");
-
-        let mod_bytes = std::fs::read(&mod_schema).expect("mod schema should be readable");
-        let v1_bytes = std::fs::read(&v1_schema).expect("v1 schema should be readable");
-
-        assert!(!mod_bytes.is_empty(), "mod.ncl should not be empty");
-        assert!(!v1_bytes.is_empty(), "v1.ncl should not be empty");
-
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
