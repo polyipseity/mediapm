@@ -216,10 +216,19 @@ impl FileSystemState {
     }
 
     /// Removes one hash from in-process reconstructed-byte cache.
-    fn invalidate_cached_object_bytes(&self, hash: Hash) -> Result<(), CasError> {
+    fn invalidate_cached_object_bytes(&self, hash: Hash) {
         let mut cache = self.lock_content_cache("invalidating object-byte cache");
         cache.remove(&hash);
-        Ok(())
+    }
+
+    /// Converts ratio inputs to `f64` for observability reporting.
+    ///
+    /// The metrics API intentionally exposes a floating-point compression ratio.
+    /// Precision loss for very large counters is acceptable in this diagnostic
+    /// view and does not affect correctness-critical planning/state logic.
+    #[allow(clippy::cast_precision_loss)]
+    fn ratio_as_f64(numerator: u64, denominator: u64) -> f64 {
+        numerator as f64 / denominator as f64
     }
 
     /// Increments cache-hit metric counter.
@@ -271,7 +280,7 @@ impl FileSystemState {
             self.metrics.object_actor_rpc_wait_ms.load(Ordering::Relaxed);
 
         let delta_compression_ratio =
-            if delta_content == 0 { 1.0 } else { delta_payload as f64 / delta_content as f64 };
+            if delta_content == 0 { 1.0 } else { Self::ratio_as_f64(delta_payload, delta_content) };
 
         FileSystemMetrics {
             cache_hits,
@@ -293,7 +302,7 @@ impl FileSystemState {
     ///
     /// When `include_empty` is false, the implicit empty-content node and any
     /// edges that reference it are omitted.
-    fn topology_snapshot(&self, include_empty: bool) -> Result<CasTopologySnapshot, CasError> {
+    fn topology_snapshot(&self, include_empty: bool) -> CasTopologySnapshot {
         let index = self.lock_index_read("building topology snapshot");
 
         let mut nodes: Vec<CasTopologyNode> = index
@@ -343,7 +352,7 @@ impl FileSystemState {
             .collect();
         constraints.sort_by_key(|row| row.target_hash);
 
-        Ok(CasTopologySnapshot { include_empty, nodes, constraints })
+        CasTopologySnapshot { include_empty, nodes, constraints }
     }
 
     /// Reads bytes from cache or underlying storage, then caches result.
@@ -589,7 +598,7 @@ impl FileSystemState {
             index.constraints.clone()
         };
         let seed = recovery::choose_constraint_seed(&self.root, Some(current_constraints))?;
-        let recovered = recovery::rebuild_index_from_object_store(&self.root, seed)?;
+        let recovered = recovery::rebuild_index_from_object_store(&self.root, &seed)?;
 
         {
             let mut index = self.lock_index_write("publishing repaired index state");
@@ -669,7 +678,8 @@ impl FileSystemState {
             hash
         )
         .map_err(|err| CasError::actor_rpc("deleting object files via object actor", err))??;
-        self.invalidate_cached_object_bytes(hash)
+        self.invalidate_cached_object_bytes(hash);
+        Ok(())
     }
 
     /// Calculates optimization score for currently stored object metadata.
@@ -877,7 +887,8 @@ impl FileSystemState {
         if let StoredObject::Delta { state } = object {
             self.record_delta_compression(state.payload.len() as u64, state.content_len);
         }
-        self.invalidate_cached_object_bytes(hash)
+        self.invalidate_cached_object_bytes(hash);
+        Ok(())
     }
 
     /// Derives index metadata from one persisted object plan.
@@ -1710,6 +1721,11 @@ impl Drop for FileSystemCas {
 /// Public constructor/helpers and visualization/maintenance utilities.
 impl FileSystemCas {
     /// Opens (or initializes) a CAS repository rooted at `root`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when directory initialization, durable index
+    /// loading/recovery, or object-actor startup fails.
     pub async fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
         Self::open_with_alpha_and_recovery(root, 4, FileSystemRecoveryOptions::default()).await
     }
@@ -1718,17 +1734,30 @@ impl FileSystemCas {
     ///
     /// This keeps normal production constructors unchanged while allowing tests
     /// to opt into a shorter actor-shutdown grace window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] under the same failure conditions as [`Self::open`].
     pub async fn open_for_tests(root: impl AsRef<Path>) -> Result<Self, CasError> {
         Self::open_with_alpha_and_recovery_for_tests(root, 4, FileSystemRecoveryOptions::default())
             .await
     }
 
     /// Opens a CAS repository with an explicit optimizer depth penalty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when backend initialization or startup recovery
+    /// cannot complete.
     pub async fn open_with_alpha(root: impl AsRef<Path>, alpha: u64) -> Result<Self, CasError> {
         Self::open_with_alpha_and_recovery(root, alpha, FileSystemRecoveryOptions::default()).await
     }
 
     /// Opens a CAS repository with explicit optimizer and recovery settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when filesystem/bootstrap/index startup flows fail.
     pub async fn open_with_alpha_and_recovery(
         root: impl AsRef<Path>,
         alpha: u64,
@@ -1745,6 +1774,11 @@ impl FileSystemCas {
 
     /// Opens a CAS repository with test-oriented drop behavior and explicit
     /// optimizer depth penalty.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] under the same failure conditions as
+    /// [`Self::open_with_alpha_and_recovery`].
     pub async fn open_with_alpha_for_tests(
         root: impl AsRef<Path>,
         alpha: u64,
@@ -1758,6 +1792,10 @@ impl FileSystemCas {
     }
 
     /// Opens a CAS repository with test-oriented drop behavior and explicit recovery settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when startup initialization/recovery fails.
     pub async fn open_with_alpha_and_recovery_for_tests(
         root: impl AsRef<Path>,
         alpha: u64,
@@ -1785,56 +1823,96 @@ impl FileSystemCas {
     }
 
     /// Returns the canonical full-data object file path for `hash`.
+    #[must_use]
     pub fn object_path_for_hash(&self, hash: Hash) -> PathBuf {
         object_path(&self.root, hash)
     }
 
     /// Returns the canonical `.diff` path for `hash`.
+    #[must_use]
     pub fn diff_path_for_hash(&self, hash: Hash) -> PathBuf {
         diff_object_path(&self.root, hash)
     }
 
     /// Returns CAS root path.
+    #[must_use]
     pub fn root_path(&self) -> &Path {
         &self.root
     }
 
     /// Enables/disables max-compression mode (`alpha = 0` when enabled).
+    ///
+    /// # Errors
+    ///
+    /// This API is intentionally fallible for parity with other runtime
+    /// toggles; the current implementation does not produce an error.
+    #[allow(clippy::unused_async)]
     pub async fn set_max_compression_mode(&self, enabled: bool) -> Result<(), CasError> {
         self.state.set_max_compression_mode(enabled);
         Ok(())
     }
 
     /// Reports current max-compression mode flag.
+    ///
+    /// # Errors
+    ///
+    /// This API is intentionally fallible for consistency; the current
+    /// implementation does not produce an error.
+    #[allow(clippy::unused_async)]
     pub async fn max_compression_mode(&self) -> Result<bool, CasError> {
         Ok(self.state.max_compression_mode())
     }
 
     /// Computes total CAS payload bytes currently stored on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when requesting the object actor's tracked size
+    /// fails (for example, actor RPC timeout/failure).
     pub async fn cas_store_size_bytes(&self) -> Result<u64, CasError> {
         self.state.cas_store_size_bytes().await
     }
 
     /// Returns runtime observability counters for this filesystem backend.
+    ///
+    /// # Errors
+    ///
+    /// This API is intentionally fallible for consistency; the current
+    /// implementation does not produce an error.
+    #[allow(clippy::unused_async)]
     pub async fn metrics(&self) -> Result<FileSystemMetrics, CasError> {
         Ok(self.state.metrics())
     }
 
     /// Returns topology snapshot suitable for graph visualization.
+    ///
+    /// # Errors
+    ///
+    /// This API is intentionally fallible for consistency; the current
+    /// implementation does not produce an error.
+    #[allow(clippy::unused_async)]
     pub async fn topology_snapshot(
         &self,
         include_empty: bool,
     ) -> Result<CasTopologySnapshot, CasError> {
-        self.state.topology_snapshot(include_empty)
+        Ok(self.state.topology_snapshot(include_empty))
     }
 
     /// Renders current topology as Mermaid flowchart markup.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when topology snapshot collection fails.
     pub async fn visualize_mermaid(&self, include_empty: bool) -> Result<String, CasError> {
         let snapshot = self.topology_snapshot(include_empty).await?;
         Ok(render_topology_mermaid(&snapshot))
     }
 
     /// Renders a depth-limited Mermaid topology view around one target hash.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when topology snapshot collection fails.
     pub async fn visualize_mermaid_neighborhood(
         &self,
         target_hash: Hash,
@@ -1846,26 +1924,51 @@ impl FileSystemCas {
     }
 
     /// Returns current explicit constraint bases for `target_hash`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::NotFound`] when `target_hash` does not exist.
+    #[allow(clippy::unused_async)]
     pub async fn constraint_bases(&self, target_hash: Hash) -> Result<Vec<Hash>, CasError> {
         self.state.constraint_bases(target_hash)
     }
 
     /// Flushes in-memory index snapshot to redb.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when durable snapshot persistence fails.
     pub async fn flush_index_snapshot(&self) -> Result<(), CasError> {
         self.state.persist_index_snapshot().await
     }
 
     /// Rebuilds durable index metadata from the object store and persists it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when object-store scanning, validation, or
+    /// snapshot persistence fails.
     pub async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {
         self.state.repair_index_from_object_store().await
     }
 
     /// Migrates durable index storage to one target schema marker.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when migration or post-migration load/publish
+    /// operations fail.
     pub async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         self.state.migrate_index_to_version(target_version).await
     }
 
     /// Reports whether an optimize run is currently active.
+    ///
+    /// # Errors
+    ///
+    /// This API is intentionally fallible for consistency; the current
+    /// implementation does not produce an error.
+    #[allow(clippy::unused_async)]
     pub async fn optimize_in_progress(&self) -> Result<bool, CasError> {
         Ok(self.state.optimize_in_progress.load(Ordering::Acquire))
     }
@@ -2215,12 +2318,12 @@ fn ensure_reconstructed_size(
 fn ensure_reconstructed_hash(
     expected_hash: Hash,
     content: &[u8],
-    context: &str,
+    operation: &str,
 ) -> Result<(), CasError> {
     let actual = Hash::from_content(content);
     if actual != expected_hash {
         return Err(CasError::corrupt_object(format!(
-            "hash mismatch while {context}: expected {expected_hash}, got {actual}"
+            "hash mismatch while {operation}: expected {expected_hash}, got {actual}"
         )));
     }
 
@@ -2380,7 +2483,7 @@ mod tests {
                 let entry = entry.expect("dir entry");
                 let child = entry.path();
                 if child.is_dir() {
-                    if child.file_name().map(|name| name == "tmp").unwrap_or(false) {
+                    if child.file_name().is_some_and(|name| name == "tmp") {
                         tmp_dirs.push(child.clone());
                     }
                     stack.push(child);
@@ -2703,7 +2806,8 @@ mod tests {
     async fn filesystem_get_stream_round_trips_large_full_payload() {
         let (_dir, cas) = open_temp_filesystem_cas().await;
 
-        let payload = vec![b'm'; (super::FILESYSTEM_MMAP_MIN_BYTES as usize) + 4096];
+        let mmap_min_bytes = usize::try_from(super::FILESYSTEM_MMAP_MIN_BYTES).unwrap_or(64 * 1024);
+        let payload = vec![b'm'; mmap_min_bytes + 4096];
         let hash = cas.put(Bytes::from(payload.clone())).await.expect("put large payload");
 
         let mut stream = cas.get_stream(hash).await.expect("get_stream large full payload");

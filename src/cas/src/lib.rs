@@ -59,16 +59,26 @@ mod tests {
         InMemoryCas,
     };
 
+    /// Type-check helper that ensures exported actor client aliases stay public.
+    fn accept_client(client: Option<CasNodeActorClient>) {
+        drop(client);
+    }
+
     #[test]
     fn public_exports_are_constructible() {
-        let _hash = Hash::from_content(b"export-smoke");
-        let _command = CasWireCommand::OptimizeOnce;
-        let _response = CasWireResponse::Ack;
+        let hash = Hash::from_content(b"export-smoke");
+        assert!(!hash.to_hex().is_empty());
 
-        let _in_memory = InMemoryCas::new();
+        let command = CasWireCommand::OptimizeOnce;
+        assert!(matches!(command, CasWireCommand::OptimizeOnce));
 
-        fn _accept_client(_client: Option<CasNodeActorClient>) {}
-        _accept_client(None);
+        let response = CasWireResponse::Ack;
+        assert!(matches!(response, CasWireResponse::Ack));
+
+        let in_memory = InMemoryCas::new();
+        drop(in_memory);
+
+        accept_client(None);
     }
 
     #[tokio::test]

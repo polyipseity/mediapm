@@ -96,12 +96,12 @@ pub(super) fn build_reconstruction_plan(
 pub(super) fn ensure_reconstructed_hash(
     expected_hash: Hash,
     content: &[u8],
-    context: &str,
+    operation: &str,
 ) -> Result<(), CasError> {
     let actual = Hash::from_content(content);
     if actual != expected_hash {
         return Err(CasError::corrupt_object(format!(
-            "hash mismatch while {context}: expected {expected_hash}, got {actual}"
+            "hash mismatch while {operation}: expected {expected_hash}, got {actual}"
         )));
     }
 

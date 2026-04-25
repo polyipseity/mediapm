@@ -187,7 +187,7 @@ pub struct IndexRepairReport {
 /// Priority hint for one optimizer pass.
 ///
 /// This is a scheduling hint, not a hard guarantee. Backends may currently use
-/// it only for heuristics/logging and evolve toward stronger QoS later.
+/// it only for heuristics/logging and evolve toward stronger `QoS` later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizePriority {
     /// Best-effort background maintenance.

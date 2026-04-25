@@ -87,7 +87,7 @@ async fn delete_base_preserves_descendant_reconstructability() {
 /// 5. Assert each failure classifies as `NotFound`.
 ///
 /// Edge cases covered:
-/// - deterministic sequential delete_many behavior.
+/// - deterministic sequential `delete_many` behavior.
 #[tokio::test]
 async fn delete_many_removes_all_targets() {
     run_with_15s_timeout(async {
@@ -187,8 +187,8 @@ async fn optimize_delete_optimize_remains_stable() {
             let base = backend.put(synthetic_payload(81, 24 * 1024)).await.expect("put base");
 
             let mut targets = Vec::new();
-            for idx in 0..5usize {
-                let payload = synthetic_payload(90 + idx as u8, 24 * 1024);
+            for idx in 0u8..5 {
+                let payload = synthetic_payload(90 + idx, 24 * 1024);
                 let target = backend.put(payload).await.expect("put target");
                 backend
                     .set_constraint(Constraint {

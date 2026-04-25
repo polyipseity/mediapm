@@ -57,8 +57,7 @@ mod base_storage_serde {
         let len = bytes.len();
         bytes.try_into().map_err(|_: Vec<u8>| {
             D::Error::custom(format!(
-                "expected {HASH_STORAGE_KEY_BYTES} base-storage bytes, got {}",
-                len
+                "expected {HASH_STORAGE_KEY_BYTES} base-storage bytes, got {len}"
             ))
         })
     }

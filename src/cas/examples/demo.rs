@@ -113,7 +113,8 @@ fn reset_demo_output_directory() -> Result<PathBuf, Box<dyn std::error::Error>> 
 
 /// Builds deterministic file fixtures for repeatable demo output.
 fn input_files_for_demo() -> Vec<DemoFileSpec> {
-    let waveform: Vec<u8> = (0u32..2048).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+    let waveform: Vec<u8> =
+        (0u32..2048).map(|i| u8::try_from((i * 37 + 11) % 256).unwrap_or(0)).collect();
 
     vec![
         DemoFileSpec {

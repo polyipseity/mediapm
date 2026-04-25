@@ -95,11 +95,21 @@ impl HashAlgorithm {
     }
 
     /// Resolves an algorithm from multicodec code.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError::UnknownAlgorithmCode`] when `code` is not
+    /// recognized by the crate's supported algorithm set.
     pub fn from_code(code: u64) -> Result<Self, HashParseError> {
         Self::try_from(code).map_err(|_| HashParseError::UnknownAlgorithmCode(code))
     }
 
     /// Resolves an algorithm from name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError::UnknownAlgorithmName`] when `name` does not
+    /// match a supported algorithm token.
     pub fn from_name(name: &str) -> Result<Self, HashParseError> {
         if name.eq_ignore_ascii_case(BLAKE3_NAME) {
             Ok(Self::Blake3)
@@ -124,6 +134,11 @@ impl Hash {
     }
 
     /// Builds a hash from algorithm and digest bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if internal multihash wrapping fails for a digest with the
+    /// known compile-time width for `algorithm`.
     #[must_use]
     pub fn from_parts(algorithm: HashAlgorithm, digest: [u8; BLAKE3_DIGEST_SIZE]) -> Self {
         Self::from_digest_slice(algorithm, &digest)
@@ -131,6 +146,11 @@ impl Hash {
     }
 
     /// Builds a hash from encoded multihash bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError`] when bytes fail multihash decoding,
+    /// algorithm validation, or digest-size validation.
     pub fn from_storage_bytes(bytes: &[u8]) -> Result<Self, HashParseError> {
         let inner = RawMultihash::<MULTIHASH_BUFFER_SIZE>::from_bytes(bytes)
             .map_err(|err| HashParseError::Multihash(err.to_string()))?;
@@ -141,13 +161,16 @@ impl Hash {
     ///
     /// # Performance
     /// This method performs no heap allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if writing to the fixed-size stack buffer unexpectedly
+    /// fails inside the multihash encoder.
     pub fn write_storage_bytes(self, out: &mut [u8; STORAGE_BYTES_LEN]) {
         let encoded_len = self.inner.encoded_len();
         debug_assert!(
             encoded_len == STORAGE_BYTES_LEN,
-            "encoded multihash length {} did not match fixed length {}",
-            encoded_len,
-            STORAGE_BYTES_LEN
+            "encoded multihash length {encoded_len} did not match fixed length {STORAGE_BYTES_LEN}"
         );
 
         let mut cursor = Cursor::new(&mut out[..]);
@@ -179,6 +202,10 @@ impl Hash {
     }
 
     /// Returns lowercase hex representation of full multihash storage bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if writing into the temporary [`String`] buffer fails.
     #[must_use]
     pub fn to_storage_hex(self) -> String {
         let mut out = String::with_capacity(STORAGE_BYTES_LEN * 2);
@@ -187,6 +214,10 @@ impl Hash {
     }
 
     /// Writes lowercase multihash storage hex into an existing formatter/writer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any write error from `writer`.
     pub fn write_storage_hex(&self, writer: &mut impl std::fmt::Write) -> std::fmt::Result {
         let storage = self.storage_bytes();
         write_hex_into(writer, &storage)
@@ -199,6 +230,12 @@ impl Hash {
     }
 
     /// Computes a hash for arbitrary byte content using the selected algorithm.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the derive-generated codetable produces an invalid
+    /// multihash for `algorithm`, which would indicate an internal invariant
+    /// violation.
     #[must_use]
     pub fn from_content_with_algorithm(algorithm: HashAlgorithm, content: &[u8]) -> Self {
         let inner = algorithm.digest(content);
@@ -207,6 +244,11 @@ impl Hash {
     }
 
     /// Returns the algorithm tag.
+    ///
+    /// # Panics
+    ///
+    /// Panics if this hash contains an unknown algorithm code, which indicates
+    /// internal invariant violation.
     #[inline]
     #[must_use]
     pub fn algorithm(self) -> HashAlgorithm {
@@ -236,6 +278,10 @@ impl Hash {
     }
 
     /// Returns digest bytes as 32-byte array for Blake3.
+    ///
+    /// # Panics
+    ///
+    /// Panics if digest bytes do not match the fixed Blake3 width.
     #[must_use]
     pub fn as_digest_bytes(&self) -> &[u8; BLAKE3_DIGEST_SIZE] {
         self.digest().try_into().expect("blake3 digest size must be 32 bytes")
@@ -248,6 +294,10 @@ impl Hash {
     }
 
     /// Returns lowercase hex representation of digest bytes only.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if writing into the temporary [`String`] buffer fails.
     #[must_use]
     pub fn to_hex(self) -> String {
         let mut out = String::with_capacity(self.digest().len() * 2);
@@ -256,6 +306,10 @@ impl Hash {
     }
 
     /// Writes lowercase digest hex directly into an existing formatter/writer.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any write error from `writer`.
     ///
     /// # Performance
     /// Allocation-free for callers that provide an existing output buffer.
@@ -300,6 +354,11 @@ impl Hash {
     ///
     /// This is useful for low-level codec operations that need to construct hashes
     /// from pre-validated multihash values.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError`] when algorithm code or digest width do not
+    /// satisfy crate invariants.
     pub fn try_from_multihash(
         inner: RawMultihash<MULTIHASH_BUFFER_SIZE>,
     ) -> Result<Self, HashParseError> {
@@ -318,13 +377,22 @@ impl Hash {
     ///
     /// This is useful when parsing formats where the exact byte length must be determined
     /// from the varint-encoded prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError`] when multihash decoding fails, when the
+    /// consumed prefix length cannot be represented as `usize`, or when the
+    /// decoded hash violates algorithm/digest invariants.
     pub fn from_storage_bytes_with_len(bytes: &[u8]) -> Result<(Self, usize), HashParseError> {
         let mut cursor = Cursor::new(bytes);
         RawMultihash::<MULTIHASH_BUFFER_SIZE>::read(&mut cursor)
             .map_err(|e| HashParseError::Multihash(e.to_string()))?;
 
-        let consumed =
-            usize::try_from(cursor.position()).expect("cursor position should fit in usize");
+        let consumed = usize::try_from(cursor.position()).map_err(|_| {
+            HashParseError::Multihash(
+                "multihash cursor position exceeded platform usize range".to_string(),
+            )
+        })?;
 
         let hash = Self::from_storage_bytes(&bytes[..consumed])?;
         Ok((hash, consumed))

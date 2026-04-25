@@ -37,9 +37,9 @@ use redb::{Database, ReadableMultimapTable, ReadableTable};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use std::arch::is_x86_feature_detected;
 #[cfg(target_arch = "x86")]
-use std::arch::x86::{__m128i, _mm_and_si128, _mm_set_epi32, _mm_set1_epi32, _mm_storeu_si128};
+use std::arch::x86::{__m128i, _mm_and_si128, _mm_set_epi32, _mm_set1_epi32};
 #[cfg(target_arch = "x86_64")]
-use std::arch::x86_64::{__m128i, _mm_and_si128, _mm_set_epi32, _mm_set1_epi32, _mm_storeu_si128};
+use std::arch::x86_64::{__m128i, _mm_and_si128, _mm_set_epi32, _mm_set1_epi32};
 
 use super::{
     DELTA_PROMOTION_DEPTH, HASH_STORAGE_KEY_BYTES, IndexState, MAX_DELTA_DEPTH, ObjectEncoding,
@@ -171,7 +171,7 @@ impl<'a> BloomPayloadView<'a> {
         let digest2 = pod_read_unaligned::<[u32; 8]>(hashes[2].as_digest_bytes());
         let digest3 = pod_read_unaligned::<[u32; 8]>(hashes[3].as_digest_bytes());
 
-        let mask = self.mask as u32;
+        let mask = u32::try_from(self.mask).unwrap_or(u32::MAX);
         let lane_a =
             unsafe { masked_lanes_sse2([digest0[0], digest1[0], digest2[0], digest3[0]], mask) };
         let lane_b =
@@ -208,12 +208,16 @@ unsafe fn masked_lanes_sse2(
     values: [u32; BLOOM_HASH_PROBE_COUNT],
     mask: u32,
 ) -> [usize; BLOOM_HASH_PROBE_COUNT] {
-    let v = _mm_set_epi32(values[3] as i32, values[2] as i32, values[1] as i32, values[0] as i32);
-    let m = _mm_set1_epi32(mask as i32);
+    let v = _mm_set_epi32(
+        values[3].cast_signed(),
+        values[2].cast_signed(),
+        values[1].cast_signed(),
+        values[0].cast_signed(),
+    );
+    let m = _mm_set1_epi32(mask.cast_signed());
     let masked = _mm_and_si128(v, m);
 
-    let mut out = [0u32; 4];
-    unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, masked) };
+    let out = unsafe { std::mem::transmute::<__m128i, [u32; BLOOM_HASH_PROBE_COUNT]>(masked) };
     [out[0] as usize, out[1] as usize, out[2] as usize, out[3] as usize]
 }
 
@@ -404,7 +408,7 @@ impl CasIndexDb {
         let _migration_guard = self.lock_migration_read("reading index contains_hashes_fast")?;
         let schema_marker = self.schema_marker_for_operation()?;
         let read = self.db.begin_read().map_err(CasError::redb)?;
-        let bloom_hits = match self.bloom_prefilter_many_from_read(&read, schema_marker, hashes)? {
+        let bloom_hits = match Self::bloom_prefilter_many_from_read(&read, schema_marker, hashes)? {
             Some(hits) => hits,
             None => self
                 .bloom
@@ -491,6 +495,36 @@ impl CasIndexDb {
         schema_marker: u32,
         state: &IndexState,
     ) -> Result<(), CasError> {
+        let bloom_from_state = HashBloomFilter::from_index_state(state);
+
+        let read = self.db.begin_read().map_err(CasError::redb)?;
+        let primary_read = open_primary_table_read(&read, schema_marker)?;
+        let constraints_read = open_constraints_table_read(&read, schema_marker)?;
+
+        let write = self.db.begin_write().map_err(CasError::redb)?;
+        {
+            let mut primary_write = open_primary_table_write(&write, schema_marker)?;
+            let mut constraints_write = open_constraints_table_write(&write, schema_marker)?;
+
+            Self::reconcile_primary_rows(state, schema_marker, &primary_read, &mut primary_write)?;
+            Self::reconcile_constraint_rows(state, &constraints_read, &mut constraints_write)?;
+
+            Self::set_schema_marker_current(&write, schema_marker)?;
+            Self::persist_bloom_state_table(&write, schema_marker, &bloom_from_state)?;
+        }
+
+        write.commit().map_err(CasError::redb)?;
+        self.replace_bloom_filter(bloom_from_state)?;
+        Ok(())
+    }
+
+    /// Reconciles desired runtime primary rows against persisted rows.
+    fn reconcile_primary_rows(
+        state: &IndexState,
+        schema_marker: u32,
+        primary_read: &redb::ReadOnlyTable<&'static [u8], &'static [u8]>,
+        primary_write: &mut redb::Table<&[u8], &[u8]>,
+    ) -> Result<(), CasError> {
         let mut desired_primary = state
             .objects
             .iter()
@@ -498,6 +532,67 @@ impl CasIndexDb {
             .map(|(hash, _)| *hash)
             .peekable();
 
+        let mut primary_iter = primary_read.iter().map_err(CasError::redb)?;
+        let mut next_primary = || -> Result<Option<ExistingPrimaryRow>, CasError> {
+            let Some(row) = primary_iter.next() else {
+                return Ok(None);
+            };
+            let (key, value) = row.map_err(CasError::redb)?;
+            let key_bytes: [u8; HASH_STORAGE_KEY_BYTES] = key.value().try_into().map_err(|_| {
+                CasError::corrupt_index(format!(
+                    "invalid key width in primary index: expected {HASH_STORAGE_KEY_BYTES}, got {}",
+                    key.value().len()
+                ))
+            })?;
+            Ok(Some((key_bytes, value.value().to_vec())))
+        };
+
+        let mut existing_primary = next_primary()?;
+        while let Some(desired_hash) = desired_primary.peek().copied() {
+            let desired_key = index_key_from_hash(desired_hash);
+            let desired_value = Self::encode_desired_header(state, schema_marker, desired_hash)?;
+
+            if let Some((existing_key, existing_value)) = existing_primary.as_ref()
+                && *existing_key == desired_key
+            {
+                if existing_value.as_slice() != desired_value.as_slice() {
+                    primary_write
+                        .insert(desired_key.as_slice(), desired_value.as_slice())
+                        .map_err(CasError::redb)?;
+                }
+                let _ = desired_primary.next();
+                existing_primary = next_primary()?;
+                continue;
+            }
+
+            if let Some((existing_key, _)) = existing_primary.as_ref()
+                && *existing_key < desired_key
+            {
+                primary_write.remove(existing_key.as_slice()).map_err(CasError::redb)?;
+                existing_primary = next_primary()?;
+                continue;
+            }
+
+            primary_write
+                .insert(desired_key.as_slice(), desired_value.as_slice())
+                .map_err(CasError::redb)?;
+            let _ = desired_primary.next();
+        }
+
+        while let Some((existing_key, _)) = existing_primary {
+            primary_write.remove(existing_key.as_slice()).map_err(CasError::redb)?;
+            existing_primary = next_primary()?;
+        }
+
+        Ok(())
+    }
+
+    /// Reconciles desired runtime explicit constraints against persisted rows.
+    fn reconcile_constraint_rows(
+        state: &IndexState,
+        constraints_read: &redb::ReadOnlyMultimapTable<&'static [u8], &'static [u8]>,
+        constraints_write: &mut redb::MultimapTable<&[u8], &[u8]>,
+    ) -> Result<(), CasError> {
         let mut desired_constraints = state
             .constraints
             .iter()
@@ -510,132 +605,58 @@ impl CasIndexDb {
             })
             .peekable();
 
-        let bloom_from_state = HashBloomFilter::from_index_state(state);
+        for row in constraints_read.iter().map_err(CasError::redb)? {
+            let (target, bases) = row.map_err(CasError::redb)?;
+            let target: [u8; HASH_STORAGE_KEY_BYTES] = target.value().try_into().map_err(|_| {
+                CasError::corrupt_index(format!(
+                    "invalid target key width in constraints table: expected {HASH_STORAGE_KEY_BYTES}, got {}",
+                    target.value().len()
+                ))
+            })?;
 
-        let read = self.db.begin_read().map_err(CasError::redb)?;
-        let primary_read = open_primary_table_read(&read, schema_marker)?;
-        let constraints_read = open_constraints_table_read(&read, schema_marker)?;
-
-        let write = self.db.begin_write().map_err(CasError::redb)?;
-        {
-            let mut primary_write = open_primary_table_write(&write, schema_marker)?;
-            let mut constraints_write = open_constraints_table_write(&write, schema_marker)?;
-
-            let mut primary_iter = primary_read.iter().map_err(CasError::redb)?;
-            let mut next_primary = || -> Result<Option<ExistingPrimaryRow>, CasError> {
-                let Some(row) = primary_iter.next() else {
-                    return Ok(None);
-                };
-                let (key, value) = row.map_err(CasError::redb)?;
-                let key_bytes: [u8; HASH_STORAGE_KEY_BYTES] =
-                    key.value().try_into().map_err(|_| {
+            for base in bases {
+                let base = base.map_err(CasError::redb)?;
+                let base: [u8; HASH_STORAGE_KEY_BYTES] = base.value().try_into().map_err(|_| {
                     CasError::corrupt_index(format!(
-                        "invalid key width in primary index: expected {HASH_STORAGE_KEY_BYTES}, got {}",
-                        key.value().len()
+                        "invalid base key width in constraints table: expected {HASH_STORAGE_KEY_BYTES}, got {}",
+                        base.value().len()
                     ))
                 })?;
-                let value_bytes = value.value().to_vec();
-                Ok(Some((key_bytes, value_bytes)))
-            };
 
-            let mut existing_primary = next_primary()?;
-            while let Some(desired_hash) = desired_primary.peek().copied() {
-                let desired_key = index_key_from_hash(desired_hash);
-                let desired_value =
-                    Self::encode_desired_header(state, schema_marker, desired_hash)?;
-
-                if let Some((existing_key, existing_value)) = existing_primary.as_ref()
-                    && *existing_key == desired_key
-                {
-                    if existing_value.as_slice() != desired_value.as_slice() {
-                        primary_write
-                            .insert(desired_key.as_slice(), desired_value.as_slice())
+                let existing_pair = (target, base);
+                while let Some(desired_pair) = desired_constraints.peek().copied() {
+                    if desired_pair < existing_pair {
+                        constraints_write
+                            .insert(desired_pair.0.as_slice(), desired_pair.1.as_slice())
                             .map_err(CasError::redb)?;
+                        let _ = desired_constraints.next();
+                    } else {
+                        break;
                     }
-                    let _ = desired_primary.next();
-                    existing_primary = next_primary()?;
-                    continue;
                 }
 
-                if let Some((existing_key, _)) = existing_primary.as_ref()
-                    && *existing_key < desired_key
-                {
-                    primary_write.remove(existing_key.as_slice()).map_err(CasError::redb)?;
-                    existing_primary = next_primary()?;
-                    continue;
-                }
-
-                primary_write
-                    .insert(desired_key.as_slice(), desired_value.as_slice())
-                    .map_err(CasError::redb)?;
-                let _ = desired_primary.next();
-            }
-
-            while let Some((existing_key, _)) = existing_primary {
-                primary_write.remove(existing_key.as_slice()).map_err(CasError::redb)?;
-                existing_primary = next_primary()?;
-            }
-
-            for row in constraints_read.iter().map_err(CasError::redb)? {
-                let (target, bases) = row.map_err(CasError::redb)?;
-                let target: [u8; HASH_STORAGE_KEY_BYTES] =
-                    target.value().try_into().map_err(|_| {
-                    CasError::corrupt_index(format!(
-                        "invalid target key width in constraints table: expected {HASH_STORAGE_KEY_BYTES}, got {}",
-                        target.value().len()
-                    ))
-                })?;
-
-                for base in bases {
-                    let base = base.map_err(CasError::redb)?;
-                    let base: [u8; HASH_STORAGE_KEY_BYTES] =
-                        base.value().try_into().map_err(|_| {
-                        CasError::corrupt_index(format!(
-                            "invalid base key width in constraints table: expected {HASH_STORAGE_KEY_BYTES}, got {}",
-                            base.value().len()
-                        ))
-                    })?;
-
-                    let existing_pair = (target, base);
-                    while let Some(desired_pair) = desired_constraints.peek().copied() {
-                        if desired_pair < existing_pair {
-                            constraints_write
-                                .insert(desired_pair.0.as_slice(), desired_pair.1.as_slice())
-                                .map_err(CasError::redb)?;
-                            let _ = desired_constraints.next();
-                        } else {
-                            break;
-                        }
-                    }
-
-                    if let Some(desired_pair) = desired_constraints.peek().copied() {
-                        if desired_pair == existing_pair {
-                            let _ = desired_constraints.next();
-                        } else {
-                            constraints_write
-                                .remove(existing_pair.0.as_slice(), existing_pair.1.as_slice())
-                                .map_err(CasError::redb)?;
-                        }
+                if let Some(desired_pair) = desired_constraints.peek().copied() {
+                    if desired_pair == existing_pair {
+                        let _ = desired_constraints.next();
                     } else {
                         constraints_write
                             .remove(existing_pair.0.as_slice(), existing_pair.1.as_slice())
                             .map_err(CasError::redb)?;
                     }
+                } else {
+                    constraints_write
+                        .remove(existing_pair.0.as_slice(), existing_pair.1.as_slice())
+                        .map_err(CasError::redb)?;
                 }
             }
-
-            for desired_pair in desired_constraints {
-                constraints_write
-                    .insert(desired_pair.0.as_slice(), desired_pair.1.as_slice())
-                    .map_err(CasError::redb)?;
-            }
-
-            Self::set_schema_marker_current(&write, schema_marker)?;
-            Self::persist_bloom_state_table(&write, schema_marker, &bloom_from_state)?;
         }
 
-        write.commit().map_err(CasError::redb)?;
-        self.replace_bloom_filter(bloom_from_state)?;
+        for desired_pair in desired_constraints {
+            constraints_write
+                .insert(desired_pair.0.as_slice(), desired_pair.1.as_slice())
+                .map_err(CasError::redb)?;
+        }
+
         Ok(())
     }
 
@@ -850,7 +871,7 @@ impl CasIndexDb {
         schema_marker: u32,
     ) -> Result<(), CasError> {
         let encoded = encode_current_schema_marker(schema_marker)?;
-        write_schema_marker_to_metadata(write, &encoded)
+        write_schema_marker_to_metadata(write, encoded)
     }
 
     /// Reloads bloom state from persisted payload or rebuilds it from primary rows.
@@ -930,7 +951,6 @@ impl CasIndexDb {
 
     /// Performs read-transaction bloom prefilter for many hashes when payload exists.
     fn bloom_prefilter_many_from_read(
-        &self,
         read: &redb::ReadTransaction,
         schema_marker: u32,
         hashes: &[Hash],

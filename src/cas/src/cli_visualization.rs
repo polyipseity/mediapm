@@ -9,6 +9,7 @@
 //! - topology data collection + output rendering/writing live here,
 //! - callers pass one fully resolved request object.
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -111,24 +112,32 @@ fn render_topology_text(snapshot: &CasTopologySnapshot) -> String {
     let mut out = String::new();
     out.push_str("CAS topology report\n");
     out.push_str("===================\n");
-    out.push_str(&format!(
-        "nodes={} constraints={} include_empty={}\n\n",
+    let _ = writeln!(
+        out,
+        "nodes={} constraints={} include_empty={}",
         snapshot.nodes.len(),
         snapshot.constraints.len(),
         snapshot.include_empty
-    ));
+    );
+    out.push('\n');
 
     out.push_str("nodes\n-----\n");
     for node in &snapshot.nodes {
         match node.encoding {
-            CasTopologyEncoding::Full => out.push_str(&format!(
-                "- {} kind=full depth={} content={}B payload={}B\n",
-                node.hash, node.depth, node.content_len, node.payload_len
-            )),
-            CasTopologyEncoding::Delta { base_hash } => out.push_str(&format!(
-                "- {} kind=delta(base={}) depth={} content={}B payload={}B\n",
-                node.hash, base_hash, node.depth, node.content_len, node.payload_len
-            )),
+            CasTopologyEncoding::Full => {
+                let _ = writeln!(
+                    out,
+                    "- {} kind=full depth={} content={}B payload={}B",
+                    node.hash, node.depth, node.content_len, node.payload_len
+                );
+            }
+            CasTopologyEncoding::Delta { base_hash } => {
+                let _ = writeln!(
+                    out,
+                    "- {} kind=delta(base={}) depth={} content={}B payload={}B",
+                    node.hash, base_hash, node.depth, node.content_len, node.payload_len
+                );
+            }
         }
     }
 
@@ -138,7 +147,7 @@ fn render_topology_text(snapshot: &CasTopologySnapshot) -> String {
     } else {
         for row in &snapshot.constraints {
             let bases = row.bases.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
-            out.push_str(&format!("- {} -> [{}]\n", row.target_hash, bases));
+            let _ = writeln!(out, "- {} -> [{}]", row.target_hash, bases);
         }
     }
 

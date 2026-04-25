@@ -99,7 +99,7 @@ async fn strict_mode_rejects_missing_primary_index_when_objects_exist() {
 
         std::fs::remove_file(root.path().join("index.redb")).expect("remove index.redb");
 
-        let error = match FileSystemCas::open_with_alpha_and_recovery_for_tests(
+        let Err(error) = FileSystemCas::open_with_alpha_and_recovery_for_tests(
             root.path(),
             4,
             FileSystemRecoveryOptions {
@@ -109,9 +109,8 @@ async fn strict_mode_rejects_missing_primary_index_when_objects_exist() {
             },
         )
         .await
-        {
-            Ok(_) => panic!("strict mode should reject missing primary index"),
-            Err(error) => error,
+        else {
+            panic!("strict mode should reject missing primary index");
         };
 
         assert!(

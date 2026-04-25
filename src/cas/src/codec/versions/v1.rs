@@ -134,8 +134,7 @@ impl<'a> V1Envelope<'a> {
         let payload_start = hash_end;
         let payload_len_usize = usize::try_from(payload_len).map_err(|_| {
             CasError::corrupt_object(format!(
-                "delta envelope: payload_len {} exceeds platform usize",
-                payload_len
+                "delta envelope: payload_len {payload_len} exceeds platform usize"
             ))
         })?;
         let payload_end = payload_start
@@ -163,8 +162,7 @@ impl<'a> V1Envelope<'a> {
         let computed = compute_crc32(content_len, payload_len, hash_bytes, payload_slice);
         if checksum != computed {
             return Err(CasError::corrupt_object(format!(
-                "delta envelope: checksum mismatch (expected {:#010x}, got {:#010x})",
-                checksum, computed
+                "delta envelope: checksum mismatch (expected {checksum:#010x}, got {computed:#010x})"
             )));
         }
 
@@ -192,8 +190,8 @@ impl<'a> V1Envelope<'a> {
         );
         if self.checksum != computed {
             return Err(CasError::corrupt_object(format!(
-                "delta envelope: checksum mismatch (expected {:#010x}, got {:#010x})",
-                self.checksum, computed
+                "delta envelope: checksum mismatch (expected {expected:#010x}, got {computed:#010x})",
+                expected = self.checksum
             )));
         }
         Ok(())
@@ -215,7 +213,7 @@ impl<'a> V1Envelope<'a> {
     }
 }
 
-/// Formal bidirectional optic between V1 envelope and DeltaState.
+/// Formal bidirectional optic between V1 envelope and `DeltaState`.
 pub(crate) fn delta_state_v1_iso<'a>() -> IsoPrime<'a, RcBrand, V1Envelope<'a>, DeltaStateV1<'a>> {
     IsoPrime::new(
         |envelope: V1Envelope<'a>| DeltaStateV1 {

@@ -190,7 +190,7 @@ impl FileObjectActorState {
                     CasError::io("reading cas entry metadata", path.clone(), source)
                 })?;
                 if metadata.is_dir() {
-                    if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
+                    if path.file_name().is_some_and(|name| name == "tmp") {
                         continue;
                     }
                     stack.push(path);
@@ -316,7 +316,7 @@ impl FileObjectActorState {
 
         match object {
             StoredObject::Full { .. } => {
-                let full_bytes = object.encode()?;
+                let full_bytes = object.encode();
                 let staging_root = self.staging_tmp_root();
                 write_object_atomic(&staging_root, &full_path, full_bytes.as_ref()).await?;
                 Self::remove_file_if_exists(
@@ -327,7 +327,7 @@ impl FileObjectActorState {
                 .await?;
             }
             StoredObject::Delta { .. } => {
-                let diff_bytes = object.encode()?;
+                let diff_bytes = object.encode();
                 let staging_root = self.staging_tmp_root();
                 write_object_atomic(&staging_root, &diff_path, diff_bytes.as_ref()).await?;
                 Self::remove_file_if_exists(
@@ -385,8 +385,8 @@ impl FileObjectActorState {
     }
 
     /// Returns cached total CAS store bytes tracked by actor state.
-    async fn cas_store_size_bytes(&self) -> Result<u64, CasError> {
-        Ok(self.total_store_size)
+    fn cas_store_size_bytes(&self) -> u64 {
+        self.total_store_size
     }
 }
 
@@ -429,11 +429,11 @@ impl Actor for FileObjectActor {
                 let _ = reply.send(state.delete_object_files(hash).await);
             }
             FileObjectActorMessage::CasStoreSizeBytes(reply) => {
-                let _ = reply.send(state.cas_store_size_bytes().await);
+                let _ = reply.send(Ok(state.cas_store_size_bytes()));
             }
         }
 
-        let processing_ms = started.elapsed().as_millis().max(1) as u64;
+        let processing_ms = u64::try_from(started.elapsed().as_millis().max(1)).unwrap_or(u64::MAX);
         info!(
             operation,
             processing_ms,

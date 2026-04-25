@@ -101,11 +101,22 @@ impl CasBackendConfig {
     ///
     /// Environment variables are expanded in locator strings using
     /// `$NAME`, `${NAME}`, or `%NAME%` forms.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the locator is empty, uses an unsupported
+    /// scheme, fails URL parsing, fails environment-variable expansion, or
+    /// resolves to a non-writable filesystem root.
     pub fn from_locator(locator: &str) -> Result<Self, CasError> {
         Self::from_locator_with_options(locator, CasLocatorParseOptions::default())
     }
 
     /// Builds backend configuration from a locator string with explicit parse options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when locator parsing/normalization fails or when
+    /// the resolved filesystem root cannot be prepared for CAS writes.
     pub fn from_locator_with_options(
         locator: &str,
         options: CasLocatorParseOptions,
@@ -141,7 +152,7 @@ impl CasBackendConfig {
             })?;
 
             if parsed.scheme() == "file" {
-                let file_path = parsed.to_file_path().map_err(|_| {
+                let file_path = parsed.to_file_path().map_err(|()| {
                     CasError::invalid_input(format!(
                         "invalid file locator '{locator}': must resolve to a local filesystem path"
                     ))
@@ -175,6 +186,7 @@ pub struct CasConfig {
 /// Builder-style constructors and open methods for configured backends.
 impl CasConfig {
     /// Creates configuration for in-memory backend.
+    #[must_use]
     pub const fn in_memory() -> Self {
         Self {
             backend: CasBackendConfig::InMemory,
@@ -187,6 +199,7 @@ impl CasConfig {
     }
 
     /// Creates configuration for filesystem backend with default alpha (`4`).
+    #[must_use]
     pub fn filesystem(root: impl Into<PathBuf>) -> Self {
         Self {
             backend: CasBackendConfig::FileSystem {
@@ -198,6 +211,7 @@ impl CasConfig {
     }
 
     /// Creates configuration for filesystem backend with explicit alpha.
+    #[must_use]
     pub fn filesystem_with_alpha(root: impl Into<PathBuf>, alpha: u64) -> Self {
         Self {
             backend: CasBackendConfig::FileSystem { root: root.into(), alpha },
@@ -206,6 +220,7 @@ impl CasConfig {
     }
 
     /// Creates configuration for filesystem backend with explicit alpha and recovery settings.
+    #[must_use]
     pub fn filesystem_with_alpha_and_recovery(
         root: impl Into<PathBuf>,
         alpha: u64,
@@ -218,6 +233,11 @@ impl CasConfig {
     }
 
     /// Parses a configuration from a locator string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when the supplied locator cannot be parsed,
+    /// normalized, or validated for backend construction.
     pub fn from_locator(locator: &str) -> Result<Self, CasError> {
         Ok(Self {
             backend: CasBackendConfig::from_locator_with_options(
@@ -229,6 +249,10 @@ impl CasConfig {
     }
 
     /// Parses a configuration from a locator string using explicit parse options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when locator parsing or backend validation fails.
     pub fn from_locator_with_options(
         locator: &str,
         options: CasLocatorParseOptions,
@@ -250,6 +274,11 @@ impl CasConfig {
     }
 
     /// Opens the configured backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when backend initialization fails (for example,
+    /// filesystem directory/bootstrap/index recovery failures).
     pub async fn open(self) -> Result<ConfiguredCas, CasError> {
         match self.backend {
             CasBackendConfig::InMemory => Ok(ConfiguredCas::InMemory(InMemoryCas::new())),

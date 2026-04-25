@@ -49,8 +49,7 @@ mod base_storage_serde {
         let len = bytes.len();
         bytes.try_into().map_err(|_: Vec<u8>| {
             D::Error::custom(format!(
-                "expected {HASH_STORAGE_KEY_BYTES} base-storage bytes, got {}",
-                len
+                "expected {HASH_STORAGE_KEY_BYTES} base-storage bytes, got {len}"
             ))
         })
     }
@@ -109,9 +108,9 @@ pub(crate) fn open_primary_table_read_v1(
 }
 
 /// Opens V1 primary-object table for a write transaction.
-pub(crate) fn open_primary_table_write_v1<'txn>(
-    write: &'txn redb::WriteTransaction,
-) -> Result<redb::Table<'txn, &'static [u8], &'static [u8]>, CasError> {
+pub(crate) fn open_primary_table_write_v1(
+    write: &redb::WriteTransaction,
+) -> Result<redb::Table<'_, &'static [u8], &'static [u8]>, CasError> {
     write.open_table(PRIMARY_INDEX).map_err(CasError::redb)
 }
 
@@ -123,9 +122,9 @@ pub(crate) fn open_constraints_table_read_v1(
 }
 
 /// Opens V1 constraints table for a write transaction.
-pub(crate) fn open_constraints_table_write_v1<'txn>(
-    write: &'txn redb::WriteTransaction,
-) -> Result<redb::MultimapTable<'txn, &'static [u8], &'static [u8]>, CasError> {
+pub(crate) fn open_constraints_table_write_v1(
+    write: &redb::WriteTransaction,
+) -> Result<redb::MultimapTable<'_, &'static [u8], &'static [u8]>, CasError> {
     write.open_multimap_table(PRIMARY_CONSTRAINTS).map_err(CasError::redb)
 }
 
@@ -310,7 +309,11 @@ pub(crate) fn decode_bloom_payload_v1(bytes: &[u8]) -> Result<(usize, &[u8]), Ca
     let word_count = u32::from_le_bytes(bytes[0..4].try_into().expect("slice width checked"));
     let bit_len = u64::from_le_bytes(bytes[4..12].try_into().expect("slice width checked"));
 
-    let bit_len = bit_len as usize;
+    let bit_len = usize::try_from(bit_len).map_err(|_| {
+        CasError::corrupt_index(format!(
+            "persisted bloom bit length {bit_len} does not fit platform usize"
+        ))
+    })?;
     if bit_len == 0 || !bit_len.is_power_of_two() {
         return Err(CasError::corrupt_index(format!(
             "persisted bloom filter has invalid bit length: {bit_len}"

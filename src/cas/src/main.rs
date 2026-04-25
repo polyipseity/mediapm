@@ -275,7 +275,7 @@ mod tests {
     fn parse_hash_list_accepts_comma_delimited_values() {
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
-        let input = format!("{},{}", a, b);
+        let input = format!("{a},{b}");
 
         let parsed = parse_hash_list(&input).expect("parse hash list");
         assert_eq!(parsed.len(), 2);
