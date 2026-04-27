@@ -229,7 +229,7 @@ where
 
             let total_steps = workflow.steps.len();
             if total_steps == 0 {
-                ProgressBar::new(1).with_message(workflow_display_name).finish_success("complete");
+                ProgressBar::new(1).with_message(workflow_display_name).finish_success("ready");
                 continue;
             }
 
@@ -353,7 +353,7 @@ where
                     .saturating_add(workflow_summary.rematerialized_instances);
                 pending_unsaved_hashes.extend(workflow_pending_unsaved_hashes);
 
-                workflow_progress.finish_success("complete");
+                workflow_progress.finish_success("ready");
                 break;
             }
         }

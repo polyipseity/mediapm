@@ -36,7 +36,8 @@ tokio.workspace = true
 tokio.workspace = true
 
 [[example]]
-name = "bootstrap_defaults"
+name = "conductor_bootstrap_defaults"
+path = "examples/bootstrap_defaults.rs"
 test = true
 harness = false
 
@@ -46,7 +47,8 @@ test = true
 harness = false
 
 [[example]]
-name = "demo"
+name = "conductor_demo"
+path = "examples/demo.rs"
 test = true
 harness = false
 
