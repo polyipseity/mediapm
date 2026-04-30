@@ -269,7 +269,10 @@ impl FileObjectActorState {
 
             #[cfg(not(unix))]
             {
-                #[allow(clippy::permissions_set_readonly_false)]
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "on non-Unix platforms we must clear the readonly flag before managed overwrite/delete operations can succeed"
+                )]
                 {
                     let mut writable_permissions = permissions;
                     writable_permissions.set_readonly(false);

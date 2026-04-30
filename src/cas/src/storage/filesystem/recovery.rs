@@ -14,7 +14,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -36,6 +37,10 @@ const INDEX_BACKUP_FILE_PREFIX: &str = "index-backup-";
 const INDEX_BACKUP_FILE_SUFFIX: &str = ".postcard";
 /// Current serialized backup payload format version.
 const INDEX_BACKUP_FORMAT_VERSION: u32 = 1;
+/// Maximum stale-backup deletion attempts before surfacing an IO failure.
+const INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS: usize = 6;
+/// Fixed backoff used between stale-backup deletion retries.
+const INDEX_BACKUP_PRUNE_BACKOFF_MS: u64 = 40;
 
 #[derive(Debug, Clone)]
 /// Constraint source seed used during index rebuild.
@@ -608,9 +613,32 @@ fn prune_old_backups(backup_root: &Path, keep: usize) -> Result<(), CasError> {
     paths.reverse();
 
     for stale in paths.into_iter().skip(keep) {
-        std::fs::remove_file(&stale).map_err(|source| {
+        remove_stale_backup_file_with_retry(&stale).map_err(|source| {
             CasError::io("removing stale index backup snapshot", &stale, source)
         })?;
+    }
+
+    Ok(())
+}
+
+/// Removes one stale backup file with bounded retries for transient locks.
+///
+/// Windows antivirus/indexer races may hold backup snapshots briefly. Treat
+/// `NotFound` as already-pruned and retry only transient lock-style errors.
+fn remove_stale_backup_file_with_retry(path: &Path) -> Result<(), std::io::Error> {
+    for attempt in 0..INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                let retryable = error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(32);
+                if !retryable || attempt + 1 == INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS {
+                    return Err(error);
+                }
+                thread::sleep(Duration::from_millis(INDEX_BACKUP_PRUNE_BACKOFF_MS));
+            }
+        }
     }
 
     Ok(())
@@ -729,4 +757,31 @@ fn unix_epoch_millis() -> u64 {
 /// Returns current UNIX epoch nanoseconds (best-effort).
 fn unix_epoch_nanos() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_nanos()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remove_stale_backup_file_with_retry;
+
+    /// Ensures stale-backup pruning treats already-removed files as success.
+    #[test]
+    fn remove_stale_backup_file_with_retry_ignores_not_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing.postcard");
+
+        remove_stale_backup_file_with_retry(&missing)
+            .expect("missing stale backup should be treated as already pruned");
+    }
+
+    /// Ensures stale-backup pruning removes existing files successfully.
+    #[test]
+    fn remove_stale_backup_file_with_retry_removes_existing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let stale = temp.path().join("stale.postcard");
+        std::fs::write(&stale, b"backup").expect("write stale backup");
+
+        remove_stale_backup_file_with_retry(&stale)
+            .expect("existing stale backup should be removed");
+        assert!(!stale.exists(), "stale backup should no longer exist");
+    }
 }

@@ -226,7 +226,10 @@ impl FileSystemState {
     /// The metrics API intentionally exposes a floating-point compression ratio.
     /// Precision loss for very large counters is acceptable in this diagnostic
     /// view and does not affect correctness-critical planning/state logic.
-    #[allow(clippy::cast_precision_loss)]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "this ratio is diagnostic-only telemetry; minor floating-point precision loss does not affect correctness"
+    )]
     fn ratio_as_f64(numerator: u64, denominator: u64) -> f64 {
         numerator as f64 / denominator as f64
     }
@@ -1846,7 +1849,10 @@ impl FileSystemCas {
     ///
     /// This API is intentionally fallible for parity with other runtime
     /// toggles; the current implementation does not produce an error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn set_max_compression_mode(&self, enabled: bool) -> Result<(), CasError> {
         self.state.set_max_compression_mode(enabled);
         Ok(())
@@ -1858,7 +1864,10 @@ impl FileSystemCas {
     ///
     /// This API is intentionally fallible for consistency; the current
     /// implementation does not produce an error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn max_compression_mode(&self) -> Result<bool, CasError> {
         Ok(self.state.max_compression_mode())
     }
@@ -1879,7 +1888,10 @@ impl FileSystemCas {
     ///
     /// This API is intentionally fallible for consistency; the current
     /// implementation does not produce an error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn metrics(&self) -> Result<FileSystemMetrics, CasError> {
         Ok(self.state.metrics())
     }
@@ -1890,7 +1902,10 @@ impl FileSystemCas {
     ///
     /// This API is intentionally fallible for consistency; the current
     /// implementation does not produce an error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn topology_snapshot(
         &self,
         include_empty: bool,
@@ -1928,7 +1943,10 @@ impl FileSystemCas {
     /// # Errors
     ///
     /// Returns [`CasError::NotFound`] when `target_hash` does not exist.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn constraint_bases(&self, target_hash: Hash) -> Result<Vec<Hash>, CasError> {
         self.state.constraint_bases(target_hash)
     }
@@ -1968,7 +1986,10 @@ impl FileSystemCas {
     ///
     /// This API is intentionally fallible for consistency; the current
     /// implementation does not produce an error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "kept async for API-shape consistency with neighboring fallible runtime helpers"
+    )]
     pub async fn optimize_in_progress(&self) -> Result<bool, CasError> {
         Ok(self.state.optimize_in_progress.load(Ordering::Acquire))
     }
@@ -2249,7 +2270,10 @@ fn clear_file_readonly_if_set(path: &Path) -> Result<(), CasError> {
 
         #[cfg(not(unix))]
         {
-            #[allow(clippy::permissions_set_readonly_false)]
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "on non-Unix platforms we must clear the readonly flag before managed overwrite/delete operations can succeed"
+            )]
             {
                 let mut writable_permissions = permissions;
                 writable_permissions.set_readonly(false);
