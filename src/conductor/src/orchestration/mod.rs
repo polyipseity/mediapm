@@ -1,9 +1,10 @@
 //! Actor-backed orchestration runtime.
 
 mod actors;
-mod config;
+pub mod config;
 mod coordinator;
 mod node;
+mod profiler;
 mod protocol;
 
 use std::path::Path;
@@ -62,7 +63,7 @@ where
     ) -> Result<RunSummary, ConductorError> {
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
-        export_nickel_config_schemas(&resolved_runtime_paths.conductor_dir)?;
+        export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
         client.run_workflow(user_ncl, machine_ncl, options).await
     }

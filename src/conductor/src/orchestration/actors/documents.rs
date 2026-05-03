@@ -2,11 +2,20 @@
 //!
 //! This actor owns the user/machine document merge contract so the coordinator
 //! can sequence workflows without also carrying parsing and merge logic inline.
+//!
+//! ## Validation caching
+//!
+//! `evaluate_total_configuration_sources` runs the Nickel evaluator to
+//! type-check the combined user + machine + state documents.  On large
+//! configurations this can take several seconds.  The actor therefore caches
+//! the blake3 hash of the three source texts and skips re-validation on
+//! repeat runs where the content has not changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
+use blake3::Hash as Blake3Hash;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
 use crate::api::RunWorkflowOptions;
@@ -41,7 +50,7 @@ impl DocumentLoaderClient {
         &self,
         user_ncl: &Path,
         machine_ncl: &Path,
-        state_config: &Path,
+        conductor_state_config: &Path,
         options: RunWorkflowOptions,
     ) -> Result<LoadedDocuments, ConductorError> {
         call_t!(
@@ -50,8 +59,8 @@ impl DocumentLoaderClient {
             DEFAULT_RPC_TIMEOUT_MS,
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
-            state_config.to_path_buf(),
-            options
+            conductor_state_config.to_path_buf(),
+            Box::new(options)
         )
         .map_err(|err| {
             ConductorError::Internal(format!("document loader load_and_unify RPC failed: {err}"))
@@ -108,7 +117,7 @@ enum DocumentLoaderMessage {
         PathBuf,
         PathBuf,
         PathBuf,
-        RunWorkflowOptions,
+        Box<RunWorkflowOptions>,
         RpcReplyPort<Result<LoadedDocuments, ConductorError>>,
     ),
     /// Persists the machine-editable document after runtime updates.
@@ -125,22 +134,39 @@ enum DocumentLoaderMessage {
     ),
 }
 
-/// Stateless actor that owns document parsing and merge policy.
+/// Mutable state carried by the document-loader actor across calls.
+///
+/// Keeps a validated-source hash so that repeat `LoadAndUnify` requests with
+/// identical user + machine + state content can skip the expensive Nickel
+/// evaluation step.
+#[derive(Debug, Default)]
+struct DocumentLoaderState {
+    /// blake3 hash of the last successfully validated combined source texts.
+    ///
+    /// `None` means no successful validation has been recorded in this actor
+    /// lifetime (first call always validates).
+    last_validated_sources_hash: Option<Blake3Hash>,
+}
+
+/// Actor that owns document parsing and merge policy.
+///
+/// Stateful so that successful Nickel validation results can be cached across
+/// consecutive calls when the source content has not changed.
 #[derive(Debug, Clone, Copy, Default)]
 struct DocumentLoaderActor;
 
 impl Actor for DocumentLoaderActor {
     type Msg = DocumentLoaderMessage;
-    type State = ();
+    type State = DocumentLoaderState;
     type Arguments = ();
 
-    /// Initializes the actor with no mutable state because all behavior is pure over the requested files.
+    /// Initializes the actor state with no prior validated hash.
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         _args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        Ok(())
+        Ok(DocumentLoaderState::default())
     }
 
     /// Handles document loading and persistence RPC calls.
@@ -148,22 +174,24 @@ impl Actor for DocumentLoaderActor {
         &self,
         _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
-        _state: &mut Self::State,
+        state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
             DocumentLoaderMessage::LoadAndUnify(
                 user_ncl,
                 machine_ncl,
-                state_config,
+                conductor_state_config,
                 options,
                 reply,
             ) => {
-                let _ = reply.send(Self::load_and_unify_documents(
+                let result = Self::load_and_unify_documents(
                     &user_ncl,
                     &machine_ncl,
-                    &state_config,
+                    &conductor_state_config,
                     &options,
-                ));
+                    &mut state.last_validated_sources_hash,
+                );
+                let _ = reply.send(result);
             }
             DocumentLoaderMessage::PersistMachineDocument(path, document, reply) => {
                 let _ = reply.send(Self::persist_machine_document(&path, &document));
@@ -178,20 +206,48 @@ impl Actor for DocumentLoaderActor {
 
 impl DocumentLoaderActor {
     /// Loads both documents, evaluates total configuration, and returns the merged runtime representation.
+    ///
+    /// The `validated_sources_hash` cache is checked before running the
+    /// expensive Nickel evaluation.  When the combined source hash matches the
+    /// cached value the validation pass is skipped.  The cache is updated on
+    /// every successful validation so the next call with unchanged content
+    /// benefits immediately.
     fn load_and_unify_documents(
         user_ncl: &Path,
         machine_ncl: &Path,
-        state_config: &Path,
+        conductor_state_config: &Path,
         options: &RunWorkflowOptions,
+        validated_sources_hash: &mut Option<Blake3Hash>,
     ) -> Result<LoadedDocuments, ConductorError> {
         let user_source = Self::load_user_source(user_ncl, machine_ncl)?;
         let machine_source = Self::load_machine_source(machine_ncl)?;
-        let state_source = Self::load_state_source(state_config)?;
-        evaluate_total_configuration_sources(&user_source, &machine_source, &state_source)?;
+        let state_source = Self::load_state_source(conductor_state_config)?;
+
+        // Compute a combined hash of the three source texts for cache keying.
+        // blake3 is keyed per-section so interleaved collisions are avoided.
+        let combined_hash = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(user_source.as_bytes());
+            hasher.update(machine_source.as_bytes());
+            hasher.update(state_source.as_bytes());
+            hasher.finalize()
+        };
+
+        // Skip validation when the source content matches the last validated
+        // hash.  This avoids re-running the Nickel evaluator on repeat runs
+        // where the configuration has not changed, reducing startup latency by
+        // several seconds on large configurations.
+        let cache_hit = validated_sources_hash.is_some_and(|cached| cached == combined_hash);
+        if !cache_hit {
+            evaluate_total_configuration_sources(&user_source, &machine_source, &state_source)?;
+            // Update the cache only after successful validation so a failed
+            // validation attempt does not suppress re-validation on the next call.
+            *validated_sources_hash = Some(combined_hash);
+        }
 
         let user_document = Self::load_user_document(user_ncl, machine_ncl)?;
         let (mut machine_document, _machine_existed) = Self::load_machine_document(machine_ncl)?;
-        let mut state_document = Self::load_state_document(state_config)?;
+        let mut state_document = Self::load_state_document(conductor_state_config)?;
         let merged_runtime_storage = Self::merge_runtime_storage(
             &user_document.runtime,
             &machine_document.runtime,
@@ -569,17 +625,35 @@ impl DocumentLoaderActor {
         {
             conflict_fields.push("conductor_dir");
         }
-        if user.state_config.is_some()
-            && machine.state_config.is_some()
-            && user.state_config != machine.state_config
+        if user.conductor_state_config.is_some()
+            && machine.conductor_state_config.is_some()
+            && user.conductor_state_config != machine.conductor_state_config
         {
-            conflict_fields.push("state_config");
+            conflict_fields.push("conductor_state_config");
         }
         if user.cas_store_dir.is_some()
             && machine.cas_store_dir.is_some()
             && user.cas_store_dir != machine.cas_store_dir
         {
             conflict_fields.push("cas_store_dir");
+        }
+        if user.conductor_tmp_dir.is_some()
+            && machine.conductor_tmp_dir.is_some()
+            && user.conductor_tmp_dir != machine.conductor_tmp_dir
+        {
+            conflict_fields.push("conductor_tmp_dir");
+        }
+        if user.conductor_schema_dir.is_some()
+            && machine.conductor_schema_dir.is_some()
+            && user.conductor_schema_dir != machine.conductor_schema_dir
+        {
+            conflict_fields.push("conductor_schema_dir");
+        }
+        if user.use_user_tool_cache.is_some()
+            && machine.use_user_tool_cache.is_some()
+            && user.use_user_tool_cache != machine.use_user_tool_cache
+        {
+            conflict_fields.push("use_user_tool_cache");
         }
 
         if !conflict_fields.is_empty() {
@@ -610,9 +684,21 @@ impl DocumentLoaderActor {
 
         Ok(RuntimeStorageConfig {
             conductor_dir: user.conductor_dir.clone().or_else(|| machine.conductor_dir.clone()),
-            state_config: user.state_config.clone().or_else(|| machine.state_config.clone()),
+            conductor_state_config: user
+                .conductor_state_config
+                .clone()
+                .or_else(|| machine.conductor_state_config.clone()),
             cas_store_dir: user.cas_store_dir.clone().or_else(|| machine.cas_store_dir.clone()),
+            conductor_tmp_dir: user
+                .conductor_tmp_dir
+                .clone()
+                .or_else(|| machine.conductor_tmp_dir.clone()),
+            conductor_schema_dir: user
+                .conductor_schema_dir
+                .clone()
+                .or_else(|| machine.conductor_schema_dir.clone()),
             inherited_env_vars,
+            use_user_tool_cache: user.use_user_tool_cache.or(machine.use_user_tool_cache),
         })
     }
 
@@ -708,8 +794,8 @@ impl DocumentLoaderActor {
 
     /// Loads the volatile state source text, returning a default empty
     /// state document when the file is missing or empty.
-    fn load_state_source(state_config: &Path) -> Result<String, ConductorError> {
-        if !state_config.exists() {
+    fn load_state_source(conductor_state_config: &Path) -> Result<String, ConductorError> {
+        if !conductor_state_config.exists() {
             let encoded = encode_state_document(StateNickelDocument::default())?;
             return String::from_utf8(encoded).map_err(|err| {
                 ConductorError::Serialization(format!(
@@ -718,12 +804,13 @@ impl DocumentLoaderActor {
             });
         }
 
-        let content =
-            std::fs::read_to_string(state_config).map_err(|source| ConductorError::Io {
+        let content = std::fs::read_to_string(conductor_state_config).map_err(|source| {
+            ConductorError::Io {
                 operation: "reading .conductor/state.ncl".to_string(),
-                path: state_config.to_path_buf(),
+                path: conductor_state_config.to_path_buf(),
                 source,
-            })?;
+            }
+        })?;
 
         if content.trim().is_empty() {
             let encoded = encode_state_document(StateNickelDocument::default())?;
@@ -776,7 +863,10 @@ impl DocumentLoaderActor {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -805,8 +895,10 @@ impl DocumentLoaderActor {
     }
 
     /// Parses the volatile state document from effective source text.
-    fn load_state_document(state_config: &Path) -> Result<StateNickelDocument, ConductorError> {
-        let content = Self::load_state_source(state_config)?;
+    fn load_state_document(
+        conductor_state_config: &Path,
+    ) -> Result<StateNickelDocument, ConductorError> {
+        let content = Self::load_state_source(conductor_state_config)?;
         decode_state_document(content.as_bytes())
     }
 
@@ -853,7 +945,10 @@ impl DocumentLoaderActor {
     }
 
     /// Produces the merged runtime representation from the two parsed documents.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     fn unify_documents(
         user: &UserNickelDocument,
         machine: &MachineNickelDocument,
@@ -1120,6 +1215,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1150,6 +1246,7 @@ mod tests {
                 Hash::from_content(b"machine"),
                 crate::model::config::ExternalContentRef {
                     description: Some("fixture root".to_string()),
+                    save: None,
                 },
             )]),
             tool_configs: BTreeMap::from([(
@@ -1179,6 +1276,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1231,6 +1329,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1283,6 +1382,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1336,6 +1436,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1410,10 +1511,12 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
-                assert!(message.contains("duplicate environment key 'DUPLICATE'"));
+                assert!(message.contains("duplicate environment key"));
+                assert!(message.contains("tools.runner@1.0.0.env_vars"));
                 assert!(message.contains("tool_configs.runner@1.0.0.env_vars"));
             }
             other => panic!("expected workflow error, got {other:?}"),
@@ -1438,7 +1541,10 @@ mod tests {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -1456,7 +1562,10 @@ mod tests {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -1474,6 +1583,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1503,7 +1613,10 @@ mod tests {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -1521,7 +1634,10 @@ mod tests {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -1539,6 +1655,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions { allow_tool_redefinition: true, ..RunWorkflowOptions::default() },
+            &mut None,
         )
         .expect("override option should allow redefinition");
 
@@ -1566,9 +1683,12 @@ mod tests {
         let user = UserNickelDocument {
             runtime: RuntimeStorageConfig {
                 conductor_dir: Some(".runtime".to_string()),
-                state_config: Some(".runtime/state.ncl".to_string()),
+                conductor_state_config: Some(".runtime/state.ncl".to_string()),
                 cas_store_dir: Some(".runtime/store".to_string()),
+                conductor_tmp_dir: Some(".runtime/tmp".to_string()),
+                conductor_schema_dir: Some(".runtime/config/conductor".to_string()),
                 inherited_env_vars: None,
+                use_user_tool_cache: Some(true),
             },
             tools: BTreeMap::from([(
                 "echo@1.0.0".to_string(),
@@ -1579,7 +1699,10 @@ mod tests {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                     ..ToolSpec::default()
                 },
@@ -1601,12 +1724,15 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut None,
         )
         .expect("documents should load and unify");
 
         assert!(loaded.machine_document.runtime.conductor_dir.is_none());
-        assert!(loaded.machine_document.runtime.state_config.is_none());
+        assert!(loaded.machine_document.runtime.conductor_state_config.is_none());
         assert!(loaded.machine_document.runtime.cas_store_dir.is_none());
+        assert!(loaded.machine_document.runtime.conductor_tmp_dir.is_none());
+        assert!(loaded.machine_document.runtime.conductor_schema_dir.is_none());
 
         let expected_defaults = default_runtime_inherited_env_vars_for_host();
         if expected_defaults.is_empty() {

@@ -24,7 +24,7 @@ pub(super) enum ConductorNodeMessage {
     RunWorkflow(
         PathBuf,
         PathBuf,
-        RunWorkflowOptions,
+        Box<RunWorkflowOptions>,
         RpcReplyPort<Result<RunSummary, ConductorError>>,
     ),
     /// Returns the current in-memory orchestration-state snapshot.
@@ -66,7 +66,7 @@ impl ConductorActorClient {
             DEFAULT_RPC_TIMEOUT_MS,
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
-            options
+            Box::new(options)
         )
         .map_err(|err| {
             ConductorError::Internal(format!("conductor actor run_workflow RPC failed: {err}"))
@@ -141,10 +141,10 @@ where
     ) -> Result<(), ActorProcessingErr> {
         match message {
             ConductorNodeMessage::RunWorkflow(user_ncl, machine_ncl, options, reply) => {
-                let result = if options == RunWorkflowOptions::default() {
+                let result = if *options == RunWorkflowOptions::default() {
                     state.run_workflow(&user_ncl, &machine_ncl).await
                 } else {
-                    state.run_workflow_with_options(&user_ncl, &machine_ncl, options).await
+                    state.run_workflow_with_options(&user_ncl, &machine_ncl, *options).await
                 };
                 let _ = reply.send(result);
             }

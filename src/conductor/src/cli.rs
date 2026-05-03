@@ -21,8 +21,9 @@ use mediapm_cas::{
 };
 
 use crate::api::{
-    ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, default_state_paths,
-    export_nickel_config_schemas, resolve_runtime_storage_paths,
+    CommonExecutableTool, ConductorApi, RunWorkflowOptions, RuntimeStoragePaths,
+    default_state_paths, export_nickel_config_schemas, fetch_common_executable_tool_payload,
+    resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -35,6 +36,18 @@ use crate::orchestration::SimpleConductor;
 
 /// Default runtime storage root used by the conductor CLI.
 const DEFAULT_CONDUCTOR_DIR: &str = ".conductor";
+
+/// Executable suffix used by workspace binaries on the active host platform.
+#[cfg(windows)]
+const WORKSPACE_BINARY_SUFFIX: &str = ".exe";
+
+/// Executable suffix used by workspace binaries on the active host platform.
+#[cfg(not(windows))]
+const WORKSPACE_BINARY_SUFFIX: &str = "";
+
+/// Maximum number of parent directories searched when sibling and PATH
+/// passthrough binary lookup both miss.
+const MAX_ANCESTOR_BINARY_SEARCH_LEVELS: usize = 6;
 
 /// Grouped runtime storage path arguments.
 #[derive(Debug, Clone, Args)]
@@ -49,7 +62,7 @@ struct RuntimePathArgs {
     ///
     /// Defaults to `<conductor_dir>/state.ncl`.
     #[arg(long = "config-state", global = true)]
-    config_state: Option<PathBuf>,
+    conductor_state_config: Option<PathBuf>,
 
     /// CAS backend locator string or filesystem directory path.
     ///
@@ -57,6 +70,24 @@ struct RuntimePathArgs {
     /// format supported by `mediapm-cas`). Defaults to `<conductor_dir>/store`.
     #[arg(long, global = true)]
     cas_store_dir: Option<String>,
+
+    /// Optional override path for per-step execution sandbox roots.
+    ///
+    /// Defaults to `<conductor_dir>/tmp`.
+    #[arg(long, global = true)]
+    conductor_tmp_dir: Option<PathBuf>,
+
+    /// Optional override directory for exported conductor Nickel schemas.
+    ///
+    /// Defaults to `<conductor_dir>/config/conductor`.
+    #[arg(long, global = true)]
+    conductor_schema_dir: Option<PathBuf>,
+
+    /// Optional JSON profile artifact output path.
+    ///
+    /// When set, conductor writes one per-run profiler report at this path.
+    #[arg(long = "profile-json", global = true)]
+    profile_json: Option<PathBuf>,
 }
 
 /// Top-level conductor CLI parser.
@@ -116,10 +147,22 @@ pub enum ImportCommand {
     /// Registers tool file(s) in CAS and updates machine tool metadata/config.
     Tool {
         /// Path to one tool file or tool directory.
-        path: PathBuf,
-        /// Logical tool name.
+        ///
+        /// This is required unless `--preset` is used.
+        #[arg(required_unless_present = "preset", conflicts_with = "preset")]
+        path: Option<PathBuf>,
+        /// Optional source-install preset for common executable tools.
+        ///
+        /// When set, the tool binary is fetched from upstream source and
+        /// imported directly into machine-managed runtime config.
         #[arg(long)]
-        name: String,
+        preset: Option<CommonExecutableTool>,
+        /// Logical tool name.
+        ///
+        /// This is required for file/directory imports and optional for
+        /// preset imports (defaults to the preset canonical logical name).
+        #[arg(long, required_unless_present = "preset")]
+        name: Option<String>,
         /// Optional executable process path recorded as
         /// `tools.<name>.command[0]`
         /// when this import must register new machine tool metadata.
@@ -201,8 +244,10 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
 
     let runtime_storage_paths = RuntimeStoragePaths {
         conductor_dir: cli.runtime_paths.conductor_dir,
-        config_state: cli.runtime_paths.config_state,
+        conductor_state_config: cli.runtime_paths.conductor_state_config,
         cas_store_dir: None,
+        conductor_tmp_dir: cli.runtime_paths.conductor_tmp_dir,
+        conductor_schema_dir: cli.runtime_paths.conductor_schema_dir,
     };
     let resolved_runtime_paths =
         resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &runtime_storage_paths);
@@ -215,7 +260,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
     match cli.command {
         CliCommand::Cas(args) => passthrough_cas(&args.args),
         other => {
-            let schema_anchor = resolved_runtime_paths.conductor_dir.as_path();
+            let schema_anchor = resolved_runtime_paths.conductor_schema_dir.as_path();
             export_nickel_config_schemas(schema_anchor)?;
             let cas = open_cas(&cas_locator).await?;
             match other {
@@ -226,6 +271,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                         &machine_ncl,
                         allow_tool_redefinition,
                         runtime_storage_paths,
+                        cli.runtime_paths.profile_json.clone(),
                     )
                     .await
                 }
@@ -233,7 +279,13 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                 CliCommand::Import(args) => handle_import(cas, &user_ncl, &machine_ncl, args).await,
                 CliCommand::Remove(args) => handle_remove(&user_ncl, &machine_ncl, args),
                 CliCommand::Gc => {
-                    run_gc(cas, &user_ncl, &machine_ncl, &resolved_runtime_paths.config_state).await
+                    run_gc(
+                        cas,
+                        &user_ncl,
+                        &machine_ncl,
+                        &resolved_runtime_paths.conductor_state_config,
+                    )
+                    .await
                 }
                 CliCommand::Cas(_) => {
                     unreachable!("passthrough handled above")
@@ -264,6 +316,7 @@ async fn run_workflow(
     machine_ncl: &Path,
     allow_tool_redefinition: bool,
     runtime_storage_paths: RuntimeStoragePaths,
+    profile_output_path: Option<PathBuf>,
 ) -> Result<(), ConductorError> {
     let conductor = SimpleConductor::new(cas);
     let summary = conductor
@@ -274,6 +327,7 @@ async fn run_workflow(
                 allow_tool_redefinition,
                 runtime_storage_paths,
                 runtime_inherited_env_vars: Vec::new(),
+                profile_output_path,
             },
         )
         .await?;
@@ -300,13 +354,81 @@ async fn handle_import(
     args: ImportArgs,
 ) -> Result<(), ConductorError> {
     match args.command {
-        ImportCommand::Tool { path, name, process_name } => {
-            import_tool(cas, machine_ncl, &path, &name, process_name.as_deref()).await
+        ImportCommand::Tool { path, preset, name, process_name } => {
+            if let Some(tool_preset) = preset {
+                return import_common_tool(
+                    cas,
+                    machine_ncl,
+                    tool_preset,
+                    name.as_deref(),
+                    process_name.as_deref(),
+                )
+                .await;
+            }
+
+            let import_path = path.as_deref().ok_or_else(|| {
+                ConductorError::Workflow(
+                    "import tool requires a path unless --preset is provided".to_string(),
+                )
+            })?;
+            let tool_name = name.as_deref().ok_or_else(|| {
+                ConductorError::Workflow(
+                    "import tool requires --name when importing from path".to_string(),
+                )
+            })?;
+
+            import_tool(cas, machine_ncl, import_path, tool_name, process_name.as_deref()).await
         }
         ImportCommand::Data { path, description } => {
             import_data(cas, machine_ncl, &path, description.as_deref()).await
         }
     }
+}
+
+/// Installs one common upstream executable and imports it into machine config.
+///
+/// The installer fetches the executable bytes through conductor API helper
+/// (release-asset download path), stores them in CAS, then wires
+/// `tool_configs.<tool>.content_map` plus executable metadata for immediate
+/// workflow use.
+async fn import_common_tool(
+    cas: ConfiguredCas,
+    machine_ncl: &Path,
+    tool: CommonExecutableTool,
+    logical_name_override: Option<&str>,
+    process_name_override: Option<&str>,
+) -> Result<(), ConductorError> {
+    let logical_tool_name = logical_name_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(tool.logical_tool_name())
+        .to_string();
+
+    let payload = fetch_common_executable_tool_payload(tool)?;
+    let mut machine = load_machine_document(machine_ncl)?;
+    let hash = cas.put(payload.executable_bytes).await?;
+    let imported_content_map = BTreeMap::from([(payload.executable_file_name.clone(), hash)]);
+
+    let resolved_process_name = process_name_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(payload.executable_file_name.as_str());
+    let description_override = format!(
+        "Installed by conductor CLI tool preset importer from upstream release assets for '{}'",
+        tool.logical_tool_name()
+    );
+
+    register_or_merge_imported_tool(
+        &mut machine,
+        &logical_tool_name,
+        Path::new(payload.executable_file_name.as_str()),
+        Some(resolved_process_name),
+        imported_content_map,
+        Some(description_override.as_str()),
+    )?;
+
+    save_machine_document(machine_ncl, &machine)?;
+    Ok(())
 }
 
 /// Handles remove command variants.
@@ -362,6 +484,7 @@ async fn import_tool(
         path,
         process_name,
         imported_content_map,
+        None,
     )?;
 
     save_machine_document(machine_ncl, &machine)?;
@@ -400,6 +523,7 @@ async fn import_data(
             description: description
                 .map(std::string::ToString::to_string)
                 .or_else(|| Some(default_description.clone())),
+            save: None,
         })
         .overwrite_existing(true),
     )?;
@@ -421,6 +545,7 @@ fn register_or_merge_imported_tool(
     import_path: &Path,
     process_name: Option<&str>,
     imported_content_map: BTreeMap<String, Hash>,
+    description_override: Option<&str>,
 ) -> Result<(), ConductorError> {
     if imported_content_map.is_empty() {
         return Err(ConductorError::Workflow(format!(
@@ -447,9 +572,9 @@ fn register_or_merge_imported_tool(
             .with_tool_config(ToolConfigSpec {
                 max_concurrent_calls: -1,
                 max_retries: -1,
-                description: Some(format!(
-                    "Imported by conductor CLI from '{}'",
-                    import_path.display()
+                description: Some(description_override.map_or_else(
+                    || format!("Imported by conductor CLI from '{}'", import_path.display()),
+                    std::string::ToString::to_string,
                 )),
                 input_defaults: BTreeMap::new(),
                 env_vars: BTreeMap::new(),
@@ -561,11 +686,11 @@ async fn run_gc(
     cas: ConfiguredCas,
     user_ncl: &Path,
     machine_ncl: &Path,
-    state_config: &Path,
+    conductor_state_config: &Path,
 ) -> Result<(), ConductorError> {
     let user = load_user_document(user_ncl)?;
     let machine = load_machine_document(machine_ncl)?;
-    let state = load_state_document(state_config)?;
+    let state = load_state_document(conductor_state_config)?;
 
     let mut roots: BTreeSet<Hash> = BTreeSet::new();
     roots.extend(user.external_data.keys().copied());
@@ -605,24 +730,154 @@ async fn run_gc(
     Ok(())
 }
 
-/// Executes passthrough to `mediapm-cas` via cargo.
-fn passthrough_cas(args: &[String]) -> Result<(), ConductorError> {
-    let status = Command::new("cargo")
-        .arg("run")
-        .arg("--package")
-        .arg("mediapm-cas")
-        .arg("--")
-        .args(args)
-        .status()
-        .map_err(|err| {
-            ConductorError::Workflow(format!("failed launching CAS passthrough command: {err}"))
+/// Returns host-specific executable file name for one binary stem.
+#[must_use]
+fn workspace_binary_file_name(binary_stem: &str) -> String {
+    format!("{binary_stem}{WORKSPACE_BINARY_SUFFIX}")
+}
+
+/// Searches one ordered list of directories for the target passthrough binary.
+#[must_use]
+fn find_binary_in_paths<I>(binary_stem: &str, directories: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let binary_file_name = workspace_binary_file_name(binary_stem);
+    directories
+        .into_iter()
+        .map(|directory| directory.join(&binary_file_name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Searches PATH for the target passthrough binary.
+#[must_use]
+fn find_binary_in_system_path(binary_stem: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    find_binary_in_paths(binary_stem, std::env::split_paths(&path))
+}
+
+/// Searches parent directories for the target passthrough binary.
+#[must_use]
+fn find_binary_in_ancestors_from(
+    binary_stem: &str,
+    start_directory: &Path,
+    max_levels: usize,
+) -> Option<PathBuf> {
+    let mut current = Some(start_directory);
+    let mut levels_checked = 0usize;
+    while let Some(directory) = current {
+        if levels_checked > max_levels {
+            break;
+        }
+
+        if let Some(found) = find_binary_in_paths(binary_stem, [directory.to_path_buf()]) {
+            return Some(found);
+        }
+
+        current = directory.parent();
+        levels_checked = levels_checked.saturating_add(1);
+    }
+
+    None
+}
+
+/// Resolves one passthrough binary from env override, sibling path, PATH, or
+/// ancestor directories.
+fn resolve_workspace_binary_path(
+    binary_stem: &str,
+    env_override_name: Option<&str>,
+) -> Result<PathBuf, ConductorError> {
+    let binary_file_name = workspace_binary_file_name(binary_stem);
+    let current_executable = std::env::current_exe().map_err(|source| ConductorError::Io {
+        operation: "resolving current conductor executable path".to_string(),
+        path: PathBuf::from("<current-exe>"),
+        source,
+    })?;
+
+    let executable_directory = current_executable.parent().ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "current executable '{}' has no parent directory",
+            current_executable.display()
+        ))
+    })?;
+    let sibling_path = executable_directory.join(&binary_file_name);
+
+    let mut attempts = Vec::new();
+    if let Some(env_name) = env_override_name
+        && let Some(env_value) = std::env::var_os(env_name)
+    {
+        let env_path = PathBuf::from(env_value);
+        attempts.push(format!("${env_name}={}", env_path.display()));
+        if env_path.is_file() {
+            return Ok(env_path);
+        }
+    }
+
+    attempts.push(format!("sibling={}", sibling_path.display()));
+    if sibling_path.is_file() {
+        return Ok(sibling_path);
+    }
+
+    attempts.push(format!("PATH ({binary_file_name})"));
+    if let Some(path_match) = find_binary_in_system_path(binary_stem) {
+        return Ok(path_match);
+    }
+
+    attempts.push(format!("ancestor search (max {MAX_ANCESTOR_BINARY_SEARCH_LEVELS} levels)"));
+    if let Some(ancestor_match) = find_binary_in_ancestors_from(
+        binary_stem,
+        executable_directory,
+        MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
+    ) {
+        return Ok(ancestor_match);
+    }
+
+    let env_hint = env_override_name.map_or_else(
+        || "set an explicit passthrough binary path environment variable".to_string(),
+        |name| format!("set {name} to an absolute binary path"),
+    );
+
+    Err(ConductorError::Workflow(format!(
+        "passthrough binary '{binary_stem}' was not found (attempts: {}). Fix by {} or placing '{}' next to '{}' / on PATH",
+        attempts.join("; "),
+        env_hint,
+        binary_file_name,
+        current_executable.display(),
+    )))
+}
+
+/// Runs one workspace binary by name without build-if-missing behavior.
+fn run_workspace_binary(
+    _package_name: &str,
+    binary_stem: &str,
+    args: &[String],
+) -> Result<(), ConductorError> {
+    let env_override_name = match binary_stem {
+        "mediapm-cas" => Some("MEDIAPM_CAS_BINARY"),
+        _ => None,
+    };
+    let binary_path = resolve_workspace_binary_path(binary_stem, env_override_name)?;
+
+    let status =
+        Command::new(&binary_path).args(args).status().map_err(|source| ConductorError::Io {
+            operation: format!("launching workspace passthrough binary '{binary_stem}'"),
+            path: binary_path.clone(),
+            source,
         })?;
 
     if status.success() {
         Ok(())
     } else {
-        Err(ConductorError::Workflow(format!("CAS passthrough exited with status {status}")))
+        Err(ConductorError::Workflow(format!(
+            "workspace passthrough binary '{}' exited with status {status}",
+            binary_path.display()
+        )))
     }
+}
+
+/// Executes passthrough to `mediapm-cas` through sibling workspace binaries.
+fn passthrough_cas(args: &[String]) -> Result<(), ConductorError> {
+    run_workspace_binary("mediapm-cas", "mediapm-cas", args)
 }
 
 /// Loads `conductor.ncl` through versioned decoder, returning default when absent.
@@ -766,8 +1021,10 @@ fn normalized_relative_path(base_dir: &Path, file: &Path) -> Result<String, Cond
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CliCommand, ImportArgs, ImportCommand, persisted_state_json_pretty,
-        register_or_merge_imported_tool, resolve_import_process_name,
+        Cli, CliCommand, CommonExecutableTool, ImportArgs, ImportCommand,
+        MAX_ANCESTOR_BINARY_SEARCH_LEVELS, find_binary_in_ancestors_from, find_binary_in_paths,
+        persisted_state_json_pretty, register_or_merge_imported_tool, resolve_import_process_name,
+        workspace_binary_file_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -776,6 +1033,7 @@ mod tests {
     use clap::Parser;
     use mediapm_cas::Hash;
     use std::collections::BTreeMap;
+    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -794,11 +1052,89 @@ mod tests {
         let cli = Cli::parse_from(["conductor", "import", "tool", "./tools/zip", "--name", "zip"]);
 
         match cli.command {
-            CliCommand::Import(ImportArgs { command: ImportCommand::Tool { name, .. } }) => {
-                assert_eq!(name, "zip");
+            CliCommand::Import(ImportArgs {
+                command: ImportCommand::Tool { path, preset, name, process_name },
+            }) => {
+                assert_eq!(path, Some(PathBuf::from("./tools/zip")));
+                assert!(preset.is_none());
+                assert_eq!(name, Some("zip".to_string()));
+                assert!(process_name.is_none());
             }
             other => panic!("expected import tool command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_import_tool_preset_command() {
+        let cli = Cli::parse_from(["conductor", "import", "tool", "--preset", "sd"]);
+
+        match cli.command {
+            CliCommand::Import(ImportArgs {
+                command: ImportCommand::Tool { path, preset, name, process_name },
+            }) => {
+                assert_eq!(preset, Some(CommonExecutableTool::Sd));
+                assert!(path.is_none());
+                assert!(name.is_none());
+                assert!(process_name.is_none());
+            }
+            other => panic!("expected import tool --preset command, got {other:?}"),
+        }
+    }
+
+    /// Protects host-suffix executable-name rendering for passthrough lookup.
+    #[test]
+    fn workspace_binary_file_name_applies_host_suffix() {
+        assert_eq!(
+            workspace_binary_file_name("mediapm-cas"),
+            format!("mediapm-cas{}", super::WORKSPACE_BINARY_SUFFIX)
+        );
+    }
+
+    /// Protects deterministic directory-list binary lookup behavior.
+    #[test]
+    fn find_binary_in_paths_returns_first_existing_match() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        fs::create_dir_all(&first).expect("first dir");
+        fs::create_dir_all(&second).expect("second dir");
+
+        let binary_name = workspace_binary_file_name("mediapm-cas");
+        let binary_path = second.join(binary_name);
+        fs::write(&binary_path, b"stub").expect("binary");
+
+        let found = find_binary_in_paths(
+            "mediapm-cas",
+            vec![first.clone(), second.clone(), root.path().to_path_buf()],
+        )
+        .expect("binary should be found");
+
+        assert_eq!(found, binary_path);
+    }
+
+    /// Protects bounded ancestor lookup semantics for passthrough fallback.
+    #[test]
+    fn find_binary_in_ancestors_respects_max_level_budget() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let level_0 = root.path().join("l0");
+        let level_1 = level_0.join("l1");
+        let level_2 = level_1.join("l2");
+        fs::create_dir_all(&level_2).expect("nested directories");
+
+        let binary_name = workspace_binary_file_name("mediapm-cas");
+        let binary_path = level_0.join(&binary_name);
+        fs::write(&binary_path, b"stub").expect("binary");
+
+        let miss = find_binary_in_ancestors_from("mediapm-cas", &level_2, 1);
+        assert!(miss.is_none(), "max level budget should prevent reaching level_0");
+
+        let hit = find_binary_in_ancestors_from(
+            "mediapm-cas",
+            &level_2,
+            MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
+        )
+        .expect("ancestor lookup should reach level_0 with default budget");
+        assert_eq!(hit, binary_path);
     }
 
     #[test]
@@ -822,12 +1158,24 @@ mod tests {
             "runtime/state.custom.ncl",
             "--cas-store-dir",
             "runtime/cas-root",
+            "--conductor-tmp-dir",
+            "runtime/tmp-root",
+            "--conductor-schema-dir",
+            "runtime/config/custom-conductor-schemas",
             "run",
         ]);
 
         assert_eq!(cli.runtime_paths.conductor_dir, PathBuf::from("runtime/.conductor-custom"));
-        assert_eq!(cli.runtime_paths.config_state, Some(PathBuf::from("runtime/state.custom.ncl")));
+        assert_eq!(
+            cli.runtime_paths.conductor_state_config,
+            Some(PathBuf::from("runtime/state.custom.ncl"))
+        );
         assert_eq!(cli.runtime_paths.cas_store_dir, Some("runtime/cas-root".to_string()));
+        assert_eq!(cli.runtime_paths.conductor_tmp_dir, Some(PathBuf::from("runtime/tmp-root")));
+        assert_eq!(
+            cli.runtime_paths.conductor_schema_dir,
+            Some(PathBuf::from("runtime/config/custom-conductor-schemas"))
+        );
     }
 
     #[test]
@@ -840,6 +1188,7 @@ mod tests {
             PathBuf::from("demo.exe").as_path(),
             Some("demo.exe"),
             BTreeMap::from([("demo.exe".to_string(), Hash::from_content(b"demo-a"))]),
+            None,
         )
         .expect("import registration should bootstrap missing tool metadata");
 
@@ -877,6 +1226,7 @@ mod tests {
             PathBuf::from("demo.exe").as_path(),
             None,
             BTreeMap::from([("payload.txt".to_string(), Hash::from_content(b"demo-b"))]),
+            None,
         )
         .expect("content-map merge should succeed for existing executable");
 

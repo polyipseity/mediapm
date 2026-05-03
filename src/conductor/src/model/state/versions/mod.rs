@@ -150,10 +150,12 @@ fn output_ref_iso() -> IsoPrime<'static, RcBrand, latest::OutputRef, OutputRef> 
         |versioned: latest::OutputRef| OutputRef {
             hash: versioned.hash,
             persistence: persistence_flags_iso().from(versioned.persistence),
+            allow_empty_capture: versioned.allow_empty_capture,
         },
         |runtime: OutputRef| latest::OutputRef {
             hash: runtime.hash,
             persistence: persistence_flags_iso().to(runtime.persistence),
+            allow_empty_capture: runtime.allow_empty_capture,
         },
     )
 }

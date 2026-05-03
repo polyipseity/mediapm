@@ -182,15 +182,32 @@ let OutputCaptureV1 =
 in
 
 # ||| Tool output declaration (capture-only; persistence is call-level policy).
+# ||| When `allow_empty` is `true`, a capture that produces no output
+# ||| (missing file, no regex match, missing folder) is treated as a
+# ||| successful empty output rather than a workflow error.  Downstream
+# ||| steps that reference an empty-capture output as a step input receive
+# ||| a workflow error at resolution time.
 let ToolOutputSpecV1 = {
   capture | OutputCaptureV1,
+  allow_empty | Bool | optional,
 }
 in
 
 # ||| External content metadata resolved through CAS.
 # ||| Hash identity is represented by the map key in `external_data`.
+# ||| Save policy accepts only:
+# ||| - `true`: regular saved behavior,
+# ||| - `"full"`: saved behavior with full-data preference.
+# ||| `false` is rejected for external-data references.
+let ExternalDataSaveModeV1 =
+  std.contract.any_of [
+    std.contract.from_predicate (fun value => value == true),
+    std.contract.from_predicate (fun value => value == "full"),
+  ]
+in
 let ExternalContentRefV1 = {
   description | String | optional,
+  save | ExternalDataSaveModeV1 | optional,
 }
 in
 
@@ -290,8 +307,10 @@ in
 # ||| Grouped runtime storage-path configuration.
 let RuntimeStorageV1 = {
   conductor_dir | NonEmptyStringV1 | optional,
-  state_config | NonEmptyStringV1 | optional,
+  conductor_state_config | NonEmptyStringV1 | optional,
   cas_store_dir | NonEmptyStringV1 | optional,
+  conductor_tmp_dir | NonEmptyStringV1 | optional,
+  conductor_schema_dir | NonEmptyStringV1 | optional,
   # Optional additional inherited host environment-variable names keyed by
   # platform.
   #
@@ -300,6 +319,9 @@ let RuntimeStorageV1 = {
   # host platform entry from this map and merges those names after defaults
   # with case-insensitive de-duplication.
   inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
+  # Optional toggle for shared global user-level managed-tool download cache.
+  # Omitted values default to enabled behavior.
+  use_user_tool_cache | Bool | optional,
 }
 in
 

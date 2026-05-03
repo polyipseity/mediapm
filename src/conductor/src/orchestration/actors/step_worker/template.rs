@@ -54,7 +54,10 @@ where
     /// tokens expand list inputs to multiple arguments and scalar inputs to one
     /// argument when non-empty. Conditional unpack tokens evaluate to one
     /// rendered branch argument when non-empty.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "instance method form keeps parser helpers consistent across template operations"
+    )]
     fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
         let prefix = "${*";
         if !template.starts_with(prefix) || !template.ends_with('}') {
@@ -147,7 +150,10 @@ where
     ///
     /// `:folder(...)` is only valid when combined with `:zip(...)`, and ZIP
     /// selectors that resolve to directories must use `:folder(...)`.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     fn resolve_template_token(
         &self,
         token: &str,
@@ -302,7 +308,10 @@ where
     ///
     /// Returns the token prefix before the directive plus the trimmed argument
     /// when the trailing suffix matches exactly; otherwise returns `None`.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as method to mirror other parser helpers and error-context style"
+    )]
     fn split_trailing_template_directive<'a>(
         &self,
         token: &'a str,
@@ -367,10 +376,20 @@ where
 
     /// Resolves one `${<condition> ? <true> | <false>}` conditional token.
     ///
-    /// Supported conditions are either one comparison expression
-    /// (`<left> <op> <right>`) with operators `==`, `!=`, `<`, `<=`, `>`,
-    /// and `>=`, or one truthiness expression (`<operand>` or `!<operand>`).
-    /// Comparison operands use lexicographic string ordering.
+    /// Conditions use a recursive-descent grammar with the following rules:
+    ///
+    /// - Logical `&&` and `||` combine sub-conditions; `&&` binds tighter
+    ///   than `||`.
+    /// - Parentheses `(…)` group sub-conditions.
+    /// - A leading `!` negates one primary.
+    /// - Leaf expressions are either one comparison (`<left> <op> <right>`)
+    ///   with operators `==`, `!=`, `<`, `<=`, `>`, `>=`, or one truthiness
+    ///   check (`<operand>`). Comparison operands use lexicographic ordering.
+    ///
+    /// The `|` branch separator is always distinct from the `||` logical-or
+    /// operator: `||` inside the condition is consumed by the recursive-descent
+    /// parser, while a lone `|` outside any depth-tracked delimiter ends the
+    /// condition and begins the false branch.
     fn resolve_comparison_conditional_token(
         &self,
         token: &str,
@@ -383,32 +402,234 @@ where
             return Ok(None);
         };
 
-        let matches = if let Some((left_operand, operator, right_operand)) =
-            self.parse_conditional_comparison(condition_expression, token)?
-        {
-            let left_value = self.resolve_conditional_operand(left_operand, inputs)?;
-            let right_value = self.resolve_conditional_operand(right_operand, inputs)?;
-
-            match operator {
-                TemplateComparisonOperator::Equal => left_value == right_value,
-                TemplateComparisonOperator::NotEqual => left_value != right_value,
-                TemplateComparisonOperator::LessThan => left_value < right_value,
-                TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
-                TemplateComparisonOperator::GreaterThan => left_value > right_value,
-                TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
-            }
-        } else {
-            self.resolve_conditional_truthiness(condition_expression, inputs)?
-        };
+        let matches = self.evaluate_condition_expression(condition_expression, token, inputs)?;
 
         let selected_branch = if matches { true_branch } else { false_branch };
         self.resolve_conditional_branch_value(selected_branch, inputs, pending_file_writes)
             .map(Some)
     }
 
+    /// Evaluates one full condition expression with `&&`, `||`, `!`, and
+    /// parentheses using recursive descent.
+    ///
+    /// Grammar:
+    /// ```text
+    /// condition  ::= or_expr
+    /// or_expr    ::= and_expr ("||" and_expr)*
+    /// and_expr   ::= primary ("&&" primary)*
+    /// primary    ::= "(" condition ")"
+    ///              | "!" primary
+    ///              | leaf_expression
+    /// ```
+    /// A `leaf_expression` is either a comparison (`<left> <op> <right>`) or a
+    /// truthiness check (`<operand>`), using the existing
+    /// [`parse_conditional_comparison`] and [`resolve_conditional_truthiness`]
+    /// helpers. Leaf extraction stops at any `&&`, `||`, or `)` that is
+    /// outside depth-tracked quotes, parentheses, brackets, and braces.
+    fn evaluate_condition_expression(
+        &self,
+        expression: &str,
+        token: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<bool, ConductorError> {
+        let trimmed = expression.trim();
+        let (value, remaining) = self.parse_condition_or_expr(trimmed, token, inputs)?;
+        let remaining_trimmed = remaining.trim();
+        if !remaining_trimmed.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "unexpected content in condition expression '${{{token}}}': '{remaining_trimmed}'"
+            )));
+        }
+        Ok(value)
+    }
+
+    /// Parses `or_expr ::= and_expr ("||" and_expr)*`.
+    ///
+    /// Returns the evaluated boolean and the unconsumed remainder of `expression`
+    /// so the caller can continue parsing at the enclosing grammar level.
+    fn parse_condition_or_expr<'a>(
+        &self,
+        expression: &'a str,
+        token: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<(bool, &'a str), ConductorError> {
+        let (mut result, mut remaining) =
+            self.parse_condition_and_expr(expression, token, inputs)?;
+        loop {
+            let trimmed = remaining.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("||") {
+                let (rhs, new_remaining) =
+                    self.parse_condition_and_expr(rest.trim_start(), token, inputs)?;
+                result = result || rhs;
+                remaining = new_remaining;
+            } else {
+                break;
+            }
+        }
+        Ok((result, remaining))
+    }
+
+    /// Parses `and_expr ::= primary ("&&" primary)*`.
+    ///
+    /// Returns the evaluated boolean and the unconsumed remainder of `expression`
+    /// so the caller can continue parsing at the enclosing grammar level.
+    fn parse_condition_and_expr<'a>(
+        &self,
+        expression: &'a str,
+        token: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<(bool, &'a str), ConductorError> {
+        let (mut result, mut remaining) =
+            self.parse_condition_primary(expression, token, inputs)?;
+        loop {
+            let trimmed = remaining.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("&&") {
+                let (rhs, new_remaining) =
+                    self.parse_condition_primary(rest.trim_start(), token, inputs)?;
+                result = result && rhs;
+                remaining = new_remaining;
+            } else {
+                break;
+            }
+        }
+        Ok((result, remaining))
+    }
+
+    /// Parses `primary ::= "(" condition ")" | "!" primary | leaf_expression`.
+    ///
+    /// Parenthesised groups delegate back to [`parse_condition_or_expr`] so
+    /// the full grammar is supported recursively. A leading `!` negates the
+    /// next primary. All other input is treated as a leaf and extracted by
+    /// [`Self::extract_condition_leaf`].
+    fn parse_condition_primary<'a>(
+        &self,
+        expression: &'a str,
+        token: &str,
+        inputs: &BTreeMap<String, ResolvedInput>,
+    ) -> Result<(bool, &'a str), ConductorError> {
+        let expression = expression.trim_start();
+
+        // Parenthesised sub-expression.
+        if let Some(inner) = expression.strip_prefix('(') {
+            let (value, after_inner) = self.parse_condition_or_expr(inner, token, inputs)?;
+            let after_trimmed = after_inner.trim_start();
+            if let Some(rest) = after_trimmed.strip_prefix(')') {
+                return Ok((value, rest));
+            }
+            return Err(ConductorError::Workflow(format!(
+                "unclosed parenthesis in condition expression '${{{token}}}'"
+            )));
+        }
+
+        // Logical negation: `!primary`.
+        if let Some(rest) = expression.strip_prefix('!') {
+            let (value, remaining) =
+                self.parse_condition_primary(rest.trim_start(), token, inputs)?;
+            return Ok((!value, remaining));
+        }
+
+        // Leaf: comparison or truthiness.
+        let (leaf, remaining) = Self::extract_condition_leaf(expression);
+        let leaf = leaf.trim();
+        if leaf.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "empty primary expression in condition '${{{token}}}'"
+            )));
+        }
+
+        let value =
+            if let Some((left, op, right)) = self.parse_conditional_comparison(leaf, token)? {
+                let left_value = self.resolve_conditional_operand(left, inputs)?;
+                let right_value = self.resolve_conditional_operand(right, inputs)?;
+                match op {
+                    TemplateComparisonOperator::Equal => left_value == right_value,
+                    TemplateComparisonOperator::NotEqual => left_value != right_value,
+                    TemplateComparisonOperator::LessThan => left_value < right_value,
+                    TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
+                    TemplateComparisonOperator::GreaterThan => left_value > right_value,
+                    TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
+                }
+            } else {
+                self.resolve_conditional_truthiness(leaf, inputs)?
+            };
+
+        Ok((value, remaining))
+    }
+
+    /// Extracts one leaf condition token, stopping at `&&`, `||`, or a `)` at
+    /// depth zero outside any depth-tracked quotes, parentheses, brackets, or
+    /// braces.
+    ///
+    /// Returns `(leaf, remaining)` where `remaining` starts at the first
+    /// stopping delimiter. Depth tracking mirrors
+    /// [`split_conditional_token_branches`].
+    fn extract_condition_leaf(expression: &str) -> (&str, &str) {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut paren_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut brace_depth = 0usize;
+        let chars: Vec<(usize, char)> = expression.char_indices().collect();
+        let mut i = 0;
+
+        while i < chars.len() {
+            let (index, character) = chars[i];
+
+            if let Some(active_quote) = quote {
+                if escaped {
+                    escaped = false;
+                    i += 1;
+                    continue;
+                }
+                if character == '\\' {
+                    escaped = true;
+                    i += 1;
+                    continue;
+                }
+                if character == active_quote {
+                    quote = None;
+                }
+                i += 1;
+                continue;
+            }
+
+            match character {
+                '\'' | '"' => {
+                    quote = Some(character);
+                    i += 1;
+                    continue;
+                }
+                '(' => paren_depth = paren_depth.saturating_add(1),
+                ')' if paren_depth > 0 => paren_depth = paren_depth.saturating_sub(1),
+                ')' => return (&expression[..index], &expression[index..]),
+                '[' => bracket_depth = bracket_depth.saturating_add(1),
+                ']' if bracket_depth > 0 => bracket_depth = bracket_depth.saturating_sub(1),
+                '{' => brace_depth = brace_depth.saturating_add(1),
+                '}' if brace_depth > 0 => brace_depth = brace_depth.saturating_sub(1),
+                '&' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    if i + 1 < chars.len() && chars[i + 1].1 == '&' {
+                        return (&expression[..index], &expression[index..]);
+                    }
+                }
+                '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    if i + 1 < chars.len() && chars[i + 1].1 == '|' {
+                        return (&expression[..index], &expression[index..]);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        (expression, "")
+    }
+
     /// Returns host platform value used by `context.os` selectors.
     #[must_use]
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "method keeps context selectors grouped on the executor helper surface"
+    )]
     fn current_os_text(&self) -> &'static str {
         match std::env::consts::OS {
             "windows" => "windows",
@@ -420,7 +641,10 @@ where
 
     /// Returns current process working-directory text used by
     /// `context.working_directory` selectors.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "instance-scoped helper for consistent template-context access pattern"
+    )]
     fn current_working_directory_text(&self) -> Result<String, ConductorError> {
         std::env::current_dir().map(|path| path.to_string_lossy().to_string()).map_err(|source| {
             ConductorError::Io {
@@ -432,7 +656,10 @@ where
     }
 
     /// Splits one conditional token into condition + true/false branches.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "kept as method to maintain cohesive conditional-parser API on executor"
+    )]
     fn split_conditional_token_branches<'a>(
         &self,
         token: &'a str,
@@ -445,19 +672,25 @@ where
         let mut condition_separator_index = None;
         let mut branch_separator_index = None;
 
-        for (index, character) in token.char_indices() {
+        let chars: Vec<(usize, char)> = token.char_indices().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let (index, character) = chars[i];
             if let Some(active_quote) = quote {
                 if escaped {
                     escaped = false;
+                    i += 1;
                     continue;
                 }
                 if character == '\\' {
                     escaped = true;
+                    i += 1;
                     continue;
                 }
                 if character == active_quote {
                     quote = None;
                 }
+                i += 1;
                 continue;
             }
 
@@ -475,6 +708,11 @@ where
                     }
                 }
                 '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                    // Skip `||` (logical-or in condition) — treat lone `|` as branch separator.
+                    if i + 1 < chars.len() && chars[i + 1].1 == '|' {
+                        i += 2;
+                        continue;
+                    }
                     if condition_separator_index.is_some() {
                         branch_separator_index = Some(index);
                         break;
@@ -482,6 +720,7 @@ where
                 }
                 _ => {}
             }
+            i += 1;
         }
 
         let Some(condition_separator_index) = condition_separator_index else {
@@ -510,7 +749,10 @@ where
     ///
     /// Returns `Ok(None)` when no comparison operator is present so callers can
     /// fall back to truthiness evaluation.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "method-style parser helper keeps comparison parsing colocated with related evaluators"
+    )]
     fn parse_conditional_comparison<'a>(
         &self,
         condition_expression: &'a str,
@@ -865,7 +1107,10 @@ where
     }
 
     /// Recursively collects one directory tree into relative-file payloads.
-    #[allow(clippy::self_only_used_in_recursion)]
+    #[expect(
+        clippy::self_only_used_in_recursion,
+        reason = "recursive traversal helper intentionally remains method-scoped with sibling ZIP helpers"
+    )]
     fn collect_directory_file_payloads_recursive(
         &self,
         root_directory: &Path,
@@ -1021,7 +1266,10 @@ where
     }
 
     /// Decodes one JavaScript-like escape sequence from a template or selector.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "kept instance-scoped to align with the template parser helper surface"
+    )]
     fn decode_js_escape(
         &self,
         escaped_tail: &str,

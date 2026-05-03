@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
 use crate::model::state::{OutputSaveMode, PersistenceFlags};
+use crate::tools::downloader::use_user_download_cache_enabled;
 
 pub(crate) mod versions;
 
@@ -98,10 +99,16 @@ pub struct RuntimeStorageConfig {
     pub conductor_dir: Option<String>,
     /// Optional override path for the volatile state document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_config: Option<String>,
+    pub conductor_state_config: Option<String>,
     /// Optional override path for filesystem CAS storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cas_store_dir: Option<String>,
+    /// Optional override path for temporary execution sandboxes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_tmp_dir: Option<String>,
+    /// Optional override path for exported conductor schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_schema_dir: Option<String>,
     /// Optional additional inherited host environment-variable names keyed by
     /// platform.
     ///
@@ -113,6 +120,12 @@ pub struct RuntimeStorageConfig {
     /// with case-insensitive deduplication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
+    /// Optional toggle for shared global user-level managed-tool download
+    /// cache.
+    ///
+    /// When omitted, the cache is enabled by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_user_tool_cache: Option<bool>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by
@@ -184,9 +197,21 @@ impl RuntimeStorageConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.conductor_dir.is_none()
-            && self.state_config.is_none()
+            && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
+            && self.conductor_tmp_dir.is_none()
+            && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.use_user_tool_cache.is_none()
+    }
+
+    /// Returns whether shared global user-level download cache should be used.
+    ///
+    /// Absent configuration defaults to `true` so repeated tool downloads can
+    /// reuse payload bytes across local workspaces for this user.
+    #[must_use]
+    pub const fn use_user_tool_cache_enabled(&self) -> bool {
+        use_user_download_cache_enabled(self.use_user_tool_cache)
     }
 
     /// Returns inherited runtime environment names merged with host defaults.
@@ -269,6 +294,17 @@ pub struct ExternalContentRef {
     /// Optional human description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Optional save policy for this external-data root.
+    ///
+    /// Supported values:
+    /// - `true` => regular saved behavior,
+    /// - `"full"` => saved behavior with full-data preference hints,
+    /// - `None` => runtime default behavior.
+    ///
+    /// `false` (`OutputSaveMode::Unsaved`) is invalid for external-data
+    /// references and rejected during validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<OutputSaveMode>,
 }
 
 /// Add-external-data request options for machine document mutations.
@@ -299,6 +335,20 @@ impl AddExternalDataOptions {
         self.overwrite_existing = value;
         self
     }
+}
+
+/// Validates one external-data save mode for machine-document insertion.
+fn validate_external_data_save_mode(
+    save_mode: Option<OutputSaveMode>,
+) -> Result<(), ConductorError> {
+    if matches!(save_mode, Some(OutputSaveMode::Unsaved)) {
+        return Err(ConductorError::Workflow(
+            "external_data save policy cannot be false/unsaved; use true/saved or \"full\""
+                .to_string(),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Tool definition from one conductor configuration document.
@@ -555,9 +605,12 @@ pub enum ToolInputKind {
     StringList,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_default_tool_input_kind(kind: &ToolInputKind) -> bool {
-    matches!(kind, ToolInputKind::String)
+/// Returns whether a value equals its type default for serde skip checks.
+fn is_default_value<T>(value: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    value == &T::default()
 }
 
 /// Tool input declaration entry.
@@ -566,7 +619,7 @@ pub struct ToolInputSpec {
     /// Declared value kind for this input.
     ///
     /// When omitted, runtime defaults to [`ToolInputKind::String`].
-    #[serde(default, skip_serializing_if = "is_default_tool_input_kind")]
+    #[serde(default, skip_serializing_if = "is_default_value")]
     pub kind: ToolInputKind,
 }
 
@@ -727,11 +780,30 @@ pub struct ToolOutputSpec {
     /// process/runtime template values. Regex capture kinds evaluate the final
     /// regex pattern against normalized sandbox-relative paths.
     pub capture: OutputCaptureSpec,
+    /// Whether a capture that produces no output (missing file, no regex
+    /// match, missing folder) is treated as a successful empty output rather
+    /// than a workflow error.
+    ///
+    /// When `true` and the capture source is absent or empty, the output is
+    /// stored as an empty capture in the orchestration state. Downstream steps
+    /// that reference an empty-capture output as a step input receive a
+    /// workflow error at resolution time, preventing silent empty-payload
+    /// propagation.
+    ///
+    /// This flag is appropriate for conditional outputs — artifacts that a
+    /// tool produces only when certain options are active (for example
+    /// subtitle sidecars, thumbnail sidecars, description files). Marking
+    /// these outputs `allow_empty = true` prevents spurious workflow failures
+    /// when the tool is configured to skip the optional artifact.
+    ///
+    /// Defaults to `false`: missing captures are errors by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_empty: bool,
 }
 
 impl Default for ToolOutputSpec {
     fn default() -> Self {
-        Self { capture: OutputCaptureSpec::Stdout {} }
+        Self { capture: OutputCaptureSpec::Stdout {}, allow_empty: false }
     }
 }
 
@@ -1184,6 +1256,8 @@ impl MachineNickelDocument {
         hash: Hash,
         options: AddExternalDataOptions,
     ) -> Result<(), ConductorError> {
+        validate_external_data_save_mode(options.reference.save)?;
+
         if !options.overwrite_existing && self.external_data.contains_key(&hash) {
             return Err(ConductorError::Workflow(format!(
                 "external data '{hash}' already exists in machine config; set overwrite_existing=true to replace it"
@@ -1237,6 +1311,7 @@ fn sync_tool_content_external_data_roots(
     for hash in referenced_hashes {
         external_data.entry(hash).or_insert_with(|| ExternalContentRef {
             description: Some(format!("{MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX} {hash}")),
+            save: None,
         });
     }
 }
@@ -1417,7 +1492,8 @@ mod tests {
 
     use super::{
         AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef,
-        MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec, UserNickelDocument,
+        MachineNickelDocument, OutputSaveMode, ToolConfigSpec, ToolKindSpec, ToolSpec,
+        UserNickelDocument,
     };
 
     /// Verifies add-tool can insert both tool spec and tool config in one call.
@@ -1548,6 +1624,7 @@ mod tests {
                 fixture_hash,
                 AddExternalDataOptions::new(ExternalContentRef {
                     description: Some("fixture payload".to_string()),
+                    save: None,
                 }),
             )
             .expect("machine external data insert should succeed");
@@ -1563,18 +1640,37 @@ mod tests {
         machine
             .add_external_data(
                 fixture_hash,
-                AddExternalDataOptions::new(ExternalContentRef { description: None }),
+                AddExternalDataOptions::new(ExternalContentRef { description: None, save: None }),
             )
             .expect("first insert should succeed");
 
         let error = machine
             .add_external_data(
                 fixture_hash,
-                AddExternalDataOptions::new(ExternalContentRef { description: None }),
+                AddExternalDataOptions::new(ExternalContentRef { description: None, save: None }),
             )
             .expect_err("duplicate insert without overwrite should fail");
 
         assert!(error.to_string().contains("already exists"));
+    }
+
+    /// Verifies machine external-data insertion rejects unsaved (`false`) save policy.
+    #[test]
+    fn add_machine_external_data_rejects_unsaved_save_policy() {
+        let mut machine = MachineNickelDocument::default();
+        let fixture_hash = Hash::from_content(b"fixture-unsaved");
+
+        let error = machine
+            .add_external_data(
+                fixture_hash,
+                AddExternalDataOptions::new(ExternalContentRef {
+                    description: Some("fixture unsaved".to_string()),
+                    save: Some(OutputSaveMode::Unsaved),
+                }),
+            )
+            .expect_err("unsaved external-data save policy should fail validation");
+
+        assert!(error.to_string().contains("cannot be false/unsaved"));
     }
 
     /// Verifies stale managed tool-content roots are removed while non-managed
@@ -1591,11 +1687,15 @@ mod tests {
                     stale_hash,
                     ExternalContentRef {
                         description: Some("managed tool content CAS root for stale".to_string()),
+                        save: None,
                     },
                 ),
                 (
                     kept_hash,
-                    ExternalContentRef { description: Some("user-managed fixture".to_string()) },
+                    ExternalContentRef {
+                        description: Some("user-managed fixture".to_string()),
+                        save: None,
+                    },
                 ),
             ]),
             tool_configs: BTreeMap::from([(

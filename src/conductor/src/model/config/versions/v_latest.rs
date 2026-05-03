@@ -140,9 +140,12 @@ pub(crate) enum ToolInputKindLatest {
     StringList,
 }
 
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
-    matches!(kind, ToolInputKindLatest::String)
+/// Returns whether a value equals its type default for serde skip checks.
+fn is_default_value<T>(value: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    value == &T::default()
 }
 
 /// Declared tool input entry in the latest persisted schema.
@@ -150,7 +153,7 @@ fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ToolInputSpecLatest {
     /// Declared input value kind.
-    #[serde(default, skip_serializing_if = "is_default_tool_input_kind_latest")]
+    #[serde(default, skip_serializing_if = "is_default_value")]
     pub(crate) kind: ToolInputKindLatest,
 }
 
@@ -323,14 +326,23 @@ pub(crate) struct RuntimeStorageLatest {
     pub(crate) conductor_dir: Option<String>,
     /// Optional volatile state document path override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state_config: Option<String>,
+    pub(crate) conductor_state_config: Option<String>,
     /// Optional filesystem CAS store directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cas_store_dir: Option<String>,
+    /// Optional temporary execution sandbox directory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) conductor_tmp_dir: Option<String>,
+    /// Optional schema export directory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) conductor_schema_dir: Option<String>,
     /// Optional additional inherited host environment-variable names keyed by
     /// platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
+    /// Optional toggle for shared global user-level managed-tool cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) use_user_tool_cache: Option<bool>,
 }
 
 impl RuntimeStorageLatest {
@@ -338,9 +350,12 @@ impl RuntimeStorageLatest {
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.conductor_dir.is_none()
-            && self.state_config.is_none()
+            && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
+            && self.conductor_tmp_dir.is_none()
+            && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.use_user_tool_cache.is_none()
     }
 }
 
@@ -349,6 +364,9 @@ impl RuntimeStorageLatest {
 pub(crate) struct ToolOutputSpecLatest {
     /// Capture source for this output.
     pub(crate) capture: OutputCaptureLatest,
+    /// Whether a missing capture is treated as empty rather than an error.
+    #[serde(default)]
+    pub(crate) allow_empty: bool,
 }
 
 /// External content metadata persisted in the latest Nickel schema.
@@ -357,6 +375,20 @@ pub(crate) struct ExternalContentRefLatest {
     /// Optional human description.
     #[serde(default)]
     pub(crate) description: Option<String>,
+    /// Optional persisted save override for this external-data root.
+    ///
+    /// Wire shape mirrors output-policy `save` values:
+    /// - `true` for regular saved mode,
+    /// - `"full"` for full-data preferred mode.
+    ///
+    /// `false` is parsed here for compatibility but rejected by runtime
+    /// validation when used under `external_data`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_output_save_latest"
+    )]
+    pub(crate) save: Option<OutputSaveLatest>,
 }
 
 /// Per-tool runtime execution configuration persisted in the latest schema.

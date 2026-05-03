@@ -132,6 +132,12 @@ pub struct OutputRefV1 {
     pub hash: Hash,
     /// Effective persistence flags.
     pub persistence: PersistenceFlagsV1,
+    /// Whether this output was captured as intentionally empty.
+    ///
+    /// Defaults to `false` for compatibility with state written before this
+    /// field was introduced.
+    #[serde(default)]
+    pub allow_empty_capture: bool,
 }
 
 /// Builtin metadata kind marker used by orchestration-state V1 wire format.

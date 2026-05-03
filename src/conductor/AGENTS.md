@@ -61,7 +61,7 @@ Conductor uses two config documents plus one runtime state document:
 Grouped runtime path defaults:
 
 - runtime root (`conductor_dir`): `.conductor`
-- volatile state path (`state_config`): `<conductor_dir>/state.ncl`
+- volatile state path (`conductor_state_config`): `<conductor_dir>/state.ncl`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
 - schema export directory: `<conductor_dir>/config/conductor`
 
@@ -77,7 +77,7 @@ Document contract:
 - `conductor.machine.ncl` stores machine-managed setup/config declarations.
 - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
   storage fields under one `runtime` record:
-  `runtime.conductor_dir`, `runtime.state_config`,
+  `runtime.conductor_dir`, `runtime.conductor_state_config`,
   `runtime.cas_store_dir`, and optional platform-keyed inherited host
   env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS
   locator string (filesystem path or URL).
@@ -119,6 +119,17 @@ official baseline set is:
 - `archive` (pure ZIP-only pack/unpack/repack transforms)
 
 All other domain logic remains external tooling or mediapm workflow behavior.
+
+For portable string-manipulation tasks in workflows, prefer provisioning
+`sd` via conductor tool preset import (`import tool --preset sd`) instead of
+platform-specific shell tools (`sed`, PowerShell regex one-offs, etc.).
+Use `sd` for deterministic text rewrites where possible so workflow behavior
+stays consistent across Windows/Linux/macOS runners.
+
+Common executable tool presets must use one module file per preset under
+`src/conductor/src/tools/` (for example `tools/sd.rs`) with registry/dispatch
+kept in `tools/mod.rs`; avoid re-centralizing preset implementation logic in
+`api.rs`.
 
 ## Tool Schema and Runtime Invariants
 
@@ -237,7 +248,7 @@ When editing tool/config schema behavior, preserve these invariants:
     or non-negative integers. Runtime unified execution normalizes `-1` to the
     current default retry policy.
 
-  1. Newly captured output references must initialize persistence from the
+27. Newly captured output references must initialize persistence from the
     resolved output specification policy before equivalent-call merge logic is
     applied; do not seed new output entries with unconditional saved defaults.
 
@@ -302,6 +313,14 @@ Supported token forms:
 - `${<operand> ? <true> | <false>}` / `${!<operand> ? <true> | <false>}`
   - Truthiness conditional where non-empty scalar values and non-empty list
     values are truthy.
+- `${<expr1> && <expr2> ? <true> | <false>}` / `${<expr1> || <expr2> ? <true> | <false>}`
+  - Logical-and (`&&`) and logical-or (`||`) combine sub-conditions.
+  - `&&` binds tighter than `||` (standard precedence).
+  - Parentheses group sub-conditions: `${(<expr1> || <expr2>) && <expr3> ? <true> | <false>}`.
+  - A leading `!` negates a primary: `${!(a == "x") ? <true> | <false>}`.
+  - The branch separator `|` is always distinct from `||`: `||` inside the
+    condition is consumed by the recursive-descent parser; a lone `|` outside
+    any depth-tracked delimiter ends the condition and begins the false branch.
 - `\${...}`
   - Escapes interpolation start and renders literal `${...}`.
 - JavaScript-like string escapes in literal spans are supported.
@@ -390,6 +409,12 @@ Guidance:
 - Builtin crates must use explicit crate versions in their own `Cargo.toml`
   (`version = "..."`) instead of inheriting workspace package version.
 - Ensure process execution errors preserve useful stderr context.
+- Guard external executable subprocesses with a bounded timeout (default
+  `900` seconds) so stuck child processes cannot stall worker actors forever;
+  allow explicit operator override via
+  `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS`.
+- Execute external tools with stdin disconnected (`Stdio::null`) so accidental
+  interactive prompts cannot block worker actors indefinitely.
 - Create an isolated temporary cwd only when a step actually needs to execute.
 - The temporary cwd is ad hoc execution scratch space, not a directory tied to
   tool identity or cached instances.
@@ -408,6 +433,8 @@ Guidance:
   normalized sandbox-relative paths (`/` separators on all hosts).
 - Regex file capture must resolve to exactly one file; zero or multiple
   matches are workflow errors.
+- Regex folder capture (`folder_regex`) may resolve zero to many paths;
+  zero matches are valid.
 - `folder_regex` capture rename expansions (capture-group based) must remain
   deterministic and fail fast on post-rename path collisions.
 
@@ -446,7 +473,7 @@ Examples live under `src/conductor/examples/`.
 - `demo.rs` should keep generated `conductor.ncl` newcomer-friendly by
   including explicit default grouped runtime storage values as schema fields
   (not comments):
-  `conductor_dir = .conductor`, `state_config = .conductor/state.ncl`,
+  `conductor_dir = .conductor`, `conductor_state_config = .conductor/state.ncl`,
   `cas_store_dir = .conductor/store/`.
 - When demonstrating filesystem flows in `demo.rs`, prefer compact pipelines
   that keep builtin `import` at the beginning and builtin `export` at the end,

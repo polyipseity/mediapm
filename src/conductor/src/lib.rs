@@ -4,18 +4,21 @@
 //! - `api` for public contracts,
 //! - `error` for error taxonomy,
 //! - `model` for persisted schemas,
-//! - `orchestration` for runtime execution behavior.
+//! - `orchestration` for runtime execution behavior,
+//! - `tools` for common executable tool presets.
 
 pub mod api;
 pub mod cli;
 pub mod error;
 pub mod model;
 pub mod orchestration;
+pub mod tools;
 
 pub use api::{
-    ConductorApi, ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
-    RuntimeStoragePaths, SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind,
-    ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths, export_nickel_config_schemas,
+    CommonExecutablePayload, CommonExecutableTool, ConductorApi, ResolvedRuntimeStoragePaths,
+    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths, SchedulerDiagnostics,
+    SchedulerTraceEvent, SchedulerTraceKind, ToolRuntimeEstimate, WorkerQueueDiagnostics,
+    default_state_paths, export_nickel_config_schemas, fetch_common_executable_tool_payload,
     resolve_runtime_storage_paths, schema_export_dir,
 };
 pub use error::ConductorError;
@@ -34,6 +37,11 @@ pub use model::state::{
     persisted_state_json_pretty, persisted_state_json_value,
 };
 pub use orchestration::SimpleConductor;
+pub use orchestration::config::ENV_PROFILE_OUTPUT_PATH;
+pub use tools::downloader::{
+    UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
+    default_user_download_cache_root, use_user_download_cache_enabled,
+};
 
 /// Returns built-in tool ids known by the conductor runtime.
 ///

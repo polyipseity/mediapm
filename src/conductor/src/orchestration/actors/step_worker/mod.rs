@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
@@ -22,13 +22,24 @@ use crate::model::config::{
     ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{
-    OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance, merge_persistence_flags,
+    OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
+    merge_persistence_flags,
 };
 use crate::orchestration::protocol::{
     StepExecutionBundle, StepExecutionRequest, StepOutputs, UnifiedNickelDocument, UnifiedToolSpec,
 };
 
 mod template;
+
+/// Environment-variable override for executable subprocess timeout (seconds).
+const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
+
+/// Default timeout budget for external executable subprocesses.
+///
+/// This guard prevents indefinitely hanging child processes from stalling
+/// conductor workers forever while still leaving enough room for heavy media
+/// transforms in normal host conditions.
+const DEFAULT_EXECUTABLE_TIMEOUT_SECS: u64 = 15 * 60;
 
 /// Worker actor request envelope.
 #[derive(Debug)]
@@ -110,6 +121,13 @@ struct ResolvedOutputSpec {
     capture: ResolvedOutputCapture,
     /// Final persistence policy after tool defaults and step overrides merge.
     persistence: PersistenceFlags,
+    /// Whether a capture that produces no output is treated as a successful
+    /// empty capture rather than a workflow error.
+    ///
+    /// When `true` and the capture source is absent, the output is stored as
+    /// `allow_empty_capture = true` in the orchestration state. Downstream
+    /// steps referencing this output as a step input receive a workflow error.
+    allow_empty: bool,
 }
 
 /// In-memory capture buffers returned by process execution.
@@ -246,7 +264,10 @@ where
     C: CasApi + Send + Sync + 'static,
 {
     /// Executes one planned step request and returns the bundle needed for state merge.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     async fn execute_step(
         &self,
         request: StepExecutionRequest,
@@ -335,8 +356,7 @@ where
         };
 
         if needs_execution {
-            let execution_cwd_temp =
-                self.create_execution_temp_cwd(&request.runtime_storage_dir)?;
+            let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
             let execution_cwd = execution_cwd_temp.path();
             self.materialize_tool_content_map(&tool.tool_content_map, execution_cwd).await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
@@ -355,12 +375,33 @@ where
                         "output '{output_name}' disappeared from resolved output spec map"
                     ))
                 })?;
-                let payload = self.capture_output_payload(output_spec, &capture, execution_cwd)?;
-                let hash = self.cas.put(payload).await?;
-                instance.outputs.insert(
-                    output_name.clone(),
-                    OutputRef { hash, persistence: output_spec.persistence },
-                );
+                let maybe_payload =
+                    self.capture_output_payload(output_spec, &capture, execution_cwd)?;
+                if let Some(payload) = maybe_payload {
+                    let hash = self.cas.put(payload).await?;
+                    instance.outputs.insert(
+                        output_name.clone(),
+                        OutputRef {
+                            hash,
+                            persistence: output_spec.persistence,
+                            allow_empty_capture: false,
+                        },
+                    );
+                } else {
+                    // Empty capture: allowed by allow_empty = true on the tool output spec.
+                    // Store empty bytes in CAS so cache-hit paths have a stable hash and
+                    // mark the OutputRef so coordinators can surface a descriptive error
+                    // if a downstream step tries to consume this empty output as input.
+                    let empty_hash = self.cas.put(Vec::new()).await?;
+                    instance.outputs.insert(
+                        output_name.clone(),
+                        OutputRef {
+                            hash: empty_hash,
+                            persistence: output_spec.persistence,
+                            allow_empty_capture: true,
+                        },
+                    );
+                }
             }
         }
 
@@ -422,7 +463,10 @@ where
     /// Executable tools additionally enforce declared input/default contracts,
     /// while builtin tools accept pass-through key/value bindings and delegate
     /// strict argument validation to builtin implementations.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     async fn resolve_inputs(
         &self,
         unified: &UnifiedNickelDocument,
@@ -604,13 +648,16 @@ where
         for segment in parsed_segments {
             match segment {
                 ParsedInputBindingSegment::ExternalData { hash } => {
-                    if !unified.external_data.contains_key(&hash) {
+                    let Some(reference) = unified.external_data.get(&hash) else {
                         return Err(ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' references unknown external data hash '{hash}'",
                             step.id
                         )));
-                    }
+                    };
                     let bytes = self.cas.get(hash).await?;
+                    if reference.save.is_some_and(OutputSaveMode::prefers_full) {
+                        self.apply_full_save_hint(hash).await?;
+                    }
                     plain_content.extend_from_slice(bytes.as_ref());
                 }
                 ParsedInputBindingSegment::Literal(content) => {
@@ -625,9 +672,19 @@ where
                             step.id, output, step_id
                         ))
                     })?;
-                    let output_hash = producer.get(output).copied().ok_or_else(|| {
+                    let output_slot = producer.get(output).ok_or_else(|| {
                         ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' references missing output '{}' on step '{}'",
+                            step.id, output, step_id
+                        ))
+                    })?;
+                    // None = empty capture produced via allow_empty; using an empty capture as
+                    // a step input is a workflow error to prevent silent empty-payload propagation.
+                    let output_hash = output_slot.ok_or_else(|| {
+                        ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' references output '{}' from step '{}', \
+                             but that output was captured as empty (allow_empty = true) and cannot be \
+                             used as a step input",
                             step.id, output, step_id
                         ))
                     })?;
@@ -872,15 +929,18 @@ where
     /// Creates one ad hoc sandbox directory only when a step actually needs to
     /// execute.
     ///
-    /// Sandboxes are always nested under `<runtime_storage_dir>/tmp`, where
-    /// `runtime_storage_dir` is resolved from
-    /// `RunWorkflowOptions.runtime_storage_paths.conductor_dir`.
-    #[allow(clippy::unused_self)]
+    /// Sandboxes are always nested under `runtime_tmp_dir`, which is resolved
+    /// from `RunWorkflowOptions.runtime_storage_paths.conductor_tmp_dir`
+    /// (default `<conductor_dir>/tmp`).
+    #[expect(
+        clippy::unused_self,
+        reason = "helper keeps method shape for readability and symmetry with other executor helpers"
+    )]
     fn create_execution_temp_cwd(
         &self,
-        runtime_storage_dir: &Path,
+        runtime_tmp_dir: &Path,
     ) -> Result<tempfile::TempDir, ConductorError> {
-        let scratch_root = runtime_storage_dir.join("tmp");
+        let scratch_root = runtime_tmp_dir.to_path_buf();
         std::fs::create_dir_all(&scratch_root).map_err(|source| ConductorError::Io {
             operation: "creating tool sandbox root directory".to_string(),
             path: scratch_root.clone(),
@@ -896,7 +956,10 @@ where
     }
 
     /// Normalizes one tool-relative path and rejects absolute or escaping paths.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "helper is intentionally instance-scoped for local API consistency"
+    )]
     fn normalized_relative_tool_path(
         &self,
         relative_path: &str,
@@ -943,7 +1006,10 @@ where
     }
 
     /// Compiles one output-capture regex pattern after template rendering.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "instance-scoped helper keeps call sites uniform across template and capture helpers"
+    )]
     fn compile_output_capture_regex(
         &self,
         pattern: &str,
@@ -1016,7 +1082,11 @@ where
                 };
                 Ok((
                     name.clone(),
-                    ResolvedOutputSpec { capture, persistence: PersistenceFlags::default() },
+                    ResolvedOutputSpec {
+                        capture,
+                        persistence: PersistenceFlags::default(),
+                        allow_empty: output_spec.allow_empty,
+                    },
                 ))
             })
             .collect::<Result<_, ConductorError>>()?;
@@ -1067,7 +1137,10 @@ where
     }
 
     /// Materializes deferred template file writes into one execution sandbox.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "method form preserves a cohesive helper surface on StepWorkerExecutor"
+    )]
     fn materialize_template_file_writes(
         &self,
         pending_file_writes: &[TemplateFileWrite],
@@ -1094,7 +1167,9 @@ where
     }
 
     /// Spawns one executable process inside the step sandbox and captures its streams.
-    #[allow(clippy::unused_async)]
+    ///
+    /// Runtime timeout uses [`EXECUTABLE_TIMEOUT_SECS_ENV_VAR`] when provided,
+    /// otherwise [`DEFAULT_EXECUTABLE_TIMEOUT_SECS`].
     async fn execute_executable_tool(
         &self,
         executable_name: &str,
@@ -1102,6 +1177,82 @@ where
         env_vars: &BTreeMap<String, String>,
         success_codes: &BTreeSet<i32>,
         tool_cwd: &Path,
+    ) -> Result<ToolExecutionCapture, ConductorError> {
+        let executable_timeout = Self::resolve_executable_timeout_duration()?;
+
+        self.execute_executable_tool_with_timeout(
+            executable_name,
+            resolved_args,
+            env_vars,
+            success_codes,
+            tool_cwd,
+            executable_timeout,
+        )
+        .await
+    }
+
+    /// Resolves the configured executable timeout budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] when
+    /// [`EXECUTABLE_TIMEOUT_SECS_ENV_VAR`] is set to a non-positive or
+    /// non-integer value.
+    fn resolve_executable_timeout_duration() -> Result<Duration, ConductorError> {
+        let Some(raw) = std::env::var_os(EXECUTABLE_TIMEOUT_SECS_ENV_VAR) else {
+            return Ok(Duration::from_secs(DEFAULT_EXECUTABLE_TIMEOUT_SECS));
+        };
+
+        let text = raw.to_string_lossy().trim().to_string();
+        if text.is_empty() {
+            return Ok(Duration::from_secs(DEFAULT_EXECUTABLE_TIMEOUT_SECS));
+        }
+
+        Self::parse_executable_timeout_duration(&text)
+    }
+
+    /// Parses one explicit timeout override value into a [`Duration`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] when the value is non-integer or
+    /// non-positive.
+    fn parse_executable_timeout_duration(value: &str) -> Result<Duration, ConductorError> {
+        let text = value.trim();
+        if text.is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "{EXECUTABLE_TIMEOUT_SECS_ENV_VAR} must be a positive integer number of seconds"
+            )));
+        }
+
+        let timeout_seconds = text.parse::<u64>().map_err(|error| {
+            ConductorError::Workflow(format!(
+                "{EXECUTABLE_TIMEOUT_SECS_ENV_VAR} must be a positive integer number of seconds, got '{text}': {error}"
+            ))
+        })?;
+        if timeout_seconds == 0 {
+            return Err(ConductorError::Workflow(format!(
+                "{EXECUTABLE_TIMEOUT_SECS_ENV_VAR} must be greater than 0 seconds"
+            )));
+        }
+
+        Ok(Duration::from_secs(timeout_seconds))
+    }
+
+    /// Spawns one executable process with an explicit timeout budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Workflow`] when process startup succeeds but
+    /// execution exceeds `executable_timeout`.
+    async fn execute_executable_tool_with_timeout(
+        &self,
+        executable_name: &str,
+        resolved_args: &[String],
+        env_vars: &BTreeMap<String, String>,
+        success_codes: &BTreeSet<i32>,
+        tool_cwd: &Path,
+        executable_timeout: Duration,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         if executable_name.trim().is_empty() {
             return Err(ConductorError::Workflow(
@@ -1137,18 +1288,28 @@ where
             }
         }
 
-        let mut command = std::process::Command::new(&executable_path);
+        let mut command = tokio::process::Command::new(&executable_path);
         for arg in resolved_args {
             command.arg(arg);
         }
         command.current_dir(tool_cwd);
+        command.stdin(std::process::Stdio::null());
         command.env_clear();
         command.envs(env_vars);
-        let output = command.output().map_err(|source| ConductorError::Io {
-            operation: format!("executing executable process '{executable_name}'"),
-            path: executable_path.clone(),
-            source,
-        })?;
+        command.kill_on_drop(true);
+        let output = match tokio::time::timeout(executable_timeout, command.output()).await {
+            Ok(output) => output.map_err(|source| ConductorError::Io {
+                operation: format!("executing executable process '{executable_name}'"),
+                path: executable_path.clone(),
+                source,
+            })?,
+            Err(_) => {
+                return Err(ConductorError::Workflow(format!(
+                    "process '{executable_name}' exceeded timeout of {} seconds; adjust {EXECUTABLE_TIMEOUT_SECS_ENV_VAR} to override",
+                    executable_timeout.as_secs()
+                )));
+            }
+        };
 
         let Some(process_code) = output.status.code() else {
             return Err(ConductorError::Workflow(format!(
@@ -1287,7 +1448,10 @@ where
     ///
     /// This uses the same archive unpack path as runtime execution to ensure
     /// collision checks reflect real unpack behavior.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "method stays async to align with the surrounding async planning pipeline"
+    )]
     async fn list_tool_content_directory_target_files(
         &self,
         raw_relative_path: &str,
@@ -1328,7 +1492,10 @@ where
     }
 
     /// Collects all regular files under one directory as sandbox-relative paths.
-    #[allow(clippy::self_only_used_in_recursion)]
+    #[expect(
+        clippy::self_only_used_in_recursion,
+        reason = "recursive helper intentionally remains a method to share executor-scoped error style"
+    )]
     fn collect_relative_files_recursive(
         &self,
         root_dir: &Path,
@@ -1418,7 +1585,10 @@ where
     /// `relative_dir` is already normalized and guaranteed to stay inside
     /// `tool_cwd`. The referenced CAS payload must be a ZIP archive; invalid
     /// archives fail fast with an actionable workflow error.
-    #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async,
+        reason = "async signature preserves parity with other materialization helpers in the execution pipeline"
+    )]
     async fn materialize_tool_content_directory_from_zip(
         &self,
         raw_relative_path: &str,
@@ -1461,7 +1631,10 @@ where
     /// CLI ergonomics may optionally define one default option key so one value
     /// can be provided without spelling a key, but explicit keyed input remains
     /// supported and maps to the same API key.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     async fn execute_builtin_tool(
         &self,
         builtin_name: &str,
@@ -1625,43 +1798,67 @@ where
     }
 
     /// Captures one declared output payload from the execution results.
+    ///
+    /// Returns `Ok(Some(bytes))` when the output is captured normally,
+    /// `Ok(None)` when the capture source was absent and the output spec
+    /// declares `allow_empty = true`, or an error when capture fails and
+    /// `allow_empty = false`.
     fn capture_output_payload(
         &self,
         output_spec: &ResolvedOutputSpec,
         capture: &ToolExecutionCapture,
         tool_cwd: &Path,
-    ) -> Result<Vec<u8>, ConductorError> {
+    ) -> Result<Option<Vec<u8>>, ConductorError> {
         match &output_spec.capture {
-            ResolvedOutputCapture::Stdout => Ok(capture.stdout.clone()),
-            ResolvedOutputCapture::Stderr => Ok(capture.stderr.clone()),
-            ResolvedOutputCapture::ProcessCode => Ok(capture.process_code.to_string().into_bytes()),
+            ResolvedOutputCapture::Stdout => Ok(Some(capture.stdout.clone())),
+            ResolvedOutputCapture::Stderr => Ok(Some(capture.stderr.clone())),
+            ResolvedOutputCapture::ProcessCode => {
+                Ok(Some(capture.process_code.to_string().into_bytes()))
+            }
             ResolvedOutputCapture::File { relative_path } => {
                 let path = tool_cwd.join(relative_path);
-                std::fs::read(&path).map_err(|source| ConductorError::Io {
-                    operation: "capturing declared file output".to_string(),
-                    path,
-                    source,
-                })
+                match std::fs::read(&path) {
+                    Ok(bytes) => Ok(Some(bytes)),
+                    Err(source)
+                        if source.kind() == std::io::ErrorKind::NotFound
+                            && output_spec.allow_empty =>
+                    {
+                        Ok(None)
+                    }
+                    Err(source) => Err(ConductorError::Io {
+                        operation: "capturing declared file output".to_string(),
+                        path,
+                        source,
+                    }),
+                }
             }
-            ResolvedOutputCapture::FileRegex { path_regex, pattern } => {
-                self.capture_regex_file_output(path_regex, pattern, tool_cwd)
-            }
+            ResolvedOutputCapture::FileRegex { path_regex, pattern } => self
+                .capture_regex_file_output(path_regex, pattern, tool_cwd, output_spec.allow_empty),
             ResolvedOutputCapture::FolderAsZip { relative_path, include_topmost_folder } => {
+                let folder_path = tool_cwd.join(relative_path);
+                if output_spec.allow_empty && !folder_path.exists() {
+                    return Ok(None);
+                }
                 self.capture_folder_output_as_zip(relative_path, *include_topmost_folder, tool_cwd)
+                    .map(Some)
             }
             ResolvedOutputCapture::FolderRegexAsZip { path_regex, pattern } => {
-                self.capture_regex_folder_output_as_zip(path_regex, pattern, tool_cwd)
+                self.capture_regex_folder_output_as_zip(path_regex, pattern, tool_cwd).map(Some)
             }
         }
     }
 
     /// Captures one file output selected by regex from the execution sandbox.
+    ///
+    /// When `allow_empty` is `true` and the regex matches no file, returns
+    /// `Ok(None)` instead of returning a workflow error.
     fn capture_regex_file_output(
         &self,
         path_regex: &Regex,
         pattern: &str,
         tool_cwd: &Path,
-    ) -> Result<Vec<u8>, ConductorError> {
+        allow_empty: bool,
+    ) -> Result<Option<Vec<u8>>, ConductorError> {
         let mut relative_files = BTreeSet::new();
         let mut relative_dirs = BTreeSet::new();
         self.collect_capture_candidate_paths(
@@ -1680,13 +1877,14 @@ where
             .collect();
 
         match matches.len() {
+            0 if allow_empty => Ok(None),
             0 => Err(ConductorError::Workflow(format!(
                 "capturing declared file output by regex '{pattern}' failed: no sandbox file matched"
             ))),
             1 => {
                 let matched_path = matches[0].clone();
                 let path = tool_cwd.join(&matched_path);
-                std::fs::read(&path).map_err(|source| ConductorError::Io {
+                std::fs::read(&path).map(Some).map_err(|source| ConductorError::Io {
                     operation: format!(
                         "capturing declared file output by regex '{pattern}' from '{}'",
                         Self::normalize_relative_path_for_regex(&matched_path)
@@ -1714,7 +1912,10 @@ where
     /// The implementation delegates packing to the builtin archive/zip crate,
     /// using stored (no-compression) ZIP entries to preserve exact payload
     /// bytes and avoid compression nondeterminism.
-    #[allow(clippy::unused_self)]
+    #[expect(
+        clippy::unused_self,
+        reason = "method placement keeps folder and regex capture helpers grouped on the executor"
+    )]
     fn capture_folder_output_as_zip(
         &self,
         relative_path: &std::path::Path,
@@ -1905,7 +2106,10 @@ where
 
     /// Collects sandbox-relative file and directory candidates for regex output
     /// capture matching.
-    #[allow(clippy::self_only_used_in_recursion)]
+    #[expect(
+        clippy::self_only_used_in_recursion,
+        reason = "recursive traversal helper remains instance-scoped for consistency with sibling capture helpers"
+    )]
     fn collect_capture_candidate_paths(
         &self,
         root_dir: &Path,

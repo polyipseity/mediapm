@@ -146,6 +146,9 @@ impl ResolvedInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputRef {
     /// CAS hash for this output value.
+    ///
+    /// When `allow_empty_capture` is `true`, this hash is the blake3 hash of
+    /// zero bytes, representing an empty capture rather than real content.
     pub hash: Hash,
     /// Effective merged persistence policy for this output.
     ///
@@ -153,6 +156,17 @@ pub struct OutputRef {
     /// instances and combining duplicate caller output policies via
     /// [`merge_persistence_flags`].
     pub persistence: PersistenceFlags,
+    /// Whether this output was captured as intentionally empty via the
+    /// tool output spec's `allow_empty = true` policy.
+    ///
+    /// When `true`, the hash is the empty-bytes hash and the output must not
+    /// be used as a step input. Downstream steps that reference this output
+    /// receive a workflow error at input-resolution time.
+    ///
+    /// Defaults to `false` for backward-compatibility with persisted state
+    /// written before this field was introduced.
+    #[serde(default)]
+    pub allow_empty_capture: bool,
 }
 
 /// State record for one deterministic tool-call instance.

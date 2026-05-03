@@ -16,8 +16,14 @@ use crate::model::config::{
 };
 use crate::model::state::{OrchestrationState, ToolCallInstance};
 
-/// Collected output hashes keyed by producing step id and declared output name.
-pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Hash>>;
+/// Collected output hash slots keyed by producing step id and declared output name.
+///
+/// `Some(hash)` indicates a normally-captured output available in CAS.
+/// `None` indicates an intentionally-empty capture produced when the tool
+/// output declared `allow_empty = true` and the capture source was absent;
+/// downstream steps that reference an empty-capture output as a step input
+/// receive a workflow error at input-resolution time.
+pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Option<Hash>>>;
 
 /// One tool definition after user/machine document unification.
 #[derive(Debug, Clone)]
@@ -110,13 +116,12 @@ pub(super) struct StepExecutionRequest {
     pub workflow_name: String,
     /// State snapshot used for cache-key and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved runtime storage root used for creating per-execution scratch
-    /// directories.
+    /// Resolved runtime temporary sandbox root used for ad hoc execution cwd
+    /// allocation.
     ///
     /// This is derived from `RunWorkflowOptions.runtime_storage_paths`
-    /// (`conductor_dir`), defaulting to `.conductor` next to the selected
-    /// machine or user config files.
-    pub runtime_storage_dir: PathBuf,
+    /// (`conductor_tmp_dir`), defaulting to `<conductor_dir>/tmp`.
+    pub runtime_tmp_dir: PathBuf,
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     ///
@@ -173,8 +178,9 @@ pub(super) struct LevelExecutionRequest {
     pub unified: Arc<UnifiedNickelDocument>,
     /// State snapshot used for cache and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved runtime storage root used for scratch sandbox creation.
-    pub runtime_storage_dir: PathBuf,
+    /// Resolved runtime temporary sandbox root used for scratch sandbox
+    /// creation.
+    pub runtime_tmp_dir: PathBuf,
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     pub outermost_config_dir: PathBuf,

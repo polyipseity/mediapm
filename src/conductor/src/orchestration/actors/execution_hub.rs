@@ -197,7 +197,10 @@ where
     }
 
     /// Executes one workflow level by planning assignments, dispatching workers, and recording completion facts.
-    #[allow(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     async fn execute_level(
         &self,
         request: LevelExecutionRequest,
@@ -232,7 +235,7 @@ where
                 let unified = request.unified.clone();
                 let workflow_name = request.workflow_name.clone();
                 let state_snapshot = request.state_snapshot.clone();
-                let runtime_storage_dir = request.runtime_storage_dir.clone();
+                let runtime_tmp_dir = request.runtime_tmp_dir.clone();
                 let outermost_config_dir = request.outermost_config_dir.clone();
                 let step_outputs = request.step_outputs.clone();
                 let required_output_names = request
@@ -254,7 +257,7 @@ where
                             impure_timestamp,
                             workflow_name: workflow_name.clone(),
                             state_snapshot: state_snapshot.clone(),
-                            runtime_storage_dir: runtime_storage_dir.clone(),
+                            runtime_tmp_dir: runtime_tmp_dir.clone(),
                             outermost_config_dir: outermost_config_dir.clone(),
                             step_outputs: step_outputs.clone(),
                             required_output_names: required_output_names.clone(),

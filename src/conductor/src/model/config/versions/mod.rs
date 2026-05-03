@@ -617,22 +617,38 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
 }
 
 /// Optic bridge from latest persisted Nickel state to runtime user document.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDocument> {
     IsoPrime::new(
         |state: latest::State| UserNickelDocument {
             metadata: NickelDocumentMetadata::default(),
             runtime: crate::model::config::RuntimeStorageConfig {
                 conductor_dir: state.runtime.conductor_dir,
-                state_config: state.runtime.state_config,
+                conductor_state_config: state.runtime.conductor_state_config,
                 cas_store_dir: state.runtime.cas_store_dir,
+                conductor_tmp_dir: state.runtime.conductor_tmp_dir,
+                conductor_schema_dir: state.runtime.conductor_schema_dir,
                 inherited_env_vars: state.runtime.inherited_env_vars,
+                use_user_tool_cache: state.runtime.use_user_tool_cache,
             },
             external_data: state
                 .external_data
                 .into_iter()
                 .map(|(hash, reference)| {
-                    (hash, ExternalContentRef { description: reference.description })
+                    (
+                        hash,
+                        ExternalContentRef {
+                            description: reference.description,
+                            save: reference.save.map(|save| match save {
+                                v_latest::OutputSaveLatest::Bool(false) => OutputSaveMode::Unsaved,
+                                v_latest::OutputSaveLatest::Bool(true) => OutputSaveMode::Saved,
+                                v_latest::OutputSaveLatest::Full => OutputSaveMode::Full,
+                            }),
+                        },
+                    )
                 })
                 .collect(),
             tools: state
@@ -702,6 +718,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     path_regex,
                                                 } => OutputCaptureSpec::FolderRegex { path_regex },
                                             },
+                                            allow_empty: output_spec.allow_empty,
                                         },
                                     )
                                 })
@@ -813,9 +830,12 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
         |runtime: UserNickelDocument| latest::State {
             runtime: v_latest::RuntimeStorageLatest {
                 conductor_dir: runtime.runtime.conductor_dir,
-                state_config: runtime.runtime.state_config,
+                conductor_state_config: runtime.runtime.conductor_state_config,
                 cas_store_dir: runtime.runtime.cas_store_dir,
+                conductor_tmp_dir: runtime.runtime.conductor_tmp_dir,
+                conductor_schema_dir: runtime.runtime.conductor_schema_dir,
                 inherited_env_vars: runtime.runtime.inherited_env_vars,
+                use_user_tool_cache: runtime.runtime.use_user_tool_cache,
             },
             external_data: runtime
                 .external_data
@@ -823,7 +843,14 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 .map(|(hash, reference)| {
                     (
                         hash,
-                        v_latest::ExternalContentRefLatest { description: reference.description },
+                        v_latest::ExternalContentRefLatest {
+                            description: reference.description,
+                            save: reference.save.map(|save| match save {
+                                OutputSaveMode::Unsaved => v_latest::OutputSaveLatest::Bool(false),
+                                OutputSaveMode::Saved => v_latest::OutputSaveLatest::Bool(true),
+                                OutputSaveMode::Full => v_latest::OutputSaveLatest::Full,
+                            }),
+                        },
                     )
                 })
                 .collect(),
@@ -895,6 +922,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     }
                                                 }
                                             },
+                                            allow_empty: output_spec.allow_empty,
                                         },
                                     )
                                 })
@@ -1178,7 +1206,10 @@ pub(crate) fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument,
 }
 
 /// Performs structural invariant checks on one latest persisted Nickel envelope.
-#[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn vet_latest_envelope(
     envelope: &latest::Envelope,
     document_kind: &str,
@@ -1198,11 +1229,11 @@ fn vet_latest_envelope(
             "{document_kind} conductor_dir must be non-empty"
         )));
     }
-    if let Some(state_config) = &envelope.runtime.state_config
-        && state_config.trim().is_empty()
+    if let Some(conductor_state_config) = &envelope.runtime.conductor_state_config
+        && conductor_state_config.trim().is_empty()
     {
         return Err(ConductorError::Workflow(format!(
-            "{document_kind} state_config must be non-empty when provided"
+            "{document_kind} conductor_state_config must be non-empty when provided"
         )));
     }
     if let Some(cas_store_dir) = &envelope.runtime.cas_store_dir
@@ -1210,6 +1241,20 @@ fn vet_latest_envelope(
     {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} cas_store_dir must be non-empty when provided"
+        )));
+    }
+    if let Some(conductor_tmp_dir) = &envelope.runtime.conductor_tmp_dir
+        && conductor_tmp_dir.trim().is_empty()
+    {
+        return Err(ConductorError::Workflow(format!(
+            "{document_kind} conductor_tmp_dir must be non-empty when provided"
+        )));
+    }
+    if let Some(conductor_schema_dir) = &envelope.runtime.conductor_schema_dir
+        && conductor_schema_dir.trim().is_empty()
+    {
+        return Err(ConductorError::Workflow(format!(
+            "{document_kind} conductor_schema_dir must be non-empty when provided"
         )));
     }
 
@@ -1254,6 +1299,14 @@ fn vet_latest_envelope(
     }
 
     let external_hashes = envelope.external_data.keys().copied().collect::<BTreeSet<_>>();
+
+    for (hash, reference) in &envelope.external_data {
+        if matches!(reference.save, Some(v_latest::OutputSaveLatest::Bool(false))) {
+            return Err(ConductorError::Workflow(format!(
+                "{document_kind} external_data '{hash}' save policy cannot be false; use true or \"full\""
+            )));
+        }
+    }
 
     for (tool_name, tool_config) in &envelope.tool_configs {
         if tool_config.max_concurrent_calls == 0 || tool_config.max_concurrent_calls < -1 {
@@ -1955,12 +2008,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     version = 1,
     runtime = {
         conductor_dir = ".runtime",
-        state_config = ".runtime/state.ncl",
+        conductor_state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
         "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
             description = "fixture root",
+            save = "full",
         },
     },
     tools = {
@@ -1976,9 +2030,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         let decoded =
             decode_machine_document(source.as_bytes()).expect("machine document should decode");
         assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.conductor_state_config.as_deref(), Some(".runtime/state.ncl"));
         assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
+        assert_eq!(
+            decoded.external_data.values().next().and_then(|reference| reference.save),
+            Some(OutputSaveMode::Full)
+        );
         assert_eq!(decoded.tools.len(), 1);
     }
 
@@ -2008,12 +2066,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     version = 1,
     runtime = {
         conductor_dir = ".runtime",
-        state_config = ".runtime/state.ncl",
+        conductor_state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
         "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
             description = "tool content root",
+            save = true,
         },
     },
     tool_configs = {
@@ -2042,9 +2101,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
 
         let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
         assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.conductor_state_config.as_deref(), Some(".runtime/state.ncl"));
         assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
+        assert_eq!(
+            decoded.external_data.values().next().and_then(|reference| reference.save),
+            Some(OutputSaveMode::Saved)
+        );
         assert_eq!(decoded.tool_configs.len(), 1);
         assert!(decoded.tool_configs.get("tool_a@1.0.0").is_some_and(|config| {
             config.input_defaults.contains_key("args") && config.max_retries == 1
@@ -2054,6 +2117,27 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
             Some(ImpureTimestamp { epoch_seconds: 123, subsec_nanos: 456 })
         );
         assert!(decoded.state_pointer.is_some());
+    }
+
+    /// Verifies external-data save policy rejects `false` in user documents.
+    #[test]
+    fn decode_user_document_rejects_external_data_unsaved_save_mode() {
+        let source = r#"
+{
+    version = 1,
+    external_data = {
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "invalid unsaved external",
+            save = false,
+        },
+    },
+}
+"#;
+
+        let err = decode_user_document(source.as_bytes())
+            .expect_err("external_data save=false should be rejected");
+        let message = err.to_string();
+        assert!(message.contains("save"));
     }
 
     /// Verifies tool-config content-map hashes must be rooted in `external_data`.
