@@ -338,6 +338,16 @@ fn backup_snapshot_root(root: &Path) -> PathBuf {
     root.join(INDEX_BACKUP_DIR_NAME)
 }
 
+/// Opens one directory for object-store traversal, tolerating transient
+/// `NotFound` races caused by concurrent prune/delete operations.
+fn read_object_store_dir_tolerant(dir: &Path) -> Result<Option<std::fs::ReadDir>, CasError> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(CasError::io("reading object store directory", dir, source)),
+    }
+}
+
 /// Returns whether object store contains at least one non-empty object file.
 fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError> {
     let storage_root = root.join(STORAGE_VERSION);
@@ -347,19 +357,28 @@ fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError
 
     let mut stack = vec![storage_root];
     while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(source) => {
-                return Err(CasError::io("reading object store directory", &dir, source));
-            }
+        let Some(entries) = read_object_store_dir_tolerant(&dir)? else {
+            continue;
         };
+
         for entry in entries {
-            let entry = entry
-                .map_err(|source| CasError::io("iterating object store directory", &dir, source))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("iterating object store directory", &dir, source));
+                }
+            };
+
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| {
-                CasError::io("reading object store entry type", path.clone(), source)
-            })?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("reading object store entry type", path, source));
+                }
+            };
+
             if file_type.is_dir() {
                 if path.file_name().is_some_and(|name| name == "tmp") {
                     continue;
@@ -400,15 +419,28 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
     let mut stack = vec![storage_root];
 
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|source| CasError::io("reading object store directory", &dir, source))?;
+        let Some(entries) = read_object_store_dir_tolerant(&dir)? else {
+            continue;
+        };
+
         for entry in entries {
-            let entry = entry
-                .map_err(|source| CasError::io("iterating object store directory", &dir, source))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("iterating object store directory", &dir, source));
+                }
+            };
+
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| {
-                CasError::io("reading object store entry type", path.clone(), source)
-            })?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("reading object store entry type", path, source));
+                }
+            };
+
             if file_type.is_dir() {
                 if path.file_name().is_some_and(|name| name == "tmp") {
                     continue;
@@ -761,6 +793,7 @@ fn unix_epoch_nanos() -> u128 {
 
 #[cfg(test)]
 mod tests {
+    use super::read_object_store_dir_tolerant;
     use super::remove_stale_backup_file_with_retry;
 
     /// Ensures stale-backup pruning treats already-removed files as success.
@@ -783,5 +816,18 @@ mod tests {
         remove_stale_backup_file_with_retry(&stale)
             .expect("existing stale backup should be removed");
         assert!(!stale.exists(), "stale backup should no longer exist");
+    }
+
+    /// Ensures object-store traversal can tolerate directories that disappear
+    /// between enumeration and recursive descent.
+    #[test]
+    fn read_object_store_dir_tolerant_returns_none_for_missing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-dir");
+
+        let entries = read_object_store_dir_tolerant(&missing)
+            .expect("missing directory should not surface an IO error");
+
+        assert!(entries.is_none());
     }
 }

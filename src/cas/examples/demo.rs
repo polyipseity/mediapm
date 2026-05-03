@@ -108,7 +108,12 @@ impl StoreSizeStats {
     ///
     /// For zero-byte logical stores, this returns `1.0` to represent a neutral
     /// no-change baseline and avoid divide-by-zero artifacts.
+    /// # Precision
+    ///
+    /// Both fields are cast `u64 → f64`. Precision is lost above 2^52 bytes
+    /// (~4 PiB), which is beyond practical store sizes for this demo.
     #[must_use]
+    #[allow(clippy::cast_precision_loss)]
     fn ratio_with_delta_over_without(self) -> f64 {
         if self.without_delta_bytes == 0 {
             1.0
