@@ -1,11 +1,14 @@
 //! Payload download, extraction, and content-map enumeration helpers.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use flate2::read::GzDecoder;
+use mediapm_conductor::fetch_common_executable_tool_payload;
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
@@ -22,7 +25,7 @@ use super::{DownloadProgressCallback, DownloadProgressSnapshot};
 
 /// Materializes resolved download actions into one install root.
 pub(super) async fn materialize_download_plan(
-    entry: ToolCatalogEntry,
+    entry: &ToolCatalogEntry,
     plan: &ResolvedDownloadPlan,
     install_root: &Path,
     download_progress: Option<DownloadProgressCallback>,
@@ -32,6 +35,18 @@ pub(super) async fn materialize_download_plan(
         materialize_internal_launcher(entry, plan, install_root)?;
         if let Some(callback) = download_progress {
             callback(DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: Some(0) });
+        }
+        return Ok(());
+    }
+
+    if let Some(common_tool) = plan.common_executable_tool {
+        let payload_size =
+            materialize_conductor_common_executable(entry, plan, install_root, common_tool)?;
+        if let Some(callback) = download_progress {
+            callback(DownloadProgressSnapshot {
+                downloaded_bytes: payload_size,
+                total_bytes: Some(payload_size),
+            });
         }
         return Ok(());
     }
@@ -55,7 +70,6 @@ pub(super) async fn materialize_download_plan(
     }
 
     let mut cumulative_downloaded_bytes = 0_u64;
-    let mut cumulative_total_bytes = Some(0_u64);
     let planned_total_bytes = planned_total_download_bytes(plan).await;
 
     if let Some(callback) = download_progress.as_ref() {
@@ -76,7 +90,6 @@ pub(super) async fn materialize_download_plan(
             let callback = Arc::clone(callback);
             let action_snapshot = Arc::clone(&action_snapshot);
             let base_downloaded = cumulative_downloaded_bytes;
-            let base_total = cumulative_total_bytes;
 
             Arc::new(move |snapshot: DownloadProgressSnapshot| {
                 if let Ok(mut current) = action_snapshot.lock() {
@@ -85,7 +98,6 @@ pub(super) async fn materialize_download_plan(
 
                 callback(aggregate_progress_snapshot(
                     base_downloaded,
-                    base_total,
                     snapshot,
                     planned_total_bytes,
                 ));
@@ -108,13 +120,9 @@ pub(super) async fn materialize_download_plan(
             .unwrap_or(DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: None });
         cumulative_downloaded_bytes =
             cumulative_downloaded_bytes.saturating_add(completed_snapshot.downloaded_bytes);
-        cumulative_total_bytes = match (cumulative_total_bytes, completed_snapshot.total_bytes) {
-            (Some(base), Some(current)) => Some(base.saturating_add(current)),
-            _ => None,
-        };
         if let Some(callback) = download_progress.as_ref() {
             let mut downloaded_bytes = cumulative_downloaded_bytes;
-            let total_bytes = planned_total_bytes.or(cumulative_total_bytes);
+            let total_bytes = planned_total_bytes;
             if let Some(total_bytes) = total_bytes {
                 downloaded_bytes = downloaded_bytes.min(total_bytes);
             }
@@ -126,9 +134,32 @@ pub(super) async fn materialize_download_plan(
     Ok(())
 }
 
+/// Materializes one conductor common-source executable payload.
+fn materialize_conductor_common_executable(
+    entry: &ToolCatalogEntry,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+    common_tool: mediapm_conductor::CommonExecutableTool,
+) -> Result<u64, MediaPmError> {
+    let payload = fetch_common_executable_tool_payload(common_tool).map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "materializing common executable tool '{}' failed: {error}",
+            entry.name
+        ))
+    })?;
+
+    for action in plan.per_os_actions.values() {
+        let destination =
+            install_root.join(action.os.as_str()).join(entry.executable_name_for_os(action.os));
+        write_binary_file(&destination, &payload.executable_bytes)?;
+    }
+
+    Ok(u64::try_from(payload.executable_bytes.len()).unwrap_or(u64::MAX))
+}
+
 /// Materializes locally generated command-launcher shims for internal tools.
 fn materialize_internal_launcher(
-    entry: ToolCatalogEntry,
+    entry: &ToolCatalogEntry,
     plan: &ResolvedDownloadPlan,
     install_root: &Path,
 ) -> Result<(), MediaPmError> {
@@ -234,15 +265,11 @@ async fn planned_total_download_bytes(plan: &ResolvedDownloadPlan) -> Option<u64
 /// Aggregates one action-local snapshot into multi-action cumulative progress.
 fn aggregate_progress_snapshot(
     base_downloaded: u64,
-    base_total: Option<u64>,
     current_snapshot: DownloadProgressSnapshot,
     planned_total: Option<u64>,
 ) -> DownloadProgressSnapshot {
     let mut downloaded_bytes = base_downloaded.saturating_add(current_snapshot.downloaded_bytes);
-    let total_bytes = planned_total.or(match (base_total, current_snapshot.total_bytes) {
-        (Some(base), Some(current)) => Some(base.saturating_add(current)),
-        _ => None,
-    });
+    let total_bytes = planned_total;
 
     if let Some(total_bytes) = total_bytes {
         downloaded_bytes = downloaded_bytes.min(total_bytes);
@@ -253,7 +280,7 @@ fn aggregate_progress_snapshot(
 
 /// Downloads and materializes one OS payload into the destination root.
 async fn materialize_one_os_payload(
-    entry: ToolCatalogEntry,
+    entry: &ToolCatalogEntry,
     action: &OsDownloadAction,
     destination_root: &Path,
     download_progress: Option<DownloadProgressCallback>,
@@ -273,6 +300,7 @@ async fn materialize_one_os_payload(
     let mode_label = match action.mode {
         crate::tools::catalog::DownloadPayloadMode::DirectBinary => "direct-binary",
         crate::tools::catalog::DownloadPayloadMode::ZipArchive => "zip-archive",
+        crate::tools::catalog::DownloadPayloadMode::TarGzArchive => "tar-gz-archive",
         crate::tools::catalog::DownloadPayloadMode::TarXzArchive => "tar-xz-archive",
     };
     let cache_key = format!(
@@ -292,6 +320,9 @@ async fn materialize_one_os_payload(
         }
         crate::tools::catalog::DownloadPayloadMode::ZipArchive => {
             extract_zip_payload(&payload, destination_root)?;
+        }
+        crate::tools::catalog::DownloadPayloadMode::TarGzArchive => {
+            extract_tar_gz_payload(&payload, destination_root)?;
         }
         crate::tools::catalog::DownloadPayloadMode::TarXzArchive => {
             extract_tar_xz_payload(&payload, destination_root)?;
@@ -319,7 +350,7 @@ fn download_cache_identity(plan: &ResolvedDownloadPlan) -> String {
 
 /// Resolves executable relative paths from one install root.
 pub(super) fn resolve_executable_paths(
-    entry: ToolCatalogEntry,
+    entry: &ToolCatalogEntry,
     plan: &ResolvedDownloadPlan,
     install_root: &Path,
 ) -> Result<BTreeMap<ToolOs, String>, MediaPmError> {
@@ -396,13 +427,13 @@ pub(super) fn build_command_selector(
     unique_paths.sort_unstable();
     unique_paths.dedup();
     if unique_paths.len() == 1 {
-        return Ok(unique_paths[0].to_string());
+        return Ok(unique_paths[0].clone());
     }
 
     let mut selector = String::new();
     for os in [ToolOs::Windows, ToolOs::Linux, ToolOs::Macos] {
         if let Some(path) = paths.get(&os) {
-            selector.push_str(&format!("${{context.os == \"{}\" ? {path} | ''}}", os.as_str()));
+            let _ = write!(selector, "${{context.os == \"{}\" ? {path} | ''}}", os.as_str());
         }
     }
 
@@ -427,7 +458,7 @@ pub(super) fn collect_materialized_content_entries(
     let archive_only = plan.per_os_actions.values().all(|action| is_archive_mode(action.mode));
 
     if archive_only {
-        return collect_archive_directory_entries(plan, root);
+        return Ok(collect_archive_directory_entries(plan, root));
     }
 
     collect_regular_file_entries(root)
@@ -439,6 +470,7 @@ fn is_archive_mode(mode: crate::tools::catalog::DownloadPayloadMode) -> bool {
     matches!(
         mode,
         crate::tools::catalog::DownloadPayloadMode::ZipArchive
+            | crate::tools::catalog::DownloadPayloadMode::TarGzArchive
             | crate::tools::catalog::DownloadPayloadMode::TarXzArchive
     )
 }
@@ -447,12 +479,12 @@ fn is_archive_mode(mode: crate::tools::catalog::DownloadPayloadMode) -> bool {
 fn collect_archive_directory_entries(
     plan: &ResolvedDownloadPlan,
     root: &Path,
-) -> Result<BTreeMap<String, ContentMapSource>, MediaPmError> {
+) -> BTreeMap<String, ContentMapSource> {
     if plan.shared_package {
-        return Ok(BTreeMap::from([(
+        return BTreeMap::from([(
             "./".to_string(),
             ContentMapSource::DirectoryZip { root_dir: root.to_path_buf() },
-        )]));
+        )]);
     }
 
     let mut entries = BTreeMap::new();
@@ -464,7 +496,7 @@ fn collect_archive_directory_entries(
         );
     }
 
-    Ok(entries)
+    entries
 }
 
 /// Collects all regular files in one install root as direct file entries.
@@ -532,7 +564,7 @@ fn extract_zip_payload(bytes: &[u8], destination: &Path) -> Result<(), MediaPmEr
             MediaPmError::Workflow(format!("reading ZIP entry at index {index} failed: {source}"))
         })?;
 
-        let Some(enclosed) = file.enclosed_name().map(|path| path.to_path_buf()) else {
+        let Some(enclosed) = file.enclosed_name().as_deref().map(Path::to_path_buf) else {
             continue;
         };
         let output_path = destination.join(enclosed);
@@ -601,6 +633,37 @@ fn extract_tar_xz_payload(bytes: &[u8], destination: &Path) -> Result<(), MediaP
     Ok(())
 }
 
+/// Extracts TAR.GZ payload bytes into one destination directory.
+fn extract_tar_gz_payload(bytes: &[u8], destination: &Path) -> Result<(), MediaPmError> {
+    let decoder = GzDecoder::new(Cursor::new(bytes));
+    let mut archive = TarArchive::new(decoder);
+    let entries = archive.entries().map_err(|source| {
+        MediaPmError::Workflow(format!("opening TAR.GZ payload entries failed: {source}"))
+    })?;
+
+    for entry_result in entries {
+        let mut entry = entry_result.map_err(|source| {
+            MediaPmError::Workflow(format!("reading TAR.GZ entry failed: {source}"))
+        })?;
+
+        let unpacked = entry.unpack_in(destination).map_err(|source| {
+            MediaPmError::Workflow(format!(
+                "extracting TAR.GZ payload into '{}' failed: {source}",
+                destination.display()
+            ))
+        })?;
+
+        if !unpacked {
+            return Err(MediaPmError::Workflow(format!(
+                "TAR.GZ payload entry resolved outside destination '{}'",
+                destination.display()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Writes one downloaded binary and ensures executable permissions where needed.
 fn write_binary_file(path: &Path, bytes: &[u8]) -> Result<(), MediaPmError> {
     if let Some(parent) = path.parent() {
@@ -626,6 +689,13 @@ fn write_binary_file(path: &Path, bytes: &[u8]) -> Result<(), MediaPmError> {
 }
 
 /// Ensures executable permission bits are present on Unix-like platforms.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "on non-Unix hosts executable bit mutation is skipped by design"
+    )
+)]
 fn ensure_executable_permissions(path: &Path) -> Result<(), MediaPmError> {
     #[cfg(not(unix))]
     let _ = path;
@@ -691,12 +761,14 @@ mod tests {
     use xz2::write::XzEncoder;
 
     use super::{
-        aggregate_progress_snapshot, extract_tar_xz_payload, materialize_internal_launcher,
-        media_tagger_launcher_env_var,
+        aggregate_progress_snapshot, collect_materialized_content_entries, extract_tar_xz_payload,
+        materialize_internal_launcher, media_tagger_launcher_env_var,
     };
     use crate::tools::catalog::{DownloadPayloadMode, ToolOs, tool_catalog_entry};
     use crate::tools::downloader::DownloadProgressSnapshot;
-    use crate::tools::downloader::models::{OsDownloadAction, ResolvedDownloadPlan};
+    use crate::tools::downloader::models::{
+        OsDownloadAction, ResolvedDownloadPlan, ResolvedToolIdentity,
+    };
 
     /// Protects Linux archive provisioning by ensuring TAR.XZ payloads can be
     /// extracted and discovered as regular files for executable resolution.
@@ -731,13 +803,26 @@ mod tests {
     fn aggregate_progress_snapshot_prefers_planned_total_and_clamps_downloaded() {
         let snapshot = aggregate_progress_snapshot(
             180,
-            Some(200),
             DownloadProgressSnapshot { downloaded_bytes: 80, total_bytes: Some(120) },
             Some(240),
         );
 
         assert_eq!(snapshot.total_bytes, Some(240));
         assert_eq!(snapshot.downloaded_bytes, 240);
+    }
+
+    /// Protects non-growing total-byte semantics by keeping totals unknown
+    /// when precompute probes cannot determine one stable aggregate size.
+    #[test]
+    fn aggregate_progress_snapshot_keeps_total_unknown_without_precomputed_size() {
+        let snapshot = aggregate_progress_snapshot(
+            64,
+            DownloadProgressSnapshot { downloaded_bytes: 16, total_bytes: Some(32) },
+            None,
+        );
+
+        assert_eq!(snapshot.total_bytes, None);
+        assert_eq!(snapshot.downloaded_bytes, 80);
     }
 
     /// Protects Windows launcher reliability by ensuring generated scripts
@@ -766,14 +851,15 @@ mod tests {
             per_os_actions,
             shared_package: false,
             internal_launcher: true,
-            identity: Default::default(),
+            common_executable_tool: None,
+            identity: ResolvedToolIdentity::default(),
             source_label: "mediapm internal launcher".to_string(),
             source_identifier: "mediapm-internal".to_string(),
             warnings: Vec::new(),
         };
 
         materialize_internal_launcher(
-            tool_catalog_entry("media-tagger").expect("media-tagger entry"),
+            &tool_catalog_entry("media-tagger").expect("media-tagger entry"),
             &plan,
             &install_root,
         )
@@ -788,5 +874,56 @@ mod tests {
         );
         assert!(!script.contains("cargo run"), "launcher must not depend on cargo fallback");
         assert!(!script.contains("where mediapm"), "launcher must not use ambient command lookup");
+    }
+
+    /// Verifies direct-binary materialization publishes one content-map entry
+    /// per supported platform with normalized, sandbox-relative keys.
+    #[test]
+    fn collect_materialized_content_entries_emits_all_platform_keys_for_direct_binaries() {
+        let root = tempdir().expect("tempdir");
+        let install_root = root.path().join("tool-root");
+
+        let mut per_os_actions = BTreeMap::new();
+        for os in ToolOs::all() {
+            per_os_actions.insert(
+                os,
+                OsDownloadAction { os, urls: Vec::new(), mode: DownloadPayloadMode::DirectBinary },
+            );
+        }
+
+        let plan = ResolvedDownloadPlan {
+            per_os_actions,
+            shared_package: false,
+            internal_launcher: false,
+            common_executable_tool: None,
+            identity: ResolvedToolIdentity::default(),
+            source_label: "fixture direct binary".to_string(),
+            source_identifier: "fixture-direct".to_string(),
+            warnings: Vec::new(),
+        };
+
+        fs::create_dir_all(install_root.join("windows")).expect("create windows folder");
+        fs::create_dir_all(install_root.join("linux")).expect("create linux folder");
+        fs::create_dir_all(install_root.join("macos")).expect("create macos folder");
+        fs::write(install_root.join("windows").join("sd.exe"), b"windows-sd")
+            .expect("write windows binary");
+        fs::write(install_root.join("linux").join("sd"), b"linux-sd").expect("write linux binary");
+        fs::write(install_root.join("macos").join("sd"), b"macos-sd").expect("write macos binary");
+
+        let _entry = tool_catalog_entry("sd").expect("sd entry");
+        let content_entries =
+            collect_materialized_content_entries(&plan, &install_root).expect("collect");
+
+        let keys = content_entries.keys().map(std::string::String::as_str).collect::<Vec<_>>();
+
+        assert!(keys.contains(&"windows/sd.exe"));
+        assert!(keys.contains(&"linux/sd"));
+        assert!(keys.contains(&"macos/sd"));
+        for key in keys {
+            assert!(
+                !key.contains("..") && !key.starts_with('/'),
+                "content-map key should be sandbox-relative and traversal-safe: {key}"
+            );
+        }
     }
 }

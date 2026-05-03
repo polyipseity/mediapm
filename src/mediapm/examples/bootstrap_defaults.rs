@@ -23,8 +23,8 @@ struct BootstrapRunResult {
     conductor_user_ncl: PathBuf,
     /// Path to conductor machine config.
     conductor_machine_ncl: PathBuf,
-    /// Path to lockfile.
-    lock_jsonc: PathBuf,
+    /// Path to machine-managed mediapm state document.
+    mediapm_state_ncl: PathBuf,
     /// Executed conductor-instance count reported by sync.
     executed_instances: usize,
     /// Cache-hit instance count reported by sync.
@@ -47,7 +47,7 @@ async fn run_bootstrap_sync(workspace_root: &Path) -> ExampleResult<BootstrapRun
         mediapm_ncl: service.paths().mediapm_ncl.clone(),
         conductor_user_ncl: service.paths().conductor_user_ncl.clone(),
         conductor_machine_ncl: service.paths().conductor_machine_ncl.clone(),
-        lock_jsonc: service.paths().lock_jsonc.clone(),
+        mediapm_state_ncl: service.paths().mediapm_state_ncl.clone(),
         executed_instances: summary.executed_instances,
         cached_instances: summary.cached_instances,
         rematerialized_instances: summary.rematerialized_instances,
@@ -66,7 +66,7 @@ async fn main() -> ExampleResult<()> {
     println!("mediapm.ncl: {}", result.mediapm_ncl.display());
     println!("conductor user document: {}", result.conductor_user_ncl.display());
     println!("conductor machine document: {}", result.conductor_machine_ncl.display());
-    println!("lock file: {}", result.lock_jsonc.display());
+    println!("mediapm state file: {}", result.mediapm_state_ncl.display());
     println!(
         "sync summary => executed={}, cached={}, rematerialized={}, materialized={}, removed={}",
         result.executed_instances,
@@ -81,10 +81,6 @@ async fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use mediapm_conductor::decode_machine_document;
-
     /// Verifies bootstrap sync creates expected state/config files.
     #[tokio::test]
     async fn bootstrap_sync_creates_default_documents() {
@@ -99,7 +95,7 @@ mod tests {
             result.conductor_machine_ncl.exists(),
             "conductor machine document should be created"
         );
-        assert!(result.lock_jsonc.exists(), "lock file should be created");
+        assert!(result.mediapm_state_ncl.exists(), "mediapm state file should be created");
     }
 
     /// Verifies bootstrap registers builtins required by managed workflows.
@@ -111,8 +107,9 @@ mod tests {
             .expect("bootstrap sync should succeed");
 
         let machine_text =
-            fs::read_to_string(&result.conductor_machine_ncl).expect("read machine document");
-        let machine = decode_machine_document(machine_text.as_bytes()).expect("decode machine");
+            std::fs::read_to_string(&result.conductor_machine_ncl).expect("read machine document");
+        let machine = mediapm_conductor::decode_machine_document(machine_text.as_bytes())
+            .expect("decode machine");
 
         for tool_id in mediapm::registered_builtin_ids() {
             assert!(

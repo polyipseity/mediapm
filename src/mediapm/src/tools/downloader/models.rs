@@ -3,6 +3,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use mediapm_conductor::CommonExecutableTool;
+
 use crate::tools::catalog::{DownloadPayloadMode, ToolCatalogEntry, ToolOs};
 
 /// GitHub API base URL used for release metadata queries.
@@ -76,6 +78,9 @@ pub(super) struct ResolvedDownloadPlan {
     pub shared_package: bool,
     /// Whether payload should be generated as local internal-launcher shim.
     pub internal_launcher: bool,
+    /// Optional conductor common-tool selector used for source-backed binary
+    /// materialization.
+    pub common_executable_tool: Option<CommonExecutableTool>,
     /// Resolved release identity metadata.
     pub identity: ResolvedToolIdentity,
     /// Human-readable source label for lock metadata.

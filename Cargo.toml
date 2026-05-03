@@ -25,8 +25,7 @@ publish = false
 
 [workspace.lints.clippy]
 all = "deny"
-pedantic = "warn"
-warnings = "deny"
+pedantic = "deny"
 
 [workspace.lints.rust]
 warnings = "deny"
@@ -45,8 +44,10 @@ chromaprint-next = "0.1.0"
 clap = { version = "4.5.48", features = ["derive"] }
 crc32fast = "1.5.0"
 dashmap = "6.1.0"
+dirs = "6.0.0"
 dotenvy = "0.15.7"
 ffmetadata = "0.1.2"
+flate2 = "1.1.4"
 fp-library = "0.13.1"
 fs4 = "0.13.1"
 futures-core = "0.3.31"
@@ -66,6 +67,7 @@ ractor = { version = "0.15.12", features = ["tokio_runtime"] }
 redb = "2.6.3"
 regex = "1.11"
 reqwest = { version = "0.11", features = ["rustls-tls"] }
+same-file = "1.0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 smallvec = { version = "1.15.1", features = ["serde"] }

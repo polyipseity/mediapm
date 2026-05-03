@@ -29,21 +29,28 @@ pub(super) fn resolve_cas_store_path(
 #[must_use]
 pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageConfig {
     let conductor_dir = path_to_runtime_storage_value(&paths.root_dir, &paths.runtime_root);
-    let state_config =
+    let conductor_state_config =
         path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_state_config);
     let cas_store_dir =
         path_to_runtime_storage_value(&paths.root_dir, &paths.runtime_root.join("store"));
+    let conductor_tmp_dir =
+        path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_tmp_dir);
+    let conductor_schema_dir =
+        path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_schema_dir);
     let inherited_env_vars = default_runtime_inherited_env_vars_for_host();
 
     RuntimeStorageConfig {
         conductor_dir: Some(conductor_dir),
-        state_config: Some(state_config),
+        conductor_state_config: Some(conductor_state_config),
         cas_store_dir: Some(cas_store_dir),
+        conductor_tmp_dir: Some(conductor_tmp_dir),
+        conductor_schema_dir: Some(conductor_schema_dir),
         inherited_env_vars: if inherited_env_vars.is_empty() {
             None
         } else {
             Some(inherited_env_vars)
         },
+        use_user_tool_cache: Some(true),
     }
 }
 
@@ -70,19 +77,31 @@ fn apply_runtime_storage_defaults(
     let mut changed = false;
 
     if runtime_storage.conductor_dir.is_none() {
-        runtime_storage.conductor_dir = defaults.conductor_dir.clone();
+        runtime_storage.conductor_dir.clone_from(&defaults.conductor_dir);
         changed = true;
     }
-    if runtime_storage.state_config.is_none() {
-        runtime_storage.state_config = defaults.state_config.clone();
+    if runtime_storage.conductor_state_config.is_none() {
+        runtime_storage.conductor_state_config.clone_from(&defaults.conductor_state_config);
         changed = true;
     }
     if runtime_storage.cas_store_dir.is_none() {
-        runtime_storage.cas_store_dir = defaults.cas_store_dir.clone();
+        runtime_storage.cas_store_dir.clone_from(&defaults.cas_store_dir);
+        changed = true;
+    }
+    if runtime_storage.conductor_tmp_dir.is_none() {
+        runtime_storage.conductor_tmp_dir.clone_from(&defaults.conductor_tmp_dir);
+        changed = true;
+    }
+    if runtime_storage.conductor_schema_dir.is_none() {
+        runtime_storage.conductor_schema_dir.clone_from(&defaults.conductor_schema_dir);
         changed = true;
     }
     if include_inherited_env_vars && runtime_storage.inherited_env_vars.is_none() {
-        runtime_storage.inherited_env_vars = defaults.inherited_env_vars.clone();
+        runtime_storage.inherited_env_vars.clone_from(&defaults.inherited_env_vars);
+        changed = true;
+    }
+    if runtime_storage.use_user_tool_cache.is_none() {
+        runtime_storage.use_user_tool_cache = defaults.use_user_tool_cache;
         changed = true;
     }
 

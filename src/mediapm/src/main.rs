@@ -5,7 +5,7 @@
 //! - sync/materialization orchestration,
 //! - passthrough commands to Phase 1 CAS and Phase 2 conductor CLIs.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use clap::{Args, Parser, Subcommand};
@@ -16,6 +16,18 @@ use mediapm::{
     load_runtime_dotenv_for_root, resolve_default_global_paths,
 };
 use url::Url;
+
+/// Executable suffix used by workspace binaries on the active host platform.
+#[cfg(windows)]
+const WORKSPACE_BINARY_SUFFIX: &str = ".exe";
+
+/// Executable suffix used by workspace binaries on the active host platform.
+#[cfg(not(windows))]
+const WORKSPACE_BINARY_SUFFIX: &str = "";
+
+/// Maximum number of parent directories searched for sibling passthrough
+/// binaries when direct sibling and PATH lookups miss.
+const MAX_ANCESTOR_BINARY_SEARCH_LEVELS: usize = 6;
 
 /// `mediapm` phase-3 CLI.
 #[derive(Debug, Parser)]
@@ -33,12 +45,12 @@ struct Cli {
     /// Overrides `runtime.conductor_machine_config` for this invocation.
     #[arg(long)]
     conductor_machine_config: Option<PathBuf>,
-    /// Overrides `runtime.conductor_state` for this command invocation.
+    /// Overrides `runtime.conductor_state_config` for this command invocation.
     #[arg(long)]
-    conductor_state: Option<PathBuf>,
-    /// Overrides `runtime.lockfile` for this command invocation.
+    conductor_state_config: Option<PathBuf>,
+    /// Overrides `runtime.media_state_config` for this command invocation.
     #[arg(long)]
-    lockfile: Option<PathBuf>,
+    media_state_config: Option<PathBuf>,
     /// Overrides `runtime.env_file` for this command invocation.
     #[arg(long)]
     env_file: Option<PathBuf>,
@@ -79,13 +91,6 @@ enum Command {
         #[command(subcommand)]
         command: BuiltinsCommand,
     },
-    /// Internal implementation commands used by managed workflow shims.
-    #[command(hide = true)]
-    Internal {
-        /// Internal subcommand selector.
-        #[command(subcommand)]
-        command: InternalCommand,
-    },
     /// Passthrough to Phase 1 `mediapm-cas` CLI.
     Cas(PassthroughArgs),
     /// Passthrough to Phase 2 conductor CLI.
@@ -108,6 +113,15 @@ enum ToolsCommand {
         #[arg(long)]
         id: String,
     },
+    /// Runs one managed tool binary directly.
+    Run {
+        /// Immutable tool id or logical tool name.
+        #[arg(long)]
+        tool: String,
+        /// Trailing arguments passed to the managed tool executable.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 /// Media-source commands.
@@ -118,7 +132,7 @@ enum MediaCommand {
         /// Source URI (`http` or `https`).
         uri: String,
     },
-    /// Adds one local source file and records an `import-once` CAS-hash ingest step.
+    /// Adds one local source file and records an `import` CAS-hash ingest step.
     AddLocal {
         /// Local source file path.
         path: PathBuf,
@@ -159,49 +173,63 @@ enum BuiltinsCommand {
     MediaTagger(InternalMediaTaggerArgs),
 }
 
-/// Internal helper commands used by workspace-local tool shims.
-#[derive(Debug, Subcommand)]
-enum InternalCommand {
-    /// Native metadata tagging flow (`Chromaprint -> AcoustID -> MusicBrainz`).
-    #[command(name = "media-tagger")]
-    MediaTagger(InternalMediaTaggerArgs),
-}
-
 /// Arguments for one internal media-tagger invocation.
 #[derive(Debug, Args)]
 struct InternalMediaTaggerArgs {
-    /// Input media payload path.
+    /// Optional input media payload path.
+    ///
+    /// This may be omitted when MBID-based identity is supplied (for example
+    /// `--recording-mbid`) and the invocation only needs metadata fetch.
     #[arg(long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
     /// Output media payload path.
     #[arg(long)]
     output: PathBuf,
-    /// Optional AcoustID API key override.
+    /// Optional `AcoustID` API key override.
     ///
-    /// When omitted and no recording MBID override is provided, AcoustID
+    /// When omitted and no recording MBID override is provided, `AcoustID`
     /// lookup now fails immediately with a configuration error.
-    /// When provided, AcoustID lookup/authentication failures are also
+    /// When provided, `AcoustID` lookup/authentication failures are also
     /// surfaced as hard errors.
     #[arg(long)]
     acoustid_api_key: Option<String>,
-    /// AcoustID lookup endpoint.
+    /// `AcoustID` lookup endpoint.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_ACOUSTID_ENDPOINT)]
     acoustid_endpoint: String,
-    /// MusicBrainz endpoint label used in diagnostics.
+    /// `MusicBrainz` endpoint label used in diagnostics.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT)]
     musicbrainz_endpoint: String,
+    /// Optional persistent cache directory for metadata/cover-art fetches.
+    #[arg(long)]
+    cache_dir: Option<PathBuf>,
+    /// Cache-expiry budget in seconds.
+    ///
+    /// Negative values disable expiry and keep cached rows indefinitely.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CACHE_EXPIRY_SECONDS)]
+    cache_expiry_seconds: i64,
     /// Enables strict failure when recording identity or metadata cannot be resolved.
     #[arg(long, default_value_t = true)]
     strict_identification: bool,
+    /// Enables extended Picard-compatible tag projection from `MusicBrainz` payloads.
+    #[arg(long, default_value_t = true)]
+    write_all_tags: bool,
+    /// Enables binary cover-art attachment preparation plus Picard-compatible
+    /// `coverart_*` metadata enrichment.
+    #[arg(long, default_value_t = true)]
+    write_all_images: bool,
+    /// Internal slot count used when emitting deterministic cover-art
+    /// attachment members for downstream ffmpeg apply stages.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT
+    )]
+    cover_art_slot_count: usize,
     /// Optional recording MBID override.
     #[arg(long)]
     recording_mbid: Option<String>,
     /// Optional release MBID override.
     #[arg(long)]
     release_mbid: Option<String>,
-    /// `ffmpeg` executable used for decode + metadata-write stages.
-    #[arg(long, default_value = "ffmpeg")]
-    ffmpeg_bin: String,
 }
 
 /// Generic passthrough argument holder.
@@ -254,28 +282,31 @@ struct ToolsSyncArgs {
 
 #[tokio::main]
 /// Parses CLI args and executes one top-level command.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let runtime_storage_overrides = MediaRuntimeStorage {
         mediapm_dir: option_path_to_string(cli.mediapm_dir),
-        library_dir: None,
-        tmp_dir: None,
+        hierarchy_root_dir: None,
+        mediapm_tmp_dir: None,
+        materialization_preference_order: None,
         conductor_config: option_path_to_string(cli.conductor_config),
         conductor_machine_config: option_path_to_string(cli.conductor_machine_config),
-        conductor_state: option_path_to_string(cli.conductor_state),
+        conductor_state_config: option_path_to_string(cli.conductor_state_config),
+        conductor_tmp_dir: None,
+        conductor_schema_dir: None,
         inherited_env_vars: None,
-        lockfile: option_path_to_string(cli.lockfile),
+        media_state_config: option_path_to_string(cli.media_state_config),
         env_file: option_path_to_string(cli.env_file),
-        schema_config_dir: None,
-        use_user_download_cache: None,
+        mediapm_schema_dir: None,
+        use_user_tool_cache: None,
     };
     if matches!(
         &cli.command,
-        Command::Sync(_)
-            | Command::Tools { .. }
-            | Command::Media { .. }
-            | Command::Builtins { .. }
-            | Command::Internal { .. }
+        Command::Sync(_) | Command::Tools { .. } | Command::Media { .. } | Command::Builtins { .. }
     ) {
         let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
     }
@@ -335,11 +366,17 @@ async fn main() -> anyhow::Result<()> {
                 let removed_hashes = service.prune_tool(&id).await?;
                 println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
             }
+            ToolsCommand::Run { tool, args } => {
+                let exit_code = service.run_managed_tool(&tool, &args)?;
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
         },
         Command::Media { command } => match command {
             MediaCommand::Add { uri } => {
                 let uri = Url::parse(&uri)?;
-                let media_id = service.add_media_source(uri)?;
+                let media_id = service.add_media_source(&uri)?;
                 println!("registered media source id={media_id}");
             }
             MediaCommand::AddLocal { path } => {
@@ -386,9 +423,6 @@ async fn main() -> anyhow::Result<()> {
         Command::Builtins { command } => match command {
             BuiltinsCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
         },
-        Command::Internal { command } => match command {
-            InternalCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
-        },
         Command::Cas(args) => {
             passthrough_cas(&args.args)?;
         }
@@ -407,10 +441,14 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
         acoustid_api_key: args.acoustid_api_key,
         acoustid_endpoint: args.acoustid_endpoint,
         musicbrainz_endpoint: args.musicbrainz_endpoint,
+        cache_dir: args.cache_dir,
+        cache_expiry_seconds: args.cache_expiry_seconds,
         strict_identification: args.strict_identification,
+        write_all_tags: args.write_all_tags,
+        write_all_images: args.write_all_images,
+        cover_art_slot_count: args.cover_art_slot_count,
         recording_mbid: args.recording_mbid,
         release_mbid: args.release_mbid,
-        ffmpeg_bin: args.ffmpeg_bin,
     })
     .await
 }
@@ -421,36 +459,225 @@ fn option_path_to_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
-/// Executes passthrough to Phase 1 CAS CLI.
-fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
-    let status = ProcessCommand::new("cargo")
-        .arg("run")
-        .arg("--package")
-        .arg("mediapm-cas")
-        .arg("--")
-        .args(args)
-        .status()?;
+/// Returns host-specific executable file name for one binary stem.
+#[must_use]
+fn workspace_binary_file_name(binary_stem: &str) -> String {
+    format!("{binary_stem}{WORKSPACE_BINARY_SUFFIX}")
+}
 
+/// Searches one ordered list of directories for the target passthrough binary.
+#[must_use]
+fn find_binary_in_paths<I>(binary_stem: &str, directories: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let binary_file_name = workspace_binary_file_name(binary_stem);
+    directories
+        .into_iter()
+        .map(|directory| directory.join(&binary_file_name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Searches PATH for the target passthrough binary.
+#[must_use]
+fn find_binary_in_system_path(binary_stem: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    find_binary_in_paths(binary_stem, std::env::split_paths(&path))
+}
+
+/// Searches parent directories for the target passthrough binary.
+#[must_use]
+fn find_binary_in_ancestors_from(
+    binary_stem: &str,
+    start_directory: &Path,
+    max_levels: usize,
+) -> Option<PathBuf> {
+    let mut current = Some(start_directory);
+    let mut levels_checked = 0usize;
+    while let Some(directory) = current {
+        if levels_checked > max_levels {
+            break;
+        }
+
+        if let Some(found) = find_binary_in_paths(binary_stem, [directory.to_path_buf()]) {
+            return Some(found);
+        }
+
+        current = directory.parent();
+        levels_checked = levels_checked.saturating_add(1);
+    }
+
+    None
+}
+
+/// Resolves one passthrough binary from env override, sibling path, PATH, or
+/// ancestor directories.
+fn resolve_workspace_binary_path(
+    binary_stem: &str,
+    env_override_name: Option<&str>,
+) -> anyhow::Result<PathBuf> {
+    let binary_file_name = workspace_binary_file_name(binary_stem);
+    let current_executable = std::env::current_exe()?;
+    let executable_directory = current_executable
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
+    let sibling_path = executable_directory.join(&binary_file_name);
+
+    let mut attempts = Vec::new();
+    if let Some(env_name) = env_override_name
+        && let Some(env_value) = std::env::var_os(env_name)
+    {
+        let env_path = PathBuf::from(env_value);
+        attempts.push(format!("${env_name}={}", env_path.display()));
+        if env_path.is_file() {
+            return Ok(env_path);
+        }
+    }
+
+    attempts.push(format!("sibling={}", sibling_path.display()));
+    if sibling_path.is_file() {
+        return Ok(sibling_path);
+    }
+
+    attempts.push(format!("PATH ({binary_file_name})"));
+    if let Some(path_match) = find_binary_in_system_path(binary_stem) {
+        return Ok(path_match);
+    }
+
+    attempts.push(format!("ancestor search (max {MAX_ANCESTOR_BINARY_SEARCH_LEVELS} levels)"));
+    if let Some(ancestor_match) = find_binary_in_ancestors_from(
+        binary_stem,
+        executable_directory,
+        MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
+    ) {
+        return Ok(ancestor_match);
+    }
+
+    let env_hint = env_override_name.map_or_else(
+        || "set an explicit passthrough binary path environment variable".to_string(),
+        |name| format!("set {name} to an absolute binary path"),
+    );
+
+    anyhow::bail!(
+        "passthrough binary '{binary_stem}' was not found (attempts: {}). Fix by {} or placing '{}' next to '{}' / on PATH",
+        attempts.join("; "),
+        env_hint,
+        binary_file_name,
+        current_executable.display(),
+    );
+}
+
+/// Runs one workspace binary resolved for production-safe passthrough.
+fn run_workspace_binary(
+    _package_name: &str,
+    binary_stem: &str,
+    args: &[String],
+) -> anyhow::Result<()> {
+    let env_override_name = match binary_stem {
+        "mediapm-cas" => Some("MEDIAPM_CAS_BINARY"),
+        "mediapm-conductor" => Some("MEDIAPM_CONDUCTOR_BINARY"),
+        _ => None,
+    };
+    let binary_path = resolve_workspace_binary_path(binary_stem, env_override_name)?;
+
+    let status = ProcessCommand::new(&binary_path).args(args).status()?;
     if status.success() {
         Ok(())
     } else {
-        anyhow::bail!("cas passthrough exited with status {status}")
+        anyhow::bail!(
+            "workspace passthrough binary '{}' exited with status {status}",
+            binary_path.display()
+        )
     }
 }
 
-/// Executes passthrough to Phase 2 conductor CLI.
-fn passthrough_conductor(args: &[String]) -> anyhow::Result<()> {
-    let status = ProcessCommand::new("cargo")
-        .arg("run")
-        .arg("--package")
-        .arg("mediapm-conductor")
-        .arg("--")
-        .args(args)
-        .status()?;
+/// Executes passthrough to Phase 1 CAS CLI using sibling workspace binaries.
+fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
+    run_workspace_binary("mediapm-cas", "mediapm-cas", args)
+}
 
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("conductor passthrough exited with status {status}")
+/// Executes passthrough to Phase 2 conductor CLI using sibling workspace binaries.
+fn passthrough_conductor(args: &[String]) -> anyhow::Result<()> {
+    run_workspace_binary("mediapm-conductor", "mediapm-conductor", args)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use clap::Parser;
+
+    use super::{
+        Cli, MAX_ANCESTOR_BINARY_SEARCH_LEVELS, WORKSPACE_BINARY_SUFFIX,
+        find_binary_in_ancestors_from, find_binary_in_paths, workspace_binary_file_name,
+    };
+
+    /// Keeps executable-name suffix behavior stable across host platforms.
+    #[test]
+    fn workspace_binary_file_name_applies_host_suffix() {
+        assert_eq!(
+            workspace_binary_file_name("mediapm-cas"),
+            format!("mediapm-cas{WORKSPACE_BINARY_SUFFIX}")
+        );
+    }
+
+    /// Protects directory-list passthrough binary lookup semantics.
+    #[test]
+    fn find_binary_in_paths_returns_first_file_match() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join("first");
+        let second = root.path().join("second");
+        fs::create_dir_all(&first).expect("first dir");
+        fs::create_dir_all(&second).expect("second dir");
+
+        let binary_name = workspace_binary_file_name("mediapm-cas");
+        let binary_path = second.join(binary_name);
+        fs::write(&binary_path, b"stub").expect("binary file");
+
+        let found = find_binary_in_paths(
+            "mediapm-cas",
+            vec![first.clone(), second.clone(), root.path().to_path_buf()],
+        )
+        .expect("binary should be found");
+
+        assert_eq!(found, binary_path);
+    }
+
+    /// Protects bounded ancestor lookup semantics for passthrough fallbacks.
+    #[test]
+    fn find_binary_in_ancestors_respects_max_level_budget() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let level_0 = root.path().join("l0");
+        let level_1 = level_0.join("l1");
+        let level_2 = level_1.join("l2");
+        fs::create_dir_all(&level_2).expect("nested directories");
+
+        let binary_name = workspace_binary_file_name("mediapm-conductor");
+        let binary_path = level_0.join(&binary_name);
+        fs::write(&binary_path, b"stub").expect("binary");
+
+        let miss = find_binary_in_ancestors_from("mediapm-conductor", &level_2, 1);
+        assert!(miss.is_none(), "max level budget should prevent reaching level_0");
+
+        let hit = find_binary_in_ancestors_from(
+            "mediapm-conductor",
+            &level_2,
+            MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
+        )
+        .expect("ancestor lookup should reach level_0 with default budget");
+        assert_eq!(hit, binary_path);
+    }
+
+    /// Protects no-backcompat policy by rejecting removed hidden internal route.
+    #[test]
+    fn removed_internal_command_route_is_not_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "internal",
+            "media-tagger",
+            "--output",
+            "output.ffmetadata",
+        ]);
+        assert!(parsed.is_err(), "internal command route must stay removed");
     }
 }

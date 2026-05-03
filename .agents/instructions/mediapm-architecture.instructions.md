@@ -86,7 +86,7 @@ is a narrow, documented reason.
     top-level numeric `version` markers,
   - `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime
     storage path fields only under one `runtime` record
-    (`runtime.conductor_dir`, `runtime.state_config`,
+    (`runtime.conductor_dir`, `runtime.conductor_state_config`,
     `runtime.cas_store_dir`) plus optional platform-keyed inherited host
     env-name map (`runtime.inherited_env_vars`),
   - runtime inherited env-name defaults are host-specific (`SYSTEMROOT`,
@@ -133,8 +133,10 @@ is a narrow, documented reason.
   - default runtime root is `.mediapm/`,
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
-    `conductor_state`, `inherited_env_vars`, `lockfile`, `library_dir`,
-    `tmp_dir`, and `use_user_download_cache`,
+    `conductor_state_config`, `inherited_env_vars`, `media_state_config`,
+    `hierarchy_root_dir`, `mediapm_tmp_dir`, `conductor_tmp_dir`,
+    `conductor_schema_dir`, `env_file`, `mediapm_schema_dir`, and
+    `use_user_tool_cache`,
   - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
     `macos`, ...) and each platform key maps to an ordered list of
     inherited environment-variable names,
@@ -142,16 +144,16 @@ is a narrow, documented reason.
     `mediapm_dir = .mediapm`,
     `conductor_config = mediapm.conductor.ncl`,
     `conductor_machine_config = mediapm.conductor.machine.ncl`,
-    `conductor_state = <mediapm_dir>/state.ncl`,
-    `lockfile = <mediapm_dir>/lock.jsonc`,
+    `conductor_state_config = <mediapm_dir>/state.conductor.ncl`,
+    `media_state_config = <mediapm_dir>/state.ncl`,
   - persisted `mediapm.ncl` schema keeps explicit top-level numeric
     `version` markers,
-  - persisted lockfile schema keeps explicit top-level numeric `version`
-    markers,
+  - persisted machine-managed `state.ncl` schema keeps explicit top-level
+    numeric `version` markers and one top-level `state` payload field,
   - `mediapm.ncl` wire-version dispatch and migrations live under
     `src/mediapm/src/config/versions/` with version-specific wire envelopes in
     `vN.rs`,
-  - lockfile wire-version dispatch and migrations live under
+  - machine-managed state wire-version dispatch and migrations live under
     `src/mediapm/src/lockfile/versions/` with version-specific wire envelopes
     in `vN.rs`,
   - default materialized output root is the topmost `mediapm.ncl` directory
@@ -161,21 +163,25 @@ is a narrow, documented reason.
     replacement/removal operations,
   - when `mediapm` invokes conductor, grouped conductor runtime-storage
     defaults also target effective `mediapm_dir`
-    (`conductor_dir = <mediapm_dir>`, `state_config = <mediapm_dir>/state.ncl`,
+    (`conductor_dir = <mediapm_dir>`,
+    `conductor_state_config = <mediapm_dir>/state.conductor.ncl`,
     `cas_store_dir = <mediapm_dir>/store`) with inherited env-name defaults
     matching conductor host defaults; managed tool-config env-vars should not
     redundantly restate those inherited names,
   - `mediapm` workflow execution must pass grouped runtime-storage paths
     derived from effective runtime path resolution so volatile state writes do
     not regress to standalone `.conductor/state.ncl` defaults,
-  - relative `runtime.library_dir` resolves relative to the topmost
+  - relative `runtime.hierarchy_root_dir` resolves relative to the topmost
     `mediapm.ncl` directory,
-  - relative `runtime.tmp_dir` resolves relative to effective
+  - relative `runtime.mediapm_tmp_dir` resolves relative to effective
     `runtime.mediapm_dir`,
-  - `runtime.use_user_download_cache` defaults to enabled when omitted
-    and controls one shared user-level global managed-tool download cache with
-    fixed layout `tool-cache/store/` + `tool-cache/index.jsonc` and fixed
-    30-day eviction,
+  - `runtime.use_user_tool_cache` defaults to enabled when omitted
+    and controls a shared user-level managed-tool download cache; when invoked
+    through `mediapm`, the cache root is `<os-cache-dir>/mediapm/cache/` with
+    fixed layout `cache/store/` (CAS payloads), default metadata index
+    `cache/tools.jsonc`, optional additional indexes `cache/*.jsonc`, and
+    fixed 30-day eviction; conductor standalone uses
+    `<os-cache-dir>/mediapm-conductor/cache/` with the same layout,
   - `tools.ffmpeg.max_input_slots` and
     `tools.ffmpeg.max_output_slots` default to `64` when omitted and
     bound generated ffmpeg indexed input/output slot fan-out,
@@ -186,31 +192,51 @@ is a narrow, documented reason.
     shadowed by placeholder file values,
   - relative `runtime.conductor_config`,
     `runtime.conductor_machine_config`,
-    `runtime.conductor_state`, and `runtime.lockfile` resolve
+    `runtime.conductor_state_config`, and `runtime.media_state_config` resolve
     relative to the topmost `mediapm.ncl` directory,
   - local-source ingest created by `mediapm media add-local` is represented as
-    an `import-once` step (`options.kind = "cas_hash"`, `options.hash =
-    "blake3:<hex>"`),
+    an `import` step (`options.kind = "cas_hash"`, `options.hash =
+"blake3:<hex>"`),
   - media source schema may additionally keep manual payload pointers in
     `variant_hashes` (variant name -> CAS hash),
+  - media source entries may include optional human-readable `title` and
+    `description`,
   - each media source may optionally define explicit `workflow_id` override,
   - media source `metadata` is strict when present:
     each key maps to either a literal string value or to one
-    `{ variant = "<file-variant>", metadata_key = "<json-key>" }` binding;
+    `{ variant = "<file-variant>", metadata_key = "<json-key>", transform = { pattern = "<regex>", replacement = "<replacement>" }? }` binding;
     metadata bindings must target file variants (not folder captures), and
-    hierarchy placeholders `${media.metadata.<key>}` must fail fast when
+    hierarchy placeholders `${media.id}` and `${media.metadata.<key>}` must fail fast when
     referenced keys are undefined or unresolved,
+  - hierarchy uses an ordered node-array schema (`hierarchy = [ { ... } ]`)
+    with recursive `children`; legacy flat-map and `"/kind"` forms are
+    unsupported (no backward compatibility),
+  - hierarchy kinds are explicit: `folder` (default), `media`,
+    `media_folder`, and `playlist`; `media` uses singular `variant`,
+    `media_folder` uses plural `variants` and may define `rename_files`,
+    and playlist `ids` resolve by ordered id entries, accept string shorthand
+    and object refs (`{ id, path }`),
+  - hierarchy entries with `kind = "playlist"` emit playlist files, may define
+    ordered `ids` with optional per-item path-mode overrides, and must remain
+    file-leaf nodes,
+  - demo/example hierarchy layouts should remain Jellyfin-compatible for media
+    files:
+    `music videos/<artist> - <title> [<media.id>]/<artist> - <title> [<media.id>](<ext>)`,
+    with non-media sidecars grouped under `sidecars/`,
   - media processing uses one ordered `steps` list where each step defines
-    `tool` (`yt-dlp`, `import`, `import-once`, `ffmpeg`, `rsgain`,
+    `tool` (`yt-dlp`, `import`, `ffmpeg`, `rsgain`,
     `media-tagger`), `input_variants` for non-source-ingest transforms
-    (source-ingest tools `yt-dlp`, `import`, and `import-once` keep
+    (source-ingest tools `yt-dlp` and `import` keep
     `input_variants` empty), `output_variants` as a map keyed
     by output variant name with optional
     per-variant policy overrides (`save`, `save_full`) where defaults are
     `save = true` and `save_full = false`; hierarchy file-path variants must
-    resolve to file outputs with latest-producer `save = true` and
-    `save_full = true`, while hierarchy directory-path variants may use folder
+    resolve to file outputs with latest-producer persisted-save semantics
+    (`save = true` or `save = "full"`), while hierarchy directory-path variants may use folder
     outputs with default `save_full = false`; strict tool-specific `options`,
+  - machine-managed state `managed_files` entries must carry canonical CAS
+    hash strings for each materialized file; workflow reconciliation must root
+    all managed-file hashes in top-level conductor `external_data`,
   - managed media-tool step `options` must stay value-centric:
     values represent option payloads (not raw CLI option-name tokens);
     runtime command templates expand values into CLI arguments via conductor
@@ -223,6 +249,8 @@ is a narrow, documented reason.
     as disabled,
   - managed `media-tagger` defaults should keep
     `strict_identification = "true"` unless callers explicitly override it,
+    and should keep `cover_art_slot_count = tools.ffmpeg.max_input_slots - 1`
+    so metadata and apply stages stay slot-compatible,
   - when `media-tagger` runs on the AcoustID lookup path (no explicit
     recording MBID override), missing/empty AcoustID credentials must fail
     immediately; key sources remain CLI `--acoustid-api-key` or
@@ -234,11 +262,58 @@ is a narrow, documented reason.
     thumbnails, descriptions, infojson, comments, links, chapter splits, and
     playlist sidecars) are exposed via `output_variants`; description/infojson
     should bind to file captures while folder families map to artifact-capture
-    outputs in generated tool/workflow specs,
-  - yt-dlp per-variant `filename_template` values are supported only for
-    folder-style output variants and are filename templates only; runtime owns
-    sandbox directories (for example `downloads/`), so directory prefixes must
-    not appear in config values,
+    outputs in generated tool/workflow specs; aggregated downloader synthesis
+    must keep one shared yt-dlp call for multiple requested output families
+    while isolating artifact bundles through regex folder captures, and any
+    internal filename post-edit marker used for disambiguation must be removed
+    via regex-capture rename semantics before user-visible outputs,
+  - yt-dlp output-variant synthesis must apply explicit sidecar toggles per
+    variant kind so primary/sandbox variants do not capture unrelated sidecar
+    families,
+  - playlist-only output variants must keep explicit gating so single-item
+    runs with `no_playlist = true` cannot capture playlist sidecar artifacts,
+  - hierarchy directory entries may define ordered
+    `rename_files = [{ pattern, replacement }, ...]` regex rewrites that
+    apply to extracted folder file members; file hierarchy targets must keep
+    `rename_files` empty,
+  - managed media tool defaults should stay quality- and metadata-preserving:
+    `yt-dlp` defaults to `bestvideo*+bestaudio/best` plus enabled metadata,
+    `sub_langs = "all"`, unified subtitle writes enabled by default
+    (`write_subs = "true"`, mapped to manual + automatic subtitle toggles)
+    while broad translated subtitle pressure should still be reduced using
+    precise `options.sub_langs` selectors and optional
+    `options.sleep_subtitles`.
+    Keep this mitigation anchored to documented upstream incidents in
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3875360390`
+    and
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3712613129`:
+    broad translated subtitle requests are the highest-risk path for
+    `HTTP 429`, focused subtitle requests are usually lower risk, and
+    extractor-args
+    translation-skip knobs are not a reliable substitute for precise language
+    selectors, and
+    highest-quality single-thumbnail capture (`write_thumbnail = "true"`,
+    `write_all_thumbnails = "false"`), `ffmpeg` defaults to
+    metadata-preserving copy behavior, `rsgain` defaults to single-track
+    true-peak normalization with direct `custom`-mode execution while keeping
+    container/stream layout by default (not audio-only output), and
+    `media-tagger` defaults should maximize broad MusicBrainz/Picard-compatible
+    metadata population while preserving existing source metadata unless
+    overridden by media-tagger values; cover-art selection should keep one
+    highest-quality payload per distinct CAA artwork entry (original image
+    preferred, thumbnail fallback allowed), emit deterministic attachment slot
+    artifacts for ffmpeg `attached_pic` mapping, and keep emitted
+    `coverart_*` metadata keys synchronized with Picard cover-art behavior
+    documented
+    in `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`,
+  - output-variant values are object-driven across managed tools: `kind`
+    defines default file-vs-folder capture behavior and optional
+    `capture_kind` (`file`/`folder`) may override that default,
+  - yt-dlp output-variant `langs` is only a capture-filter hint for
+    subtitle-family artifacts; downloader language selection remains
+    step-option owned via `options.sub_langs`,
+  - do not document or rely on a separate dedicated per-variant
+    output-folder configuration model,
   - online source URLs are declared by downloader steps via `options.uri`
     (not by top-level media fields),
   - step low-level list input bindings use `options.option_args`,
@@ -275,26 +350,41 @@ is a narrow, documented reason.
     `mediapm.tools.<name>+source@version` ->
     `mediapm.tools.<name>+source@tag`; resolution must fail if none are
     available,
+  - `conductor::registered_builtin_ids()` exposes namespaced immutable ids;
+    when building `ToolKindSpec::Builtin`, map `name` to the process-name
+    suffix (`import`, `export`, ...) instead of copying full namespaced ids,
   - catalog defaults are: `ffmpeg` preferring GitHub Releases (BtbN on
     Windows) with platform fallbacks, `yt-dlp` from GitHub Releases on
     `latest`, `rsgain` from GitHub Releases on `latest` ZIP assets, and
     `media-tagger` from the built-in internal launcher
     (`mediapm builtins media-tagger`) using Chromaprint + AcoustID +
     MusicBrainz + FFmetadata + FFmpeg,
+  - downloader-plan resolution should remain cross-platform (`windows`,
+    `linux`, `macos`) even if later import/materialization is host-filtered,
+  - for GitHub release assets (notably ffmpeg), resolve concrete asset URLs
+    from release metadata instead of assuming static
+    `releases/latest/download/...` paths,
   - archive-backed managed tool payloads should prefer compact
     directory-form `content_map` entries (trailing `/` keys with ZIP bytes)
     over one-entry-per-file maps when possible,
+  - managed executable payload materialization should keep all-platform
+    `content_map` coverage (`windows/`, `linux/`, `macos/`, or shared `./`
+    root when payloads are platform-identical), and generated command
+    selectors should use `${context.os == "<target>" ? ... | ...}` branches
+    that all map to one materialized target,
   - step execution order is the declared `steps` list order,
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under
     effective `.mediapm/tmp` and atomic commit into library roots,
   - materializer path validation enforces NFD-only filenames and rejects
     reserved characters (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`),
-  - materializer link fallback order remains deterministic: hardlink ->
-    symlink -> reflink -> copy,
+  - materializer link/write order follows
+    `runtime.materialization_preference_order` (must be non-empty and
+    duplicate-free); default order remains hardlink -> symlink -> reflink ->
+    copy,
   - online/local source pipelines keep explicit ingest -> optional transcode ->
     metadata-application sequencing, and permanent-transcode safety external
-    data remains lockfile-tracked/pruneable.
+    data remains machine-state-tracked/pruneable.
 - Built-ins should stay narrowly scoped and version-addressable.
 - Builtin runtime behavior must remain inside `src/conductor-builtins/*`
   crates (not inline in `src/conductor`).
@@ -304,18 +394,18 @@ is a narrow, documented reason.
   - CLI arguments use standard Rust flags/options and all values remain strings,
   - API arguments are `BTreeMap<String, String>` with optional raw payload
     bytes for content-oriented operations.
-  Builtins may optionally define one default CLI option key so one value can be
-  passed without spelling the key, but explicit keyed input must remain
-  supported and must map to the same API key.
-  Builtin execution must fail fast on undeclared keys, missing required keys,
-  and invalid argument combinations; do not silently drop unknown values.
-  For builtins whose successful non-error result is pure, successful payloads
-  may be deterministic bytes or `BTreeMap<String, String>`. Impure builtins
-  may instead primarily communicate success through side effects. The only
-  allowed CLI/API difference is input ergonomics (string flag transport vs map
-  transport).
-  CLI failures may use ordinary Rust error types; do not wrap failures inside
-  string-only success objects.
+    Builtins may optionally define one default CLI option key so one value can be
+    passed without spelling the key, but explicit keyed input must remain
+    supported and must map to the same API key.
+    Builtin execution must fail fast on undeclared keys, missing required keys,
+    and invalid argument combinations; do not silently drop unknown values.
+    For builtins whose successful non-error result is pure, successful payloads
+    may be deterministic bytes or `BTreeMap<String, String>`. Impure builtins
+    may instead primarily communicate success through side effects. The only
+    allowed CLI/API difference is input ergonomics (string flag transport vs map
+    transport).
+    CLI failures may use ordinary Rust error types; do not wrap failures inside
+    string-only success objects.
 - Builtin crate `version` values should be explicit per crate in each builtin
   crate `Cargo.toml` (do not inherit workspace package version).
 - Prefer one-directional dependencies:
@@ -362,6 +452,57 @@ When you add or change public APIs in `src/`:
 - Explain invariants and side effects, not just what types are called.
 - Prefer newcomer-readable docs over shorthand internal jargon.
 
+## pulsebar rendering contract
+
+`pulsebar` has two rendering modes that are not interchangeable:
+
+- `ProgressBar::new()` — **standalone mode** (`managed = false`). Calls to
+  `set_message`, `set_position`, and `advance` internally call `try_render()`,
+  which writes a carriage-return update directly. `try_render()` is throttled
+  to one paint every 50 ms — so if three mutations fire in rapid succession
+  (within the same millisecond) only the first one triggers a terminal write.
+  The remaining state updates are silently skipped. Consequently, a standalone
+  bar set up before a long async `await` may show stale state for the entire
+  await duration (e.g., stuck at `0/13` for 5 minutes while yt-dlp runs),
+  because no mutation occurs during the await and the throttle is never reset.
+  `finish_success`/`finish_error` call `render_final()` which bypasses the
+  throttle and always writes — so the final state is always correct.
+
+- `MultiProgress::new()` + `multi.add_bar()` — **managed mode**. A background
+  OS thread fires every 50 ms and renders all managed bars unconditionally,
+  regardless of whether any mutations have occurred since the last cycle. This
+  is the only mode that produces live-updating progress during long async awaits
+  (e.g., subprocess execution, network downloads).
+
+**Rule:** Whenever progress bars must remain visually live during long-running
+async operations (tool execution, downloads, actor message waiting), always use
+`MultiProgress`. Never use standalone `ProgressBar::new()` for workflow-level
+or download-level progress that spans blocking awaits.
+
+**Specific invariants for conductor workflow progress:**
+
+- `execute_workflows` in `src/conductor/src/orchestration/coordinator.rs` must
+  create a single `MultiProgress` at the top of the function and all workflow
+  bars must be allocated via `multi.add_bar(...)`.
+- A settle delay (`tokio::time::sleep`) of at least one render interval (75 ms)
+  must be awaited before returning from `execute_workflows` so the background
+  thread can flush final `finish_success`/`finish_error` states before the
+  `MultiProgress` drops and the thread stops.
+- The same settle delay must precede each early-return error path that calls
+  `workflow_progress.finish_error(...)`.
+- The same settle delay must also precede retry-loop continuation after
+  `workflow_progress.finish_error("retrying")` so the previous retry status is
+  rendered before the replacement retry bar is allocated.
+
+**Progress message format:**
+
+- Conductor workflow bars use the format: `<name> · <N/total> · <step-id>` for
+  single-step levels, and `<name> · <N-M/total> · <step-id>, <step-id2>[, +K more]`
+  for multi-step levels.
+- Use `N/total` (not `N-N/total`) when first == last (single-step level).
+- Do not add prefixes like "running " or wrap step ids in `step '...'` quotes —
+  they are redundant noise.
+
 ## Validation checklist after Rust edits
 
 **During development:**
@@ -374,6 +515,20 @@ Run targeted validation on affected crates:
 - If changes touch `src/mediapm/**`, run
   `cargo run --package mediapm --example demo_online` as the final runtime
   gate after targeted test/lint checks.
+  After the run, inspect generated artifacts under
+  `src/mediapm/examples/.artifacts/demo-online/` and verify sidecar-family
+  payload correctness (not only path existence).
+  Confirm the interpolated media root under `music videos/` contains the
+  metadata-templated demo filenames
+  `${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}`
+  and
+  `${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}`,
+  both preserving video+audio streams while sidecar hierarchy stays under
+  `sidecars/` and selected sidecar families are additionally mirrored at
+  media root.
+  Run this gate with rate-limit discipline: at most one run per validation
+  pass, no rapid retry loops, and cool-down backoff before retrying transient
+  provider (`HTTP 429`) failures.
   Treat this as a hard gate: do not replace failures with placeholder or
   skip-success behavior; report transient external-provider failures as
   blockers until run success or explicit reviewer acceptance.

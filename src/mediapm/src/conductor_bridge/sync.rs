@@ -9,17 +9,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
-use mediapm_conductor::{AddToolOptions, MachineNickelDocument, ToolKindSpec};
+use mediapm_conductor::{AddToolOptions, InputBinding, MachineNickelDocument, ToolKindSpec};
 use pulsebar::{MultiProgress, ProgressBar};
 
-use crate::config::{MediaPmDocument, ToolRequirement};
+use crate::builtins::media_tagger::MEDIA_TAGGER_FFMPEG_BIN_ENV;
+use crate::config::{
+    MediaPmDocument, ToolRequirement, normalize_selector_compare_value, normalize_selector_value,
+};
 use crate::error::MediaPmError;
 use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::{ToolDownloadDescriptor, tool_catalog_entry};
 use crate::tools::downloader::{
     ContentMapSource, DownloadProgressCallback, DownloadProgressSnapshot, ProvisionedToolPayload,
-    ToolDownloadCache, default_global_tool_cache_root, provision_tool_payload,
+    ResolvedToolIdentity, ToolDownloadCache, default_global_tool_cache_root,
+    provision_tool_payload,
 };
 
 use super::ToolSyncReport;
@@ -28,19 +32,23 @@ use super::runtime_storage::resolve_cas_store_path;
 use super::tool_runtime::{
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV, MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV, build_tool_env, build_tool_spec,
-    default_tool_config_description, merge_tool_config_defaults, resolve_ffmpeg_slot_limits,
-    validate_tool_command,
+    default_tool_config_description, extract_platform_conditional_paths,
+    merge_tool_config_defaults, resolve_ffmpeg_slot_limits, validate_tool_command,
 };
 use super::util::now_unix_seconds;
 
 /// Reconciles desired tools from `mediapm.ncl` into conductor machine config.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 pub(crate) async fn reconcile_desired_tools(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
     inherited_env_vars: &[String],
     lock: &mut MediaLockFile,
     check_tag_updates: bool,
-    use_user_download_cache: bool,
+    use_user_tool_cache: bool,
 ) -> Result<ToolSyncReport, MediaPmError> {
     ensure_conductor_documents(paths)?;
 
@@ -59,6 +67,10 @@ pub(crate) async fn reconcile_desired_tools(
     let mut skipped_tag_update_tool_ids = BTreeMap::new();
 
     for (tool_name, requirement) in &document.tools {
+        if is_builtin_source_ingest_requirement(tool_name) {
+            continue;
+        }
+
         if should_skip_tag_update_check(requirement, tool_name, lock, &machine, check_tag_updates)
             && let Some(active_tool_id) = lock.active_tools.get(tool_name).cloned()
         {
@@ -69,40 +81,40 @@ pub(crate) async fn reconcile_desired_tools(
         requirements_to_provision.insert(tool_name.clone(), requirement.clone());
     }
 
-    let shared_download_cache = if use_user_download_cache {
-        match default_global_tool_cache_root() {
-            Some(cache_root) => match ToolDownloadCache::open(&cache_root).await {
+    let shared_tool_cache = if use_user_tool_cache {
+        if let Some(cache_root) = default_global_tool_cache_root() {
+            match ToolDownloadCache::open(&cache_root).await {
                 Ok(cache) => {
                     let _ = cache.prune_expired_entries().await;
                     Some(Arc::new(cache))
                 }
                 Err(error) => {
-                    report
-                        .warnings
-                        .push(format!("shared global user tool-cache disabled: {error}"));
+                    report.warnings.push(format!("shared global user cache disabled: {error}"));
                     None
                 }
-            },
-            None => {
-                report
-                    .warnings
-                    .push("shared global user tool-cache disabled: global user directory could not be resolved".to_string());
-                None
             }
+        } else {
+            report.warnings.push(
+                "shared global user cache disabled: global user directory could not be resolved"
+                    .to_string(),
+            );
+            None
         }
     } else {
         None
     };
 
-    let mut provisioned_by_name = provision_desired_tools_concurrently(
-        paths,
-        &requirements_to_provision,
-        shared_download_cache,
-    )
-    .await?;
+    let mut provisioned_by_name =
+        provision_desired_tools_concurrently(paths, &requirements_to_provision, shared_tool_cache)
+            .await?;
+    let provisioned_snapshot = provisioned_by_name.clone();
     let mut desired_tool_ids = BTreeSet::new();
 
-    for name in document.tools.keys() {
+    for (name, requirement) in &document.tools {
+        if is_builtin_source_ingest_requirement(name) {
+            continue;
+        }
+
         if let Some(active_tool_id) = skipped_tag_update_tool_ids.get(name) {
             desired_tool_ids.insert(active_tool_id.clone());
             report.unchanged_tool_ids.push(active_tool_id.clone());
@@ -115,11 +127,55 @@ pub(crate) async fn reconcile_desired_tools(
             ))
         })?;
         report.warnings.extend(provisioned.warnings.clone());
-        let desired_tool_id = provisioned.tool_id.clone();
+        let mut effective_content_entries = provisioned.content_entries.clone();
+        let mut desired_tool_id = provisioned.tool_id.clone();
+        let mut media_tagger_ffmpeg_content_map = BTreeMap::new();
+        let mut media_tagger_ffmpeg_host_command_path: Option<String> = None;
+        let mut media_tagger_ffmpeg_tool_id: Option<String> = None;
+        let mut companion_ffmpeg_content_map = BTreeMap::new();
+        let mut companion_ffmpeg_host_command_path: Option<String> = None;
+
+        if name.eq_ignore_ascii_case("media-tagger") {
+            let ffmpeg_selection = resolve_media_tagger_ffmpeg_selection(
+                requirement,
+                &provisioned_snapshot,
+                lock,
+                &machine,
+            )?;
+
+            desired_tool_id = augment_media_tagger_tool_id_with_ffmpeg_selector(
+                &desired_tool_id,
+                &ffmpeg_selection.selector,
+            );
+            media_tagger_ffmpeg_content_map = ffmpeg_selection.existing_content_map;
+            media_tagger_ffmpeg_host_command_path = ffmpeg_selection.host_command_path;
+            media_tagger_ffmpeg_tool_id = Some(ffmpeg_selection.selected_tool_id);
+            for (entry_key, entry_source) in ffmpeg_selection.provisioned_content_entries {
+                effective_content_entries.entry(entry_key).or_insert(entry_source);
+            }
+        }
+
+        if name.eq_ignore_ascii_case("yt-dlp")
+            && let Some(companion_selection) = resolve_companion_ffmpeg_selection(
+                "yt-dlp",
+                requirement,
+                &provisioned_snapshot,
+                lock,
+                &machine,
+            )?
+        {
+            companion_ffmpeg_content_map = companion_selection.existing_content_map;
+            companion_ffmpeg_host_command_path = companion_selection.host_command_path;
+
+            for (entry_key, entry_source) in companion_selection.provisioned_content_entries {
+                effective_content_entries.entry(entry_key).or_insert(entry_source);
+            }
+        }
+
         desired_tool_ids.insert(desired_tool_id.clone());
         let desired_version = lock_registry_version(&provisioned)?;
         let existing_active = lock.active_tools.get(name).cloned();
-        let spec = build_tool_spec(paths, name, &provisioned, ffmpeg_slot_limits)?;
+        let spec = build_tool_spec(paths, name, &provisioned, ffmpeg_slot_limits);
         let command_vector = match &spec.kind {
             ToolKindSpec::Executable { command, .. } => command.clone(),
             ToolKindSpec::Builtin { .. } => {
@@ -128,11 +184,15 @@ pub(crate) async fn reconcile_desired_tools(
                 )));
             }
         };
+
+        ensure_internal_launcher_content_entries_exist(&provisioned, &effective_content_entries)?;
+
         let content_map =
-            import_tool_content_files_into_cas(&cas, &provisioned.content_entries).await?;
+            import_tool_content_files_into_cas(&cas, &effective_content_entries).await?;
         validate_tool_command(name, &command_vector, &content_map)?;
         let mut desired_config = merge_tool_config_defaults(
             machine.tool_configs.get(&desired_tool_id),
+            paths,
             name,
             content_map,
             default_tool_config_description(
@@ -142,6 +202,36 @@ pub(crate) async fn reconcile_desired_tools(
             ),
             ffmpeg_slot_limits,
         );
+        if name.eq_ignore_ascii_case("media-tagger") {
+            for (relative_path, multihash) in media_tagger_ffmpeg_content_map {
+                desired_config
+                    .content_map
+                    .get_or_insert_with(BTreeMap::new)
+                    .entry(relative_path)
+                    .or_insert(multihash);
+            }
+        }
+        if name.eq_ignore_ascii_case("yt-dlp") {
+            for (relative_path, multihash) in companion_ffmpeg_content_map {
+                desired_config
+                    .content_map
+                    .get_or_insert_with(BTreeMap::new)
+                    .entry(relative_path)
+                    .or_insert(multihash);
+            }
+        }
+        if name.eq_ignore_ascii_case("yt-dlp")
+            && let Some(ffmpeg_path) = companion_ffmpeg_host_command_path
+            && matches!(
+                desired_config.input_defaults.get("ffmpeg_location"),
+                Some(InputBinding::String(value))
+                    if value.trim().is_empty() || value.eq_ignore_ascii_case("ffmpeg")
+            )
+        {
+            desired_config
+                .input_defaults
+                .insert("ffmpeg_location".to_string(), InputBinding::String(ffmpeg_path));
+        }
         remove_redundant_inherited_env_vars_from_tool_config(
             &mut desired_config,
             inherited_env_vars,
@@ -160,6 +250,17 @@ pub(crate) async fn reconcile_desired_tools(
             } else {
                 desired_config.env_vars.entry(env_key).or_insert(env_value);
             }
+        }
+        if name.eq_ignore_ascii_case("media-tagger")
+            && let Some(ffmpeg_path) = media_tagger_ffmpeg_host_command_path
+        {
+            let ffmpeg_path = resolve_managed_tool_command_absolute_path(
+                paths,
+                media_tagger_ffmpeg_tool_id.as_deref(),
+                &ffmpeg_path,
+            )
+            .unwrap_or(ffmpeg_path);
+            desired_config.env_vars.insert(MEDIA_TAGGER_FFMPEG_BIN_ENV.to_string(), ffmpeg_path);
         }
 
         if existing_active.as_deref() == Some(desired_tool_id.as_str())
@@ -242,10 +343,510 @@ fn remove_redundant_inherited_env_vars_from_tool_config(
         .retain(|name, _| !inherited_lower.contains(&name.trim().to_ascii_lowercase()));
 }
 
+/// Resolves preferred managed ffmpeg binary path for current host OS.
+#[must_use]
+fn resolve_host_command_selector_path(command_selector: &str) -> Option<String> {
+    if command_selector.contains("context.os") {
+        let selectors = extract_platform_conditional_paths(command_selector).ok()?;
+        return selectors.get(std::env::consts::OS).cloned();
+    }
+
+    let trimmed = command_selector.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+/// Resolved ffmpeg linkage used to stabilize managed media-tagger identity and
+/// content-map compatibility with the selected ffmpeg payload.
+#[derive(Debug, Clone)]
+struct MediaTaggerFfmpegSelection {
+    /// Stable selector fragment (hash, version, or tag) folded into tool id.
+    selector: String,
+    /// Concrete managed ffmpeg tool id selected for this linkage.
+    selected_tool_id: String,
+    /// Optional provisioned payload entries for selected ffmpeg content.
+    provisioned_content_entries: BTreeMap<String, ContentMapSource>,
+    /// Existing machine content-map entries for selected ffmpeg payload.
+    existing_content_map: BTreeMap<String, Hash>,
+    /// Host-resolved ffmpeg executable path for media-tagger subprocess env.
+    host_command_path: Option<String>,
+}
+
+/// Resolved companion ffmpeg linkage for tools that invoke ffmpeg subprocesses.
+#[derive(Debug, Clone)]
+struct CompanionFfmpegSelection {
+    /// Optional provisioned payload entries for selected ffmpeg content.
+    provisioned_content_entries: BTreeMap<String, ContentMapSource>,
+    /// Existing machine content-map entries for selected ffmpeg payload.
+    existing_content_map: BTreeMap<String, Hash>,
+    /// Host-resolved ffmpeg executable path for companion tool arguments.
+    host_command_path: Option<String>,
+}
+
+/// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
+const MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX: &str = "ffmpeg/";
+
+/// Normalizes one managed-tool relative command path for install-root lookup.
+#[must_use]
+fn normalize_managed_tool_relative_command_path(relative_command_path: &str) -> Option<String> {
+    let normalized = relative_command_path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let without_media_tagger_prefix = normalized
+        .strip_prefix(MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX)
+        .unwrap_or(&normalized)
+        .trim_start_matches('/')
+        .to_string();
+
+    if without_media_tagger_prefix.is_empty() { None } else { Some(without_media_tagger_prefix) }
+}
+
+/// Resolves an absolute managed-tool command path from one relative selector path.
+///
+/// Returns `None` when no tool id is provided or when the candidate path does not
+/// currently exist as a regular file under `paths.tools_dir/<tool_id>/`.
+///
+/// For media-tagger ffmpeg linkage, this also accepts namespaced selectors such
+/// as `ffmpeg/windows/...` and resolves them against the selected managed ffmpeg
+/// install root.
+#[must_use]
+fn resolve_managed_tool_command_absolute_path(
+    paths: &MediaPmPaths,
+    tool_id: Option<&str>,
+    relative_command_path: &str,
+) -> Option<String> {
+    let tool_id = tool_id?.trim();
+    if tool_id.is_empty() {
+        return None;
+    }
+
+    let relative = normalize_managed_tool_relative_command_path(relative_command_path)?;
+
+    let candidate = paths.tools_dir.join(tool_id).join(Path::new(&relative));
+    if candidate.is_file() { Some(candidate.to_string_lossy().replace('\\', "/")) } else { None }
+}
+
+/// Prefixes one ffmpeg content-map key for media-tagger sandbox mounting.
+#[must_use]
+fn media_tagger_ffmpeg_content_key(relative_path: &str) -> String {
+    let normalized = relative_path
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+
+    if normalized.is_empty() {
+        MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX.to_string()
+    } else if normalized.starts_with(MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX) {
+        normalized
+    } else {
+        format!("{MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX}{normalized}")
+    }
+}
+
+/// Prefixes ffmpeg provisioned content-map entries for media-tagger tool rows.
+#[must_use]
+fn prefix_media_tagger_ffmpeg_content_entries(
+    entries: &BTreeMap<String, ContentMapSource>,
+) -> BTreeMap<String, ContentMapSource> {
+    entries
+        .iter()
+        .map(|(path, source)| (media_tagger_ffmpeg_content_key(path), source.clone()))
+        .collect()
+}
+
+/// Prefixes ffmpeg hash-only content-map rows for media-tagger tool rows.
+#[must_use]
+fn prefix_media_tagger_ffmpeg_hash_map(entries: &BTreeMap<String, Hash>) -> BTreeMap<String, Hash> {
+    entries.iter().map(|(path, hash)| (media_tagger_ffmpeg_content_key(path), *hash)).collect()
+}
+
+/// Resolves the ffmpeg payload that media-tagger should bind to.
+///
+/// Selection priority honors `tools.media-tagger.dependencies.ffmpeg_version`: explicit
+/// selector first, otherwise inherited active/provisioned ffmpeg.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
+fn resolve_media_tagger_ffmpeg_selection(
+    requirement: &ToolRequirement,
+    provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
+    lock: &MediaLockFile,
+    machine: &MachineNickelDocument,
+) -> Result<MediaTaggerFfmpegSelection, MediaPmError> {
+    let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
+        !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
+    });
+
+    if let Some(requested_selector) = requested_selector {
+        let normalized_requested = normalize_selector_compare_value(&requested_selector);
+
+        if let Some(payload) = provisioned_snapshot.get("ffmpeg")
+            && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
+        {
+            return Ok(MediaTaggerFfmpegSelection {
+                selector: ffmpeg_selector_from_identity(&payload.identity).unwrap_or_else(|| {
+                    normalize_selector_value(Some(&requested_selector))
+                        .unwrap_or_else(|| requested_selector.clone())
+                }),
+                selected_tool_id: payload.tool_id.clone(),
+                provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
+                    &payload.content_entries,
+                ),
+                existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
+                    &machine
+                        .tool_configs
+                        .get(&payload.tool_id)
+                        .and_then(|config| config.content_map.clone())
+                        .unwrap_or_default(),
+                ),
+                host_command_path: resolve_host_command_selector_path(&payload.command_selector)
+                    .map(|path| media_tagger_ffmpeg_content_key(&path)),
+            });
+        }
+
+        let mut candidates = lock
+            .tool_registry
+            .iter()
+            .filter(|(_, record)| record.name.eq_ignore_ascii_case("ffmpeg"))
+            .filter_map(|(tool_id, record)| {
+                let selector = normalize_selector_value(Some(&record.version))?;
+                if normalize_selector_compare_value(&selector) == normalized_requested
+                    && machine.tools.contains_key(tool_id)
+                {
+                    Some((tool_id.clone(), selector))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            return Err(MediaPmError::Workflow(format!(
+                "tools.media-tagger.dependencies.ffmpeg_version '{requested_selector}' did not match any managed ffmpeg tool"
+            )));
+        }
+
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg");
+        let (selected_tool_id, selected_selector) = if let Some(active_tool_id) =
+            active_ffmpeg_tool_id
+        {
+            candidates
+                    .iter()
+                    .find(|(tool_id, _)| tool_id == active_tool_id)
+                    .cloned()
+                    .or_else(|| candidates.first().cloned())
+                    .ok_or_else(|| {
+                        MediaPmError::Workflow(
+                            "tools.media-tagger.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                                .to_string(),
+                        )
+                    })?
+        } else {
+            candidates.first().cloned().ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "tools.media-tagger.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                            .to_string(),
+                    )
+                })?
+        };
+
+        return Ok(MediaTaggerFfmpegSelection {
+            selector: selected_selector,
+            selected_tool_id: selected_tool_id.clone(),
+            provisioned_content_entries: BTreeMap::new(),
+            existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
+                &machine
+                    .tool_configs
+                    .get(&selected_tool_id)
+                    .and_then(|config| config.content_map.clone())
+                    .unwrap_or_default(),
+            ),
+            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                machine,
+                &selected_tool_id,
+            )
+            .map(|path| media_tagger_ffmpeg_content_key(&path)),
+        });
+    }
+
+    if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
+        let selector = ffmpeg_selector_from_identity(&payload.identity).ok_or_else(|| {
+            MediaPmError::Workflow(
+                "managed ffmpeg payload did not expose hash/version/tag identity for media-tagger linkage"
+                    .to_string(),
+            )
+        })?;
+
+        return Ok(MediaTaggerFfmpegSelection {
+            selector,
+            selected_tool_id: payload.tool_id.clone(),
+            provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
+                &payload.content_entries,
+            ),
+            existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
+                &machine
+                    .tool_configs
+                    .get(&payload.tool_id)
+                    .and_then(|config| config.content_map.clone())
+                    .unwrap_or_default(),
+            ),
+            host_command_path: resolve_host_command_selector_path(&payload.command_selector)
+                .map(|path| media_tagger_ffmpeg_content_key(&path)),
+        });
+    }
+
+    let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg").ok_or_else(|| {
+        MediaPmError::Workflow(
+            "media-tagger requires active logical tool 'ffmpeg' when tools.media-tagger.dependencies.ffmpeg_version is not pinned"
+                .to_string(),
+        )
+    })?;
+
+    if !machine.tools.contains_key(active_ffmpeg_tool_id) {
+        return Err(MediaPmError::Workflow(format!(
+            "active ffmpeg tool '{active_ffmpeg_tool_id}' is missing from conductor machine config"
+        )));
+    }
+
+    let selector = ffmpeg_selector_from_registry_or_tool_id(active_ffmpeg_tool_id, lock)
+        .ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "could not derive ffmpeg selector identity from active tool '{active_ffmpeg_tool_id}'"
+            ))
+        })?;
+
+    Ok(MediaTaggerFfmpegSelection {
+        selector,
+        selected_tool_id: active_ffmpeg_tool_id.clone(),
+        provisioned_content_entries: BTreeMap::new(),
+        existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
+            &machine
+                .tool_configs
+                .get(active_ffmpeg_tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+        ),
+        host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+            machine,
+            active_ffmpeg_tool_id,
+        )
+        .map(|path| media_tagger_ffmpeg_content_key(&path)),
+    })
+}
+
+/// Resolves optional ffmpeg linkage for companion tools like `yt-dlp`.
+///
+/// Selection priority honors `<tool>.dependencies.ffmpeg_version`: explicit selector first,
+/// then inherited active/provisioned ffmpeg payload when available.
+fn resolve_companion_ffmpeg_selection(
+    logical_tool_name: &str,
+    requirement: &ToolRequirement,
+    provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
+    lock: &MediaLockFile,
+    machine: &MachineNickelDocument,
+) -> Result<Option<CompanionFfmpegSelection>, MediaPmError> {
+    let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
+        !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
+    });
+
+    if let Some(requested_selector) = requested_selector {
+        let normalized_requested = normalize_selector_compare_value(&requested_selector);
+
+        if let Some(payload) = provisioned_snapshot.get("ffmpeg")
+            && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
+        {
+            return Ok(Some(CompanionFfmpegSelection {
+                provisioned_content_entries: payload.content_entries.clone(),
+                existing_content_map: machine
+                    .tool_configs
+                    .get(&payload.tool_id)
+                    .and_then(|config| config.content_map.clone())
+                    .unwrap_or_default(),
+                host_command_path: resolve_host_command_selector_path(&payload.command_selector),
+            }));
+        }
+
+        let mut candidates = lock
+            .tool_registry
+            .iter()
+            .filter(|(_, record)| record.name.eq_ignore_ascii_case("ffmpeg"))
+            .filter_map(|(tool_id, record)| {
+                let selector = normalize_selector_value(Some(&record.version))?;
+                if normalize_selector_compare_value(&selector) == normalized_requested
+                    && machine.tools.contains_key(tool_id)
+                {
+                    Some((tool_id.clone(), selector))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            return Err(MediaPmError::Workflow(format!(
+                "tools.{logical_tool_name}.dependencies.ffmpeg_version '{requested_selector}' did not match any managed ffmpeg tool"
+            )));
+        }
+
+        candidates.sort_by(|left, right| left.0.cmp(&right.0));
+        let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg");
+        let (selected_tool_id, _) = if let Some(active_tool_id) = active_ffmpeg_tool_id {
+            candidates
+                .iter()
+                .find(|(tool_id, _)| tool_id == active_tool_id)
+                .cloned()
+                .or_else(|| candidates.first().cloned())
+                .ok_or_else(|| {
+                    MediaPmError::Workflow(format!(
+                        "tools.{logical_tool_name}.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                    ))
+                })?
+        } else {
+            candidates.first().cloned().ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "tools.{logical_tool_name}.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                ))
+            })?
+        };
+
+        return Ok(Some(CompanionFfmpegSelection {
+            provisioned_content_entries: BTreeMap::new(),
+            existing_content_map: machine
+                .tool_configs
+                .get(&selected_tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                machine,
+                &selected_tool_id,
+            ),
+        }));
+    }
+
+    if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
+        return Ok(Some(CompanionFfmpegSelection {
+            provisioned_content_entries: payload.content_entries.clone(),
+            existing_content_map: machine
+                .tool_configs
+                .get(&payload.tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+            host_command_path: resolve_host_command_selector_path(&payload.command_selector),
+        }));
+    }
+
+    if let Some(active_ffmpeg_tool_id) = lock.active_tools.get("ffmpeg")
+        && machine.tools.contains_key(active_ffmpeg_tool_id)
+    {
+        return Ok(Some(CompanionFfmpegSelection {
+            provisioned_content_entries: BTreeMap::new(),
+            existing_content_map: machine
+                .tool_configs
+                .get(active_ffmpeg_tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                machine,
+                active_ffmpeg_tool_id,
+            ),
+        }));
+    }
+
+    Ok(None)
+}
+
+/// Resolves host ffmpeg executable path from one machine-managed tool spec.
+#[must_use]
+fn resolve_host_ffmpeg_command_path_from_machine_tool(
+    machine: &MachineNickelDocument,
+    tool_id: &str,
+) -> Option<String> {
+    let tool_spec = machine.tools.get(tool_id)?;
+    let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
+        return None;
+    };
+
+    command.first().and_then(|selector| resolve_host_command_selector_path(selector))
+}
+
+/// Returns true when requested selector equals ffmpeg hash/version/tag.
+#[must_use]
+fn ffmpeg_identity_matches_selector(
+    identity: &ResolvedToolIdentity,
+    normalized_requested: &str,
+) -> bool {
+    [identity.git_hash.as_deref(), identity.version.as_deref(), identity.tag.as_deref()]
+        .into_iter()
+        .flatten()
+        .filter_map(|value| normalize_selector_value(Some(value)))
+        .any(|value| normalize_selector_compare_value(&value).as_str() == normalized_requested)
+}
+
+/// Extracts selector identity from a resolved ffmpeg catalog identity.
+#[must_use]
+fn ffmpeg_selector_from_identity(identity: &ResolvedToolIdentity) -> Option<String> {
+    identity
+        .git_hash
+        .as_deref()
+        .or(identity.version.as_deref())
+        .or(identity.tag.as_deref())
+        .and_then(|value| normalize_selector_value(Some(value)))
+}
+
+/// Derives selector identity from lock registry first, then tool-id suffix.
+#[must_use]
+fn ffmpeg_selector_from_registry_or_tool_id(tool_id: &str, lock: &MediaLockFile) -> Option<String> {
+    if let Some(registry_entry) = lock.tool_registry.get(tool_id)
+        && registry_entry.name.eq_ignore_ascii_case("ffmpeg")
+        && let Some(selector) = normalize_selector_value(Some(&registry_entry.version))
+    {
+        return Some(selector);
+    }
+
+    tool_id.rsplit_once('@').and_then(|(_, suffix)| normalize_selector_value(Some(suffix)))
+}
+
+/// Folds ffmpeg selector identity into media-tagger managed tool id.
+#[must_use]
+fn augment_media_tagger_tool_id_with_ffmpeg_selector(base_tool_id: &str, selector: &str) -> String {
+    let normalized_fragment =
+        selector
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() { character.to_ascii_lowercase() } else { '-' }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+
+    if normalized_fragment.is_empty() {
+        return base_tool_id.to_string();
+    }
+
+    if let Some((prefix, suffix)) = base_tool_id.rsplit_once('@') {
+        format!("{prefix}+ffmpeg-{normalized_fragment}@{suffix}")
+    } else {
+        format!("{base_tool_id}+ffmpeg-{normalized_fragment}")
+    }
+}
+
 /// Provisions all desired tools concurrently and reports completion with pulsebar.
 ///
 /// This keeps network transfer concurrency while rendering one progress row per
 /// logical tool so users can see byte-level status without mixed output.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 async fn provision_desired_tools_concurrently(
     paths: &MediaPmPaths,
     requirements: &BTreeMap<String, ToolRequirement>,
@@ -301,7 +902,7 @@ async fn provision_desired_tools_concurrently(
         handles.push((
             tool_name.clone(),
             tokio::spawn(async move {
-                worker_progress.set_message(&format!("{worker_tool_name}: resolving release"));
+                worker_progress.set_message(&format!("{worker_tool_name}: resolving"));
 
                 let callback_sender = worker_sender.clone();
                 let callback: DownloadProgressCallback = Arc::new(move |snapshot| {
@@ -630,7 +1231,7 @@ fn update_overall_tool_download_progress(
             if state.completed {
                 TOOL_PROGRESS_BAR_SCALE
             } else {
-                state.last_snapshot.map(tool_progress_position).unwrap_or(0)
+                state.last_snapshot.map_or(0, tool_progress_position)
             }
         })
         .sum::<u64>()
@@ -652,7 +1253,7 @@ fn update_overall_tool_download_progress(
     render_state.initialized = true;
 }
 
-/// Formats the aggregate download row using completed-tool counts and bytes.
+/// Formats the aggregate download row using compact tool-count phases.
 #[must_use]
 fn format_overall_tool_download_message(
     total_tools: usize,
@@ -660,33 +1261,17 @@ fn format_overall_tool_download_message(
 ) -> String {
     let completed_tools = progress_state_by_name.values().filter(|state| state.completed).count();
 
-    let mut downloaded_bytes_total = 0_u64;
-    let mut total_bytes_all_known = true;
-    let mut total_bytes_total = 0_u64;
-
-    for state in progress_state_by_name.values() {
-        if let Some(snapshot) = state.last_snapshot {
-            downloaded_bytes_total =
-                downloaded_bytes_total.saturating_add(snapshot.downloaded_bytes);
-            if let Some(total_bytes) = snapshot.total_bytes {
-                total_bytes_total = total_bytes_total.saturating_add(total_bytes);
-            } else {
-                total_bytes_all_known = false;
-            }
-        } else {
-            total_bytes_all_known = false;
-        }
+    if completed_tools == total_tools {
+        return format!("tool downloads: {completed_tools} — ready");
     }
 
-    let downloaded_label = format_byte_count(downloaded_bytes_total);
-    if total_bytes_all_known {
-        return format!(
-            "tool downloads: {completed_tools}/{total_tools} ready • {downloaded_label} / {}",
-            format_byte_count(total_bytes_total),
-        );
+    if completed_tools == 0
+        && progress_state_by_name.values().all(|state| state.last_snapshot.is_none())
+    {
+        return "tool downloads: resolving".to_string();
     }
 
-    format!("tool downloads: {completed_tools}/{total_tools} ready • {downloaded_label} downloaded")
+    format!("tool downloads: {completed_tools}/{total_tools} — downloading")
 }
 
 /// Converts a transfer snapshot into the shared fixed-range progress position.
@@ -703,24 +1288,25 @@ fn tool_progress_position(snapshot: DownloadProgressSnapshot) -> u64 {
     coarse_position.min(TOOL_PROGRESS_BAR_SCALE.saturating_sub(1))
 }
 
-/// Formats one human-readable byte-progress label for a tool transfer row.
+/// Formats one compact downloading label for a tool transfer row.
 fn format_tool_download_message(tool_name: &str, snapshot: DownloadProgressSnapshot) -> String {
     let downloaded = format_byte_count(snapshot.downloaded_bytes);
     if let Some(total_bytes) = snapshot.total_bytes {
         let total = format_byte_count(total_bytes);
-        return format!("{tool_name}: {downloaded} / {total}");
+        return format!("{tool_name}: {downloaded} / {total} — downloading");
     }
 
-    format!("{tool_name}: {downloaded} downloaded")
+    format!("{tool_name}: {downloaded} — downloading")
 }
 
-/// Formats one human-readable completion label for a tool transfer row.
+/// Formats one compact completion label for a tool transfer row.
 fn format_tool_download_completion_message(
     tool_name: &str,
     snapshot: DownloadProgressSnapshot,
     status: &str,
 ) -> String {
-    format!("{} — {status}", format_tool_download_message(tool_name, snapshot))
+    let downloaded = format_byte_count(snapshot.downloaded_bytes);
+    format!("{tool_name}: {downloaded} — {status}")
 }
 
 /// Formats one byte count using binary-size units for concise progress labels.
@@ -731,14 +1317,16 @@ fn format_byte_count(bytes: u64) -> String {
         return format!("{bytes} B");
     }
 
-    let mut value = bytes as f64;
+    let mut value_tenths = u128::from(bytes) * 10;
     let mut unit_index = 0_usize;
-    while value >= 1024.0 && unit_index + 1 < UNITS.len() {
-        value /= 1024.0;
+    while value_tenths >= 10 * 1024 && unit_index + 1 < UNITS.len() {
+        value_tenths = (value_tenths + 512) / 1024;
         unit_index += 1;
     }
 
-    format!("{value:.1} {}", UNITS[unit_index])
+    let whole = value_tenths / 10;
+    let fractional = value_tenths % 10;
+    format!("{whole}.{fractional} {}", UNITS[unit_index])
 }
 
 /// Returns true when tag-only requirements should skip remote update checks.
@@ -764,12 +1352,33 @@ fn should_skip_tag_update_check(
         return false;
     };
 
-    machine.tools.contains_key(active_tool_id)
+    let Some(tool_spec) = machine.tools.get(active_tool_id) else {
+        return false;
+    };
+    let Some(tool_config) = machine.tool_configs.get(active_tool_id) else {
+        return false;
+    };
+    let Some(content_map) = tool_config.content_map.as_ref() else {
+        return false;
+    };
+
+    let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
+        return false;
+    };
+
+    validate_tool_command(tool_name, command, content_map).is_ok()
 }
 
 /// Returns true when one requirement selects only by moving tag.
 fn is_tag_only_requirement(requirement: &ToolRequirement) -> bool {
     requirement.normalized_tag().is_some() && requirement.normalized_version().is_none()
+}
+
+/// Returns true when one logical tool requirement targets a builtin
+/// source-ingest step tool that is not downloader-provisioned.
+#[must_use]
+fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
+    tool_name.eq_ignore_ascii_case("import")
 }
 
 /// Removes stale managed tool artifacts that are not declared in `mediapm.ncl`.
@@ -907,38 +1516,222 @@ fn lock_registry_version(provisioned: &ProvisionedToolPayload) -> Result<String,
     )))
 }
 
+/// Ensures internal launcher payload files exist before CAS import.
+///
+/// Some environments can remove non-host launcher files between provisioning
+/// and CAS import. Internal launchers are deterministic, so missing files are
+/// regenerated from their known relative content-map keys.
+fn ensure_internal_launcher_content_entries_exist(
+    provisioned: &ProvisionedToolPayload,
+    content_entries: &BTreeMap<String, ContentMapSource>,
+) -> Result<(), MediaPmError> {
+    if !matches!(provisioned.catalog.download, ToolDownloadDescriptor::InternalLauncher) {
+        return Ok(());
+    }
+
+    for (relative_path, source) in content_entries {
+        let ContentMapSource::FilePath(absolute_path) = source else {
+            continue;
+        };
+
+        if absolute_path.exists() {
+            continue;
+        }
+
+        if !provisioned.catalog.name.eq_ignore_ascii_case("media-tagger") {
+            return Err(MediaPmError::Workflow(format!(
+                "internal launcher '{}' is missing payload file '{}' at '{}' and has no regeneration strategy",
+                provisioned.catalog.name,
+                relative_path,
+                absolute_path.display()
+            )));
+        }
+
+        regenerate_media_tagger_internal_launcher_file(relative_path, absolute_path)?;
+    }
+
+    Ok(())
+}
+
+/// Regenerates one missing internal media-tagger launcher script file.
+fn regenerate_media_tagger_internal_launcher_file(
+    relative_path: &str,
+    absolute_path: &Path,
+) -> Result<(), MediaPmError> {
+    let normalized = relative_path
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+
+    let launcher_env_key = match normalized.as_str() {
+        "windows/media-tagger.cmd" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV,
+        "linux/media-tagger" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV,
+        "macos/media-tagger" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
+        _ => {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot regenerate internal media-tagger launcher for unsupported path key '{relative_path}'"
+            )));
+        }
+    };
+
+    let content = if normalized.starts_with("windows/") {
+        format!(
+            concat!(
+                "@echo off\r\n",
+                "setlocal\r\n",
+                "if \"%{launcher_env_key}%\"==\"\" (\r\n",
+                "  echo internal media-tagger launcher requires %{launcher_env_key}% to be set>&2\r\n",
+                "  exit /b 1\r\n",
+                ")\r\n",
+                "\"%{launcher_env_key}%\" builtins media-tagger %*\r\n"
+            ),
+            launcher_env_key = launcher_env_key,
+        )
+    } else {
+        format!(
+            concat!(
+                "#!/usr/bin/env sh\n",
+                "if [ -z \"${launcher_env_key}\" ]; then\n",
+                "  printf '%s\\n' \"internal media-tagger launcher requires {launcher_env_key} to be set\" >&2\n",
+                "  exit 1\n",
+                "fi\n",
+                "exec \"${launcher_env_key}\" builtins media-tagger \"$@\"\n"
+            ),
+            launcher_env_key = launcher_env_key,
+        )
+    };
+
+    if let Some(parent) = absolute_path.parent() {
+        fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
+            operation: "creating internal launcher parent directory during regeneration"
+                .to_string(),
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    fs::write(absolute_path, content.as_bytes()).map_err(|source| MediaPmError::Io {
+        operation: "writing regenerated internal launcher payload".to_string(),
+        path: absolute_path.to_path_buf(),
+        source,
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(absolute_path)
+            .map_err(|source| MediaPmError::Io {
+                operation: "reading regenerated internal launcher metadata".to_string(),
+                path: absolute_path.to_path_buf(),
+                source,
+            })?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(absolute_path, permissions).map_err(|source| MediaPmError::Io {
+            operation: "setting regenerated internal launcher executable permissions".to_string(),
+            path: absolute_path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    Ok(())
+}
+
 /// Imports materialized tool payload files into conductor CAS.
 async fn import_tool_content_files_into_cas(
     cas: &FileSystemCas,
     content_entries: &BTreeMap<String, ContentMapSource>,
 ) -> Result<BTreeMap<String, Hash>, MediaPmError> {
     let mut map = BTreeMap::new();
-    for (relative_path, entry) in content_entries {
-        let bytes = match entry {
-            ContentMapSource::FilePath(absolute_path) => {
-                fs::read(absolute_path).map_err(|source| MediaPmError::Io {
-                    operation: format!(
-                        "reading tool payload file '{}' before CAS import",
-                        absolute_path.display()
-                    ),
-                    path: absolute_path.clone(),
-                    source,
-                })?
-            }
-            ContentMapSource::DirectoryZip { root_dir } => {
-                build_uncompressed_zip_bytes_from_directory(root_dir)?
-            }
-        };
+    let mut source_hash_cache = BTreeMap::<ContentMapSourceCacheKey, Hash>::new();
 
-        let hash = cas.put(bytes).await.map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "importing tool payload entry '{relative_path}' into CAS failed: {source}",
-            ))
-        })?;
+    for (relative_path, entry) in content_entries {
+        let hash = import_tool_content_source_into_cas(
+            cas,
+            relative_path.as_str(),
+            entry,
+            &mut source_hash_cache,
+        )
+        .await?;
         map.insert(relative_path.clone(), hash);
     }
 
     Ok(map)
+}
+
+/// Cache key for one materialized content-map source import.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ContentMapSourceCacheKey {
+    /// Raw file payload imported directly from one absolute path.
+    FilePath(PathBuf),
+    /// Directory payload imported as one deterministic uncompressed ZIP blob.
+    DirectoryZip(PathBuf),
+}
+
+/// Returns one stable source-cache key for content-map deduplication.
+fn content_map_source_cache_key(source: &ContentMapSource) -> ContentMapSourceCacheKey {
+    match source {
+        ContentMapSource::FilePath(path) => ContentMapSourceCacheKey::FilePath(path.clone()),
+        ContentMapSource::DirectoryZip { root_dir } => {
+            ContentMapSourceCacheKey::DirectoryZip(root_dir.clone())
+        }
+    }
+}
+
+/// Imports one content-map source into CAS with per-pass source-hash caching.
+///
+/// Blocking file I/O is offloaded to `spawn_blocking` so the async executor
+/// remains available for progress rendering and other tasks while large tool
+/// payloads (e.g. ffmpeg directory ZIPs) are read and serialized.
+async fn import_tool_content_source_into_cas(
+    cas: &FileSystemCas,
+    relative_path: &str,
+    source: &ContentMapSource,
+    source_hash_cache: &mut BTreeMap<ContentMapSourceCacheKey, Hash>,
+) -> Result<Hash, MediaPmError> {
+    let cache_key = content_map_source_cache_key(source);
+    if let Some(hash) = source_hash_cache.get(&cache_key) {
+        return Ok(*hash);
+    }
+
+    let bytes = match source {
+        ContentMapSource::FilePath(absolute_path) => {
+            let path = absolute_path.clone();
+            tokio::task::spawn_blocking(move || {
+                fs::read(&path).map_err(|source| MediaPmError::Io {
+                    operation: format!(
+                        "reading tool payload file '{}' before CAS import",
+                        path.display()
+                    ),
+                    path: path.clone(),
+                    source,
+                })
+            })
+            .await
+            .map_err(|e| {
+                MediaPmError::Workflow(format!("tool payload file read task panicked: {e}"))
+            })??
+        }
+        ContentMapSource::DirectoryZip { root_dir } => {
+            let dir = root_dir.clone();
+            tokio::task::spawn_blocking(move || build_uncompressed_zip_bytes_from_directory(&dir))
+                .await
+                .map_err(|e| {
+                    MediaPmError::Workflow(format!("tool payload directory ZIP task panicked: {e}"))
+                })??
+        }
+    };
+
+    let hash = cas.put(bytes).await.map_err(|source| {
+        MediaPmError::Workflow(format!(
+            "importing tool payload entry '{relative_path}' into CAS failed: {source}",
+        ))
+    })?;
+    source_hash_cache.insert(cache_key, hash);
+
+    Ok(hash)
 }
 
 /// Serializes one directory tree as an uncompressed ZIP payload.
@@ -1103,8 +1896,11 @@ pub(crate) async fn prune_tool_binary(
 
 #[cfg(test)]
 mod tests {
+    use mediapm_conductor::{ToolConfigSpec, ToolSpec};
+
     use crate::tools::catalog::{
         DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor,
+        tool_catalog_entry,
     };
 
     use super::*;
@@ -1165,8 +1961,8 @@ mod tests {
         assert_eq!(tool_progress_position(snapshot), TOOL_PROGRESS_BAR_SCALE / 4);
     }
 
-    /// Protects message contract by preserving explicit downloaded/total text
-    /// for known payload sizes.
+    /// Protects message contract by preserving compact known-size transfer
+    /// text during active downloads.
     #[test]
     fn format_tool_download_message_reports_known_totals() {
         let message = format_tool_download_message(
@@ -1175,11 +1971,11 @@ mod tests {
         );
 
         assert!(message.contains("ffmpeg:"));
-        assert!(message.contains("1.0 KiB / 2.0 KiB"));
+        assert!(message.contains("1.0 KiB / 2.0 KiB — downloading"));
     }
 
-    /// Protects fallback transfer messaging for servers that omit
-    /// `Content-Length` while bytes are still streamed successfully.
+    /// Protects unknown-size transfer messaging so rows stay compact and avoid
+    /// redundant wording.
     #[test]
     fn format_tool_download_message_handles_unknown_totals() {
         let message = format_tool_download_message(
@@ -1187,7 +1983,7 @@ mod tests {
             DownloadProgressSnapshot { downloaded_bytes: 512, total_bytes: None },
         );
 
-        assert_eq!(message, "yt-dlp: 512 B downloaded");
+        assert_eq!(message, "yt-dlp: 512 B — downloading");
     }
 
     /// Protects transfer rendering from zero-size `Content-Length` headers by
@@ -1203,8 +1999,8 @@ mod tests {
         assert_eq!(normalized.total_bytes, None);
     }
 
-    /// Protects aggregate status labels so total row reports ready-count and
-    /// total bytes when all tools expose determinate transfer sizes.
+    /// Protects aggregate status labels so active downloads report compact
+    /// completed/total counts.
     #[test]
     fn format_overall_tool_download_message_reports_known_totals() {
         let states = BTreeMap::from([
@@ -1231,11 +2027,11 @@ mod tests {
         ]);
 
         let message = format_overall_tool_download_message(2, &states);
-        assert_eq!(message, "tool downloads: 1/2 ready • 1.5 KiB / 3.0 KiB",);
+        assert_eq!(message, "tool downloads: 1/2 — downloading",);
     }
 
-    /// Protects completion-row labels so successful tools preserve byte totals
-    /// and append stable terminal status text.
+    /// Protects completion-row labels so successful tools collapse to one
+    /// downloaded-size value with stable status text.
     #[test]
     fn format_tool_download_completion_message_appends_status() {
         let message = format_tool_download_completion_message(
@@ -1244,7 +2040,51 @@ mod tests {
             "ready",
         );
 
-        assert_eq!(message, "media-tagger: 2.0 KiB / 4.0 KiB — ready");
+        assert_eq!(message, "media-tagger: 2.0 KiB — ready");
+    }
+
+    /// Protects aggregate pre-download labels so the top row stays minimal
+    /// while workers are still resolving releases.
+    #[test]
+    fn format_overall_tool_download_message_reports_resolving_phase() {
+        let states = BTreeMap::from([
+            ("ffmpeg".to_string(), ToolDownloadProgressState::default()),
+            ("yt-dlp".to_string(), ToolDownloadProgressState::default()),
+        ]);
+
+        let message = format_overall_tool_download_message(2, &states);
+        assert_eq!(message, "tool downloads: resolving");
+    }
+
+    /// Protects aggregate completion labels so ready state reports only the
+    /// completed tool count and terminal status.
+    #[test]
+    fn format_overall_tool_download_message_reports_ready_phase() {
+        let states = BTreeMap::from([
+            (
+                "ffmpeg".to_string(),
+                ToolDownloadProgressState {
+                    last_snapshot: Some(DownloadProgressSnapshot {
+                        downloaded_bytes: 1_024,
+                        total_bytes: Some(1_024),
+                    }),
+                    completed: true,
+                },
+            ),
+            (
+                "yt-dlp".to_string(),
+                ToolDownloadProgressState {
+                    last_snapshot: Some(DownloadProgressSnapshot {
+                        downloaded_bytes: 2_048,
+                        total_bytes: None,
+                    }),
+                    completed: true,
+                },
+            ),
+        ]);
+
+        let message = format_overall_tool_download_message(2, &states);
+        assert_eq!(message, "tool downloads: 2 — ready");
     }
 
     /// Verifies lock registry version uses immutable identity precedence and
@@ -1319,6 +2159,7 @@ mod tests {
         let requirement = ToolRequirement {
             version: None,
             tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies::default(),
             recheck_seconds: None,
             max_input_slots: None,
             max_output_slots: None,
@@ -1347,5 +2188,458 @@ mod tests {
             &machine,
             false,
         ));
+    }
+
+    /// Verifies tag-only skip mode is disabled when the active executable tool
+    /// row is missing non-host platform payload keys.
+    #[test]
+    fn should_not_skip_tag_updates_when_platform_selector_content_is_incomplete() {
+        let requirement = ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies::default(),
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        };
+        let active_tool_id =
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
+        let command_selector = "${context.os == \"windows\" ? windows/ffmpeg.exe | ''}${context.os == \"linux\" ? linux/ffmpeg | ''}${context.os == \"macos\" ? macos/ffmpeg | ''}".to_string();
+
+        let lock = MediaLockFile {
+            active_tools: BTreeMap::from([("ffmpeg".to_string(), active_tool_id.clone())]),
+            ..MediaLockFile::default()
+        };
+
+        let machine = MachineNickelDocument {
+            tools: BTreeMap::from([(
+                active_tool_id.clone(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec![command_selector],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    ..ToolSpec::default()
+                },
+            )]),
+            tool_configs: BTreeMap::from([(
+                active_tool_id,
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([(
+                        "windows/ffmpeg.exe".to_string(),
+                        Hash::from_content(b"windows"),
+                    )])),
+                    ..ToolConfigSpec::default()
+                },
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        assert!(!should_skip_tag_update_check(&requirement, "ffmpeg", &lock, &machine, false,));
+    }
+
+    /// Verifies tag-only skip mode remains enabled when active executable
+    /// content maps include every platform selector branch target.
+    #[test]
+    fn should_skip_tag_updates_when_platform_selector_content_is_complete() {
+        let requirement = ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies::default(),
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        };
+        let active_tool_id =
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
+        let command_selector = "${context.os == \"windows\" ? windows/ffmpeg.exe | ''}${context.os == \"linux\" ? linux/ffmpeg | ''}${context.os == \"macos\" ? macos/ffmpeg | ''}".to_string();
+
+        let lock = MediaLockFile {
+            active_tools: BTreeMap::from([("ffmpeg".to_string(), active_tool_id.clone())]),
+            ..MediaLockFile::default()
+        };
+
+        let machine = MachineNickelDocument {
+            tools: BTreeMap::from([(
+                active_tool_id.clone(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec![command_selector],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    ..ToolSpec::default()
+                },
+            )]),
+            tool_configs: BTreeMap::from([(
+                active_tool_id,
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([
+                        ("windows/ffmpeg.exe".to_string(), Hash::from_content(b"windows")),
+                        ("linux/ffmpeg".to_string(), Hash::from_content(b"linux")),
+                        ("macos/ffmpeg".to_string(), Hash::from_content(b"macos")),
+                    ])),
+                    ..ToolConfigSpec::default()
+                },
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        assert!(should_skip_tag_update_check(&requirement, "ffmpeg", &lock, &machine, false,));
+    }
+
+    /// Verifies host-specific managed executable path resolution from
+    /// platform-conditional command selector templates.
+    #[test]
+    fn resolve_host_command_selector_path_prefers_host_selector_branch() {
+        let selector = "${context.os == \"windows\" ? windows/tool.exe | ''}${context.os == \"linux\" ? linux/tool | ''}${context.os == \"macos\" ? macos/tool | ''}";
+        let resolved = resolve_host_command_selector_path(selector).expect("path");
+        let expected = if cfg!(windows) {
+            "windows/tool.exe"
+        } else if cfg!(target_os = "macos") {
+            "macos/tool"
+        } else {
+            "linux/tool"
+        };
+
+        assert_eq!(resolved, expected);
+    }
+
+    /// Verifies command selector resolution returns direct path values when
+    /// selector is already host-specific text.
+    #[test]
+    fn resolve_host_command_selector_path_accepts_direct_path() {
+        let resolved = resolve_host_command_selector_path("windows/ffmpeg-master/bin/ffmpeg.exe")
+            .expect("direct path");
+
+        assert_eq!(resolved, "windows/ffmpeg-master/bin/ffmpeg.exe");
+    }
+
+    /// Verifies media-tagger managed ids include selected ffmpeg selector
+    /// identity to invalidate stale launcher rows when ffmpeg changes.
+    #[test]
+    fn media_tagger_tool_id_includes_ffmpeg_selector_fragment() {
+        let base_tool_id = "mediapm.tools.media-tagger+mediapm-internal@latest";
+        let augmented =
+            augment_media_tagger_tool_id_with_ffmpeg_selector(base_tool_id, "blake3:ABC_def");
+
+        assert_eq!(
+            augmented,
+            "mediapm.tools.media-tagger+mediapm-internal+ffmpeg-blake3-abc-def@latest"
+        );
+    }
+
+    /// Verifies ffmpeg selector derivation prefers lock registry versions and
+    /// falls back to immutable tool-id suffixes when registry rows are absent.
+    #[test]
+    fn ffmpeg_selector_resolution_uses_registry_then_tool_id_suffix() {
+        let mut lock = MediaLockFile::default();
+        lock.tool_registry.insert(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
+            ToolRegistryRecord {
+                name: "ffmpeg".to_string(),
+                version: "v7.1".to_string(),
+                source: "GitHub BTBN".to_string(),
+                registry_multihash: "blake3:fixture".to_string(),
+                last_transition_unix_seconds: 0,
+                status: ToolRegistryStatus::Active,
+            },
+        );
+
+        let from_registry = ffmpeg_selector_from_registry_or_tool_id(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1",
+            &lock,
+        );
+        assert_eq!(from_registry.as_deref(), Some("v7.1"));
+
+        let from_suffix = ffmpeg_selector_from_registry_or_tool_id(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@blake3-abcdef1234",
+            &MediaLockFile::default(),
+        );
+        assert_eq!(from_suffix.as_deref(), Some("blake3-abcdef1234"));
+    }
+
+    /// Verifies media-tagger ffmpeg content entries are mounted under a stable
+    /// namespaced prefix to avoid collisions with launcher paths.
+    #[test]
+    fn media_tagger_ffmpeg_content_keys_are_namespaced() {
+        assert_eq!(
+            media_tagger_ffmpeg_content_key("windows/ffmpeg/bin/ffmpeg.exe"),
+            "ffmpeg/windows/ffmpeg/bin/ffmpeg.exe"
+        );
+        assert_eq!(media_tagger_ffmpeg_content_key("ffmpeg/linux/ffmpeg"), "ffmpeg/linux/ffmpeg");
+    }
+
+    /// Verifies media-tagger ffmpeg env path prefers absolute managed-tool binary
+    /// paths when the selected companion tool is installed locally.
+    #[test]
+    fn resolve_managed_tool_command_absolute_path_prefers_installed_tool_binary() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+        let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1";
+        let relative = "windows/bin/ffmpeg.exe";
+
+        let absolute = paths.tools_dir.join(tool_id).join(relative);
+        std::fs::create_dir_all(absolute.parent().expect("parent dir")).expect("mkdirs");
+        std::fs::write(&absolute, b"ffmpeg").expect("write fake ffmpeg binary");
+
+        let resolved = resolve_managed_tool_command_absolute_path(&paths, Some(tool_id), relative)
+            .expect("absolute path");
+
+        assert_eq!(resolved, absolute.to_string_lossy().replace('\\', "/"));
+    }
+
+    /// Verifies media-tagger namespaced ffmpeg selectors resolve to the same
+    /// installed managed-tool binary path.
+    #[test]
+    fn resolve_managed_tool_command_absolute_path_accepts_media_tagger_namespaced_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+        let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1";
+        let installed_relative = "windows/bin/ffmpeg.exe";
+        let namespaced_relative = "ffmpeg/windows/bin/ffmpeg.exe";
+
+        let absolute = paths.tools_dir.join(tool_id).join(installed_relative);
+        std::fs::create_dir_all(absolute.parent().expect("parent dir")).expect("mkdirs");
+        std::fs::write(&absolute, b"ffmpeg").expect("write fake ffmpeg binary");
+
+        let resolved =
+            resolve_managed_tool_command_absolute_path(&paths, Some(tool_id), namespaced_relative)
+                .expect("absolute path");
+
+        assert_eq!(resolved, absolute.to_string_lossy().replace('\\', "/"));
+    }
+
+    /// Verifies missing internal media-tagger launcher files are
+    /// deterministically regenerated before CAS import.
+    #[test]
+    fn internal_media_tagger_launcher_entries_are_regenerated_when_missing() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let install_root = temp.path().join("mediapm.tools.media-tagger+mediapm-internal@0.0.0");
+        let windows_path = install_root.join("windows").join("media-tagger.cmd");
+        let linux_path = install_root.join("linux").join("media-tagger");
+        let macos_path = install_root.join("macos").join("media-tagger");
+
+        let content_entries = BTreeMap::from([
+            (
+                "windows/media-tagger.cmd".to_string(),
+                ContentMapSource::FilePath(windows_path.clone()),
+            ),
+            ("linux/media-tagger".to_string(), ContentMapSource::FilePath(linux_path.clone())),
+            ("macos/media-tagger".to_string(), ContentMapSource::FilePath(macos_path.clone())),
+        ]);
+
+        let provisioned = ProvisionedToolPayload {
+            tool_id: "mediapm.tools.media-tagger+mediapm-internal@0.0.0".to_string(),
+            command_selector: "windows/media-tagger.cmd".to_string(),
+            content_entries: content_entries.clone(),
+            identity: crate::tools::downloader::ResolvedToolIdentity::default(),
+            source_label: "mediapm internal launcher".to_string(),
+            source_identifier: "mediapm-internal".to_string(),
+            catalog: tool_catalog_entry("media-tagger").expect("catalog entry"),
+            warnings: Vec::new(),
+        };
+
+        ensure_internal_launcher_content_entries_exist(&provisioned, &content_entries)
+            .expect("regenerate missing launcher files");
+
+        assert!(windows_path.is_file());
+        assert!(linux_path.is_file());
+        assert!(macos_path.is_file());
+
+        let windows_script =
+            std::fs::read_to_string(&windows_path).expect("read regenerated windows launcher");
+        assert!(windows_script.contains(MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV));
+
+        let linux_script =
+            std::fs::read_to_string(&linux_path).expect("read regenerated linux launcher");
+        assert!(linux_script.contains(MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV));
+
+        let macos_script =
+            std::fs::read_to_string(&macos_path).expect("read regenerated macos launcher");
+        assert!(macos_script.contains(MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV));
+    }
+
+    /// Verifies per-pass content-source caching reuses file-path imports.
+    #[test]
+    fn import_tool_content_source_into_cas_reuses_cached_file_path_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cas_root = temp.path().join("cas");
+        let payload_path = temp.path().join("payload.bin");
+        std::fs::write(&payload_path, b"fixture-payload").expect("write payload file");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+
+        runtime.block_on(async {
+            let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+            let source = ContentMapSource::FilePath(payload_path.clone());
+            let mut cache = BTreeMap::<ContentMapSourceCacheKey, Hash>::new();
+
+            let first =
+                import_tool_content_source_into_cas(&cas, "windows/tool.exe", &source, &mut cache)
+                    .await
+                    .expect("first import");
+
+            std::fs::remove_file(&payload_path).expect("remove source payload file");
+
+            let second = import_tool_content_source_into_cas(
+                &cas,
+                "windows/tool-copy.exe",
+                &source,
+                &mut cache,
+            )
+            .await
+            .expect("cached import");
+
+            assert_eq!(first, second);
+        });
+    }
+
+    /// Verifies per-pass content-source caching reuses directory-ZIP imports.
+    #[test]
+    fn import_tool_content_source_into_cas_reuses_cached_directory_zip_hash() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cas_root = temp.path().join("cas");
+        let directory_root = temp.path().join("tool-dir");
+        std::fs::create_dir_all(&directory_root).expect("create tool directory");
+        std::fs::write(directory_root.join("tool.txt"), b"tool-bytes")
+            .expect("write directory payload");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+
+        runtime.block_on(async {
+            let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+            let source = ContentMapSource::DirectoryZip { root_dir: directory_root.clone() };
+            let mut cache = BTreeMap::<ContentMapSourceCacheKey, Hash>::new();
+
+            let first = import_tool_content_source_into_cas(&cas, "windows/", &source, &mut cache)
+                .await
+                .expect("first directory import");
+
+            std::fs::remove_dir_all(&directory_root).expect("remove source directory");
+
+            let second =
+                import_tool_content_source_into_cas(&cas, "windows-copy/", &source, &mut cache)
+                    .await
+                    .expect("cached directory import");
+
+            assert_eq!(first, second);
+        });
+    }
+
+    /// Verifies companion ffmpeg selector resolution for yt-dlp can pin to an
+    /// already-registered managed ffmpeg tool without requiring reprovision.
+    #[test]
+    fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
+        let requirement = ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies {
+                ffmpeg_version: Some("v7.1".to_string()),
+                sd_version: None,
+            },
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        };
+
+        let mut lock = MediaLockFile::default();
+        lock.tool_registry.insert(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
+            ToolRegistryRecord {
+                name: "ffmpeg".to_string(),
+                version: "v7.1".to_string(),
+                source: "GitHub BTBN".to_string(),
+                registry_multihash: "blake3:fixture".to_string(),
+                last_transition_unix_seconds: 0,
+                status: ToolRegistryStatus::Active,
+            },
+        );
+
+        let mut machine = MachineNickelDocument::default();
+        machine.tools.insert(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec!["windows/ffmpeg/bin/ffmpeg.exe".to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(
+                    "windows/ffmpeg/bin/ffmpeg.exe".to_string(),
+                    Hash::from_content(b"ffmpeg-v7.1"),
+                )])),
+                ..ToolConfigSpec::default()
+            },
+        );
+
+        let selection = resolve_companion_ffmpeg_selection(
+            "yt-dlp",
+            &requirement,
+            &BTreeMap::new(),
+            &lock,
+            &machine,
+        )
+        .expect("companion selection should succeed")
+        .expect("selection should be present");
+
+        assert!(selection.provisioned_content_entries.is_empty());
+        assert!(selection.existing_content_map.contains_key("windows/ffmpeg/bin/ffmpeg.exe"));
+        assert_eq!(selection.host_command_path.as_deref(), Some("windows/ffmpeg/bin/ffmpeg.exe"));
+    }
+
+    /// Verifies explicit yt-dlp companion ffmpeg selectors fail fast when no
+    /// managed ffmpeg identity matches the requested selector.
+    #[test]
+    fn companion_ffmpeg_selection_rejects_unknown_selector() {
+        let requirement = ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies {
+                ffmpeg_version: Some("v9.9".to_string()),
+                sd_version: None,
+            },
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        };
+
+        let error = resolve_companion_ffmpeg_selection(
+            "yt-dlp",
+            &requirement,
+            &BTreeMap::new(),
+            &MediaLockFile::default(),
+            &MachineNickelDocument::default(),
+        )
+        .expect_err("unknown selector should fail");
+
+        assert!(
+            error.to_string().contains(
+                "tools.yt-dlp.dependencies.ffmpeg_version 'v9.9' did not match any managed ffmpeg tool"
+            ),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// Verifies builtin source-ingest logical tool requirements are skipped
+    /// from downloader provisioning.
+    #[test]
+    fn builtin_source_ingest_tool_requirements_are_skipped_from_provisioning() {
+        assert!(is_builtin_source_ingest_requirement("import"));
+        assert!(!is_builtin_source_ingest_requirement("ffmpeg"));
+        assert!(!is_builtin_source_ingest_requirement("yt-dlp"));
     }
 }

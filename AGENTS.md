@@ -129,18 +129,90 @@
   Key cross-crate invariants:
   - Runtime state root defaults to `.mediapm/`; `mediapm.ncl` `runtime` may
     optionally override `mediapm_dir`, paths, and `inherited_env_vars`.
+  - Media-source entries may include optional human-readable `title` and
+    `description`; add flows should auto-populate them from lightweight source
+    metadata when available.
   - When `mediapm` invokes conductor, pass grouped runtime-storage paths so
-    conductor volatile writes do not fall back to standalone
-    `.conductor/state.ncl` defaults.
+    conductor volatile writes target
+    `<mediapm_dir>/state.conductor.ncl` (not standalone
+    `.conductor/state.ncl` defaults); `mediapm` machine-managed state persists
+    at `<mediapm_dir>/state.ncl` and uses `runtime.media_state_config` for overrides.
   - Materialized outputs are marked read-only after sync commit; runtime may
     clear read-only bits only for managed replacement/removal operations.
   - Materializer enforces NFD-only filenames and rejects reserved characters
     (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`).
-  - Link/write fallback order is deterministic: hardlink → symlink → reflink →
-    copy.
+  - Link/write materialization order follows
+    `runtime.materialization_preference_order` (must be non-empty and
+    duplicate-free); default order is hardlink → symlink → reflink → copy.
   - `yt-dlp` reconciliation defaults to one active concurrent call and one
-    outer conductor retry; `media-tagger` defaults to
-    `strict_identification = "true"`.
+    outer conductor retry, `sub_langs = "all"`, and unified subtitle capture
+    enabled (`write_subs = "true"`, mapped to manual + automatic subtitle
+    downloader toggles). Keep translated subtitle pressure low with precise
+    `options.sub_langs` selectors and optional `options.sleep_subtitles` when
+    provider throttling appears. Keep this mitigation anchored to documented
+    upstream incidents in
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3875360390`
+    and
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3712613129`:
+    broad translated subtitle requests are the highest-risk path for
+    `HTTP 429`, focused subtitle requests are usually lower risk, and
+    extractor-args
+    translation-skip knobs are not a reliable substitute for precise language
+    selectors,
+    `merge_output_format = "mkv"`, chapter embedding enabled
+    by default (`embed_chapters = "true"`, `split_chapters = "false"`),
+    `clean_info_json = "true"`, comments capture enabled by default
+    (`write_comments = "true"`), all internet-shortcut link outputs enabled
+    by default (`write_url_link`, `write_webloc_link`,
+    `write_desktop_link`), and highest-quality single-thumbnail capture by
+    default; `media-tagger` defaults to `strict_identification = "true"`,
+    `write_all_tags = "true"`, `write_all_images = "true"`, and
+    `cover_art_slot_count = tools.ffmpeg.max_input_slots - 1`.
+  - Managed `rsgain` defaults stay in single-track mode
+    (`album = "false"`, `album_mode = "false"`).
+  - Managed `media-tagger` cache defaults to `<mediapm_dir>/cache` and uses
+    the shared CAS/index layout (`cache/store/` + `cache/media-tagger.jsonc`)
+    without dedicated media-tagger subfolders under `store/`.
+  - Schema exports default to `<mediapm_dir>/config/mediapm` for mediapm;
+    standalone conductor defaults to `<conductor_dir>/config/conductor`; and
+    mediapm-driven conductor defaults to `<mediapm_dir>/config/conductor`.
+  - Tool requirements may set `ffmpeg_version` for `yt-dlp`, `rsgain`, and
+    `media-tagger` (inherit/global semantics when omitted).
+  - yt-dlp `output_variants` values must not embed `format`; any explicit
+    format selector belongs in step `options.format`.
+  - output-variant values are object-driven across managed tools: `kind`
+    controls default file-vs-folder capture policy, and optional
+    `capture_kind = "file"|"folder"` may override that default per
+    variant.
+  - output-variant kind naming is strict (no legacy aliases): use
+    `primary` for main transform outputs; yt-dlp folder-family kinds must use
+    plural names (`subtitles`, `thumbnails`, `links`,
+    `chapters`) while file-family kinds remain singular (`primary`,
+    `description`, `infojson`, `comment`, `archive`, `annotation`, playlist file sidecars).
+  - yt-dlp output-variant `langs` is an optional capture-filter hint for
+    subtitle-family artifacts only; downloader language selection remains
+    step-option owned via `options.sub_langs`.
+  - Hierarchy uses an ordered node-array schema (`hierarchy = [ { ... } ]`)
+    with recursive `children` and explicit kinds: `folder` (default),
+    `media`, `media_folder`, and `playlist`; legacy flat-map and `"/kind"`
+    forms are unsupported (no backward compatibility).
+    `media` uses singular `variant`, `media_folder` uses plural `variants`
+    and optional `rename_files`; hierarchy `id` is optional on all kinds and
+    must be unique when provided. `media_id` is optional on all kinds,
+    but `media`/`media_folder` require one effective non-empty value (direct
+    or inherited). Playlist `ids` resolve by ordered id entries that target
+    hierarchy-node ids, accept string shorthand and object entries
+    (`{ id, path }`), and remain file-leaf entries.
+  - Media-source entries must not define `media.<id>.id` overrides; playlist
+    membership is owned by hierarchy-node ids only.
+  - Hierarchy directory entries may define optional ordered
+    `rename_files = [{ pattern, replacement }, ...]` regex rewrites that
+    apply to extracted folder file members; file hierarchy targets must keep
+    `rename_files` empty.
+  - Managed executable materialization keeps all-platform `content_map` keys
+    (`windows/`, `linux/`, `macos/`, or shared `./` for platform-identical
+    payloads) and uses `${context.os == "<target>" ? ... | ...}` command
+    selectors.
   See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules,
   tool provisioning catalog, conductor integration boundary, and example policy.
 
@@ -163,6 +235,27 @@
 - For any change that touches `src/mediapm/**`, run
   `cargo run --package mediapm --example demo_online` as a final runtime gate
   after targeted tests/lints so the managed online workflow remains healthy.
+  After the run, inspect generated artifacts under
+  `src/mediapm/examples/.artifacts/demo-online/` (including sidecar-family
+  content correctness, not only path existence).
+  To reduce third-party provider rate-limit risk (`HTTP 429`), run this gate
+  at most once per validation pass, avoid immediate repeat retries, and apply
+  backoff cool-down before re-running after transient provider failures.
+  If the run appears stuck, do triage before retrying: check whether
+  `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes are still active, inspect
+  artifact-root timestamps, and check stderr for fallback-root messages
+  (`demo-online-fallback-*`) when canonical cleanup is locked.
+  First-run bootstrap often needs several minutes for managed tool download
+  and extraction; be patient and avoid interrupting while progress is still
+  advancing.
+  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to keep runs bounded and treat
+  timeout failures as blockers (same as other provider/network failures).
+  `demo_online` enforces this as a hard timeout and exits with code `124`
+  when exceeded.
+  Keep timeout/watchdog notices user-facing and progress-safe: avoid periodic
+  heartbeat stderr lines during conductor progress rendering, and keep timeout
+  notice output plain text (no row-clear ANSI control sequences) so terminal
+  progress rows are not duplicated.
   Treat this as mandatory: do not replace failures with placeholder/skip
   success paths. If external providers block completion, report the failure
   explicitly and keep the task blocked until the run succeeds or the reviewer
@@ -214,6 +307,9 @@
   `foo/*.rs`, and place local unit tests in `foo/tests.rs` with
   `#[cfg(test)] mod tests;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and
   avoid `#[path = "..."]` for routine in-crate module/test placement.
+- Do not deliberately rename examples/tests solely to force workspace-wide
+  unique target names. Shared canonical names (for example `demo`) are allowed;
+  when running examples, use package-qualified invocations to disambiguate.
 - Preserve mirrored prompt content between `.agents/prompts/` and
   `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF;

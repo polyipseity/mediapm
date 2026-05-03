@@ -17,13 +17,16 @@ chromaprint-next.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 ffmetadata.workspace = true
+flate2.workspace = true
 fp-library.workspace = true
 mediapm-cas = { path = "../cas" }
 mediapm-conductor = { path = "../conductor" }
 musicbrainz_rs.workspace = true
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
+regex.workspace = true
 reqwest.workspace = true
+same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
@@ -39,5 +42,16 @@ tempfile.workspace = true
 tokio.workspace = true
 
 [[example]]
+name = "bootstrap_defaults"
+test = true
+harness = false
+
+[[example]]
+name = "demo"
+test = false
+harness = false
+
+[[example]]
 name = "demo_online"
 test = false
+harness = false

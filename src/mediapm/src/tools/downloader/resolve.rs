@@ -18,22 +18,30 @@ use crate::tools::catalog::{
 
 use super::ToolDownloadCache;
 use super::github::{
-    github_latest_release_json, github_release_by_tag_json, github_release_description,
-    github_release_list_json, github_release_resolved_commit_hash,
-    github_release_zip_asset_url_from_release,
+    github_latest_release_json, github_release_asset_url_by_markers_from_release,
+    github_release_by_tag_json, github_release_description, github_release_list_json,
+    github_release_resolved_commit_hash, github_release_zip_asset_url_from_release,
 };
 use super::models::{OsDownloadAction, ResolvedDownloadPlan, ResolvedToolIdentity};
 
 /// Running `mediapm` package version used for internal-launcher identity.
 const CURRENT_MEDIAPM_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Default release-metadata cache refresh interval when tool config omits
+/// `recheck_seconds`.
+const DEFAULT_RELEASE_METADATA_RECHECK_SECONDS: u64 = 24 * 60 * 60;
+
 /// Prefix used for `mediapm`-managed immutable tool ids in test helpers.
 #[cfg(test)]
 const MANAGED_TOOL_ID_PREFIX: &str = "mediapm.tools.";
 
 /// Resolves one download plan from a catalog entry and a declared requirement.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 pub(super) async fn resolve_download_plan(
-    entry: ToolCatalogEntry,
+    entry: &ToolCatalogEntry,
     requirement: &ToolRequirement,
     download_cache: Option<Arc<ToolDownloadCache>>,
 ) -> Result<ResolvedDownloadPlan, MediaPmError> {
@@ -61,7 +69,7 @@ pub(super) async fn resolve_download_plan(
 
     match entry.download {
         ToolDownloadDescriptor::StaticUrls { modes, urls, release_repo } => {
-            let per_os_actions = ToolOs::all()
+            let mut per_os_actions = ToolOs::all()
                 .into_iter()
                 .map(|os| {
                     (
@@ -80,14 +88,15 @@ pub(super) async fn resolve_download_plan(
                 let resolved = resolve_github_release(
                     repo,
                     entry.name,
-                    &requested_version,
-                    &requested_tag,
+                    requested_version.as_deref(),
+                    requested_tag.as_deref(),
                     requirement.metadata_recheck_seconds(),
                     download_cache.clone(),
                 )
                 .await?;
                 warnings.extend(resolved.warnings);
                 let release = resolved.release;
+                remap_latest_download_urls_from_release(&mut per_os_actions, &release);
                 let tag = release
                     .get("tag_name")
                     .and_then(Value::as_str)
@@ -101,10 +110,10 @@ pub(super) async fn resolve_download_plan(
 
                 validate_resolved_release_selectors(
                     entry.name,
-                    &requested_version,
-                    &requested_tag,
-                    &version,
-                    &tag,
+                    requested_version.as_deref(),
+                    requested_tag.as_deref(),
+                    version.as_deref(),
+                    tag.as_deref(),
                 )?;
 
                 ResolvedToolIdentity {
@@ -127,6 +136,7 @@ pub(super) async fn resolve_download_plan(
                 per_os_actions,
                 shared_package,
                 internal_launcher: false,
+                common_executable_tool: None,
                 identity,
                 source_label: entry.source_label_for_os(host_os).to_string(),
                 source_identifier: entry.source_identifier_for_os(host_os).to_string(),
@@ -137,8 +147,8 @@ pub(super) async fn resolve_download_plan(
             let resolved = resolve_github_release(
                 repo,
                 entry.name,
-                &requested_version,
-                &requested_tag,
+                requested_version.as_deref(),
+                requested_tag.as_deref(),
                 requirement.metadata_recheck_seconds(),
                 download_cache,
             )
@@ -157,10 +167,10 @@ pub(super) async fn resolve_download_plan(
             });
             validate_resolved_release_selectors(
                 entry.name,
-                &requested_version,
-                &requested_tag,
-                &version,
-                &tag,
+                requested_version.as_deref(),
+                requested_tag.as_deref(),
+                version.as_deref(),
+                tag.as_deref(),
             )?;
 
             let per_os_actions = ToolOs::all()
@@ -183,6 +193,7 @@ pub(super) async fn resolve_download_plan(
                 shared_package: all_os_first_urls_equal(&per_os_actions),
                 per_os_actions,
                 internal_launcher: false,
+                common_executable_tool: None,
                 identity: ResolvedToolIdentity {
                     git_hash: github_release_resolved_commit_hash(repo, &release).await,
                     version,
@@ -243,6 +254,7 @@ pub(super) async fn resolve_download_plan(
                 per_os_actions,
                 shared_package: false,
                 internal_launcher: true,
+                common_executable_tool: None,
                 identity: ResolvedToolIdentity {
                     git_hash: None,
                     version: resolved_version,
@@ -277,15 +289,15 @@ struct CachedReleaseMetadata {
 /// Validates requested selector constraints against resolved release metadata.
 fn validate_resolved_release_selectors(
     tool_name: &str,
-    requested_version: &Option<String>,
-    requested_tag: &Option<String>,
-    resolved_version: &Option<String>,
-    resolved_tag: &Option<String>,
+    requested_version: Option<&str>,
+    requested_tag: Option<&str>,
+    resolved_version: Option<&str>,
+    resolved_tag: Option<&str>,
 ) -> Result<(), MediaPmError> {
     if let Some(version) = requested_version
         && !is_latest_selector(version)
     {
-        let resolved = resolved_version.as_deref().ok_or_else(|| {
+        let resolved = resolved_version.ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "tool '{tool_name}' requested version '{version}' but resolved release has no version metadata"
             ))
@@ -300,7 +312,7 @@ fn validate_resolved_release_selectors(
     if let Some(tag) = requested_tag
         && !is_latest_selector(tag)
     {
-        let resolved = resolved_tag.as_deref().ok_or_else(|| {
+        let resolved = resolved_tag.ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "tool '{tool_name}' requested tag '{tag}' but resolved release has no tag metadata"
             ))
@@ -328,17 +340,85 @@ fn all_os_first_urls_equal(actions: &BTreeMap<ToolOs, OsDownloadAction>) -> bool
     iter.all(|action| action.urls.first() == Some(first_url))
 }
 
+/// Rewrites stale `/releases/latest/download/...` candidates to concrete asset
+/// URLs discovered in resolved GitHub release metadata.
+fn remap_latest_download_urls_from_release(
+    actions: &mut BTreeMap<ToolOs, OsDownloadAction>,
+    release: &Value,
+) {
+    for action in actions.values_mut() {
+        let mut resolved_urls = Vec::new();
+        for url in &action.urls {
+            let mapped =
+                remap_latest_download_url(release, action.mode, url).unwrap_or_else(|| url.clone());
+            if !resolved_urls.contains(&mapped) {
+                resolved_urls.push(mapped);
+            }
+        }
+        action.urls = resolved_urls;
+    }
+}
+
+/// Resolves one static latest-download URL to the matching concrete release
+/// asset URL when marker extraction succeeds.
+fn remap_latest_download_url(
+    release: &Value,
+    mode: DownloadPayloadMode,
+    url: &str,
+) -> Option<String> {
+    let filename = url.split("/releases/latest/download/").nth(1)?;
+    let markers = latest_download_asset_markers(filename)?;
+    let marker_refs = markers.iter().map(String::as_str).collect::<Vec<_>>();
+    let require_zip = matches!(mode, DownloadPayloadMode::ZipArchive);
+    github_release_asset_url_by_markers_from_release(release, &marker_refs, require_zip).ok()
+}
+
+/// Extracts marker tokens used to locate one concrete release asset.
+fn latest_download_asset_markers(filename: &str) -> Option<Vec<String>> {
+    let filename = filename.to_ascii_lowercase();
+    let suffix = filename.as_str();
+
+    let (stem, archive_suffix) = if let Some(stem) = suffix.strip_suffix(".tar.xz") {
+        (stem, "tar.xz")
+    } else if let Some(stem) = suffix.strip_suffix(".tar.gz") {
+        (stem, "tar.gz")
+    } else if let Some(stem) = suffix.strip_suffix(".zip") {
+        (stem, "zip")
+    } else {
+        return None;
+    };
+
+    let mut markers = Vec::new();
+    markers.push(stem.to_string());
+    markers.push(archive_suffix.to_string());
+
+    let stem_parts = stem
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+
+    if let Some(last) = stem_parts.last() {
+        markers.push(format!("{last}.{archive_suffix}"));
+    }
+
+    markers.extend(stem_parts);
+    markers.sort();
+    markers.dedup();
+    Some(markers)
+}
+
 /// Resolves one GitHub release payload from tool selectors.
 async fn resolve_github_release(
     repo: &str,
     tool_name: &str,
-    requested_version: &Option<String>,
-    requested_tag: &Option<String>,
+    requested_version: Option<&str>,
+    requested_tag: Option<&str>,
     metadata_recheck_seconds: Option<u64>,
     download_cache: Option<Arc<ToolDownloadCache>>,
 ) -> Result<ResolvedGitHubRelease, MediaPmError> {
     let cache_key = release_metadata_cache_key(repo, requested_version, requested_tag);
-    let cached = load_cached_release_metadata(&download_cache, &cache_key).await;
+    let cached = load_cached_release_metadata(download_cache.as_ref(), &cache_key).await;
     let now = now_unix_seconds();
 
     if !should_refresh_release_metadata(cached.as_ref(), metadata_recheck_seconds, now)
@@ -349,7 +429,7 @@ async fn resolve_github_release(
 
     match fetch_github_release(repo, tool_name, requested_version, requested_tag).await {
         Ok(release) => {
-            store_cached_release_metadata(&download_cache, &cache_key, &release, now).await;
+            store_cached_release_metadata(download_cache.as_ref(), &cache_key, &release, now).await;
             Ok(ResolvedGitHubRelease { release, warnings: Vec::new() })
         }
         Err(error) => {
@@ -372,8 +452,8 @@ async fn resolve_github_release(
 async fn fetch_github_release(
     repo: &str,
     tool_name: &str,
-    requested_version: &Option<String>,
-    requested_tag: &Option<String>,
+    requested_version: Option<&str>,
+    requested_tag: Option<&str>,
 ) -> Result<Value, MediaPmError> {
     if let Some(tag) = requested_tag {
         if is_latest_selector(tag) {
@@ -392,7 +472,7 @@ async fn fetch_github_release(
         return github_latest_release_json(repo).await;
     }
 
-    let preferred_tags = [version.clone(), format!("v{version}")];
+    let preferred_tags = [version.to_string(), format!("v{version}")];
     for tag in preferred_tags {
         if let Ok(release) = github_release_by_tag_json(repo, &tag).await {
             return Ok(release);
@@ -421,15 +501,13 @@ async fn fetch_github_release(
 #[must_use]
 fn release_metadata_cache_key(
     repo: &str,
-    requested_version: &Option<String>,
-    requested_tag: &Option<String>,
+    requested_version: Option<&str>,
+    requested_tag: Option<&str>,
 ) -> String {
     let selector = requested_tag
-        .as_deref()
         .map(|tag| format!("tag:{}", normalize_selector_compare_value(tag)))
         .or_else(|| {
             requested_version
-                .as_deref()
                 .map(|version| format!("version:{}", normalize_selector_compare_value(version)))
         })
         .unwrap_or_else(|| "unknown".to_string());
@@ -439,22 +517,22 @@ fn release_metadata_cache_key(
 
 /// Loads cached GitHub release metadata when available and decodable.
 async fn load_cached_release_metadata(
-    download_cache: &Option<Arc<ToolDownloadCache>>,
+    download_cache: Option<&Arc<ToolDownloadCache>>,
     cache_key: &str,
 ) -> Option<CachedReleaseMetadata> {
-    let cache = download_cache.as_ref()?;
+    let cache = download_cache?;
     let bytes = cache.lookup_bytes(cache_key).await?;
     serde_json::from_slice::<CachedReleaseMetadata>(&bytes).ok()
 }
 
 /// Stores one GitHub release payload in shared cache with refresh timestamp.
 async fn store_cached_release_metadata(
-    download_cache: &Option<Arc<ToolDownloadCache>>,
+    download_cache: Option<&Arc<ToolDownloadCache>>,
     cache_key: &str,
     release: &Value,
     fetched_unix_seconds: u64,
 ) {
-    let Some(cache) = download_cache.as_ref() else {
+    let Some(cache) = download_cache else {
         return;
     };
 
@@ -476,12 +554,9 @@ fn should_refresh_release_metadata(
         return true;
     };
 
-    match metadata_recheck_seconds {
-        Some(recheck_seconds) => {
-            now_unix_seconds.saturating_sub(cached.fetched_unix_seconds) >= recheck_seconds
-        }
-        None => true,
-    }
+    let recheck_seconds =
+        metadata_recheck_seconds.unwrap_or(DEFAULT_RELEASE_METADATA_RECHECK_SECONDS);
+    now_unix_seconds.saturating_sub(cached.fetched_unix_seconds) >= recheck_seconds
 }
 
 /// Returns true when selector explicitly requests moving latest release.
@@ -542,7 +617,7 @@ pub(super) fn logical_name_matches_tool_id(tool_id: &str, logical_name: &str) ->
     };
 
     let prefixed = strip_managed_tool_id_prefix(prefix);
-    let canonical_name = prefixed.split_once('+').map(|(name, _)| name).unwrap_or(prefixed).trim();
+    let canonical_name = prefixed.split_once('+').map_or(prefixed, |(name, _)| name).trim();
 
     canonical_name.eq_ignore_ascii_case(logical_name)
 }
@@ -561,16 +636,21 @@ fn strip_managed_tool_id_prefix(prefix: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::future::Future;
 
     use serde_json::json;
 
     use crate::config::ToolRequirement;
-    use crate::tools::catalog::{PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor};
+    use crate::tools::catalog::{
+        DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor, ToolOs,
+    };
 
     use super::{
-        CURRENT_MEDIAPM_VERSION, CachedReleaseMetadata, release_metadata_cache_key,
-        resolve_download_plan, should_refresh_release_metadata,
+        CURRENT_MEDIAPM_VERSION, CachedReleaseMetadata, OsDownloadAction,
+        latest_download_asset_markers, release_metadata_cache_key,
+        remap_latest_download_urls_from_release, resolve_download_plan,
+        should_refresh_release_metadata,
     };
 
     fn run_async<T>(future: impl Future<Output = T>) -> T {
@@ -584,8 +664,7 @@ mod tests {
     /// Verifies release-metadata cache keys normalize selectors for stable reuse.
     #[test]
     fn release_metadata_cache_key_normalizes_version_selectors() {
-        let key =
-            release_metadata_cache_key("yt-dlp/yt-dlp", &Some("v2026.04.01".to_string()), &None);
+        let key = release_metadata_cache_key("yt-dlp/yt-dlp", Some("v2026.04.01"), None);
 
         assert_eq!(key, "metadata=github-release|repo=yt-dlp/yt-dlp|selector=version:2026.04.01");
     }
@@ -608,16 +687,16 @@ mod tests {
         assert!(should_refresh_release_metadata(Some(&cached), Some(300), 10_300));
     }
 
-    /// Verifies default behavior without `recheck_seconds` keeps refresh-on-run
-    /// semantics for moving release tracks.
+    /// Verifies omitted `recheck_seconds` uses one-day metadata cache reuse.
     #[test]
-    fn should_refresh_release_metadata_defaults_to_refresh_when_recheck_absent() {
+    fn should_refresh_release_metadata_defaults_to_daily_recheck_when_absent() {
         let cached = CachedReleaseMetadata {
             fetched_unix_seconds: 10_000,
             release: json!({ "tag_name": "v1.0.0" }),
         };
 
-        assert!(should_refresh_release_metadata(Some(&cached), None, 10_001));
+        assert!(!should_refresh_release_metadata(Some(&cached), None, 10_000 + (24 * 60 * 60) - 1));
+        assert!(should_refresh_release_metadata(Some(&cached), None, 10_000 + (24 * 60 * 60)));
     }
 
     /// Verifies internal launcher identity is pinned to the running mediapm
@@ -649,16 +728,86 @@ mod tests {
         let requirement = ToolRequirement {
             version: Some("latest".to_string()),
             tag: Some("latest".to_string()),
+            dependencies: crate::config::ToolRequirementDependencies::default(),
             recheck_seconds: None,
             max_input_slots: None,
             max_output_slots: None,
         };
 
         let plan =
-            run_async(resolve_download_plan(entry, &requirement, None)).expect("resolve plan");
+            run_async(resolve_download_plan(&entry, &requirement, None)).expect("resolve plan");
 
         let expected_tag = format!("v{CURRENT_MEDIAPM_VERSION}");
         assert_eq!(plan.identity.version.as_deref(), Some(CURRENT_MEDIAPM_VERSION));
         assert_eq!(plan.identity.tag.as_deref(), Some(expected_tag.as_str()));
+    }
+
+    /// Verifies marker extraction keeps platform, flavor, and archive suffix
+    /// hints used to remap latest-download URLs to concrete release assets.
+    #[test]
+    fn latest_download_marker_extraction_is_stable() {
+        let markers =
+            latest_download_asset_markers("ffmpeg-master-latest-linux64-gpl-shared.tar.xz")
+                .expect("markers");
+
+        assert!(markers.contains(&"linux64".to_string()));
+        assert!(markers.contains(&"gpl".to_string()));
+        assert!(markers.contains(&"shared.tar.xz".to_string()));
+        assert!(markers.contains(&"tar.xz".to_string()));
+    }
+
+    /// Verifies static latest-download URLs are rewritten to concrete
+    /// per-release assets when release metadata provides matching files.
+    #[test]
+    fn remap_latest_download_urls_rewrites_matching_assets() {
+        let mut actions = BTreeMap::from([
+            (
+                ToolOs::Linux,
+                OsDownloadAction {
+                    os: ToolOs::Linux,
+                    urls: vec![
+                        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl-shared.tar.xz".to_string(),
+                    ],
+                    mode: DownloadPayloadMode::TarXzArchive,
+                },
+            ),
+            (
+                ToolOs::Windows,
+                OsDownloadAction {
+                    os: ToolOs::Windows,
+                    urls: vec![
+                        "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip".to_string(),
+                    ],
+                    mode: DownloadPayloadMode::ZipArchive,
+                },
+            ),
+        ]);
+
+        let release = json!({
+            "assets": [
+                {
+                    "name": "ffmpeg-N-1-linux64-gpl-shared.tar.xz",
+                    "browser_download_url": "https://example.test/linux.tar.xz"
+                },
+                {
+                    "name": "ffmpeg-N-1-win64-gpl-shared.zip",
+                    "browser_download_url": "https://example.test/win.zip"
+                }
+            ]
+        });
+
+        remap_latest_download_urls_from_release(&mut actions, &release);
+
+        assert_eq!(
+            actions.get(&ToolOs::Linux).and_then(|action| action.urls.first()).map(String::as_str),
+            Some("https://example.test/linux.tar.xz")
+        );
+        assert_eq!(
+            actions
+                .get(&ToolOs::Windows)
+                .and_then(|action| action.urls.first())
+                .map(String::as_str),
+            Some("https://example.test/win.zip")
+        );
     }
 }

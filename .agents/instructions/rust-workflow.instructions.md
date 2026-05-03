@@ -63,6 +63,23 @@ When editing Rust source, validate changes with targeted checks first:
   - `cargo run --package mediapm --example demo_online`
   - Run this after targeted crate tests/lints so generated managed-tool
     workflows are exercised end to end.
+  - Inspect generated artifacts under
+    `src/mediapm/examples/.artifacts/demo-online/` after the run, including
+    sidecar-family payload correctness (not only path existence).
+  - To reduce third-party provider rate-limit risk (`HTTP 429`), run this
+    gate at most once per validation pass, avoid immediate back-to-back reruns,
+    and use a cool-down backoff before retrying transient provider failures.
+  - If the run appears stuck, triage before rerunning: verify active
+    `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes, inspect artifact timestamp
+    movement, and check stderr for fallback-root messages
+    (`demo-online-fallback-*`) when canonical cleanup is locked.
+  - Bound long runs with `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` and treat timeout
+    exits as blocker failures, not soft skips.
+  - `demo_online` hard-enforces this limit and returns exit code `124` on
+    timeout; treat that exit as equivalent to any other blocker failure.
+  - Keep timeout/watchdog messaging progress-safe: avoid periodic heartbeat
+    stderr output while conductor progress bars are rendering, and keep timeout
+    notices plain text (no row-clear ANSI control sequences).
   - This is a strict gate: do not downgrade failures into skip manifests,
     placeholder payload acceptance, or "soft-success" status.
   - If external network/tool providers prevent success, report that blocker
@@ -122,6 +139,27 @@ When refactoring touches multiple crates or splits large modules:
   - tests with explicit guarantee statements.
 - Avoid shallow docs that only rename symbols; write newcomer-oriented
   explanations that clarify intent and boundaries.
+
+## Lint suppression policy
+
+- Do not add bare suppression attributes (`#[allow(...)]` or `#![allow(...)]`)
+  for rustc/clippy lints.
+- Prefer direct code fixes for lint findings first.
+- When suppression is truly unavoidable, use item-scoped
+  `#[expect(<lint>, reason = "<substantive rationale>")]`.
+  - Keep scope as narrow as possible (single item/block, never crate-wide).
+  - The `reason` must explain *why the code shape is required now*, not just
+    restate the lint name.
+  - Good reasons reference concrete constraints such as platform behavior,
+    API-shape compatibility, or orchestration-ordering invariants.
+- Treat `#[expect(...)]` as temporary technical debt:
+  - remove it when refactors make the lint unnecessary,
+  - and investigate any `unfulfilled_lint_expectations` warning rather than
+    suppressing it.
+- For platform edge cases (for example
+  `clippy::permissions_set_readonly_false`) and diagnostic-only numeric
+  conversions (for example `clippy::cast_precision_loss`), include explicit
+  safety/correctness boundaries in the `reason` string.
 
 ## Core architectural constraints
 

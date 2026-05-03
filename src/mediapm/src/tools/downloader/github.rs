@@ -91,7 +91,12 @@ pub(super) fn github_release_asset_url_by_markers_from_release(
         if lower.contains("source code") {
             continue;
         }
-        if require_zip && !lower.ends_with(".zip") {
+        if require_zip
+            && !std::path::Path::new(&lower)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        {
             continue;
         }
 
@@ -112,8 +117,12 @@ pub(super) fn github_release_asset_url_by_markers_from_release(
     }
 
     if require_zip
-        && let Some((_, url)) =
-            assets.iter().find(|(name, _)| name.to_ascii_lowercase().ends_with(".zip"))
+        && let Some((_, url)) = assets.iter().find(|(name, _)| {
+            std::path::Path::new(name)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        })
     {
         return Ok(url.clone());
     }
@@ -291,7 +300,7 @@ fn github_api_url_with_segments(repo: &str, segments: &[&str]) -> Result<String,
     })?;
 
     {
-        let mut path_segments = url.path_segments_mut().map_err(|_| {
+        let mut path_segments = url.path_segments_mut().map_err(|()| {
             MediaPmError::Workflow(format!(
                 "building GitHub API URL for '{repo}' failed: path is not a base"
             ))
