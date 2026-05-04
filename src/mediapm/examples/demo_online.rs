@@ -1452,22 +1452,22 @@ fn demo_ffprobe_command() -> &'static str {
 /// executable selector.
 #[must_use]
 fn derive_ffprobe_path_from_ffmpeg_command(ffmpeg_command: &str) -> Option<PathBuf> {
-    let trimmed = ffmpeg_command.trim().trim_matches('"');
+    let trimmed = ffmpeg_command.trim().trim_matches('"').trim_matches('\'');
     if trimmed.is_empty() {
         return None;
     }
 
-    let mut path = PathBuf::from(trimmed);
-    let file_name = path.file_name()?.to_string_lossy();
+    let (prefix, file_name) = match trimmed.rfind(['/', '\\']) {
+        Some(index) => (&trimmed[..=index], &trimmed[index + 1..]),
+        None => ("", trimmed),
+    };
 
     if file_name.eq_ignore_ascii_case("ffmpeg.exe") {
-        path.set_file_name("ffprobe.exe");
-        return Some(path);
+        return Some(PathBuf::from(format!("{prefix}ffprobe.exe")));
     }
 
     if file_name.eq_ignore_ascii_case("ffmpeg") {
-        path.set_file_name("ffprobe");
-        return Some(path);
+        return Some(PathBuf::from(format!("{prefix}ffprobe")));
     }
 
     None
@@ -2856,11 +2856,13 @@ mod tests {
         let windows =
             super::derive_ffprobe_path_from_ffmpeg_command(r#"D:\tools\ffmpeg\bin\ffmpeg.exe"#)
                 .expect("windows ffmpeg selector should derive ffprobe sibling");
-        assert!(windows.ends_with("ffprobe.exe"));
+        let windows_suffix = windows.to_string_lossy().replace('\\', "/");
+        assert!(windows_suffix.ends_with("ffprobe.exe"));
 
         let unix = super::derive_ffprobe_path_from_ffmpeg_command("/opt/ffmpeg/bin/ffmpeg")
             .expect("unix ffmpeg selector should derive ffprobe sibling");
-        assert!(unix.ends_with("ffprobe"));
+        let unix_suffix = unix.to_string_lossy().replace('\\', "/");
+        assert!(unix_suffix.ends_with("ffprobe"));
     }
 
     /// Ensures non-ffmpeg selectors do not synthesize invalid ffprobe paths.
