@@ -719,7 +719,6 @@ fn clear_readonly_bits_recursively(path: &Path) {
     #[cfg(not(windows))]
     {
         let _ = path;
-        return;
     }
 
     #[cfg(windows)]
