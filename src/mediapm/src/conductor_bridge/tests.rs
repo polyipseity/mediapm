@@ -993,11 +993,14 @@ fn runtime_storage_normalization_backfills_inherited_env_var_defaults() {
     let changed = normalize_runtime_storage_defaults(&paths, &mut runtime_storage);
     let expected = default_runtime_inherited_env_vars_for_host();
 
+    assert!(
+        changed,
+        "normalization should report changes when defaults fill missing runtime fields",
+    );
+
     if expected.is_empty() {
-        assert!(!changed);
         assert!(runtime_storage.inherited_env_vars.is_none());
     } else {
-        assert!(changed);
         assert_eq!(runtime_storage.inherited_env_vars, Some(expected));
     }
     assert_eq!(runtime_storage.use_user_tool_cache, Some(true));
