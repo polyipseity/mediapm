@@ -8,6 +8,3 @@ mod demo_online;
 
 /// Builtin registration and topology-level identity checks.
 mod topology;
-
-/// Workspace example-target declaration and shared-name guardrails.
-mod workspace_examples;

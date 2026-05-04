@@ -148,7 +148,7 @@ When refactoring touches multiple crates or splits large modules:
 - When suppression is truly unavoidable, use item-scoped
   `#[expect(<lint>, reason = "<substantive rationale>")]`.
   - Keep scope as narrow as possible (single item/block, never crate-wide).
-  - The `reason` must explain *why the code shape is required now*, not just
+  - The `reason` must explain _why the code shape is required now_, not just
     restate the lint name.
   - Good reasons reference concrete constraints such as platform behavior,
     API-shape compatibility, or orchestration-ordering invariants.

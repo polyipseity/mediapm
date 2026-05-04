@@ -18,18 +18,18 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - top-level `tests/tests.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
     `tests/prop/`.
-- For examples that depend on external tools/network/media providers, prefer
-  compile-only coverage (`[[example]] ... test = false`) with explicit rustdoc
-  notes explaining why runtime execution is intentionally excluded from
-  automated test runs (for example `cargo run -p mediapm --example demo_online`).
-- Keep `src/mediapm/examples/demo.rs` executable within automated tests:
-  source ingest should stay local (`import` + bundled fixture bytes), and
-  tests may force configuration-only execution via
-  `MEDIAPM_DEMO_RUN_SYNC=false`.
+- For examples that depend on external tools/network/media providers, require
+  test-target-aware runtime gating: when compiled as Cargo test targets they
+  should default to configuration-only execution and avoid external
+  network/provider/tool side effects.
+- Keep `src/mediapm/examples/demo.rs` and
+  `src/mediapm/examples/demo_online.rs` full-sync for explicit manual runs
+  (`cargo run --example ...`) while supporting env overrides for forced-mode
+  diagnostics in test-target executions.
 - Keep `src/mediapm/examples/demo.rs` ffmpeg behavior fast for local fixture
   execution: prefer stream-copy (`codec_copy = "true"`) over re-encode-heavy
   demo transforms.
-- Even when CI keeps these examples compile-only, changes under
+- Even with automated test-target config-only behavior, changes under
   `src/mediapm/**` must still run
   `cargo run --package mediapm --example demo_online` as the final local
   validation gate.

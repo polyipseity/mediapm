@@ -40,18 +40,3 @@ zip.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio.workspace = true
-
-[[example]]
-name = "bootstrap_defaults"
-test = true
-harness = false
-
-[[example]]
-name = "demo"
-test = false
-harness = false
-
-[[example]]
-name = "demo_online"
-test = false
-harness = false

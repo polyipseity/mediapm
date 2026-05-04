@@ -516,11 +516,12 @@ Hard runtime gate for `src/mediapm/**` edits:
 
 Example policy:
 
-- Examples requiring external tooling/network should stay compile-only in cargo
-  tests (`[[example]] ... test = false`) with explicit rustdoc notes.
-- Keep `examples/demo.rs` locally runnable during automated tests by using
-  local ingest (`import` + bundled fixture asset) and allowing tests to
-  force configuration-only mode via `MEDIAPM_DEMO_RUN_SYNC=false`.
+- Examples that depend on external tooling/network must detect test-target
+  execution (`cfg!(test)`) and default to config-only mode so automated test
+  runs avoid provider/network/tool side effects.
+- Keep full-sync behavior for explicit manual runs (`cargo run --example ...`),
+  with environment overrides (`MEDIAPM_DEMO_RUN_SYNC`,
+  `MEDIAPM_DEMO_ONLINE_RUN_SYNC`) available for forced-mode diagnostics.
 - Keep the demo fixture transcode fast: prefer ffmpeg stream-copy
   (`codec_copy = "true"`) into an audio-focused container/extension
   (`.m4a`) rather than demo-time audio re-encoding.

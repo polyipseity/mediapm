@@ -66,6 +66,21 @@ fn demo_declares_import_and_dollar_zero_metadata_transforms() {
     );
 }
 
+/// Verifies local `demo` defaults to config-only mode when compiled as a
+/// Cargo test-target binary.
+#[test]
+fn demo_defaults_to_config_only_when_built_as_test_target() {
+    let source = include_str!("../../examples/demo.rs");
+
+    assert!(
+        source.contains("fn running_as_test_binary() -> bool")
+            && source.contains("cfg!(test)")
+            && source.contains("!running_as_test_binary()")
+            && source.contains("MEDIAPM_DEMO_RUN_SYNC"),
+        "demo should auto-disable full sync in test-target runs while keeping explicit env override support"
+    );
+}
+
 /// Verifies local `demo` wires one explicit playlist hierarchy node with
 /// duplicated ids and per-item absolute path override.
 #[test]

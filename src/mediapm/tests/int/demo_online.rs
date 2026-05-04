@@ -1,8 +1,8 @@
 //! Integration guardrails for the `demo_online` example wiring.
 //!
 //! These checks intentionally validate source-level invariants in the example
-//! because `demo_online` is compile-only in automated tests (`test = false`) to
-//! avoid network/tool-provider dependencies during CI.
+//! so automated test runs can validate behavior without requiring real
+//! network/tool-provider execution.
 
 /// Verifies `demo_online` writes explicit runtime defaults so generated
 /// `mediapm.ncl` documents all runtime knobs (not just tool-cache toggle).
@@ -46,6 +46,15 @@ fn demo_online_writes_explicit_runtime_defaults() {
 )]
 fn demo_online_uses_in_memory_service_wiring() {
     let source = include_str!("../../examples/demo_online.rs");
+
+    assert!(
+        source.contains("DEMO_ONLINE_RUN_SYNC_ENV")
+            && source.contains("fn demo_online_run_sync_enabled() -> bool")
+            && source.contains("run_online_demo_config_only")
+            && source.contains("let run_sync = demo_online_run_sync_enabled();")
+            && source.contains("println!(\"sync executed: {run_sync}\");"),
+        "demo_online should auto-switch to config-only mode in test-target runs while keeping explicit env overrides"
+    );
 
     assert!(
         source.contains("MediaPmService::new_in_memory_at("),

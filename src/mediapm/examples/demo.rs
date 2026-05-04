@@ -7,9 +7,11 @@
 //!   (`import -> ffmpeg -> rsgain -> media-tagger`),
 //! - writes inspectable artifacts under `examples/.artifacts/demo`.
 //!
-//! Default runtime behavior executes full sync (`run_sync = true`). Tests and
-//! automation can force configuration-only mode by setting
-//! `MEDIAPM_DEMO_RUN_SYNC=false`.
+//! Default runtime behavior executes full sync (`run_sync = true`) in manual
+//! runs. When this example is executed as a Cargo test binary, it
+//! auto-switches to configuration-only mode so automated runs avoid external
+//! tool downloads/execution. Operators can still override via
+//! `MEDIAPM_DEMO_RUN_SYNC`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -81,7 +83,7 @@ const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
 
 /// Environment variable controlling whether this example runs full sync.
 ///
-/// - unset: full sync enabled,
+/// - unset: full sync enabled in manual runs; disabled in test-binary runs,
 /// - set to one of `0`, `false`, `no`, or `off` (case-insensitive): sync
 ///   disabled and only artifact/config generation runs.
 const DEMO_RUN_SYNC_ENV_VAR: &str = "MEDIAPM_DEMO_RUN_SYNC";
@@ -575,9 +577,20 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
+/// Returns whether this example binary was compiled as a Cargo test target.
+#[must_use]
+fn running_as_test_binary() -> bool {
+    cfg!(test)
+}
+
 /// Resolves sync execution mode from `MEDIAPM_DEMO_RUN_SYNC`.
 fn demo_run_sync_enabled() -> bool {
-    sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
+    let override_value = std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok();
+    if override_value.is_some() {
+        return sync_enabled_from_env_value(override_value.as_deref());
+    }
+
+    !running_as_test_binary()
 }
 
 /// Imports one source payload into the runtime CAS store and returns its hash.
@@ -1219,7 +1232,9 @@ mod tests {
             "demo should rely on managed media-tagger input defaults for strict identification"
         );
         assert!(
-            demo_config.contains("music videos/")
+            demo_config.contains("music videos")
+                && demo_config
+                    .contains("${media.metadata.artist} - ${media.metadata.title} [${media.id}]")
                 && demo_config.contains("${media.id}")
                 && demo_config.contains("${media.metadata.video_ext}")
                 && demo_config.contains("${media.metadata.tagged_ext}"),
@@ -1243,6 +1258,29 @@ mod tests {
         assert!(!super::sync_enabled_from_env_value(Some("false")));
         assert!(!super::sync_enabled_from_env_value(Some("OFF")));
         assert!(!super::sync_enabled_from_env_value(Some("0")));
+    }
+
+    /// Ensures unset sync mode defaults to config-only when compiled as a
+    /// test-target binary.
+    #[test]
+    fn demo_run_sync_defaults_to_config_only_in_test_binary() {
+        let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
+        // SAFETY: test mutates one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::remove_var(super::DEMO_RUN_SYNC_ENV_VAR);
+        }
+
+        let enabled = super::demo_run_sync_enabled();
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(super::DEMO_RUN_SYNC_ENV_VAR, value);
+            }
+        }
+
+        assert!(!enabled, "test-target demo runs should default to config-only mode");
     }
 
     /// Ensures cleanup retries can remove readonly-marked demo artifact trees

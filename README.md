@@ -54,6 +54,19 @@ Run full workspace validation:
 
 These workspace-wide commands are intentionally slow and best suited for pre-push gates.
 
+`mediapm` examples (`demo`, `demo_online`) now detect test-target execution.
+When compiled/run by Cargo test targets, they auto-switch to config-only mode
+and avoid network/provider/external-tool execution while still generating
+workspace configuration artifacts.
+
+```mermaid
+flowchart LR
+  A[example entrypoint] --> B{compiled as test target?}
+  B -->|yes| C[config-only: write config + manifest]
+  B -->|no| D[full sync: tools + workflows + artifacts]
+  E[env override MEDIAPM_DEMO*_RUN_SYNC] --> B
+```
+
 Integration tests across workspace crates use one shared harness shape:
 
 - top-level `tests/tests.rs` entrypoint,
@@ -104,6 +117,12 @@ Run `mediapm` examples:
 - `cargo run -p mediapm --example demo`
 - `cargo run -p mediapm --example demo_online`
 
+Install workspace CLIs (exactly three executables):
+
+- `cargo install --path src/cas` → `mediapm-cas`
+- `cargo install --path src/conductor` → `mediapm-conductor`
+- `cargo install --path src/mediapm` → `mediapm`
+
 Progress rendering notes:
 
 - managed-tool rows use minimal phase labels:
@@ -118,9 +137,9 @@ Progress rendering notes:
 - conductor workflow rows keep compact names while using `ready` as terminal
   success status.
 
-`demo_online` is intentionally **compile-only** in automated test/CI flows
-(`test = false` in `src/mediapm/Cargo.toml`) because it depends on external
-tool distribution endpoints and third-party media/network availability.
+`demo` and `demo_online` keep full-sync behavior for explicit manual runs
+(`cargo run --example ...`). In automated test-target execution they run in
+config-only mode so CI can execute entrypoints without external dependencies.
 For local development changes under `src/mediapm/**`, treat
 `cargo run --package mediapm --example demo_online` plus artifact inspection
 under `src/mediapm/examples/.artifacts/demo-online/` as a strict validation
@@ -191,9 +210,9 @@ The demo's ffmpeg transform now uses stream-copy into `.m4a` output so local
 example execution stays fast while preserving source audio fidelity.
 
 `cargo run -p mediapm --example demo` still defaults to full sync execution.
-Automated tests run the real demo entrypoint in configuration-only mode by
-setting `MEDIAPM_DEMO_RUN_SYNC=false`, so the example itself is executed during
-`mediapm` test runs without depending on network/tool-download availability.
+When the example is compiled as a test target, unset sync mode defaults to
+config-only. Use `MEDIAPM_DEMO_RUN_SYNC=true` (or
+`MEDIAPM_DEMO_ONLINE_RUN_SYNC=true`) to force full sync from test-target runs.
 
 `mediapm` runtime defaults:
 

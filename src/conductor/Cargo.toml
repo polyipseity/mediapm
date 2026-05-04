@@ -39,23 +39,3 @@ zip.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-
-[[example]]
-name = "bootstrap_defaults"
-test = true
-harness = false
-
-[[example]]
-name = "cache_and_rematerialization"
-test = true
-harness = false
-
-[[example]]
-name = "demo"
-test = true
-harness = false
-
-[[example]]
-name = "runtime_diagnostics"
-test = true
-harness = false

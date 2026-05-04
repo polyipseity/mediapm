@@ -46,23 +46,3 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-
-[[example]]
-name = "configured_router"
-test = true
-harness = false
-
-[[example]]
-name = "demo"
-test = true
-harness = false
-
-[[example]]
-name = "hello_world"
-test = true
-harness = false
-
-[[example]]
-name = "manual_optimize"
-test = true
-harness = false
