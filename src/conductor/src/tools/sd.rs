@@ -358,7 +358,11 @@ mod tests {
         );
 
         #[cfg(not(windows))]
-        assert!(!file_name.ends_with(".exe"));
+        assert!(
+            !std::path::Path::new(&file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        );
 
         assert_eq!(LOGICAL_TOOL_NAME, "mediapm-conductor.tools.sd");
     }
