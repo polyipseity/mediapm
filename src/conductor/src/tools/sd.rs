@@ -2,6 +2,7 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
+use std::path::Path;
 
 use crate::error::ConductorError;
 
@@ -171,18 +172,16 @@ fn select_host_release_asset(
                 ))
             })?;
 
-        let archive_kind = if std::path::Path::new(name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
-        {
-            ReleaseArchiveKind::Zip
-        } else if name.ends_with(".tar.gz") {
-            ReleaseArchiveKind::TarGz
-        } else {
-            return Err(ConductorError::Workflow(format!(
-                "latest sd release asset '{name}' uses unsupported archive suffix"
-            )));
-        };
+        let archive_kind =
+            if Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
+                ReleaseArchiveKind::Zip
+            } else if name.ends_with(".tar.gz") {
+                ReleaseArchiveKind::TarGz
+            } else {
+                return Err(ConductorError::Workflow(format!(
+                    "latest sd release asset '{name}' uses unsupported archive suffix"
+                )));
+            };
 
         return Ok(ReleaseAssetSelection { download_url: download_url.to_string(), archive_kind });
     }
@@ -342,8 +341,6 @@ pub fn fetch_payload() -> Result<CommonExecutablePayload, ConductorError> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use serde_json::json;
 
     use super::{LOGICAL_TOOL_NAME, executable_file_name, select_host_release_asset};
@@ -355,7 +352,7 @@ mod tests {
 
         #[cfg(windows)]
         assert!(
-            Path::new(&file_name)
+            std::path::Path::new(&file_name)
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
         );
