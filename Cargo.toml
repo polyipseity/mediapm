@@ -34,29 +34,29 @@ warnings = "deny"
 anyhow = "1.0.100"
 async-trait = "0.1.89"
 bitvec = "1.0.1"
-blake3 = "1.8.2"
+blake3 = "1.8.5"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytes = "1.10.1"
 cargo-husky = { version = "1.5.0", default-features = false, features = [
 	"user-hooks",
 ] }
 chromaprint-next = "0.1.0"
-clap = { version = "4.5.48", features = ["derive"] }
+clap = { version = "4.6.1", features = ["derive"] }
 crc32fast = "1.5.0"
 dashmap = "6.1.0"
 dirs = "6.0.0"
 dotenvy = "0.15.7"
 ffmetadata = "0.1.2"
 flate2 = "1.1.4"
-fp-library = "0.13.1"
-fs4 = "0.13.1"
+fp-library = "0.17.0"
+fs4 = "1.1.0"
 futures-core = "0.3.31"
 futures-util = "0.3.31"
 memmap2 = "0.9.9"
 miette = { version = "7.6.0", features = ["derive"] }
 multihash = "0.19"
 multihash-derive = "0.9"
-musicbrainz_rs = "0.12.0"
+musicbrainz_rs = "0.13.0"
 nickel-lang-core = "0.17.0"
 oxidelta = "0.1.4"
 parking_lot = "0.12.5"
@@ -64,9 +64,9 @@ postcard = { version = "1.1.3", features = ["alloc"] }
 proptest = "1.6.0"
 pulsebar = { version = "0.2.1", features = ["tokio"] }
 ractor = { version = "0.15.12", features = ["tokio_runtime"] }
-redb = "2.6.3"
+redb = "4.1.0"
 regex = "1.11"
-reqwest = { version = "0.11", features = ["rustls-tls"] }
+reqwest = { version = "0.12", features = ["rustls-tls"] }
 same-file = "1.0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -74,7 +74,7 @@ smallvec = { version = "1.15.1", features = ["serde"] }
 tar = "0.4.44"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
-tokio = { version = "1.48.0", features = [
+tokio = { version = "1.52.2", features = [
 	"fs",
 	"io-util",
 	"macros",
@@ -86,12 +86,12 @@ tokio = { version = "1.48.0", features = [
 tokio-util = { version = "0.7.16", features = ["io"] }
 tracing = "0.1.41"
 unicode-normalization = "0.1.24"
-ureq = { version = "2.12.1", default-features = true }
+ureq = { version = "3.3.0", default-features = true }
 url = "2.5.7"
 walkdir = "2.5.0"
 xz2 = "0.1.7"
 zerocopy = { version = "0.8", features = ["derive"] }
-zip = "2.2.0"
+zip = "8.6.0"
 
 [workspace.metadata.bin]
 # <https://github.com/cargo-bins/cargo-binstall/issues/2476>
