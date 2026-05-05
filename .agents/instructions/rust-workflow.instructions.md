@@ -60,7 +60,7 @@ When editing Rust source, validate changes with targeted checks first:
   - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
 
 - For edits under `src/mediapm/**`, include one final runtime validation run:
-  - `cargo run --package mediapm --example demo_online`
+  - `cargo run --package mediapm --example mediapm_demo_online`
   - Run this after targeted crate tests/lints so generated managed-tool
     workflows are exercised end to end.
   - Inspect generated artifacts under
@@ -75,7 +75,7 @@ When editing Rust source, validate changes with targeted checks first:
     (`demo-online-fallback-*`) when canonical cleanup is locked.
   - Bound long runs with `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` and treat timeout
     exits as blocker failures, not soft skips.
-  - `demo_online` hard-enforces this limit and returns exit code `124` on
+    - `mediapm_demo_online` hard-enforces this limit and returns exit code `124` on
     timeout; treat that exit as equivalent to any other blocker failure.
   - Keep timeout/watchdog messaging progress-safe: avoid periodic heartbeat
     stderr output while conductor progress bars are rendering, and keep timeout
@@ -128,6 +128,18 @@ When refactoring touches multiple crates or splits large modules:
   - `cargo fmt-check` (all files)
   - `cargo test-pkg <crate>` (affected crate tests)
   - `cargo clippy-pkg <crate>` (affected crate lint)
+
+## Example target naming convention
+
+- All workspace examples must use the crate-name prefix to avoid Cargo filename-collision warnings.
+- Naming pattern: `<crate_name>_<example_name>.rs`
+  - Examples: `cas_demo.rs`, `conductor_bootstrap_defaults.rs`, `mediapm_demo_online.rs`
+- This ensures unique target names across the workspace when running `cargo build --all-targets`.
+- When invoking examples, use the full target name:
+  - `cargo run --package cas --example cas_demo`
+  - `cargo run --package conductor --example conductor_runtime_diagnostics`
+  - `cargo run --package mediapm --example mediapm_demo_online`
+- All examples must follow this convention; enforce it during code review.
 
 ## Docstring completion bar
 

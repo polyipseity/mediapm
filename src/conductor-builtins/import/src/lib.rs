@@ -21,7 +21,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 use clap::{ArgAction, Parser};
-use ureq::Error as UreqError;
+use ureq::{Agent, Error as UreqError};
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.import@1.0.0";
@@ -259,25 +259,16 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
         );
     }
 
-    let response = match ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
+    let agent: Agent = Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
         .build()
-        .get(url)
-        .call()
-    {
-        Ok(response) => response,
-        Err(UreqError::Status(code, response)) => {
-            return Err(format!(
-                "import fetch got non-OK status: {code} {}",
-                response.status_text()
-            ));
-        }
-        Err(UreqError::Transport(error)) => {
-            return Err(format!("import fetch request failed: {error}"));
-        }
-    };
+        .into();
+    let mut response = agent.get(url).call().map_err(|error| match error {
+        UreqError::StatusCode(code) => format!("import fetch got non-OK status: {code}"),
+        other => format!("import fetch request failed: {other}"),
+    })?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.body_mut().as_reader();
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)

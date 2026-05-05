@@ -31,7 +31,7 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   demo transforms.
 - Even with automated test-target config-only behavior, changes under
   `src/mediapm/**` must still run
-  `cargo run --package mediapm --example demo_online` as the final local
+  `cargo run --package mediapm --example mediapm_demo_online` as the final local
   validation gate.
   Execute this gate with rate-limit discipline: run once per validation pass,
   avoid rapid consecutive retries, and apply cool-down backoff before retrying
@@ -153,7 +153,7 @@ Before finishing, run targeted validation on affected crates:
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
 - `cargo clippy-pkg <crate>` (affected crate lint; e.g., `cargo clippy-pkg mediapm`)
 - For edits under `src/mediapm/**`, run
-  `cargo run --package mediapm --example demo_online` last and report
+  `cargo run --package mediapm --example mediapm_demo_online` last and report
   transient external-provider failures explicitly if encountered.
   Inspect `src/mediapm/examples/.artifacts/demo-online/` after the run and
   validate sidecar-family payload correctness (not only path existence).

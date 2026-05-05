@@ -474,7 +474,7 @@ Pre-push/full-workspace validation:
 
 Hard runtime gate for `src/mediapm/**` edits:
 
-- Run `cargo run --package mediapm --example demo_online` after targeted
+- Run `cargo run --package mediapm --example mediapm_demo_online` after targeted
   tests/lints.
 - Inspect generated artifacts under
   `src/mediapm/examples/.artifacts/demo-online/` after the run and verify
@@ -502,7 +502,7 @@ Hard runtime gate for `src/mediapm/**` edits:
   moving.
 - Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to cap long demo runs and treat
   timeout failures as blockers unless reviewer explicitly accepts them.
-- Keep `demo_online` timeout/watchdog notices as single-shot plain-text lines
+- Keep `mediapm_demo_online` timeout/watchdog notices as single-shot plain-text lines
   and avoid periodic heartbeat stderr logging while conductor progress bars
   are active, so progress rows are not duplicated or visually corrupted.
 - Treat provider/network failures as blockers unless reviewer explicitly

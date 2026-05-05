@@ -513,7 +513,7 @@ Run targeted validation on affected crates:
 - `cargo clippy-pkg <crate>` (e.g., `cargo clippy-pkg mediapm`)
 - `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
 - If changes touch `src/mediapm/**`, run
-  `cargo run --package mediapm --example demo_online` as the final runtime
+  `cargo run --package mediapm --example mediapm_demo_online` as the final runtime
   gate after targeted test/lint checks.
   After the run, inspect generated artifacts under
   `src/mediapm/examples/.artifacts/demo-online/` and verify sidecar-family

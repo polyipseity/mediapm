@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, CasMaintenanceApi, Constraint, FileSystemCas, OptimizeOptions};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
 use std::time::Duration;
 use tempfile::tempdir;

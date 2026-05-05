@@ -21,7 +21,7 @@ flate2.workspace = true
 fp-library.workspace = true
 mediapm-cas = { path = "../cas" }
 mediapm-conductor = { path = "../conductor" }
-musicbrainz_rs.workspace = true
+musicbrainz_rs = { workspace = true, features = ["async", "rustls"] }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 regex.workspace = true

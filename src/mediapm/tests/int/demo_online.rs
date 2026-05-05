@@ -8,7 +8,7 @@
 /// `mediapm.ncl` documents all runtime knobs (not just tool-cache toggle).
 #[test]
 fn demo_online_writes_explicit_runtime_defaults() {
-    let source = include_str!("../../examples/demo_online.rs");
+    let source = include_str!("../../examples/mediapm_demo_online.rs");
 
     assert!(
         source.contains("mediapm_dir: Some(\".mediapm\".to_string())")
@@ -45,7 +45,7 @@ fn demo_online_writes_explicit_runtime_defaults() {
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
 fn demo_online_uses_in_memory_service_wiring() {
-    let source = include_str!("../../examples/demo_online.rs");
+    let source = include_str!("../../examples/mediapm_demo_online.rs");
 
     assert!(
         source.contains("DEMO_ONLINE_RUN_SYNC_ENV")
@@ -364,7 +364,7 @@ fn demo_online_uses_in_memory_service_wiring() {
 /// duplicated id references and per-item path mode fields.
 #[test]
 fn demo_online_configures_playlist_hierarchy_entry() {
-    let source = include_str!("../../examples/demo_online.rs");
+    let source = include_str!("../../examples/mediapm_demo_online.rs");
 
     assert!(
         source.contains("path: \"playlists\".to_string()")

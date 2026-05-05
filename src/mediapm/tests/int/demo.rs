@@ -8,7 +8,7 @@
 /// identification instead of restating the default in step options.
 #[test]
 fn demo_relies_on_media_tagger_default_strict_identification() {
-    let source = include_str!("../../examples/demo.rs");
+    let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
         !source.contains("\"strict_identification\".to_string()")
@@ -22,7 +22,7 @@ fn demo_relies_on_media_tagger_default_strict_identification() {
 /// `mediapm.ncl` documents all runtime knobs (not just tool-cache toggle).
 #[test]
 fn demo_writes_explicit_runtime_defaults() {
-    let source = include_str!("../../examples/demo.rs");
+    let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
         source.contains("mediapm_dir: Some(\".mediapm\".to_string())")
@@ -56,7 +56,7 @@ fn demo_writes_explicit_runtime_defaults() {
 /// transforms.
 #[test]
 fn demo_declares_import_and_dollar_zero_metadata_transforms() {
-    let source = include_str!("../../examples/demo.rs");
+    let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
         source.contains("\"import\".to_string()")
@@ -70,7 +70,7 @@ fn demo_declares_import_and_dollar_zero_metadata_transforms() {
 /// Cargo test-target binary.
 #[test]
 fn demo_defaults_to_config_only_when_built_as_test_target() {
-    let source = include_str!("../../examples/demo.rs");
+    let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
         source.contains("fn running_as_test_binary() -> bool")
@@ -85,7 +85,7 @@ fn demo_defaults_to_config_only_when_built_as_test_target() {
 /// duplicated ids and per-item absolute path override.
 #[test]
 fn demo_configures_playlist_hierarchy_entry() {
-    let source = include_str!("../../examples/demo.rs");
+    let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
         source.contains("path: \"playlists\".to_string()")

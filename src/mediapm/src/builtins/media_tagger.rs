@@ -650,7 +650,7 @@ async fn fetch_musicbrainz_payloads(
         .with_tags()
         .with_annotations()
         .with_work_level_relations()
-        .execute()
+        .execute_async()
         .await
         .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
 
@@ -677,7 +677,7 @@ async fn fetch_musicbrainz_payloads(
                 .with_annotations()
                 .with_recording_level_relations()
                 .with_release_group_level_relations()
-                .execute()
+                .execute_async()
                 .await
                 .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,
         )

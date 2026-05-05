@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 
+use ureq::Agent;
+
 use crate::error::ConductorError;
 
 use super::CommonExecutablePayload;
@@ -100,11 +102,13 @@ fn host_release_asset_markers() -> &'static [&'static str] {
 
 /// Fetches one JSON value from the latest `sd` release endpoint.
 fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
-    let response = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
+    let agent: Agent = Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
         .build()
+        .into();
+    let mut response = agent
         .get(SD_LATEST_RELEASE_API_URL)
-        .set("User-Agent", SD_DOWNLOAD_USER_AGENT)
+        .header("User-Agent", SD_DOWNLOAD_USER_AGENT)
         .call()
         .map_err(|source| {
             ConductorError::Workflow(format!(
@@ -112,7 +116,7 @@ fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
             ))
         })?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.body_mut().as_reader();
     let mut payload = Vec::new();
     reader.read_to_end(&mut payload).map_err(|source| ConductorError::Io {
         operation: "reading latest sd release metadata response".to_string(),
@@ -194,19 +198,20 @@ fn select_host_release_asset(
 
 /// Downloads one release asset payload as raw bytes.
 fn download_release_asset(download_url: &str) -> Result<Vec<u8>, ConductorError> {
-    let response = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(300))
+    let agent: Agent = Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(300)))
         .build()
-        .get(download_url)
-        .set("User-Agent", SD_DOWNLOAD_USER_AGENT)
-        .call()
-        .map_err(|source| {
-            ConductorError::Workflow(format!(
-                "downloading sd release asset from '{download_url}' failed: {source}"
-            ))
-        })?;
+        .into();
+    let mut response =
+        agent.get(download_url).header("User-Agent", SD_DOWNLOAD_USER_AGENT).call().map_err(
+            |source| {
+                ConductorError::Workflow(format!(
+                    "downloading sd release asset from '{download_url}' failed: {source}"
+                ))
+            },
+        )?;
 
-    let mut reader = response.into_reader();
+    let mut reader = response.body_mut().as_reader();
     let mut payload = Vec::new();
     reader.read_to_end(&mut payload).map_err(|source| ConductorError::Io {
         operation: "reading sd release asset response body".to_string(),

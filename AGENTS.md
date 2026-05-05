@@ -233,7 +233,7 @@
   - Example: `cargo test-pkg mediapm` runs only mediapm tests
   - See `.cargo/config.toml` for available aliases and convenience shortcuts
 - For any change that touches `src/mediapm/**`, run
-  `cargo run --package mediapm --example demo_online` as a final runtime gate
+  `cargo run --package mediapm --example mediapm_demo_online` as a final runtime gate
   after targeted tests/lints so the managed online workflow remains healthy.
   After the run, inspect generated artifacts under
   `src/mediapm/examples/.artifacts/demo-online/` (including sidecar-family

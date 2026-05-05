@@ -41,11 +41,11 @@ fn demo_example_runs_during_test_execution() {
         .arg("--package")
         .arg("mediapm")
         .arg("--example")
-        .arg("demo")
+        .arg("mediapm_demo")
         .env("MEDIAPM_DEMO_RUN_SYNC", "false")
         .current_dir(&workspace_root)
         .output()
-        .expect("running `cargo run --package mediapm --example demo`");
+        .expect("running `cargo run --package mediapm --example mediapm_demo`");
 
     assert!(
         output.status.success(),

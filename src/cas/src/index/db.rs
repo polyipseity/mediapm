@@ -32,7 +32,7 @@ use std::sync::{Arc, RwLock};
 
 use bitvec::{order::Lsb0, vec::BitVec};
 use bytemuck::pod_read_unaligned;
-use redb::{Database, ReadableMultimapTable, ReadableTable};
+use redb::{Database, ReadableDatabase, ReadableMultimapTable, ReadableTable};
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 use std::arch::is_x86_feature_detected;
@@ -1051,7 +1051,9 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use redb::{Database, MultimapTableDefinition, ReadableTable, TableDefinition};
+    use redb::{
+        Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition,
+    };
     use tempfile::tempdir;
 
     use super::{
