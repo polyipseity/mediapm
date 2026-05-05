@@ -37,9 +37,6 @@ bitvec = "1.0.1"
 blake3 = "1.8.5"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytes = "1.10.1"
-cargo-husky = { version = "1.5.0", default-features = false, features = [
-	"user-hooks",
-] }
 chromaprint-next = "0.1.0"
 clap = { version = "4.6.1", features = ["derive"] }
 crc32fast = "1.5.0"
@@ -56,9 +53,9 @@ memmap2 = "0.9.9"
 miette = { version = "7.6.0", features = ["derive"] }
 multihash = "0.19"
 multihash-derive = "0.9"
-musicbrainz_rs = "0.13.0"
+musicbrainz_rs = { version = "0.13.0", default-features = false }
 nickel-lang-core = "0.17.0"
-oxidelta = "0.1.4"
+oxidelta = { version = "0.1.4", default-features = false }
 parking_lot = "0.12.5"
 postcard = { version = "1.1.3", features = ["alloc"] }
 proptest = "1.6.0"
@@ -66,7 +63,7 @@ pulsebar = { version = "0.2.1", features = ["tokio"] }
 ractor = { version = "0.15.12", features = ["tokio_runtime"] }
 redb = "4.1.0"
 regex = "1.11"
-reqwest = { version = "0.12", features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 same-file = "1.0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -83,10 +80,9 @@ tokio = { version = "1.52.2", features = [
 	"sync",
 	"time",
 ] }
-tokio-util = { version = "0.7.16", features = ["io"] }
 tracing = "0.1.41"
 unicode-normalization = "0.1.24"
-ureq = { version = "3.3.0", default-features = true }
+ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 url = "2.5.7"
 walkdir = "2.5.0"
 xz2 = "0.1.7"

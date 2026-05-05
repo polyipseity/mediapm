@@ -7,26 +7,29 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 3 media orchestration facade over conductor and CAS"
 
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:clap"]
+
 [lints]
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true, optional = true }
 async-trait.workspace = true
 chromaprint-next.workspace = true
-clap.workspace = true
+clap = { workspace = true, optional = true }
 dotenvy.workspace = true
 ffmetadata.workspace = true
 flate2.workspace = true
 fp-library.workspace = true
-mediapm-cas = { path = "../cas" }
-mediapm-conductor = { path = "../conductor" }
+mediapm-cas = { path = "../cas", default-features = false }
+mediapm-conductor = { path = "../conductor", default-features = false }
 musicbrainz_rs = { workspace = true, features = ["async", "rustls"] }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 regex.workspace = true
 reqwest.workspace = true
-same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
@@ -38,5 +41,10 @@ xz2.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+same-file.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+
+[[bin]]
+name = "mediapm"
+path = "src/main.rs"
+required-features = ["cli"]

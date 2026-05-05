@@ -7,23 +7,27 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 2 orchestration contracts and state model for mediapm"
 
+[features]
+default = ["cli"]
+cli = ["dep:clap"]
+
 [lints]
 workspace = true
 
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive"], optional = true }
 dirs.workspace = true
 flate2.workspace = true
 fp-library.workspace = true
 futures-util.workspace = true
-mediapm-cas = { path = "../cas" }
-mediapm-conductor-builtin-echo = { path = "../conductor-builtins/echo" }
-mediapm-conductor-builtin-fs = { path = "../conductor-builtins/fs" }
-mediapm-conductor-builtin-import = { path = "../conductor-builtins/import" }
-mediapm-conductor-builtin-archive = { path = "../conductor-builtins/archive" }
-mediapm-conductor-builtin-export = { path = "../conductor-builtins/export" }
+mediapm-cas = { path = "../cas", default-features = false }
+mediapm-conductor-builtin-echo = { path = "../conductor-builtins/echo", default-features = false }
+mediapm-conductor-builtin-fs = { path = "../conductor-builtins/fs", default-features = false }
+mediapm-conductor-builtin-import = { path = "../conductor-builtins/import", default-features = false }
+mediapm-conductor-builtin-archive = { path = "../conductor-builtins/archive", default-features = false }
+mediapm-conductor-builtin-export = { path = "../conductor-builtins/export", default-features = false }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 ractor.workspace = true
@@ -37,5 +41,8 @@ tokio.workspace = true
 ureq.workspace = true
 zip.workspace = true
 
-[dev-dependencies]
-tokio.workspace = true
+[[bin]]
+name = "mediapm-conductor"
+path = "src/main.rs"
+required-features = ["cli"]
+

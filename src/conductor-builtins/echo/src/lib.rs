@@ -28,9 +28,12 @@
 //! details inside the string-only success object.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
+#[cfg(feature = "cli")]
 use std::io::Write;
 
+#[cfg(feature = "cli")]
 use clap::{Parser, ValueEnum};
 
 /// Builtin tool name handled by this crate.
@@ -46,7 +49,8 @@ pub const TOOL_VERSION: &str = "1.0.0";
 pub type StringMap = BTreeMap<String, String>;
 
 /// Output stream selector used by both API and CLI entrypoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
 pub enum EchoStream {
     /// Emit text only to stdout.
     Stdout,
@@ -62,6 +66,7 @@ pub enum EchoStream {
 /// - text is passed as positional arguments and echoed verbatim,
 /// - one optional `--stream` flag chooses stdout/stderr/both,
 /// - API equivalents are `text` and `stream` in [`StringMap`].
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Output stream selection (`stdout`, `stderr`, or `both`).
@@ -139,6 +144,7 @@ pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<Stri
 /// # Errors
 ///
 /// Returns an error when writing to the selected output stream(s) fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<WOut: Write, WErr: Write>(
     cli: &BuiltinCliArgs,
     stdout_writer: &mut WOut,
@@ -208,9 +214,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cli")]
     use clap::Parser;
 
-    use super::{BuiltinCliArgs, execute_echo, execute_string_map, run_cli_command};
+    #[cfg(feature = "cli")]
+    use super::{BuiltinCliArgs, run_cli_command};
+    use super::{execute_echo, execute_string_map};
     use std::collections::BTreeMap;
 
     /// Verifies API defaults to stdout and appends newline like shell echo.
@@ -281,6 +290,7 @@ mod tests {
         assert_eq!(payload.get("stderr"), Some(&String::new()));
     }
 
+    #[cfg(feature = "cli")]
     /// Verifies CLI echoes positional text to selected streams.
     #[test]
     fn run_cli_emits_to_selected_stream() {

@@ -8,6 +8,7 @@
 //! - `tools` for common executable tool presets.
 
 pub mod api;
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod error;
 pub mod model;

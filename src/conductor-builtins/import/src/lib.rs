@@ -15,12 +15,16 @@
 //! returned directly.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
 use std::io::Read;
+#[cfg(feature = "cli")]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
+
 use ureq::{Agent, Error as UreqError};
 
 /// Stable builtin id used by topology registration.
@@ -39,6 +43,7 @@ pub const IS_IMPURE: bool = true;
 pub type StringMap = BTreeMap<String, String>;
 
 /// Standard clap-based CLI accepted by every builtin crate.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Prints builtin descriptor metadata as JSON and exits.
@@ -79,6 +84,7 @@ pub fn describe() -> StringMap {
 ///
 /// Returns a serialization error when the descriptor map cannot be rendered
 /// as valid JSON.
+#[cfg(feature = "cli")]
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -215,6 +221,7 @@ enum PathMode {
 /// Returns an error when CLI key/value pairs are malformed, import execution
 /// fails, descriptor serialization fails, or writing output to the provided
 /// writer fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -232,6 +239,36 @@ pub fn run_cli_command<W: Write>(
         execute_content_map(&tool_cwd, &params, &inputs).map_err(std::io::Error::other)?;
     writer.write_all(&payload)?;
     Ok(())
+}
+
+#[cfg(not(feature = "cli"))]
+type DescribeJsonError = String;
+
+#[cfg(feature = "cli")]
+type DescribeJsonError = serde_json::Error;
+
+/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
+///
+/// When the `cli` feature is disabled, this helper still provides deterministic
+/// descriptor JSON via a prebuilt string and never fails.
+///
+/// # Errors
+///
+/// Returns a serialization error only when the `cli` feature is enabled and
+/// descriptor JSON encoding fails. With `cli` disabled this helper always
+/// returns `Ok` with a deterministic JSON payload.
+pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
+    #[cfg(feature = "cli")]
+    {
+        describe_json()
+    }
+    #[cfg(not(feature = "cli"))]
+    {
+        Ok(
+            "{\n  \"is_impure\": \"true\",\n  \"summary\": \"import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes\",\n  \"tool_id\": \"builtins.import@1.0.0\",\n  \"tool_name\": \"import\",\n  \"tool_version\": \"1.0.0\"\n}"
+                .to_string(),
+        )
+    }
 }
 
 /// Performs URL fetch with strict integrity pinning.
@@ -297,6 +334,7 @@ fn resolve_file_or_folder_source(
 }
 
 /// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
+#[cfg(feature = "cli")]
 fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
     let mut map = StringMap::new();
     let mut chunks = pairs.chunks_exact(2);

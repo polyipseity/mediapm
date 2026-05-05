@@ -10,6 +10,7 @@
 pub mod downloader;
 pub mod sd;
 
+#[cfg(feature = "cli")]
 use clap::ValueEnum;
 
 use crate::error::ConductorError;
@@ -18,7 +19,8 @@ use crate::error::ConductorError;
 ///
 /// This enum intentionally starts with a minimal set (`sd`) and can grow as
 /// additional frequently-used helper tools are standardized.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
 pub enum CommonExecutableTool {
     /// Stream editor fetched from official GitHub release assets.
     ///
