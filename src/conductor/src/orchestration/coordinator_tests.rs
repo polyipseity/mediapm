@@ -10,7 +10,7 @@ use std::sync::Arc;
 use mediapm_cas::{CasApi, CasError, FileSystemCas, InMemoryCas};
 use tempfile::tempdir;
 
-use crate::api::SchedulerTraceKind;
+use crate::api::{SchedulerTraceKind, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::config::{
     InputBinding, MachineNickelDocument, OutputCaptureSpec, OutputPolicy, ToolInputSpec,
@@ -18,7 +18,8 @@ use crate::model::config::{
     decode_state_document, encode_machine_document, encode_user_document,
 };
 use crate::model::state::{
-    OutputSaveMode, PersistenceFlags, decode_state, merge_persistence_flags,
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ToolCallInstance,
+    decode_state, merge_persistence_flags,
 };
 
 use super::WorkflowCoordinator;
@@ -782,6 +783,147 @@ async fn missing_state_pointer_blob_falls_back_to_empty_state() {
 
     // Missing user document triggers bootstrap workflow with one deterministic step.
     assert_eq!(summary.executed_instances, 1);
+}
+
+/// Protects state replacement/export path by validating config compatibility,
+/// persisting only pointer + CAS state blob, and supporting subsequent loads.
+#[tokio::test]
+async fn replace_and_load_resolved_state_roundtrip() {
+    let mut coordinator = WorkflowCoordinator::new(Arc::new(InMemoryCas::new()));
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+    let state_path = dir.path().join(".conductor").join("state.ncl");
+
+    let user = UserNickelDocument {
+        tools: BTreeMap::from([(
+            "echo@1.0.0".to_string(),
+            ToolSpec {
+                is_impure: false,
+                inputs: BTreeMap::new(),
+                kind: ToolKindSpec::Builtin {
+                    name: "echo".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                outputs: BTreeMap::from([(
+                    "result".to_string(),
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
+                )]),
+            },
+        )]),
+        ..UserNickelDocument::default()
+    };
+    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+        .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    let next_state = OrchestrationState {
+        version: OrchestrationState::default().version,
+        instances: BTreeMap::from([(
+            "instance-a".to_string(),
+            ToolCallInstance {
+                tool_name: "echo@1.0.0".to_string(),
+                metadata: ToolSpec {
+                    is_impure: false,
+                    inputs: BTreeMap::new(),
+                    kind: ToolKindSpec::Builtin {
+                        name: "echo".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
+                    outputs: BTreeMap::new(),
+                },
+                impure_timestamp: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "result".to_string(),
+                    OutputRef {
+                        hash: mediapm_cas::Hash::from_content(b"state-roundtrip"),
+                        persistence: PersistenceFlags::default(),
+                        allow_empty_capture: false,
+                    },
+                )]),
+            },
+        )]),
+    };
+
+    let pointer = coordinator
+        .replace_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            next_state.clone(),
+            StateMutationOptions::default(),
+        )
+        .await
+        .expect("state replacement should succeed");
+
+    let state_document =
+        decode_state_document(&std::fs::read(&state_path).expect("read state doc"))
+            .expect("decode state doc");
+    assert_eq!(state_document.state_pointer, Some(pointer));
+
+    let loaded = coordinator
+        .load_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            StateMutationOptions::default(),
+        )
+        .await
+        .expect("state load should succeed");
+    assert_eq!(loaded, next_state);
+}
+
+/// Protects state-validation boundary by rejecting replacements that reference
+/// unknown tools under current merged config.
+#[tokio::test]
+async fn replace_resolved_state_rejects_unknown_tool_instances() {
+    let mut coordinator = WorkflowCoordinator::new(Arc::new(InMemoryCas::new()));
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+
+    std::fs::write(
+        &user_path,
+        encode_user_document(UserNickelDocument::default()).expect("encode user"),
+    )
+    .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    let invalid_state = OrchestrationState {
+        version: OrchestrationState::default().version,
+        instances: BTreeMap::from([(
+            "instance-a".to_string(),
+            ToolCallInstance {
+                tool_name: "missing@1.0.0".to_string(),
+                metadata: ToolSpec::default(),
+                impure_timestamp: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+        )]),
+    };
+
+    let result = coordinator
+        .replace_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            invalid_state,
+            StateMutationOptions::default(),
+        )
+        .await;
+    match result {
+        Err(ConductorError::Workflow(message)) => {
+            assert!(message.contains("references unknown tool"));
+        }
+        other => panic!("expected unknown-tool validation error, got {other:?}"),
+    }
 }
 
 /// Protects integer-only validation for executable process success codes.

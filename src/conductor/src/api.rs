@@ -4,10 +4,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
-use crate::model::state::OrchestrationState;
+use crate::model::state::{
+    OrchestrationState, decode_state, encode_state, persisted_state_json_pretty,
+};
 #[cfg(feature = "tool-presets")]
 pub use crate::tools::{
     CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
@@ -222,6 +225,40 @@ impl Default for RunWorkflowOptions {
     }
 }
 
+/// Runtime options for state export/import/edit operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateMutationOptions {
+    /// Grouped runtime storage paths used by this invocation.
+    ///
+    /// Defaults:
+    /// - `conductor_dir = .conductor`
+    /// - `conductor_state_config = <conductor_dir>/state.ncl`
+    /// - `cas_store_dir = <conductor_dir>/store`
+    /// - `conductor_tmp_dir = <conductor_dir>/tmp`
+    /// - `conductor_schema_dir = <conductor_dir>/config/conductor`
+    pub runtime_storage_paths: RuntimeStoragePaths,
+    /// Additional host environment variable names inherited while evaluating
+    /// configuration documents for this operation.
+    pub runtime_inherited_env_vars: Vec<String>,
+}
+
+impl StateMutationOptions {
+    /// Returns strict-safe defaults for state mutation operations.
+    #[must_use]
+    pub fn strict() -> Self {
+        Self {
+            runtime_storage_paths: RuntimeStoragePaths::default(),
+            runtime_inherited_env_vars: Vec::new(),
+        }
+    }
+}
+
+impl Default for StateMutationOptions {
+    fn default() -> Self {
+        Self::strict()
+    }
+}
+
 /// Async API contract for Phase 2 conductor.
 #[async_trait]
 pub trait ConductorApi: Send + Sync {
@@ -263,6 +300,95 @@ pub trait ConductorApi: Send + Sync {
 
     /// Returns the current in-memory orchestration-state snapshot.
     async fn get_state(&self) -> Result<OrchestrationState, ConductorError>;
+
+    /// Loads the effective orchestration state for one user/machine/runtime
+    /// path configuration.
+    ///
+    /// Resolution semantics mirror workflow execution:
+    /// - load and validate `conductor.ncl`, `conductor.machine.ncl`, and
+    ///   resolved volatile state document,
+    /// - resolve one effective `state_pointer`,
+    /// - load the pointed orchestration state from CAS.
+    async fn load_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+    ) -> Result<OrchestrationState, ConductorError>;
+
+    /// Replaces orchestration state for one user/machine/runtime path
+    /// configuration.
+    ///
+    /// Mutation boundary:
+    /// - validate the candidate state against currently resolved merged config,
+    /// - persist only the new state blob in CAS,
+    /// - update only the volatile state document `state_pointer`.
+    async fn replace_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        state: OrchestrationState,
+        options: StateMutationOptions,
+    ) -> Result<Hash, ConductorError>;
+
+    /// Exports effective orchestration state to one JSON file.
+    ///
+    /// The file payload uses persisted wire-envelope JSON shape.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when state resolution fails, parent directory creation
+    /// fails, or writing the export file fails.
+    async fn export_state_to_path(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+        output_path: &Path,
+    ) -> Result<Hash, ConductorError> {
+        let state = self.load_resolved_state(user_ncl, machine_ncl, options).await?;
+        if let Some(parent) = output_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
+                operation: "creating parent directory for exported state".to_string(),
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+
+        let rendered = persisted_state_json_pretty(&state)?;
+        fs::write(output_path, rendered.as_bytes()).map_err(|source| ConductorError::Io {
+            operation: "writing exported orchestration state".to_string(),
+            path: output_path.to_path_buf(),
+            source,
+        })?;
+
+        let encoded = encode_state(state)?;
+        Ok(Hash::from_content(&encoded))
+    }
+
+    /// Imports orchestration state from one JSON file and publishes it through
+    /// volatile state pointer update.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when reading or decoding input JSON fails, state
+    /// validation fails against resolved config, CAS persistence fails, or
+    /// volatile pointer persistence fails.
+    async fn import_state_from_path(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+        input_path: &Path,
+    ) -> Result<Hash, ConductorError> {
+        let bytes = fs::read(input_path).map_err(|source| ConductorError::Io {
+            operation: "reading imported orchestration state".to_string(),
+            path: input_path.to_path_buf(),
+            source,
+        })?;
+        let state = decode_state(&bytes)?;
+        self.replace_resolved_state(user_ncl, machine_ncl, state, options).await
+    }
 
     /// Returns runtime diagnostics including worker queue metrics and scheduler traces.
     async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError>;

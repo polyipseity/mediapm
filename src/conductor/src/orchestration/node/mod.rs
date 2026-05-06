@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mediapm_cas::CasApi;
+use mediapm_cas::Hash;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
-use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
+use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
 use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
@@ -31,6 +32,23 @@ pub(super) enum ConductorNodeMessage {
     GetState(RpcReplyPort<Result<OrchestrationState, ConductorError>>),
     /// Returns runtime diagnostics and scheduler traces.
     GetRuntimeDiagnostics(RpcReplyPort<Result<RuntimeDiagnostics, ConductorError>>),
+    /// Loads effective orchestration state resolved from user/machine/state
+    /// documents.
+    LoadResolvedState(
+        PathBuf,
+        PathBuf,
+        Box<StateMutationOptions>,
+        RpcReplyPort<Result<OrchestrationState, ConductorError>>,
+    ),
+    /// Replaces effective orchestration state and updates only volatile
+    /// `state_pointer` + CAS state blob.
+    ReplaceResolvedState(
+        PathBuf,
+        PathBuf,
+        Box<OrchestrationState>,
+        Box<StateMutationOptions>,
+        RpcReplyPort<Result<Hash, ConductorError>>,
+    ),
 }
 
 /// Typed client for interacting with the conductor node actor.
@@ -99,6 +117,64 @@ impl ConductorActorClient {
                 ))
             })?
     }
+
+    /// Loads effective orchestration state resolved from user/machine/state
+    /// documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or when state loading
+    /// fails in the coordinator.
+    pub async fn load_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+    ) -> Result<OrchestrationState, ConductorError> {
+        call_t!(
+            self.actor,
+            ConductorNodeMessage::LoadResolvedState,
+            DEFAULT_RPC_TIMEOUT_MS,
+            user_ncl.to_path_buf(),
+            machine_ncl.to_path_buf(),
+            Box::new(options)
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "conductor actor load_resolved_state RPC failed: {err}"
+            ))
+        })?
+    }
+
+    /// Replaces effective orchestration state and updates only volatile
+    /// `state_pointer` + CAS state blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or state replacement
+    /// fails in the coordinator.
+    pub async fn replace_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        state: OrchestrationState,
+        options: StateMutationOptions,
+    ) -> Result<Hash, ConductorError> {
+        call_t!(
+            self.actor,
+            ConductorNodeMessage::ReplaceResolvedState,
+            DEFAULT_RPC_TIMEOUT_MS,
+            user_ncl.to_path_buf(),
+            machine_ncl.to_path_buf(),
+            Box::new(state),
+            Box::new(options)
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "conductor actor replace_resolved_state RPC failed: {err}"
+            ))
+        })?
+    }
 }
 
 /// Marker actor for top-level conductor node command dispatch.
@@ -153,6 +229,29 @@ where
             }
             ConductorNodeMessage::GetRuntimeDiagnostics(reply) => {
                 let _ = reply.send(state.runtime_diagnostics().await);
+            }
+            ConductorNodeMessage::LoadResolvedState(user_ncl, machine_ncl, options, reply) => {
+                let _ = reply.send(
+                    state.load_resolved_state_with_options(&user_ncl, &machine_ncl, *options).await,
+                );
+            }
+            ConductorNodeMessage::ReplaceResolvedState(
+                user_ncl,
+                machine_ncl,
+                next_state,
+                options,
+                reply,
+            ) => {
+                let _ = reply.send(
+                    state
+                        .replace_resolved_state_with_options(
+                            &user_ncl,
+                            &machine_ncl,
+                            *next_state,
+                            *options,
+                        )
+                        .await,
+                );
             }
         }
         Ok(())

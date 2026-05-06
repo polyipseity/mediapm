@@ -13,7 +13,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
 use mediapm_cas::{
@@ -23,8 +25,8 @@ use mediapm_cas::{
 #[cfg(feature = "tool-presets")]
 use crate::api::{CommonExecutableTool, fetch_common_executable_tool_payload};
 use crate::api::{
-    ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, default_state_paths,
-    export_nickel_config_schemas, resolve_runtime_storage_paths,
+    ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, StateMutationOptions,
+    default_state_paths, export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -110,8 +112,8 @@ pub enum CliCommand {
         #[arg(long, default_value_t = false)]
         allow_tool_redefinition: bool,
     },
-    /// Prints current migrated orchestration state.
-    State,
+    /// State inspection and mutation operations.
+    State(StateArgs),
     /// Imports tool/data content into CAS and Nickel docs.
     Import(ImportArgs),
     /// Removes tool/data references from Nickel docs.
@@ -120,6 +122,41 @@ pub enum CliCommand {
     Gc,
     /// Passthrough to Phase-1 CAS CLI.
     Cas(PassthroughArgs),
+}
+
+/// State command group.
+#[derive(Debug, Args)]
+pub struct StateArgs {
+    /// State operation variant.
+    #[command(subcommand)]
+    command: Option<StateCommand>,
+}
+
+/// State operation variants.
+#[derive(Debug, Subcommand)]
+pub enum StateCommand {
+    /// Prints current migrated orchestration state.
+    Show,
+    /// Exports current migrated orchestration state to one JSON file.
+    Export {
+        /// Destination JSON file path.
+        path: PathBuf,
+    },
+    /// Imports orchestration state from one JSON file.
+    Import {
+        /// Source JSON file path.
+        path: PathBuf,
+    },
+    /// Opens current state in an editor and applies validated edits.
+    Edit {
+        /// Optional editor command override.
+        ///
+        /// When omitted, editor resolution follows git-style environment
+        /// precedence: `GIT_EDITOR`, then `VISUAL`, then `EDITOR`, then
+        /// platform fallback (`notepad` on Windows, `vi` elsewhere).
+        #[arg(long)]
+        editor: Option<String>,
+    },
 }
 
 /// Import command group.
@@ -301,7 +338,10 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                     )
                     .await
                 }
-                CliCommand::State => print_state(cas).await,
+                CliCommand::State(args) => {
+                    handle_state(cas, &user_ncl, &machine_ncl, runtime_storage_paths.clone(), args)
+                        .await
+                }
                 CliCommand::Import(args) => handle_import(cas, &user_ncl, &machine_ncl, args).await,
                 CliCommand::Remove(args) => handle_remove(&user_ncl, &machine_ncl, args),
                 CliCommand::Gc => {
@@ -317,6 +357,46 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                     unreachable!("passthrough handled above")
                 }
             }
+        }
+    }
+}
+
+/// Handles state command variants.
+async fn handle_state(
+    cas: ConfiguredCas,
+    user_ncl: &Path,
+    machine_ncl: &Path,
+    runtime_storage_paths: RuntimeStoragePaths,
+    args: StateArgs,
+) -> Result<(), ConductorError> {
+    let conductor = SimpleConductor::new(cas);
+    let options =
+        StateMutationOptions { runtime_storage_paths, runtime_inherited_env_vars: Vec::new() };
+
+    match args.command.unwrap_or(StateCommand::Show) {
+        StateCommand::Show => {
+            let state = conductor.load_resolved_state(user_ncl, machine_ncl, options).await?;
+            let rendered = persisted_state_json_pretty(&state)?;
+            println!("{rendered}");
+            Ok(())
+        }
+        StateCommand::Export { path } => {
+            let pointer =
+                conductor.export_state_to_path(user_ncl, machine_ncl, options, &path).await?;
+            println!("exported_state_path={}", path.display());
+            println!("exported_state_hash={pointer}");
+            Ok(())
+        }
+        StateCommand::Import { path } => {
+            let pointer =
+                conductor.import_state_from_path(user_ncl, machine_ncl, options, &path).await?;
+            println!("imported_state_path={}", path.display());
+            println!("imported_state_hash={pointer}");
+            Ok(())
+        }
+        StateCommand::Edit { editor } => {
+            edit_state_via_editor(&conductor, user_ncl, machine_ncl, options, editor.as_deref())
+                .await
         }
     }
 }
@@ -363,13 +443,190 @@ async fn run_workflow(
     Ok(())
 }
 
-/// Prints current orchestration state as pretty JSON.
-async fn print_state(cas: ConfiguredCas) -> Result<(), ConductorError> {
-    let conductor = SimpleConductor::new(cas);
-    let state = conductor.get_state().await?;
-    let rendered = persisted_state_json_pretty(&state)?;
-    println!("{rendered}");
+/// Opens current state in an editor, validates edits, and applies updates.
+///
+/// Edit-loop behavior:
+/// - current resolved state is rendered to one temporary JSON file,
+/// - editor is launched,
+/// - decoded/validated state is applied,
+/// - on decode/validation failure the user can iteratively re-edit.
+async fn edit_state_via_editor(
+    conductor: &SimpleConductor<ConfiguredCas>,
+    user_ncl: &Path,
+    machine_ncl: &Path,
+    options: StateMutationOptions,
+    editor_override: Option<&str>,
+) -> Result<(), ConductorError> {
+    let initial_state =
+        conductor.load_resolved_state(user_ncl, machine_ncl, options.clone()).await?;
+    let rendered = persisted_state_json_pretty(&initial_state)?;
+
+    let temp = tempfile::Builder::new()
+        .prefix("conductor-state-edit-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|source| ConductorError::Io {
+            operation: "creating temporary state edit file".to_string(),
+            path: PathBuf::from("<tempfile>"),
+            source,
+        })?;
+    let edit_path = temp.path().to_path_buf();
+    std::fs::write(&edit_path, rendered.as_bytes()).map_err(|source| ConductorError::Io {
+        operation: "writing initial state into temporary edit file".to_string(),
+        path: edit_path.clone(),
+        source,
+    })?;
+
+    loop {
+        launch_editor(editor_override, &edit_path)?;
+
+        let edited = std::fs::read(&edit_path).map_err(|source| ConductorError::Io {
+            operation: "reading edited orchestration state".to_string(),
+            path: edit_path.clone(),
+            source,
+        })?;
+
+        match decode_state(&edited) {
+            Ok(state) => match conductor
+                .replace_resolved_state(user_ncl, machine_ncl, state, options.clone())
+                .await
+            {
+                Ok(pointer) => {
+                    println!("edited_state_path={}", edit_path.display());
+                    println!("edited_state_hash={pointer}");
+                    return Ok(());
+                }
+                Err(error) => {
+                    eprintln!("state edit validation failed: {error}");
+                    if !should_retry_state_edit()? {
+                        return Err(ConductorError::Workflow(
+                            "state edit aborted after validation failure".to_string(),
+                        ));
+                    }
+                }
+            },
+            Err(error) => {
+                eprintln!("state edit decode failed: {error}");
+                if !should_retry_state_edit()? {
+                    return Err(ConductorError::Workflow(
+                        "state edit aborted after decode failure".to_string(),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Returns whether interactive state-edit flow should retry after a failure.
+fn should_retry_state_edit() -> Result<bool, ConductorError> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return Ok(false);
+    }
+
+    print!("Re-open editor to fix state and retry? [Y/n]: ");
+    std::io::stdout().flush().map_err(|source| ConductorError::Io {
+        operation: "flushing state edit retry prompt".to_string(),
+        path: PathBuf::from("<stdout>"),
+        source,
+    })?;
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).map_err(|source| ConductorError::Io {
+        operation: "reading state edit retry response".to_string(),
+        path: PathBuf::from("<stdin>"),
+        source,
+    })?;
+
+    let response = line.trim().to_ascii_lowercase();
+    Ok(response.is_empty() || response == "y" || response == "yes")
+}
+
+/// Launches editor command against one state-edit file path.
+fn launch_editor(editor_override: Option<&str>, edit_path: &Path) -> Result<(), ConductorError> {
+    let editor = resolve_editor_command(editor_override);
+    let (program, args) = parse_editor_command(&editor)?;
+    let status = Command::new(&program).args(args).arg(edit_path).status().map_err(|source| {
+        ConductorError::Io {
+            operation: "launching state editor command".to_string(),
+            path: PathBuf::from(program),
+            source,
+        }
+    })?;
+
+    if !status.success() {
+        return Err(ConductorError::Workflow(format!(
+            "state editor command '{editor}' exited with non-zero status {status}"
+        )));
+    }
+
     Ok(())
+}
+
+/// Resolves editor command string with git-style environment precedence.
+#[must_use]
+fn resolve_editor_command(editor_override: Option<&str>) -> String {
+    if let Some(override_value) = editor_override {
+        let trimmed = override_value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+
+    for key in ["GIT_EDITOR", "VISUAL", "EDITOR"] {
+        if let Some(value) = std::env::var_os(key) {
+            let owned = value.to_string_lossy().to_string();
+            let trimmed = owned.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
+
+    if cfg!(windows) { "notepad".to_string() } else { "vi".to_string() }
+}
+
+/// Parses one editor command line into executable path plus argument vector.
+fn parse_editor_command(command: &str) -> Result<(String, Vec<String>), ConductorError> {
+    let mut tokens = Vec::<String>::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+
+    for ch in command.chars() {
+        if quote.is_none() && ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        match quote {
+            Some(active) if ch == active => {
+                quote = None;
+            }
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+            }
+            Some(_) | None => {
+                current.push(ch);
+            }
+        }
+    }
+
+    if quote.is_some() {
+        return Err(ConductorError::Workflow(format!(
+            "invalid editor command '{command}': unterminated quote"
+        )));
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    let Some(program) = tokens.first().cloned() else {
+        return Err(ConductorError::Workflow("editor command must not be empty".to_string()));
+    };
+    let args = if tokens.len() > 1 { tokens[1..].to_vec() } else { Vec::new() };
+    Ok((program, args))
 }
 
 /// Handles import command variants.
@@ -924,8 +1181,9 @@ mod tests {
     #[cfg(feature = "tool-presets")]
     use super::CommonExecutableTool;
     use super::{
-        Cli, CliCommand, ImportArgs, ImportCommand, passthrough_cas, persisted_state_json_pretty,
-        register_or_merge_imported_tool, resolve_import_process_name,
+        Cli, CliCommand, ImportArgs, ImportCommand, StateArgs, StateCommand, parse_editor_command,
+        passthrough_cas, persisted_state_json_pretty, register_or_merge_imported_tool,
+        resolve_import_process_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -1002,6 +1260,55 @@ mod tests {
             }
             other => panic!("expected run command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_state_show_default_command() {
+        let cli = Cli::parse_from(["conductor", "state"]);
+        match cli.command {
+            CliCommand::State(StateArgs { command }) => {
+                assert!(command.is_none(), "state without subcommand should default to show");
+            }
+            other => panic!("expected state command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_state_export_command() {
+        let cli = Cli::parse_from(["conductor", "state", "export", "state.json"]);
+        match cli.command {
+            CliCommand::State(StateArgs { command: Some(StateCommand::Export { path }) }) => {
+                assert_eq!(path, PathBuf::from("state.json"));
+            }
+            other => panic!("expected state export command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_state_edit_with_editor_override() {
+        let cli = Cli::parse_from(["conductor", "state", "edit", "--editor", "code --wait"]);
+        match cli.command {
+            CliCommand::State(StateArgs { command: Some(StateCommand::Edit { editor }) }) => {
+                assert_eq!(editor.as_deref(), Some("code --wait"));
+            }
+            other => panic!("expected state edit command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_editor_command_supports_quoted_program_and_args() {
+        let (program, args) =
+            parse_editor_command("\"C:\\Program Files\\Editor\\editor.exe\" --wait")
+                .expect("quoted editor command should parse");
+        assert_eq!(program, "C:\\Program Files\\Editor\\editor.exe");
+        assert_eq!(args, vec!["--wait".to_string()]);
+    }
+
+    #[test]
+    fn parse_editor_command_rejects_unterminated_quote() {
+        let error =
+            parse_editor_command("\"code --wait").expect_err("unterminated quote should fail");
+        assert!(error.to_string().contains("unterminated"));
     }
 
     #[test]

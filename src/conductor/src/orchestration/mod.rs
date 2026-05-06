@@ -15,11 +15,12 @@ use mediapm_cas::CasApi;
 use tokio::sync::OnceCell;
 
 use crate::api::{
-    ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, export_nickel_config_schemas,
-    resolve_runtime_storage_paths,
+    ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions,
+    export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
+use mediapm_cas::Hash;
 
 pub use node::ConductorActorClient;
 pub use node::spawn_conductor_actor;
@@ -71,6 +72,33 @@ where
     async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
         let client = self.actor_client().await?;
         client.get_state().await
+    }
+
+    async fn load_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+    ) -> Result<OrchestrationState, ConductorError> {
+        let resolved_runtime_paths =
+            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
+        let client = self.actor_client().await?;
+        client.load_resolved_state(user_ncl, machine_ncl, options).await
+    }
+
+    async fn replace_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        state: OrchestrationState,
+        options: StateMutationOptions,
+    ) -> Result<Hash, ConductorError> {
+        let resolved_runtime_paths =
+            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
+        let client = self.actor_client().await?;
+        client.replace_resolved_state(user_ncl, machine_ncl, state, options).await
     }
 
     async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {

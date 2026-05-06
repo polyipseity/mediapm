@@ -14,7 +14,7 @@ use mediapm_cas::{CasApi, CasError, Hash};
 use pulsebar::MultiProgress;
 
 use crate::api::{
-    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics,
+    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics, StateMutationOptions,
     resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
@@ -272,6 +272,138 @@ where
         }
 
         Ok(summary)
+    }
+
+    /// Loads effective orchestration state for one user/machine/runtime path
+    /// set and validates it against the currently resolved merged config.
+    pub(super) async fn load_resolved_state_with_options(
+        &mut self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+    ) -> Result<OrchestrationState, ConductorError> {
+        if user_ncl.as_os_str().is_empty() || machine_ncl.as_os_str().is_empty() {
+            return Err(ConductorError::Workflow(
+                "conductor.ncl and conductor.machine.ncl paths must be non-empty".to_string(),
+            ));
+        }
+
+        self.ensure_runtime_support().await?;
+        let document_loader = self.document_loader.clone().ok_or_else(|| {
+            ConductorError::Internal("document loader actor was not initialized".to_string())
+        })?;
+        let state_store = self.state_store.clone().ok_or_else(|| {
+            ConductorError::Internal("state store actor was not initialized".to_string())
+        })?;
+
+        let resolved_runtime_paths =
+            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        let load_options = RunWorkflowOptions {
+            allow_tool_redefinition: false,
+            runtime_storage_paths: options.runtime_storage_paths,
+            runtime_inherited_env_vars: options.runtime_inherited_env_vars,
+            profile_output_path: None,
+        };
+        let LoadedDocuments { prior_state_pointer, unified, .. } = document_loader
+            .load_and_unify(
+                user_ncl,
+                machine_ncl,
+                &resolved_runtime_paths.conductor_state_config,
+                load_options,
+            )
+            .await?;
+
+        let state = state_store.load_state_from_pointer(prior_state_pointer).await?;
+        Self::validate_state_against_unified(&state, &unified)?;
+        Ok(state)
+    }
+
+    /// Replaces effective orchestration state for one user/machine/runtime path
+    /// set and persists only the new CAS state blob plus volatile
+    /// `state_pointer`.
+    pub(super) async fn replace_resolved_state_with_options(
+        &mut self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        next_state: OrchestrationState,
+        options: StateMutationOptions,
+    ) -> Result<Hash, ConductorError> {
+        if user_ncl.as_os_str().is_empty() || machine_ncl.as_os_str().is_empty() {
+            return Err(ConductorError::Workflow(
+                "conductor.ncl and conductor.machine.ncl paths must be non-empty".to_string(),
+            ));
+        }
+
+        self.ensure_runtime_support().await?;
+        let document_loader = self.document_loader.clone().ok_or_else(|| {
+            ConductorError::Internal("document loader actor was not initialized".to_string())
+        })?;
+        let state_store = self.state_store.clone().ok_or_else(|| {
+            ConductorError::Internal("state store actor was not initialized".to_string())
+        })?;
+
+        let resolved_runtime_paths =
+            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        let load_options = RunWorkflowOptions {
+            allow_tool_redefinition: false,
+            runtime_storage_paths: options.runtime_storage_paths,
+            runtime_inherited_env_vars: options.runtime_inherited_env_vars,
+            profile_output_path: None,
+        };
+        let LoadedDocuments { mut state_document, unified, .. } = document_loader
+            .load_and_unify(
+                user_ncl,
+                machine_ncl,
+                &resolved_runtime_paths.conductor_state_config,
+                load_options,
+            )
+            .await?;
+
+        Self::validate_state_against_unified(&next_state, &unified)?;
+        let next_pointer = state_store.persist_and_publish_state(next_state).await?;
+        state_document.state_pointer = Some(next_pointer);
+        document_loader
+            .persist_state_document(&resolved_runtime_paths.conductor_state_config, state_document)
+            .await?;
+        Ok(next_pointer)
+    }
+
+    /// Validates that a state snapshot references only known tool/input/output
+    /// contracts from the currently resolved merged config.
+    fn validate_state_against_unified(
+        state: &OrchestrationState,
+        unified: &UnifiedNickelDocument,
+    ) -> Result<(), ConductorError> {
+        for (instance_key, instance) in &state.instances {
+            let Some(tool) = unified.tools.get(&instance.tool_name) else {
+                return Err(ConductorError::Workflow(format!(
+                    "state instance '{instance_key}' references unknown tool '{}' under current merged config",
+                    instance.tool_name
+                )));
+            };
+
+            for input_name in instance.inputs.keys() {
+                let is_declared = tool.inputs.contains_key(input_name);
+                let has_default = tool.default_inputs.contains_key(input_name);
+                if !is_declared && !has_default {
+                    return Err(ConductorError::Workflow(format!(
+                        "state instance '{instance_key}' for tool '{}' references unknown input '{input_name}' under current merged config",
+                        instance.tool_name
+                    )));
+                }
+            }
+
+            for output_name in instance.outputs.keys() {
+                if !tool.outputs.contains_key(output_name) {
+                    return Err(ConductorError::Workflow(format!(
+                        "state instance '{instance_key}' for tool '{}' references unknown output '{output_name}' under current merged config",
+                        instance.tool_name
+                    )));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Executes all unified workflows level by level using the execution-hub actor.
