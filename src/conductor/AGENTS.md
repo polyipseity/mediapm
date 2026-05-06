@@ -48,6 +48,17 @@ Key ecosystem (from `Cargo.toml`):
 - Hashing: `blake3`
 - CLI: `clap`
 
+## CLI/API Parity Contract
+
+- Keep conductor CLI operations API-backed by default: command handlers in
+  `src/conductor/src/cli.rs` should call `ConductorApi` methods (through
+  `SimpleConductor`) instead of duplicating orchestration logic.
+- When adding or changing CLI commands, update `ConductorApi` and actor-client
+  routing in the same change if behavior must be available programmatically.
+- CLI-only ergonomics (argument parsing, editor/environment precedence, output
+  formatting) may differ, but validation and mutation semantics must match API
+  paths.
+
 ## Configuration Document Model
 
 Conductor uses two config documents plus one runtime state document:

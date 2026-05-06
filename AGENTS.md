@@ -271,6 +271,35 @@
 - Keep CI, editor automation, prompt examples, and instruction files aligned
   with the commands and configs that are actually present in the repository.
 
+## Dependency and Feature Discipline
+
+- Keep dependency surfaces minimal and explicit:
+  - prefer existing workspace dependencies before introducing new crates,
+  - remove now-unused direct dependencies when refactors eliminate them,
+  - avoid parallel libraries that solve the same concern in one crate.
+- Keep optional behavior feature-gated at compile time (not only runtime):
+  - optional dependencies must be wired behind explicit Cargo features,
+  - avoid hidden feature fan-out through default features,
+  - prefer `default-features = false` for internal cross-crate dependencies unless
+    one default behavior is intentionally required.
+- When changing crate features, validate representative feature matrices with
+  targeted `cargo check` invocations so minimal builds remain healthy.
+- Prefer small, atomic commits for dependency/feature-surface changes so
+  feature-boundary regressions are easy to audit and bisect.
+
+## CLI and API Parity
+
+- For each crate that exposes both a CLI binary and a reusable library API,
+  keep behavior parity as an explicit contract:
+  - new CLI operations should route through corresponding library/API entry
+    points instead of duplicating core logic in `main.rs`,
+  - programmatic APIs should expose the same validation and failure semantics as
+    CLI paths,
+  - CLI-only argument ergonomics are acceptable, but capability gaps between CLI
+    and API are not.
+- When adding/renaming CLI operations, update tests so parsing + API-backed
+  execution coverage protects the parity contract.
+
 ## Conventions
 
 - Distinguish between what is present today and what is only part of the

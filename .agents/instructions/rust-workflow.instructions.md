@@ -102,6 +102,11 @@ When refactoring touches multiple crates or splits large modules:
 
 - Keep changes minimal, deterministic, and aligned with the repository's
   functional-core direction documented in active instruction files.
+- Keep dependency and feature surfaces explicit:
+  - prefer existing workspace dependencies before adding new crates,
+  - remove direct dependencies that become unused after refactors,
+  - keep optional behavior compile-time gated behind explicit Cargo features,
+  - avoid hidden feature fan-out through default features.
 - Avoid adding hidden mutable state or introducing databases unless explicitly requested.
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
 - Keep Rust code fully documented with module-level `//!` and item-level
@@ -179,3 +184,13 @@ When refactoring touches multiple crates or splits large modules:
 - Keep side effects concentrated in executor/infrastructure.
 - Preserve sidecar invariants and migration-provenance semantics.
 - Keep object-store writes and sidecar writes atomic.
+
+## CLI/API parity contract
+
+- For crates that expose both a CLI binary and a library API, keep behavior
+  parity as an explicit invariant:
+  - new CLI operations should route through library/API entry points,
+  - API validation and failure semantics should match CLI-backed behavior,
+  - CLI-only ergonomic sugar is acceptable, capability gaps are not.
+- When adding or renaming CLI operations, update tests so parser behavior and
+  API-backed execution paths are both covered.
