@@ -17,7 +17,6 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
-use std::io::Read;
 #[cfg(feature = "cli")]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -25,7 +24,8 @@ use std::path::{Component, Path, PathBuf};
 #[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
 
-use ureq::{Agent, Error as UreqError};
+#[cfg(feature = "fetch")]
+use reqwest::blocking::Client;
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.import@1.0.0";
@@ -253,6 +253,7 @@ fn describe_json_compact() -> String {
 }
 
 /// Performs URL fetch with strict integrity pinning.
+#[cfg(feature = "fetch")]
 fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     let url = params.get("url").ok_or_else(|| "import kind='fetch' requires 'url'".to_string())?;
     let expected_hash = params
@@ -277,20 +278,21 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
         );
     }
 
-    let agent: Agent = Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
         .build()
-        .into();
-    let mut response = agent.get(url).call().map_err(|error| match error {
-        UreqError::StatusCode(code) => format!("import fetch got non-OK status: {code}"),
-        other => format!("import fetch request failed: {other}"),
-    })?;
+        .map_err(|err| format!("building import fetch HTTP client failed: {err}"))?;
 
-    let mut reader = response.body_mut().as_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|err| format!("reading import fetch response failed: {err}"))?;
+    let response =
+        client.get(url).send().map_err(|err| format!("import fetch request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("import fetch got non-OK status: {}", response.status().as_u16()));
+    }
+
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("reading import fetch response failed: {err}"))?
+        .to_vec();
 
     let actual_hash = blake3::hash(&bytes);
     let actual_digest = format!("blake3:{}", actual_hash.to_hex());
@@ -301,6 +303,12 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     }
 
     Ok(bytes)
+}
+
+/// Fetch-path fallback when network feature is disabled.
+#[cfg(not(feature = "fetch"))]
+fn execute_fetch(_params: &StringMap) -> Result<Vec<u8>, String> {
+    Err("import kind='fetch' requires enabling crate feature 'fetch'".to_string())
 }
 
 /// Resolves one file/folder import source path using configured path mode.

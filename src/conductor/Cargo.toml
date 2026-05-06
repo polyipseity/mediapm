@@ -9,7 +9,9 @@ description = "Phase 2 orchestration contracts and state model for mediapm"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "mediapm-cas/cli"]
+cli = ["dep:clap", "mediapm-cas/cli", "tool-presets", "fetch"]
+fetch = ["mediapm-conductor-builtin-import/fetch"]
+tool-presets = ["dep:flate2", "dep:tar", "dep:reqwest", "dep:zip"]
 
 [lints]
 workspace = true
@@ -17,9 +19,9 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 blake3.workspace = true
-clap = { workspace = true, features = ["derive"], optional = true }
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 dirs.workspace = true
-flate2.workspace = true
+flate2 = { workspace = true, optional = true }
 fp-library.workspace = true
 futures-util.workspace = true
 mediapm-cas = { path = "../cas", default-features = false }
@@ -34,15 +36,14 @@ ractor.workspace = true
 regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tar.workspace = true
+tar = { workspace = true, optional = true }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-ureq.workspace = true
-zip.workspace = true
+reqwest = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
 
 [[bin]]
 name = "mediapm-conductor"
 path = "src/main.rs"
 required-features = ["cli"]
-

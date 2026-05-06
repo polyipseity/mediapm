@@ -14,7 +14,7 @@ cli = ["dep:clap"]
 workspace = true
 
 [dependencies]
-clap = { workspace = true, features = ["derive"], optional = true }
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 
 [[bin]]
 name = "mediapm-conductor-builtin-echo"

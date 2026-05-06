@@ -365,18 +365,48 @@ pub fn unpack_zip_bytes_to_directory(zip_bytes: &[u8], dest_dir: &Path) -> Resul
 ///
 /// # Errors
 ///
-/// Returns an error when temporary workspace setup fails, archive unpacking
-/// fails, or canonical repacking fails.
+/// Returns an error when archive decoding fails, one entry escapes the
+/// destination namespace, or canonical repacking fails.
 pub fn normalize_archive_zip_bytes_to_folder_zip_bytes(
     archive_bytes: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let workspace = tempfile::tempdir().map_err(|err| {
-        format!("creating temporary archive normalization workspace failed: {err}")
-    })?;
-    let unpack_dir = workspace.path().join("unpacked");
+    let reader = std::io::Cursor::new(archive_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|err| format!("reading zip archive bytes failed: {err}"))?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o644);
 
-    unpack_zip_bytes_to_directory(archive_bytes, &unpack_dir)?;
-    pack_directory_to_uncompressed_zip_bytes(&unpack_dir, false)
+    for index in 0..archive.len() {
+        let mut entry =
+            archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            format!("unsafe zip entry name '{}', escaping destination", entry.name())
+        })?;
+        let mut normalized_name = enclosed.to_string_lossy().replace('\\', "/");
+
+        if entry.name().ends_with('/') {
+            if !normalized_name.ends_with('/') {
+                normalized_name.push('/');
+            }
+            writer
+                .add_directory(normalized_name, options)
+                .map_err(|err| format!("adding directory to zip failed: {err}"))?;
+            continue;
+        }
+
+        writer
+            .start_file(normalized_name, options)
+            .map_err(|err| format!("starting zip file entry failed: {err}"))?;
+        std::io::copy(&mut entry, &mut writer)
+            .map_err(|err| format!("writing zip file entry failed: {err}"))?;
+    }
+
+    writer
+        .finish()
+        .map_err(|err| format!("finalizing zip payload failed: {err}"))
+        .map(std::io::Cursor::into_inner)
 }
 
 /// Packs one file payload into one uncompressed ZIP payload.

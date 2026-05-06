@@ -8,18 +8,19 @@ publish.workspace = true
 description = "Phase 2 built-in import tool contract"
 
 [features]
-default = ["cli"]
+default = ["cli", "fetch"]
 cli = ["dep:clap"]
+fetch = ["dep:reqwest", "dep:url", "dep:blake3"]
 
 [lints]
 workspace = true
 
 [dependencies]
-blake3.workspace = true
-clap = { workspace = true, features = ["derive"], optional = true }
+blake3 = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 mediapm-conductor-builtin-archive = { path = "../archive", default-features = false }
-ureq.workspace = true
-url.workspace = true
+reqwest = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

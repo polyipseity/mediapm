@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true, optional = true }
 chromaprint-next.workspace = true
-clap = { workspace = true, optional = true }
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 dotenvy.workspace = true
 ffmetadata.workspace = true
 flate2.workspace = true

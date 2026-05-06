@@ -15,7 +15,7 @@ cli = ["dep:clap", "dep:serde_json"]
 workspace = true
 
 [dependencies]
-clap = { workspace = true, features = ["derive"], optional = true }
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 mediapm-conductor-builtin-archive = { path = "../archive", default-features = false }
 serde_json = { workspace = true, optional = true }
 

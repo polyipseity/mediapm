@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use flate2::read::GzDecoder;
-use mediapm_conductor::fetch_common_executable_tool_payload;
 use tar::Archive as TarArchive;
 use xz2::read::XzDecoder;
 use zip::ZipArchive;
@@ -35,18 +34,6 @@ pub(super) async fn materialize_download_plan(
         materialize_internal_launcher(entry, plan, install_root)?;
         if let Some(callback) = download_progress {
             callback(DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: Some(0) });
-        }
-        return Ok(());
-    }
-
-    if let Some(common_tool) = plan.common_executable_tool {
-        let payload_size =
-            materialize_conductor_common_executable(entry, plan, install_root, common_tool)?;
-        if let Some(callback) = download_progress {
-            callback(DownloadProgressSnapshot {
-                downloaded_bytes: payload_size,
-                total_bytes: Some(payload_size),
-            });
         }
         return Ok(());
     }
@@ -132,29 +119,6 @@ pub(super) async fn materialize_download_plan(
     }
 
     Ok(())
-}
-
-/// Materializes one conductor common-source executable payload.
-fn materialize_conductor_common_executable(
-    entry: &ToolCatalogEntry,
-    plan: &ResolvedDownloadPlan,
-    install_root: &Path,
-    common_tool: mediapm_conductor::CommonExecutableTool,
-) -> Result<u64, MediaPmError> {
-    let payload = fetch_common_executable_tool_payload(common_tool).map_err(|error| {
-        MediaPmError::Workflow(format!(
-            "materializing common executable tool '{}' failed: {error}",
-            entry.name
-        ))
-    })?;
-
-    for action in plan.per_os_actions.values() {
-        let destination =
-            install_root.join(action.os.as_str()).join(entry.executable_name_for_os(action.os));
-        write_binary_file(&destination, &payload.executable_bytes)?;
-    }
-
-    Ok(u64::try_from(payload.executable_bytes.len()).unwrap_or(u64::MAX))
 }
 
 /// Materializes locally generated command-launcher shims for internal tools.
@@ -851,7 +815,6 @@ mod tests {
             per_os_actions,
             shared_package: false,
             internal_launcher: true,
-            common_executable_tool: None,
             identity: ResolvedToolIdentity::default(),
             source_label: "mediapm internal launcher".to_string(),
             source_identifier: "mediapm-internal".to_string(),
@@ -895,7 +858,6 @@ mod tests {
             per_os_actions,
             shared_package: false,
             internal_launcher: false,
-            common_executable_tool: None,
             identity: ResolvedToolIdentity::default(),
             source_label: "fixture direct binary".to_string(),
             source_identifier: "fixture-direct".to_string(),

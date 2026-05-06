@@ -136,7 +136,6 @@ pub(super) async fn resolve_download_plan(
                 per_os_actions,
                 shared_package,
                 internal_launcher: false,
-                common_executable_tool: None,
                 identity,
                 source_label: entry.source_label_for_os(host_os).to_string(),
                 source_identifier: entry.source_identifier_for_os(host_os).to_string(),
@@ -193,7 +192,6 @@ pub(super) async fn resolve_download_plan(
                 shared_package: all_os_first_urls_equal(&per_os_actions),
                 per_os_actions,
                 internal_launcher: false,
-                common_executable_tool: None,
                 identity: ResolvedToolIdentity {
                     git_hash: github_release_resolved_commit_hash(repo, &release).await,
                     version,
@@ -254,7 +252,6 @@ pub(super) async fn resolve_download_plan(
                 per_os_actions,
                 shared_package: false,
                 internal_launcher: true,
-                common_executable_tool: None,
                 identity: ResolvedToolIdentity {
                     git_hash: None,
                     version: resolved_version,

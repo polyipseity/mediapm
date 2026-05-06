@@ -8,19 +8,22 @@
 //! and default cache-root helpers shared with `mediapm`.
 
 pub mod downloader;
+#[cfg(feature = "tool-presets")]
 pub mod sd;
 
-#[cfg(feature = "cli")]
+#[cfg(all(feature = "cli", feature = "tool-presets"))]
 use clap::ValueEnum;
 
+#[cfg(feature = "tool-presets")]
 use crate::error::ConductorError;
 
 /// Common executable tools that conductor can source directly from upstream.
 ///
 /// This enum intentionally starts with a minimal set (`sd`) and can grow as
 /// additional frequently-used helper tools are standardized.
+#[cfg(feature = "tool-presets")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "cli", derive(ValueEnum))]
+#[cfg_attr(all(feature = "cli", feature = "tool-presets"), derive(ValueEnum))]
 pub enum CommonExecutableTool {
     /// Stream editor fetched from official GitHub release assets.
     ///
@@ -29,12 +32,22 @@ pub enum CommonExecutableTool {
     Sd,
 }
 
+#[cfg(feature = "tool-presets")]
 impl CommonExecutableTool {
     /// Returns the canonical logical tool name used in machine config.
     #[must_use]
     pub const fn logical_tool_name(self) -> &'static str {
         match self {
-            Self::Sd => sd::LOGICAL_TOOL_NAME,
+            Self::Sd => {
+                #[cfg(feature = "tool-presets")]
+                {
+                    sd::LOGICAL_TOOL_NAME
+                }
+                #[cfg(not(feature = "tool-presets"))]
+                {
+                    "mediapm-conductor.tools.sd"
+                }
+            }
         }
     }
 
@@ -42,12 +55,29 @@ impl CommonExecutableTool {
     #[must_use]
     pub fn executable_file_name(self) -> String {
         match self {
-            Self::Sd => sd::executable_file_name(),
+            Self::Sd => {
+                #[cfg(feature = "tool-presets")]
+                {
+                    sd::executable_file_name()
+                }
+                #[cfg(not(feature = "tool-presets"))]
+                {
+                    #[cfg(windows)]
+                    {
+                        "sd.exe".to_string()
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        "sd".to_string()
+                    }
+                }
+            }
         }
     }
 }
 
 /// Binary payload materialized for one source-installed common executable.
+#[cfg(feature = "tool-presets")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommonExecutablePayload {
     /// Canonical executable file name (for example `sd.exe` on Windows).
@@ -62,6 +92,7 @@ pub struct CommonExecutablePayload {
 ///
 /// Returns [`ConductorError`] when installation fails or the executable payload
 /// cannot be materialized.
+#[cfg(feature = "tool-presets")]
 pub fn fetch_common_executable_tool_payload(
     tool: CommonExecutableTool,
 ) -> Result<CommonExecutablePayload, ConductorError> {
@@ -72,9 +103,11 @@ pub fn fetch_common_executable_tool_payload(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tool-presets")]
     use super::CommonExecutableTool;
 
     /// Protects stable tool-preset selector metadata for release downloads.
+    #[cfg(feature = "tool-presets")]
     #[test]
     fn common_sd_tool_selector_fields_are_stable() {
         assert_eq!(CommonExecutableTool::Sd.logical_tool_name(), "mediapm-conductor.tools.sd");

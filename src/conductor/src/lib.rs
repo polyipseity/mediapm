@@ -15,11 +15,14 @@ pub mod model;
 pub mod orchestration;
 pub mod tools;
 
+#[cfg(feature = "tool-presets")]
 pub use api::{
-    CommonExecutablePayload, CommonExecutableTool, ConductorApi, ResolvedRuntimeStoragePaths,
-    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths, SchedulerDiagnostics,
-    SchedulerTraceEvent, SchedulerTraceKind, ToolRuntimeEstimate, WorkerQueueDiagnostics,
-    default_state_paths, export_nickel_config_schemas, fetch_common_executable_tool_payload,
+    CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
+};
+pub use api::{
+    ConductorApi, ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
+    RuntimeStoragePaths, SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind,
+    ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths, export_nickel_config_schemas,
     resolve_runtime_storage_paths, schema_export_dir,
 };
 pub use error::ConductorError;

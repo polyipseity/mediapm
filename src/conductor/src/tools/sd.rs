@@ -4,7 +4,7 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 
-use ureq::Agent;
+use reqwest::blocking::Client;
 
 use crate::error::ConductorError;
 
@@ -102,26 +102,31 @@ fn host_release_asset_markers() -> &'static [&'static str] {
 
 /// Fetches one JSON value from the latest `sd` release endpoint.
 fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
-    let agent: Agent = Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(60)))
-        .build()
-        .into();
-    let mut response = agent
+    let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(
+        |source| {
+            ConductorError::Workflow(format!("building sd metadata HTTP client failed: {source}"))
+        },
+    )?;
+    let response = client
         .get(SD_LATEST_RELEASE_API_URL)
-        .header("User-Agent", SD_DOWNLOAD_USER_AGENT)
-        .call()
+        .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
+        .send()
         .map_err(|source| {
             ConductorError::Workflow(format!(
                 "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed: {source}"
             ))
         })?;
+    if !response.status().is_success() {
+        return Err(ConductorError::Workflow(format!(
+            "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed with status {}",
+            response.status().as_u16()
+        )));
+    }
 
-    let mut reader = response.body_mut().as_reader();
-    let mut payload = Vec::new();
-    reader.read_to_end(&mut payload).map_err(|source| ConductorError::Io {
-        operation: "reading latest sd release metadata response".to_string(),
-        path: std::env::temp_dir(),
-        source,
+    let payload = response.bytes().map_err(|source| {
+        ConductorError::Workflow(format!(
+            "reading latest sd release metadata response body failed: {source}"
+        ))
     })?;
 
     serde_json::from_slice::<serde_json::Value>(&payload).map_err(|source| {
@@ -198,26 +203,31 @@ fn select_host_release_asset(
 
 /// Downloads one release asset payload as raw bytes.
 fn download_release_asset(download_url: &str) -> Result<Vec<u8>, ConductorError> {
-    let agent: Agent = Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(300)))
-        .build()
-        .into();
-    let mut response =
-        agent.get(download_url).header("User-Agent", SD_DOWNLOAD_USER_AGENT).call().map_err(
-            |source| {
-                ConductorError::Workflow(format!(
-                    "downloading sd release asset from '{download_url}' failed: {source}"
-                ))
-            },
-        )?;
+    let client = Client::builder().timeout(std::time::Duration::from_secs(300)).build().map_err(
+        |source| {
+            ConductorError::Workflow(format!("building sd download HTTP client failed: {source}"))
+        },
+    )?;
+    let response = client
+        .get(download_url)
+        .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
+        .send()
+        .map_err(|source| {
+            ConductorError::Workflow(format!(
+                "downloading sd release asset from '{download_url}' failed: {source}"
+            ))
+        })?;
+    if !response.status().is_success() {
+        return Err(ConductorError::Workflow(format!(
+            "downloading sd release asset from '{download_url}' failed with status {}",
+            response.status().as_u16()
+        )));
+    }
 
-    let mut reader = response.body_mut().as_reader();
-    let mut payload = Vec::new();
-    reader.read_to_end(&mut payload).map_err(|source| ConductorError::Io {
-        operation: "reading sd release asset response body".to_string(),
-        path: std::env::temp_dir(),
-        source,
+    let payload = response.bytes().map_err(|source| {
+        ConductorError::Workflow(format!("reading sd release asset response body failed: {source}"))
     })?;
+    let payload = payload.to_vec();
 
     if payload.is_empty() {
         return Err(ConductorError::Workflow(format!(

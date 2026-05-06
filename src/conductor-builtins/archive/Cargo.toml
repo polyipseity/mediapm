@@ -15,9 +15,11 @@ cli = ["dep:clap"]
 workspace = true
 
 [dependencies]
-clap = { workspace = true, features = ["derive"], optional = true }
-tempfile.workspace = true
+clap = { workspace = true, features = ["derive", "std"], optional = true }
 zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [[bin]]
 name = "mediapm-conductor-builtin-archive"

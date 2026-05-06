@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
+#[cfg(feature = "tool-presets")]
 pub use crate::tools::{
     CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
 };
@@ -469,9 +470,11 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    #[cfg(feature = "tool-presets")]
+    use super::CommonExecutableTool;
     use super::{
-        CommonExecutableTool, RuntimeStoragePaths, export_nickel_config_schemas,
-        resolve_runtime_storage_paths, schema_export_dir,
+        RuntimeStoragePaths, export_nickel_config_schemas, resolve_runtime_storage_paths,
+        schema_export_dir,
     };
 
     /// Protects grouped-runtime default resolution rooted at `.conductor`.
@@ -602,6 +605,7 @@ mod tests {
     }
 
     /// Protects stable tool-preset selector metadata for release downloads.
+    #[cfg(feature = "tool-presets")]
     #[test]
     fn common_sd_tool_selector_fields_are_stable() {
         assert_eq!(CommonExecutableTool::Sd.logical_tool_name(), "mediapm-conductor.tools.sd");

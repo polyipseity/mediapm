@@ -20,10 +20,11 @@ use mediapm_cas::{
     CasApi, CasConfig, CasLocatorParseOptions, CasMaintenanceApi, ConfiguredCas, Hash,
 };
 
+#[cfg(feature = "tool-presets")]
+use crate::api::{CommonExecutableTool, fetch_common_executable_tool_payload};
 use crate::api::{
-    CommonExecutableTool, ConductorApi, RunWorkflowOptions, RuntimeStoragePaths,
-    default_state_paths, export_nickel_config_schemas, fetch_common_executable_tool_payload,
-    resolve_runtime_storage_paths,
+    ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, default_state_paths,
+    export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -137,8 +138,13 @@ pub enum ImportCommand {
         /// Path to one tool file or tool directory.
         ///
         /// This is required unless `--preset` is used.
-        #[arg(required_unless_present = "preset", conflicts_with = "preset")]
+        #[cfg_attr(
+            feature = "tool-presets",
+            arg(required_unless_present = "preset", conflicts_with = "preset")
+        )]
+        #[cfg_attr(not(feature = "tool-presets"), arg(required = true))]
         path: Option<PathBuf>,
+        #[cfg(feature = "tool-presets")]
         /// Optional source-install preset for common executable tools.
         ///
         /// When set, the tool binary is fetched from upstream source and
@@ -149,7 +155,8 @@ pub enum ImportCommand {
         ///
         /// This is required for file/directory imports and optional for
         /// preset imports (defaults to the preset canonical logical name).
-        #[arg(long, required_unless_present = "preset")]
+        #[cfg_attr(feature = "tool-presets", arg(long, required_unless_present = "preset"))]
+        #[cfg_attr(not(feature = "tool-presets"), arg(long, required = true))]
         name: Option<String>,
         /// Optional executable process path recorded as
         /// `tools.<name>.command[0]`
@@ -373,6 +380,7 @@ async fn handle_import(
     args: ImportArgs,
 ) -> Result<(), ConductorError> {
     match args.command {
+        #[cfg(feature = "tool-presets")]
         ImportCommand::Tool { path, preset, name, process_name } => {
             if let Some(tool_preset) = preset {
                 return import_common_tool(
@@ -398,6 +406,19 @@ async fn handle_import(
 
             import_tool(cas, machine_ncl, import_path, tool_name, process_name.as_deref()).await
         }
+        #[cfg(not(feature = "tool-presets"))]
+        ImportCommand::Tool { path, name, process_name } => {
+            let import_path = path.as_deref().ok_or_else(|| {
+                ConductorError::Workflow("import tool requires a path".to_string())
+            })?;
+            let tool_name = name.as_deref().ok_or_else(|| {
+                ConductorError::Workflow(
+                    "import tool requires --name when importing from path".to_string(),
+                )
+            })?;
+
+            import_tool(cas, machine_ncl, import_path, tool_name, process_name.as_deref()).await
+        }
         ImportCommand::Data { path, description } => {
             import_data(cas, machine_ncl, &path, description.as_deref()).await
         }
@@ -410,6 +431,7 @@ async fn handle_import(
 /// (release-asset download path), stores them in CAS, then wires
 /// `tool_configs.<tool>.content_map` plus executable metadata for immediate
 /// workflow use.
+#[cfg(feature = "tool-presets")]
 async fn import_common_tool(
     cas: ConfiguredCas,
     machine_ncl: &Path,
@@ -899,9 +921,11 @@ fn normalized_relative_path(base_dir: &Path, file: &Path) -> Result<String, Cond
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "tool-presets")]
+    use super::CommonExecutableTool;
     use super::{
-        Cli, CliCommand, CommonExecutableTool, ImportArgs, ImportCommand, passthrough_cas,
-        persisted_state_json_pretty, register_or_merge_imported_tool, resolve_import_process_name,
+        Cli, CliCommand, ImportArgs, ImportCommand, passthrough_cas, persisted_state_json_pretty,
+        register_or_merge_imported_tool, resolve_import_process_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -929,10 +953,9 @@ mod tests {
 
         match cli.command {
             CliCommand::Import(ImportArgs {
-                command: ImportCommand::Tool { path, preset, name, process_name },
+                command: ImportCommand::Tool { path, name, process_name, .. },
             }) => {
                 assert_eq!(path, Some(PathBuf::from("./tools/zip")));
-                assert!(preset.is_none());
                 assert_eq!(name, Some("zip".to_string()));
                 assert!(process_name.is_none());
             }
@@ -940,6 +963,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tool-presets")]
     #[test]
     fn parse_import_tool_preset_command() {
         let cli = Cli::parse_from(["conductor", "import", "tool", "--preset", "sd"]);
