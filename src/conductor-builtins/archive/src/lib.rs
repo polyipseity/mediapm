@@ -19,9 +19,10 @@
 use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
-#[cfg(feature = "cli")]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "cli")]
+use std::path::PathBuf;
 
 #[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
@@ -81,13 +82,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
-///
-/// # Errors
-///
-/// Returns a serialization error when descriptor map encoding to JSON fails.
 #[cfg(feature = "cli")]
-pub fn describe_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&describe())
+#[must_use]
+pub fn describe_json() -> String {
+    describe_json_compact()
 }
 
 /// Executes one archive request and returns transformed bytes.
@@ -159,7 +157,7 @@ pub fn run_cli_command<W: Write>(
     writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
     if cli.describe {
-        let descriptor = describe_json()?;
+        let descriptor = describe_json();
         writer.write_all(descriptor.as_bytes())?;
         return Ok(());
     }
@@ -177,34 +175,19 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-#[cfg(not(feature = "cli"))]
-type DescribeJsonError = String;
-
-#[cfg(feature = "cli")]
-type DescribeJsonError = serde_json::Error;
-
 /// Serializes [`describe`] for non-CLI callers without requiring CLI features.
 ///
-/// When the `cli` feature is disabled, this helper still provides deterministic
-/// descriptor JSON via a prebuilt string and never fails.
-///
-/// # Errors
-///
-/// Returns a serialization error only when the `cli` feature is enabled and
-/// descriptor JSON encoding fails. With `cli` disabled this helper always
-/// returns `Ok` with a deterministic JSON payload.
-pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
-    #[cfg(feature = "cli")]
-    {
-        describe_json()
-    }
-    #[cfg(not(feature = "cli"))]
-    {
-        Ok(
-            "{\n  \"is_impure\": \"false\",\n  \"summary\": \"pure archive builtin runtime transforming bytes to bytes\",\n  \"tool_id\": \"builtins.archive@1.0.0\",\n  \"tool_name\": \"archive\",\n  \"tool_version\": \"1.0.0\"\n}"
-                .to_string(),
-        )
-    }
+/// This helper is always infallible and deterministic.
+#[must_use]
+pub fn describe_json_compat() -> String {
+    describe_json_compact()
+}
+
+/// Returns one deterministic descriptor JSON string without serde dependencies.
+#[must_use]
+fn describe_json_compact() -> String {
+    "{\n  \"is_impure\": \"false\",\n  \"summary\": \"pure archive builtin runtime transforming bytes to bytes\",\n  \"tool_id\": \"builtins.archive@1.0.0\",\n  \"tool_name\": \"archive\",\n  \"tool_version\": \"1.0.0\"\n}"
+        .to_string()
 }
 
 /// Packs one directory tree into uncompressed ZIP bytes.
@@ -215,7 +198,7 @@ pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
 /// # Errors
 ///
 /// Returns an error when the source directory is missing/invalid, directory
-/// walking fails, ZIP entry writes fail, or ZIP finalization fails.
+/// enumeration fails, ZIP entry writes fail, or ZIP finalization fails.
 pub fn pack_directory_to_uncompressed_zip_bytes(
     source_dir: &Path,
     include_source_dir: bool,
@@ -249,36 +232,69 @@ pub fn pack_directory_to_uncompressed_zip_bytes(
         None
     };
 
-    for entry in walkdir::WalkDir::new(source_dir) {
-        let entry = entry.map_err(|err| format!("walkdir failed: {err}"))?;
-        let path = entry.path();
-        if path == source_dir {
-            if let Some(root_name) = &source_dir_name {
-                let mut root_entry = root_name.clone();
-                if !root_entry.ends_with('/') {
-                    root_entry.push('/');
-                }
-                writer
-                    .add_directory(root_entry, options)
-                    .map_err(|err| format!("adding root directory to zip failed: {err}"))?;
-            }
-            continue;
+    if let Some(root_name) = &source_dir_name {
+        let mut root_entry = root_name.clone();
+        if !root_entry.ends_with('/') {
+            root_entry.push('/');
         }
+        writer
+            .add_directory(root_entry, options)
+            .map_err(|err| format!("adding root directory to zip failed: {err}"))?;
+    }
 
+    pack_directory_entries_recursively(
+        &mut writer,
+        source_dir,
+        source_dir,
+        source_dir_name.as_deref(),
+        options,
+    )?;
+
+    writer
+        .finish()
+        .map_err(|err| format!("finalizing zip payload failed: {err}"))
+        .map(std::io::Cursor::into_inner)
+}
+
+/// Packs one directory recursively into an existing ZIP writer.
+///
+/// Entries are traversed in sorted lexical order for deterministic output.
+fn pack_directory_entries_recursively(
+    writer: &mut zip::ZipWriter<std::io::Cursor<Vec<u8>>>,
+    root_dir: &Path,
+    current_dir: &Path,
+    source_dir_name: Option<&str>,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(current_dir).map_err(|err| {
+        format!("reading source directory '{}' failed: {err}", current_dir.display())
+    })? {
+        entries.push(entry.map_err(|err| format!("reading source directory entry failed: {err}"))?);
+    }
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+
+    for entry in entries {
+        let path = entry.path();
         let relative =
-            path.strip_prefix(source_dir).map_err(|err| format!("strip prefix failed: {err}"))?;
+            path.strip_prefix(root_dir).map_err(|err| format!("strip prefix failed: {err}"))?;
         let mut name = relative.to_string_lossy().replace('\\', "/");
-        if let Some(root_name) = &source_dir_name {
+        if let Some(root_name) = source_dir_name {
             name = format!("{root_name}/{name}");
         }
 
-        if entry.file_type().is_dir() {
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("reading file type for '{}' failed: {err}", path.display()))?;
+
+        if file_type.is_dir() {
             if !name.ends_with('/') {
                 name.push('/');
             }
             writer
                 .add_directory(name, options)
                 .map_err(|err| format!("adding directory to zip failed: {err}"))?;
+            pack_directory_entries_recursively(writer, root_dir, &path, source_dir_name, options)?;
             continue;
         }
 
@@ -286,16 +302,13 @@ pub fn pack_directory_to_uncompressed_zip_bytes(
             .start_file(name, options)
             .map_err(|err| format!("starting zip file entry failed: {err}"))?;
 
-        let mut source = std::fs::File::open(path)
+        let mut source = std::fs::File::open(&path)
             .map_err(|err| format!("opening source file '{}' failed: {err}", path.display()))?;
-        std::io::copy(&mut source, &mut writer)
+        std::io::copy(&mut source, writer)
             .map_err(|err| format!("writing zip file entry failed: {err}"))?;
     }
 
-    writer
-        .finish()
-        .map_err(|err| format!("finalizing zip payload failed: {err}"))
-        .map(std::io::Cursor::into_inner)
+    Ok(())
 }
 
 /// Unpacks ZIP payload bytes into one destination directory.
@@ -582,7 +595,7 @@ mod tests {
     /// Verifies descriptor serialization keeps the stable builtin identifier.
     #[test]
     fn descriptor_json_contains_tool_id() {
-        let json = describe_json().expect("descriptor serialization should succeed");
+        let json = describe_json();
         assert!(json.contains("builtins.archive@1.0.0"));
     }
 }

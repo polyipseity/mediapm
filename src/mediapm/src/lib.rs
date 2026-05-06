@@ -24,10 +24,10 @@ mod tools;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use async_trait::async_trait;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
@@ -247,14 +247,16 @@ fn resolve_global_paths_or_error() -> Result<MediaPmGlobalPaths, MediaPmError> {
 }
 
 /// Async API contract for media source processing and sync.
-#[async_trait]
 pub trait MediaPmApi: Send + Sync {
     /// Processes a single source URI using the configured media pipeline policy.
-    async fn process_source(&self, uri: Url, permanent: bool)
-    -> Result<MediaPackage, MediaPmError>;
+    fn process_source(
+        &self,
+        uri: Url,
+        permanent: bool,
+    ) -> impl Future<Output = Result<MediaPackage, MediaPmError>> + Send;
 
     /// Reconciles declared media/tool state to filesystem/materialization state.
-    async fn sync_library(&self) -> Result<SyncSummary, MediaPmError>;
+    fn sync_library(&self) -> impl Future<Output = Result<SyncSummary, MediaPmError>> + Send;
 }
 
 /// Generic media service over a pluggable conductor implementation.
@@ -825,7 +827,6 @@ impl MediaPmService<SimpleConductor<InMemoryCas>> {
     }
 }
 
-#[async_trait]
 impl<C> MediaPmApi for MediaPmService<C>
 where
     C: ConductorApi,

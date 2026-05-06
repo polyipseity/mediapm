@@ -9,14 +9,13 @@ description = "Phase 2 built-in fs tool contract"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:serde_json"]
+cli = ["dep:clap"]
 
 [lints]
 workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"], optional = true }
-serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

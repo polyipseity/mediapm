@@ -9,16 +9,14 @@ description = "Phase 2 built-in archive tool contract (zip/tar.gz)"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:serde_json"]
+cli = ["dep:clap"]
 
 [lints]
 workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive"], optional = true }
-serde_json = { workspace = true, optional = true }
 tempfile.workspace = true
-walkdir.workspace = true
 zip.workspace = true
 
 [[bin]]

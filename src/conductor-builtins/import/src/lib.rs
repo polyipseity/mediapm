@@ -79,14 +79,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
-///
-/// # Errors
-///
-/// Returns a serialization error when the descriptor map cannot be rendered
-/// as valid JSON.
 #[cfg(feature = "cli")]
-pub fn describe_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&describe())
+#[must_use]
+pub fn describe_json() -> String {
+    describe_json_compact()
 }
 
 /// Executes one import request and returns imported payload bytes.
@@ -227,7 +223,7 @@ pub fn run_cli_command<W: Write>(
     writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
     if cli.describe {
-        let descriptor = describe_json()?;
+        let descriptor = describe_json();
         writer.write_all(descriptor.as_bytes())?;
         return Ok(());
     }
@@ -241,34 +237,19 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-#[cfg(not(feature = "cli"))]
-type DescribeJsonError = String;
-
-#[cfg(feature = "cli")]
-type DescribeJsonError = serde_json::Error;
-
 /// Serializes [`describe`] for non-CLI callers without requiring CLI features.
 ///
-/// When the `cli` feature is disabled, this helper still provides deterministic
-/// descriptor JSON via a prebuilt string and never fails.
-///
-/// # Errors
-///
-/// Returns a serialization error only when the `cli` feature is enabled and
-/// descriptor JSON encoding fails. With `cli` disabled this helper always
-/// returns `Ok` with a deterministic JSON payload.
-pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
-    #[cfg(feature = "cli")]
-    {
-        describe_json()
-    }
-    #[cfg(not(feature = "cli"))]
-    {
-        Ok(
-            "{\n  \"is_impure\": \"true\",\n  \"summary\": \"import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes\",\n  \"tool_id\": \"builtins.import@1.0.0\",\n  \"tool_name\": \"import\",\n  \"tool_version\": \"1.0.0\"\n}"
-                .to_string(),
-        )
-    }
+/// This helper is always infallible and deterministic.
+#[must_use]
+pub fn describe_json_compat() -> String {
+    describe_json_compact()
+}
+
+/// Returns one deterministic descriptor JSON string without serde dependencies.
+#[must_use]
+fn describe_json_compact() -> String {
+    "{\n  \"is_impure\": \"true\",\n  \"summary\": \"import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes\",\n  \"tool_id\": \"builtins.import@1.0.0\",\n  \"tool_name\": \"import\",\n  \"tool_version\": \"1.0.0\"\n}"
+        .to_string()
 }
 
 /// Performs URL fetch with strict integrity pinning.
@@ -696,7 +677,7 @@ mod tests {
     /// Verifies descriptor serialization keeps the stable builtin identifier.
     #[test]
     fn descriptor_json_contains_tool_id() {
-        let json = describe_json().expect("descriptor serialization should succeed");
+        let json = describe_json();
         assert!(json.contains("builtins.import@1.0.0"));
     }
 }

@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
-async-trait.workspace = true
 chromaprint-next.workspace = true
 clap = { workspace = true, optional = true }
 dotenvy.workspace = true

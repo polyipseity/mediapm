@@ -9,7 +9,7 @@ description = "Phase 2 built-in import tool contract"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:serde_json"]
+cli = ["dep:clap"]
 
 [lints]
 workspace = true
@@ -17,8 +17,7 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 clap = { workspace = true, features = ["derive"], optional = true }
-mediapm-conductor-builtin-archive = { path = "../archive" }
-serde_json = { workspace = true, optional = true }
+mediapm-conductor-builtin-archive = { path = "../archive", default-features = false }
 ureq.workspace = true
 url.workspace = true
 

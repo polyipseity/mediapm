@@ -47,7 +47,6 @@ ffmetadata = "0.1.2"
 flate2 = "1.1.4"
 fp-library = "0.17.0"
 fs4 = "1.1.0"
-futures-core = "0.3.31"
 futures-util = "0.3.31"
 memmap2 = "0.9.9"
 miette = { version = "7.6.0", features = ["derive"] }
@@ -84,7 +83,6 @@ tracing = "0.1.41"
 unicode-normalization = "0.1.24"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 url = "2.5.7"
-walkdir = "2.5.0"
 xz2 = "0.1.7"
 zerocopy = { version = "0.8", features = ["derive"] }
 zip = "8.6.0"
