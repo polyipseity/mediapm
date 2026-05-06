@@ -1285,6 +1285,17 @@ mod tests {
     }
 
     #[test]
+    fn parse_state_import_command() {
+        let cli = Cli::parse_from(["conductor", "state", "import", "state.json"]);
+        match cli.command {
+            CliCommand::State(StateArgs { command: Some(StateCommand::Import { path }) }) => {
+                assert_eq!(path, PathBuf::from("state.json"));
+            }
+            other => panic!("expected state import command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_state_edit_with_editor_override() {
         let cli = Cli::parse_from(["conductor", "state", "edit", "--editor", "code --wait"]);
         match cli.command {
