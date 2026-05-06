@@ -9,7 +9,7 @@ description = "Phase 3 media orchestration facade over conductor and CAS"
 
 [features]
 default = ["cli"]
-cli = ["dep:anyhow", "dep:clap"]
+cli = ["dep:anyhow", "dep:clap", "mediapm-cas/cli", "mediapm-conductor/cli"]
 
 [lints]
 workspace = true

@@ -9,11 +9,11 @@
 //! - CLI automation mutates only `conductor.machine.ncl`.
 //! - `conductor.ncl` remains user-edited input, but it shares the same schema.
 //! - CAS mutations always go through configured CAS backends.
-//! - passthrough commands forward stdio and preserve external tool output.
+//! - passthrough commands reuse the CAS CLI parser/dispatcher in-process.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
 use mediapm_cas::{
@@ -36,18 +36,6 @@ use crate::orchestration::SimpleConductor;
 
 /// Default runtime storage root used by the conductor CLI.
 const DEFAULT_CONDUCTOR_DIR: &str = ".conductor";
-
-/// Executable suffix used by workspace binaries on the active host platform.
-#[cfg(windows)]
-const WORKSPACE_BINARY_SUFFIX: &str = ".exe";
-
-/// Executable suffix used by workspace binaries on the active host platform.
-#[cfg(not(windows))]
-const WORKSPACE_BINARY_SUFFIX: &str = "";
-
-/// Maximum number of parent directories searched when sibling and PATH
-/// passthrough binary lookup both miss.
-const MAX_ANCESTOR_BINARY_SEARCH_LEVELS: usize = 6;
 
 /// Grouped runtime storage path arguments.
 #[derive(Debug, Clone, Args)]
@@ -231,6 +219,37 @@ pub async fn run_from_env() -> Result<(), ConductorError> {
     run(cli).await
 }
 
+/// Parses one explicit argv sequence and executes it.
+///
+/// Callers should include a program-name placeholder as argv[0].
+///
+/// # Errors
+///
+/// Returns any clap parsing error or command execution failure.
+pub async fn run_from_argv<I, T>(argv: I) -> Result<(), ConductorError>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let cli =
+        Cli::try_parse_from(argv).map_err(|error| ConductorError::Workflow(error.to_string()))?;
+    run(cli).await
+}
+
+/// Parses trailing passthrough arguments and executes the conductor CLI.
+///
+/// This helper prepends an internal argv[0] binary-name placeholder so parent
+/// CLIs can forward only trailing command arguments.
+///
+/// # Errors
+///
+/// Returns any clap parsing error or command execution failure.
+pub async fn run_from_passthrough_args(args: &[String]) -> Result<(), ConductorError> {
+    let passthrough_argv =
+        std::iter::once("mediapm-conductor".to_string()).chain(args.iter().cloned());
+    run_from_argv(passthrough_argv).await
+}
+
 /// Executes one parsed CLI command.
 ///
 /// # Errors
@@ -258,7 +277,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
         .unwrap_or_else(|| resolved_runtime_paths.cas_store_dir.to_string_lossy().to_string());
 
     match cli.command {
-        CliCommand::Cas(args) => passthrough_cas(&args.args),
+        CliCommand::Cas(args) => passthrough_cas(&args.args).await,
         other => {
             let schema_anchor = resolved_runtime_paths.conductor_schema_dir.as_path();
             export_nickel_config_schemas(schema_anchor)?;
@@ -730,154 +749,14 @@ async fn run_gc(
     Ok(())
 }
 
-/// Returns host-specific executable file name for one binary stem.
-#[must_use]
-fn workspace_binary_file_name(binary_stem: &str) -> String {
-    format!("{binary_stem}{WORKSPACE_BINARY_SUFFIX}")
-}
-
-/// Searches one ordered list of directories for the target passthrough binary.
-#[must_use]
-fn find_binary_in_paths<I>(binary_stem: &str, directories: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let binary_file_name = workspace_binary_file_name(binary_stem);
-    directories
-        .into_iter()
-        .map(|directory| directory.join(&binary_file_name))
-        .find(|candidate| candidate.is_file())
-}
-
-/// Searches PATH for the target passthrough binary.
-#[must_use]
-fn find_binary_in_system_path(binary_stem: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    find_binary_in_paths(binary_stem, std::env::split_paths(&path))
-}
-
-/// Searches parent directories for the target passthrough binary.
-#[must_use]
-fn find_binary_in_ancestors_from(
-    binary_stem: &str,
-    start_directory: &Path,
-    max_levels: usize,
-) -> Option<PathBuf> {
-    let mut current = Some(start_directory);
-    let mut levels_checked = 0usize;
-    while let Some(directory) = current {
-        if levels_checked > max_levels {
-            break;
-        }
-
-        if let Some(found) = find_binary_in_paths(binary_stem, [directory.to_path_buf()]) {
-            return Some(found);
-        }
-
-        current = directory.parent();
-        levels_checked = levels_checked.saturating_add(1);
-    }
-
-    None
-}
-
-/// Resolves one passthrough binary from env override, sibling path, PATH, or
-/// ancestor directories.
-fn resolve_workspace_binary_path(
-    binary_stem: &str,
-    env_override_name: Option<&str>,
-) -> Result<PathBuf, ConductorError> {
-    let binary_file_name = workspace_binary_file_name(binary_stem);
-    let current_executable = std::env::current_exe().map_err(|source| ConductorError::Io {
-        operation: "resolving current conductor executable path".to_string(),
-        path: PathBuf::from("<current-exe>"),
-        source,
-    })?;
-
-    let executable_directory = current_executable.parent().ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "current executable '{}' has no parent directory",
-            current_executable.display()
-        ))
-    })?;
-    let sibling_path = executable_directory.join(&binary_file_name);
-
-    let mut attempts = Vec::new();
-    if let Some(env_name) = env_override_name
-        && let Some(env_value) = std::env::var_os(env_name)
-    {
-        let env_path = PathBuf::from(env_value);
-        attempts.push(format!("${env_name}={}", env_path.display()));
-        if env_path.is_file() {
-            return Ok(env_path);
-        }
-    }
-
-    attempts.push(format!("sibling={}", sibling_path.display()));
-    if sibling_path.is_file() {
-        return Ok(sibling_path);
-    }
-
-    attempts.push(format!("PATH ({binary_file_name})"));
-    if let Some(path_match) = find_binary_in_system_path(binary_stem) {
-        return Ok(path_match);
-    }
-
-    attempts.push(format!("ancestor search (max {MAX_ANCESTOR_BINARY_SEARCH_LEVELS} levels)"));
-    if let Some(ancestor_match) = find_binary_in_ancestors_from(
-        binary_stem,
-        executable_directory,
-        MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
-    ) {
-        return Ok(ancestor_match);
-    }
-
-    let env_hint = env_override_name.map_or_else(
-        || "set an explicit passthrough binary path environment variable".to_string(),
-        |name| format!("set {name} to an absolute binary path"),
-    );
-
-    Err(ConductorError::Workflow(format!(
-        "passthrough binary '{binary_stem}' was not found (attempts: {}). Fix by {} or placing '{}' next to '{}' / on PATH",
-        attempts.join("; "),
-        env_hint,
-        binary_file_name,
-        current_executable.display(),
-    )))
-}
-
-/// Runs one workspace binary by name without build-if-missing behavior.
-fn run_workspace_binary(
-    _package_name: &str,
-    binary_stem: &str,
-    args: &[String],
-) -> Result<(), ConductorError> {
-    let env_override_name = match binary_stem {
-        "mediapm-cas" => Some("MEDIAPM_CAS_BINARY"),
-        _ => None,
-    };
-    let binary_path = resolve_workspace_binary_path(binary_stem, env_override_name)?;
-
-    let status =
-        Command::new(&binary_path).args(args).status().map_err(|source| ConductorError::Io {
-            operation: format!("launching workspace passthrough binary '{binary_stem}'"),
-            path: binary_path.clone(),
-            source,
-        })?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(ConductorError::Workflow(format!(
-            "workspace passthrough binary '{}' exited with status {status}",
-            binary_path.display()
-        )))
-    }
-}
-
-/// Executes passthrough to `mediapm-cas` through sibling workspace binaries.
-fn passthrough_cas(args: &[String]) -> Result<(), ConductorError> {
-    run_workspace_binary("mediapm-cas", "mediapm-cas", args)
+/// Executes passthrough to the Phase-1 CAS CLI in-process.
+///
+/// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
+/// so conductor does not require a sibling `mediapm-cas` executable.
+async fn passthrough_cas(args: &[String]) -> Result<(), ConductorError> {
+    mediapm_cas::cli::run_from_passthrough_args(args)
+        .await
+        .map_err(|error| ConductorError::Workflow(format!("cas passthrough failed: {error}")))
 }
 
 /// Loads `conductor.ncl` through versioned decoder, returning default when absent.
@@ -1021,10 +900,8 @@ fn normalized_relative_path(base_dir: &Path, file: &Path) -> Result<String, Cond
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CliCommand, CommonExecutableTool, ImportArgs, ImportCommand,
-        MAX_ANCESTOR_BINARY_SEARCH_LEVELS, find_binary_in_ancestors_from, find_binary_in_paths,
+        Cli, CliCommand, CommonExecutableTool, ImportArgs, ImportCommand, passthrough_cas,
         persisted_state_json_pretty, register_or_merge_imported_tool, resolve_import_process_name,
-        workspace_binary_file_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -1033,7 +910,6 @@ mod tests {
     use clap::Parser;
     use mediapm_cas::Hash;
     use std::collections::BTreeMap;
-    use std::fs;
     use std::path::PathBuf;
 
     #[test]
@@ -1081,60 +957,16 @@ mod tests {
         }
     }
 
-    /// Protects host-suffix executable-name rendering for passthrough lookup.
-    #[test]
-    fn workspace_binary_file_name_applies_host_suffix() {
-        assert_eq!(
-            workspace_binary_file_name("mediapm-cas"),
-            format!("mediapm-cas{}", super::WORKSPACE_BINARY_SUFFIX)
+    /// Protects in-process CAS passthrough routing with preserved trailing args.
+    #[tokio::test]
+    async fn passthrough_cas_reports_parse_errors_without_external_binary() {
+        let error = passthrough_cas(&["bad-subcommand".to_string()])
+            .await
+            .expect_err("invalid cas command should fail");
+        assert!(
+            error.to_string().contains("cas passthrough failed"),
+            "error should be wrapped with passthrough context"
         );
-    }
-
-    /// Protects deterministic directory-list binary lookup behavior.
-    #[test]
-    fn find_binary_in_paths_returns_first_existing_match() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join("first");
-        let second = root.path().join("second");
-        fs::create_dir_all(&first).expect("first dir");
-        fs::create_dir_all(&second).expect("second dir");
-
-        let binary_name = workspace_binary_file_name("mediapm-cas");
-        let binary_path = second.join(binary_name);
-        fs::write(&binary_path, b"stub").expect("binary");
-
-        let found = find_binary_in_paths(
-            "mediapm-cas",
-            vec![first.clone(), second.clone(), root.path().to_path_buf()],
-        )
-        .expect("binary should be found");
-
-        assert_eq!(found, binary_path);
-    }
-
-    /// Protects bounded ancestor lookup semantics for passthrough fallback.
-    #[test]
-    fn find_binary_in_ancestors_respects_max_level_budget() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let level_0 = root.path().join("l0");
-        let level_1 = level_0.join("l1");
-        let level_2 = level_1.join("l2");
-        fs::create_dir_all(&level_2).expect("nested directories");
-
-        let binary_name = workspace_binary_file_name("mediapm-cas");
-        let binary_path = level_0.join(&binary_name);
-        fs::write(&binary_path, b"stub").expect("binary");
-
-        let miss = find_binary_in_ancestors_from("mediapm-cas", &level_2, 1);
-        assert!(miss.is_none(), "max level budget should prevent reaching level_0");
-
-        let hit = find_binary_in_ancestors_from(
-            "mediapm-cas",
-            &level_2,
-            MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
-        )
-        .expect("ancestor lookup should reach level_0 with default budget");
-        assert_eq!(hit, binary_path);
     }
 
     #[test]

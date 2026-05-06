@@ -13,6 +13,8 @@
 //! - Async API contracts suitable for use by higher orchestration layers.
 
 mod api;
+#[cfg(feature = "cli")]
+pub mod cli;
 mod cli_visualization;
 mod codec;
 mod error;

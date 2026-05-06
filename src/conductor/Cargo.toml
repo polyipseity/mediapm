@@ -9,7 +9,7 @@ description = "Phase 2 orchestration contracts and state model for mediapm"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "mediapm-cas/cli"]
 
 [lints]
 workspace = true

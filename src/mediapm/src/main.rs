@@ -3,10 +3,9 @@
 //! This CLI exposes:
 //! - media/tool declarative state management,
 //! - sync/materialization orchestration,
-//! - passthrough commands to Phase 1 CAS and Phase 2 conductor CLIs.
+//! - passthrough command surfaces for Phase 1 CAS and Phase 2 conductor CLIs.
 
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
 use mediapm::{
@@ -16,18 +15,6 @@ use mediapm::{
     load_runtime_dotenv_for_root, resolve_default_global_paths,
 };
 use url::Url;
-
-/// Executable suffix used by workspace binaries on the active host platform.
-#[cfg(windows)]
-const WORKSPACE_BINARY_SUFFIX: &str = ".exe";
-
-/// Executable suffix used by workspace binaries on the active host platform.
-#[cfg(not(windows))]
-const WORKSPACE_BINARY_SUFFIX: &str = "";
-
-/// Maximum number of parent directories searched for sibling passthrough
-/// binaries when direct sibling and PATH lookups miss.
-const MAX_ANCESTOR_BINARY_SEARCH_LEVELS: usize = 6;
 
 /// `mediapm` phase-3 CLI.
 #[derive(Debug, Parser)]
@@ -424,10 +411,10 @@ async fn main() -> anyhow::Result<()> {
             BuiltinsCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
         },
         Command::Cas(args) => {
-            passthrough_cas(&args.args)?;
+            passthrough_cas(&args.args).await?;
         }
         Command::Conductor(args) => {
-            passthrough_conductor(&args.args)?;
+            passthrough_conductor(&args.args).await?;
         }
     }
     Ok(())
@@ -459,214 +446,28 @@ fn option_path_to_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
-/// Returns host-specific executable file name for one binary stem.
-#[must_use]
-fn workspace_binary_file_name(binary_stem: &str) -> String {
-    format!("{binary_stem}{WORKSPACE_BINARY_SUFFIX}")
+/// Executes Phase-1 CAS CLI passthrough in-process.
+///
+/// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
+/// so `mediapm cas ...` does not require a sibling `mediapm-cas` executable.
+async fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
+    mediapm_cas::cli::run_from_passthrough_args(args).await
 }
 
-/// Searches one ordered list of directories for the target passthrough binary.
-#[must_use]
-fn find_binary_in_paths<I>(binary_stem: &str, directories: I) -> Option<PathBuf>
-where
-    I: IntoIterator<Item = PathBuf>,
-{
-    let binary_file_name = workspace_binary_file_name(binary_stem);
-    directories
-        .into_iter()
-        .map(|directory| directory.join(&binary_file_name))
-        .find(|candidate| candidate.is_file())
-}
-
-/// Searches PATH for the target passthrough binary.
-#[must_use]
-fn find_binary_in_system_path(binary_stem: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    find_binary_in_paths(binary_stem, std::env::split_paths(&path))
-}
-
-/// Searches parent directories for the target passthrough binary.
-#[must_use]
-fn find_binary_in_ancestors_from(
-    binary_stem: &str,
-    start_directory: &Path,
-    max_levels: usize,
-) -> Option<PathBuf> {
-    let mut current = Some(start_directory);
-    let mut levels_checked = 0usize;
-    while let Some(directory) = current {
-        if levels_checked > max_levels {
-            break;
-        }
-
-        if let Some(found) = find_binary_in_paths(binary_stem, [directory.to_path_buf()]) {
-            return Some(found);
-        }
-
-        current = directory.parent();
-        levels_checked = levels_checked.saturating_add(1);
-    }
-
-    None
-}
-
-/// Resolves one passthrough binary from env override, sibling path, PATH, or
-/// ancestor directories.
-fn resolve_workspace_binary_path(
-    binary_stem: &str,
-    env_override_name: Option<&str>,
-) -> anyhow::Result<PathBuf> {
-    let binary_file_name = workspace_binary_file_name(binary_stem);
-    let current_executable = std::env::current_exe()?;
-    let executable_directory = current_executable
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("current executable has no parent directory"))?;
-    let sibling_path = executable_directory.join(&binary_file_name);
-
-    let mut attempts = Vec::new();
-    if let Some(env_name) = env_override_name
-        && let Some(env_value) = std::env::var_os(env_name)
-    {
-        let env_path = PathBuf::from(env_value);
-        attempts.push(format!("${env_name}={}", env_path.display()));
-        if env_path.is_file() {
-            return Ok(env_path);
-        }
-    }
-
-    attempts.push(format!("sibling={}", sibling_path.display()));
-    if sibling_path.is_file() {
-        return Ok(sibling_path);
-    }
-
-    attempts.push(format!("PATH ({binary_file_name})"));
-    if let Some(path_match) = find_binary_in_system_path(binary_stem) {
-        return Ok(path_match);
-    }
-
-    attempts.push(format!("ancestor search (max {MAX_ANCESTOR_BINARY_SEARCH_LEVELS} levels)"));
-    if let Some(ancestor_match) = find_binary_in_ancestors_from(
-        binary_stem,
-        executable_directory,
-        MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
-    ) {
-        return Ok(ancestor_match);
-    }
-
-    let env_hint = env_override_name.map_or_else(
-        || "set an explicit passthrough binary path environment variable".to_string(),
-        |name| format!("set {name} to an absolute binary path"),
-    );
-
-    anyhow::bail!(
-        "passthrough binary '{binary_stem}' was not found (attempts: {}). Fix by {} or placing '{}' next to '{}' / on PATH",
-        attempts.join("; "),
-        env_hint,
-        binary_file_name,
-        current_executable.display(),
-    );
-}
-
-/// Runs one workspace binary resolved for production-safe passthrough.
-fn run_workspace_binary(
-    _package_name: &str,
-    binary_stem: &str,
-    args: &[String],
-) -> anyhow::Result<()> {
-    let env_override_name = match binary_stem {
-        "mediapm-cas" => Some("MEDIAPM_CAS_BINARY"),
-        "mediapm-conductor" => Some("MEDIAPM_CONDUCTOR_BINARY"),
-        _ => None,
-    };
-    let binary_path = resolve_workspace_binary_path(binary_stem, env_override_name)?;
-
-    let status = ProcessCommand::new(&binary_path).args(args).status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!(
-            "workspace passthrough binary '{}' exited with status {status}",
-            binary_path.display()
-        )
-    }
-}
-
-/// Executes passthrough to Phase 1 CAS CLI using sibling workspace binaries.
-fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
-    run_workspace_binary("mediapm-cas", "mediapm-cas", args)
-}
-
-/// Executes passthrough to Phase 2 conductor CLI using sibling workspace binaries.
-fn passthrough_conductor(args: &[String]) -> anyhow::Result<()> {
-    run_workspace_binary("mediapm-conductor", "mediapm-conductor", args)
+/// Executes Phase-2 conductor CLI passthrough in-process.
+///
+/// This path reuses `mediapm-conductor` clap parsing and command dispatch
+/// directly, so `mediapm conductor ...` does not require a sibling
+/// `mediapm-conductor` executable.
+async fn passthrough_conductor(args: &[String]) -> anyhow::Result<()> {
+    mediapm_conductor::cli::run_from_passthrough_args(args).await.map_err(anyhow::Error::from)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use clap::Parser;
 
-    use super::{
-        Cli, MAX_ANCESTOR_BINARY_SEARCH_LEVELS, WORKSPACE_BINARY_SUFFIX,
-        find_binary_in_ancestors_from, find_binary_in_paths, workspace_binary_file_name,
-    };
-
-    /// Keeps executable-name suffix behavior stable across host platforms.
-    #[test]
-    fn workspace_binary_file_name_applies_host_suffix() {
-        assert_eq!(
-            workspace_binary_file_name("mediapm-cas"),
-            format!("mediapm-cas{WORKSPACE_BINARY_SUFFIX}")
-        );
-    }
-
-    /// Protects directory-list passthrough binary lookup semantics.
-    #[test]
-    fn find_binary_in_paths_returns_first_file_match() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join("first");
-        let second = root.path().join("second");
-        fs::create_dir_all(&first).expect("first dir");
-        fs::create_dir_all(&second).expect("second dir");
-
-        let binary_name = workspace_binary_file_name("mediapm-cas");
-        let binary_path = second.join(binary_name);
-        fs::write(&binary_path, b"stub").expect("binary file");
-
-        let found = find_binary_in_paths(
-            "mediapm-cas",
-            vec![first.clone(), second.clone(), root.path().to_path_buf()],
-        )
-        .expect("binary should be found");
-
-        assert_eq!(found, binary_path);
-    }
-
-    /// Protects bounded ancestor lookup semantics for passthrough fallbacks.
-    #[test]
-    fn find_binary_in_ancestors_respects_max_level_budget() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let level_0 = root.path().join("l0");
-        let level_1 = level_0.join("l1");
-        let level_2 = level_1.join("l2");
-        fs::create_dir_all(&level_2).expect("nested directories");
-
-        let binary_name = workspace_binary_file_name("mediapm-conductor");
-        let binary_path = level_0.join(&binary_name);
-        fs::write(&binary_path, b"stub").expect("binary");
-
-        let miss = find_binary_in_ancestors_from("mediapm-conductor", &level_2, 1);
-        assert!(miss.is_none(), "max level budget should prevent reaching level_0");
-
-        let hit = find_binary_in_ancestors_from(
-            "mediapm-conductor",
-            &level_2,
-            MAX_ANCESTOR_BINARY_SEARCH_LEVELS,
-        )
-        .expect("ancestor lookup should reach level_0 with default budget");
-        assert_eq!(hit, binary_path);
-    }
+    use super::Cli;
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
     #[test]
