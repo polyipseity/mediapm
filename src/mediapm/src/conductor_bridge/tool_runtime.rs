@@ -904,7 +904,7 @@ pub(super) fn default_max_retries(tool_name: &str) -> i32 {
 /// Merges existing runtime tool config with default policy and fresh content map.
 pub(super) fn merge_tool_config_defaults(
     existing: Option<&ToolConfigSpec>,
-    paths: &MediaPmPaths,
+    _paths: &MediaPmPaths,
     tool_name: &str,
     content_map: BTreeMap<String, Hash>,
     default_description: String,
@@ -916,7 +916,7 @@ pub(super) fn merge_tool_config_defaults(
     let mut max_concurrent_calls = default_limit;
     let mut max_retries = default_retries;
     let mut description = Some(default_description);
-    let mut input_defaults = default_input_defaults_for_tool(tool_name, paths, ffmpeg_slot_limits);
+    let mut input_defaults = default_input_defaults_for_tool(tool_name, ffmpeg_slot_limits);
     let mut env_vars = BTreeMap::new();
 
     if let Some(config) = existing {
@@ -960,7 +960,6 @@ pub(super) fn merge_tool_config_defaults(
 )]
 fn default_input_defaults_for_tool(
     tool_name: &str,
-    paths: &MediaPmPaths,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> BTreeMap<String, InputBinding> {
     let mut input_defaults = BTreeMap::from([
@@ -978,8 +977,6 @@ fn default_input_defaults_for_tool(
     }
 
     if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        let yt_dlp_cache_dir = paths.workspace_yt_dlp_cache_dir().to_string_lossy().to_string();
-
         input_defaults
             .insert("paths".to_string(), InputBinding::String(SANDBOX_DOWNLOADS_DIR.to_string()));
         input_defaults.insert(
@@ -1036,7 +1033,7 @@ fn default_input_defaults_for_tool(
         // Prevents single-item URLs from being treated as playlist downloads by default.
         // Explicitly set to "false" in steps that intentionally download full playlists.
         input_defaults.insert("no_playlist".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("cache_dir".to_string(), InputBinding::String(yt_dlp_cache_dir));
+        input_defaults.insert("cache_dir".to_string(), InputBinding::String(String::new()));
         input_defaults
             .insert("ffmpeg_location".to_string(), InputBinding::String("ffmpeg".to_string()));
     } else if tool_name.eq_ignore_ascii_case("ffmpeg") {
@@ -1092,9 +1089,6 @@ fn default_input_defaults_for_tool(
         input_defaults
             .insert(INPUT_SD_REPLACEMENT.to_string(), InputBinding::String(String::new()));
     } else if tool_name.eq_ignore_ascii_case("media-tagger") {
-        let media_tagger_cache_dir =
-            paths.workspace_media_tagger_cache_dir().to_string_lossy().to_string();
-
         input_defaults
             .insert("strict_identification".to_string(), InputBinding::String("true".to_string()));
         input_defaults
@@ -1120,8 +1114,7 @@ fn default_input_defaults_for_tool(
                 crate::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
             ),
         );
-        input_defaults
-            .insert("cache_dir".to_string(), InputBinding::String(media_tagger_cache_dir));
+        input_defaults.insert("cache_dir".to_string(), InputBinding::String(String::new()));
         input_defaults.insert(
             "cache_expiry_seconds".to_string(),
             InputBinding::String(
@@ -1906,20 +1899,12 @@ mod tests {
         find_workspace_root_for_target_dir, resolve_profile_adjacent_mediapm_binary_for_example,
     };
 
-    /// Creates stable fixture paths for default-input tests.
-    fn fixture_paths() -> crate::paths::MediaPmPaths {
-        crate::paths::MediaPmPaths::from_root("/workspace")
-    }
-
     /// Verifies generated input defaults include every declared managed-tool
     /// option key so runtime config remains explicit and override-friendly.
     #[test]
     fn input_defaults_include_all_declared_option_inputs() {
-        let paths = fixture_paths();
-
         for tool_name in ["yt-dlp", "ffmpeg", "rsgain", "media-tagger"] {
-            let defaults =
-                default_input_defaults_for_tool(tool_name, &paths, FfmpegSlotLimits::default());
+            let defaults = default_input_defaults_for_tool(tool_name, FfmpegSlotLimits::default());
             for option_name in option_input_names_for_tool(tool_name) {
                 assert!(
                     defaults.contains_key(*option_name),
@@ -1936,11 +1921,7 @@ mod tests {
     /// expected loudness profile and explicit peak-safety behavior.
     #[test]
     fn rsgain_defaults_match_expected_loudness_profile() {
-        let defaults = default_input_defaults_for_tool(
-            "rsgain",
-            &fixture_paths(),
-            FfmpegSlotLimits::default(),
-        );
+        let defaults = default_input_defaults_for_tool("rsgain", FfmpegSlotLimits::default());
 
         assert_eq!(defaults.get("target_lufs"), Some(&InputBinding::String("-18".to_string())));
         assert_eq!(defaults.get("album"), Some(&InputBinding::String("false".to_string())));
@@ -1955,9 +1936,7 @@ mod tests {
     /// unified subtitle capture enabled.
     #[test]
     fn yt_dlp_defaults_prefer_single_best_thumbnail_with_unified_subtitles() {
-        let paths = fixture_paths();
-        let defaults =
-            default_input_defaults_for_tool("yt-dlp", &paths, FfmpegSlotLimits::default());
+        let defaults = default_input_defaults_for_tool("yt-dlp", FfmpegSlotLimits::default());
 
         assert_eq!(defaults.get("write_subs"), Some(&InputBinding::String("true".to_string())));
         assert_eq!(defaults.get("sub_langs"), Some(&InputBinding::String("all".to_string())));
@@ -2015,12 +1994,7 @@ mod tests {
             defaults.get("download_archive"),
             Some(&InputBinding::String("downloads/archive.txt".to_string()))
         );
-        assert_eq!(
-            defaults.get("cache_dir"),
-            Some(&InputBinding::String(
-                paths.workspace_yt_dlp_cache_dir().to_string_lossy().to_string()
-            ))
-        );
+        assert_eq!(defaults.get("cache_dir"), Some(&InputBinding::String(String::new())));
     }
 
     /// Verifies unified subtitle input wiring controls both manual and
@@ -2051,21 +2025,14 @@ mod tests {
     /// runtime-root cache location, and one-day cache expiry budget.
     #[test]
     fn media_tagger_defaults_include_workspace_cache_and_expiry() {
-        let paths = fixture_paths();
-        let defaults =
-            default_input_defaults_for_tool("media-tagger", &paths, FfmpegSlotLimits::default());
+        let defaults = default_input_defaults_for_tool("media-tagger", FfmpegSlotLimits::default());
 
         assert_eq!(
             defaults.get("strict_identification"),
             Some(&InputBinding::String("true".to_string()))
         );
 
-        assert_eq!(
-            defaults.get("cache_dir"),
-            Some(&InputBinding::String(
-                paths.workspace_media_tagger_cache_dir().to_string_lossy().to_string()
-            ))
-        );
+        assert_eq!(defaults.get("cache_dir"), Some(&InputBinding::String(String::new())));
         assert_eq!(
             defaults.get("cache_expiry_seconds"),
             Some(&InputBinding::String(

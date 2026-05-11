@@ -109,6 +109,8 @@ enum ToolsCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Refreshes machine-managed runtime path defaults and dotenv scaffolding.
+    RefreshRuntime,
 }
 
 /// Media-source commands.
@@ -358,6 +360,12 @@ async fn main() -> anyhow::Result<()> {
                 if exit_code != 0 {
                     std::process::exit(exit_code);
                 }
+            }
+            ToolsCommand::RefreshRuntime => {
+                service.refresh_runtime_configuration()?;
+                println!(
+                    "refreshed mediapm-managed conductor runtime configuration and dotenv files"
+                );
             }
         },
         Command::Media { command } => match command {

@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
+use mediapm_conductor::runtime_env::{ensure_runtime_env_files, load_runtime_env_files};
 use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
     RuntimeStoragePaths, SimpleConductor,
@@ -58,31 +59,6 @@ pub use paths::MediaPmPaths;
 use crate::tools::downloader::{
     ToolCachePruneReport, ToolDownloadCache, default_global_tool_cache_root,
 };
-
-/// Canonical generated dotenv template for runtime credential guidance.
-const RUNTIME_DOTENV_TEMPLATE: &str = concat!(
-    "# mediapm runtime credential file\n",
-    "#\n",
-    "# This file is generated and loaded automatically by mediapm.\n",
-    "# Keep secrets here instead of committing them into mediapm.ncl.\n",
-    "#\n",
-    "# Copy/paste and replace placeholder values as needed.\n",
-    "# Lines beginning with # are comments.\n",
-    "# By default every environment-variable assignment is commented so\n",
-    "# shell/user-level environment values remain visible without .env overrides.\n",
-    "\n",
-    "# AcoustID API key used by media-tagger lookups.\n",
-    "# For mediapm sync workflows, add ACOUSTID_API_KEY to runtime.inherited_env_vars\n",
-    "# so conductor forwards this variable to tool subprocesses.\n",
-    "# ACOUSTID_API_KEY=replace-with-your-acoustid-api-key\n",
-    "\n",
-    "# Optional endpoint overrides for advanced/self-hosted setups.\n",
-    "# ACOUSTID_ENDPOINT=https://api.acoustid.org/v2/lookup\n",
-    "# MUSICBRAINZ_ENDPOINT=https://musicbrainz.org/ws/2\n",
-);
-
-/// Canonical colocated `.gitignore` content for runtime dotenv protection.
-const RUNTIME_DOTENV_GITIGNORE: &str = "/.env\n";
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -626,6 +602,25 @@ where
         })
     }
 
+    /// Refreshes mediapm-managed conductor runtime paths and dotenv files.
+    ///
+    /// This command updates machine-managed runtime defaults under
+    /// `mediapm.conductor.machine.ncl` so moved workspaces re-materialize
+    /// effective paths on next execution without running workflows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when config loading, dotenv setup, or document
+    /// normalization fails.
+    pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
+        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
+        load_runtime_dotenv(&effective_paths)?;
+        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        Ok(())
+    }
+
     /// Reconciles only tool requirements and state/runtime metadata.
     ///
     /// This operation intentionally avoids running conductor workflows or
@@ -885,61 +880,12 @@ fn ensure_and_load_mediapm_document(path: &Path) -> Result<MediaPmDocument, Medi
 
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
 fn load_runtime_dotenv(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    ensure_runtime_dotenv_files(paths)?;
-
-    dotenvy::from_path_override(&paths.env_file).map_err(|source| {
+    load_runtime_env_files(&paths.runtime_root).map_err(|source| {
         MediaPmError::Workflow(format!(
-            "loading runtime dotenv file '{}' failed: {source}",
-            paths.env_file.display()
+            "loading conductor runtime dotenv files under '{}' failed: {source}",
+            paths.runtime_root.display()
         ))
     })?;
-
-    Ok(())
-}
-
-/// Creates runtime `.env` and colocated `.gitignore` files when absent.
-fn ensure_runtime_dotenv_files(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    let dotenv_parent =
-        paths.env_file.parent().map_or_else(|| paths.runtime_root.clone(), Path::to_path_buf);
-
-    fs::create_dir_all(&dotenv_parent).map_err(|source| MediaPmError::Io {
-        operation: "creating runtime dotenv parent directory".to_string(),
-        path: dotenv_parent.clone(),
-        source,
-    })?;
-
-    if !paths.env_file.exists() {
-        fs::write(&paths.env_file, RUNTIME_DOTENV_TEMPLATE.as_bytes()).map_err(|source| {
-            MediaPmError::Io {
-                operation: "writing runtime dotenv template".to_string(),
-                path: paths.env_file.clone(),
-                source,
-            }
-        })?;
-    }
-
-    let gitignore_path = dotenv_parent.join(".gitignore");
-    let should_write_gitignore = match fs::read_to_string(&gitignore_path) {
-        Ok(current) => current != RUNTIME_DOTENV_GITIGNORE,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(source) => {
-            return Err(MediaPmError::Io {
-                operation: "reading runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            });
-        }
-    };
-
-    if should_write_gitignore {
-        fs::write(&gitignore_path, RUNTIME_DOTENV_GITIGNORE.as_bytes()).map_err(|source| {
-            MediaPmError::Io {
-                operation: "writing runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            }
-        })?;
-    }
 
     Ok(())
 }
@@ -1402,13 +1348,22 @@ mod tests {
         assert!(service.paths().conductor_machine_ncl.exists());
         assert!(service.paths().mediapm_state_ncl.exists());
         assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
         assert!(service.paths().runtime_root.join(".gitignore").exists());
 
         let dotenv_text =
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
-        assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
-        assert!(dotenv_text.contains("# ACOUSTID_ENDPOINT="));
-        assert!(dotenv_text.contains("# MUSICBRAINZ_ENDPOINT="));
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        assert!(dotenv_generated_text.contains("# @generated by mediapm tool sync"));
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
 
         let schema_dir =
             service.paths().schema_export_dir.as_ref().expect("default schema export dir");
@@ -1436,13 +1391,22 @@ mod tests {
         assert!(service.paths().conductor_machine_ncl.exists());
         assert!(service.paths().mediapm_state_ncl.exists());
         assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
         assert!(service.paths().runtime_root.join(".gitignore").exists());
 
         let dotenv_text =
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
-        assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
-        assert!(dotenv_text.contains("# ACOUSTID_ENDPOINT="));
-        assert!(dotenv_text.contains("# MUSICBRAINZ_ENDPOINT="));
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        assert!(dotenv_generated_text.contains("# @generated by mediapm tool sync"));
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
 
         let schema_dir =
             service.paths().schema_export_dir.as_ref().expect("default schema export dir");
