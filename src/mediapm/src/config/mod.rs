@@ -831,20 +831,19 @@ pub struct MediaPmState {
     /// Active tool id per logical tool name.
     #[serde(default)]
     pub active_tools: BTreeMap<String, String>,
-    /// Managed workflow step refresh state grouped by media id and step key.
+    /// Managed workflow step refresh state grouped by media id.
     ///
-    /// `mediapm` uses this machine-only state to decide whether a given media
-    /// step should refresh its impure execution identity or keep previously
-    /// materialized outputs.
+    /// This ordered list keeps prior explicit step snapshots in synthesis
+    /// order so reconciliation can forward-scan for exact matches.
     ///
-    /// Refresh policy is intentionally strict:
-    /// - refresh when the explicit user-facing step config changed, or
-    /// - refresh when the mediapm-managed impure timestamp is missing.
-    ///
-    /// Implicit managed defaults are not persisted in `explicit_config` and
-    /// therefore do not trigger refreshes by themselves.
+    /// Matching policy is intentionally strict and order-aware:
+    /// - for each current step, scan for the first exact `explicit_config`
+    ///   match after the last matched index,
+    /// - refresh when no exact match exists,
+    /// - after an exact match, refresh only when the matched
+    ///   `impure_timestamp` is missing.
     #[serde(default)]
-    pub workflow_step_state: BTreeMap<String, BTreeMap<String, ManagedWorkflowStepState>>,
+    pub workflow_states: BTreeMap<String, Vec<ManagedWorkflowStepState>>,
 }
 
 /// Timezone-independent mediapm step-refresh timestamp.
@@ -886,7 +885,7 @@ fn mediapm_state_is_empty(value: &MediaPmState) -> bool {
     value.managed_files.is_empty()
         && value.tool_registry.is_empty()
         && value.active_tools.is_empty()
-        && value.workflow_step_state.is_empty()
+        && value.workflow_states.is_empty()
 }
 
 /// Materialized file ledger entry.
@@ -4129,50 +4128,46 @@ mod tests {
     /// Protects workflow-step refresh state persistence by round-tripping
     /// explicit step config snapshots and mediapm-managed impure timestamps.
     #[test]
-    fn mediapm_state_round_trip_preserves_workflow_step_state() {
+    fn mediapm_state_round_trip_preserves_workflow_states() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("state.ncl");
         let mut state = MediaPmState::default();
-        state.workflow_step_state.insert(
+        state.workflow_states.insert(
             "demo-media".to_string(),
-            BTreeMap::from([
-                (
-                    "step-0".to_string(),
-                    super::ManagedWorkflowStepState {
-                        explicit_config: serde_json::json!({
-                            "tool": "yt-dlp",
-                            "output_variants": {
-                                "default": { "kind": "primary", "save": "full" }
-                            },
-                            "options": { "uri": "https://example.com/video" }
-                        }),
-                        impure_timestamp: Some(MediaPmImpureTimestamp {
-                            epoch_seconds: 123,
-                            subsec_nanos: 456,
-                        }),
-                    },
-                ),
-                (
-                    "step-1".to_string(),
-                    super::ManagedWorkflowStepState {
-                        explicit_config: serde_json::json!({
-                            "tool": "rsgain",
-                            "input_variants": ["default"],
-                            "output_variants": {
-                                "default": { "kind": "primary", "save": "full" }
-                            },
-                            "options": {}
-                        }),
-                        impure_timestamp: None,
-                    },
-                ),
-            ]),
+            vec![
+                super::ManagedWorkflowStepState {
+                    explicit_config: serde_json::json!({
+                        "tool": "yt-dlp",
+                        "output_variants": {
+                            "default": { "kind": "primary", "save": "full" }
+                        },
+                        "options": { "uri": "https://example.com/video" }
+                    }),
+                    impure_timestamp: Some(MediaPmImpureTimestamp {
+                        epoch_seconds: 123,
+                        subsec_nanos: 456,
+                    }),
+                },
+                super::ManagedWorkflowStepState {
+                    explicit_config: serde_json::json!({
+                        "tool": "rsgain",
+                        "input_variants": ["default"],
+                        "output_variants": {
+                            "default": { "kind": "primary", "save": "full" }
+                        },
+                        "options": {}
+                    }),
+                    impure_timestamp: None,
+                },
+            ],
         );
 
         save_mediapm_state_document(&path, &state).expect("save state.ncl");
         let decoded = load_mediapm_state_document(&path).expect("load state.ncl");
+        let rendered = std::fs::read_to_string(&path).expect("read state.ncl");
 
         assert_eq!(decoded, state);
+        assert!(rendered.contains("workflow_states = {"));
     }
 
     /// Protects strict state-file shape by rejecting non-state top-level keys.

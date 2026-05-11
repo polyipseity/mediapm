@@ -581,7 +581,7 @@ pub async fn sync_hierarchy(
         }
 
         let staged_path = staging_root.join(fs_relative_path);
-        let (managed_media_id, managed_variant, managed_file_hashes) = match entry.kind {
+        let (managed_media_id, managed_file_variants, managed_file_hashes) = match entry.kind {
             HierarchyEntryKind::Media => {
                 let source = resolve_hierarchy_source(document, entry)?;
 
@@ -647,7 +647,7 @@ pub async fn sync_hierarchy(
 
                 (
                     entry.media_id.clone(),
-                    resolved_variants.join("+"),
+                    BTreeMap::from([(relative_path.clone(), variant.clone())]),
                     BTreeMap::from([(relative_path.clone(), file_hash)]),
                 )
             }
@@ -692,6 +692,7 @@ pub async fn sync_hierarchy(
                 )?;
 
                 let mut extracted_entries = BTreeMap::new();
+                let mut extracted_entry_variants = BTreeMap::<String, String>::new();
                 for variant in &resolved_variants {
                     let variant_source =
                         resolve_variant_source_bytes(&lookup, &entry.media_id, source, variant)
@@ -708,10 +709,12 @@ pub async fn sync_hierarchy(
                         variant,
                         &compiled_rename_rules,
                         &mut extracted_entries,
+                        &mut extracted_entry_variants,
                     )?;
                 }
 
                 let mut managed_file_hashes = BTreeMap::new();
+                let mut managed_file_variants = BTreeMap::new();
                 for (entry_path, is_directory) in &extracted_entries {
                     if *is_directory {
                         continue;
@@ -741,9 +744,20 @@ pub async fn sync_hierarchy(
                     )
                     .await?;
                     managed_file_hashes.insert(managed_path, staged_hash);
+
+                    let entry_variant = extracted_entry_variants.get(entry_path).cloned().ok_or_else(
+                        || {
+                            MediaPmError::Workflow(format!(
+                                "missing extracted variant provenance for hierarchy path '{relative_path}' media '{}' extracted file '{entry_path}'",
+                                entry.media_id
+                            ))
+                        },
+                    )?;
+                    managed_file_variants
+                        .insert(join_relative_paths(fs_relative_path, entry_path), entry_variant);
                 }
 
-                (entry.media_id.clone(), resolved_variants.join("+"), managed_file_hashes)
+                (entry.media_id.clone(), managed_file_variants, managed_file_hashes)
             }
             HierarchyEntryKind::Playlist => {
                 if relative_path.ends_with('/') || relative_path.ends_with('\\') {
@@ -822,7 +836,10 @@ pub async fn sync_hierarchy(
 
                 (
                     "playlist".to_string(),
-                    format!("playlist:{}", playlist_format_label(entry.format)),
+                    BTreeMap::from([(
+                        relative_path.clone(),
+                        format!("playlist:{}", playlist_format_label(entry.format)),
+                    )]),
                     BTreeMap::from([(relative_path.clone(), playlist_hash)]),
                 )
             }
@@ -841,11 +858,19 @@ pub async fn sync_hierarchy(
         commit_staged_output(&staged_path, &final_path, entry.kind)?;
 
         for (managed_file_path, managed_hash) in managed_file_hashes {
+            let managed_variant = managed_file_variants
+                .get(&managed_file_path)
+                .cloned()
+                .ok_or_else(|| {
+                    MediaPmError::Workflow(format!(
+                        "missing managed variant metadata for materialized path '{managed_file_path}'"
+                    ))
+                })?;
             lock.managed_files.insert(
                 managed_file_path,
                 ManagedFileRecord {
                     media_id: managed_media_id.clone(),
-                    variant: managed_variant.clone(),
+                    variant: managed_variant,
                     hash: managed_hash.to_string(),
                     last_synced_unix_millis: unix_epoch_millis(),
                 },
@@ -2062,6 +2087,10 @@ fn extract_zip_member_bytes(zip_bytes: &[u8], member_key: &str) -> Result<Vec<u8
 /// destination directory. This helper enforces strict path-collision rules so
 /// no file or directory path can be overwritten by a later variant, except
 /// duplicate file paths where the first extracted file is retained.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "folder extraction requires explicit runtime context and mutable ledgers"
+)]
 fn extract_zip_folder_variant_bytes(
     zip_bytes: &[u8],
     target_dir: &Path,
@@ -2070,6 +2099,7 @@ fn extract_zip_folder_variant_bytes(
     variant: &str,
     rename_rules: &[CompiledHierarchyFolderRenameRule],
     extracted_entries: &mut BTreeMap<String, bool>,
+    extracted_entry_variants: &mut BTreeMap<String, String>,
 ) -> Result<(), MediaPmError> {
     let reader = std::io::Cursor::new(zip_bytes);
     let mut archive = zip::ZipArchive::new(reader).map_err(|error| {
@@ -2128,6 +2158,8 @@ fn extract_zip_folder_variant_bytes(
             if !should_write_entry {
                 continue;
             }
+
+            extracted_entry_variants.insert(renamed.clone(), variant.to_string());
 
             let file_path = target_dir.join(&renamed);
             if let Some(parent) = file_path.parent() {
@@ -3018,6 +3050,20 @@ mod tests {
                 "library/rickroll/Rick Astley - Never Gonna Give You Up [rickroll].url"
             )
         );
+        assert_eq!(
+            lock.managed_files
+                .get("library/rickroll/Rick Astley - Never Gonna Give You Up [rickroll].jpg")
+                .expect("jpg managed record")
+                .variant,
+            "sidecars"
+        );
+        assert_eq!(
+            lock.managed_files
+                .get("library/rickroll/Rick Astley - Never Gonna Give You Up [rickroll].url")
+                .expect("url managed record")
+                .variant,
+            "sidecars"
+        );
     }
 
     /// Protects overlapping media-folder commits by ensuring parent-folder
@@ -3097,6 +3143,20 @@ mod tests {
         assert!(paths.hierarchy_root_dir.join("library/media-a/thumb.webp").is_file());
         assert!(lock.managed_files.contains_key("library/media-a/sidecars/info.json"));
         assert!(lock.managed_files.contains_key("library/media-a/thumb.webp"));
+        assert_eq!(
+            lock.managed_files
+                .get("library/media-a/sidecars/info.json")
+                .expect("info managed record")
+                .variant,
+            "sidecars"
+        );
+        assert_eq!(
+            lock.managed_files
+                .get("library/media-a/thumb.webp")
+                .expect("thumb managed record")
+                .variant,
+            "root"
+        );
     }
 
     /// Protects nested folder-merge semantics by preserving existing children
@@ -3184,6 +3244,27 @@ mod tests {
         assert!(lock.managed_files.contains_key("library/media-a/sidecars/info.json"));
         assert!(lock.managed_files.contains_key("library/media-a/sidecars/links.url"));
         assert!(lock.managed_files.contains_key("library/media-a/thumb.webp"));
+        assert_eq!(
+            lock.managed_files
+                .get("library/media-a/sidecars/info.json")
+                .expect("info managed record")
+                .variant,
+            "sidecars"
+        );
+        assert_eq!(
+            lock.managed_files
+                .get("library/media-a/sidecars/links.url")
+                .expect("links managed record")
+                .variant,
+            "root"
+        );
+        assert_eq!(
+            lock.managed_files
+                .get("library/media-a/thumb.webp")
+                .expect("thumb managed record")
+                .variant,
+            "root"
+        );
     }
 
     /// Protects rename-rule replacement interpolation by supporting

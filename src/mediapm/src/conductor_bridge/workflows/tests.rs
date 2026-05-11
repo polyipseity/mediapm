@@ -197,15 +197,12 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
 
     let mut lock = MediaLockFile {
         active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
-        workflow_step_state: BTreeMap::from([(
+        workflow_states: BTreeMap::from([(
             media_id.clone(),
-            BTreeMap::from([(
-                "step-0".to_string(),
-                ManagedWorkflowStepState {
-                    explicit_config: explicit_snapshot.clone(),
-                    impure_timestamp: Some(preserved_timestamp),
-                },
-            )]),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: Some(preserved_timestamp),
+            }],
         )]),
         ..MediaLockFile::default()
     };
@@ -238,9 +235,9 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
     assert_eq!(workflow.steps[0].tool, old_tool);
 
     let stored = lock
-        .workflow_step_state
+        .workflow_states
         .get(&media_id)
-        .and_then(|steps| steps.get("step-0"))
+        .and_then(|steps| steps.first())
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, explicit_snapshot);
     assert_eq!(stored.impure_timestamp, Some(preserved_timestamp));
@@ -269,18 +266,15 @@ fn changed_step_config_forces_refresh_to_active_tool() {
 
     let mut lock = MediaLockFile {
         active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
-        workflow_step_state: BTreeMap::from([(
+        workflow_states: BTreeMap::from([(
             media_id.clone(),
-            BTreeMap::from([(
-                "step-0".to_string(),
-                ManagedWorkflowStepState {
-                    explicit_config: old_snapshot,
-                    impure_timestamp: Some(MediaPmImpureTimestamp {
-                        epoch_seconds: 1,
-                        subsec_nanos: 2,
-                    }),
-                },
-            )]),
+            vec![ManagedWorkflowStepState {
+                explicit_config: old_snapshot,
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 1,
+                    subsec_nanos: 2,
+                }),
+            }],
         )]),
         ..MediaLockFile::default()
     };
@@ -310,9 +304,9 @@ fn changed_step_config_forces_refresh_to_active_tool() {
     assert_eq!(workflow.steps[0].tool, new_tool);
 
     let stored = lock
-        .workflow_step_state
+        .workflow_states
         .get(&media_id)
-        .and_then(|steps| steps.get("step-0"))
+        .and_then(|steps| steps.first())
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, new_snapshot);
     assert!(stored.impure_timestamp.is_some());
@@ -340,15 +334,12 @@ fn missing_step_timestamp_forces_refresh_to_active_tool() {
 
     let mut lock = MediaLockFile {
         active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
-        workflow_step_state: BTreeMap::from([(
+        workflow_states: BTreeMap::from([(
             media_id.clone(),
-            BTreeMap::from([(
-                "step-0".to_string(),
-                ManagedWorkflowStepState {
-                    explicit_config: explicit_snapshot.clone(),
-                    impure_timestamp: None,
-                },
-            )]),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: None,
+            }],
         )]),
         ..MediaLockFile::default()
     };
@@ -381,12 +372,130 @@ fn missing_step_timestamp_forces_refresh_to_active_tool() {
     assert_eq!(workflow.steps[0].tool, new_tool);
 
     let stored = lock
-        .workflow_step_state
+        .workflow_states
         .get(&media_id)
-        .and_then(|steps| steps.get("step-0"))
+        .and_then(|steps| steps.first())
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, explicit_snapshot);
     assert!(stored.impure_timestamp.is_some());
+}
+
+/// Protects forward-scan state matching so later steps can still reuse an
+/// exact prior snapshot even when earlier steps no longer match.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this regression test keeps full setup inline to make matching behavior auditable"
+)]
+fn forward_scan_matching_preserves_later_matching_step_timestamp() {
+    let old_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@old".to_string();
+    let new_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@new".to_string();
+    let media_id = "forward-scan".to_string();
+
+    let step0_old = MediaStep {
+        tool: MediaStepTool::YtDlp,
+        input_variants: Vec::new(),
+        output_variants: BTreeMap::from([("v0".to_string(), yt_dlp_output_variant("primary"))]),
+        options: BTreeMap::from([(
+            "uri".to_string(),
+            TransformInputValue::String("https://example.com/a".to_string()),
+        )]),
+    };
+    let step0_new = MediaStep {
+        options: BTreeMap::from([(
+            "uri".to_string(),
+            TransformInputValue::String("https://example.com/a?v=2".to_string()),
+        )]),
+        ..step0_old.clone()
+    };
+    let step1 = MediaStep {
+        tool: MediaStepTool::YtDlp,
+        input_variants: Vec::new(),
+        output_variants: BTreeMap::from([("v1".to_string(), yt_dlp_output_variant("primary"))]),
+        options: BTreeMap::from([(
+            "uri".to_string(),
+            TransformInputValue::String("https://example.com/b".to_string()),
+        )]),
+    };
+
+    let step0_old_snapshot = serde_json::to_value(&step0_old).expect("serialize step0 old");
+    let step1_snapshot = serde_json::to_value(&step1).expect("serialize step1");
+    let step1_timestamp = MediaPmImpureTimestamp { epoch_seconds: 77, subsec_nanos: 88 };
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(
+            media_id.clone(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::new(),
+                steps: vec![step0_new, step1.clone()],
+            },
+        )]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile {
+        active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![
+                ManagedWorkflowStepState {
+                    explicit_config: step0_old_snapshot,
+                    impure_timestamp: Some(MediaPmImpureTimestamp {
+                        epoch_seconds: 1,
+                        subsec_nanos: 2,
+                    }),
+                },
+                ManagedWorkflowStepState {
+                    explicit_config: step1_snapshot.clone(),
+                    impure_timestamp: Some(step1_timestamp),
+                },
+            ],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![
+                WorkflowStepSpec {
+                    id: "0-0-yt-dlp".to_string(),
+                    tool: old_tool.clone(),
+                    inputs: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+                },
+                WorkflowStepSpec {
+                    id: "1-0-yt-dlp".to_string(),
+                    tool: old_tool.clone(),
+                    inputs: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+                },
+            ],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
+        .expect("plan should succeed");
+    let workflow =
+        plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
+    assert_eq!(workflow.steps.len(), 2);
+    assert_eq!(workflow.steps[0].tool, new_tool);
+    assert_eq!(workflow.steps[1].tool, old_tool);
+
+    let stored_states = lock.workflow_states.get(&media_id).expect("stored workflow states");
+    assert_eq!(stored_states.len(), 2);
+    assert_eq!(stored_states[1].explicit_config, step1_snapshot);
+    assert_eq!(stored_states[1].impure_timestamp, Some(step1_timestamp));
 }
 
 /// Protects managed external-data dedupe by merging overlapping hash policies

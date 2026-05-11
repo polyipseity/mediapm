@@ -43,8 +43,6 @@ mod yt_dlp;
 
 /// Prefix for default `mediapm`-managed workflow ids in machine documents.
 const MANAGED_WORKFLOW_PREFIX: &str = "mediapm.media.";
-/// Prefix for persisted per-media step-state keys.
-const MANAGED_WORKFLOW_STEP_STATE_KEY_PREFIX: &str = "step-";
 /// Prefix for `mediapm`-managed external-data descriptions.
 const MANAGED_EXTERNAL_DESCRIPTION_PREFIX: &str = "managed external data:";
 /// Legacy prefix used by older local-variant-only managed external-data rows.
@@ -200,10 +198,9 @@ pub(super) fn resolved_ffmpeg_family_output_extension(extension: Option<&str>) -
 ///   preserved untouched.
 ///
 /// Lock side effects:
-/// - updates `lock.workflow_step_state` refresh metadata for each
+/// - updates `lock.workflow_states` refresh metadata for each
 ///   `media.<id>.steps[<index>]` row,
-/// - prunes stale media/step refresh rows when sources or step indexes are
-///   removed.
+/// - prunes stale media refresh rows when sources are removed.
 pub(crate) fn reconcile_media_workflows(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
@@ -488,16 +485,10 @@ fn build_media_workflow_plan_with_limits(
         plan.workflows.insert(workflow_id, workflow);
     }
 
-    lock.workflow_step_state
+    lock.workflow_states
         .retain(|tracked_media_id, _| document.media.contains_key(tracked_media_id));
 
     Ok(plan)
-}
-
-/// Builds the persisted state key for one media step index.
-#[must_use]
-fn managed_workflow_step_state_key(step_index: usize) -> String {
-    format!("{MANAGED_WORKFLOW_STEP_STATE_KEY_PREFIX}{step_index}")
 }
 
 /// Serializes one explicit user-facing media step config snapshot.
@@ -509,17 +500,24 @@ fn explicit_media_step_config_snapshot(step: &MediaStep) -> Result<Value, MediaP
     })
 }
 
-/// Returns true when one media step requires refresh under mediapm policy.
+/// Finds the first exact step-state match after `start_index`.
 #[must_use]
-fn media_step_requires_refresh(
-    existing_state: Option<&ManagedWorkflowStepState>,
+fn find_matching_step_state_index(
+    existing_states: &[ManagedWorkflowStepState],
+    start_index: usize,
     explicit_config: &Value,
-) -> bool {
-    let Some(existing_state) = existing_state else {
-        return true;
-    };
+) -> Option<usize> {
+    existing_states
+        .iter()
+        .enumerate()
+        .skip(start_index)
+        .find_map(|(index, state)| (state.explicit_config == *explicit_config).then_some(index))
+}
 
-    existing_state.explicit_config != *explicit_config || existing_state.impure_timestamp.is_none()
+/// Returns true when one matched step-state still requires refresh.
+#[must_use]
+fn matched_state_requires_refresh(existing_state: Option<&ManagedWorkflowStepState>) -> bool {
+    existing_state.is_none_or(|state| state.impure_timestamp.is_none())
 }
 
 /// Generates one fresh monotonic impure timestamp for mediapm step refresh.
@@ -824,10 +822,11 @@ fn resolve_input_variant_producer<'a>(
 /// Creates ordered workflow steps from unified media-step declarations.
 ///
 /// This synthesis pass also updates per-step refresh state in
-/// `lock.workflow_step_state`:
+/// `lock.workflow_states`:
 /// - explicit config snapshots are persisted from user-authored step values,
-/// - step impure timestamps are refreshed only when explicit config changes or
-///   timestamps are missing,
+/// - for each step, explicit config matching forward-scans for the first
+///   exact match after the last matched state index,
+/// - timestamps are checked only for exactly matched states,
 /// - unchanged steps with existing timestamps preserve prior immutable tool ids
 ///   from the existing machine workflow when possible.
 #[expect(
@@ -849,19 +848,23 @@ fn synthesize_media_steps(
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
-    let mut retained_step_state_keys = BTreeSet::new();
+    let existing_media_states = lock.workflow_states.get(media_id).cloned().unwrap_or_default();
+    let mut next_media_states = Vec::with_capacity(source.steps.len());
+    let mut next_match_search_start = 0usize;
 
     for (step_index, step) in source.steps.iter().enumerate() {
-        let step_state_key = managed_workflow_step_state_key(step_index);
-        let _ = retained_step_state_keys.insert(step_state_key.clone());
         let explicit_step_config = explicit_media_step_config_snapshot(step)?;
-        let existing_step_state = lock
-            .workflow_step_state
-            .get(media_id)
-            .and_then(|steps| steps.get(&step_state_key))
-            .cloned();
-        let mut requires_refresh =
-            media_step_requires_refresh(existing_step_state.as_ref(), &explicit_step_config);
+        let matched_state_index = find_matching_step_state_index(
+            &existing_media_states,
+            next_match_search_start,
+            &explicit_step_config,
+        );
+        if let Some(matched_index) = matched_state_index {
+            next_match_search_start = matched_index.saturating_add(1);
+        }
+        let existing_step_state =
+            matched_state_index.and_then(|index| existing_media_states.get(index)).cloned();
+        let mut requires_refresh = matched_state_requires_refresh(existing_step_state.as_ref());
 
         let tool_id = resolve_step_tool_id(lock, machine, step.tool)?;
         let producer_snapshot = variant_producers.clone();
@@ -1059,19 +1062,16 @@ fn synthesize_media_steps(
             existing_step_state.and_then(|state| state.impure_timestamp)
         };
 
-        lock.workflow_step_state.entry(media_id.to_string()).or_default().insert(
-            step_state_key,
-            ManagedWorkflowStepState { explicit_config: explicit_step_config, impure_timestamp },
-        );
+        next_media_states.push(ManagedWorkflowStepState {
+            explicit_config: explicit_step_config,
+            impure_timestamp,
+        });
     }
 
-    let mut remove_media_step_state = false;
-    if let Some(step_state) = lock.workflow_step_state.get_mut(media_id) {
-        step_state.retain(|step_key, _| retained_step_state_keys.contains(step_key));
-        remove_media_step_state = step_state.is_empty();
-    }
-    if remove_media_step_state {
-        lock.workflow_step_state.remove(media_id);
+    if next_media_states.is_empty() {
+        lock.workflow_states.remove(media_id);
+    } else {
+        lock.workflow_states.insert(media_id.to_string(), next_media_states);
     }
 
     Ok(())

@@ -311,11 +311,26 @@ let MediaSourceV1 = {
 }
 in
 
+# ||| Machine-managed impure timestamp shape for workflow refresh state.
+let MediaPmImpureTimestampV1 = {
+  epoch_seconds | Dyn,
+  subsec_nanos | Dyn,
+}
+in
+
+# ||| One machine-managed workflow step refresh snapshot.
+let ManagedWorkflowStepStateV1 = {
+  explicit_config | Dyn,
+  impure_timestamp | MediaPmImpureTimestampV1 | optional,
+}
+in
+
 # ||| Machine-managed state payload for `state.ncl` persistence.
 let MediaPmStateV1 = {
   managed_files | Dyn | optional,
   tool_registry | Dyn | optional,
   active_tools | Dyn | optional,
+  workflow_states | { _ : Array ManagedWorkflowStepStateV1 } | optional,
 }
 in
 
