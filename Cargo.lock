@@ -2142,6 +2142,7 @@ dependencies = [
  "blake3",
  "clap",
  "dirs",
+ "dotenvy",
  "flate2",
  "fp-library",
  "futures-util",

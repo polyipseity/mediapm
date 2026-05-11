@@ -23,6 +23,7 @@ use crate::model::config::{
     parse_input_binding,
 };
 use crate::model::state::{OrchestrationState, merge_persistence_flags};
+use crate::runtime_env::load_runtime_env_files;
 
 use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor};
 use super::actors::execution_hub::{ExecutionHubClient, spawn_execution_hub_actor};
@@ -162,6 +163,10 @@ where
 
     /// Executes workflows using `conductor.ncl` and `conductor.machine.ncl` paths
     /// with explicit runtime options.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps workflow lifecycle sequencing explicit and auditable"
+    )]
     pub(super) async fn run_workflow_with_options(
         &mut self,
         user_ncl: &Path,
@@ -176,9 +181,15 @@ where
         let run_started_unix_nanos = Self::now_unix_nanos();
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        let mut effective_options = options;
+        let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
+        Self::append_unique_env_var_names(
+            &mut effective_options.runtime_inherited_env_vars,
+            &runtime_env_names,
+        );
         let conductor_state_config = resolved_runtime_paths.conductor_state_config.clone();
         let profile_output_path =
-            options.profile_output_path.clone().or_else(profile_output_path_from_env);
+            effective_options.profile_output_path.clone().or_else(profile_output_path_from_env);
 
         self.ensure_runtime_support().await?;
         let document_loader = self.document_loader.clone().ok_or_else(|| {
@@ -193,7 +204,7 @@ where
 
         let LoadedDocuments { machine_document, mut state_document, prior_state_pointer, unified } =
             document_loader
-                .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, options)
+                .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         let outermost_config_dir = Self::absolute_outermost_config_dir(
@@ -298,10 +309,13 @@ where
 
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        let mut runtime_inherited_env_vars = options.runtime_inherited_env_vars;
+        let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
+        Self::append_unique_env_var_names(&mut runtime_inherited_env_vars, &runtime_env_names);
         let load_options = RunWorkflowOptions {
             allow_tool_redefinition: false,
             runtime_storage_paths: options.runtime_storage_paths,
-            runtime_inherited_env_vars: options.runtime_inherited_env_vars,
+            runtime_inherited_env_vars,
             profile_output_path: None,
         };
         let LoadedDocuments { prior_state_pointer, unified, .. } = document_loader
@@ -344,10 +358,13 @@ where
 
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+        let mut runtime_inherited_env_vars = options.runtime_inherited_env_vars;
+        let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
+        Self::append_unique_env_var_names(&mut runtime_inherited_env_vars, &runtime_env_names);
         let load_options = RunWorkflowOptions {
             allow_tool_redefinition: false,
             runtime_storage_paths: options.runtime_storage_paths,
-            runtime_inherited_env_vars: options.runtime_inherited_env_vars,
+            runtime_inherited_env_vars,
             profile_output_path: None,
         };
         let LoadedDocuments { mut state_document, unified, .. } = document_loader
@@ -404,6 +421,22 @@ where
         }
 
         Ok(())
+    }
+
+    /// Appends env-var names with trimming and case-insensitive deduplication.
+    fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
+        for raw_name in source {
+            let trimmed = raw_name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if target.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+                continue;
+            }
+
+            target.push(trimmed.to_string());
+        }
     }
 
     /// Executes all unified workflows level by level using the execution-hub actor.

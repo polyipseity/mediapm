@@ -16,6 +16,7 @@ use std::str::FromStr;
 
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::ConductorError;
 use crate::model::state::{OutputSaveMode, PersistenceFlags};
@@ -1482,6 +1483,21 @@ pub fn evaluate_total_configuration_sources(
     state_source: &str,
 ) -> Result<(), ConductorError> {
     versions::evaluate_total_configuration_sources(user_source, machine_source, state_source)
+}
+
+/// Evaluates fixed Nickel migrations/contracts plus user, machine, and state
+/// configuration and returns the normalized compiled payload.
+///
+/// # Errors
+///
+/// Returns an error when any document fails version checks, schema validation,
+/// or merged configuration evaluation.
+pub fn compile_total_configuration_sources(
+    user_source: &str,
+    machine_source: &str,
+    state_source: &str,
+) -> Result<Value, ConductorError> {
+    versions::compile_total_configuration_sources(user_source, machine_source, state_source)
 }
 
 #[cfg(test)]

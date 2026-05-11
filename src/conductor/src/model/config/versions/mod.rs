@@ -188,12 +188,6 @@ where
     })
 }
 
-/// Evaluates one temporary Nickel main file purely for validation side effects.
-fn validate_main_file(main_file: &Path, context: &str) -> Result<(), ConductorError> {
-    let _: Value = evaluate_main_file_as(main_file, context)?;
-    Ok(())
-}
-
 /// Evaluates one raw Nickel document source and returns its exported value.
 ///
 /// This helper is intentionally schema-agnostic and is used for metadata
@@ -551,12 +545,13 @@ fn runtime_builtin_tool_spec(name: String, version: String) -> ToolSpec {
     }
 }
 
-/// Evaluates fixed Nickel migrations/contracts plus user and machine configuration together.
-pub(crate) fn evaluate_total_configuration_sources(
+/// Evaluates fixed Nickel migrations/contracts plus user and machine
+/// configuration and returns the normalized compiled payload.
+pub(crate) fn compile_total_configuration_sources(
     user_source: &str,
     machine_source: &str,
     state_source: &str,
-) -> Result<(), ConductorError> {
+) -> Result<Value, ConductorError> {
     validate_state_document_source_shape(state_source)?;
 
     let target_version = latest_version_among_sources(user_source, machine_source, state_source)?;
@@ -613,7 +608,18 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
         "writing temporary total Nickel validation wrapper",
     )?;
 
-    validate_main_file(&validate_path, "evaluating full Nickel configuration")
+    evaluate_main_file_as(&validate_path, "evaluating full Nickel configuration")
+}
+
+/// Evaluates fixed Nickel migrations/contracts plus user and machine
+/// configuration together for validation side effects.
+pub(crate) fn evaluate_total_configuration_sources(
+    user_source: &str,
+    machine_source: &str,
+    state_source: &str,
+) -> Result<(), ConductorError> {
+    let _ = compile_total_configuration_sources(user_source, machine_source, state_source)?;
+    Ok(())
 }
 
 /// Optic bridge from latest persisted Nickel state to runtime user document.

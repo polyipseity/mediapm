@@ -13,6 +13,7 @@ pub mod cli;
 pub mod error;
 pub mod model;
 pub mod orchestration;
+pub mod runtime_env;
 pub mod tools;
 
 #[cfg(feature = "tool-presets")]
