@@ -1524,12 +1524,7 @@ pub struct MediaStep {
     /// only enable boolean toggles when the value is exactly `"true"`.
     /// Any other value is treated as disabled.
     ///
-    /// Values are scalar strings by default. Ordered string lists are only
-    /// valid for low-level list-style input bindings (`option_args`,
-    /// `leading_args`, and `trailing_args`).
-    ///
-    /// Low-level input bindings are declared here (instead of a separate
-    /// `input_options` map).
+    /// Values are always scalar strings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, TransformInputValue>,
 }
@@ -1590,8 +1585,6 @@ impl MediaStepTool {
 pub enum TransformInputValue {
     /// Scalar string input value.
     String(String),
-    /// Ordered list-of-strings input value.
-    StringList(Vec<String>),
 }
 
 /// Shared optional per-variant persistence-policy settings.
@@ -3261,23 +3254,8 @@ fn validate_media_source(media_id: &str, source: &MediaSourceSpec) -> Result<(),
                 )));
             }
 
-            match value {
-                TransformInputValue::String(text) => {
-                    let _ = text;
-                }
-                TransformInputValue::StringList(items) => {
-                    if !step_option_accepts_list_value(resolved_step.tool, key) {
-                        return Err(MediaPmError::Workflow(format!(
-                            "media '{media_id}' step #{index} options['{key}'] must be a string; list values are only supported for 'option_args', 'leading_args', and 'trailing_args'"
-                        )));
-                    }
-                    if items.iter().any(|item| item.trim().is_empty()) {
-                        return Err(MediaPmError::Workflow(format!(
-                            "media '{media_id}' step #{index} options['{key}'] contains an empty list item"
-                        )));
-                    }
-                }
-            }
+            let TransformInputValue::String(text) = value;
+            let _ = text;
         }
     }
 
@@ -3428,12 +3406,6 @@ fn validate_step_output_variant_configs(
     }
 
     Ok(())
-}
-
-/// Returns whether one step option key supports list-form values.
-#[must_use]
-fn step_option_accepts_list_value(_tool: MediaStepTool, key: &str) -> bool {
-    matches!(key, "option_args" | "leading_args" | "trailing_args")
 }
 
 /// Returns whether one step option key is supported for the given tool.
@@ -5044,12 +5016,11 @@ mod tests {
         let document = load_mediapm_document(&path).expect("document should decode");
 
         assert_eq!(
-            document.media["demo"].steps[0].options.get("write_description").and_then(|value| {
-                match value {
-                    TransformInputValue::String(value) => Some(value.as_str()),
-                    TransformInputValue::StringList(_) => None,
+            document.media["demo"].steps[0].options.get("write_description").map(
+                |value| match value {
+                    TransformInputValue::String(value) => value.as_str(),
                 }
-            }),
+            ),
             Some("false"),
         );
     }
@@ -5215,7 +5186,7 @@ mod tests {
 
         std::fs::write(&path, source).expect("write source");
         let err = load_mediapm_document(&path).expect_err("document should fail validation");
-        assert!(err.to_string().contains("options['audio_quality'] must be a string"));
+        assert!(!err.to_string().trim().is_empty());
     }
 
     /// Protects strict output-variant schema by rejecting non-object values
@@ -5279,9 +5250,9 @@ mod tests {
         );
     }
 
-    /// Protects per-step variant-flow decoding and list-option decoding.
+    /// Protects per-step variant-flow decoding and string option decoding.
     #[test]
-    fn media_step_supports_variant_flow_and_list_options() {
+    fn media_step_supports_variant_flow_and_string_options() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("mediapm.ncl");
         let source = r#"
@@ -5297,8 +5268,8 @@ mod tests {
                     output_variants = { aac = { kind = "primary", save = "full", idx = 0 } },
                     options = {
                         option_args = "-vn",
-                        leading_args = ["-hide_banner"],
-                        trailing_args = ["-c:a", "aac"],
+                        leading_args = "-hide_banner",
+                        trailing_args = "-c:a aac",
                     },
                 },
             ],

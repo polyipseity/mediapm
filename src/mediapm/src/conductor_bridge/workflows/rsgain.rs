@@ -280,8 +280,8 @@ pub(super) fn synthesize_rsgain_step_chain(
             outputs: BTreeMap::from([(ffmpeg_output_capture_name(0), OutputPolicy::default())]),
         });
 
-        let (leading_args, trailing_args) = extract_step_list_args(media_id, step_index, step)?;
-        let option_inputs = step_option_input_bindings(step.tool, &step.options)?;
+        let (leading_args, trailing_args) = extract_step_list_args(step);
+        let option_inputs = step_option_input_bindings(step.tool, &step.options);
 
         let mut rsgain_inputs = BTreeMap::new();
         rsgain_inputs.insert(

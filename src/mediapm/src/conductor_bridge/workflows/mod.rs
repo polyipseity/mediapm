@@ -988,11 +988,10 @@ fn synthesize_media_steps(
                 }
 
                 if !matches!(step.tool, MediaStepTool::Import) {
-                    let (leading_args, trailing_args) =
-                        extract_step_list_args(media_id, step_index, &resolved_step)?;
+                    let (leading_args, trailing_args) = extract_step_list_args(&resolved_step);
 
                     let option_inputs =
-                        step_option_input_bindings(step.tool, &resolved_step.options)?;
+                        step_option_input_bindings(step.tool, &resolved_step.options);
 
                     inputs.insert(
                         INPUT_LEADING_ARGS.to_string(),
@@ -1279,48 +1278,40 @@ fn resolve_selected_dependency_tool_id(
 }
 
 /// Extracts low-level list-option bindings from step `options`.
-fn extract_step_list_args(
-    media_id: &str,
-    step_index: usize,
-    step: &MediaStep,
-) -> Result<(Vec<String>, Vec<String>), MediaPmError> {
+fn extract_step_list_args(step: &MediaStep) -> (Vec<String>, Vec<String>) {
     let leading_args = match step.options.get(INPUT_LEADING_ARGS) {
-        Some(TransformInputValue::StringList(items)) => items.clone(),
-        Some(TransformInputValue::String(_)) => {
-            return Err(MediaPmError::Workflow(format!(
-                "media '{media_id}' step #{step_index} options['{INPUT_LEADING_ARGS}'] must be a string list"
-            )));
-        }
+        Some(TransformInputValue::String(value)) => split_option_args(value),
         None => Vec::new(),
     };
 
     let trailing_args = match step.options.get(INPUT_TRAILING_ARGS) {
-        Some(TransformInputValue::StringList(items)) => items.clone(),
-        Some(TransformInputValue::String(_)) => {
-            return Err(MediaPmError::Workflow(format!(
-                "media '{media_id}' step #{step_index} options['{INPUT_TRAILING_ARGS}'] must be a string list"
-            )));
-        }
+        Some(TransformInputValue::String(value)) => split_option_args(value),
         None => Vec::new(),
     };
 
-    Ok((leading_args, trailing_args))
+    (leading_args, trailing_args)
+}
+
+/// Splits one whitespace-delimited option-arg string into argv items.
+#[must_use]
+fn split_option_args(value: &str) -> Vec<String> {
+    value.split_whitespace().map(ToString::to_string).collect::<Vec<_>>()
 }
 
 /// Builds deterministic tool input bindings from one step tool/options map.
 fn step_option_input_bindings(
     tool: MediaStepTool,
     options: &BTreeMap<String, TransformInputValue>,
-) -> Result<BTreeMap<String, InputBinding>, MediaPmError> {
+) -> BTreeMap<String, InputBinding> {
     let mut input_bindings = BTreeMap::new();
 
     for (key, value) in options {
-        if let Some(binding) = map_step_option_input_binding(tool, key, value)? {
+        if let Some(binding) = map_step_option_input_binding(tool, key, value) {
             input_bindings.insert(key.clone(), binding);
         }
     }
 
-    Ok(input_bindings)
+    input_bindings
 }
 
 /// Resolved output binding behavior for one step output-variant entry.
@@ -1573,40 +1564,29 @@ pub(super) fn map_step_option_input_binding(
     tool: MediaStepTool,
     key: &str,
     value: &TransformInputValue,
-) -> Result<Option<InputBinding>, MediaPmError> {
+) -> Option<InputBinding> {
     if matches!(tool, MediaStepTool::YtDlp) && key == "uri" {
-        return Ok(None);
+        return None;
     }
 
     if matches!(tool, MediaStepTool::MediaTagger) && key == "output_container" {
-        return Ok(None);
+        return None;
     }
 
     if matches!(key, INPUT_LEADING_ARGS | INPUT_TRAILING_ARGS) {
-        return Ok(None);
+        return None;
     }
 
     if key == "option_args" {
         let items = match value {
-            TransformInputValue::String(value) => {
-                value.split_whitespace().map(ToString::to_string).collect::<Vec<_>>()
-            }
-            TransformInputValue::StringList(items) => items.clone(),
+            TransformInputValue::String(value) => split_option_args(value),
         };
-        return Ok(Some(InputBinding::StringList(items)));
+        return Some(InputBinding::StringList(items));
     }
 
-    if matches!(value, TransformInputValue::StringList(_)) {
-        return Err(MediaPmError::Workflow(format!(
-            "tool '{}' option '{key}' must be a string; string_list is only supported for 'option_args', '{INPUT_LEADING_ARGS}', and '{INPUT_TRAILING_ARGS}'",
-            tool.as_str()
-        )));
-    }
-
-    Ok(Some(match value {
+    Some(match value {
         TransformInputValue::String(value) => InputBinding::String(value.clone()),
-        TransformInputValue::StringList(_) => unreachable!("list values are rejected above"),
-    }))
+    })
 }
 
 /// Resolves active immutable tool id for one logical tool name.

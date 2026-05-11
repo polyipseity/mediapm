@@ -1321,8 +1321,7 @@ fn step_option_bindings_keep_non_option_args_values_scalar() {
             ("merge_output_format".to_string(), TransformInputValue::String("mkv".to_string())),
             ("no_playlist".to_string(), TransformInputValue::String("true".to_string())),
         ]),
-    )
-    .expect("bindings");
+    );
 
     assert!(bindings.get("merge_output_format") == Some(&InputBinding::String("mkv".to_string())));
     assert!(bindings.get("no_playlist") == Some(&InputBinding::String("true".to_string())));
@@ -1338,8 +1337,7 @@ fn step_option_bindings_split_option_args_to_string_list() {
             "option_args".to_string(),
             TransformInputValue::String("--foo --bar=baz".to_string()),
         )]),
-    )
-    .expect("bindings");
+    );
 
     assert_eq!(
         bindings.get("option_args"),
@@ -1347,21 +1345,18 @@ fn step_option_bindings_split_option_args_to_string_list() {
     );
 }
 
-/// Protects scalar-first option typing by rejecting list values for
-/// non-`option_args` option inputs.
+/// Protects scalar-first option typing for non-`option_args` inputs.
 #[test]
-fn step_option_bindings_reject_string_list_for_non_option_args_option() {
-    let error = step_option_input_bindings(
+fn step_option_bindings_accept_scalar_for_non_option_args_option() {
+    let bindings = step_option_input_bindings(
         MediaStepTool::YtDlp,
         &BTreeMap::from([(
             "merge_output_format".to_string(),
-            TransformInputValue::StringList(vec!["mkv".to_string()]),
+            TransformInputValue::String("mkv".to_string()),
         )]),
-    )
-    .expect_err("non-option_args list option should fail");
+    );
 
-    assert!(error.to_string().contains("must be a string"));
-    assert!(error.to_string().contains("merge_output_format"));
+    assert_eq!(bindings.get("merge_output_format"), Some(&InputBinding::String("mkv".to_string())),);
 }
 
 /// Protects yt-dlp source URI routing so workflow synthesis does not bind
@@ -1374,8 +1369,7 @@ fn step_option_bindings_skip_yt_dlp_uri_option() {
             "uri".to_string(),
             TransformInputValue::String("https://example.com/v".to_string()),
         )]),
-    )
-    .expect("bindings");
+    );
 
     assert!(!bindings.contains_key("uri"));
 }

@@ -38,13 +38,13 @@ pub(super) fn synthesize_yt_dlp_step(
     let step_id = yt_dlp_step_id(step_index);
     let source_uri = step_option_scalar(step, "uri")
         .map_or_else(|| media_source_uri(media_id, source), ToString::to_string);
-    let (leading_args, trailing_args) = extract_step_list_args(media_id, step_index, step)?;
+    let (leading_args, trailing_args) = extract_step_list_args(step);
 
     let mut inputs = BTreeMap::new();
     inputs.insert(INPUT_SOURCE_URL.to_string(), InputBinding::String(source_uri));
     inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
     inputs.insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
-    inputs.extend(step_option_input_bindings(step.tool, &step.options)?);
+    inputs.extend(step_option_input_bindings(step.tool, &step.options));
 
     let mut outputs = BTreeMap::new();
     let mut pending_variant_updates = Vec::new();

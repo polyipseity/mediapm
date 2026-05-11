@@ -4185,10 +4185,7 @@ mod tests {
                         ("uri".to_string(), TransformInputValue::String(source_uri.to_string())),
                         (
                             "leading_args".to_string(),
-                            TransformInputValue::StringList(vec![
-                                "--format".to_string(),
-                                "bestaudio/best".to_string(),
-                            ]),
+                            TransformInputValue::String("--format bestaudio/best".to_string()),
                         ),
                     ]),
                 }],
@@ -4270,10 +4267,7 @@ mod tests {
                     ("uri".to_string(), TransformInputValue::String(source_uri.to_string())),
                     (
                         "leading_args".to_string(),
-                        TransformInputValue::StringList(vec![
-                            "--format".to_string(),
-                            "bestaudio/best".to_string(),
-                        ]),
+                        TransformInputValue::String("--format bestaudio/best".to_string()),
                     ),
                 ]),
             }],

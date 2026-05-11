@@ -69,8 +69,8 @@ pub(super) fn synthesize_ffmpeg_step(
         }
     }
 
-    let (leading_args, trailing_args) = extract_step_list_args(media_id, step_index, step)?;
-    let option_inputs = step_option_input_bindings(step.tool, &step.options)?;
+    let (leading_args, trailing_args) = extract_step_list_args(step);
+    let option_inputs = step_option_input_bindings(step.tool, &step.options);
     inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
     inputs.insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
     inputs.extend(option_inputs);
