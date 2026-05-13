@@ -308,17 +308,20 @@ async fn add_media_source_sets_remote_download_defaults() {
         matches!(metadata.get("title"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "title")
     );
     assert!(
+        matches!(metadata.get("artist"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "uploader")
+    );
+    assert!(
         matches!(metadata.get("video_id"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "id")
     );
     assert!(matches!(
         metadata.get("video_ext"),
         Some(MediaMetadataValue::Variant(binding))
-            if binding.variant == "infojson"
-                && binding.metadata_key == "ext"
+            if binding.variant == "video_tagged"
+                && binding.metadata_key == "format_name"
                 && binding
                     .transform
                     .as_ref()
-                    .is_some_and(|transform| transform.pattern == "(.+)" && transform.replacement == ".$1")
+                    .is_some_and(|transform| transform.pattern == "(?i)matroska(?:,.*)?" && transform.replacement == ".mkv")
     ));
 
     assert!(source.title.as_deref().is_some_and(|title| !title.trim().is_empty()));

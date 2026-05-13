@@ -313,8 +313,13 @@ mod tests {
                 let variants: BTreeSet<_> = media_root
                     .children
                     .iter()
-                    .map(|child| {
-                        child.variant.clone().expect("preset media child should define variant")
+                    .flat_map(|child| {
+                        let mut values = Vec::new();
+                        if let Some(variant) = child.variant.clone() {
+                            values.push(variant);
+                        }
+                        values.extend(child.variants.clone());
+                        values
                     })
                     .collect();
                 (node.path.clone(), variants)
@@ -325,17 +330,23 @@ mod tests {
             hierarchy_by_folder
                 .get(&manifest.local_hierarchy_folder)
                 .expect("local preset folder should exist"),
-            &BTreeSet::from(["default".to_string(), "normalized".to_string()]),
-            "local preset should project tagged + untagged media variants"
+            &BTreeSet::from(["media".to_string()]),
+            "local preset should project only the final pipeline variant"
         );
         assert_eq!(
             hierarchy_by_folder
                 .get(&manifest.yt_dlp_hierarchy_folder)
                 .expect("yt-dlp preset folder should exist"),
             &BTreeSet::from([
-                "default".to_string(),
+                "archive".to_string(),
+                "description".to_string(),
                 "infojson".to_string(),
-                "normalized".to_string(),
+                "links".to_string(),
+                "subtitles".to_string(),
+                "subtitles_en".to_string(),
+                "thumbnails".to_string(),
+                "video".to_string(),
+                "video_tagged".to_string(),
             ]),
             "yt-dlp preset should follow demo-style media + infojson projection without sidecars folder"
         );
