@@ -28,12 +28,15 @@ use crate::config::{
 use crate::error::MediaPmError;
 use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
+use crate::tools::catalog::tool_catalog_entry;
+use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
 use super::documents::{load_machine_document, save_machine_document};
 use super::tool_runtime::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, FfmpegSlotLimits,
-    ffmpeg_cover_slot_enabled_input_name, ffmpeg_input_content_name, ffmpeg_output_capture_name,
-    ffmpeg_output_file_path, ffmpeg_output_path_input_name, resolve_ffmpeg_slot_limits,
+    build_tool_spec, default_tool_config_description, ffmpeg_cover_slot_enabled_input_name,
+    ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_path,
+    ffmpeg_output_path_input_name, merge_tool_config_defaults, resolve_ffmpeg_slot_limits,
 };
 
 mod ffmpeg;
@@ -206,8 +209,43 @@ pub(crate) fn reconcile_media_workflows(
     document: &MediaPmDocument,
     lock: &mut MediaLockFile,
 ) -> Result<(), MediaPmError> {
+    reconcile_media_workflows_with_mode(paths, document, lock, false)
+}
+
+/// Reconciles managed media workflows while permitting unresolved-tool
+/// placeholders for config-only edit flows.
+///
+/// This mode is used by source/hierarchy configuration commands that mutate
+/// `mediapm.ncl` without running tool provisioning. It keeps generated
+/// conductor machine workflows populated for inspection by synthesizing
+/// placeholder active tools only when required logical tools are missing.
+pub(crate) fn reconcile_media_workflows_for_config_edits(
+    paths: &MediaPmPaths,
+    document: &MediaPmDocument,
+    lock: &mut MediaLockFile,
+) -> Result<(), MediaPmError> {
+    reconcile_media_workflows_with_mode(paths, document, lock, true)
+}
+
+/// Reconciles one workflow per media source into machine config with optional
+/// unresolved-tool placeholder fallback.
+fn reconcile_media_workflows_with_mode(
+    paths: &MediaPmPaths,
+    document: &MediaPmDocument,
+    lock: &mut MediaLockFile,
+    allow_unresolved_tool_placeholders: bool,
+) -> Result<(), MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
+    if allow_unresolved_tool_placeholders {
+        ensure_active_tool_placeholders_for_media_steps(
+            paths,
+            document,
+            &mut machine,
+            lock,
+            ffmpeg_slot_limits,
+        )?;
+    }
     let plan = build_media_workflow_plan_with_limits(document, lock, &machine, ffmpeg_slot_limits)?;
     let override_ids = explicit_managed_workflow_overrides(document);
     let mut managed_external_data = plan.external_data;
@@ -236,6 +274,136 @@ pub(crate) fn reconcile_media_workflows(
     }
 
     save_machine_document(&paths.conductor_machine_ncl, &machine)
+}
+
+/// Ensures required logical media tools are represented by active tool ids.
+///
+/// When add/remove config commands run before explicit tool sync, this helper
+/// seeds deterministic unresolved placeholders so workflow synthesis can still
+/// build managed workflow rows for examples and config inspection.
+fn ensure_active_tool_placeholders_for_media_steps(
+    paths: &MediaPmPaths,
+    document: &MediaPmDocument,
+    machine: &mut MachineNickelDocument,
+    lock: &mut MediaLockFile,
+    ffmpeg_slot_limits: FfmpegSlotLimits,
+) -> Result<(), MediaPmError> {
+    for logical_tool_name in required_logical_tool_names_for_media_steps(document) {
+        ensure_active_tool_placeholder(
+            paths,
+            machine,
+            lock,
+            logical_tool_name,
+            ffmpeg_slot_limits,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Returns logical tool names required by configured media-step synthesis.
+#[must_use]
+fn required_logical_tool_names_for_media_steps(
+    document: &MediaPmDocument,
+) -> BTreeSet<&'static str> {
+    let mut required = BTreeSet::new();
+
+    for source in document.media.values() {
+        for step in &source.steps {
+            match step.tool {
+                MediaStepTool::YtDlp => {
+                    required.insert("yt-dlp");
+                }
+                MediaStepTool::Import => {}
+                MediaStepTool::Ffmpeg => {
+                    required.insert("ffmpeg");
+                }
+                MediaStepTool::Rsgain => {
+                    required.insert("rsgain");
+                    required.insert("ffmpeg");
+                    required.insert("sd");
+                }
+                MediaStepTool::MediaTagger => {
+                    required.insert("media-tagger");
+                    required.insert("ffmpeg");
+                }
+            }
+        }
+    }
+
+    required
+}
+
+/// Ensures one logical media tool maps to a machine-visible active tool id.
+fn ensure_active_tool_placeholder(
+    paths: &MediaPmPaths,
+    machine: &mut MachineNickelDocument,
+    lock: &mut MediaLockFile,
+    logical_tool_name: &str,
+    ffmpeg_slot_limits: FfmpegSlotLimits,
+) -> Result<(), MediaPmError> {
+    if lock
+        .active_tools
+        .get(logical_tool_name)
+        .is_some_and(|active_tool_id| machine.tools.contains_key(active_tool_id))
+    {
+        return Ok(());
+    }
+
+    let placeholder_tool_id = unresolved_placeholder_tool_id(logical_tool_name);
+    let placeholder_payload =
+        unresolved_placeholder_payload(logical_tool_name, &placeholder_tool_id)?;
+    if !machine.tools.contains_key(&placeholder_tool_id) {
+        machine.tools.insert(
+            placeholder_tool_id.clone(),
+            build_tool_spec(paths, logical_tool_name, &placeholder_payload, ffmpeg_slot_limits),
+        );
+    }
+    machine.tool_configs.insert(
+        placeholder_tool_id.clone(),
+        merge_tool_config_defaults(
+            machine.tool_configs.get(&placeholder_tool_id),
+            paths,
+            logical_tool_name,
+            BTreeMap::new(),
+            default_tool_config_description(
+                logical_tool_name,
+                &placeholder_payload.identity,
+                placeholder_payload.catalog.description,
+            ),
+            ffmpeg_slot_limits,
+        ),
+    );
+    lock.active_tools.insert(logical_tool_name.to_string(), placeholder_tool_id);
+
+    Ok(())
+}
+
+/// Builds deterministic placeholder id for one unresolved logical tool name.
+#[must_use]
+fn unresolved_placeholder_tool_id(logical_tool_name: &str) -> String {
+    format!(
+        "mediapm.tools.{}+mediapm-unresolved@latest",
+        logical_tool_name.trim().to_ascii_lowercase()
+    )
+}
+
+/// Builds placeholder provisioned payload for unresolved logical tools.
+fn unresolved_placeholder_payload(
+    logical_tool_name: &str,
+    placeholder_tool_id: &str,
+) -> Result<ProvisionedToolPayload, MediaPmError> {
+    let catalog = tool_catalog_entry(logical_tool_name)?;
+    Ok(ProvisionedToolPayload {
+        tool_id: placeholder_tool_id.to_string(),
+        command_selector: format!("unresolved/{logical_tool_name}"),
+        content_entries: BTreeMap::new(),
+        identity: ResolvedToolIdentity::default(),
+        source_label: "mediapm unresolved placeholder".to_string(),
+        source_identifier: "mediapm-unresolved".to_string(),
+        catalog,
+        warnings: Vec::new(),
+    })
 }
 
 /// Collects managed external-data roots from machine tool content and lock

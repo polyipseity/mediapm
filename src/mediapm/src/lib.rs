@@ -314,6 +314,30 @@ where
         merge_runtime_storage(config_runtime_storage, &self.runtime_storage_overrides)
     }
 
+    /// Reconciles managed workflows for config-only edit commands.
+    ///
+    /// This helper keeps conductor machine workflow rows synchronized after
+    /// source/hierarchy mutations even when explicit tool sync is deferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when conductor documents cannot be prepared,
+    /// workflow reconciliation fails, or lock state cannot be persisted.
+    fn reconcile_workflows_after_config_edit(
+        &self,
+        document: &MediaPmDocument,
+    ) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows_for_config_edits(
+            &effective_paths,
+            document,
+            &mut lock,
+        )?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)
+    }
+
     /// Adds one online media source to `mediapm.ncl`.
     ///
     /// # Errors
@@ -432,6 +456,7 @@ where
         );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
@@ -481,6 +506,7 @@ where
         let source_description = description
             .unwrap_or_else(|| build_local_default_description(&absolute, &source_title));
         let source_extension_with_dot = local_extension_with_dot(&absolute);
+        let hash_text = hash.to_string();
 
         document.media.insert(
             media_id.clone(),
@@ -500,54 +526,11 @@ where
                     ),
                 ])),
                 variant_hashes: BTreeMap::new(),
-                steps: vec![
-                    MediaStep {
-                        tool: MediaStepTool::Import,
-                        input_variants: Vec::new(),
-                        output_variants: BTreeMap::from([(
-                            "source".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                                "save": "full",
-                            }),
-                        )]),
-                        options: BTreeMap::from([
-                            (
-                                "kind".to_string(),
-                                TransformInputValue::String("cas_hash".to_string()),
-                            ),
-                            ("hash".to_string(), TransformInputValue::String(hash.to_string())),
-                        ]),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::Rsgain,
-                        input_variants: vec!["source".to_string()],
-                        output_variants: BTreeMap::from([(
-                            "normalized".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                                "save": "full",
-                            }),
-                        )]),
-                        options: BTreeMap::new(),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::MediaTagger,
-                        input_variants: vec!["normalized".to_string()],
-                        output_variants: BTreeMap::from([(
-                            "default".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                                "save": "full",
-                            }),
-                        )]),
-                        options: BTreeMap::new(),
-                    },
-                ],
+                steps: local_source_default_steps(&hash_text),
             },
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
@@ -589,6 +572,7 @@ where
         ));
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(())
     }
 
@@ -613,6 +597,7 @@ where
         let removed_hierarchy_nodes =
             remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(removed_hierarchy_nodes)
     }
 
@@ -637,6 +622,7 @@ where
         let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
         if removed_nodes > 0 {
             save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+            self.reconcile_workflows_after_config_edit(&document)?;
         }
         Ok(removed_nodes)
     }
@@ -1378,6 +1364,58 @@ fn local_extension_with_dot(path: &Path) -> String {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map_or_else(|| ".bin".to_string(), |value| format!(".{value}"))
+}
+
+/// Builds default managed transform chain for one local-source CAS hash.
+///
+/// The generated chain keeps local ingest semantics aligned with
+/// `media add --preset local` defaults:
+/// `import -> rsgain -> media-tagger`, with full-save policy on each produced
+/// variant so downstream hierarchy presets can project both normalized and
+/// tagged outputs deterministically.
+#[must_use]
+fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
+    vec![
+        MediaStep {
+            tool: MediaStepTool::Import,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "source".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                    "save": "full",
+                }),
+            )]),
+            options: BTreeMap::from([
+                ("kind".to_string(), TransformInputValue::String("cas_hash".to_string())),
+                ("hash".to_string(), TransformInputValue::String(hash_text.to_string())),
+            ]),
+        },
+        MediaStep {
+            tool: MediaStepTool::Rsgain,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([(
+                "normalized".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                    "save": "full",
+                }),
+            )]),
+            options: BTreeMap::new(),
+        },
+        MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec!["normalized".to_string()],
+            output_variants: BTreeMap::from([(
+                "default".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                    "save": "full",
+                }),
+            )]),
+            options: BTreeMap::new(),
+        },
+    ]
 }
 
 /// Builds default description for one remote media source.

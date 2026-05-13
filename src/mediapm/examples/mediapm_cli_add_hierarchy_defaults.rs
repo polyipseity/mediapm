@@ -346,7 +346,18 @@ mod tests {
             fs::read(&manifest.conductor_machine_ncl).expect("read conductor machine config");
 
         let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
-        let _machine =
+        let machine =
             decode_machine_document(&machine_bytes).expect("decode conductor machine config");
+
+        let expected_workflow_ids = [
+            format!("mediapm.media.{}", manifest.local_media_id),
+            format!("mediapm.media.{}", manifest.remote_media_id),
+        ];
+        for workflow_id in expected_workflow_ids {
+            assert!(
+                machine.workflows.contains_key(&workflow_id),
+                "conductor machine config should contain managed workflow '{workflow_id}'"
+            );
+        }
     }
 }

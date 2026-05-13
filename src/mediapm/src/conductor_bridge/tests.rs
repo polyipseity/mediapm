@@ -9,6 +9,9 @@ use mediapm_conductor::{
     ToolKindSpec, ToolSpec, default_runtime_inherited_env_vars_for_host,
 };
 
+use crate::config::{
+    MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
+};
 use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
@@ -1094,4 +1097,98 @@ fn resolve_managed_tool_target_rejects_ambiguous_logical_name_selector() {
     assert!(message.contains("matched multiple managed tool ids"));
     assert!(message.contains("source-a"));
     assert!(message.contains("source-b"));
+}
+
+/// Protects config-edit reconciliation by ensuring managed workflows are
+/// populated even when no logical tools are active yet.
+#[test]
+fn config_edit_reconcile_populates_workflows_with_unresolved_tool_placeholders() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(temp.path());
+    ensure_conductor_documents(&paths).expect("bootstrap conductor documents");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(
+            "demo-media".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: Some("demo source".to_string()),
+                title: Some("demo title".to_string()),
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::new(),
+                steps: vec![
+                    MediaStep {
+                        tool: MediaStepTool::YtDlp,
+                        input_variants: Vec::new(),
+                        output_variants: BTreeMap::from([(
+                            "source".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "save": "full",
+                            }),
+                        )]),
+                        options: BTreeMap::from([(
+                            "uri".to_string(),
+                            TransformInputValue::String("https://example.com/video".to_string()),
+                        )]),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Rsgain,
+                        input_variants: vec!["source".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "normalized".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "save": "full",
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::MediaTagger,
+                        input_variants: vec!["normalized".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "default".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "save": "full",
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile::default();
+    super::workflows::reconcile_media_workflows_for_config_edits(&paths, &document, &mut lock)
+        .expect("config-edit workflow reconciliation");
+
+    let machine = load_machine_document(&paths.conductor_machine_ncl).expect("load machine");
+    assert!(
+        machine.workflows.contains_key("mediapm.media.demo-media"),
+        "managed workflow should be populated"
+    );
+    assert!(
+        !machine
+            .workflows
+            .get("mediapm.media.demo-media")
+            .expect("managed workflow")
+            .steps
+            .is_empty(),
+        "managed workflow should include synthesized steps"
+    );
+
+    for logical_name in ["yt-dlp", "rsgain", "media-tagger", "ffmpeg", "sd"] {
+        let active_tool_id = lock.active_tools.get(logical_name).unwrap_or_else(|| {
+            panic!("expected placeholder active tool mapping for '{logical_name}'")
+        });
+        assert!(
+            machine.tools.contains_key(active_tool_id),
+            "placeholder tool '{active_tool_id}' should be registered in machine config"
+        );
+    }
 }

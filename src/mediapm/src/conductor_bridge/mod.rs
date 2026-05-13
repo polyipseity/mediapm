@@ -26,7 +26,7 @@ pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
 pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 pub(crate) use workflows::{
     managed_workflow_id_for_media, reconcile_media_workflows,
-    resolve_media_variant_output_binding_with_limits,
+    reconcile_media_workflows_for_config_edits, resolve_media_variant_output_binding_with_limits,
 };
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use mediapm_conductor::decode_machine_document;
 use serde_json::Value;
 
 /// Extracts `manifest: <path>` from example stdout.
@@ -81,6 +82,31 @@ fn cli_add_sources_example_runs_and_writes_manifest() {
             .is_some_and(|value| !value.trim().is_empty()),
         "manifest should include non-empty remote media id"
     );
+
+    let machine_path = manifest_json
+        .get("conductor_machine_ncl")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .expect("manifest should include conductor machine path");
+    let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
+        .expect("decode conductor machine document");
+
+    let local_media_id = manifest_json
+        .get("local_media_id")
+        .and_then(Value::as_str)
+        .expect("manifest should include local media id");
+    let remote_media_id = manifest_json
+        .get("remote_media_id")
+        .and_then(Value::as_str)
+        .expect("manifest should include remote media id");
+    for workflow_id in
+        [format!("mediapm.media.{local_media_id}"), format!("mediapm.media.{remote_media_id}")]
+    {
+        assert!(
+            machine.workflows.contains_key(&workflow_id),
+            "conductor machine should contain managed workflow '{workflow_id}'"
+        );
+    }
 }
 
 /// Verifies hierarchy-presets example runs and emits inspectable config artifacts.
@@ -127,6 +153,31 @@ fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty()),
             "manifest should include non-empty '{key}'"
+        );
+    }
+
+    let machine_path = manifest_json
+        .get("conductor_machine_ncl")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .expect("manifest should include conductor machine path");
+    let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
+        .expect("decode conductor machine document");
+
+    let local_media_id = manifest_json
+        .get("local_media_id")
+        .and_then(Value::as_str)
+        .expect("manifest should include local media id");
+    let remote_media_id = manifest_json
+        .get("remote_media_id")
+        .and_then(Value::as_str)
+        .expect("manifest should include remote media id");
+    for workflow_id in
+        [format!("mediapm.media.{local_media_id}"), format!("mediapm.media.{remote_media_id}")]
+    {
+        assert!(
+            machine.workflows.contains_key(&workflow_id),
+            "conductor machine should contain managed workflow '{workflow_id}'"
         );
     }
 }
