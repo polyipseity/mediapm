@@ -1170,9 +1170,102 @@ fn hierarchy_preset_node_id(
     format!("{media_id}-hier-{}-{}", preset.as_label().replace('-', "_"), &digest[..12])
 }
 
+/// Builds one media-file hierarchy node bound to one output variant.
+#[must_use]
+fn hierarchy_media_file_node(path: &str, media_id: &str, variant: &str) -> HierarchyNode {
+    HierarchyNode {
+        path: path.to_string(),
+        kind: HierarchyNodeKind::Media,
+        id: None,
+        media_id: Some(media_id.to_string()),
+        variant: Some(variant.to_string()),
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: Vec::new(),
+    }
+}
+
+/// Builds one media-folder hierarchy node bound to ordered variant selectors.
+#[must_use]
+fn hierarchy_media_folder_node(
+    path: &str,
+    media_id: &str,
+    variants: Vec<String>,
+    rename_files: Vec<HierarchyFolderRenameRule>,
+) -> HierarchyNode {
+    HierarchyNode {
+        path: path.to_string(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: None,
+        media_id: Some(media_id.to_string()),
+        variant: None,
+        variants,
+        rename_files,
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: Vec::new(),
+    }
+}
+
+/// Builds media-root children for the local hierarchy preset.
+#[must_use]
+fn local_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
+    vec![hierarchy_media_file_node(HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "media")]
+}
+
+/// Builds media-root children for the yt-dlp hierarchy preset.
+#[must_use]
+fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
+    vec![
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE, media_id, "video"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE,
+            media_id,
+            "video_tagged",
+        ),
+        hierarchy_media_folder_node(
+            "subtitles",
+            media_id,
+            vec!["subtitles".to_string()],
+            Vec::new(),
+        ),
+        hierarchy_media_folder_node(
+            "thumbnails",
+            media_id,
+            vec!["thumbnails".to_string()],
+            Vec::new(),
+        ),
+        hierarchy_media_folder_node("links", media_id, vec!["links".to_string()], Vec::new()),
+        hierarchy_media_file_node("archive.txt", media_id, "archive"),
+        hierarchy_media_file_node("description.txt", media_id, "description"),
+        hierarchy_media_file_node("info.json", media_id, "infojson"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE,
+            media_id,
+            "description",
+        ),
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE,
+            media_id,
+            "subtitles_en",
+        ),
+        hierarchy_media_folder_node(
+            "",
+            media_id,
+            vec!["thumbnails".to_string(), "links".to_string()],
+            vec![HierarchyFolderRenameRule {
+                pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+                replacement: HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT.to_string(),
+            }],
+        ),
+    ]
+}
+
 /// Builds one hierarchy node tree for the selected preset.
 #[must_use]
-#[allow(clippy::too_many_lines)]
 fn build_hierarchy_preset_node(
     preset: MediaHierarchyPreset,
     media_id: &str,
@@ -1180,172 +1273,12 @@ fn build_hierarchy_preset_node(
     hierarchy_id: String,
 ) -> HierarchyNode {
     let (media_root_template, media_children) = match preset {
-        MediaHierarchyPreset::Local => (
-            HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(),
-            vec![HierarchyNode {
-                path: HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE.to_string(),
-                kind: HierarchyNodeKind::Media,
-                id: None,
-                media_id: Some(media_id.to_string()),
-                variant: Some("media".to_string()),
-                variants: Vec::new(),
-                rename_files: Vec::new(),
-                format: PlaylistFormat::default(),
-                ids: Vec::new(),
-                children: Vec::new(),
-            }],
-        ),
+        MediaHierarchyPreset::Local => {
+            (HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(), local_hierarchy_media_children(media_id))
+        }
         MediaHierarchyPreset::YtDlp => (
             HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE.to_string(),
-            vec![
-                HierarchyNode {
-                    path: HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE.to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("video".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE.to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("video_tagged".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "subtitles".to_string(),
-                    kind: HierarchyNodeKind::MediaFolder,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: None,
-                    variants: vec!["subtitles".to_string()],
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "thumbnails".to_string(),
-                    kind: HierarchyNodeKind::MediaFolder,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: None,
-                    variants: vec!["thumbnails".to_string()],
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "links".to_string(),
-                    kind: HierarchyNodeKind::MediaFolder,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: None,
-                    variants: vec!["links".to_string()],
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "archive.txt".to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("archive".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "description.txt".to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("description".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: "info.json".to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("infojson".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE.to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("description".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE.to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("infojson".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE.to_string(),
-                    kind: HierarchyNodeKind::Media,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: Some("subtitles_en".to_string()),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-                HierarchyNode {
-                    path: String::new(),
-                    kind: HierarchyNodeKind::MediaFolder,
-                    id: None,
-                    media_id: Some(media_id.to_string()),
-                    variant: None,
-                    variants: vec!["thumbnails".to_string(), "links".to_string()],
-                    rename_files: vec![HierarchyFolderRenameRule {
-                        pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
-                        replacement: HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT.to_string(),
-                    }],
-                    format: PlaylistFormat::default(),
-                    ids: Vec::new(),
-                    children: Vec::new(),
-                },
-            ],
+            yt_dlp_hierarchy_media_children(media_id),
         ),
     };
 
