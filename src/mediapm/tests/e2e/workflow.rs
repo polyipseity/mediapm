@@ -169,7 +169,11 @@ async fn sync_honors_explicit_conductor_state_override() {
     assert!(!root.path().join(".conductor").join("state.ncl").exists());
 }
 
-/// Protects remote add-flow defaults for managed `yt-dlp -> rsgain -> media-tagger` synthesis.
+/// Protects remote add-flow defaults for managed `yt-dlp -> ffmpeg -> media-tagger -> rsgain` synthesis.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this test intentionally asserts full preset shape in one place so regressions remain easy to diagnose"
+)]
 #[tokio::test]
 async fn add_media_source_sets_remote_download_defaults() {
     let root = tempdir().expect("tempdir");
@@ -180,49 +184,122 @@ async fn add_media_source_sets_remote_download_defaults() {
     let document = load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm doc");
     let source = document.media.get(&media_id).expect("source exists");
 
-    assert_eq!(source.steps.len(), 3);
+    assert_eq!(source.steps.len(), 4);
     let yt_dlp_step = &source.steps[0];
-    let rsgain_step = &source.steps[1];
+    let ffmpeg_step = &source.steps[1];
     let media_tagger_step = &source.steps[2];
+    let rsgain_step = &source.steps[3];
 
     assert_eq!(yt_dlp_step.tool, MediaStepTool::YtDlp);
     assert_eq!(
         yt_dlp_step.options.get("uri"),
         Some(&TransformInputValue::String("https://example.com/video.mkv".to_string())),
     );
-    assert_eq!(yt_dlp_step.options.len(), 1, "add_media_source should keep yt-dlp options minimal");
     assert_eq!(
-        yt_dlp_step.output_variants.get("source"),
+        yt_dlp_step.options.get("format"),
+        Some(&TransformInputValue::String(
+            "bestvideo[height<=144]+bestaudio/best[height<=144]/best".to_string(),
+        )),
+    );
+    assert_eq!(
+        yt_dlp_step.options.get("sub_langs"),
+        Some(&TransformInputValue::String(
+            "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig".to_string(),
+        )),
+    );
+    assert_eq!(
+        yt_dlp_step.options.len(),
+        3,
+        "add_media_source should keep demo-style yt-dlp defaults"
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("video"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "save": "full",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("subtitles"),
+        Some(&serde_json::json!({
+            "kind": "subtitles",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("subtitles_en"),
+        Some(&serde_json::json!({
+            "kind": "subtitles",
+            "capture_kind": "file",
+            "langs": "en",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("thumbnails"),
+        Some(&serde_json::json!({
+            "kind": "thumbnails",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("description"),
+        Some(&serde_json::json!({
+            "kind": "description",
         })),
     );
     assert_eq!(
         yt_dlp_step.output_variants.get("infojson"),
         Some(&serde_json::json!({
             "kind": "infojson",
-            "save": "full",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("links"),
+        Some(&serde_json::json!({
+            "kind": "links",
+        })),
+    );
+    assert_eq!(
+        yt_dlp_step.output_variants.get("archive"),
+        Some(&serde_json::json!({
+            "kind": "archive",
+        })),
+    );
+    assert_eq!(yt_dlp_step.output_variants.len(), 8);
+
+    assert_eq!(ffmpeg_step.tool, MediaStepTool::Ffmpeg);
+    assert_eq!(ffmpeg_step.input_variants, vec!["video".to_string()]);
+    assert_eq!(
+        ffmpeg_step.output_variants.get("video"),
+        Some(&serde_json::json!({
+            "kind": "primary",
+            "idx": 0.0,
+            "extension": "mkv",
+        })),
+    );
+    assert_eq!(
+        ffmpeg_step.options.get("codec_copy"),
+        Some(&TransformInputValue::String("true".to_string())),
+    );
+    assert_eq!(
+        ffmpeg_step.options.get("container"),
+        Some(&TransformInputValue::String("matroska".to_string())),
+    );
+
+    assert_eq!(media_tagger_step.tool, MediaStepTool::MediaTagger);
+    assert_eq!(media_tagger_step.input_variants, vec!["video".to_string()]);
+    assert_eq!(
+        media_tagger_step.output_variants.get("video_tagged"),
+        Some(&serde_json::json!({
+            "kind": "primary",
+            "extension": "mkv",
         })),
     );
 
     assert_eq!(rsgain_step.tool, MediaStepTool::Rsgain);
-    assert_eq!(rsgain_step.input_variants, vec!["source".to_string()]);
+    assert_eq!(rsgain_step.input_variants, vec!["video_tagged".to_string()]);
     assert_eq!(
-        rsgain_step.output_variants.get("normalized"),
+        rsgain_step.output_variants.get("video_tagged"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "save": "full",
-        })),
-    );
-
-    assert_eq!(media_tagger_step.tool, MediaStepTool::MediaTagger);
-    assert_eq!(media_tagger_step.input_variants, vec!["normalized".to_string()]);
-    assert_eq!(
-        media_tagger_step.output_variants.get("default"),
-        Some(&serde_json::json!({
-            "kind": "primary",
-            "save": "full",
+            "extension": "mkv",
         })),
     );
 

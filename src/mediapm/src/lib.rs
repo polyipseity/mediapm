@@ -408,45 +408,115 @@ where
                         input_variants: Vec::new(),
                         output_variants: BTreeMap::from([
                             (
-                                "source".to_string(),
+                                "video".to_string(),
                                 serde_json::json!({
                                     "kind": "primary",
-                                    "save": "full",
+                                }),
+                            ),
+                            (
+                                "subtitles".to_string(),
+                                serde_json::json!({
+                                    "kind": "subtitles",
+                                }),
+                            ),
+                            (
+                                "subtitles_en".to_string(),
+                                serde_json::json!({
+                                    "kind": "subtitles",
+                                    "capture_kind": "file",
+                                    "langs": "en",
+                                }),
+                            ),
+                            (
+                                "thumbnails".to_string(),
+                                serde_json::json!({
+                                    "kind": "thumbnails",
+                                }),
+                            ),
+                            (
+                                "description".to_string(),
+                                serde_json::json!({
+                                    "kind": "description",
                                 }),
                             ),
                             (
                                 "infojson".to_string(),
                                 serde_json::json!({
                                     "kind": "infojson",
-                                    "save": "full",
+                                }),
+                            ),
+                            (
+                                "links".to_string(),
+                                serde_json::json!({
+                                    "kind": "links",
+                                }),
+                            ),
+                            (
+                                "archive".to_string(),
+                                serde_json::json!({
+                                    "kind": "archive",
                                 }),
                             ),
                         ]),
-                        options: BTreeMap::from([(
-                            "uri".to_string(),
-                            TransformInputValue::String(uri.to_string()),
-                        )]),
+                        options: BTreeMap::from([
+                            ("uri".to_string(), TransformInputValue::String(uri.to_string())),
+                            (
+                                "format".to_string(),
+                                TransformInputValue::String(
+                                    "bestvideo[height<=144]+bestaudio/best[height<=144]/best"
+                                        .to_string(),
+                                ),
+                            ),
+                            (
+                                "sub_langs".to_string(),
+                                TransformInputValue::String(
+                                    "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig".to_string(),
+                                ),
+                            ),
+                        ]),
                     },
                     MediaStep {
-                        tool: MediaStepTool::Rsgain,
-                        input_variants: vec!["source".to_string()],
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["video".to_string()],
                         output_variants: BTreeMap::from([(
-                            "normalized".to_string(),
+                            "video".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
-                                "save": "full",
+                                "idx": 0,
+                                "extension": "mkv",
+                            }),
+                        )]),
+                        options: BTreeMap::from([
+                            (
+                                "codec_copy".to_string(),
+                                TransformInputValue::String("true".to_string()),
+                            ),
+                            (
+                                "container".to_string(),
+                                TransformInputValue::String("matroska".to_string()),
+                            ),
+                        ]),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::MediaTagger,
+                        input_variants: vec!["video".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "video_tagged".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "extension": "mkv",
                             }),
                         )]),
                         options: BTreeMap::new(),
                     },
                     MediaStep {
-                        tool: MediaStepTool::MediaTagger,
-                        input_variants: vec!["normalized".to_string()],
+                        tool: MediaStepTool::Rsgain,
+                        input_variants: vec!["video_tagged".to_string()],
                         output_variants: BTreeMap::from([(
-                            "default".to_string(),
+                            "video_tagged".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
-                                "save": "full",
+                                "extension": "mkv",
                             }),
                         )]),
                         options: BTreeMap::new(),
