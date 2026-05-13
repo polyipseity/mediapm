@@ -531,6 +531,50 @@ where
         Ok(media_id)
     }
 
+    /// Adds one default hierarchy media-node preset for an existing media id.
+    ///
+    /// The preset currently appends one `kind = "media"` node that selects
+    /// the managed `default` variant and uses a media-id-prefixed,
+    /// metadata-templated Jellyfin-style filename under `music videos/`.
+    ///
+    /// This operation is idempotent: if the preset hierarchy id already
+    /// exists, no additional node is added.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the target media id is not registered or
+    /// when `mediapm.ncl` cannot be loaded/saved.
+    pub fn add_default_media_hierarchy_preset(&self, media_id: &str) -> Result<(), MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+
+        if !document.media.contains_key(media_id) {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot add default hierarchy preset: media id '{media_id}' does not exist"
+            )));
+        }
+
+        let hierarchy_id = format!("{media_id}-default");
+        if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
+            return Ok(());
+        }
+
+        document.hierarchy.push(HierarchyNode {
+            path: default_hierarchy_path_template_for_media(media_id),
+            kind: HierarchyNodeKind::Media,
+            id: Some(hierarchy_id),
+            media_id: Some(media_id.to_string()),
+            variant: Some("default".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: Vec::new(),
+        });
+
+        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
     /// Lists currently registered tools from conductor machine config.
     ///
     /// # Errors
@@ -876,6 +920,25 @@ fn ensure_and_load_mediapm_document(path: &Path) -> Result<MediaPmDocument, Medi
     }
 
     load_mediapm_document(path)
+}
+
+/// Returns true when any hierarchy node in one recursive tree declares
+/// `target_id`.
+fn hierarchy_contains_node_id(nodes: &[HierarchyNode], target_id: &str) -> bool {
+    nodes.iter().any(|node| {
+        node.id.as_deref().is_some_and(|value| value == target_id)
+            || hierarchy_contains_node_id(&node.children, target_id)
+    })
+}
+
+/// Returns one deterministic default hierarchy path for one media id.
+///
+/// The media-id prefix keeps sibling preset nodes path-unique before metadata
+/// interpolation occurs during materialization planning.
+fn default_hierarchy_path_template_for_media(media_id: &str) -> String {
+    format!(
+        "music videos/{media_id} - ${{media.metadata.title}} [${{media.id}}]${{media.metadata.video_ext}}"
+    )
 }
 
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
@@ -1310,10 +1373,10 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        LocalSourceMetadata, MediaPmApi, MediaPmService, MediaRuntimeStorage, OnlineSourceMetadata,
-        merge_runtime_storage, parse_local_source_metadata_from_ffprobe_json,
-        parse_online_source_metadata, should_prefer_filesystem_workflow_runner,
-        validate_source_uri,
+        HierarchyNodeKind, LocalSourceMetadata, MediaPmApi, MediaPmService, MediaRuntimeStorage,
+        OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
+        parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
+        should_prefer_filesystem_workflow_runner, validate_source_uri,
     };
     use tempfile::tempdir;
     use url::Url;
@@ -1448,6 +1511,69 @@ mod tests {
         let conductor_schema_dir = root.path().join(".mediapm").join("config").join("conductor");
         assert!(conductor_schema_dir.join("mod.ncl").exists());
         assert!(conductor_schema_dir.join("v1.ncl").exists());
+    }
+
+    /// Ensures default hierarchy preset insertion creates one deterministic
+    /// media-node entry and keeps repeated insertions idempotent.
+    #[tokio::test]
+    async fn add_default_hierarchy_preset_is_idempotent_for_existing_media() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+
+        service
+            .add_default_media_hierarchy_preset(&media_id)
+            .expect("first hierarchy preset insertion should succeed");
+        service
+            .add_default_media_hierarchy_preset(&media_id)
+            .expect("second hierarchy preset insertion should remain idempotent");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let expected_hierarchy_id = format!("{media_id}-default");
+        let matching_nodes: Vec<_> = document
+            .hierarchy
+            .iter()
+            .filter(|node| {
+                node.id.as_deref() == Some(expected_hierarchy_id.as_str())
+                    && node.kind == HierarchyNodeKind::Media
+                    && node.media_id.as_deref() == Some(media_id.as_str())
+                    && node.variant.as_deref() == Some("default")
+            })
+            .collect();
+
+        assert_eq!(
+            matching_nodes.len(),
+            1,
+            "default hierarchy preset should exist exactly once for one media id"
+        );
+        assert_eq!(
+            matching_nodes[0].path,
+            format!(
+                "music videos/{media_id} - ${{media.metadata.title}} [${{media.id}}]${{media.metadata.video_ext}}"
+            )
+        );
+    }
+
+    /// Ensures default hierarchy preset insertion fails for unknown media ids.
+    #[test]
+    fn add_default_hierarchy_preset_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .add_default_media_hierarchy_preset("missing-media")
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "cannot add default hierarchy preset: media id 'missing-media' does not exist"
+            ),
+            "error should explain missing media id"
+        );
     }
 
     /// Ensures service-level runtime overrides take precedence for cache toggle

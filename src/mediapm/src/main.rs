@@ -126,6 +126,11 @@ enum MediaCommand {
         /// Local source file path.
         path: PathBuf,
     },
+    /// Adds one default hierarchy media-node preset for an existing media id.
+    AddHierarchyDefault {
+        /// Existing media id in `mediapm.ncl`.
+        media_id: String,
+    },
 }
 
 /// Global-directory management commands.
@@ -378,6 +383,10 @@ async fn main() -> anyhow::Result<()> {
                 let media_id = service.add_local_source(&path).await?;
                 println!("registered local media source id={media_id}");
             }
+            MediaCommand::AddHierarchyDefault { media_id } => {
+                service.add_default_media_hierarchy_preset(&media_id)?;
+                println!("registered default hierarchy preset for media id={media_id}");
+            }
         },
         Command::Global { command } => match command {
             GlobalCommand::Path => {
@@ -488,5 +497,13 @@ mod tests {
             "output.ffmetadata",
         ]);
         assert!(parsed.is_err(), "internal command route must stay removed");
+    }
+
+    /// Protects CLI surface for default hierarchy preset insertion.
+    #[test]
+    fn media_add_hierarchy_default_route_is_parsed() {
+        let parsed =
+            Cli::try_parse_from(["mediapm", "media", "add-hierarchy-default", "media-123"]);
+        assert!(parsed.is_ok(), "media add-hierarchy-default route must parse");
     }
 }

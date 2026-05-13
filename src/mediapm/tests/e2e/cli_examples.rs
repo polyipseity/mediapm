@@ -1,0 +1,122 @@
+//! End-to-end guardrails for offline CLI-focused examples.
+//!
+//! These tests execute the new examples so they run during automated test
+//! passes and verify that each emits a manifest plus generated config files.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use serde_json::Value;
+
+/// Extracts `manifest: <path>` from example stdout.
+fn manifest_path_from_stdout(stdout: &str) -> Option<PathBuf> {
+    stdout.lines().find_map(|line| line.strip_prefix("manifest: ").map(PathBuf::from))
+}
+
+/// Resolves workspace root from crate-level `CARGO_MANIFEST_DIR`.
+fn workspace_root() -> PathBuf {
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    crate_root
+        .parent()
+        .and_then(Path::parent)
+        .expect("mediapm crate should live under <workspace>/src/mediapm")
+        .to_path_buf()
+}
+
+/// Runs one mediapm example and returns combined process output.
+fn run_example(example_name: &str) -> std::process::Output {
+    Command::new("cargo")
+        .arg("run")
+        .arg("--package")
+        .arg("mediapm")
+        .arg("--example")
+        .arg(example_name)
+        .current_dir(workspace_root())
+        .output()
+        .expect("running mediapm CLI example should succeed")
+}
+
+/// Verifies source-add example runs and emits inspectable config artifacts.
+#[test]
+fn cli_add_sources_example_runs_and_writes_manifest() {
+    let output = run_example("mediapm_cli_add_sources");
+    assert!(
+        output.status.success(),
+        "example should run successfully\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let manifest_path = manifest_path_from_stdout(&stdout).unwrap_or_else(|| {
+        workspace_root().join("src/mediapm/examples/.artifacts/cli-add-sources/manifest.json")
+    });
+
+    assert!(manifest_path.exists(), "example manifest should exist");
+
+    let manifest_text = fs::read_to_string(&manifest_path).expect("read add-sources manifest");
+    let manifest_json: Value = serde_json::from_str(&manifest_text).expect("parse manifest json");
+
+    for key in ["mediapm_ncl", "conductor_user_ncl", "conductor_machine_ncl"] {
+        let path = manifest_json
+            .get(key)
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .expect("manifest should include config path");
+        assert!(path.exists(), "manifest path '{key}' should exist");
+    }
+
+    assert!(
+        manifest_json
+            .get("local_media_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+        "manifest should include non-empty local media id"
+    );
+    assert!(
+        manifest_json
+            .get("remote_media_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+        "manifest should include non-empty remote media id"
+    );
+}
+
+/// Verifies hierarchy-default example runs and emits inspectable config artifacts.
+#[test]
+fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
+    let output = run_example("mediapm_cli_add_hierarchy_defaults");
+    assert!(
+        output.status.success(),
+        "example should run successfully\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let manifest_path = manifest_path_from_stdout(&stdout).unwrap_or_else(|| {
+        workspace_root()
+            .join("src/mediapm/examples/.artifacts/cli-add-hierarchy-defaults/manifest.json")
+    });
+
+    assert!(manifest_path.exists(), "example manifest should exist");
+
+    let manifest_text = fs::read_to_string(&manifest_path).expect("read hierarchy manifest");
+    let manifest_json: Value = serde_json::from_str(&manifest_text).expect("parse manifest json");
+
+    for key in ["mediapm_ncl", "conductor_user_ncl", "conductor_machine_ncl"] {
+        let path = manifest_json
+            .get(key)
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .expect("manifest should include config path");
+        assert!(path.exists(), "manifest path '{key}' should exist");
+    }
+
+    assert_eq!(
+        manifest_json.get("hierarchy_node_count").and_then(Value::as_u64),
+        Some(2),
+        "hierarchy-default example should add one node per media source"
+    );
+}
