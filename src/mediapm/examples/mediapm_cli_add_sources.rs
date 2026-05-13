@@ -1,8 +1,8 @@
 //! Offline CLI example for inspecting default `media add` source outputs.
 //!
 //! This example intentionally uses the real `mediapm` CLI commands:
-//! - `mediapm media add-local <path>`
-//! - `mediapm media add <youtube-url>`
+//! - `mediapm media add --preset local <path>`
+//! - `mediapm media add --preset yt-dlp <youtube-url>`
 //!
 //! It writes all generated documents under
 //! `src/mediapm/examples/.artifacts/cli-add-sources/` and emits a small
@@ -42,9 +42,9 @@ struct AddSourcesManifest {
     conductor_user_ncl: PathBuf,
     /// Path to generated conductor machine document.
     conductor_machine_ncl: PathBuf,
-    /// Media id returned by `media add-local`.
+    /// Media id returned by `media add --preset local`.
     local_media_id: String,
-    /// Media id returned by `media add`.
+    /// Media id returned by `media add --preset yt-dlp`.
     remote_media_id: String,
 }
 
@@ -158,15 +158,18 @@ fn run_cli_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let add_local_stdout = run_mediapm_cli(
         &cli_path,
         &root,
-        &["media", "add-local", &local_source_path.to_string_lossy()],
+        &["media", "add", "--preset", "local", &local_source_path.to_string_lossy()],
     )?;
     let local_media_id = parse_registered_media_id(&add_local_stdout)
-        .ok_or_else(|| "missing media id in add-local command output".to_string())?;
+        .ok_or_else(|| "missing media id in media add --preset local output".to_string())?;
 
-    let add_remote_stdout =
-        run_mediapm_cli(&cli_path, &root, &["media", "add", DUMMY_YOUTUBE_URL])?;
+    let add_remote_stdout = run_mediapm_cli(
+        &cli_path,
+        &root,
+        &["media", "add", "--preset", "yt-dlp", DUMMY_YOUTUBE_URL],
+    )?;
     let remote_media_id = parse_registered_media_id(&add_remote_stdout)
-        .ok_or_else(|| "missing media id in add command output".to_string())?;
+        .ok_or_else(|| "missing media id in media add --preset yt-dlp output".to_string())?;
 
     let mediapm_ncl = root.join("mediapm.ncl");
     let conductor_user_ncl = root.join("mediapm.conductor.ncl");

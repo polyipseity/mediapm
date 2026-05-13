@@ -1,9 +1,10 @@
-//! Offline CLI example for inspecting default hierarchy preset output.
+//! Offline CLI example for inspecting hierarchy preset output.
 //!
 //! This example builds on source registration by invoking:
-//! - `mediapm media add-local <path>`
-//! - `mediapm media add <youtube-url>`
-//! - `mediapm media add-hierarchy-default <media-id>` (once per media)
+//! - `mediapm media add --preset local <path>`
+//! - `mediapm media add --preset yt-dlp <youtube-url>`
+//! - `mediapm hierarchy add --preset local --folder <folder> <media-id>`
+//! - `mediapm hierarchy add --preset yt-dlp --folder <folder> <media-id>`
 //!
 //! It writes generated documents under
 //! `src/mediapm/examples/.artifacts/cli-add-hierarchy-defaults/` and records
@@ -23,6 +24,10 @@ const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy-defaults";
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 /// Dummy `YouTube` URL used to synthesize remote source defaults.
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+/// Folder root used for local hierarchy preset insertion.
+const LOCAL_HIERARCHY_FOLDER: &str = "music videos/local";
+/// Folder root used for yt-dlp hierarchy preset insertion.
+const YT_DLP_HIERARCHY_FOLDER: &str = "music videos/online";
 
 /// Shared result alias for this example.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
@@ -40,12 +45,16 @@ struct AddHierarchyDefaultsManifest {
     conductor_user_ncl: PathBuf,
     /// Path to generated conductor machine document.
     conductor_machine_ncl: PathBuf,
-    /// Local media id returned by `media add-local`.
+    /// Local media id returned by `media add --preset local`.
     local_media_id: String,
-    /// Remote media id returned by `media add`.
+    /// Remote media id returned by `media add --preset yt-dlp`.
     remote_media_id: String,
     /// Number of hierarchy nodes after default-preset insertion.
     hierarchy_node_count: usize,
+    /// Folder root used for local hierarchy preset insertion.
+    local_hierarchy_folder: String,
+    /// Folder root used for yt-dlp hierarchy preset insertion.
+    yt_dlp_hierarchy_folder: String,
 }
 
 /// Returns workspace root by walking up from this crate directory.
@@ -156,19 +165,23 @@ fn add_sources_for_hierarchy_example(
     let add_local_stdout = run_mediapm_cli(
         cli_path,
         root,
-        &["media", "add-local", &local_source_path.to_string_lossy()],
+        &["media", "add", "--preset", "local", &local_source_path.to_string_lossy()],
     )?;
     let local_media_id = parse_registered_media_id(&add_local_stdout)
-        .ok_or_else(|| "missing media id in add-local command output".to_string())?;
+        .ok_or_else(|| "missing media id in media add --preset local output".to_string())?;
 
-    let add_remote_stdout = run_mediapm_cli(cli_path, root, &["media", "add", DUMMY_YOUTUBE_URL])?;
+    let add_remote_stdout = run_mediapm_cli(
+        cli_path,
+        root,
+        &["media", "add", "--preset", "yt-dlp", DUMMY_YOUTUBE_URL],
+    )?;
     let remote_media_id = parse_registered_media_id(&add_remote_stdout)
-        .ok_or_else(|| "missing media id in add command output".to_string())?;
+        .ok_or_else(|| "missing media id in media add --preset yt-dlp output".to_string())?;
 
     Ok((local_media_id, remote_media_id))
 }
 
-/// Runs the hierarchy-default example flow and persists output manifest.
+/// Runs the hierarchy-preset example flow and persists output manifest.
 fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefaultsManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
@@ -176,8 +189,32 @@ fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefault
     let cli_path = ensure_mediapm_cli_binary()?;
     let (local_media_id, remote_media_id) = add_sources_for_hierarchy_example(&cli_path, &root)?;
 
-    run_mediapm_cli(&cli_path, &root, &["media", "add-hierarchy-default", &local_media_id])?;
-    run_mediapm_cli(&cli_path, &root, &["media", "add-hierarchy-default", &remote_media_id])?;
+    run_mediapm_cli(
+        &cli_path,
+        &root,
+        &[
+            "hierarchy",
+            "add",
+            "--preset",
+            "local",
+            "--folder",
+            LOCAL_HIERARCHY_FOLDER,
+            &local_media_id,
+        ],
+    )?;
+    run_mediapm_cli(
+        &cli_path,
+        &root,
+        &[
+            "hierarchy",
+            "add",
+            "--preset",
+            "yt-dlp",
+            "--folder",
+            YT_DLP_HIERARCHY_FOLDER,
+            &remote_media_id,
+        ],
+    )?;
 
     let mediapm_ncl = root.join("mediapm.ncl");
     let conductor_user_ncl = root.join("mediapm.conductor.ncl");
@@ -194,6 +231,8 @@ fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefault
         local_media_id,
         remote_media_id,
         hierarchy_node_count: document.hierarchy.len(),
+        local_hierarchy_folder: LOCAL_HIERARCHY_FOLDER.to_string(),
+        yt_dlp_hierarchy_folder: YT_DLP_HIERARCHY_FOLDER.to_string(),
     };
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
@@ -201,7 +240,7 @@ fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefault
     Ok(manifest)
 }
 
-/// Runs the offline hierarchy-default example and prints artifact locations.
+/// Runs the offline hierarchy-preset example and prints artifact locations.
 fn main() -> ExampleResult<()> {
     let manifest = run_cli_add_hierarchy_defaults_example()?;
 
@@ -211,6 +250,8 @@ fn main() -> ExampleResult<()> {
     println!("conductor machine: {}", manifest.conductor_machine_ncl.display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
+    println!("local hierarchy folder: {}", manifest.local_hierarchy_folder);
+    println!("yt-dlp hierarchy folder: {}", manifest.yt_dlp_hierarchy_folder);
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
 
     Ok(())
@@ -218,7 +259,7 @@ fn main() -> ExampleResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
     use mediapm::load_mediapm_document;
@@ -227,7 +268,8 @@ mod tests {
     use super::run_cli_add_hierarchy_defaults_example;
     use mediapm::HierarchyNodeKind;
 
-    /// Verifies hierarchy-default CLI preset inserts one media node per source.
+    /// Verifies local/yt-dlp hierarchy presets insert one root node each with
+    /// preset-specific variant projections.
     #[test]
     fn cli_add_hierarchy_defaults_writes_expected_hierarchy_nodes() {
         let manifest = run_cli_add_hierarchy_defaults_example()
@@ -240,42 +282,63 @@ mod tests {
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.hierarchy.len(), 2, "example should add two hierarchy nodes");
 
-        let expected_media_ids: BTreeSet<_> =
-            [manifest.local_media_id.clone(), manifest.remote_media_id.clone()]
-                .into_iter()
-                .collect();
-
         let observed_media_ids: BTreeSet<_> = document
             .hierarchy
             .iter()
             .map(|node| {
-                let media_id = node
-                    .media_id
-                    .as_deref()
-                    .expect("default preset should set media_id")
-                    .to_string();
+                let media_id =
+                    node.media_id.as_deref().expect("preset root should set media_id").to_string();
                 assert_eq!(
                     node.kind,
-                    HierarchyNodeKind::Media,
-                    "default preset should emit media-kind hierarchy node"
-                );
-                assert_eq!(
-                    node.path,
-                    format!(
-                        "music videos/{media_id} - ${{media.metadata.title}} [${{media.id}}]${{media.metadata.video_ext}}"
-                    ),
-                    "default preset should keep stable path template with media-id prefix"
-                );
-                assert_eq!(
-                    node.variant.as_deref(),
-                    Some("default"),
-                    "default preset should select default output variant"
+                    HierarchyNodeKind::Folder,
+                    "preset root should emit folder-kind hierarchy node"
                 );
                 media_id
             })
             .collect();
 
+        let expected_media_ids: BTreeSet<_> =
+            [manifest.local_media_id.clone(), manifest.remote_media_id.clone()]
+                .into_iter()
+                .collect();
+
         assert_eq!(observed_media_ids, expected_media_ids);
+
+        let hierarchy_by_folder: BTreeMap<_, _> = document
+            .hierarchy
+            .iter()
+            .map(|node| {
+                let media_root =
+                    node.children.first().expect("preset root should include media root");
+                let variants: BTreeSet<_> = media_root
+                    .children
+                    .iter()
+                    .map(|child| {
+                        child.variant.clone().expect("preset media child should define variant")
+                    })
+                    .collect();
+                (node.path.clone(), variants)
+            })
+            .collect();
+
+        assert_eq!(
+            hierarchy_by_folder
+                .get(&manifest.local_hierarchy_folder)
+                .expect("local preset folder should exist"),
+            &BTreeSet::from(["default".to_string(), "normalized".to_string()]),
+            "local preset should project tagged + untagged media variants"
+        );
+        assert_eq!(
+            hierarchy_by_folder
+                .get(&manifest.yt_dlp_hierarchy_folder)
+                .expect("yt-dlp preset folder should exist"),
+            &BTreeSet::from([
+                "default".to_string(),
+                "infojson".to_string(),
+                "normalized".to_string(),
+            ]),
+            "yt-dlp preset should follow demo-style media + infojson projection without sidecars folder"
+        );
 
         let user_bytes =
             fs::read(&manifest.conductor_user_ncl).expect("read conductor user config");

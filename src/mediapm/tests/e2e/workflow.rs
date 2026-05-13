@@ -36,7 +36,7 @@ async fn source_scheme_validation_is_enforced() {
     assert!(result.is_err());
 }
 
-/// Protects local-source URI acceptance used by `media add-local` flows.
+/// Protects local-source URI acceptance used by `media add --preset local` flows.
 #[tokio::test]
 async fn local_scheme_is_accepted() {
     let service = MediaPmService::new_in_memory();

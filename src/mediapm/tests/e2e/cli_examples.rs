@@ -83,7 +83,7 @@ fn cli_add_sources_example_runs_and_writes_manifest() {
     );
 }
 
-/// Verifies hierarchy-default example runs and emits inspectable config artifacts.
+/// Verifies hierarchy-presets example runs and emits inspectable config artifacts.
 #[test]
 fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
     let output = run_example("mediapm_cli_add_hierarchy_defaults");
@@ -117,6 +117,16 @@ fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
     assert_eq!(
         manifest_json.get("hierarchy_node_count").and_then(Value::as_u64),
         Some(2),
-        "hierarchy-default example should add one node per media source"
+        "hierarchy-presets example should add one node per media source"
     );
+
+    for key in ["local_hierarchy_folder", "yt_dlp_hierarchy_folder"] {
+        assert!(
+            manifest_json
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty()),
+            "manifest should include non-empty '{key}'"
+        );
+    }
 }

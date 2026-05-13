@@ -7,9 +7,9 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use mediapm::{
-    MediaPmService, MediaRuntimeStorage, ToolRegistryStatus,
+    MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage, ToolRegistryStatus,
     builtins::media_tagger::InternalMediaTaggerOptions, ensure_global_directory_layout,
     global_tool_cache_clear, global_tool_cache_prune_expired, global_tool_cache_status,
     load_runtime_dotenv_for_root, resolve_default_global_paths,
@@ -66,6 +66,12 @@ enum Command {
         #[command(subcommand)]
         command: MediaCommand,
     },
+    /// Hierarchy registry commands.
+    Hierarchy {
+        /// Hierarchy subcommand selector.
+        #[command(subcommand)]
+        command: HierarchyCommand,
+    },
     /// User-scoped global `mediapm` directory management commands.
     Global {
         /// Global subcommand selector.
@@ -116,21 +122,79 @@ enum ToolsCommand {
 /// Media-source commands.
 #[derive(Debug, Subcommand)]
 enum MediaCommand {
-    /// Adds one online source URI to `mediapm.ncl`.
-    Add {
-        /// Source URI (`http` or `https`).
-        uri: String,
-    },
-    /// Adds one local source file and records an `import` CAS-hash ingest step.
-    AddLocal {
-        /// Local source file path.
-        path: PathBuf,
-    },
-    /// Adds one default hierarchy media-node preset for an existing media id.
-    AddHierarchyDefault {
+    /// Adds one media source using one explicit preset.
+    Add(MediaAddArgs),
+    /// Removes one existing media source id from `mediapm.ncl`.
+    Remove {
         /// Existing media id in `mediapm.ncl`.
         media_id: String,
     },
+}
+
+/// Hierarchy commands.
+#[derive(Debug, Subcommand)]
+enum HierarchyCommand {
+    /// Adds one hierarchy entry using one explicit preset.
+    Add(HierarchyAddArgs),
+    /// Removes one hierarchy entry using one explicit preset.
+    Remove(HierarchyRemoveArgs),
+}
+
+/// Arguments for `mediapm media add`.
+#[derive(Debug, Args)]
+struct MediaAddArgs {
+    /// Media-add preset (`yt-dlp` or `local`).
+    #[arg(long, value_enum)]
+    preset: MediaAddPreset,
+    /// Source value interpreted by the selected preset.
+    ///
+    /// - `yt-dlp`: online URI (`http` or `https`)
+    /// - `local`: filesystem path
+    source: String,
+}
+
+/// Media-add presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MediaAddPreset {
+    /// Online downloader preset (`yt-dlp -> rsgain -> media-tagger`).
+    YtDlp,
+    /// Local importer preset (`import -> rsgain -> media-tagger`).
+    Local,
+}
+
+/// Arguments for `mediapm hierarchy add`.
+#[derive(Debug, Args)]
+struct HierarchyAddArgs {
+    /// Hierarchy-add preset.
+    #[arg(long, value_enum)]
+    preset: HierarchyPreset,
+    /// Hierarchy root folder where this preset should be applied.
+    #[arg(long)]
+    folder: String,
+    /// Existing media id in `mediapm.ncl`.
+    media_id: String,
+}
+
+/// Arguments for `mediapm hierarchy remove`.
+#[derive(Debug, Args)]
+struct HierarchyRemoveArgs {
+    /// Hierarchy-remove preset.
+    #[arg(long, value_enum)]
+    preset: HierarchyPreset,
+    /// Hierarchy root folder where this preset was applied.
+    #[arg(long)]
+    folder: String,
+    /// Existing media id in `mediapm.ncl`.
+    media_id: String,
+}
+
+/// Hierarchy presets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum HierarchyPreset {
+    /// Local-source hierarchy preset.
+    Local,
+    /// Online yt-dlp hierarchy preset.
+    YtDlp,
 }
 
 /// Global-directory management commands.
@@ -300,7 +364,11 @@ async fn main() -> anyhow::Result<()> {
     };
     if matches!(
         &cli.command,
-        Command::Sync(_) | Command::Tools { .. } | Command::Media { .. } | Command::Builtins { .. }
+        Command::Sync(_)
+            | Command::Tools { .. }
+            | Command::Media { .. }
+            | Command::Hierarchy { .. }
+            | Command::Builtins { .. }
     ) {
         let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
     }
@@ -374,18 +442,47 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Command::Media { command } => match command {
-            MediaCommand::Add { uri } => {
-                let uri = Url::parse(&uri)?;
-                let media_id = service.add_media_source(&uri)?;
+            MediaCommand::Add(args) => {
+                let media_id = match args.preset {
+                    MediaAddPreset::YtDlp => {
+                        let uri = Url::parse(&args.source)?;
+                        service.add_media_source(&uri)?
+                    }
+                    MediaAddPreset::Local => {
+                        let path = PathBuf::from(args.source);
+                        service.add_local_source(&path).await?
+                    }
+                };
                 println!("registered media source id={media_id}");
             }
-            MediaCommand::AddLocal { path } => {
-                let media_id = service.add_local_source(&path).await?;
-                println!("registered local media source id={media_id}");
+            MediaCommand::Remove { media_id } => {
+                let removed_hierarchy_nodes = service.remove_media_source(&media_id)?;
+                println!(
+                    "removed media source id={media_id} (removed_hierarchy_nodes={removed_hierarchy_nodes})"
+                );
             }
-            MediaCommand::AddHierarchyDefault { media_id } => {
-                service.add_default_media_hierarchy_preset(&media_id)?;
-                println!("registered default hierarchy preset for media id={media_id}");
+        },
+        Command::Hierarchy { command } => match command {
+            HierarchyCommand::Add(args) => {
+                let preset = map_hierarchy_preset(args.preset);
+                service.add_media_hierarchy_preset(preset, &args.media_id, &args.folder)?;
+                println!(
+                    "registered hierarchy preset={} for media id={} at folder={}",
+                    args.preset.to_possible_value().expect("value enum").get_name(),
+                    args.media_id,
+                    args.folder
+                );
+            }
+            HierarchyCommand::Remove(args) => {
+                let preset = map_hierarchy_preset(args.preset);
+                let removed_nodes =
+                    service.remove_media_hierarchy_preset(preset, &args.media_id, &args.folder)?;
+                println!(
+                    "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
+                    args.preset.to_possible_value().expect("value enum").get_name(),
+                    args.media_id,
+                    args.folder
+                );
             }
         },
         Command::Global { command } => match command {
@@ -463,6 +560,15 @@ fn option_path_to_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
+/// Converts CLI hierarchy preset values into service-layer presets.
+#[must_use]
+fn map_hierarchy_preset(preset: HierarchyPreset) -> MediaHierarchyPreset {
+    match preset {
+        HierarchyPreset::Local => MediaHierarchyPreset::Local,
+        HierarchyPreset::YtDlp => MediaHierarchyPreset::YtDlp,
+    }
+}
+
 /// Executes Phase-1 CAS CLI passthrough in-process.
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
@@ -499,11 +605,80 @@ mod tests {
         assert!(parsed.is_err(), "internal command route must stay removed");
     }
 
-    /// Protects CLI surface for default hierarchy preset insertion.
+    /// Protects preset-driven media-add CLI route.
     #[test]
-    fn media_add_hierarchy_default_route_is_parsed() {
+    fn media_add_route_with_preset_is_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "media",
+            "add",
+            "--preset",
+            "yt-dlp",
+            "https://example.com/media",
+        ]);
+        assert!(parsed.is_ok(), "media add route with preset must parse");
+    }
+
+    /// Protects media-remove CLI route.
+    #[test]
+    fn media_remove_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "media", "remove", "media-123"]);
+        assert!(parsed.is_ok(), "media remove route must parse");
+    }
+
+    /// Protects hierarchy-add local preset route with required folder.
+    #[test]
+    fn hierarchy_add_local_route_with_folder_is_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "hierarchy",
+            "add",
+            "--preset",
+            "local",
+            "--folder",
+            "music videos",
+            "media-123",
+        ]);
+        assert!(parsed.is_ok(), "hierarchy add local route must parse");
+    }
+
+    /// Protects hierarchy-add yt-dlp preset route with required folder.
+    #[test]
+    fn hierarchy_add_yt_dlp_route_with_folder_is_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "hierarchy",
+            "add",
+            "--preset",
+            "yt-dlp",
+            "--folder",
+            "music videos",
+            "media-123",
+        ]);
+        assert!(parsed.is_ok(), "hierarchy add yt-dlp route must parse");
+    }
+
+    /// Protects hierarchy-remove route with required folder.
+    #[test]
+    fn hierarchy_remove_route_with_folder_is_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "hierarchy",
+            "remove",
+            "--preset",
+            "yt-dlp",
+            "--folder",
+            "music videos",
+            "media-123",
+        ]);
+        assert!(parsed.is_ok(), "hierarchy remove route must parse");
+    }
+
+    /// Protects required folder argument for hierarchy-add commands.
+    #[test]
+    fn hierarchy_add_requires_folder_argument() {
         let parsed =
-            Cli::try_parse_from(["mediapm", "media", "add-hierarchy-default", "media-123"]);
-        assert!(parsed.is_ok(), "media add-hierarchy-default route must parse");
+            Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "yt-dlp", "media-123"]);
+        assert!(parsed.is_err(), "hierarchy add must require --folder");
     }
 }

@@ -105,6 +105,26 @@ pub struct ToolsSyncSummary {
     pub warnings: Vec<String>,
 }
 
+/// Preset families supported by `mediapm hierarchy add/remove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaHierarchyPreset {
+    /// Local-source hierarchy preset.
+    Local,
+    /// Online-source (`yt-dlp`) hierarchy preset.
+    YtDlp,
+}
+
+impl MediaHierarchyPreset {
+    /// Returns stable identifier text for user-facing diagnostics and ids.
+    #[must_use]
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::YtDlp => "yt-dlp",
+        }
+    }
+}
+
 /// Status of the global user cache under the `mediapm` user-cache namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalToolCacheStatus {
@@ -309,7 +329,7 @@ where
 
         if uri.scheme() == "local" {
             return Err(MediaPmError::Workflow(
-                "use 'media add-local <path>' for local sources so CAS hash pointers are recorded"
+                "use 'media add --preset local <path>' for local sources so CAS hash pointers are recorded"
                     .to_string(),
             ));
         }
@@ -531,48 +551,94 @@ where
         Ok(media_id)
     }
 
-    /// Adds one default hierarchy media-node preset for an existing media id.
+    /// Adds one hierarchy preset node tree for an existing media id.
     ///
-    /// The preset currently appends one `kind = "media"` node that selects
-    /// the managed `default` variant and uses a media-id-prefixed,
-    /// metadata-templated Jellyfin-style filename under `music videos/`.
+    /// This operation is idempotent per `(preset, media_id, folder)` identity.
+    /// Repeated invocations with the same triple will not add duplicate nodes.
     ///
-    /// This operation is idempotent: if the preset hierarchy id already
-    /// exists, no additional node is added.
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the media id is unknown, `folder` is
+    /// empty/invalid, or `mediapm.ncl` cannot be loaded/saved.
+    pub fn add_media_hierarchy_preset(
+        &self,
+        preset: MediaHierarchyPreset,
+        media_id: &str,
+        folder: &str,
+    ) -> Result<(), MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+
+        if !document.media.contains_key(media_id) {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot add {} hierarchy preset: media id '{media_id}' does not exist",
+                preset.as_label()
+            )));
+        }
+
+        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
+        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
+            return Ok(());
+        }
+
+        document.hierarchy.push(build_hierarchy_preset_node(
+            preset,
+            media_id,
+            &normalized_folder,
+            hierarchy_id,
+        ));
+
+        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
+    /// Removes one media source id from `mediapm.ncl`.
+    ///
+    /// This operation also removes any hierarchy nodes whose effective
+    /// `media_id` equals the removed media id so configuration remains
+    /// self-consistent after source deletion.
     ///
     /// # Errors
     ///
     /// Returns [`MediaPmError`] when the target media id is not registered or
     /// when `mediapm.ncl` cannot be loaded/saved.
-    pub fn add_default_media_hierarchy_preset(&self, media_id: &str) -> Result<(), MediaPmError> {
+    pub fn remove_media_source(&self, media_id: &str) -> Result<usize, MediaPmError> {
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-
-        if !document.media.contains_key(media_id) {
+        if document.media.remove(media_id).is_none() {
             return Err(MediaPmError::Workflow(format!(
-                "cannot add default hierarchy preset: media id '{media_id}' does not exist"
+                "cannot remove media source: media id '{media_id}' does not exist"
             )));
         }
 
-        let hierarchy_id = format!("{media_id}-default");
-        if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
-            return Ok(());
-        }
-
-        document.hierarchy.push(HierarchyNode {
-            path: default_hierarchy_path_template_for_media(media_id),
-            kind: HierarchyNodeKind::Media,
-            id: Some(hierarchy_id),
-            media_id: Some(media_id.to_string()),
-            variant: Some("default".to_string()),
-            variants: Vec::new(),
-            rename_files: Vec::new(),
-            format: PlaylistFormat::default(),
-            ids: Vec::new(),
-            children: Vec::new(),
-        });
-
+        let removed_hierarchy_nodes =
+            remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        Ok(())
+        Ok(removed_hierarchy_nodes)
+    }
+
+    /// Removes one hierarchy preset node tree for one media id + folder root.
+    ///
+    /// This operation is idempotent. If the preset node does not exist,
+    /// no changes are written and `0` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when `folder` is empty/invalid or
+    /// `mediapm.ncl` cannot be loaded/saved.
+    pub fn remove_media_hierarchy_preset(
+        &self,
+        preset: MediaHierarchyPreset,
+        media_id: &str,
+        folder: &str,
+    ) -> Result<usize, MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
+        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
+        if removed_nodes > 0 {
+            save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        }
+        Ok(removed_nodes)
     }
 
     /// Lists currently registered tools from conductor machine config.
@@ -931,14 +997,165 @@ fn hierarchy_contains_node_id(nodes: &[HierarchyNode], target_id: &str) -> bool 
     })
 }
 
-/// Returns one deterministic default hierarchy path for one media id.
+/// Removes all nodes in one recursive hierarchy tree whose `id` matches
+/// `target_id` and returns the number of removed nodes.
+fn remove_hierarchy_nodes_by_id(nodes: &mut Vec<HierarchyNode>, target_id: &str) -> usize {
+    let mut removed = 0;
+    let mut index = 0;
+
+    while index < nodes.len() {
+        if nodes[index].id.as_deref().is_some_and(|value| value == target_id) {
+            nodes.remove(index);
+            removed += 1;
+            continue;
+        }
+
+        removed += remove_hierarchy_nodes_by_id(&mut nodes[index].children, target_id);
+        index += 1;
+    }
+
+    removed
+}
+
+/// Removes all nodes in one recursive hierarchy tree whose `media_id` matches
+/// `target_media_id` and returns the number of removed nodes.
+fn remove_hierarchy_nodes_by_media_id(
+    nodes: &mut Vec<HierarchyNode>,
+    target_media_id: &str,
+) -> usize {
+    let mut removed = 0;
+    let mut index = 0;
+
+    while index < nodes.len() {
+        if nodes[index].media_id.as_deref().is_some_and(|value| value == target_media_id) {
+            nodes.remove(index);
+            removed += 1;
+            continue;
+        }
+
+        removed += remove_hierarchy_nodes_by_media_id(&mut nodes[index].children, target_media_id);
+        index += 1;
+    }
+
+    removed
+}
+
+/// Stable media-root folder template used by hierarchy presets.
+const HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
+
+/// Stable untagged-media filename template used by hierarchy presets.
+const HIERARCHY_UNTAGGED_MEDIA_FILE_TEMPLATE: &str =
+    "${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+
+/// Stable tagged-media filename template used by hierarchy presets.
+const HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE: &str =
+    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+
+/// Stable info-json filename template used by the yt-dlp hierarchy preset.
+const HIERARCHY_INFOJSON_FILE_TEMPLATE: &str = "${media.metadata.title} [${media.id}].info.json";
+
+/// Normalizes one hierarchy-root folder CLI value.
 ///
-/// The media-id prefix keeps sibling preset nodes path-unique before metadata
-/// interpolation occurs during materialization planning.
-fn default_hierarchy_path_template_for_media(media_id: &str) -> String {
-    format!(
-        "music videos/{media_id} - ${{media.metadata.title}} [${{media.id}}]${{media.metadata.video_ext}}"
-    )
+/// Returned values use slash separators and never carry surrounding slashes.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the provided folder is empty after trimming.
+fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, MediaPmError> {
+    let normalized = folder.trim().replace('\\', "/").trim_matches('/').to_string();
+    if normalized.is_empty() {
+        return Err(MediaPmError::Workflow(
+            "hierarchy preset folder must be non-empty".to_string(),
+        ));
+    }
+
+    Ok(normalized)
+}
+
+/// Builds deterministic hierarchy id for one `(preset, media, folder)` tuple.
+#[must_use]
+fn hierarchy_preset_node_id(
+    preset: MediaHierarchyPreset,
+    media_id: &str,
+    normalized_folder: &str,
+) -> String {
+    let digest = mediapm_cas::Hash::from_content(normalized_folder.as_bytes()).to_hex();
+    format!("{media_id}-hier-{}-{}", preset.as_label().replace('-', "_"), &digest[..12])
+}
+
+/// Builds one hierarchy node tree for the selected preset.
+#[must_use]
+fn build_hierarchy_preset_node(
+    preset: MediaHierarchyPreset,
+    media_id: &str,
+    normalized_folder: &str,
+    hierarchy_id: String,
+) -> HierarchyNode {
+    let mut media_children = vec![
+        HierarchyNode {
+            path: HIERARCHY_UNTAGGED_MEDIA_FILE_TEMPLATE.to_string(),
+            kind: HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: Some("normalized".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: Vec::new(),
+        },
+        HierarchyNode {
+            path: HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE.to_string(),
+            kind: HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: Some("default".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: Vec::new(),
+        },
+    ];
+
+    if matches!(preset, MediaHierarchyPreset::YtDlp) {
+        media_children.push(HierarchyNode {
+            path: HIERARCHY_INFOJSON_FILE_TEMPLATE.to_string(),
+            kind: HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: Some("infojson".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: Vec::new(),
+        });
+    }
+
+    HierarchyNode {
+        path: normalized_folder.to_string(),
+        kind: HierarchyNodeKind::Folder,
+        id: Some(hierarchy_id),
+        media_id: Some(media_id.to_string()),
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: vec![HierarchyNode {
+            path: HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(),
+            kind: HierarchyNodeKind::Folder,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: None,
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: media_children,
+        }],
+    }
 }
 
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
@@ -1154,7 +1371,7 @@ fn build_local_default_description(path: &Path, title: &str) -> String {
 /// Resolves one local file extension value with a leading dot.
 ///
 /// Missing extensions fall back to `.bin` so hierarchy interpolation keys can
-/// remain defined for all local sources added through `add-local`.
+/// remain defined for all local sources added through `media add --preset local`.
 fn local_extension_with_dot(path: &Path) -> String {
     path.extension()
         .and_then(|value| value.to_str())
@@ -1373,8 +1590,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        HierarchyNodeKind, LocalSourceMetadata, MediaPmApi, MediaPmService, MediaRuntimeStorage,
-        OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
+        HierarchyNodeKind, LocalSourceMetadata, MediaHierarchyPreset, MediaPmApi, MediaPmService,
+        MediaRuntimeStorage, OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
         parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
         should_prefer_filesystem_workflow_runner, validate_source_uri,
     };
@@ -1513,65 +1730,179 @@ mod tests {
         assert!(conductor_schema_dir.join("v1.ncl").exists());
     }
 
-    /// Ensures default hierarchy preset insertion creates one deterministic
-    /// media-node entry and keeps repeated insertions idempotent.
+    /// Ensures local hierarchy preset insertion is idempotent for one
+    /// `(media, folder)` target and emits the expected folder tree.
     #[tokio::test]
-    async fn add_default_hierarchy_preset_is_idempotent_for_existing_media() {
+    async fn add_local_hierarchy_preset_is_idempotent_for_existing_media() {
         let root = tempdir().expect("tempdir");
         let service = MediaPmService::new_in_memory_at(root.path());
         let local_file = root.path().join("local-source.txt");
         fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
 
         let media_id = service.add_local_source(&local_file).await.expect("add local source");
 
         service
-            .add_default_media_hierarchy_preset(&media_id)
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
             .expect("first hierarchy preset insertion should succeed");
         service
-            .add_default_media_hierarchy_preset(&media_id)
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
             .expect("second hierarchy preset insertion should remain idempotent");
 
         let document =
             load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
-        let expected_hierarchy_id = format!("{media_id}-default");
+
         let matching_nodes: Vec<_> = document
             .hierarchy
             .iter()
             .filter(|node| {
-                node.id.as_deref() == Some(expected_hierarchy_id.as_str())
-                    && node.kind == HierarchyNodeKind::Media
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == folder
                     && node.media_id.as_deref() == Some(media_id.as_str())
-                    && node.variant.as_deref() == Some("default")
+                    && node.children.len() == 1
             })
             .collect();
 
         assert_eq!(
             matching_nodes.len(),
             1,
-            "default hierarchy preset should exist exactly once for one media id"
+            "local hierarchy preset should exist exactly once for one media id/folder"
         );
+        let media_root = &matching_nodes[0].children[0];
         assert_eq!(
-            matching_nodes[0].path,
-            format!(
-                "music videos/{media_id} - ${{media.metadata.title}} [${{media.id}}]${{media.metadata.video_ext}}"
-            )
+            media_root.path, "${media.metadata.title} [${media.id}]",
+            "local hierarchy preset should keep stable media-root template"
         );
+        let variants: Vec<_> =
+            media_root.children.iter().map(|node| node.variant.as_deref().unwrap_or("")).collect();
+        assert!(variants.contains(&"normalized"));
+        assert!(variants.contains(&"default"));
     }
 
-    /// Ensures default hierarchy preset insertion fails for unknown media ids.
+    /// Ensures yt-dlp hierarchy preset adds infojson projection while keeping
+    /// the same media-root style as the online demo (without sidecars folder).
     #[test]
-    fn add_default_hierarchy_preset_rejects_unknown_media_id() {
+    fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(&Url::parse("https://example.com/video").expect("url"))
+            .expect("add remote source");
+
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::YtDlp, &media_id, "music videos")
+            .expect("add yt-dlp hierarchy preset");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let media_root = document
+            .hierarchy
+            .iter()
+            .find(|node| {
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == "music videos"
+                    && node.media_id.as_deref() == Some(media_id.as_str())
+            })
+            .and_then(|node| node.children.first())
+            .expect("yt-dlp preset should create media-root child folder");
+
+        let variants: Vec<_> =
+            media_root.children.iter().map(|node| node.variant.as_deref().unwrap_or("")).collect();
+        assert!(variants.contains(&"normalized"));
+        assert!(variants.contains(&"default"));
+        assert!(variants.contains(&"infojson"));
+    }
+
+    /// Ensures hierarchy preset insertion fails for unknown media ids.
+    #[test]
+    fn add_hierarchy_preset_rejects_unknown_media_id() {
         let root = tempdir().expect("tempdir");
         let service = MediaPmService::new_in_memory_at(root.path());
 
         let error = service
-            .add_default_media_hierarchy_preset("missing-media")
+            .add_media_hierarchy_preset(
+                MediaHierarchyPreset::Local,
+                "missing-media",
+                "music videos",
+            )
             .expect_err("unknown media id should be rejected");
 
         assert!(
             error.to_string().contains(
-                "cannot add default hierarchy preset: media id 'missing-media' does not exist"
+                "cannot add local hierarchy preset: media id 'missing-media' does not exist"
             ),
+            "error should explain missing media id"
+        );
+    }
+
+    /// Ensures hierarchy preset removal is idempotent for one media/folder.
+    #[tokio::test]
+    async fn remove_hierarchy_preset_is_idempotent() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("add hierarchy preset");
+
+        let removed_first = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("first hierarchy-preset removal should succeed");
+        let removed_second = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("second hierarchy-preset removal should remain idempotent");
+
+        assert_eq!(removed_first, 1, "first removal should remove one node");
+        assert_eq!(removed_second, 0, "second removal should remove zero nodes");
+    }
+
+    /// Ensures media-source removal drops matching hierarchy nodes.
+    #[tokio::test]
+    async fn remove_media_source_removes_matching_hierarchy_nodes() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
+            .expect("add hierarchy preset");
+
+        let removed_hierarchy_nodes =
+            service.remove_media_source(&media_id).expect("remove media source");
+        assert_eq!(
+            removed_hierarchy_nodes, 1,
+            "media-source removal should cascade one matching hierarchy node"
+        );
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        assert!(!document.media.contains_key(&media_id), "removed media id should no longer exist");
+        assert!(
+            document.hierarchy.iter().all(|node| node.media_id.as_deref() != Some(&media_id)),
+            "matching hierarchy nodes should also be removed"
+        );
+    }
+
+    /// Ensures media-source removal rejects unknown media ids.
+    #[test]
+    fn remove_media_source_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .remove_media_source("missing-media")
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot remove media source: media id 'missing-media' does not exist"),
             "error should explain missing media id"
         );
     }
