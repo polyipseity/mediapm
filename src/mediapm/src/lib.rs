@@ -1370,9 +1370,8 @@ fn local_extension_with_dot(path: &Path) -> String {
 ///
 /// The generated chain keeps local ingest semantics aligned with
 /// `media add --preset local` defaults:
-/// `import -> rsgain -> media-tagger`, with full-save policy on each produced
-/// variant so downstream hierarchy presets can project both normalized and
-/// tagged outputs deterministically.
+/// `import -> media-tagger -> rsgain`, while reusing one stable variant key
+/// across the full pipeline.
 #[must_use]
 fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
     vec![
@@ -1380,10 +1379,9 @@ fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
             tool: MediaStepTool::Import,
             input_variants: Vec::new(),
             output_variants: BTreeMap::from([(
-                "source".to_string(),
+                "media".to_string(),
                 serde_json::json!({
                     "kind": "primary",
-                    "save": "full",
                 }),
             )]),
             options: BTreeMap::from([
@@ -1392,25 +1390,23 @@ fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
             ]),
         },
         MediaStep {
-            tool: MediaStepTool::Rsgain,
-            input_variants: vec!["source".to_string()],
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
-                "normalized".to_string(),
+                "media".to_string(),
                 serde_json::json!({
                     "kind": "primary",
-                    "save": "full",
                 }),
             )]),
             options: BTreeMap::new(),
         },
         MediaStep {
-            tool: MediaStepTool::MediaTagger,
-            input_variants: vec!["normalized".to_string()],
+            tool: MediaStepTool::Rsgain,
+            input_variants: vec!["media".to_string()],
             output_variants: BTreeMap::from([(
-                "default".to_string(),
+                "media".to_string(),
                 serde_json::json!({
                     "kind": "primary",
-                    "save": "full",
                 }),
             )]),
             options: BTreeMap::new(),

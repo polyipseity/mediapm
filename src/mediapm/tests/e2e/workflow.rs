@@ -249,7 +249,7 @@ async fn add_media_source_sets_remote_download_defaults() {
     assert!(!description.trim().is_empty());
 }
 
-/// Protects local add-flow registration as `import -> rsgain -> media-tagger` CAS ingest.
+/// Protects local add-flow registration as `import -> media-tagger -> rsgain` CAS ingest.
 #[tokio::test]
 async fn add_local_source_sets_import_step_and_description() {
     let root = tempdir().expect("tempdir");
@@ -264,8 +264,8 @@ async fn add_local_source_sets_import_step_and_description() {
     assert!(source.variant_hashes.is_empty());
     assert_eq!(source.steps.len(), 3);
     let import_step = &source.steps[0];
-    let rsgain_step = &source.steps[1];
-    let media_tagger_step = &source.steps[2];
+    let media_tagger_step = &source.steps[1];
+    let rsgain_step = &source.steps[2];
 
     assert_eq!(import_step.tool, MediaStepTool::Import);
     assert!(import_step.input_variants.is_empty());
@@ -278,30 +278,27 @@ async fn add_local_source_sets_import_step_and_description() {
         Some(TransformInputValue::String(value)) if !value.trim().is_empty()
     ));
     assert_eq!(
-        import_step.output_variants.get("source"),
+        import_step.output_variants.get("media"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "save": "full",
-        })),
-    );
-
-    assert_eq!(rsgain_step.tool, MediaStepTool::Rsgain);
-    assert_eq!(rsgain_step.input_variants, vec!["source".to_string()]);
-    assert_eq!(
-        rsgain_step.output_variants.get("normalized"),
-        Some(&serde_json::json!({
-            "kind": "primary",
-            "save": "full",
         })),
     );
 
     assert_eq!(media_tagger_step.tool, MediaStepTool::MediaTagger);
-    assert_eq!(media_tagger_step.input_variants, vec!["normalized".to_string()]);
+    assert_eq!(media_tagger_step.input_variants, vec!["media".to_string()]);
     assert_eq!(
-        media_tagger_step.output_variants.get("default"),
+        media_tagger_step.output_variants.get("media"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "save": "full",
+        })),
+    );
+
+    assert_eq!(rsgain_step.tool, MediaStepTool::Rsgain);
+    assert_eq!(rsgain_step.input_variants, vec!["media".to_string()]);
+    assert_eq!(
+        rsgain_step.output_variants.get("media"),
+        Some(&serde_json::json!({
+            "kind": "primary",
         })),
     );
 

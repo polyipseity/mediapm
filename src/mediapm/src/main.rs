@@ -158,7 +158,7 @@ struct MediaAddArgs {
 enum MediaAddPreset {
     /// Online downloader preset (`yt-dlp -> rsgain -> media-tagger`).
     YtDlp,
-    /// Local importer preset (`import -> rsgain -> media-tagger`).
+    /// Local importer preset (`import -> media-tagger -> rsgain`).
     Local,
 }
 
