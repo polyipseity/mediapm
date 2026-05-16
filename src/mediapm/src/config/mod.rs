@@ -1386,15 +1386,30 @@ where
 
 /// One media metadata value source declared under `media.<id>.metadata`.
 ///
-/// Metadata values are intentionally strict and support exactly two forms:
+/// Metadata values are intentionally strict and support three forms:
 /// - `"text"` literal values,
 /// - object bindings that extract one key from one produced file variant.
+/// - ordered fallback lists of literal/object candidates where runtime
+///   resolves the first non-empty candidate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum MediaMetadataValue {
     /// Literal metadata text value.
     Literal(String),
     /// Variant-file metadata lookup binding.
+    Variant(MediaMetadataVariantBinding),
+    /// Ordered fallback candidates evaluated top-to-bottom until one
+    /// candidate resolves to a non-empty metadata string.
+    Fallback(Vec<MediaMetadataValueCandidate>),
+}
+
+/// One metadata value candidate entry used by fallback lists.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MediaMetadataValueCandidate {
+    /// Literal fallback metadata text.
+    Literal(String),
+    /// Variant-file metadata lookup fallback binding.
     Variant(MediaMetadataVariantBinding),
 }
 
@@ -1451,11 +1466,13 @@ pub struct MediaSourceSpec {
     pub workflow_id: Option<String>,
     /// Optional strict metadata object for media-specific path interpolation.
     ///
-    /// Each key maps to either:
+    /// Each key maps to one of:
     /// - one literal string value, or
     /// - one `{ variant, metadata_key, transform? }` object that
     ///   resolves metadata from a
-    ///   file variant produced by this media source.
+    ///   file variant produced by this media source, or
+    /// - one ordered list of string/object candidates where runtime picks the
+    ///   first non-empty value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, MediaMetadataValue>>,
     /// Optional pre-seeded CAS hash pointers keyed by variant name.
@@ -3281,52 +3298,88 @@ fn validate_media_metadata_entries(
             )));
         }
 
-        if let MediaMetadataValue::Variant(binding) = metadata_value {
-            let variant_name = binding.variant.trim();
-            if variant_name.is_empty() {
-                return Err(MediaPmError::Workflow(format!(
-                    "media '{media_id}' metadata '{metadata_name}' must define a non-empty variant"
-                )));
+        match metadata_value {
+            MediaMetadataValue::Literal(_) => {}
+            MediaMetadataValue::Variant(binding) => {
+                validate_media_metadata_variant_binding(
+                    media_id,
+                    metadata_name,
+                    binding,
+                    &producers,
+                )?;
             }
-
-            let metadata_key = binding.metadata_key.trim();
-            if metadata_key.is_empty() {
-                return Err(MediaPmError::Workflow(format!(
-                    "media '{media_id}' metadata '{metadata_name}' must define a non-empty metadata_key"
-                )));
-            }
-
-            if let Some(transform) = &binding.transform {
-                let pattern = transform.pattern.trim();
-                if pattern.is_empty() {
+            MediaMetadataValue::Fallback(candidates) => {
+                if candidates.is_empty() {
                     return Err(MediaPmError::Workflow(format!(
-                        "media '{media_id}' metadata '{metadata_name}' transform.pattern must be non-empty"
+                        "media '{media_id}' metadata '{metadata_name}' fallback list must be non-empty"
                     )));
                 }
 
-                let full_match_pattern = format!("^(?:{pattern})$");
-                Regex::new(&full_match_pattern).map_err(|error| {
-                    MediaPmError::Workflow(format!(
-                        "media '{media_id}' metadata '{metadata_name}' transform.pattern is invalid regex '{pattern}': {error}"
-                    ))
-                })?;
-            }
-
-            let producer = producers.get(variant_name).ok_or_else(|| {
-                MediaPmError::Workflow(format!(
-                    "media '{media_id}' metadata '{metadata_name}' references unknown variant '{variant_name}'"
-                ))
-            })?;
-
-            if matches!(
-                producer,
-                VariantProducerValidationMeta::StepOutput { is_folder_output: true, .. }
-            ) {
-                return Err(MediaPmError::Workflow(format!(
-                    "media '{media_id}' metadata '{metadata_name}' references variant '{variant_name}' that resolves to a folder output; metadata bindings require file variants"
-                )));
+                for candidate in candidates {
+                    if let MediaMetadataValueCandidate::Variant(binding) = candidate {
+                        validate_media_metadata_variant_binding(
+                            media_id,
+                            metadata_name,
+                            binding,
+                            &producers,
+                        )?;
+                    }
+                }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Validates one variant-backed metadata entry.
+fn validate_media_metadata_variant_binding(
+    media_id: &str,
+    metadata_name: &str,
+    binding: &MediaMetadataVariantBinding,
+    producers: &BTreeMap<String, VariantProducerValidationMeta>,
+) -> Result<(), MediaPmError> {
+    let variant_name = binding.variant.trim();
+    if variant_name.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "media '{media_id}' metadata '{metadata_name}' must define a non-empty variant"
+        )));
+    }
+
+    let metadata_key = binding.metadata_key.trim();
+    if metadata_key.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "media '{media_id}' metadata '{metadata_name}' must define a non-empty metadata_key"
+        )));
+    }
+
+    if let Some(transform) = &binding.transform {
+        let pattern = transform.pattern.trim();
+        if pattern.is_empty() {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' metadata '{metadata_name}' transform.pattern must be non-empty"
+            )));
+        }
+
+        let full_match_pattern = format!("^(?:{pattern})$");
+        Regex::new(&full_match_pattern).map_err(|error| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' metadata '{metadata_name}' transform.pattern is invalid regex '{pattern}': {error}"
+            ))
+        })?;
+    }
+
+    let producer = producers.get(variant_name).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "media '{media_id}' metadata '{metadata_name}' references unknown variant '{variant_name}'"
+        ))
+    })?;
+
+    if matches!(producer, VariantProducerValidationMeta::StepOutput { is_folder_output: true, .. })
+    {
+        return Err(MediaPmError::Workflow(format!(
+            "media '{media_id}' metadata '{metadata_name}' references variant '{variant_name}' that resolves to a folder output; metadata bindings require file variants"
+        )));
     }
 
     Ok(())
@@ -3911,12 +3964,12 @@ mod tests {
 
     use super::{
         HierarchyEntry, HierarchyEntryKind, MEDIAPM_DOCUMENT_VERSION, MaterializationMethod,
-        MediaMetadataValue, MediaPmDocument, MediaPmImpureTimestamp, MediaPmState,
-        MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig,
-        PlaylistEntryPathMode, PlaylistFormat, ToolRequirement, TransformInputValue, Value,
-        flatten_hierarchy_nodes_for_runtime, load_mediapm_document, load_mediapm_state_document,
-        media_source_uri, resolve_step_variant_flow, save_mediapm_document,
-        save_mediapm_state_document,
+        MediaMetadataValue, MediaMetadataValueCandidate, MediaPmDocument, MediaPmImpureTimestamp,
+        MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+        OutputSaveConfig, PlaylistEntryPathMode, PlaylistFormat, ToolRequirement,
+        TransformInputValue, Value, flatten_hierarchy_nodes_for_runtime, load_mediapm_document,
+        load_mediapm_state_document, media_source_uri, resolve_step_variant_flow,
+        save_mediapm_document, save_mediapm_state_document,
     };
 
     fn hierarchy_flat_map(document: &MediaPmDocument) -> BTreeMap<String, HierarchyEntry> {
@@ -6104,6 +6157,105 @@ mod tests {
             }
             other => panic!("expected metadata variant binding, got {other:?}"),
         }
+    }
+
+    /// Protects metadata decode by accepting ordered fallback lists that mix
+    /// variant bindings and literal values.
+    #[test]
+    fn media_source_metadata_accepts_fallback_candidate_lists() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("mediapm.ncl");
+        let source = r#"
+{
+    version = 1,
+    media = {
+        demo = {
+            metadata = {
+                title = [
+                    {
+                        variant = "infojson",
+                        metadata_key = "title",
+                    },
+                    "Unknown Title",
+                ],
+            },
+            steps = [
+                {
+                    tool = "yt-dlp",
+                    output_variants = {
+                        infojson = {
+                            kind = "infojson",
+                        },
+                    },
+                    options = {
+                        uri = "https://example.com/video",
+                    },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        std::fs::write(&path, source).expect("write source");
+        let document = load_mediapm_document(&path).expect("decode document");
+        let metadata = document
+            .media
+            .get("demo")
+            .and_then(|spec| spec.metadata.as_ref())
+            .expect("metadata should decode as object");
+
+        match metadata.get("title") {
+            Some(MediaMetadataValue::Fallback(candidates)) => {
+                assert_eq!(candidates.len(), 2);
+                assert!(matches!(
+                    candidates.first(),
+                    Some(MediaMetadataValueCandidate::Variant(binding))
+                        if binding.variant == "infojson" && binding.metadata_key == "title"
+                ));
+                assert_eq!(
+                    candidates.get(1),
+                    Some(&MediaMetadataValueCandidate::Literal("Unknown Title".to_string()))
+                );
+            }
+            other => panic!("expected metadata fallback list, got {other:?}"),
+        }
+    }
+
+    /// Protects metadata validation by rejecting empty fallback lists.
+    #[test]
+    fn media_source_metadata_rejects_empty_fallback_lists() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("mediapm.ncl");
+        let source = r#"
+{
+    version = 1,
+    media = {
+        demo = {
+            metadata = {
+                title = [],
+            },
+            steps = [
+                {
+                    tool = "yt-dlp",
+                    output_variants = {
+                        infojson = {
+                            kind = "infojson",
+                        },
+                    },
+                    options = {
+                        uri = "https://example.com/video",
+                    },
+                },
+            ],
+        },
+    },
+}
+"#;
+
+        std::fs::write(&path, source).expect("write source");
+        let err = load_mediapm_document(&path).expect_err("empty metadata fallback list must fail");
+        assert!(err.to_string().contains("fallback list must be non-empty"));
     }
 
     /// Protects metadata binding decode by accepting regex transform settings

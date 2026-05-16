@@ -27,9 +27,10 @@ use crate::conductor_bridge::{
 };
 use crate::config::{
     FlattenedHierarchyEntry, HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule,
-    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue, MediaPmDocument,
-    MediaSourceSpec, PlaylistEntryPathMode, PlaylistFormat, expand_variant_selectors,
-    flatten_hierarchy_nodes_for_runtime, hierarchy_metadata_placeholder_keys, media_source_uri,
+    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
+    MediaMetadataValueCandidate, MediaPmDocument, MediaSourceSpec, PlaylistEntryPathMode,
+    PlaylistFormat, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
+    hierarchy_metadata_placeholder_keys, media_source_uri,
 };
 use crate::error::MediaPmError;
 use crate::lockfile::{ManagedFileRecord, MediaLockFile};
@@ -1139,6 +1140,51 @@ async fn resolve_media_metadata_string_value(
     match metadata_value {
         MediaMetadataValue::Literal(value) => Ok(value.clone()),
         MediaMetadataValue::Variant(binding) => {
+            resolve_media_metadata_candidate_value(
+                media_id,
+                metadata_key,
+                &MediaMetadataValueCandidate::Variant(binding.clone()),
+                source,
+                lookup,
+            )
+            .await
+        }
+        MediaMetadataValue::Fallback(candidates) => {
+            for candidate in candidates {
+                let resolved = resolve_media_metadata_candidate_value(
+                    media_id,
+                    metadata_key,
+                    candidate,
+                    source,
+                    lookup,
+                )
+                .await;
+
+                if let Ok(value) = resolved
+                    && !value.trim().is_empty()
+                {
+                    return Ok(value);
+                }
+            }
+
+            Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' metadata '{metadata_key}' fallback list did not resolve any non-empty value"
+            )))
+        }
+    }
+}
+
+/// Resolves one metadata fallback candidate to a concrete string.
+async fn resolve_media_metadata_candidate_value(
+    media_id: &str,
+    metadata_key: &str,
+    candidate: &MediaMetadataValueCandidate,
+    source: &MediaSourceSpec,
+    lookup: &MaterializationLookupContext<'_>,
+) -> Result<String, MediaPmError> {
+    match candidate {
+        MediaMetadataValueCandidate::Literal(value) => Ok(value.clone()),
+        MediaMetadataValueCandidate::Variant(binding) => {
             let variant_source =
                 resolve_variant_source_bytes(lookup, media_id, source, binding.variant.as_str())
                     .await?;
