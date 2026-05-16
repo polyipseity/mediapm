@@ -40,12 +40,13 @@ pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
 pub use config::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
-    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, flatten_hierarchy_value, load_mediapm_document,
-    load_mediapm_state_document, merge_mediapm_document_with_state, nest_hierarchy_value,
-    regex_variant_selector, save_mediapm_document, save_mediapm_state_document,
+    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, ToolRequirement,
+    ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
+    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
+    nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
+    save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::MediaPmGlobalPaths;
@@ -360,34 +361,50 @@ where
 
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let media_id = media_id_from_uri(uri);
-        let OnlineSourceMetadata { title, author, description } = fetch_online_source_metadata(uri);
+        let OnlineSourceMetadata { title, artist, description } = fetch_online_source_metadata(uri);
         let source_title = title.unwrap_or_else(|| remote_default_title(uri));
         let source_description = description
-            .unwrap_or_else(|| build_remote_default_description(&source_title, author.as_deref()));
+            .unwrap_or_else(|| build_remote_default_description(&source_title, artist.as_deref()));
 
         document.media.insert(
             media_id.clone(),
             MediaSourceSpec {
                 id: None,
                 description: Some(source_description),
-                title: Some(source_title),
+                title: Some(source_title.clone()),
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([
                     (
                         "title".to_string(),
-                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: "title".to_string(),
-                            transform: None,
-                        }),
+                        MediaMetadataValue::Fallback(vec![
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "video_tagged".to_string(),
+                                metadata_key: "title".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "infojson".to_string(),
+                                metadata_key: "title".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Literal(source_title.clone()),
+                        ]),
                     ),
                     (
                         "artist".to_string(),
-                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: "uploader".to_string(),
-                            transform: None,
-                        }),
+                        MediaMetadataValue::Fallback(vec![
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "video_tagged".to_string(),
+                                metadata_key: "artist".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "infojson".to_string(),
+                                metadata_key: "uploader".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Literal("unknown".to_string()),
+                        ]),
                     ),
                     (
                         "video_id".to_string(),
@@ -591,12 +608,40 @@ where
             MediaSourceSpec {
                 id: None,
                 description: Some(source_description),
-                title: Some(source_title),
+                title: Some(source_title.clone()),
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([
                     (
                         "title".to_string(),
-                        MediaMetadataValue::Literal(local_default_title(&absolute)),
+                        MediaMetadataValue::Fallback(vec![
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "media".to_string(),
+                                metadata_key: "title".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "media".to_string(),
+                                metadata_key: "track".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Literal(source_title.clone()),
+                        ]),
+                    ),
+                    (
+                        "artist".to_string(),
+                        MediaMetadataValue::Fallback(vec![
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "media".to_string(),
+                                metadata_key: "artist".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "media".to_string(),
+                                metadata_key: "album_artist".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Literal("unknown".to_string()),
+                        ]),
                     ),
                     (
                         "video_ext".to_string(),
@@ -1513,7 +1558,7 @@ fn build_local_default_description(path: &Path, title: &str) -> String {
     let file_name = local_default_title(path);
     let mut lines = vec![format!("file: {file_name}")];
     lines.push(format!("title: {title}"));
-    lines.push("author: unknown".to_string());
+    lines.push("artist: unknown".to_string());
     lines.join("\n")
 }
 
@@ -1578,9 +1623,9 @@ fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
 }
 
 /// Builds default description for one remote media source.
-fn build_remote_default_description(title: &str, author: Option<&str>) -> String {
-    let author = author.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
-    format!("title: {title}\nauthor: {author}")
+fn build_remote_default_description(title: &str, artist: Option<&str>) -> String {
+    let artist = artist.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
+    format!("title: {title}\nartist: {artist}")
 }
 
 /// Metadata tuple fetched by downloader-aware online probes.
@@ -1588,8 +1633,8 @@ fn build_remote_default_description(title: &str, author: Option<&str>) -> String
 struct OnlineSourceMetadata {
     /// Best-effort media title.
     title: Option<String>,
-    /// Best-effort author/uploader label.
-    author: Option<String>,
+    /// Best-effort artist/uploader label.
+    artist: Option<String>,
     /// Best-effort textual description.
     description: Option<String>,
 }
@@ -1630,7 +1675,7 @@ fn try_fetch_online_source_metadata_with_yt_dlp(uri: &Url) -> Option<OnlineSourc
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let metadata = parse_online_source_metadata(&value);
 
-    if metadata.title.is_none() && metadata.author.is_none() && metadata.description.is_none() {
+    if metadata.title.is_none() && metadata.artist.is_none() && metadata.description.is_none() {
         None
     } else {
         Some(metadata)
@@ -1662,13 +1707,13 @@ fn try_fetch_local_source_metadata_with_ffprobe(path: &Path) -> Option<LocalSour
 /// Parses online metadata fields from one downloader JSON payload.
 fn parse_online_source_metadata(value: &serde_json::Value) -> OnlineSourceMetadata {
     let title = first_non_empty_json_string(value, &["fulltitle", "title", "track"]);
-    let author = first_non_empty_json_string(
+    let artist = first_non_empty_json_string(
         value,
         &["uploader", "channel", "artist", "creator", "uploader_id"],
     );
     let description = first_non_empty_json_string(value, &["description", "summary"]);
 
-    OnlineSourceMetadata { title, author, description }
+    OnlineSourceMetadata { title, artist, description }
 }
 
 /// Parses local metadata fields from one ffprobe JSON payload.
@@ -2174,10 +2219,10 @@ mod tests {
         assert!(merged.use_user_tool_cache_enabled());
     }
 
-    /// Ensures online metadata parsing extracts title/author/description when
+    /// Ensures online metadata parsing extracts title/artist/description when
     /// downloader JSON includes those fields.
     #[test]
-    fn parse_online_metadata_reads_title_author_and_description() {
+    fn parse_online_metadata_reads_title_artist_and_description() {
         let payload = json!({
             "fulltitle": "Demo Song",
             "uploader": "Demo Artist",
@@ -2189,7 +2234,7 @@ mod tests {
             metadata,
             OnlineSourceMetadata {
                 title: Some("Demo Song".to_string()),
-                author: Some("Demo Artist".to_string()),
+                artist: Some("Demo Artist".to_string()),
                 description: Some("A short description".to_string()),
             }
         );
