@@ -1,8 +1,9 @@
 //! End-to-end workflow tests for mediapm phase composition.
 
 use mediapm::{
-    MediaMetadataValue, MediaPmApi, MediaPmDocument, MediaPmService, MediaRuntimeStorage,
-    MediaStepTool, TransformInputValue, load_mediapm_document, save_mediapm_document,
+    MediaMetadataValue, MediaMetadataValueCandidate, MediaPmApi, MediaPmDocument, MediaPmService,
+    MediaRuntimeStorage, MediaStepTool, TransformInputValue, load_mediapm_document,
+    save_mediapm_document,
 };
 use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
 use mediapm_conductor::{decode_machine_document, decode_user_document};
@@ -304,12 +305,39 @@ async fn add_media_source_sets_remote_download_defaults() {
     );
 
     let metadata = source.metadata.as_ref().expect("metadata should be set for remote add");
-    assert!(
-        matches!(metadata.get("title"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "title")
-    );
-    assert!(
-        matches!(metadata.get("artist"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "uploader")
-    );
+    assert!(matches!(
+        metadata.get("title"),
+        Some(MediaMetadataValue::Fallback(candidates))
+            if matches!(
+                candidates.as_slice(),
+                [
+                    MediaMetadataValueCandidate::Variant(first),
+                    MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Literal(_),
+                ]
+                if first.variant == "video_tagged"
+                    && first.metadata_key == "title"
+                    && second.variant == "infojson"
+                    && second.metadata_key == "title"
+            )
+    ));
+    assert!(matches!(
+        metadata.get("artist"),
+        Some(MediaMetadataValue::Fallback(candidates))
+            if matches!(
+                candidates.as_slice(),
+                [
+                    MediaMetadataValueCandidate::Variant(first),
+                    MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Literal(literal),
+                ]
+                if first.variant == "video_tagged"
+                    && first.metadata_key == "artist"
+                    && second.variant == "infojson"
+                    && second.metadata_key == "uploader"
+                    && literal == "unknown"
+            )
+    ));
     assert!(
         matches!(metadata.get("video_id"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "id")
     );
@@ -383,10 +411,40 @@ async fn add_local_source_sets_import_step_and_description() {
     );
 
     let metadata = source.metadata.as_ref().expect("metadata should be set for local add");
-    assert_eq!(
+    assert!(matches!(
         metadata.get("title"),
-        Some(&MediaMetadataValue::Literal("sample-media.txt".to_string()))
-    );
+        Some(MediaMetadataValue::Fallback(candidates))
+            if matches!(
+                candidates.as_slice(),
+                [
+                    MediaMetadataValueCandidate::Variant(first),
+                    MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Literal(literal),
+                ]
+                if first.variant == "media"
+                    && first.metadata_key == "title"
+                    && second.variant == "media"
+                    && second.metadata_key == "track"
+                    && literal == "sample-media.txt"
+            )
+    ));
+    assert!(matches!(
+        metadata.get("artist"),
+        Some(MediaMetadataValue::Fallback(candidates))
+            if matches!(
+                candidates.as_slice(),
+                [
+                    MediaMetadataValueCandidate::Variant(first),
+                    MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Literal(literal),
+                ]
+                if first.variant == "media"
+                    && first.metadata_key == "artist"
+                    && second.variant == "media"
+                    && second.metadata_key == "album_artist"
+                    && literal == "unknown"
+            )
+    ));
     assert_eq!(metadata.get("video_ext"), Some(&MediaMetadataValue::Literal(".txt".to_string())));
 
     assert_eq!(source.title.as_deref(), Some("sample-media.txt"));
@@ -394,4 +452,5 @@ async fn add_local_source_sets_import_step_and_description() {
     let description = source.description.as_deref().expect("description should be set");
     assert!(description.contains("file:"));
     assert!(description.contains("sample-media.txt"));
+    assert!(description.contains("artist:"));
 }
