@@ -91,11 +91,11 @@ fn tool_id_for(logical_tool_name: &str) -> String {
 /// Builds one tool requirement for the example `mediapm.ncl` document.
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     let dependencies = match logical_tool_name {
-        "yt-dlp" => ToolRequirementDependencies {
+        "yt-dlp" | "media-tagger" => ToolRequirementDependencies {
             ffmpeg_version: Some("inherit".to_string()),
             sd_version: None,
         },
-        "media-tagger" | "rsgain" => ToolRequirementDependencies {
+        "rsgain" => ToolRequirementDependencies {
             ffmpeg_version: Some("inherit".to_string()),
             sd_version: Some("inherit".to_string()),
         },

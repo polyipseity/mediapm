@@ -184,7 +184,7 @@ fn cli_add_hierarchy_example_runs_and_writes_manifest() {
 // Verifies tools example runs and emits inspectable config artifacts.
 #[test]
 fn add_tools_example_runs_and_writes_manifest() {
-    let output = run_example("mediapm_add_tools");
+    let output = run_example("mediapm_cli_add_tools");
     assert!(
         output.status.success(),
         "example should run successfully\nstdout:\n{}\nstderr:\n{}",
