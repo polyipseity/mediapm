@@ -109,10 +109,10 @@ fn cli_add_sources_example_runs_and_writes_manifest() {
     }
 }
 
-/// Verifies hierarchy-presets example runs and emits inspectable config artifacts.
+// Verifies hierarchy example runs and emits inspectable config artifacts.
 #[test]
-fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
-    let output = run_example("mediapm_cli_add_hierarchy_defaults");
+fn cli_add_hierarchy_example_runs_and_writes_manifest() {
+    let output = run_example("mediapm_cli_add_hierarchy");
     assert!(
         output.status.success(),
         "example should run successfully\nstdout:\n{}\nstderr:\n{}",
@@ -122,8 +122,7 @@ fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let manifest_path = manifest_path_from_stdout(&stdout).unwrap_or_else(|| {
-        workspace_root()
-            .join("src/mediapm/examples/.artifacts/cli-add-hierarchy-defaults/manifest.json")
+        workspace_root().join("src/mediapm/examples/.artifacts/cli-add-hierarchy/manifest.json")
     });
 
     assert!(manifest_path.exists(), "example manifest should exist");
@@ -182,10 +181,10 @@ fn cli_add_hierarchy_defaults_example_runs_and_writes_manifest() {
     }
 }
 
-/// Verifies tool-placeholder example runs and emits inspectable config artifacts.
+// Verifies tools example runs and emits inspectable config artifacts.
 #[test]
-fn cli_add_tools_placeholders_example_runs_and_writes_manifest() {
-    let output = run_example("mediapm_cli_add_tools_placeholders");
+fn add_tools_example_runs_and_writes_manifest() {
+    let output = run_example("mediapm_add_tools");
     assert!(
         output.status.success(),
         "example should run successfully\nstdout:\n{}\nstderr:\n{}",
@@ -195,13 +194,12 @@ fn cli_add_tools_placeholders_example_runs_and_writes_manifest() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let manifest_path = manifest_path_from_stdout(&stdout).unwrap_or_else(|| {
-        workspace_root()
-            .join("src/mediapm/examples/.artifacts/cli-add-tools-placeholders/manifest.json")
+        workspace_root().join("src/mediapm/examples/.artifacts/cli-add-tools/manifest.json")
     });
 
     assert!(manifest_path.exists(), "example manifest should exist");
 
-    let manifest_text = fs::read_to_string(&manifest_path).expect("read tool-placeholder manifest");
+    let manifest_text = fs::read_to_string(&manifest_path).expect("read add-tools manifest");
     let manifest_json: Value = serde_json::from_str(&manifest_text).expect("parse manifest json");
 
     for key in ["mediapm_ncl", "conductor_user_ncl", "conductor_machine_ncl"] {
@@ -213,20 +211,20 @@ fn cli_add_tools_placeholders_example_runs_and_writes_manifest() {
         assert!(path.exists(), "manifest path '{key}' should exist");
     }
 
-    let media_id = manifest_json
-        .get("media_id")
-        .and_then(Value::as_str)
-        .expect("manifest should include media id");
-    assert!(!media_id.trim().is_empty(), "manifest media id should be non-empty");
-
-    let placeholder_tool_ids = manifest_json
-        .get("placeholder_tool_ids")
+    let logical_tool_names = manifest_json
+        .get("logical_tool_names")
         .and_then(Value::as_array)
-        .expect("manifest should include placeholder tool ids");
+        .expect("manifest should include logical tool names");
     assert!(
-        !placeholder_tool_ids.is_empty(),
-        "manifest should include at least one placeholder tool id"
+        !logical_tool_names.is_empty(),
+        "manifest should include at least one logical tool name"
     );
+
+    let tool_ids = manifest_json
+        .get("tool_ids")
+        .and_then(Value::as_array)
+        .expect("manifest should include tool ids");
+    assert_eq!(tool_ids.len(), logical_tool_names.len());
 
     let machine_path = manifest_json
         .get("conductor_machine_ncl")
@@ -236,17 +234,28 @@ fn cli_add_tools_placeholders_example_runs_and_writes_manifest() {
     let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
         .expect("decode conductor machine document");
 
-    let expected_workflow_id = format!("mediapm.media.{media_id}");
-    assert!(
-        machine.workflows.contains_key(&expected_workflow_id),
-        "conductor machine should contain managed workflow '{expected_workflow_id}'"
-    );
+    let mediapm_path = manifest_json
+        .get("mediapm_ncl")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .expect("manifest should include mediapm path");
+    let document = mediapm::load_mediapm_document(&mediapm_path).expect("load mediapm document");
+    assert!(document.media.is_empty(), "tools example should leave media empty");
+    assert_eq!(document.tools.len(), tool_ids.len());
 
-    for value in placeholder_tool_ids {
-        let tool_id = value.as_str().expect("placeholder tool id should be a string");
+    for value in tool_ids {
+        let tool_id = value.as_str().expect("tool id should be a string");
         assert!(
             machine.tools.contains_key(tool_id),
-            "conductor machine should contain placeholder tool '{tool_id}'"
+            "conductor machine should contain tool '{tool_id}'"
+        );
+        assert!(
+            machine
+                .tool_configs
+                .get(tool_id)
+                .and_then(|config| config.content_map.as_ref())
+                .is_some_and(|content_map| !content_map.is_empty()),
+            "conductor machine should contain dummy content-map entries for tool '{tool_id}'"
         );
     }
 }

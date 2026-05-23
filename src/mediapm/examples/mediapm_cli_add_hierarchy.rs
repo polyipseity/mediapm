@@ -1,25 +1,19 @@
-//! Offline CLI example for inspecting hierarchy preset output.
+//! Offline example for adding hierarchy presets on top of registered media sources.
 //!
-//! This example builds on source registration by invoking:
-//! - `mediapm media add --preset local <path>`
-//! - `mediapm media add --preset yt-dlp <youtube-url>`
-//! - `mediapm hierarchy add --preset local --folder <folder> <media-id>`
-//! - `mediapm hierarchy add --preset yt-dlp --folder <folder> <media-id>`
-//!
-//! It writes generated documents under
-//! `src/mediapm/examples/.artifacts/cli-add-hierarchy-defaults/` and records
-//! the resulting config paths/media ids in `manifest.json`.
+//! The example bootstraps a clean `mediapm` workspace, registers one local
+//! and one online media source, applies the local and yt-dlp hierarchy presets,
+//! and writes a small manifest that records the resulting document locations.
 
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 
-use mediapm::load_mediapm_document;
+use mediapm::{MediaHierarchyPreset, MediaPmService, load_mediapm_document};
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 /// Stable artifact-folder name for this example.
-const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy-defaults";
+const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy";
 /// Dummy local source file used by this example.
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
 /// Dummy `YouTube` URL used to synthesize remote source defaults.
@@ -34,7 +28,7 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
 /// Manifest emitted by this example for downstream assertions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct AddHierarchyDefaultsManifest {
+struct AddHierarchyManifest {
     /// Artifact root used by this run.
     artifact_root: PathBuf,
     /// Path to `manifest.json`.
@@ -45,9 +39,9 @@ struct AddHierarchyDefaultsManifest {
     conductor_user_ncl: PathBuf,
     /// Path to generated conductor machine document.
     conductor_machine_ncl: PathBuf,
-    /// Local media id returned by `media add --preset local`.
+    /// Local media id returned by `add_local_source`.
     local_media_id: String,
-    /// Remote media id returned by `media add --preset yt-dlp`.
+    /// Remote media id returned by `add_media_source`.
     remote_media_id: String,
     /// Number of hierarchy nodes after default-preset insertion.
     hierarchy_node_count: usize,
@@ -81,148 +75,43 @@ fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-/// Ensures the `mediapm` CLI executable exists and returns its path.
-fn ensure_mediapm_cli_binary() -> ExampleResult<PathBuf> {
-    let workspace = workspace_root();
-    let cli_path = workspace
-        .join("target")
-        .join("debug")
-        .join(format!("mediapm{}", std::env::consts::EXE_SUFFIX));
-
-    if cli_path.exists() {
-        return Ok(cli_path);
-    }
-
-    let build = ProcessCommand::new("cargo")
-        .arg("build")
-        .arg("--package")
-        .arg("mediapm")
-        .arg("--bin")
-        .arg("mediapm")
-        .current_dir(&workspace)
-        .output()?;
-
-    if !build.status.success() {
-        return Err(format!(
-            "building mediapm CLI failed\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&build.stdout),
-            String::from_utf8_lossy(&build.stderr)
-        )
-        .into());
-    }
-
-    if !cli_path.exists() {
-        return Err(format!("mediapm CLI binary was not found at '{}'", cli_path.display()).into());
-    }
-
-    Ok(cli_path)
-}
-
-/// Executes one `mediapm` CLI command against the example artifact root.
-fn run_mediapm_cli(cli_path: &Path, root: &Path, args: &[&str]) -> ExampleResult<String> {
-    let offline_bin_dir = root.join(".offline-bin");
-    fs::create_dir_all(&offline_bin_dir)?;
-
-    let output = ProcessCommand::new(cli_path)
-        .arg("--root")
-        .arg(root)
-        .args(args)
-        .env("PATH", &offline_bin_dir)
-        .output()?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "mediapm command failed: {}\nstdout:\n{}\nstderr:\n{}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// Extracts registered media id from CLI stdout.
-fn parse_registered_media_id(stdout: &str) -> Option<String> {
-    stdout.lines().find_map(|line| {
-        line.strip_prefix("registered media source id=")
-            .or_else(|| line.strip_prefix("registered local media source id="))
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-    })
-}
-
-/// Runs add-source commands and returns both generated media ids.
-fn add_sources_for_hierarchy_example(
-    cli_path: &Path,
-    root: &Path,
-) -> ExampleResult<(String, String)> {
+/// Writes the dummy local media file used for source registration.
+fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     let local_source_path = root.join("inputs").join(DUMMY_LOCAL_SOURCE_FILE);
     fs::create_dir_all(local_source_path.parent().expect("local source parent"))?;
     fs::write(&local_source_path, b"dummy-local-video-bytes")?;
-
-    let add_local_stdout = run_mediapm_cli(
-        cli_path,
-        root,
-        &["media", "add", "--preset", "local", &local_source_path.to_string_lossy()],
-    )?;
-    let local_media_id = parse_registered_media_id(&add_local_stdout)
-        .ok_or_else(|| "missing media id in media add --preset local output".to_string())?;
-
-    let add_remote_stdout = run_mediapm_cli(
-        cli_path,
-        root,
-        &["media", "add", "--preset", "yt-dlp", DUMMY_YOUTUBE_URL],
-    )?;
-    let remote_media_id = parse_registered_media_id(&add_remote_stdout)
-        .ok_or_else(|| "missing media id in media add --preset yt-dlp output".to_string())?;
-
-    Ok((local_media_id, remote_media_id))
+    Ok(local_source_path)
 }
 
-/// Runs the hierarchy-preset example flow and persists output manifest.
-fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefaultsManifest> {
+/// Runs the example flow and persists output manifest/config files.
+async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let cli_path = ensure_mediapm_cli_binary()?;
-    let (local_media_id, remote_media_id) = add_sources_for_hierarchy_example(&cli_path, &root)?;
+    let service = MediaPmService::new_in_memory_at(&root);
 
-    run_mediapm_cli(
-        &cli_path,
-        &root,
-        &[
-            "hierarchy",
-            "add",
-            "--preset",
-            "local",
-            "--folder",
-            LOCAL_HIERARCHY_FOLDER,
-            &local_media_id,
-        ],
+    let local_source_path = write_dummy_local_source(&root)?;
+    let local_media_id = service.add_local_source(&local_source_path).await?;
+    let remote_media_id = service.add_media_source(&Url::parse(DUMMY_YOUTUBE_URL)?)?;
+
+    service.add_media_hierarchy_preset(
+        MediaHierarchyPreset::Local,
+        &local_media_id,
+        LOCAL_HIERARCHY_FOLDER,
     )?;
-    run_mediapm_cli(
-        &cli_path,
-        &root,
-        &[
-            "hierarchy",
-            "add",
-            "--preset",
-            "yt-dlp",
-            "--folder",
-            YT_DLP_HIERARCHY_FOLDER,
-            &remote_media_id,
-        ],
+    service.add_media_hierarchy_preset(
+        MediaHierarchyPreset::YtDlp,
+        &remote_media_id,
+        YT_DLP_HIERARCHY_FOLDER,
     )?;
 
-    let mediapm_ncl = root.join("mediapm.ncl");
-    let conductor_user_ncl = root.join("mediapm.conductor.ncl");
-    let conductor_machine_ncl = root.join("mediapm.conductor.machine.ncl");
+    let mediapm_ncl = service.paths().mediapm_ncl.clone();
+    let conductor_user_ncl = service.paths().conductor_user_ncl.clone();
+    let conductor_machine_ncl = service.paths().conductor_machine_ncl.clone();
     let manifest_path = root.join("manifest.json");
 
     let document = load_mediapm_document(&mediapm_ncl)?;
-    let manifest = AddHierarchyDefaultsManifest {
+    let manifest = AddHierarchyManifest {
         artifact_root: root,
         manifest_path: manifest_path.clone(),
         mediapm_ncl,
@@ -241,8 +130,9 @@ fn run_cli_add_hierarchy_defaults_example() -> ExampleResult<AddHierarchyDefault
 }
 
 /// Runs the offline hierarchy-preset example and prints artifact locations.
-fn main() -> ExampleResult<()> {
-    let manifest = run_cli_add_hierarchy_defaults_example()?;
+#[tokio::main]
+async fn main() -> ExampleResult<()> {
+    let manifest = run_add_hierarchy_example().await?;
 
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
@@ -262,18 +152,15 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use mediapm::load_mediapm_document;
+    use mediapm::{HierarchyNodeKind, load_mediapm_document};
     use mediapm_conductor::{decode_machine_document, decode_user_document};
 
-    use super::run_cli_add_hierarchy_defaults_example;
-    use mediapm::HierarchyNodeKind;
+    use super::run_add_hierarchy_example;
 
-    /// Verifies local/yt-dlp hierarchy presets insert one root node each with
-    /// preset-specific variant projections.
-    #[test]
-    fn cli_add_hierarchy_defaults_writes_expected_hierarchy_nodes() {
-        let manifest = run_cli_add_hierarchy_defaults_example()
-            .expect("run cli add-hierarchy-defaults example");
+    /// Verifies local/yt-dlp hierarchy presets insert one root node each with preset-specific projections.
+    #[tokio::test]
+    async fn add_hierarchy_writes_expected_hierarchy_nodes() {
+        let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
@@ -286,14 +173,9 @@ mod tests {
             .hierarchy
             .iter()
             .map(|node| {
-                let media_id =
-                    node.media_id.as_deref().expect("preset root should set media_id").to_string();
-                assert_eq!(
-                    node.kind,
-                    HierarchyNodeKind::Folder,
-                    "preset root should emit folder-kind hierarchy node"
-                );
-                media_id
+                assert_eq!(node.kind, HierarchyNodeKind::Folder);
+                assert!(node.id.is_none(), "outer hierarchy folder should not carry an id");
+                node.media_id.as_deref().expect("preset root should set media_id").to_string()
             })
             .collect();
 
@@ -301,7 +183,6 @@ mod tests {
             [manifest.local_media_id.clone(), manifest.remote_media_id.clone()]
                 .into_iter()
                 .collect();
-
         assert_eq!(observed_media_ids, expected_media_ids);
 
         let hierarchy_by_folder: BTreeMap<_, _> = document
@@ -310,6 +191,10 @@ mod tests {
             .map(|node| {
                 let media_root =
                     node.children.first().expect("preset root should include media root");
+                assert!(
+                    media_root.id.is_some(),
+                    "media-root child should keep a stable hierarchy id"
+                );
                 let variants: BTreeSet<_> = media_root
                     .children
                     .iter()
@@ -343,12 +228,10 @@ mod tests {
                 "infojson".to_string(),
                 "links".to_string(),
                 "subtitles".to_string(),
-                "subtitles_en".to_string(),
                 "thumbnails".to_string(),
                 "video".to_string(),
-                "video_tagged".to_string(),
             ]),
-            "yt-dlp preset should follow demo-style media + infojson projection without sidecars folder"
+            "yt-dlp preset should project the updated media, infojson, subtitles, thumbnails, and links variants"
         );
 
         let user_bytes =
@@ -357,18 +240,15 @@ mod tests {
             fs::read(&manifest.conductor_machine_ncl).expect("read conductor machine config");
 
         let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
-        let machine =
-            decode_machine_document(&machine_bytes).expect("decode conductor machine config");
+        let machine_document = decode_machine_document(&machine_bytes);
+        let machine = machine_document.expect("decode conductor machine config");
 
         let expected_workflow_ids = [
             format!("mediapm.media.{}", manifest.local_media_id),
             format!("mediapm.media.{}", manifest.remote_media_id),
         ];
         for workflow_id in expected_workflow_ids {
-            assert!(
-                machine.workflows.contains_key(&workflow_id),
-                "conductor machine config should contain managed workflow '{workflow_id}'"
-            );
+            assert!(machine.workflows.contains_key(&workflow_id));
         }
     }
 }
