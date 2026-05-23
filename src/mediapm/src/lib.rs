@@ -524,16 +524,10 @@ where
                                 "extension": "mkv",
                             }),
                         )]),
-                        options: BTreeMap::from([
-                            (
-                                "codec_copy".to_string(),
-                                TransformInputValue::String("true".to_string()),
-                            ),
-                            (
-                                "container".to_string(),
-                                TransformInputValue::String("matroska".to_string()),
-                            ),
-                        ]),
+                        options: BTreeMap::from([(
+                            "container".to_string(),
+                            TransformInputValue::String("matroska".to_string()),
+                        )]),
                     },
                     MediaStep {
                         tool: MediaStepTool::MediaTagger,

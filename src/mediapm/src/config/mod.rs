@@ -3883,7 +3883,7 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
     match value {
         Value::Null => "null".to_string(),
         Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => number.to_string(),
+        Value::Number(number) => render_nickel_number(number),
         Value::String(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string()),
         Value::Array(items) => {
             if items.is_empty() {
@@ -3920,6 +3920,30 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
             }
         }
     }
+}
+
+/// Renders one JSON number value into deterministic Nickel numeric syntax.
+///
+/// Integral values are emitted without trailing decimal points (`0` instead of
+/// `0.0`) so generated Nickel remains stable for integer-typed fields such as
+/// output-variant `idx`.
+fn render_nickel_number(number: &serde_json::Number) -> String {
+    if let Some(value) = number.as_i64() {
+        return value.to_string();
+    }
+
+    if let Some(value) = number.as_u64() {
+        return value.to_string();
+    }
+
+    if let Some(value) = number.as_f64()
+        && value.is_finite()
+        && value.fract() == 0.0
+    {
+        return format!("{value:.0}");
+    }
+
+    number.to_string()
 }
 
 /// Normalizes `version` field numbers exported by Nickel into integer JSON numbers.
@@ -4167,6 +4191,46 @@ mod tests {
 
         let decoded = load_mediapm_document(&path).expect("load mediapm.ncl");
         assert!(decoded.tools.contains_key("import"));
+    }
+
+    /// Protects Nickel numeric rendering by emitting integral ffmpeg `idx`
+    /// values without trailing decimal notation.
+    #[test]
+    fn save_document_renders_integral_output_variant_idx_without_decimal() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("mediapm.ncl");
+        let mut document = MediaPmDocument::default();
+
+        document.media.insert(
+            "demo".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::new(),
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::Ffmpeg,
+                    input_variants: vec!["video".to_string()],
+                    output_variants: BTreeMap::from([(
+                        "video".to_string(),
+                        serde_json::json!({
+                            "kind": "primary",
+                            "idx": 0,
+                            "extension": "mkv",
+                        }),
+                    )]),
+                    options: BTreeMap::new(),
+                }],
+            },
+        );
+
+        save_mediapm_document(&path, &document).expect("save mediapm.ncl");
+        let rendered = std::fs::read_to_string(&path).expect("read rendered mediapm.ncl");
+
+        assert!(rendered.contains("idx = 0,"));
+        assert!(!rendered.contains("idx = 0.0"));
     }
 
     /// Protects machine-managed state persistence shape and round-trip decode.

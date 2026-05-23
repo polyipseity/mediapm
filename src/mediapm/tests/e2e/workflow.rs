@@ -255,13 +255,23 @@ async fn add_media_source_sets_remote_download_defaults() {
             "extension": "mkv",
         })),
     );
-    assert_eq!(
-        ffmpeg_step.options.get("codec_copy"),
-        Some(&TransformInputValue::String("true".to_string())),
+    assert!(
+        !ffmpeg_step.options.contains_key("codec_copy"),
+        "remote add should rely on ffmpeg codec_copy defaults and keep options minimal"
     );
     assert_eq!(
         ffmpeg_step.options.get("container"),
         Some(&TransformInputValue::String("matroska".to_string())),
+    );
+    let rendered =
+        std::fs::read_to_string(&service.paths().mediapm_ncl).expect("read rendered mediapm.ncl");
+    assert!(
+        rendered.contains("idx = 0,"),
+        "rendered ffmpeg output idx should be serialized as integer"
+    );
+    assert!(
+        !rendered.contains("codec_copy"),
+        "rendered default ffmpeg options should omit explicit codec_copy"
     );
 
     assert_eq!(media_tagger_step.tool, MediaStepTool::MediaTagger);
