@@ -3866,6 +3866,16 @@ fn is_nickel_reserved_identifier(input: &str) -> bool {
 }
 
 /// Renders JSON as deterministic Nickel source with sorted object keys.
+/// Renders `text` as a Nickel multiline string literal using 2-percent delimiters.
+///
+/// Uses `m%%"..."%%m` so content that contains the 1-percent closing sequence
+/// `"%m` is still safe.  Literal `%{` interpolation markers are escaped to `%%{`.
+fn render_nickel_multiline_string(text: &str) -> String {
+    let escaped = text.replace("%{", "%%{");
+    format!("m%%\"\n{escaped}\n\"%%m")
+}
+
+/// Renders JSON as deterministic Nickel source with sorted object keys.
 fn render_nickel_value(value: &Value, indent: usize) -> String {
     let pad = " ".repeat(indent);
     let next_pad = " ".repeat(indent + 2);
@@ -3896,11 +3906,13 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
                 let body = ordered
                     .into_iter()
                     .map(|(key, item)| {
-                        format!(
-                            "{next_pad}{} = {},",
-                            render_field_name(key),
-                            render_nickel_value(item, indent + 2)
-                        )
+                        let rendered_value = match (key.as_str(), item) {
+                            ("description", Value::String(text)) => {
+                                render_nickel_multiline_string(text)
+                            }
+                            _ => render_nickel_value(item, indent + 2),
+                        };
+                        format!("{next_pad}{} = {},", render_field_name(key), rendered_value)
                     })
                     .collect::<Vec<_>>()
                     .join("\n");

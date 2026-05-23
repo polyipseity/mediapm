@@ -28,14 +28,14 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use musicbrainz_rs::entity::recording::Recording;
-use musicbrainz_rs::prelude::*;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, load_runtime_env_files};
 use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
     RuntimeStoragePaths, SimpleConductor,
 };
+use musicbrainz_rs::entity::recording::Recording;
+use musicbrainz_rs::prelude::*;
 use rand::Rng as _;
 use url::Url;
 
@@ -375,7 +375,11 @@ where
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let media_id = media_id_from_uri(uri);
         let OnlineSourceMetadata { title, artist, description } = fetch_online_source_metadata(uri);
-        let source_title = mb.as_ref().map(|m| m.title.clone()).or(title).unwrap_or_else(|| remote_default_title(uri));
+        let source_title = mb
+            .as_ref()
+            .map(|m| m.title.clone())
+            .or(title)
+            .unwrap_or_else(|| remote_default_title(uri));
         let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
         let source_description = mb
             .as_ref()
@@ -572,6 +576,10 @@ where
     /// Returns [`MediaPmError`] when the local source path cannot be
     /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
     /// required conductor runtime documents cannot be prepared.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
     pub async fn add_local_source(
         &self,
         local_path: &Path,
@@ -616,7 +624,11 @@ where
 
         let media_id = media_id_from_local_path(&absolute);
         let LocalSourceMetadata { title, description } = fetch_local_source_metadata(&absolute);
-        let source_title = mb.as_ref().map(|m| m.title.clone()).or(title).unwrap_or_else(|| local_default_title(&absolute));
+        let source_title = mb
+            .as_ref()
+            .map(|m| m.title.clone())
+            .or(title)
+            .unwrap_or_else(|| local_default_title(&absolute));
         let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
         let source_description = mb
             .as_ref()
@@ -1763,16 +1775,16 @@ fn validate_recording_id_format(id: &str) -> Result<(), MediaPmError> {
 ///
 /// Returns [`MediaPmError`] when the recording id is not a valid UUID or the
 /// `MusicBrainz` API call fails (network error, unknown id, etc.).
-async fn fetch_mb_recording_metadata(recording_id: &str) -> Result<MbRecordingMetadata, MediaPmError> {
+async fn fetch_mb_recording_metadata(
+    recording_id: &str,
+) -> Result<MbRecordingMetadata, MediaPmError> {
     validate_recording_id_format(recording_id)?;
-    let recording = Recording::fetch()
-        .id(recording_id)
-        .with_artists()
-        .execute_async()
-        .await
-        .map_err(|e| MediaPmError::Workflow(format!(
-            "MusicBrainz lookup for recording '{recording_id}' failed: {e}"
-        )))?;
+    let recording =
+        Recording::fetch().id(recording_id).with_artists().execute_async().await.map_err(|e| {
+            MediaPmError::Workflow(format!(
+                "MusicBrainz lookup for recording '{recording_id}' failed: {e}"
+            ))
+        })?;
     let title = recording.title.clone();
     let artist = recording
         .artist_credit
