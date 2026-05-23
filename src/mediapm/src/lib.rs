@@ -383,6 +383,11 @@ where
                                 transform: None,
                             }),
                             MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "video".to_string(),
+                                metadata_key: "track".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                                 variant: "infojson".to_string(),
                                 metadata_key: "title".to_string(),
                                 transform: None,
@@ -396,6 +401,11 @@ where
                             MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
                                 variant: "video".to_string(),
                                 metadata_key: "artist".to_string(),
+                                transform: None,
+                            }),
+                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                                variant: "video".to_string(),
+                                metadata_key: "album_artist".to_string(),
                                 transform: None,
                             }),
                             MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {

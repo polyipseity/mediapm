@@ -305,12 +305,15 @@ async fn add_media_source_sets_remote_download_defaults() {
                 [
                     MediaMetadataValueCandidate::Variant(first),
                     MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Variant(third),
                     MediaMetadataValueCandidate::Literal(_),
                 ]
                 if first.variant == "video"
                     && first.metadata_key == "title"
-                    && second.variant == "infojson"
-                    && second.metadata_key == "title"
+                    && second.variant == "video"
+                    && second.metadata_key == "track"
+                    && third.variant == "infojson"
+                    && third.metadata_key == "title"
             )
     ));
     assert!(matches!(
@@ -321,12 +324,15 @@ async fn add_media_source_sets_remote_download_defaults() {
                 [
                     MediaMetadataValueCandidate::Variant(first),
                     MediaMetadataValueCandidate::Variant(second),
+                    MediaMetadataValueCandidate::Variant(third),
                     MediaMetadataValueCandidate::Literal(literal),
                 ]
                 if first.variant == "video"
                     && first.metadata_key == "artist"
-                    && second.variant == "infojson"
-                    && second.metadata_key == "uploader"
+                    && second.variant == "video"
+                    && second.metadata_key == "album_artist"
+                    && third.variant == "infojson"
+                    && third.metadata_key == "uploader"
                     && literal == "unknown"
             )
     ));
