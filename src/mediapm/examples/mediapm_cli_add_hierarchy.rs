@@ -191,9 +191,10 @@ mod tests {
             .map(|node| {
                 let media_root =
                     node.children.first().expect("preset root should include media root");
-                assert!(
-                    media_root.id.is_some(),
-                    "media-root child should keep a stable hierarchy id"
+                assert_eq!(
+                    media_root.id.as_deref(),
+                    node.media_id.as_deref(),
+                    "media-root child id should match the media id"
                 );
                 let variants: BTreeSet<_> = media_root
                     .children

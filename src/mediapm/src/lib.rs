@@ -684,7 +684,7 @@ where
         }
 
         let normalized_folder = normalize_hierarchy_folder_root(folder)?;
-        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        let hierarchy_id = hierarchy_preset_node_id(media_id);
         if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
             return Ok(());
         }
@@ -737,13 +737,13 @@ where
     /// `mediapm.ncl` cannot be loaded/saved.
     pub fn remove_media_hierarchy_preset(
         &self,
-        preset: MediaHierarchyPreset,
+        _preset: MediaHierarchyPreset,
         media_id: &str,
         folder: &str,
     ) -> Result<usize, MediaPmError> {
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
-        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        normalize_hierarchy_folder_root(folder)?;
+        let hierarchy_id = hierarchy_preset_node_id(media_id);
         let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
         if removed_nodes > 0 {
             save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
@@ -1195,15 +1195,10 @@ fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, MediaPmError>
     Ok(normalized)
 }
 
-/// Builds deterministic hierarchy id for one `(preset, media, folder)` tuple.
+/// Builds hierarchy id for one media-root folder.
 #[must_use]
-fn hierarchy_preset_node_id(
-    preset: MediaHierarchyPreset,
-    media_id: &str,
-    normalized_folder: &str,
-) -> String {
-    let digest = mediapm_cas::Hash::from_content(normalized_folder.as_bytes()).to_hex();
-    format!("{media_id}-hier-{}-{}", preset.as_label().replace('-', "_"), &digest[..12])
+fn hierarchy_preset_node_id(media_id: &str) -> String {
+    media_id.to_string()
 }
 
 /// Builds one media-file hierarchy node bound to one output variant.
@@ -1300,6 +1295,17 @@ fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
     );
     thumbnails.id = Some(format!("{media_id}.thumbnails"));
 
+    let mut thumbnails_root = hierarchy_media_folder_node(
+        "",
+        media_id,
+        vec!["thumbnails".to_string()],
+        vec![HierarchyFolderRenameRule {
+            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+            replacement: "folder.$1".to_string(),
+        }],
+    );
+    thumbnails_root.id = Some(format!("{media_id}.thumbnails_root"));
+
     let mut links = hierarchy_media_folder_node(
         "links",
         media_id,
@@ -1312,7 +1318,7 @@ fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
     );
     links.id = Some(format!("{media_id}.links"));
 
-    vec![video, archive, description, infojson, subtitles, thumbnails, links]
+    vec![video, archive, description, infojson, subtitles, thumbnails, thumbnails_root, links]
 }
 
 /// Builds one hierarchy node tree for the selected preset.
@@ -2018,7 +2024,11 @@ mod tests {
         );
         assert!(matching_nodes[0].id.is_none(), "outer hierarchy folder should not carry an id");
         let media_root = &matching_nodes[0].children[0];
-        assert!(media_root.id.is_some(), "inner media-root folder should retain a stable id");
+        assert_eq!(
+            media_root.id.as_deref(),
+            Some(media_id.as_str()),
+            "inner media-root folder should use the media id"
+        );
         assert_eq!(
             media_root.path, "${media.metadata.title} [${media.id}]",
             "local hierarchy preset should keep stable media-root template"
@@ -2098,6 +2108,7 @@ mod tests {
                 format!("{media_id}.links"),
                 format!("{media_id}.subtitles"),
                 format!("{media_id}.thumbnails"),
+                format!("{media_id}.thumbnails_root"),
                 format!("{media_id}.video"),
             ])
         );
