@@ -107,7 +107,7 @@ async fn e2e_strict_mode_rejects_missing_primary_index_when_objects_exist() {
 
         std::fs::remove_file(dir.path().join("index.redb")).expect("remove primary index");
 
-        let error = match FileSystemCas::open_with_alpha_and_recovery_for_tests(
+        let Err(error) = FileSystemCas::open_with_alpha_and_recovery_for_tests(
             dir.path(),
             4,
             FileSystemRecoveryOptions {
@@ -117,9 +117,8 @@ async fn e2e_strict_mode_rejects_missing_primary_index_when_objects_exist() {
             },
         )
         .await
-        {
-            Err(error) => error,
-            Ok(_) => panic!("strict mode should refuse missing durable index"),
+        else {
+            panic!("strict mode should refuse missing durable index");
         };
 
         assert!(error.to_string().contains("reopen with recover mode or run repair_index"));

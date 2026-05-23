@@ -200,10 +200,10 @@ pub(crate) fn open_primary_table_read(
 }
 
 /// Opens the primary object metadata table for a write transaction.
-pub(crate) fn open_primary_table_write<'txn>(
-    write: &'txn redb::WriteTransaction,
+pub(crate) fn open_primary_table_write(
+    write: &redb::WriteTransaction,
     schema_marker: u32,
-) -> Result<redb::Table<'txn, &'static [u8], &'static [u8]>, CasError> {
+) -> Result<redb::Table<'_, &'static [u8], &'static [u8]>, CasError> {
     match dispatch_schema_marker(schema_marker)? {
         PersistedLayoutVersion::V1 => v1::open_primary_table_write_v1(write),
     }
@@ -220,10 +220,10 @@ pub(crate) fn open_constraints_table_read(
 }
 
 /// Opens the constraints table for a write transaction.
-pub(crate) fn open_constraints_table_write<'txn>(
-    write: &'txn redb::WriteTransaction,
+pub(crate) fn open_constraints_table_write(
+    write: &redb::WriteTransaction,
     schema_marker: u32,
-) -> Result<redb::MultimapTable<'txn, &'static [u8], &'static [u8]>, CasError> {
+) -> Result<redb::MultimapTable<'_, &'static [u8], &'static [u8]>, CasError> {
     match dispatch_schema_marker(schema_marker)? {
         PersistedLayoutVersion::V1 => v1::open_constraints_table_write_v1(write),
     }
@@ -272,7 +272,7 @@ pub(crate) fn read_schema_marker_value_from_metadata(
 /// Writes schema marker bytes to metadata storage.
 pub(crate) fn write_schema_marker_to_metadata(
     write: &redb::WriteTransaction,
-    encoded_schema_marker: &[u8; 4],
+    encoded_schema_marker: [u8; 4],
 ) -> Result<(), CasError> {
     let mut metadata = write.open_table(INDEX_METADATA_TABLE).map_err(CasError::redb)?;
     metadata
@@ -377,7 +377,7 @@ mod tests {
     fn collect_versioned_files(dir: &Path) -> Vec<(PathBuf, u32)> {
         let mut files = fs::read_dir(dir)
             .unwrap_or_else(|err| panic!("failed to read versions dir '{}': {err}", dir.display()))
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
                 if !path.is_file() {
@@ -528,13 +528,12 @@ mod tests {
                     continue;
                 }
 
-                if version == 1 {
-                    panic!(
-                        "{} (v1) must not reference any other version module; found v{}",
-                        path.display(),
-                        referenced
-                    );
-                }
+                assert!(
+                    version != 1,
+                    "{} (v1) must not reference any other version module; found v{}",
+                    path.display(),
+                    referenced
+                );
 
                 assert_eq!(
                     referenced,

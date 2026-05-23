@@ -21,11 +21,11 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `.github/workflows/ci.yml` for canonical CI validation behavior.
 - `AGENTS.md` + `.agents/instructions/*.instructions.md` for active
   architecture and implementation contract.
-- `src/` phase crates for current module boundaries:
-  - `src/cas/` (Phase 1)
-  - `src/conductor/` (Phase 2)
-  - `src/conductor-builtins/*/` (Phase 2 built-ins)
-  - `src/mediapm/` (Phase 3)
+- `src/` workspace member crates for current module boundaries:
+  - `src/cas/` (CAS)
+  - `src/conductor/` (Conductor)
+  - `src/conductor-builtins/*/` (conductor built-ins)
+  - `src/mediapm/` (mediapm application)
 
 If planning docs mention `application`, `configuration`, `domain`,
 `infrastructure`, and `support`, treat them as conceptual layering terms unless
@@ -57,12 +57,29 @@ When editing Rust source, validate changes with targeted checks first:
 
 - Equivalent explicit forms are acceptable when aliases are unavailable:
   - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
-  - `cargo clippy -p mediapm --all-targets --all-features -- -D warnings` → same as `cargo clippy-pkg mediapm`
+  - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
 
 - For edits under `src/mediapm/**`, include one final runtime validation run:
-  - `cargo run --package mediapm --example demo_online`
+  - `cargo run --package mediapm --example mediapm_demo_online`
   - Run this after targeted crate tests/lints so generated managed-tool
     workflows are exercised end to end.
+  - Inspect generated artifacts under
+    `src/mediapm/examples/.artifacts/demo-online/` after the run, including
+    sidecar-family payload correctness (not only path existence).
+  - To reduce third-party provider rate-limit risk (`HTTP 429`), run this
+    gate at most once per validation pass, avoid immediate back-to-back reruns,
+    and use a cool-down backoff before retrying transient provider failures.
+  - If the run appears stuck, triage before rerunning: verify active
+    `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes, inspect artifact timestamp
+    movement, and check stderr for fallback-root messages
+    (`demo-online-fallback-*`) when canonical cleanup is locked.
+  - Bound long runs with `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` and treat timeout
+    exits as blocker failures, not soft skips.
+    - `mediapm_demo_online` hard-enforces this limit and returns exit code `124` on
+    timeout; treat that exit as equivalent to any other blocker failure.
+  - Keep timeout/watchdog messaging progress-safe: avoid periodic heartbeat
+    stderr output while conductor progress bars are rendering, and keep timeout
+    notices plain text (no row-clear ANSI control sequences).
   - This is a strict gate: do not downgrade failures into skip manifests,
     placeholder payload acceptance, or "soft-success" status.
   - If external network/tool providers prevent success, report that blocker
@@ -85,6 +102,11 @@ When refactoring touches multiple crates or splits large modules:
 
 - Keep changes minimal, deterministic, and aligned with the repository's
   functional-core direction documented in active instruction files.
+- Keep dependency and feature surfaces explicit:
+  - prefer existing workspace dependencies before adding new crates,
+  - remove direct dependencies that become unused after refactors,
+  - keep optional behavior compile-time gated behind explicit Cargo features,
+  - avoid hidden feature fan-out through default features.
 - Avoid adding hidden mutable state or introducing databases unless explicitly requested.
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
 - Keep Rust code fully documented with module-level `//!` and item-level
@@ -112,6 +134,18 @@ When refactoring touches multiple crates or splits large modules:
   - `cargo test-pkg <crate>` (affected crate tests)
   - `cargo clippy-pkg <crate>` (affected crate lint)
 
+## Example target naming convention
+
+- All workspace examples must use the crate-name prefix to avoid Cargo filename-collision warnings.
+- Naming pattern: `<crate_name>_<example_name>.rs`
+  - Examples: `cas_demo.rs`, `conductor_bootstrap_defaults.rs`, `mediapm_demo_online.rs`
+- This ensures unique target names across the workspace when running `cargo build --all-targets`.
+- When invoking examples, use the full target name:
+  - `cargo run --package cas --example cas_demo`
+  - `cargo run --package conductor --example conductor_runtime_diagnostics`
+  - `cargo run --package mediapm --example mediapm_demo_online`
+- All examples must follow this convention; enforce it during code review.
+
 ## Docstring completion bar
 
 - When editing `*.rs`, treat documentation as part of definition-of-done.
@@ -123,9 +157,40 @@ When refactoring touches multiple crates or splits large modules:
 - Avoid shallow docs that only rename symbols; write newcomer-oriented
   explanations that clarify intent and boundaries.
 
+## Lint suppression policy
+
+- Do not add bare suppression attributes (`#[allow(...)]` or `#![allow(...)]`)
+  for rustc/clippy lints.
+- Prefer direct code fixes for lint findings first.
+- When suppression is truly unavoidable, use item-scoped
+  `#[expect(<lint>, reason = "<substantive rationale>")]`.
+  - Keep scope as narrow as possible (single item/block, never crate-wide).
+  - The `reason` must explain _why the code shape is required now_, not just
+    restate the lint name.
+  - Good reasons reference concrete constraints such as platform behavior,
+    API-shape compatibility, or orchestration-ordering invariants.
+- Treat `#[expect(...)]` as temporary technical debt:
+  - remove it when refactors make the lint unnecessary,
+  - and investigate any `unfulfilled_lint_expectations` warning rather than
+    suppressing it.
+- For platform edge cases (for example
+  `clippy::permissions_set_readonly_false`) and diagnostic-only numeric
+  conversions (for example `clippy::cast_precision_loss`), include explicit
+  safety/correctness boundaries in the `reason` string.
+
 ## Core architectural constraints
 
 - Keep planner behavior pure and deterministic.
 - Keep side effects concentrated in executor/infrastructure.
 - Preserve sidecar invariants and migration-provenance semantics.
 - Keep object-store writes and sidecar writes atomic.
+
+## CLI/API parity contract
+
+- For crates that expose both a CLI binary and a library API, keep behavior
+  parity as an explicit invariant:
+  - new CLI operations should route through library/API entry points,
+  - API validation and failure semantics should match CLI-backed behavior,
+  - CLI-only ergonomic sugar is acceptable, capability gaps are not.
+- When adding or renaming CLI operations, update tests so parser behavior and
+  API-backed execution paths are both covered.

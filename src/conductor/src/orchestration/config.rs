@@ -1,5 +1,7 @@
 //! Orchestration actor/runtime configuration constants.
 
+use std::path::PathBuf;
+
 use std::num::NonZeroUsize;
 
 /// Default RPC timeout for actor request/response calls.
@@ -31,6 +33,9 @@ pub const ENV_UNKNOWN_STEP_COST_MS: &str = "MEDIAPM_CONDUCTOR_UNKNOWN_STEP_COST_
 /// Environment override key for scheduler trace ring-buffer capacity.
 pub const ENV_SCHEDULER_TRACE_CAPACITY: &str = "MEDIAPM_CONDUCTOR_SCHEDULER_TRACE_CAPACITY";
 
+/// Environment override key for optional JSON profile artifact output path.
+pub const ENV_PROFILE_OUTPUT_PATH: &str = "MEDIAPM_CONDUCTOR_PROFILE_JSON";
+
 /// Returns default step-worker pool size for multi-actor execution.
 #[must_use]
 pub fn default_worker_pool_size() -> usize {
@@ -38,10 +43,10 @@ pub fn default_worker_pool_size() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .and_then(NonZeroUsize::new)
-        .map(NonZeroUsize::get)
-        .unwrap_or_else(|| {
-            std::thread::available_parallelism().map(usize::from).unwrap_or(1).max(1)
-        })
+        .map_or_else(
+            || std::thread::available_parallelism().map(usize::from).unwrap_or(1).max(1),
+            NonZeroUsize::get,
+        )
 }
 
 /// Returns EWMA alpha used by adaptive scheduler.
@@ -71,4 +76,14 @@ pub fn scheduler_trace_capacity() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(DEFAULT_SCHEDULER_TRACE_CAPACITY)
+}
+
+/// Returns optional profile-artifact path from environment configuration.
+///
+/// Empty values are treated as unset.
+#[must_use]
+pub fn profile_output_path_from_env() -> Option<PathBuf> {
+    std::env::var_os(ENV_PROFILE_OUTPUT_PATH)
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
 }

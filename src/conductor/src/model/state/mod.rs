@@ -13,38 +13,70 @@ use crate::model::config::{ImpureTimestamp, ToolSpec};
 
 pub(crate) mod versions;
 
+/// Effective persistence mode for one captured output.
+///
+/// Ordering is intentional and semantic:
+/// - `Unsaved < Saved < Full`.
+///
+/// This allows merge behavior to be expressed as a simple maximum across
+/// equivalent callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub enum OutputSaveMode {
+    /// Output can be dropped after execution when no equivalent caller requires
+    /// persistence.
+    Unsaved,
+    /// Output is persisted with regular incremental behavior.
+    #[default]
+    Saved,
+    /// Output is persisted and treated as full-data preferred.
+    Full,
+}
+
+impl OutputSaveMode {
+    /// Returns whether this mode keeps output bytes persisted.
+    #[must_use]
+    pub const fn should_persist(self) -> bool {
+        !matches!(self, Self::Unsaved)
+    }
+
+    /// Returns whether this mode requires full-data persistence hints.
+    #[must_use]
+    pub const fn prefers_full(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 /// User/machine merged persistence flags for one output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistenceFlags {
-    /// When `false` for every equivalent caller, the output blob may be deleted.
-    pub save: bool,
-    /// When `true` for any equivalent caller, output should stay full-data preferred.
-    pub force_full: bool,
+    /// Effective tri-state persistence mode.
+    pub save: OutputSaveMode,
 }
 
 impl Default for PersistenceFlags {
     fn default() -> Self {
-        Self { save: true, force_full: false }
+        Self { save: OutputSaveMode::Saved }
     }
 }
 
 /// Merges persistence flags from multiple equivalent tool-call references.
 ///
 /// Invariants:
-/// - `save` is an intersection (logical AND),
-/// - `force_full` is a union (logical OR).
+/// - merge uses maximum ordering over `OutputSaveMode` where
+///   `Unsaved < Saved < Full`.
 #[must_use]
 pub fn merge_persistence_flags(
     flags: impl IntoIterator<Item = PersistenceFlags>,
 ) -> PersistenceFlags {
-    let mut merged = PersistenceFlags::default();
+    let mut merged = OutputSaveMode::Unsaved;
+    let mut seen = false;
 
     for flag in flags {
-        merged.save = merged.save && flag.save;
-        merged.force_full = merged.force_full || flag.force_full;
+        merged = merged.max(flag.save);
+        seen = true;
     }
 
-    merged
+    if seen { PersistenceFlags { save: merged } } else { PersistenceFlags::default() }
 }
 
 /// Fully resolved input vector item used in deterministic instance keys.
@@ -94,6 +126,11 @@ impl ResolvedInput {
     /// Builds one runtime list input from ordered string values.
     ///
     /// Hash identity is derived from canonical JSON encoding of the full list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the ordered list cannot be serialized into its
+    /// canonical JSON byte representation.
     pub fn from_string_list(string_list: Vec<String>) -> Result<Self, ConductorError> {
         let plain_content = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
@@ -109,6 +146,9 @@ impl ResolvedInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputRef {
     /// CAS hash for this output value.
+    ///
+    /// When `allow_empty_capture` is `true`, this hash is the blake3 hash of
+    /// zero bytes, representing an empty capture rather than real content.
     pub hash: Hash,
     /// Effective merged persistence policy for this output.
     ///
@@ -116,6 +156,17 @@ pub struct OutputRef {
     /// instances and combining duplicate caller output policies via
     /// [`merge_persistence_flags`].
     pub persistence: PersistenceFlags,
+    /// Whether this output was captured as intentionally empty via the
+    /// tool output spec's `allow_empty = true` policy.
+    ///
+    /// When `true`, the hash is the empty-bytes hash and the output must not
+    /// be used as a step input. Downstream steps that reference this output
+    /// receive a workflow error at input-resolution time.
+    ///
+    /// Defaults to `false` for backward-compatibility with persisted state
+    /// written before this field was introduced.
+    #[serde(default)]
+    pub allow_empty_capture: bool,
 }
 
 /// State record for one deterministic tool-call instance.
@@ -176,6 +227,11 @@ impl Default for OrchestrationState {
 ///
 /// The runtime state is cloned to preserve ownership expectations for callers
 /// that still need the original value after serialization.
+///
+/// # Errors
+///
+/// Returns an error when state envelope encoding fails or when the encoded
+/// payload cannot be parsed back into JSON.
 pub fn persisted_state_json_value(
     state: &OrchestrationState,
 ) -> Result<serde_json::Value, ConductorError> {
@@ -187,6 +243,11 @@ pub fn persisted_state_json_value(
 ///
 /// This is equivalent to `serde_json::to_string_pretty` over
 /// [`persisted_state_json_value`].
+///
+/// # Errors
+///
+/// Returns an error when persisted-state projection fails or when pretty JSON
+/// serialization fails.
 pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String, ConductorError> {
     let json = persisted_state_json_value(state)?;
     serde_json::to_string_pretty(&json)
@@ -194,11 +255,21 @@ pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String,
 }
 
 /// Encodes orchestration state with latest persistence version envelope.
-pub(crate) fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
+///
+/// # Errors
+///
+/// Returns an error when the runtime state cannot be converted into or
+/// serialized as the latest persistence envelope.
+pub fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state(state)
 }
 
 /// Decodes orchestration state from versioned persistence bytes.
-pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
+///
+/// # Errors
+///
+/// Returns an error when version dispatch, migration, or envelope
+/// deserialization fails.
+pub fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
     versions::decode_state(bytes)
 }

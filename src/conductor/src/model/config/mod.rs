@@ -16,9 +16,11 @@ use std::str::FromStr;
 
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::error::ConductorError;
-use crate::model::state::PersistenceFlags;
+use crate::model::state::{OutputSaveMode, PersistenceFlags};
+use crate::tools::downloader::use_user_download_cache_enabled;
 
 pub(crate) mod versions;
 
@@ -65,12 +67,10 @@ impl Default for NickelDocumentMetadata {
 /// Optional policy overrides for one named output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OutputPolicy {
-    /// Optional save override; falls back to inherited/default value when `None`.
+    /// Optional tri-state save override; falls back to inherited/default value
+    /// when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub save: Option<bool>,
-    /// Optional force-full override; falls back to inherited/default value when `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub force_full: Option<bool>,
+    pub save: Option<OutputSaveMode>,
 }
 
 /// Timezone-independent impure-execution timestamp.
@@ -100,10 +100,16 @@ pub struct RuntimeStorageConfig {
     pub conductor_dir: Option<String>,
     /// Optional override path for the volatile state document.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_config: Option<String>,
+    pub conductor_state_config: Option<String>,
     /// Optional override path for filesystem CAS storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cas_store_dir: Option<String>,
+    /// Optional override path for temporary execution sandboxes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_tmp_dir: Option<String>,
+    /// Optional override path for exported conductor schemas.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conductor_schema_dir: Option<String>,
     /// Optional additional inherited host environment-variable names keyed by
     /// platform.
     ///
@@ -115,6 +121,12 @@ pub struct RuntimeStorageConfig {
     /// with case-insensitive deduplication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
+    /// Optional toggle for shared global user-level managed-tool download
+    /// cache.
+    ///
+    /// When omitted, the cache is enabled by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_user_tool_cache: Option<bool>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by
@@ -186,9 +198,21 @@ impl RuntimeStorageConfig {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.conductor_dir.is_none()
-            && self.state_config.is_none()
+            && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
+            && self.conductor_tmp_dir.is_none()
+            && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.use_user_tool_cache.is_none()
+    }
+
+    /// Returns whether shared global user-level download cache should be used.
+    ///
+    /// Absent configuration defaults to `true` so repeated tool downloads can
+    /// reuse payload bytes across local workspaces for this user.
+    #[must_use]
+    pub const fn use_user_tool_cache_enabled(&self) -> bool {
+        use_user_download_cache_enabled(self.use_user_tool_cache)
     }
 
     /// Returns inherited runtime environment names merged with host defaults.
@@ -225,10 +249,7 @@ impl OutputPolicy {
     /// Resolves optional overrides against a concrete base policy.
     #[must_use]
     pub fn resolve(self, base: PersistenceFlags) -> PersistenceFlags {
-        PersistenceFlags {
-            save: self.save.unwrap_or(base.save),
-            force_full: self.force_full.unwrap_or(base.force_full),
-        }
+        PersistenceFlags { save: self.save.unwrap_or(base.save) }
     }
 }
 
@@ -274,6 +295,17 @@ pub struct ExternalContentRef {
     /// Optional human description.
     #[serde(default)]
     pub description: Option<String>,
+    /// Optional save policy for this external-data root.
+    ///
+    /// Supported values:
+    /// - `true` => regular saved behavior,
+    /// - `"full"` => saved behavior with full-data preference hints,
+    /// - `None` => runtime default behavior.
+    ///
+    /// `false` (`OutputSaveMode::Unsaved`) is invalid for external-data
+    /// references and rejected during validation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<OutputSaveMode>,
 }
 
 /// Add-external-data request options for machine document mutations.
@@ -306,6 +338,20 @@ impl AddExternalDataOptions {
     }
 }
 
+/// Validates one external-data save mode for machine-document insertion.
+fn validate_external_data_save_mode(
+    save_mode: Option<OutputSaveMode>,
+) -> Result<(), ConductorError> {
+    if matches!(save_mode, Some(OutputSaveMode::Unsaved)) {
+        return Err(ConductorError::Workflow(
+            "external_data save policy cannot be false/unsaved; use true/saved or \"full\""
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
 /// Tool definition from one conductor configuration document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSpec {
@@ -324,7 +370,7 @@ pub struct ToolSpec {
     ///
     /// Each output specifies only capture source (stdout/stderr/file).
     ///
-    /// Persistence policy (`save`, `force_full`) belongs to workflow tool-call
+    /// Persistence policy (`save`) belongs to workflow tool-call
     /// sites via [`WorkflowStepSpec::outputs`] and [`OutputPolicy`], not the
     /// reusable tool definition.
     #[serde(default)]
@@ -560,8 +606,12 @@ pub enum ToolInputKind {
     StringList,
 }
 
-fn is_default_tool_input_kind(kind: &ToolInputKind) -> bool {
-    matches!(kind, ToolInputKind::String)
+/// Returns whether a value equals its type default for serde skip checks.
+fn is_default_value<T>(value: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    value == &T::default()
 }
 
 /// Tool input declaration entry.
@@ -570,7 +620,7 @@ pub struct ToolInputSpec {
     /// Declared value kind for this input.
     ///
     /// When omitted, runtime defaults to [`ToolInputKind::String`].
-    #[serde(default, skip_serializing_if = "is_default_tool_input_kind")]
+    #[serde(default, skip_serializing_if = "is_default_value")]
     pub kind: ToolInputKind,
 }
 
@@ -679,6 +729,16 @@ pub enum OutputCaptureSpec {
         /// directory.
         path: String,
     },
+    /// Capture bytes from one file selected by a regex against the
+    /// sandbox-relative path.
+    ///
+    /// The runtime evaluates this regex against normalized relative paths
+    /// using forward slashes (`/`) regardless of host platform. Exactly one
+    /// regular file must match.
+    FileRegex {
+        /// Regex matched against normalized sandbox-relative file paths.
+        path_regex: String,
+    },
     /// Capture one directory snapshot by zipping it recursively.
     ///
     /// The runtime uses the builtin archive/zip implementation to build a ZIP
@@ -696,6 +756,19 @@ pub enum OutputCaptureSpec {
         #[serde(default)]
         include_topmost_folder: bool,
     },
+    /// Capture one ZIP payload containing all files selected by regex.
+    ///
+    /// The runtime evaluates this regex against normalized sandbox-relative
+    /// file and directory paths using forward slashes (`/`). Matched
+    /// directories contribute all descendant files. The resulting ZIP always
+    /// preserves paths relative to the sandbox root unless regex capture
+    /// groups are present: when one or more captures match, their strings are
+    /// joined and used as the ZIP member relative path; when no capture groups
+    /// match, the original sandbox-relative path is kept.
+    FolderRegex {
+        /// Regex matched against normalized sandbox-relative paths.
+        path_regex: String,
+    },
 }
 
 /// Declared output contract for one tool output.
@@ -703,14 +776,35 @@ pub enum OutputCaptureSpec {
 pub struct ToolOutputSpec {
     /// Capture source for this output.
     ///
-    /// For `kind = "file"`, the configured `path` supports `${...}` template
-    /// interpolation using the same rules as process/runtime template values.
+    /// For `kind = "file"` and `kind = "folder"`, the configured `path`
+    /// supports `${...}` template interpolation using the same rules as
+    /// process/runtime template values. Regex capture kinds evaluate the final
+    /// regex pattern against normalized sandbox-relative paths.
     pub capture: OutputCaptureSpec,
+    /// Whether a capture that produces no output (missing file, no regex
+    /// match, missing folder) is treated as a successful empty output rather
+    /// than a workflow error.
+    ///
+    /// When `true` and the capture source is absent or empty, the output is
+    /// stored as an empty capture in the orchestration state. Downstream steps
+    /// that reference an empty-capture output as a step input receive a
+    /// workflow error at resolution time, preventing silent empty-payload
+    /// propagation.
+    ///
+    /// This flag is appropriate for conditional outputs — artifacts that a
+    /// tool produces only when certain options are active (for example
+    /// subtitle sidecars, thumbnail sidecars, description files). Marking
+    /// these outputs `allow_empty = true` prevents spurious workflow failures
+    /// when the tool is configured to skip the optional artifact.
+    ///
+    /// Defaults to `false`: missing captures are errors by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_empty: bool,
 }
 
 impl Default for ToolOutputSpec {
     fn default() -> Self {
-        Self { capture: OutputCaptureSpec::Stdout {} }
+        Self { capture: OutputCaptureSpec::Stdout {}, allow_empty: false }
     }
 }
 
@@ -813,6 +907,10 @@ impl InputBinding {
     ///
     /// Scalar bindings visit exactly one item. List bindings visit each list
     /// element in order.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error produced by `callback` for one visited scalar item.
     pub fn try_for_each_scalar<F>(&self, mut callback: F) -> Result<(), ConductorError>
     where
         F: FnMut(usize, &str) -> Result<(), ConductorError>,
@@ -1079,6 +1177,12 @@ impl UserNickelDocument {
     /// - duplicates fail unless `overwrite_existing = true`,
     /// - builtin tools cannot end up with `content_map` in effective config,
     /// - content-map hashes are reconciled into managed `external_data` roots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation fails (for example empty tool names,
+    /// conflicting entries without overwrite mode, or invalid builtin/config
+    /// combinations).
     pub fn add_tool(
         &mut self,
         tool_name: impl Into<String>,
@@ -1108,6 +1212,12 @@ impl MachineNickelDocument {
     /// Adds one tool definition (and optional tool config) to machine document state.
     ///
     /// Validation rules mirror [`UserNickelDocument::add_tool`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation fails (for example empty tool names,
+    /// conflicting entries without overwrite mode, or invalid builtin/config
+    /// combinations).
     pub fn add_tool(
         &mut self,
         tool_name: impl Into<String>,
@@ -1137,11 +1247,18 @@ impl MachineNickelDocument {
     /// Validation rules:
     /// - `hash` is the external-data map key,
     /// - duplicates fail unless `overwrite_existing = true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `hash` already exists and overwrite mode is not
+    /// enabled.
     pub fn add_external_data(
         &mut self,
         hash: Hash,
         options: AddExternalDataOptions,
     ) -> Result<(), ConductorError> {
+        validate_external_data_save_mode(options.reference.save)?;
+
         if !options.overwrite_existing && self.external_data.contains_key(&hash) {
             return Err(ConductorError::Workflow(format!(
                 "external data '{hash}' already exists in machine config; set overwrite_existing=true to replace it"
@@ -1195,6 +1312,7 @@ fn sync_tool_content_external_data_roots(
     for hash in referenced_hashes {
         external_data.entry(hash).or_insert_with(|| ExternalContentRef {
             description: Some(format!("{MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX} {hash}")),
+            save: None,
         });
     }
 }
@@ -1294,42 +1412,92 @@ fn validate_add_tool_config_mode(
 }
 
 /// Encodes `conductor.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be converted into the latest
+/// versioned envelope or serialized as Nickel source.
 pub fn encode_user_document(document: UserNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_user_document(document)
 }
 
 /// Decodes `conductor.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, Nickel migration/validation, or
+/// bridge deserialization fails.
 pub fn decode_user_document(bytes: &[u8]) -> Result<UserNickelDocument, ConductorError> {
     versions::decode_user_document(bytes)
 }
 
 /// Encodes `conductor.machine.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the document cannot be converted into the latest
+/// versioned envelope or serialized as Nickel source.
 pub fn encode_machine_document(document: MachineNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_machine_document(document)
 }
 
 /// Decodes `conductor.machine.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, Nickel migration/validation, or
+/// bridge deserialization fails.
 pub fn decode_machine_document(bytes: &[u8]) -> Result<MachineNickelDocument, ConductorError> {
     versions::decode_machine_document(bytes)
 }
 
 /// Encodes `.conductor/state.ncl` with the latest persistence version envelope.
+///
+/// # Errors
+///
+/// Returns an error when the state document cannot be converted into the
+/// latest envelope or serialized as Nickel source.
 pub fn encode_state_document(document: StateNickelDocument) -> Result<Vec<u8>, ConductorError> {
     versions::encode_state_document(document)
 }
 
 /// Decodes `.conductor/state.ncl` from versioned persistence bytes.
+///
+/// # Errors
+///
+/// Returns an error when UTF-8 decoding, volatile-shape validation, Nickel
+/// migration/validation, or bridge deserialization fails.
 pub fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument, ConductorError> {
     versions::decode_state_document(bytes)
 }
 
 /// Evaluates fixed Nickel migrations/contracts plus user, machine, and state configuration.
+///
+/// # Errors
+///
+/// Returns an error when any document fails version checks, schema validation,
+/// or merged configuration evaluation.
 pub fn evaluate_total_configuration_sources(
     user_source: &str,
     machine_source: &str,
     state_source: &str,
 ) -> Result<(), ConductorError> {
     versions::evaluate_total_configuration_sources(user_source, machine_source, state_source)
+}
+
+/// Evaluates fixed Nickel migrations/contracts plus user, machine, and state
+/// configuration and returns the normalized compiled payload.
+///
+/// # Errors
+///
+/// Returns an error when any document fails version checks, schema validation,
+/// or merged configuration evaluation.
+pub fn compile_total_configuration_sources(
+    user_source: &str,
+    machine_source: &str,
+    state_source: &str,
+) -> Result<Value, ConductorError> {
+    versions::compile_total_configuration_sources(user_source, machine_source, state_source)
 }
 
 #[cfg(test)]
@@ -1340,7 +1508,8 @@ mod tests {
 
     use super::{
         AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef,
-        MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec, UserNickelDocument,
+        MachineNickelDocument, OutputSaveMode, ToolConfigSpec, ToolKindSpec, ToolSpec,
+        UserNickelDocument,
     };
 
     /// Verifies add-tool can insert both tool spec and tool config in one call.
@@ -1471,6 +1640,7 @@ mod tests {
                 fixture_hash,
                 AddExternalDataOptions::new(ExternalContentRef {
                     description: Some("fixture payload".to_string()),
+                    save: None,
                 }),
             )
             .expect("machine external data insert should succeed");
@@ -1486,18 +1656,37 @@ mod tests {
         machine
             .add_external_data(
                 fixture_hash,
-                AddExternalDataOptions::new(ExternalContentRef { description: None }),
+                AddExternalDataOptions::new(ExternalContentRef { description: None, save: None }),
             )
             .expect("first insert should succeed");
 
         let error = machine
             .add_external_data(
                 fixture_hash,
-                AddExternalDataOptions::new(ExternalContentRef { description: None }),
+                AddExternalDataOptions::new(ExternalContentRef { description: None, save: None }),
             )
             .expect_err("duplicate insert without overwrite should fail");
 
         assert!(error.to_string().contains("already exists"));
+    }
+
+    /// Verifies machine external-data insertion rejects unsaved (`false`) save policy.
+    #[test]
+    fn add_machine_external_data_rejects_unsaved_save_policy() {
+        let mut machine = MachineNickelDocument::default();
+        let fixture_hash = Hash::from_content(b"fixture-unsaved");
+
+        let error = machine
+            .add_external_data(
+                fixture_hash,
+                AddExternalDataOptions::new(ExternalContentRef {
+                    description: Some("fixture unsaved".to_string()),
+                    save: Some(OutputSaveMode::Unsaved),
+                }),
+            )
+            .expect_err("unsaved external-data save policy should fail validation");
+
+        assert!(error.to_string().contains("cannot be false/unsaved"));
     }
 
     /// Verifies stale managed tool-content roots are removed while non-managed
@@ -1514,11 +1703,15 @@ mod tests {
                     stale_hash,
                     ExternalContentRef {
                         description: Some("managed tool content CAS root for stale".to_string()),
+                        save: None,
                     },
                 ),
                 (
                     kept_hash,
-                    ExternalContentRef { description: Some("user-managed fixture".to_string()) },
+                    ExternalContentRef {
+                        description: Some("user-managed fixture".to_string()),
+                        save: None,
+                    },
                 ),
             ]),
             tool_configs: BTreeMap::from([(

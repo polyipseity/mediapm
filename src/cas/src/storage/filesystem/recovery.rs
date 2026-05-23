@@ -11,9 +11,11 @@
 //! serialization/deserialization boundaries.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use postcard::{from_bytes, to_allocvec};
 use serde::{Deserialize, Serialize};
@@ -35,6 +37,10 @@ const INDEX_BACKUP_FILE_PREFIX: &str = "index-backup-";
 const INDEX_BACKUP_FILE_SUFFIX: &str = ".postcard";
 /// Current serialized backup payload format version.
 const INDEX_BACKUP_FORMAT_VERSION: u32 = 1;
+/// Maximum stale-backup deletion attempts before surfacing an IO failure.
+const INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS: usize = 6;
+/// Fixed backoff used between stale-backup deletion retries.
+const INDEX_BACKUP_PRUNE_BACKOFF_MS: u64 = 40;
 
 #[derive(Debug, Clone)]
 /// Constraint source seed used during index rebuild.
@@ -142,7 +148,7 @@ pub(super) fn load_or_recover_primary_index(
             }
 
             let seed = choose_constraint_seed(root, None)?;
-            let recovered = rebuild_index_from_object_store(root, seed)?;
+            let recovered = rebuild_index_from_object_store(root, &seed)?;
             db.persist_state(&recovered.state)?;
             Ok((db, recovered.state, Some(recovered.report)))
         }
@@ -174,9 +180,8 @@ pub(super) fn choose_constraint_seed(
     let mut considered = 0usize;
     for path in backup_paths {
         considered = considered.saturating_add(1);
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
         };
         let Ok(snapshot) = from_bytes::<IndexBackupSnapshot>(&bytes) else {
             continue;
@@ -212,11 +217,11 @@ pub(super) fn choose_constraint_seed(
 /// 4. rebuild reverse maps and depth invariants.
 pub(super) fn rebuild_index_from_object_store(
     root: &Path,
-    constraint_seed: ConstraintSeed,
+    constraint_seed: &ConstraintSeed,
 ) -> Result<RecoveredIndexState, CasError> {
     let catalog = scan_object_store(root)?;
-    let (mut state, additional_skipped) = validate_catalog_into_index_state(&catalog)?;
-    let restored_constraint_rows = restore_explicit_constraints(&mut state, &constraint_seed);
+    let (mut state, additional_skipped) = validate_catalog_into_index_state(&catalog);
+    let restored_constraint_rows = restore_explicit_constraints(&mut state, constraint_seed);
 
     ensure_empty_record(&mut state);
     state.rebuild_constraint_reverse();
@@ -297,7 +302,7 @@ fn recover_after_primary_failure(
     }
 
     let seed = choose_constraint_seed(root, None)?;
-    let recovered = rebuild_index_from_object_store(root, seed)?;
+    let recovered = rebuild_index_from_object_store(root, &seed)?;
     let db = recreate_primary_index(root)?;
     db.persist_state(&recovered.state)?;
     Ok((db, recovered.state, Some(recovered.report)))
@@ -333,6 +338,16 @@ fn backup_snapshot_root(root: &Path) -> PathBuf {
     root.join(INDEX_BACKUP_DIR_NAME)
 }
 
+/// Opens one directory for object-store traversal, tolerating transient
+/// `NotFound` races caused by concurrent prune/delete operations.
+fn read_object_store_dir_tolerant(dir: &Path) -> Result<Option<std::fs::ReadDir>, CasError> {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(CasError::io("reading object store directory", dir, source)),
+    }
+}
+
 /// Returns whether object store contains at least one non-empty object file.
 fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError> {
     let storage_root = root.join(STORAGE_VERSION);
@@ -342,21 +357,30 @@ fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError
 
     let mut stack = vec![storage_root];
     while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(source) => {
-                return Err(CasError::io("reading object store directory", &dir, source));
-            }
+        let Some(entries) = read_object_store_dir_tolerant(&dir)? else {
+            continue;
         };
+
         for entry in entries {
-            let entry = entry
-                .map_err(|source| CasError::io("iterating object store directory", &dir, source))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("iterating object store directory", &dir, source));
+                }
+            };
+
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| {
-                CasError::io("reading object store entry type", path.clone(), source)
-            })?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("reading object store entry type", path, source));
+                }
+            };
+
             if file_type.is_dir() {
-                if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
+                if path.file_name().is_some_and(|name| name == "tmp") {
                     continue;
                 }
                 stack.push(path);
@@ -395,17 +419,30 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
     let mut stack = vec![storage_root];
 
     while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|source| CasError::io("reading object store directory", &dir, source))?;
+        let Some(entries) = read_object_store_dir_tolerant(&dir)? else {
+            continue;
+        };
+
         for entry in entries {
-            let entry = entry
-                .map_err(|source| CasError::io("iterating object store directory", &dir, source))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("iterating object store directory", &dir, source));
+                }
+            };
+
             let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| {
-                CasError::io("reading object store entry type", path.clone(), source)
-            })?;
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("reading object store entry type", path, source));
+                }
+            };
+
             if file_type.is_dir() {
-                if path.file_name().map(|name| name == "tmp").unwrap_or(false) {
+                if path.file_name().is_some_and(|name| name == "tmp") {
                     continue;
                 }
                 stack.push(path);
@@ -421,12 +458,9 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
                 continue;
             };
 
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(_) => {
-                    skipped_object_files = skipped_object_files.saturating_add(1);
-                    continue;
-                }
+            let Ok(bytes) = std::fs::read(&path) else {
+                skipped_object_files = skipped_object_files.saturating_add(1);
+                continue;
             };
 
             let candidate = match kind {
@@ -437,19 +471,20 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
                     }
                     StoredObject::full(bytes)
                 }
-                ParsedObjectKind::Delta => match StoredObject::decode_delta(&bytes) {
-                    Ok(object) => object,
-                    Err(_) => {
+                ParsedObjectKind::Delta => {
+                    if let Ok(object) = StoredObject::decode_delta(&bytes) {
+                        object
+                    } else {
                         skipped_object_files = skipped_object_files.saturating_add(1);
                         continue;
                     }
-                },
+                }
             };
 
             match objects.get(&hash) {
-                Some(StoredObject::Full { .. }) => {}
-                Some(StoredObject::Delta { .. })
-                    if matches!(candidate, StoredObject::Full { .. }) =>
+                Some(existing)
+                    if matches!(existing, StoredObject::Delta { .. })
+                        && matches!(candidate, StoredObject::Full { .. }) =>
                 {
                     objects.insert(hash, candidate);
                 }
@@ -465,9 +500,7 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
 }
 
 /// Validates scanned catalog content integrity and converts to runtime index state.
-fn validate_catalog_into_index_state(
-    catalog: &ScannedObjectCatalog,
-) -> Result<(IndexState, usize), CasError> {
+fn validate_catalog_into_index_state(catalog: &ScannedObjectCatalog) -> (IndexState, usize) {
     let mut memo = HashMap::<Hash, Vec<u8>>::new();
     let mut invalid = HashSet::<Hash>::new();
     let mut visiting = HashSet::<Hash>::new();
@@ -497,7 +530,7 @@ fn validate_catalog_into_index_state(
         }
     }
 
-    Ok((state, invalid.len()))
+    (state, invalid.len())
 }
 
 /// Validates one object hash by recursively reconstructing/confirming its bytes.
@@ -523,10 +556,10 @@ fn validate_hash_content(
 
     let resolved = match objects.get(&hash)? {
         StoredObject::Full { payload } => {
-            if Hash::from_content(payload) != hash {
-                None
-            } else {
+            if Hash::from_content(payload) == hash {
                 Some(payload.clone())
+            } else {
+                None
             }
         }
         StoredObject::Delta { state } => {
@@ -543,15 +576,12 @@ fn validate_hash_content(
     };
 
     let _ = visiting.remove(&hash);
-    match resolved {
-        Some(bytes) => {
-            memo.insert(hash, bytes.clone());
-            Some(bytes)
-        }
-        None => {
-            invalid.insert(hash);
-            None
-        }
+    if let Some(bytes) = resolved {
+        memo.insert(hash, bytes.clone());
+        Some(bytes)
+    } else {
+        invalid.insert(hash);
+        None
     }
 }
 
@@ -593,13 +623,10 @@ fn backup_snapshot_paths(root: &Path) -> Result<Vec<PathBuf>, CasError> {
         .map_err(|source| CasError::io("reading index backup directory", &backup_root, source))?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| {
-                    name.starts_with(INDEX_BACKUP_FILE_PREFIX)
-                        && name.ends_with(INDEX_BACKUP_FILE_SUFFIX)
-                })
-                .unwrap_or(false)
+            path.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
+                name.starts_with(INDEX_BACKUP_FILE_PREFIX)
+                    && name.ends_with(INDEX_BACKUP_FILE_SUFFIX)
+            })
         })
         .collect::<Vec<_>>();
     paths.sort();
@@ -618,9 +645,32 @@ fn prune_old_backups(backup_root: &Path, keep: usize) -> Result<(), CasError> {
     paths.reverse();
 
     for stale in paths.into_iter().skip(keep) {
-        std::fs::remove_file(&stale).map_err(|source| {
+        remove_stale_backup_file_with_retry(&stale).map_err(|source| {
             CasError::io("removing stale index backup snapshot", &stale, source)
         })?;
+    }
+
+    Ok(())
+}
+
+/// Removes one stale backup file with bounded retries for transient locks.
+///
+/// Windows antivirus/indexer races may hold backup snapshots briefly. Treat
+/// `NotFound` as already-pruned and retry only transient lock-style errors.
+fn remove_stale_backup_file_with_retry(path: &Path) -> Result<(), std::io::Error> {
+    for attempt in 0..INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                let retryable = error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(32);
+                if !retryable || attempt + 1 == INDEX_BACKUP_PRUNE_REMOVE_ATTEMPTS {
+                    return Err(error);
+                }
+                thread::sleep(Duration::from_millis(INDEX_BACKUP_PRUNE_BACKOFF_MS));
+            }
+        }
     }
 
     Ok(())
@@ -642,7 +692,6 @@ fn write_backup_file_atomic(
         .suffix(".stage")
         .tempfile_in(&staging_root)
         .map_err(|source| CasError::io("creating index backup temp file", &staging_root, source))?;
-    use std::io::Write as _;
     temp.write_all(bytes)
         .map_err(|source| CasError::io("writing index backup temp file", temp.path(), source))?;
     temp.as_file()
@@ -731,11 +780,54 @@ const fn decode_hex_nibble(byte: u8) -> Option<u8> {
 fn unix_epoch_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .map(|duration| {
+            u64::try_from(duration.as_millis().min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
+        })
         .unwrap_or(0)
 }
 
 /// Returns current UNIX epoch nanoseconds (best-effort).
 fn unix_epoch_nanos() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_nanos()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_object_store_dir_tolerant;
+    use super::remove_stale_backup_file_with_retry;
+
+    /// Ensures stale-backup pruning treats already-removed files as success.
+    #[test]
+    fn remove_stale_backup_file_with_retry_ignores_not_found() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing.postcard");
+
+        remove_stale_backup_file_with_retry(&missing)
+            .expect("missing stale backup should be treated as already pruned");
+    }
+
+    /// Ensures stale-backup pruning removes existing files successfully.
+    #[test]
+    fn remove_stale_backup_file_with_retry_removes_existing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let stale = temp.path().join("stale.postcard");
+        std::fs::write(&stale, b"backup").expect("write stale backup");
+
+        remove_stale_backup_file_with_retry(&stale)
+            .expect("existing stale backup should be removed");
+        assert!(!stale.exists(), "stale backup should no longer exist");
+    }
+
+    /// Ensures object-store traversal can tolerate directories that disappear
+    /// between enumeration and recursive descent.
+    #[test]
+    fn read_object_store_dir_tolerant_returns_none_for_missing_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("missing-dir");
+
+        let entries = read_object_store_dir_tolerant(&missing)
+            .expect("missing directory should not surface an IO error");
+
+        assert!(entries.is_none());
+    }
 }

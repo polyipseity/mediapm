@@ -59,6 +59,7 @@ impl Default for InMemoryCas {
 /// Constructors and internal helper operations for in-memory backend state.
 impl InMemoryCas {
     /// Creates an empty in-memory CAS.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_max_object_size_bytes(IN_MEMORY_DEFAULT_MAX_OBJECT_SIZE_BYTES)
     }
@@ -67,6 +68,7 @@ impl InMemoryCas {
     ///
     /// The cap is enforced by `put_stream`/`put_stream_with_constraints` before
     /// bytes are fully buffered, preventing accidental OOM in test environments.
+    #[must_use]
     pub fn with_max_object_size_bytes(max_object_size_bytes: usize) -> Self {
         Self {
             objects: Arc::new(DashMap::new()),

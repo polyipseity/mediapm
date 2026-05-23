@@ -17,6 +17,7 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{
@@ -74,8 +75,52 @@ struct DemoManifest {
     topology_mermaid_path: String,
     /// Path to JSON topology snapshot output file.
     topology_json_path: String,
+    /// Logical CAS store footprint without delta compression (bytes).
+    store_size_without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    store_size_with_delta_bytes: u64,
+    /// Ratio `with_delta / without_delta` for quick compression comparison.
+    ///
+    /// Values `< 1.0` indicate on-disk savings from delta compression; lower
+    /// values mean stronger compression.
+    ///
+    /// When `store_size_without_delta_bytes == 0`, this demo emits `1.0` so
+    /// empty/objectless stores report a neutral ratio instead of
+    /// divide-by-zero noise.
+    store_size_ratio_with_delta_over_without: f64,
     /// Per-file object metadata rows.
     files: Vec<DemoFileRecord>,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Aggregate CAS store-size metrics shared by manifest serialization.
+struct StoreSizeStats {
+    /// Logical CAS store footprint without delta compression (bytes).
+    without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    with_delta_bytes: u64,
+}
+
+impl StoreSizeStats {
+    /// Returns `with_delta / without_delta` for manifest reporting.
+    ///
+    /// Values `< 1.0` indicate on-disk savings from delta compression.
+    ///
+    /// For zero-byte logical stores, this returns `1.0` to represent a neutral
+    /// no-change baseline and avoid divide-by-zero artifacts.
+    /// # Precision
+    ///
+    /// Both fields are cast `u64 → f64`. Precision is lost above 2^52 bytes
+    /// (~4 PiB), which is beyond practical store sizes for this demo.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    fn ratio_with_delta_over_without(self) -> f64 {
+        if self.without_delta_bytes == 0 {
+            1.0
+        } else {
+            self.with_delta_bytes as f64 / self.without_delta_bytes as f64
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -108,7 +153,8 @@ fn reset_demo_output_directory() -> Result<PathBuf, Box<dyn std::error::Error>> 
 
 /// Builds deterministic file fixtures for repeatable demo output.
 fn input_files_for_demo() -> Vec<DemoFileSpec> {
-    let waveform: Vec<u8> = (0u32..2048).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+    let waveform: Vec<u8> =
+        (0u32..2048).map(|i| u8::try_from((i * 37 + 11) % 256).unwrap_or(0)).collect();
 
     vec![
         DemoFileSpec {
@@ -143,6 +189,96 @@ fn write_demo_files(base: &Path, specs: &[DemoFileSpec]) -> Result<(), Box<dyn s
         std::fs::write(path, &spec.payload)?;
     }
     Ok(())
+}
+
+/// Returns whether one path segment is a lower-level hexadecimal fragment.
+#[must_use]
+fn is_hex_segment(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Parses one filesystem CAS object path into a canonical hash when possible.
+fn parse_hash_from_store_object_path(objects_root: &Path, path: &Path) -> Option<Hash> {
+    let relative = path.strip_prefix(objects_root).ok()?;
+    let mut components = relative.iter();
+    let algorithm = components.next()?.to_string_lossy().to_string();
+    if algorithm.is_empty() {
+        return None;
+    }
+
+    let mut hex = String::new();
+    for component in components {
+        let segment = component.to_string_lossy();
+        let segment = segment.strip_suffix(".diff").unwrap_or(segment.as_ref());
+        if !is_hex_segment(segment) {
+            return None;
+        }
+        hex.push_str(segment);
+    }
+
+    if hex.len() != 64 {
+        return None;
+    }
+
+    Hash::from_str(&format!("{algorithm}:{hex}")).ok()
+}
+
+/// Recursively visits one CAS object directory and records discovered hashes.
+fn collect_store_object_hashes_recursive(
+    objects_root: &Path,
+    current_dir: &Path,
+    hashes: &mut BTreeSet<Hash>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in std::fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_store_object_hashes_recursive(objects_root, &path, hashes)?;
+            continue;
+        }
+
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        if let Some(hash) = parse_hash_from_store_object_path(objects_root, &path) {
+            let _ = hashes.insert(hash);
+        }
+    }
+
+    Ok(())
+}
+
+/// Collects all object hashes currently present under one filesystem CAS root.
+fn collect_store_object_hashes(
+    cas_root: &Path,
+) -> Result<BTreeSet<Hash>, Box<dyn std::error::Error>> {
+    let mut hashes = BTreeSet::new();
+    let objects_root = cas_root.join("v1");
+    if !objects_root.exists() {
+        return Ok(hashes);
+    }
+
+    collect_store_object_hashes_recursive(&objects_root, &objects_root, &mut hashes)?;
+
+    Ok(hashes)
+}
+
+/// Computes logical and effective store-size totals from all persisted objects.
+async fn summarize_store_sizes(
+    cas: &FileSystemCas,
+    cas_root: &Path,
+) -> Result<StoreSizeStats, Box<dyn std::error::Error>> {
+    let mut without_delta = 0u64;
+    let mut with_delta = 0u64;
+
+    for hash in collect_store_object_hashes(cas_root)? {
+        let info = cas.info(hash).await?;
+        without_delta = without_delta.saturating_add(info.content_len);
+        with_delta = with_delta.saturating_add(info.payload_len);
+    }
+
+    Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
 }
 
 /// Clears stale output files, then generates inspectable demo artifacts.
@@ -202,6 +338,7 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
 
     let generated_unix_epoch_seconds =
         SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let store_size_stats = summarize_store_sizes(&cas, &cas_root).await?;
 
     let input_root = root.join("inputs");
     let empty_hash = empty_content_hash();
@@ -218,6 +355,9 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
         prune_removed_candidates: removed_candidates,
         topology_mermaid_path: topology_mermaid_path.display().to_string(),
         topology_json_path: topology_json_path.display().to_string(),
+        store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
+        store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
+        store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
         files: records,
     };
 
@@ -272,6 +412,13 @@ mod tests {
             assert!(!fixture.relative_path.is_empty());
             assert!(!fixture.payload.is_empty());
         }
+    }
+
+    #[test]
+    /// Ensures ratio rendering stays neutral for empty/objectless stores.
+    fn store_size_ratio_uses_neutral_value_for_zero_denominator() {
+        let stats = super::StoreSizeStats { without_delta_bytes: 0, with_delta_bytes: 0 };
+        assert_eq!(stats.ratio_with_delta_over_without(), 1.0);
     }
 
     #[tokio::test]

@@ -7,19 +7,25 @@ license-file.workspace = true
 publish.workspace = true
 description = "Phase 1 CAS foundation for mediapm"
 
+[features]
+default = ["cli"]
+cli = ["dep:anyhow", "dep:clap"]
+
+[lints]
+workspace = true
+
 [dependencies]
-anyhow.workspace = true
+anyhow = { workspace = true, optional = true }
 async-trait.workspace = true
 bitvec.workspace = true
 blake3.workspace = true
 bytemuck.workspace = true
 bytes.workspace = true
-clap.workspace = true
+clap = { workspace = true, optional = true }
 crc32fast.workspace = true
 dashmap.workspace = true
 fp-library.workspace = true
 fs4.workspace = true
-futures-core.workspace = true
 futures-util.workspace = true
 memmap2.workspace = true
 miette.workspace = true
@@ -36,7 +42,6 @@ smallvec.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 zerocopy.workspace = true
@@ -44,22 +49,7 @@ zerocopy.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 
-[[example]]
-name = "configured_router"
-test = true
-harness = false
-
-[[example]]
-name = "demo"
-test = true
-harness = false
-
-[[example]]
-name = "hello_world"
-test = true
-harness = false
-
-[[example]]
-name = "manual_optimize"
-test = true
-harness = false
+[[bin]]
+name = "mediapm-cas"
+path = "src/main.rs"
+required-features = ["cli"]

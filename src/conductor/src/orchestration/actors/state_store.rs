@@ -69,6 +69,25 @@ impl StateStoreClient {
                 ConductorError::Internal(format!("state store commit_run RPC failed: {err}"))
             })?
     }
+
+    /// Persists one provided state snapshot and publishes it as current state
+    /// without unsaved-output cleanup.
+    pub(in crate::orchestration) async fn persist_and_publish_state(
+        &self,
+        state: OrchestrationState,
+    ) -> Result<Hash, ConductorError> {
+        call_t!(
+            self.actor,
+            StateStoreMessage::PersistAndPublishState,
+            DEFAULT_RPC_TIMEOUT_MS,
+            Box::new(state)
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "state store persist_and_publish_state RPC failed: {err}"
+            ))
+        })?
+    }
 }
 
 /// Requests supported by the state-store actor.
@@ -80,6 +99,8 @@ enum StateStoreMessage {
     LoadStateFromPointer(Option<Hash>, RpcReplyPort<Result<OrchestrationState, ConductorError>>),
     /// Persists the next completed run and performs unsaved-output cleanup.
     CommitRun(Box<CommitStateRequest>, RpcReplyPort<Result<Hash, ConductorError>>),
+    /// Persists one external state snapshot and publishes it without cleanup.
+    PersistAndPublishState(Box<OrchestrationState>, RpcReplyPort<Result<Hash, ConductorError>>),
 }
 
 /// Marker actor for orchestration-state persistence.
@@ -143,6 +164,17 @@ where
         Ok(current_state_pointer)
     }
 
+    /// Persists one provided state snapshot and publishes it as current state
+    /// without unsaved-output cleanup side effects.
+    async fn persist_and_publish_state(
+        &mut self,
+        next_state: OrchestrationState,
+    ) -> Result<Hash, ConductorError> {
+        let pointer = self.persist_state_blob(&next_state).await?;
+        self.current_state = next_state;
+        Ok(pointer)
+    }
+
     /// Serializes one orchestration state snapshot into CAS.
     async fn persist_state_blob(&self, state: &OrchestrationState) -> Result<Hash, ConductorError> {
         let encoded = encode_state(state.clone())?;
@@ -161,7 +193,7 @@ where
         let mut protected = BTreeSet::new();
         for instance in state.instances.values() {
             for output in instance.outputs.values() {
-                if output.persistence.save {
+                if output.persistence.save.should_persist() {
                     protected.insert(output.hash);
                 }
             }
@@ -177,7 +209,7 @@ where
         let mut deletion_candidates: BTreeSet<Hash> = pending_unsaved_hashes.clone();
         for instance in state.instances.values() {
             for output in instance.outputs.values() {
-                if !output.persistence.save {
+                if !output.persistence.save.should_persist() {
                     deletion_candidates.insert(output.hash);
                 }
             }
@@ -188,8 +220,7 @@ where
                 continue;
             }
             match self.cas.delete(candidate).await {
-                Ok(()) => {}
-                Err(CasError::NotFound(_)) => {}
+                Ok(()) | Err(CasError::NotFound(_)) => {}
                 Err(other) => return Err(ConductorError::Cas(other)),
             }
         }
@@ -231,6 +262,9 @@ where
             }
             StateStoreMessage::CommitRun(request, reply) => {
                 let _ = reply.send(state.commit_run(*request).await);
+            }
+            StateStoreMessage::PersistAndPublishState(next_state, reply) => {
+                let _ = reply.send(state.persist_and_publish_state(*next_state).await);
             }
         }
         Ok(())

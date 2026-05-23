@@ -5,15 +5,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
+use regex::Regex;
 
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, InputBinding, ProcessSpec, ToolInputKind, ToolInputSpec, ToolKindSpec,
-    ToolOutputSpec, ToolSpec, WorkflowStepSpec,
+    ExternalContentRef, ImpureTimestamp, InputBinding, ProcessSpec, ToolInputKind, ToolInputSpec,
+    ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowStepSpec,
 };
-use crate::model::state::{PersistenceFlags, ResolvedInput};
+use crate::model::state::{OutputSaveMode, PersistenceFlags, ResolvedInput};
 use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 
 use super::{ResolvedOutputCapture, ResolvedOutputSpec, StepWorkerExecutor, ToolExecutionCapture};
@@ -382,6 +384,125 @@ fn template_interpolation_supports_special_forms_inside_conditional_branches() {
         expected_path
     );
     assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
+}
+
+/// Protects logical `&&` operator in conditional expressions.
+#[test]
+fn template_interpolation_supports_and_operator_in_condition() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([
+        ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+        ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+    ]);
+    let mut pending_file_writes = Vec::new();
+
+    // Both sides true → true branch.
+    let rendered = executor
+        .render_template_value(
+            "${a == \"x\" && b == \"y\" ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("and-condition should render selected branch");
+    assert_eq!(rendered, "true");
+
+    // One side false → false branch.
+    let rendered_false = executor
+        .render_template_value(
+            "${a == \"x\" && b == \"z\" ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("and-condition with false rhs should render false branch");
+    assert_eq!(rendered_false, "false");
+}
+
+/// Protects logical `||` operator in conditional expressions.
+#[test]
+fn template_interpolation_supports_or_operator_in_condition() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([
+        ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+        ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+    ]);
+    let mut pending_file_writes = Vec::new();
+
+    // First side true → true branch.
+    let rendered = executor
+        .render_template_value(
+            "${a == \"x\" || b == \"z\" ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("or-condition with true lhs should render true branch");
+    assert_eq!(rendered, "true");
+
+    // Both sides false → false branch.
+    let rendered_false = executor
+        .render_template_value(
+            "${a == \"nope\" || b == \"nope\" ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("or-condition with both false should render false branch");
+    assert_eq!(rendered_false, "false");
+}
+
+/// Protects mixed `||`, `&&`, and parentheses grouping in conditional expressions.
+#[test]
+fn template_interpolation_supports_mixed_logical_operators_and_parentheses() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs = BTreeMap::from([
+        ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+        ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+        ("c".to_string(), ResolvedInput::from_plain_content(b"set".to_vec())),
+    ]);
+    let mut pending_file_writes = Vec::new();
+
+    // (a == "x" || b == "y") && c → (true || false) && true → true.
+    let rendered = executor
+        .render_template_value(
+            "${(a == \"x\" || b == \"z\") && c ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("mixed condition should render selected branch");
+    assert_eq!(rendered, "true");
+
+    // (a == "nope" || b == "nope") && c → false && true → false.
+    let rendered_false = executor
+        .render_template_value(
+            "${(a == \"nope\" || b == \"nope\") && c ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("mixed condition with false group should render false branch");
+    assert_eq!(rendered_false, "false");
+}
+
+/// Protects negation `!` applied to a comparison expression via parentheses.
+#[test]
+fn template_interpolation_supports_negation_of_comparison() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let inputs =
+        BTreeMap::from([("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec()))]);
+    let mut pending_file_writes = Vec::new();
+
+    // !(a == "x") → !(true) → false → selects false branch.
+    let rendered = executor
+        .render_template_value("${!(a == \"x\") ? true | false}", &inputs, &mut pending_file_writes)
+        .expect("negated comparison should render selected branch");
+    assert_eq!(rendered, "false");
+
+    // !(a == "nope") → !(false) → true → selects true branch.
+    let rendered_true = executor
+        .render_template_value(
+            "${!(a == \"nope\") ? true | false}",
+            &inputs,
+            &mut pending_file_writes,
+        )
+        .expect("negated false comparison should render true branch");
+    assert_eq!(rendered_true, "true");
 }
 
 /// Protects omission of conditional branches that resolve to empty output.
@@ -1069,12 +1190,14 @@ fn process_code_capture_serializes_exit_code_text() {
     let output_spec = ResolvedOutputSpec {
         capture: ResolvedOutputCapture::ProcessCode,
         persistence: PersistenceFlags::default(),
+        allow_empty: false,
     };
     let sandbox = tempfile::tempdir().expect("tempdir");
 
     let payload = executor
         .capture_output_payload(&output_spec, &capture, sandbox.path())
-        .expect("process-code capture should serialize");
+        .expect("process-code capture should serialize")
+        .expect("process-code capture must not be empty");
 
     assert_eq!(payload, b"27".to_vec());
 }
@@ -1095,10 +1218,12 @@ fn folder_capture_emits_zip_payload_with_optional_top_folder() {
             include_topmost_folder: false,
         },
         persistence: PersistenceFlags::default(),
+        allow_empty: false,
     };
     let payload_without_top = executor
         .capture_output_payload(&without_top, &capture, sandbox.path())
-        .expect("folder capture without top-level folder should succeed");
+        .expect("folder capture without top-level folder should succeed")
+        .expect("folder capture must not be empty");
     mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
         &payload_without_top,
         &sandbox.path().join("unzipped_without_top"),
@@ -1121,10 +1246,12 @@ fn folder_capture_emits_zip_payload_with_optional_top_folder() {
             include_topmost_folder: true,
         },
         persistence: PersistenceFlags::default(),
+        allow_empty: false,
     };
     let payload_with_top = executor
         .capture_output_payload(&with_top, &capture, sandbox.path())
-        .expect("folder capture with top-level folder should succeed");
+        .expect("folder capture with top-level folder should succeed")
+        .expect("folder capture must not be empty");
     mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
         &payload_with_top,
         &sandbox.path().join("unzipped_with_top"),
@@ -1141,6 +1268,223 @@ fn folder_capture_emits_zip_payload_with_optional_top_folder() {
     );
 }
 
+/// Protects regex file-capture behavior for dynamic output filenames.
+#[test]
+fn file_regex_capture_selects_single_matching_file() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+        .expect("write infojson");
+    std::fs::write(sandbox.path().join("downloads").join("video.description"), b"desc")
+        .expect("write description");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FileRegex {
+            path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+            pattern: "^downloads/.+\\.description$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex file capture should select one match")
+        .expect("regex file capture must not be empty");
+
+    assert_eq!(payload, b"desc");
+}
+
+/// Protects strict missing-match checks for regex file-capture declarations.
+#[test]
+fn file_regex_capture_rejects_zero_matches() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+        .expect("write infojson");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FileRegex {
+            path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+            pattern: "^downloads/.+\\.description$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let error = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect_err("regex file capture with zero matches should fail");
+
+    let ConductorError::Workflow(message) = error else {
+        panic!("expected workflow error");
+    };
+    assert!(message.contains("no sandbox file matched"), "unexpected message: {message}");
+}
+
+/// Protects strict ambiguity checks for regex file-capture declarations.
+#[test]
+fn file_regex_capture_rejects_multiple_matches() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("first.description"), b"first")
+        .expect("write first description");
+    std::fs::write(sandbox.path().join("downloads").join("second.description"), b"second")
+        .expect("write second description");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FileRegex {
+            path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+            pattern: "^downloads/.+\\.description$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let err = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect_err("regex file capture with multiple matches should fail");
+
+    let ConductorError::Workflow(message) = err else {
+        panic!("expected workflow error");
+    };
+    assert!(message.contains("ambiguous"), "unexpected message: {message}");
+}
+
+/// Protects regex folder-capture behavior by zipping matched descendants.
+#[test]
+fn folder_regex_capture_packages_matched_directory_descendants() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads").join("nested"))
+        .expect("create nested downloads");
+    std::fs::create_dir_all(sandbox.path().join("logs")).expect("create logs");
+    std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+        .expect("write infojson");
+    std::fs::write(sandbox.path().join("downloads").join("nested").join("clip.mp4"), b"media")
+        .expect("write media");
+    std::fs::write(sandbox.path().join("logs").join("debug.txt"), b"noise")
+        .expect("write unrelated file");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads$").expect("compile regex"),
+            pattern: "^downloads$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture should succeed")
+        .expect("regex folder capture must not be empty");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack regex folder zip");
+
+    assert!(unzip_dir.join("downloads").join("video.info.json").exists());
+    assert!(unzip_dir.join("downloads").join("nested").join("clip.mp4").exists());
+    assert!(!unzip_dir.join("logs").join("debug.txt").exists());
+}
+
+/// Protects optional-family behavior by emitting an empty ZIP payload when a
+/// folder-regex capture matches no sandbox paths.
+#[test]
+fn folder_regex_capture_returns_empty_zip_when_no_paths_match() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("video.mp4"), b"media")
+        .expect("write primary output");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/.+\.comments\.json$").expect("compile regex"),
+            pattern: "^downloads/.+\\.comments\\.json$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture with no matches should succeed with empty zip")
+        .expect("regex folder capture must not be empty");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex_empty");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack empty regex folder zip");
+
+    let mut entries = std::fs::read_dir(&unzip_dir).expect("read empty unzip root");
+    assert!(entries.next().is_none(), "empty capture should unpack to an empty directory tree");
+}
+
+/// Protects regex folder-capture rename semantics driven by capture groups.
+#[test]
+fn folder_regex_capture_renames_zip_members_from_capture_groups() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("clip__mediapm__.en.srt"), b"subtitle")
+        .expect("write subtitle sidecar");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/(.+?)__mediapm__(\..+)$").expect("compile regex"),
+            pattern: "^downloads/(.+?)__mediapm__(\\..+)$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let payload = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect("regex folder capture should succeed")
+        .expect("regex folder capture must not be empty");
+
+    let unzip_dir = sandbox.path().join("unzipped_regex_renamed");
+    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+        .expect("unpack regex folder zip");
+
+    assert!(unzip_dir.join("clip.en.srt").exists());
+    assert!(!unzip_dir.join("downloads").join("clip__mediapm__.en.srt").exists());
+}
+
+/// Protects regex folder-capture rename conflict detection.
+#[test]
+fn folder_regex_capture_rejects_renamed_path_conflicts() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+    std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.mp3"), b"a")
+        .expect("write first media output");
+    std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.flac"), b"b")
+        .expect("write second media output");
+
+    let output_spec = ResolvedOutputSpec {
+        capture: ResolvedOutputCapture::FolderRegexAsZip {
+            path_regex: Regex::new(r"^downloads/(.+?)__mediapm__\..+$").expect("compile regex"),
+            pattern: "^downloads/(.+?)__mediapm__\\..+$".to_string(),
+        },
+        persistence: PersistenceFlags::default(),
+        allow_empty: false,
+    };
+
+    let error = executor
+        .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+        .expect_err("regex folder capture conflict should fail");
+
+    let ConductorError::Workflow(message) = error else {
+        panic!("expected workflow error");
+    };
+    assert!(message.contains("renamed-path conflict"), "unexpected message: {message}");
+}
+
 /// Protects executable success-code membership logic.
 #[test]
 fn success_code_membership_checks_configured_set() {
@@ -1148,6 +1492,62 @@ fn success_code_membership_checks_configured_set() {
 
     assert!(StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(2, &success_codes));
     assert!(!StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(1, &success_codes));
+}
+
+/// Protects executable timeout-policy parsing by rejecting zero-second values.
+#[test]
+fn executable_timeout_parser_rejects_zero_seconds() {
+    let error = StepWorkerExecutor::<InMemoryCas>::parse_executable_timeout_duration("0")
+        .expect_err("zero-second timeout should be rejected");
+
+    let ConductorError::Workflow(message) = error else {
+        panic!("expected workflow parse error");
+    };
+    assert!(message.contains("greater than 0 seconds"), "unexpected parse message: {message}");
+}
+
+/// Protects worker resilience by timing out long-running executable subprocesses.
+#[tokio::test]
+async fn execute_executable_tool_enforces_timeout_budget() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let sandbox = tempfile::tempdir().expect("tempdir");
+
+    let executable_name = if cfg!(windows) { "sleep.cmd" } else { "sleep.sh" };
+    let executable_path = sandbox.path().join(executable_name);
+
+    let script = if cfg!(windows) {
+        "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -ExecutionPolicy Bypass -Command \"Start-Sleep -Seconds 2\"\r\n"
+    } else {
+        "#!/bin/sh\nsleep 2\n"
+    };
+    std::fs::write(&executable_path, script).expect("write timeout script");
+
+    let mut env_vars = BTreeMap::new();
+    if cfg!(windows) {
+        if let Ok(path) = std::env::var("PATH") {
+            env_vars.insert("PATH".to_string(), path);
+        }
+        if let Ok(system_root) = std::env::var("SystemRoot") {
+            env_vars.insert("SystemRoot".to_string(), system_root);
+        }
+    }
+
+    let error = executor
+        .execute_executable_tool_with_timeout(
+            executable_name,
+            &[],
+            &env_vars,
+            &BTreeSet::from([0]),
+            sandbox.path(),
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("long-running subprocess should time out");
+
+    let ConductorError::Workflow(message) = error else {
+        panic!("expected workflow timeout error");
+    };
+    assert!(message.contains("exceeded timeout"), "unexpected timeout message: {message}");
 }
 
 /// Protects reverse-diff hinting by skipping CAS constraint patches for the
@@ -1169,6 +1569,100 @@ async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
     assert!(
         cas.get_constraint(empty_content_hash()).await.expect("query empty constraint").is_none(),
         "empty-content root should remain unconstrained"
+    );
+}
+
+/// Protects external-data full-save policy behavior by applying full-save CAS
+/// constraints when `${external_data.<hash>}` bindings are consumed.
+#[tokio::test]
+async fn external_data_full_save_policy_applies_full_save_hint_on_input_resolution() {
+    let cas = Arc::new(InMemoryCas::new());
+    let external_bytes = b"external-data-full".to_vec();
+    let external_hash = cas.put(external_bytes.clone()).await.expect("put external data");
+    let executor = StepWorkerExecutor { cas: cas.clone() };
+
+    let workflow_step = WorkflowStepSpec {
+        id: "step-full-external".to_string(),
+        tool: "echo@1.0.0".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+    let unified = UnifiedNickelDocument {
+        external_data: BTreeMap::from([(
+            external_hash,
+            ExternalContentRef {
+                description: Some("full external fixture".to_string()),
+                save: Some(OutputSaveMode::Full),
+            },
+        )]),
+        tools: BTreeMap::new(),
+        workflows: BTreeMap::new(),
+        tool_content_hashes: BTreeSet::new(),
+    };
+
+    let resolved = executor
+        .resolve_input_binding(
+            &unified,
+            "wf",
+            &workflow_step,
+            &format!("${{external_data.{external_hash}}}"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("full external-data binding should resolve");
+
+    assert_eq!(resolved.plain_content, external_bytes);
+    assert_eq!(resolved.hash, external_hash);
+
+    let constraint =
+        cas.get_constraint(external_hash).await.expect("query full-save external constraint");
+    let expected = BTreeSet::from([empty_content_hash()]);
+    assert_eq!(constraint.as_ref().map(|entry| &entry.potential_bases), Some(&expected));
+}
+
+/// Protects regular external-data save behavior by avoiding full-save hints
+/// for `save = true` references.
+#[tokio::test]
+async fn external_data_saved_policy_does_not_apply_full_save_hint_on_input_resolution() {
+    let cas = Arc::new(InMemoryCas::new());
+    let external_hash = cas.put(b"external-data-saved".to_vec()).await.expect("put external data");
+    let executor = StepWorkerExecutor { cas: cas.clone() };
+
+    let workflow_step = WorkflowStepSpec {
+        id: "step-saved-external".to_string(),
+        tool: "echo@1.0.0".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+    let unified = UnifiedNickelDocument {
+        external_data: BTreeMap::from([(
+            external_hash,
+            ExternalContentRef {
+                description: Some("saved external fixture".to_string()),
+                save: Some(OutputSaveMode::Saved),
+            },
+        )]),
+        tools: BTreeMap::new(),
+        workflows: BTreeMap::new(),
+        tool_content_hashes: BTreeSet::new(),
+    };
+
+    executor
+        .resolve_input_binding(
+            &unified,
+            "wf",
+            &workflow_step,
+            &format!("${{external_data.{external_hash}}}"),
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("saved external-data binding should resolve");
+
+    assert!(
+        cas.get_constraint(external_hash).await.expect("query saved external constraint").is_none(),
+        "save=true should not inject full-save CAS hint"
     );
 }
 

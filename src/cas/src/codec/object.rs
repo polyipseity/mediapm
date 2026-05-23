@@ -36,7 +36,7 @@ pub struct DeltaState<'a> {
 }
 
 /// Delta-state ownership conversion helpers.
-impl<'a> DeltaState<'a> {
+impl DeltaState<'_> {
     /// Converts this state into an owned `'static` representation.
     pub fn into_owned(self) -> DeltaState<'static> {
         DeltaState {
@@ -112,9 +112,9 @@ impl StoredObject {
     /// The method is deliberately version-agnostic at this layer: all binary
     /// framing, checksums, and wire-layout details live in
     /// `codec::versions/*`.
-    pub(crate) fn encode(&self) -> Result<Cow<'_, [u8]>, CasError> {
+    pub(crate) fn encode(&self) -> Cow<'_, [u8]> {
         let Self::Delta { state } = self else {
-            return Ok(Cow::Borrowed(self.payload()));
+            return Cow::Borrowed(self.payload());
         };
 
         let borrowed_state = DeltaState {
@@ -123,7 +123,7 @@ impl StoredObject {
             payload: Cow::Borrowed(state.payload.as_ref()),
         };
 
-        Ok(Cow::Owned(encode_delta_state(borrowed_state)))
+        Cow::Owned(encode_delta_state(borrowed_state))
     }
 
     /// Decodes one delta object from `.diff` bytes and validates invariants.
@@ -154,7 +154,7 @@ mod tests {
         let payload = b"encoded-delta-payload".to_vec();
         let original = StoredObject::delta(base_hash, 42, payload.clone());
 
-        let encoded = original.encode().expect("delta object should encode successfully");
+        let encoded = original.encode();
         let decoded = StoredObject::decode_delta(encoded.as_ref())
             .expect("encoded bytes should decode successfully");
 
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn encode_diff_payload_returns_raw_full_payload() {
         let full = StoredObject::full(vec![1, 2, 3]);
-        let encoded = full.encode().expect("full object encoding should return raw payload");
+        let encoded = full.encode();
 
         assert!(matches!(encoded, Cow::Borrowed(_)));
         assert_eq!(encoded.as_ref(), [1, 2, 3]);

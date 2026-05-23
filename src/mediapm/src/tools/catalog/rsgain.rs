@@ -22,9 +22,9 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         linux: "GitHub Releases",
     },
     source_identifier: PlatformValue {
-        windows: "github-releases",
-        macos: "github-releases",
-        linux: "github-releases",
+        windows: "github-releases-complexlogic-rsgain",
+        macos: "github-releases-complexlogic-rsgain",
+        linux: "github-releases-complexlogic-rsgain",
     },
     executable_name: PlatformValue { windows: "rsgain.exe", macos: "rsgain", linux: "rsgain" },
     download: ToolDownloadDescriptor::GitHubLatestZipAsset {

@@ -23,6 +23,21 @@ pub(super) fn write_bytes(path: &Path, bytes: &[u8], operation: &str) -> Result<
     })
 }
 
+/// Writes bytes only when target content differs.
+pub(super) fn write_bytes_if_changed(
+    path: &Path,
+    bytes: &[u8],
+    operation: &str,
+) -> Result<(), MediaPmError> {
+    if let Ok(existing) = fs::read(path)
+        && existing == bytes
+    {
+        return Ok(());
+    }
+
+    write_bytes(path, bytes, operation)
+}
+
 /// Returns current Unix timestamp in seconds.
 pub(super) fn now_unix_seconds() -> u64 {
     SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()

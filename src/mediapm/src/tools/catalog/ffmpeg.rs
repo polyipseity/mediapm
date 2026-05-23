@@ -4,7 +4,7 @@ use super::{DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDe
 
 /// Windows URL candidates for ffmpeg payload downloads.
 ///
-/// The first two candidates prefer GitHub-hosted BtbN archives. Gyan links are
+/// The first two candidates prefer GitHub-hosted `BtbN` archives. Gyan links are
 /// retained as fallback candidates for transient GitHub/CDN failures.
 const FFMPEG_WINDOWS_URLS: &[&str] = &[
     "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl-shared.zip",
@@ -37,9 +37,9 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         linux: "GitHub Releases (BtbN)",
     },
     source_identifier: PlatformValue {
-        windows: "github-btbn",
-        macos: "evermeet",
-        linux: "github-btbn",
+        windows: "github-releases-btbn-ffmpeg-builds",
+        macos: "evermeet-ffmpeg",
+        linux: "github-releases-btbn-ffmpeg-builds",
     },
     executable_name: PlatformValue { windows: "ffmpeg.exe", macos: "ffmpeg", linux: "ffmpeg" },
     download: ToolDownloadDescriptor::StaticUrls {
@@ -85,6 +85,6 @@ mod tests {
     /// Protects immutable tool-id/source metadata stability for Linux ffmpeg.
     #[test]
     fn linux_source_identifier_uses_btbn() {
-        assert_eq!(ENTRY.source_identifier.linux, "github-btbn");
+        assert_eq!(ENTRY.source_identifier.linux, "github-releases-btbn-ffmpeg-builds");
     }
 }

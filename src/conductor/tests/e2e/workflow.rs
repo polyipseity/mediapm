@@ -29,7 +29,7 @@ async fn deterministic_workflow_hits_cache_on_second_run() {
                 },
                 outputs: BTreeMap::from([(
                     "result".to_string(),
-                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
                 )]),
                 ..ToolSpec::default()
             },
@@ -69,6 +69,6 @@ async fn deterministic_workflow_hits_cache_on_second_run() {
 
     let state_path =
         resolve_runtime_storage_paths(&user_path, &machine_path, &RuntimeStoragePaths::default())
-            .config_state;
+            .conductor_state_config;
     assert!(state_path.exists(), "state document should be persisted on run");
 }

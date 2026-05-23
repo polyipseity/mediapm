@@ -71,7 +71,8 @@ impl Drop for ObjectActorRpcScope<'_> {
     fn drop(&mut self) {
         self.metrics.object_actor_inflight.fetch_sub(1, Ordering::AcqRel);
         self.metrics.object_actor_rpc_calls.fetch_add(1, Ordering::Relaxed);
-        let elapsed_ms = self.started.elapsed().as_millis().max(1) as u64;
+        let elapsed_ms =
+            u64::try_from(self.started.elapsed().as_millis().max(1)).unwrap_or(u64::MAX);
         self.metrics.object_actor_rpc_wait_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
     }
 }

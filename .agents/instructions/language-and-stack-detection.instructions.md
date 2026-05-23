@@ -14,7 +14,7 @@ applyTo: "AGENTS.md, .agents/instructions/**/*.md"
 - Once detected, add instructions for the detected stack carefully and
   thoroughly in focused files with narrow scope.
 - When long-form architecture plans are retired, migrate durable technical
-  requirements (runtime model, testing expectations, phase boundaries,
+  requirements (runtime model, testing expectations, crate boundaries,
   invariants) into instruction files instead of leaving them only in deleted
   planning docs.
 
@@ -42,12 +42,12 @@ applyTo: "AGENTS.md, .agents/instructions/**/*.md"
 - Canonical commands, if any, and where they are defined.
 - Platform-specific constraints such as line endings, executable bits, or shell
   assumptions.
-- For this repository specifically, confirm the phase-crate split and its
+- For this repository specifically, confirm the workspace crate split and its
   responsibilities from real files:
-  - `src/cas/` as Phase 1 CAS,
-  - `src/conductor/` as Phase 2 orchestration,
+  - `src/cas/` as CAS,
+  - `src/conductor/` as orchestration,
   - `src/conductor-builtins/*/` as builtin runtime crates,
-  - `src/mediapm/` as Phase 3 composition.
+  - `src/mediapm/` as media-facing composition.
 
 ## Evidence standards
 

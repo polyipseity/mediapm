@@ -8,9 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mediapm_cas::CasApi;
+use mediapm_cas::Hash;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
-use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
+use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
 use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
@@ -24,13 +25,30 @@ pub(super) enum ConductorNodeMessage {
     RunWorkflow(
         PathBuf,
         PathBuf,
-        RunWorkflowOptions,
+        Box<RunWorkflowOptions>,
         RpcReplyPort<Result<RunSummary, ConductorError>>,
     ),
     /// Returns the current in-memory orchestration-state snapshot.
     GetState(RpcReplyPort<Result<OrchestrationState, ConductorError>>),
     /// Returns runtime diagnostics and scheduler traces.
     GetRuntimeDiagnostics(RpcReplyPort<Result<RuntimeDiagnostics, ConductorError>>),
+    /// Loads effective orchestration state resolved from user/machine/state
+    /// documents.
+    LoadResolvedState(
+        PathBuf,
+        PathBuf,
+        Box<StateMutationOptions>,
+        RpcReplyPort<Result<OrchestrationState, ConductorError>>,
+    ),
+    /// Replaces effective orchestration state and updates only volatile
+    /// `state_pointer` + CAS state blob.
+    ReplaceResolvedState(
+        PathBuf,
+        PathBuf,
+        Box<OrchestrationState>,
+        Box<StateMutationOptions>,
+        RpcReplyPort<Result<Hash, ConductorError>>,
+    ),
 }
 
 /// Typed client for interacting with the conductor node actor.
@@ -49,6 +67,11 @@ impl ConductorActorClient {
 
     /// Executes workflows from user/machine config paths plus runtime storage
     /// path options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or when workflow
+    /// evaluation/execution fails in the coordinator.
     pub async fn run_workflow(
         &self,
         user_ncl: &Path,
@@ -61,7 +84,7 @@ impl ConductorActorClient {
             DEFAULT_RPC_TIMEOUT_MS,
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
-            options
+            Box::new(options)
         )
         .map_err(|err| {
             ConductorError::Internal(format!("conductor actor run_workflow RPC failed: {err}"))
@@ -69,6 +92,11 @@ impl ConductorActorClient {
     }
 
     /// Returns the actor's current in-memory orchestration-state snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or state retrieval fails
+    /// in the coordinator.
     pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
         call_t!(self.actor, ConductorNodeMessage::GetState, DEFAULT_RPC_TIMEOUT_MS).map_err(
             |err| ConductorError::Internal(format!("conductor actor get_state RPC failed: {err}")),
@@ -76,6 +104,11 @@ impl ConductorActorClient {
     }
 
     /// Returns runtime diagnostics including worker queue metrics and scheduler traces.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or diagnostics collection
+    /// fails in the coordinator.
     pub async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
         call_t!(self.actor, ConductorNodeMessage::GetRuntimeDiagnostics, DEFAULT_RPC_TIMEOUT_MS)
             .map_err(|err| {
@@ -83,6 +116,64 @@ impl ConductorActorClient {
                     "conductor actor get_runtime_diagnostics RPC failed: {err}"
                 ))
             })?
+    }
+
+    /// Loads effective orchestration state resolved from user/machine/state
+    /// documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or when state loading
+    /// fails in the coordinator.
+    pub async fn load_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: StateMutationOptions,
+    ) -> Result<OrchestrationState, ConductorError> {
+        call_t!(
+            self.actor,
+            ConductorNodeMessage::LoadResolvedState,
+            DEFAULT_RPC_TIMEOUT_MS,
+            user_ncl.to_path_buf(),
+            machine_ncl.to_path_buf(),
+            Box::new(options)
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "conductor actor load_resolved_state RPC failed: {err}"
+            ))
+        })?
+    }
+
+    /// Replaces effective orchestration state and updates only volatile
+    /// `state_pointer` + CAS state blob.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or state replacement
+    /// fails in the coordinator.
+    pub async fn replace_resolved_state(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        state: OrchestrationState,
+        options: StateMutationOptions,
+    ) -> Result<Hash, ConductorError> {
+        call_t!(
+            self.actor,
+            ConductorNodeMessage::ReplaceResolvedState,
+            DEFAULT_RPC_TIMEOUT_MS,
+            user_ncl.to_path_buf(),
+            machine_ncl.to_path_buf(),
+            Box::new(state),
+            Box::new(options)
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!(
+                "conductor actor replace_resolved_state RPC failed: {err}"
+            ))
+        })?
     }
 }
 
@@ -126,10 +217,10 @@ where
     ) -> Result<(), ActorProcessingErr> {
         match message {
             ConductorNodeMessage::RunWorkflow(user_ncl, machine_ncl, options, reply) => {
-                let result = if options == RunWorkflowOptions::default() {
+                let result = if *options == RunWorkflowOptions::default() {
                     state.run_workflow(&user_ncl, &machine_ncl).await
                 } else {
-                    state.run_workflow_with_options(&user_ncl, &machine_ncl, options).await
+                    state.run_workflow_with_options(&user_ncl, &machine_ncl, *options).await
                 };
                 let _ = reply.send(result);
             }
@@ -139,12 +230,39 @@ where
             ConductorNodeMessage::GetRuntimeDiagnostics(reply) => {
                 let _ = reply.send(state.runtime_diagnostics().await);
             }
+            ConductorNodeMessage::LoadResolvedState(user_ncl, machine_ncl, options, reply) => {
+                let _ = reply.send(
+                    state.load_resolved_state_with_options(&user_ncl, &machine_ncl, *options).await,
+                );
+            }
+            ConductorNodeMessage::ReplaceResolvedState(
+                user_ncl,
+                machine_ncl,
+                next_state,
+                options,
+                reply,
+            ) => {
+                let _ = reply.send(
+                    state
+                        .replace_resolved_state_with_options(
+                            &user_ncl,
+                            &machine_ncl,
+                            *next_state,
+                            *options,
+                        )
+                        .await,
+                );
+            }
         }
         Ok(())
     }
 }
 
 /// Spawns a conductor node actor and returns a typed client.
+///
+/// # Errors
+///
+/// Returns an error when the node actor cannot be spawned.
 pub async fn spawn_conductor_actor<C>(cas: Arc<C>) -> Result<ConductorActorClient, ConductorError>
 where
     C: CasApi + Send + Sync + 'static,

@@ -15,13 +15,17 @@
 //! returned directly.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
-use std::io::Read;
+#[cfg(feature = "cli")]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
-use ureq::Error as UreqError;
+
+#[cfg(feature = "fetch")]
+use reqwest::blocking::Client;
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.import@1.0.0";
@@ -39,6 +43,7 @@ pub const IS_IMPURE: bool = true;
 pub type StringMap = BTreeMap<String, String>;
 
 /// Standard clap-based CLI accepted by every builtin crate.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Prints builtin descriptor metadata as JSON and exits.
@@ -74,8 +79,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
-pub fn describe_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&describe())
+#[cfg(feature = "cli")]
+#[must_use]
+pub fn describe_json() -> String {
+    describe_json_compact()
 }
 
 /// Executes one import request and returns imported payload bytes.
@@ -97,6 +104,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 /// `kind=cas_hash` requires the caller to use
 /// [`execute_content_map_with_hash_resolver`] so hash lookups can be provided
 /// by runtime context (for example conductor CAS state).
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, source payload loading fails, URL fetch/integrity checks fail,
+/// or `cas_hash` is requested without a resolver.
 pub fn execute_content_map(
     import_root_dir: &Path,
     params: &StringMap,
@@ -114,6 +127,12 @@ pub fn execute_content_map(
 ///
 /// The resolver is called only when `kind=cas_hash` is selected and receives
 /// the exact `hash` argument value.
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, source payload loading fails, URL fetch/integrity checks fail,
+/// or the resolver reports an unknown/invalid hash payload.
 pub fn execute_content_map_with_hash_resolver<F>(
     import_root_dir: &Path,
     params: &StringMap,
@@ -192,12 +211,19 @@ enum PathMode {
 /// Runs the standalone CLI command using a normal clap-parsed option structure.
 ///
 /// Successful execution writes imported payload bytes directly to stdout.
+///
+/// # Errors
+///
+/// Returns an error when CLI key/value pairs are malformed, import execution
+/// fails, descriptor serialization fails, or writing output to the provided
+/// writer fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
     if cli.describe {
-        let descriptor = describe_json()?;
+        let descriptor = describe_json();
         writer.write_all(descriptor.as_bytes())?;
         return Ok(());
     }
@@ -211,7 +237,23 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
+/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
+///
+/// This helper is always infallible and deterministic.
+#[must_use]
+pub fn describe_json_compat() -> String {
+    describe_json_compact()
+}
+
+/// Returns one deterministic descriptor JSON string without serde dependencies.
+#[must_use]
+fn describe_json_compact() -> String {
+    "{\n  \"is_impure\": \"true\",\n  \"summary\": \"import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes\",\n  \"tool_id\": \"builtins.import@1.0.0\",\n  \"tool_name\": \"import\",\n  \"tool_version\": \"1.0.0\"\n}"
+        .to_string()
+}
+
 /// Performs URL fetch with strict integrity pinning.
+#[cfg(feature = "fetch")]
 fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     let url = params.get("url").ok_or_else(|| "import kind='fetch' requires 'url'".to_string())?;
     let expected_hash = params
@@ -236,29 +278,21 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
         );
     }
 
-    let response = match ureq::AgentBuilder::new()
+    let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .build()
-        .get(url)
-        .call()
-    {
-        Ok(response) => response,
-        Err(UreqError::Status(code, response)) => {
-            return Err(format!(
-                "import fetch got non-OK status: {code} {}",
-                response.status_text()
-            ));
-        }
-        Err(UreqError::Transport(error)) => {
-            return Err(format!("import fetch request failed: {error}"));
-        }
-    };
+        .map_err(|err| format!("building import fetch HTTP client failed: {err}"))?;
 
-    let mut reader = response.into_reader();
-    let mut bytes = Vec::new();
-    reader
-        .read_to_end(&mut bytes)
-        .map_err(|err| format!("reading import fetch response failed: {err}"))?;
+    let response =
+        client.get(url).send().map_err(|err| format!("import fetch request failed: {err}"))?;
+    if !response.status().is_success() {
+        return Err(format!("import fetch got non-OK status: {}", response.status().as_u16()));
+    }
+
+    let bytes = response
+        .bytes()
+        .map_err(|err| format!("reading import fetch response failed: {err}"))?
+        .to_vec();
 
     let actual_hash = blake3::hash(&bytes);
     let actual_digest = format!("blake3:{}", actual_hash.to_hex());
@@ -271,18 +305,25 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
+/// Fetch-path fallback when network feature is disabled.
+#[cfg(not(feature = "fetch"))]
+fn execute_fetch(_params: &StringMap) -> Result<Vec<u8>, String> {
+    Err("import kind='fetch' requires enabling crate feature 'fetch'".to_string())
+}
+
 /// Resolves one file/folder import source path using configured path mode.
 fn resolve_file_or_folder_source(
     import_root_dir: &Path,
     params: &StringMap,
 ) -> Result<PathBuf, String> {
-    let kind = params.get("kind").map(String::as_str).unwrap_or("file_or_folder");
+    let kind = params.get("kind").map_or("file_or_folder", String::as_str);
     let path = params.get("path").ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
     let mode = parse_path_mode(params, kind)?;
     resolve_path_for_import_root(import_root_dir, kind, path, mode)
 }
 
 /// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
+#[cfg(feature = "cli")]
 fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
     let mut map = StringMap::new();
     let mut chunks = pairs.chunks_exact(2);
@@ -292,7 +333,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -319,15 +360,15 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
         "file" | "folder" => {
             for key in params.keys() {
                 if key != "kind" && key != "path" && key != "path_mode" {
-                    return Err(format!("import kind='{}' does not accept arg '{key}'", kind));
+                    return Err(format!("import kind='{kind}' does not accept arg '{key}'"));
                 }
             }
 
             let path = params
                 .get("path")
-                .ok_or_else(|| format!("import kind='{}' requires 'path'", kind))?;
+                .ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
             if path.trim().is_empty() {
-                return Err(format!("import kind='{}' requires non-empty 'path'", kind));
+                return Err(format!("import kind='{kind}' requires non-empty 'path'"));
             }
 
             let _ = parse_path_mode(params, kind)?;
@@ -381,7 +422,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 /// Parses and validates path-mode selector for file/folder import kinds.
 fn parse_path_mode(params: &StringMap, kind: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => Err(format!(
@@ -644,7 +685,7 @@ mod tests {
     /// Verifies descriptor serialization keeps the stable builtin identifier.
     #[test]
     fn descriptor_json_contains_tool_id() {
-        let json = describe_json().expect("descriptor serialization should succeed");
+        let json = describe_json();
         assert!(json.contains("builtins.import@1.0.0"));
     }
 }

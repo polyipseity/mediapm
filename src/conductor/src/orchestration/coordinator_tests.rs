@@ -10,14 +10,17 @@ use std::sync::Arc;
 use mediapm_cas::{CasApi, CasError, FileSystemCas, InMemoryCas};
 use tempfile::tempdir;
 
-use crate::api::SchedulerTraceKind;
+use crate::api::{SchedulerTraceKind, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::config::{
     InputBinding, MachineNickelDocument, OutputCaptureSpec, OutputPolicy, ToolInputSpec,
     ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
-    encode_machine_document, encode_user_document,
+    decode_state_document, encode_machine_document, encode_user_document,
 };
-use crate::model::state::{PersistenceFlags, merge_persistence_flags};
+use crate::model::state::{
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ToolCallInstance,
+    decode_state, merge_persistence_flags,
+};
 
 use super::WorkflowCoordinator;
 
@@ -46,7 +49,10 @@ fn corrupt_filesystem_cas_object(cas: &FileSystemCas, hash: mediapm_cas::Hash) {
 
             #[cfg(not(unix))]
             {
-                #[allow(clippy::permissions_set_readonly_false)]
+                #[expect(
+                    clippy::permissions_set_readonly_false,
+                    reason = "on non-Unix platforms we must clear the readonly flag before managed overwrite/delete operations can succeed"
+                )]
                 {
                     let mut writable_permissions = permissions;
                     writable_permissions.set_readonly(false);
@@ -62,15 +68,14 @@ fn corrupt_filesystem_cas_object(cas: &FileSystemCas, hash: mediapm_cas::Hash) {
 
 /// Protects persistence-flag merge semantics used throughout output handling.
 #[test]
-fn persistence_flags_follow_intersection_and_union_rules() {
+fn persistence_flags_follow_tri_state_max_ordering() {
     let merged = merge_persistence_flags([
-        PersistenceFlags { save: true, force_full: false },
-        PersistenceFlags { save: false, force_full: false },
-        PersistenceFlags { save: true, force_full: true },
+        PersistenceFlags { save: OutputSaveMode::Saved },
+        PersistenceFlags { save: OutputSaveMode::Unsaved },
+        PersistenceFlags { save: OutputSaveMode::Full },
     ]);
 
-    assert!(!merged.save);
-    assert!(merged.force_full);
+    assert_eq!(merged.save, OutputSaveMode::Full);
 }
 
 /// Protects bootstrap execution when no Nickel files exist yet.
@@ -116,7 +121,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                 },
                 outputs: BTreeMap::from([(
                     "result".to_string(),
-                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
                 )]),
             },
         )]),
@@ -136,7 +141,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(false), force_full: Some(false) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     }],
                 },
@@ -156,7 +161,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(true), force_full: Some(true) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     }],
                 },
@@ -190,8 +195,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
         .get("result")
         .expect("result output");
 
-    assert!(!output_ref.persistence.save);
-    assert!(output_ref.persistence.force_full);
+    assert_eq!(output_ref.persistence.save, OutputSaveMode::Unsaved);
     assert!(
         !cas.exists(output_ref.hash).await.expect("exists check should succeed"),
         "save=false output should be dropped from CAS after run"
@@ -229,7 +233,7 @@ async fn rematerializes_when_referenced_output_is_missing() {
                 },
                 outputs: BTreeMap::from([(
                     "result".to_string(),
-                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
                 )]),
             },
         )]),
@@ -249,7 +253,7 @@ async fn rematerializes_when_referenced_output_is_missing() {
                         depends_on: Vec::new(),
                         outputs: BTreeMap::from([(
                             "result".to_string(),
-                            OutputPolicy { save: Some(false), force_full: Some(false) },
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                         )]),
                     },
                     WorkflowStepSpec {
@@ -313,7 +317,7 @@ async fn pure_workflow_recovers_when_referenced_output_is_corrupted() {
                 },
                 outputs: BTreeMap::from([(
                     "result".to_string(),
-                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
                 )]),
             },
         )]),
@@ -398,6 +402,10 @@ async fn pure_workflow_recovers_when_referenced_output_is_corrupted() {
 
 /// Protects impure-workflow fail-fast behavior when cached referenced outputs are corrupted.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 async fn impure_workflow_does_not_auto_recover_corrupted_output() {
     let temp = tempdir().expect("tempdir");
     let cas =
@@ -432,7 +440,10 @@ async fn impure_workflow_does_not_auto_recover_corrupted_output() {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                 },
             ),
@@ -447,7 +458,10 @@ async fn impure_workflow_does_not_auto_recover_corrupted_output() {
                     },
                     outputs: BTreeMap::from([(
                         "result".to_string(),
-                        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {} },
+                        ToolOutputSpec {
+                            capture: OutputCaptureSpec::Stdout {},
+                            allow_empty: false,
+                        },
                     )]),
                 },
             ),
@@ -517,6 +531,198 @@ async fn impure_workflow_does_not_auto_recover_corrupted_output() {
     assert!(error.to_string().contains("impure"));
 }
 
+/// Returns a single-input/single-output builtin echo tool spec used in checkpoint tests.
+fn echo_tool_spec() -> ToolSpec {
+    ToolSpec {
+        is_impure: false,
+        inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
+        kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
+        outputs: BTreeMap::from([(
+            "result".to_string(),
+            ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
+        )]),
+    }
+}
+
+/// Builds a two-step workflow where the producer (`echo@1.0.0`) succeeds and the
+/// consumer (`fail@1.0.0`) always exits non-zero so a checkpoint is created.
+fn failing_user_document(echo_tool: ToolSpec) -> UserNickelDocument {
+    let failing_command = if cfg!(windows) {
+        vec!["cmd".to_string(), "/C".to_string(), "exit 7".to_string()]
+    } else {
+        vec!["sh".to_string(), "-c".to_string(), "exit 7".to_string()]
+    };
+    let fail_tool = ToolSpec {
+        is_impure: false,
+        inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
+        kind: ToolKindSpec::Executable {
+            command: failing_command,
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
+        outputs: BTreeMap::from([(
+            "result".to_string(),
+            ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: true },
+        )]),
+    };
+    UserNickelDocument {
+        tools: BTreeMap::from([
+            ("echo@1.0.0".to_string(), echo_tool),
+            ("fail@1.0.0".to_string(), fail_tool),
+        ]),
+        workflows: BTreeMap::from([(
+            "wf".to_string(),
+            WorkflowSpec {
+                name: None,
+                description: None,
+                steps: vec![
+                    WorkflowStepSpec {
+                        id: "producer".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("checkpoint me".to_string()),
+                        )]),
+                        depends_on: Vec::new(),
+                        outputs: BTreeMap::from([(
+                            "result".to_string(),
+                            OutputPolicy { save: Some(OutputSaveMode::Full) },
+                        )]),
+                    },
+                    WorkflowStepSpec {
+                        id: "consumer".to_string(),
+                        tool: "fail@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("${step_output.producer.result}".to_string()),
+                        )]),
+                        depends_on: vec!["producer".to_string()],
+                        outputs: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..UserNickelDocument::default()
+    }
+}
+
+/// Builds the recovered two-step workflow where both steps use `echo@1.0.0` so
+/// the run after checkpoint reuse can complete successfully.
+fn recovered_user_document(echo_tool: ToolSpec) -> UserNickelDocument {
+    UserNickelDocument {
+        tools: BTreeMap::from([("echo@1.0.0".to_string(), echo_tool)]),
+        workflows: BTreeMap::from([(
+            "wf".to_string(),
+            WorkflowSpec {
+                name: None,
+                description: None,
+                steps: vec![
+                    WorkflowStepSpec {
+                        id: "producer".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("checkpoint me".to_string()),
+                        )]),
+                        depends_on: Vec::new(),
+                        outputs: BTreeMap::from([(
+                            "result".to_string(),
+                            OutputPolicy { save: Some(OutputSaveMode::Full) },
+                        )]),
+                    },
+                    WorkflowStepSpec {
+                        id: "consumer".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "text".to_string(),
+                            InputBinding::String("${step_output.producer.result}".to_string()),
+                        )]),
+                        depends_on: vec!["producer".to_string()],
+                        outputs: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..UserNickelDocument::default()
+    }
+}
+
+/// Protects failure handling by persisting a partial checkpoint and allowing a
+/// follow-up rerun to reuse completed upstream work instead of starting over.
+#[tokio::test]
+async fn failure_checkpoint_persists_partial_state_and_rerun_reuses_it() {
+    let echo_tool = echo_tool_spec();
+    let cas = Arc::new(InMemoryCas::new());
+    let mut coordinator = WorkflowCoordinator::new(cas.clone());
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+    let state_path = dir.path().join(".conductor").join("state.ncl");
+
+    std::fs::write(
+        &user_path,
+        encode_user_document(failing_user_document(echo_tool.clone())).expect("encode user"),
+    )
+    .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    coordinator
+        .run_workflow(&user_path, &machine_path)
+        .await
+        .expect_err("second step should fail after producer checkpoint is created");
+
+    let state_document =
+        decode_state_document(&std::fs::read(&state_path).expect("read state doc"))
+            .expect("decode state doc");
+    let state_pointer =
+        state_document.state_pointer.expect("failed run should persist checkpoint pointer");
+    let persisted_state =
+        decode_state(&cas.get(state_pointer).await.expect("load checkpoint bytes"))
+            .expect("decode checkpoint state");
+    assert_eq!(
+        persisted_state.instances.len(),
+        1,
+        "only completed upstream work should be checkpointed"
+    );
+    assert!(
+        persisted_state.instances.values().all(|i| i.tool_name == "echo@1.0.0"),
+        "checkpoint should only include the completed producer instance"
+    );
+
+    let current_state = coordinator.current_state().await.expect("load current state");
+    assert_eq!(current_state.instances.len(), persisted_state.instances.len());
+    let current_instance =
+        current_state.instances.values().next().expect("current checkpointed instance");
+    let persisted_instance =
+        persisted_state.instances.values().next().expect("persisted checkpointed instance");
+    assert_eq!(current_instance.tool_name, persisted_instance.tool_name);
+    assert_eq!(current_instance.outputs, persisted_instance.outputs);
+    assert_eq!(current_instance.inputs.len(), persisted_instance.inputs.len());
+    for (input_name, current_input) in &current_instance.inputs {
+        let persisted_input = persisted_instance.inputs.get(input_name).expect("persisted input");
+        assert_eq!(current_input.hash, persisted_input.hash);
+    }
+
+    std::fs::write(
+        &user_path,
+        encode_user_document(recovered_user_document(echo_tool)).expect("encode recovered user"),
+    )
+    .expect("rewrite user");
+
+    let summary = coordinator
+        .run_workflow(&user_path, &machine_path)
+        .await
+        .expect("rerun should reuse checkpointed producer and finish consumer");
+
+    assert_eq!(summary.cached_instances, 1);
+    assert_eq!(summary.executed_instances, 1);
+    assert_eq!(summary.rematerialized_instances, 0);
+}
+
 /// Protects state-schema validation when machine state pointers reference unsupported blobs.
 #[tokio::test]
 async fn unsupported_state_schema_is_rejected() {
@@ -577,6 +783,147 @@ async fn missing_state_pointer_blob_falls_back_to_empty_state() {
 
     // Missing user document triggers bootstrap workflow with one deterministic step.
     assert_eq!(summary.executed_instances, 1);
+}
+
+/// Protects state replacement/export path by validating config compatibility,
+/// persisting only pointer + CAS state blob, and supporting subsequent loads.
+#[tokio::test]
+async fn replace_and_load_resolved_state_roundtrip() {
+    let mut coordinator = WorkflowCoordinator::new(Arc::new(InMemoryCas::new()));
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+    let state_path = dir.path().join(".conductor").join("state.ncl");
+
+    let user = UserNickelDocument {
+        tools: BTreeMap::from([(
+            "echo@1.0.0".to_string(),
+            ToolSpec {
+                is_impure: false,
+                inputs: BTreeMap::new(),
+                kind: ToolKindSpec::Builtin {
+                    name: "echo".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                outputs: BTreeMap::from([(
+                    "result".to_string(),
+                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
+                )]),
+            },
+        )]),
+        ..UserNickelDocument::default()
+    };
+    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+        .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    let next_state = OrchestrationState {
+        version: OrchestrationState::default().version,
+        instances: BTreeMap::from([(
+            "instance-a".to_string(),
+            ToolCallInstance {
+                tool_name: "echo@1.0.0".to_string(),
+                metadata: ToolSpec {
+                    is_impure: false,
+                    inputs: BTreeMap::new(),
+                    kind: ToolKindSpec::Builtin {
+                        name: "echo".to_string(),
+                        version: "1.0.0".to_string(),
+                    },
+                    outputs: BTreeMap::new(),
+                },
+                impure_timestamp: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "result".to_string(),
+                    OutputRef {
+                        hash: mediapm_cas::Hash::from_content(b"state-roundtrip"),
+                        persistence: PersistenceFlags::default(),
+                        allow_empty_capture: false,
+                    },
+                )]),
+            },
+        )]),
+    };
+
+    let pointer = coordinator
+        .replace_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            next_state.clone(),
+            StateMutationOptions::default(),
+        )
+        .await
+        .expect("state replacement should succeed");
+
+    let state_document =
+        decode_state_document(&std::fs::read(&state_path).expect("read state doc"))
+            .expect("decode state doc");
+    assert_eq!(state_document.state_pointer, Some(pointer));
+
+    let loaded = coordinator
+        .load_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            StateMutationOptions::default(),
+        )
+        .await
+        .expect("state load should succeed");
+    assert_eq!(loaded, next_state);
+}
+
+/// Protects state-validation boundary by rejecting replacements that reference
+/// unknown tools under current merged config.
+#[tokio::test]
+async fn replace_resolved_state_rejects_unknown_tool_instances() {
+    let mut coordinator = WorkflowCoordinator::new(Arc::new(InMemoryCas::new()));
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+
+    std::fs::write(
+        &user_path,
+        encode_user_document(UserNickelDocument::default()).expect("encode user"),
+    )
+    .expect("write user");
+    std::fs::write(
+        &machine_path,
+        encode_machine_document(MachineNickelDocument::default()).expect("encode machine"),
+    )
+    .expect("write machine");
+
+    let invalid_state = OrchestrationState {
+        version: OrchestrationState::default().version,
+        instances: BTreeMap::from([(
+            "instance-a".to_string(),
+            ToolCallInstance {
+                tool_name: "missing@1.0.0".to_string(),
+                metadata: ToolSpec::default(),
+                impure_timestamp: None,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+        )]),
+    };
+
+    let result = coordinator
+        .replace_resolved_state_with_options(
+            &user_path,
+            &machine_path,
+            invalid_state,
+            StateMutationOptions::default(),
+        )
+        .await;
+    match result {
+        Err(ConductorError::Workflow(message)) => {
+            assert!(message.contains("references unknown tool"));
+        }
+        other => panic!("expected unknown-tool validation error, got {other:?}"),
+    }
 }
 
 /// Protects integer-only validation for executable process success codes.
@@ -760,4 +1107,71 @@ fn workflow_display_name_prefers_metadata_name_when_present() {
         WorkflowCoordinator::<InMemoryCas>::workflow_display_name("wf.id", &unnamed),
         "wf.id"
     );
+}
+
+/// Protects workflow progress messaging so active step ids stay visible while
+/// level execution is still in flight.
+#[test]
+fn workflow_level_progress_message_includes_running_step_preview() {
+    let step = WorkflowStepSpec {
+        id: "download_source".to_string(),
+        tool: "yt-dlp@latest".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+
+    let message = WorkflowCoordinator::<InMemoryCas>::workflow_level_progress_message(
+        "rickroll",
+        0,
+        13,
+        &[&step],
+    );
+
+    assert!(message.contains("rickroll"));
+    assert!(message.contains("download_source"));
+    assert!(message.contains("  "), "progress message should use two-space separator");
+    assert!(!message.contains('·'));
+    assert!(!message.contains('%'));
+}
+
+/// Protects compact level previews when many steps share one level.
+#[test]
+fn workflow_level_progress_message_compacts_multi_step_preview() {
+    let step_a = WorkflowStepSpec {
+        id: "prepare".to_string(),
+        tool: "echo@1.0.0".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+    let step_b = WorkflowStepSpec {
+        id: "download".to_string(),
+        tool: "yt-dlp@latest".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+    let step_c = WorkflowStepSpec {
+        id: "normalize".to_string(),
+        tool: "rsgain@latest".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+
+    let message = WorkflowCoordinator::<InMemoryCas>::workflow_level_progress_message(
+        "library sync",
+        3,
+        13,
+        &[&step_a, &step_b, &step_c],
+    );
+
+    assert!(message.contains("prepare"));
+    assert!(message.contains("download"));
+    assert!(message.contains("+1 more"));
+    assert!(!message.contains("normalize"));
+    assert!(message.contains("  "), "progress message should use two-space separator");
+    assert!(!message.contains('·'));
+    assert!(!message.contains('%'));
 }

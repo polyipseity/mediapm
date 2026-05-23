@@ -16,10 +16,13 @@
 //! filesystem.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
+#[cfg(feature = "cli")]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
 
 /// Stable builtin id used by topology registration.
@@ -41,6 +44,7 @@ pub type StringMap = BTreeMap<String, String>;
 pub type BinaryInputMap = BTreeMap<String, Vec<u8>>;
 
 /// Standard clap-based CLI accepted by every builtin crate.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Prints builtin descriptor metadata as JSON and exits.
@@ -76,6 +80,12 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
+///
+/// # Errors
+///
+/// Returns a serialization error when the descriptor map cannot be rendered
+/// as valid JSON.
+#[cfg(feature = "cli")]
 pub fn describe_json() -> Result<String, serde_json::Error> {
     serde_json::to_string_pretty(&describe())
 }
@@ -98,6 +108,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 /// - `kind=file` writes `content` bytes to resolved destination.
 /// - `kind=folder` interprets `content` as one ZIP payload and unpacks it into
 ///   resolved destination.
+///
+/// # Errors
+///
+/// Returns an error when arguments are invalid, path-mode/path-resolution
+/// checks fail, folder ZIP payloads are invalid, destination directories/files
+/// cannot be created, or write/unpack operations fail.
 pub fn execute_string_map(
     export_root_dir: &Path,
     params: &StringMap,
@@ -179,6 +195,13 @@ fn payload_bytes_from_maps<'a>(
 ///
 /// CLI `--input` values are UTF-8 and are converted to bytes before API
 /// execution.
+///
+/// # Errors
+///
+/// Returns an error when CLI key/value pairs are malformed, export execution
+/// fails, descriptor serialization fails, or writing output to the provided
+/// writer fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
@@ -204,7 +227,38 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
+#[cfg(not(feature = "cli"))]
+type DescribeJsonError = String;
+
+#[cfg(feature = "cli")]
+type DescribeJsonError = serde_json::Error;
+
+/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
+///
+/// When the `cli` feature is disabled, this helper still provides deterministic
+/// descriptor JSON via a prebuilt string and never fails.
+///
+/// # Errors
+///
+/// Returns a serialization error only when the `cli` feature is enabled and
+/// descriptor JSON encoding fails. With `cli` disabled this helper always
+/// returns `Ok` with a deterministic JSON payload.
+pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
+    #[cfg(feature = "cli")]
+    {
+        describe_json()
+    }
+    #[cfg(not(feature = "cli"))]
+    {
+        Ok(
+            "{\n  \"is_impure\": \"true\",\n  \"summary\": \"export builtin runtime that writes file/folder payloads to host paths\",\n  \"tool_id\": \"builtins.export@1.0.0\",\n  \"tool_name\": \"export\",\n  \"tool_version\": \"1.0.0\"\n}"
+                .to_string(),
+        )
+    }
+}
+
 /// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
+#[cfg(feature = "cli")]
 fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
     let mut map = StringMap::new();
     let mut chunks = pairs.chunks_exact(2);
@@ -214,7 +268,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -266,7 +320,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
 
 /// Parses export destination path-mode selector.
 fn parse_path_mode(params: &StringMap) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => Err(format!("export path_mode must be 'relative' or 'absolute', got '{other}'")),

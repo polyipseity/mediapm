@@ -41,6 +41,7 @@ use crate::model::config::{
     ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     parse_input_binding,
 };
+use crate::model::state::OutputSaveMode;
 
 /// Latest-version Nickel contract bindings.
 ///
@@ -187,12 +188,6 @@ where
     })
 }
 
-/// Evaluates one temporary Nickel main file purely for validation side effects.
-fn validate_main_file(main_file: &Path, context: &str) -> Result<(), ConductorError> {
-    let _: Value = evaluate_main_file_as(main_file, context)?;
-    Ok(())
-}
-
 /// Evaluates one raw Nickel document source and returns its exported value.
 ///
 /// This helper is intentionally schema-agnostic and is used for metadata
@@ -246,7 +241,12 @@ fn read_document_version_marker(source: &str, document_kind: &str) -> Result<u32
                 "{document_kind} top-level 'version' must be a non-negative integer"
             )));
         }
-        version as u64
+
+        format!("{version:.0}").parse::<u64>().map_err(|_| {
+            ConductorError::Workflow(format!(
+                "{document_kind} top-level 'version' value {version} exceeds supported range"
+            ))
+        })?
     } else {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} top-level 'version' must be numeric"
@@ -269,6 +269,8 @@ fn read_document_version_marker(source: &str, document_kind: &str) -> Result<u32
 /// - `version`
 /// - `impure_timestamps`
 /// - `state_pointer`
+const ALLOWED_STATE_DOCUMENT_KEYS: [&str; 3] = ["version", "impure_timestamps", "state_pointer"];
+
 fn validate_state_document_source_shape(source: &str) -> Result<(), ConductorError> {
     let value = evaluate_document_source_value(source, ".conductor/state.ncl")?;
     let object = value.as_object().ok_or_else(|| {
@@ -277,9 +279,8 @@ fn validate_state_document_source_shape(source: &str) -> Result<(), ConductorErr
         )
     })?;
 
-    const ALLOWED_KEYS: [&str; 3] = ["version", "impure_timestamps", "state_pointer"];
     for key in object.keys() {
-        if !ALLOWED_KEYS.contains(&key.as_str()) {
+        if !ALLOWED_STATE_DOCUMENT_KEYS.contains(&key.as_str()) {
             return Err(ConductorError::Workflow(format!(
                 "state document '.conductor/state.ncl' may only define version, impure_timestamps, and state_pointer (found '{key}')"
             )));
@@ -544,12 +545,13 @@ fn runtime_builtin_tool_spec(name: String, version: String) -> ToolSpec {
     }
 }
 
-/// Evaluates fixed Nickel migrations/contracts plus user and machine configuration together.
-pub(crate) fn evaluate_total_configuration_sources(
+/// Evaluates fixed Nickel migrations/contracts plus user and machine
+/// configuration and returns the normalized compiled payload.
+pub(crate) fn compile_total_configuration_sources(
     user_source: &str,
     machine_source: &str,
     state_source: &str,
-) -> Result<(), ConductorError> {
+) -> Result<Value, ConductorError> {
     validate_state_document_source_shape(state_source)?;
 
     let target_version = latest_version_among_sources(user_source, machine_source, state_source)?;
@@ -606,25 +608,53 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
         "writing temporary total Nickel validation wrapper",
     )?;
 
-    validate_main_file(&validate_path, "evaluating full Nickel configuration")
+    evaluate_main_file_as(&validate_path, "evaluating full Nickel configuration")
+}
+
+/// Evaluates fixed Nickel migrations/contracts plus user and machine
+/// configuration together for validation side effects.
+pub(crate) fn evaluate_total_configuration_sources(
+    user_source: &str,
+    machine_source: &str,
+    state_source: &str,
+) -> Result<(), ConductorError> {
+    let _ = compile_total_configuration_sources(user_source, machine_source, state_source)?;
+    Ok(())
 }
 
 /// Optic bridge from latest persisted Nickel state to runtime user document.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDocument> {
     IsoPrime::new(
         |state: latest::State| UserNickelDocument {
             metadata: NickelDocumentMetadata::default(),
             runtime: crate::model::config::RuntimeStorageConfig {
                 conductor_dir: state.runtime.conductor_dir,
-                state_config: state.runtime.state_config,
+                conductor_state_config: state.runtime.conductor_state_config,
                 cas_store_dir: state.runtime.cas_store_dir,
+                conductor_tmp_dir: state.runtime.conductor_tmp_dir,
+                conductor_schema_dir: state.runtime.conductor_schema_dir,
                 inherited_env_vars: state.runtime.inherited_env_vars,
+                use_user_tool_cache: state.runtime.use_user_tool_cache,
             },
             external_data: state
                 .external_data
                 .into_iter()
                 .map(|(hash, reference)| {
-                    (hash, ExternalContentRef { description: reference.description })
+                    (
+                        hash,
+                        ExternalContentRef {
+                            description: reference.description,
+                            save: reference.save.map(|save| match save {
+                                v_latest::OutputSaveLatest::Bool(false) => OutputSaveMode::Unsaved,
+                                v_latest::OutputSaveLatest::Bool(true) => OutputSaveMode::Saved,
+                                v_latest::OutputSaveLatest::Full => OutputSaveMode::Full,
+                            }),
+                        },
+                    )
                 })
                 .collect(),
             tools: state
@@ -680,6 +710,9 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                 v_latest::OutputCaptureLatest::File { path } => {
                                                     OutputCaptureSpec::File { path }
                                                 }
+                                                v_latest::OutputCaptureLatest::FileRegex {
+                                                    path_regex,
+                                                } => OutputCaptureSpec::FileRegex { path_regex },
                                                 v_latest::OutputCaptureLatest::Folder {
                                                     path,
                                                     include_topmost_folder,
@@ -687,7 +720,11 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     path,
                                                     include_topmost_folder,
                                                 },
+                                                v_latest::OutputCaptureLatest::FolderRegex {
+                                                    path_regex,
+                                                } => OutputCaptureSpec::FolderRegex { path_regex },
                                             },
+                                            allow_empty: output_spec.allow_empty,
                                         },
                                     )
                                 })
@@ -739,8 +776,17 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                             (
                                                 output_name,
                                                 OutputPolicy {
-                                                    save: policy.save,
-                                                    force_full: policy.force_full,
+                                                    save: policy.save.map(|save| match save {
+                                                        v_latest::OutputSaveLatest::Bool(false) => {
+                                                            OutputSaveMode::Unsaved
+                                                        }
+                                                        v_latest::OutputSaveLatest::Bool(true) => {
+                                                            OutputSaveMode::Saved
+                                                        }
+                                                        v_latest::OutputSaveLatest::Full => {
+                                                            OutputSaveMode::Full
+                                                        }
+                                                    }),
                                                 },
                                             )
                                         })
@@ -790,9 +836,12 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
         |runtime: UserNickelDocument| latest::State {
             runtime: v_latest::RuntimeStorageLatest {
                 conductor_dir: runtime.runtime.conductor_dir,
-                state_config: runtime.runtime.state_config,
+                conductor_state_config: runtime.runtime.conductor_state_config,
                 cas_store_dir: runtime.runtime.cas_store_dir,
+                conductor_tmp_dir: runtime.runtime.conductor_tmp_dir,
+                conductor_schema_dir: runtime.runtime.conductor_schema_dir,
                 inherited_env_vars: runtime.runtime.inherited_env_vars,
+                use_user_tool_cache: runtime.runtime.use_user_tool_cache,
             },
             external_data: runtime
                 .external_data
@@ -800,7 +849,14 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 .map(|(hash, reference)| {
                     (
                         hash,
-                        v_latest::ExternalContentRefLatest { description: reference.description },
+                        v_latest::ExternalContentRefLatest {
+                            description: reference.description,
+                            save: reference.save.map(|save| match save {
+                                OutputSaveMode::Unsaved => v_latest::OutputSaveLatest::Bool(false),
+                                OutputSaveMode::Saved => v_latest::OutputSaveLatest::Bool(true),
+                                OutputSaveMode::Full => v_latest::OutputSaveLatest::Full,
+                            }),
+                        },
                     )
                 })
                 .collect(),
@@ -854,6 +910,11 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                 OutputCaptureSpec::File { path } => {
                                                     v_latest::OutputCaptureLatest::File { path }
                                                 }
+                                                OutputCaptureSpec::FileRegex { path_regex } => {
+                                                    v_latest::OutputCaptureLatest::FileRegex {
+                                                        path_regex,
+                                                    }
+                                                }
                                                 OutputCaptureSpec::Folder {
                                                     path,
                                                     include_topmost_folder,
@@ -861,7 +922,13 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                                     path,
                                                     include_topmost_folder,
                                                 },
+                                                OutputCaptureSpec::FolderRegex { path_regex } => {
+                                                    v_latest::OutputCaptureLatest::FolderRegex {
+                                                        path_regex,
+                                                    }
+                                                }
                                             },
+                                            allow_empty: output_spec.allow_empty,
                                         },
                                     )
                                 })
@@ -915,8 +982,17 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                                             (
                                                 output_name,
                                                 v_latest::OutputPolicyLatest {
-                                                    save: policy.save,
-                                                    force_full: policy.force_full,
+                                                    save: policy.save.map(|save| match save {
+                                                        OutputSaveMode::Unsaved => {
+                                                            v_latest::OutputSaveLatest::Bool(false)
+                                                        }
+                                                        OutputSaveMode::Saved => {
+                                                            v_latest::OutputSaveLatest::Bool(true)
+                                                        }
+                                                        OutputSaveMode::Full => {
+                                                            v_latest::OutputSaveLatest::Full
+                                                        }
+                                                    }),
                                                 },
                                             )
                                         })
@@ -1136,6 +1212,10 @@ pub(crate) fn decode_state_document(bytes: &[u8]) -> Result<StateNickelDocument,
 }
 
 /// Performs structural invariant checks on one latest persisted Nickel envelope.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn vet_latest_envelope(
     envelope: &latest::Envelope,
     document_kind: &str,
@@ -1155,11 +1235,11 @@ fn vet_latest_envelope(
             "{document_kind} conductor_dir must be non-empty"
         )));
     }
-    if let Some(state_config) = &envelope.runtime.state_config
-        && state_config.trim().is_empty()
+    if let Some(conductor_state_config) = &envelope.runtime.conductor_state_config
+        && conductor_state_config.trim().is_empty()
     {
         return Err(ConductorError::Workflow(format!(
-            "{document_kind} state_config must be non-empty when provided"
+            "{document_kind} conductor_state_config must be non-empty when provided"
         )));
     }
     if let Some(cas_store_dir) = &envelope.runtime.cas_store_dir
@@ -1167,6 +1247,20 @@ fn vet_latest_envelope(
     {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} cas_store_dir must be non-empty when provided"
+        )));
+    }
+    if let Some(conductor_tmp_dir) = &envelope.runtime.conductor_tmp_dir
+        && conductor_tmp_dir.trim().is_empty()
+    {
+        return Err(ConductorError::Workflow(format!(
+            "{document_kind} conductor_tmp_dir must be non-empty when provided"
+        )));
+    }
+    if let Some(conductor_schema_dir) = &envelope.runtime.conductor_schema_dir
+        && conductor_schema_dir.trim().is_empty()
+    {
+        return Err(ConductorError::Workflow(format!(
+            "{document_kind} conductor_schema_dir must be non-empty when provided"
         )));
     }
 
@@ -1211,6 +1305,14 @@ fn vet_latest_envelope(
     }
 
     let external_hashes = envelope.external_data.keys().copied().collect::<BTreeSet<_>>();
+
+    for (hash, reference) in &envelope.external_data {
+        if matches!(reference.save, Some(v_latest::OutputSaveLatest::Bool(false))) {
+            return Err(ConductorError::Workflow(format!(
+                "{document_kind} external_data '{hash}' save policy cannot be false; use true or \"full\""
+            )));
+        }
+    }
 
     for (tool_name, tool_config) in &envelope.tool_configs {
         if tool_config.max_concurrent_calls == 0 || tool_config.max_concurrent_calls < -1 {
@@ -1356,8 +1458,8 @@ fn vet_latest_envelope(
                             (
                                 v_latest::ToolInputKindLatest::String,
                                 v_latest::InputBindingLatest::String(_),
-                            ) => {}
-                            (
+                            )
+                            | (
                                 v_latest::ToolInputKindLatest::StringList,
                                 v_latest::InputBindingLatest::StringList(_),
                             ) => {}
@@ -1512,8 +1614,10 @@ mod tests {
     use super::{evaluate_main_file_as, resolve_version_contract, write_nickel_file};
     use super::{latest, v_latest};
     use crate::model::config::{
-        ImpureTimestamp, InputBinding, MachineNickelDocument, ToolInputKind, UserNickelDocument,
+        ImpureTimestamp, InputBinding, MachineNickelDocument, OutputPolicy, ToolInputKind,
+        UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
     };
+    use crate::model::state::OutputSaveMode;
     use serde::Deserialize;
 
     /// One declared one-hop migration edge from Nickel migration metadata.
@@ -1716,6 +1820,43 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         assert_eq!(workflow.description.as_deref(), Some("workflow description"));
     }
 
+    /// Verifies that `save = false` round-trips through encode/decode without
+    /// being coerced to default `save = true`.
+    #[test]
+    fn output_policy_unsaved_round_trips_through_latest_schema() {
+        let document = UserNickelDocument {
+            workflows: std::collections::BTreeMap::from([(
+                "wf".to_string(),
+                WorkflowSpec {
+                    name: None,
+                    description: None,
+                    steps: vec![WorkflowStepSpec {
+                        id: "step".to_string(),
+                        tool: "echo@1.0.0".to_string(),
+                        inputs: std::collections::BTreeMap::new(),
+                        depends_on: Vec::new(),
+                        outputs: std::collections::BTreeMap::from([(
+                            "result".to_string(),
+                            OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
+                        )]),
+                    }],
+                },
+            )]),
+            ..UserNickelDocument::default()
+        };
+
+        let encoded = encode_user_document(document).expect("encode user document");
+        let decoded = decode_user_document(&encoded).expect("decode user document");
+        let save = decoded
+            .workflows
+            .get("wf")
+            .and_then(|workflow| workflow.steps.first())
+            .and_then(|step| step.outputs.get("result"))
+            .and_then(|policy| policy.save);
+
+        assert_eq!(save, Some(OutputSaveMode::Unsaved));
+    }
+
     /// Verifies legacy builtin-only extras are rejected by the strict v1 shape.
     #[test]
     fn latest_schema_rejects_legacy_builtin_extra_fields() {
@@ -1873,12 +2014,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     version = 1,
     runtime = {
         conductor_dir = ".runtime",
-        state_config = ".runtime/state.ncl",
+        conductor_state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
         "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
             description = "fixture root",
+            save = "full",
         },
     },
     tools = {
@@ -1894,9 +2036,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         let decoded =
             decode_machine_document(source.as_bytes()).expect("machine document should decode");
         assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.conductor_state_config.as_deref(), Some(".runtime/state.ncl"));
         assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
+        assert_eq!(
+            decoded.external_data.values().next().and_then(|reference| reference.save),
+            Some(OutputSaveMode::Full)
+        );
         assert_eq!(decoded.tools.len(), 1);
     }
 
@@ -1926,12 +2072,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     version = 1,
     runtime = {
         conductor_dir = ".runtime",
-        state_config = ".runtime/state.ncl",
+        conductor_state_config = ".runtime/state.ncl",
         cas_store_dir = ".runtime/store",
     },
     external_data = {
         "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
             description = "tool content root",
+            save = true,
         },
     },
     tool_configs = {
@@ -1960,9 +2107,13 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
 
         let decoded = decode_user_document(source.as_bytes()).expect("user document should decode");
         assert_eq!(decoded.runtime.conductor_dir.as_deref(), Some(".runtime"));
-        assert_eq!(decoded.runtime.state_config.as_deref(), Some(".runtime/state.ncl"));
+        assert_eq!(decoded.runtime.conductor_state_config.as_deref(), Some(".runtime/state.ncl"));
         assert_eq!(decoded.runtime.cas_store_dir.as_deref(), Some(".runtime/store"));
         assert_eq!(decoded.external_data.len(), 1);
+        assert_eq!(
+            decoded.external_data.values().next().and_then(|reference| reference.save),
+            Some(OutputSaveMode::Saved)
+        );
         assert_eq!(decoded.tool_configs.len(), 1);
         assert!(decoded.tool_configs.get("tool_a@1.0.0").is_some_and(|config| {
             config.input_defaults.contains_key("args") && config.max_retries == 1
@@ -1974,7 +2125,28 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         assert!(decoded.state_pointer.is_some());
     }
 
-    /// Verifies tool-config content-map hashes must be rooted in external_data.
+    /// Verifies external-data save policy rejects `false` in user documents.
+    #[test]
+    fn decode_user_document_rejects_external_data_unsaved_save_mode() {
+        let source = r#"
+{
+    version = 1,
+    external_data = {
+        "blake3:0000000000000000000000000000000000000000000000000000000000000000" = {
+            description = "invalid unsaved external",
+            save = false,
+        },
+    },
+}
+"#;
+
+        let err = decode_user_document(source.as_bytes())
+            .expect_err("external_data save=false should be rejected");
+        let message = err.to_string();
+        assert!(message.contains("save"));
+    }
+
+    /// Verifies tool-config content-map hashes must be rooted in `external_data`.
     #[test]
     fn decode_user_document_rejects_content_map_hash_missing_external_data_root() {
         let source = r#"
@@ -2433,7 +2605,7 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// Verifies impure timestamp nanosecond components stay within one second.
     #[test]
     fn decode_user_document_rejects_out_of_range_subsec_nanos() {
-        let source = r#"
+        let source = r"
 {
     version = 1,
     impure_timestamps = {
@@ -2445,7 +2617,7 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
         },
     },
 }
-"#;
+";
 
         let err = decode_user_document(source.as_bytes()).expect_err(
             "user document should reject impure timestamp subsec_nanos >= 1_000_000_000",
@@ -2457,14 +2629,14 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// those fields are empty maps.
     #[test]
     fn decode_state_document_rejects_non_volatile_top_level_fields() {
-        let source = r#"
+        let source = r"
 {
     version = 1,
     impure_timestamps = {},
     state_pointer = null,
     tools = {},
 }
-"#;
+    ";
 
         let err = super::decode_state_document(source.as_bytes())
             .expect_err("state document with non-volatile fields should fail");
@@ -2496,9 +2668,9 @@ version.{validator_name} (migration.migrate_atomic {} {} document)
     /// `version` markers in all three configuration documents.
     #[test]
     fn evaluate_total_configuration_sources_rejects_missing_version_marker() {
-        let user = r#"{ version = 1, workflows = {} }"#;
-        let machine = r#"{ version = 1, tools = {} }"#;
-        let state = r#"{ impure_timestamps = {}, state_pointer = null }"#;
+        let user = r"{ version = 1, workflows = {} }";
+        let machine = r"{ version = 1, tools = {} }";
+        let state = r"{ impure_timestamps = {}, state_pointer = null }";
 
         let err = super::evaluate_total_configuration_sources(user, machine, state)
             .expect_err("missing state version marker should fail");

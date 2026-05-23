@@ -28,9 +28,12 @@
 //! details inside the string-only success object.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
+#[cfg(feature = "cli")]
 use std::io::Write;
 
+#[cfg(feature = "cli")]
 use clap::{Parser, ValueEnum};
 
 /// Builtin tool name handled by this crate.
@@ -46,7 +49,8 @@ pub const TOOL_VERSION: &str = "1.0.0";
 pub type StringMap = BTreeMap<String, String>;
 
 /// Output stream selector used by both API and CLI entrypoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(ValueEnum))]
 pub enum EchoStream {
     /// Emit text only to stdout.
     Stdout,
@@ -62,6 +66,7 @@ pub enum EchoStream {
 /// - text is passed as positional arguments and echoed verbatim,
 /// - one optional `--stream` flag chooses stdout/stderr/both,
 /// - API equivalents are `text` and `stream` in [`StringMap`].
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Output stream selection (`stdout`, `stderr`, or `both`).
@@ -90,15 +95,16 @@ pub struct EchoEmission {
 /// Validation rules:
 /// - unknown keys fail,
 /// - if both `params` and `inputs` provide the same key, execution fails.
+///
+/// # Errors
+///
+/// Returns an error when argument contract validation fails or when `stream`
+/// is not one of `stdout`, `stderr`, or `both`.
 pub fn execute_echo(params: &StringMap, inputs: &StringMap) -> Result<EchoEmission, String> {
     validate_argument_contract(params, inputs)?;
 
     let stream = parse_stream(
-        params
-            .get("stream")
-            .or_else(|| inputs.get("stream"))
-            .map(|value| value.as_str())
-            .unwrap_or("stdout"),
+        params.get("stream").or_else(|| inputs.get("stream")).map_or("stdout", String::as_str),
     )?;
 
     let text = params.get("text").or_else(|| inputs.get("text")).cloned().unwrap_or_default();
@@ -118,6 +124,10 @@ pub fn execute_echo(params: &StringMap, inputs: &StringMap) -> Result<EchoEmissi
 /// Keys:
 /// - `stdout`: emitted stdout text,
 /// - `stderr`: emitted stderr text.
+///
+/// # Errors
+///
+/// Returns the same execution/validation errors as [`execute_echo`].
 pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<StringMap, String> {
     let emission = execute_echo(params, inputs)?;
     Ok(StringMap::from([
@@ -130,6 +140,11 @@ pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<Stri
 ///
 /// This behaves like shell `echo`: positional text is joined with spaces,
 /// then terminated by a newline and written to the selected stream(s).
+///
+/// # Errors
+///
+/// Returns an error when writing to the selected output stream(s) fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<WOut: Write, WErr: Write>(
     cli: &BuiltinCliArgs,
     stdout_writer: &mut WOut,
@@ -199,9 +214,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "cli")]
     use clap::Parser;
 
-    use super::{BuiltinCliArgs, execute_echo, execute_string_map, run_cli_command};
+    #[cfg(feature = "cli")]
+    use super::{BuiltinCliArgs, run_cli_command};
+    use super::{execute_echo, execute_string_map};
     use std::collections::BTreeMap;
 
     /// Verifies API defaults to stdout and appends newline like shell echo.
@@ -269,9 +287,10 @@ mod tests {
         .expect("compatibility api should succeed");
 
         assert_eq!(payload.get("stdout"), Some(&"hello\n".to_string()));
-        assert_eq!(payload.get("stderr"), Some(&"".to_string()));
+        assert_eq!(payload.get("stderr"), Some(&String::new()));
     }
 
+    #[cfg(feature = "cli")]
     /// Verifies CLI echoes positional text to selected streams.
     #[test]
     fn run_cli_emits_to_selected_stream() {

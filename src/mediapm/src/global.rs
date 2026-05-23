@@ -1,80 +1,86 @@
 //! User-scoped global directory layout for `mediapm`.
 //!
 //! This module centralizes where cross-workspace, user-owned `mediapm`
-//! artifacts live. The location is intentionally data-persistent (app-data)
-//! rather than cache-only so future global features can share one stable root.
+//! cache artifacts live.
+//!
+//! Cache layout under the resolved root:
+//! - `<root>/cache/store/` — CAS payload objects
+//! - `<root>/cache/tools.jsonc` — default managed-tool metadata index
+//!
+//! Root resolution is delegated to shared conductor cache-root policy so
+//! `mediapm` runtime provisioning and global cache CLI commands always inspect
+//! the same base directory.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use mediapm_conductor::default_mediapm_user_download_cache_root;
 
 /// Canonical global directory paths for one user profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaPmGlobalPaths {
     /// Root directory for user-scoped global `mediapm` data.
     pub root_dir: PathBuf,
-    /// Root directory for global tool-download cache data.
+    /// Root directory for global cache data (`<root_dir>/cache`).
     pub tool_cache_dir: PathBuf,
-    /// CAS payload store directory for tool-cache objects.
+    /// CAS payload store directory for cache objects.
     pub tool_cache_store_dir: PathBuf,
-    /// JSONC index file for cache-key metadata.
+    /// Default managed-tool JSONC index file path.
     pub tool_cache_index_jsonc: PathBuf,
 }
 
 impl MediaPmGlobalPaths {
-    /// Builds canonical global paths from one persistent app-data base path.
+    /// Builds canonical global paths from one OS cache-base directory.
+    ///
+    /// The resulting layout is:
+    /// - `<base>/mediapm/cache/store/`
+    /// - `<base>/mediapm/cache/tools.jsonc`
+    #[must_use]
+    pub fn from_cache_base_dir(cache_base_dir: impl Into<PathBuf>) -> Self {
+        let root_dir = cache_base_dir.into().join("mediapm");
+        let tool_cache_dir = root_dir.join("cache");
+
+        Self::from_tool_cache_dir_with_root(tool_cache_dir, root_dir)
+    }
+
+    /// Builds canonical global paths from one data-base directory.
+    ///
+    /// This alias keeps legacy constructor naming available while using the
+    /// cache-root layout.
     #[must_use]
     pub fn from_data_base_dir(data_base_dir: impl Into<PathBuf>) -> Self {
-        let root_dir = data_base_dir.into().join("mediapm");
-        let tool_cache_dir = root_dir.join("tool-cache");
+        Self::from_cache_base_dir(data_base_dir)
+    }
 
-        Self {
-            tool_cache_store_dir: tool_cache_dir.join("store"),
-            tool_cache_index_jsonc: tool_cache_dir.join("index.jsonc"),
-            root_dir,
-            tool_cache_dir,
-        }
+    /// Builds canonical global paths from one resolved tool-cache root.
+    #[must_use]
+    pub fn from_tool_cache_dir(tool_cache_dir: impl Into<PathBuf>) -> Self {
+        let tool_cache_dir = tool_cache_dir.into();
+        let root_dir = infer_root_dir_from_tool_cache_dir(&tool_cache_dir);
+
+        Self::from_tool_cache_dir_with_root(tool_cache_dir, root_dir)
+    }
+
+    /// Builds canonical global paths from explicit root and tool-cache paths.
+    fn from_tool_cache_dir_with_root(tool_cache_dir: PathBuf, root_dir: PathBuf) -> Self {
+        let tool_cache_store_dir = tool_cache_dir.join("store");
+        let tool_cache_index_jsonc = tool_cache_dir.join("tools.jsonc");
+
+        Self { root_dir, tool_cache_dir, tool_cache_store_dir, tool_cache_index_jsonc }
     }
 
     /// Resolves default global-directory paths for the current user profile.
     #[must_use]
     pub fn resolve_default() -> Option<Self> {
-        default_global_data_base_dir().map(Self::from_data_base_dir)
+        default_mediapm_user_download_cache_root().map(Self::from_tool_cache_dir)
     }
 }
 
-/// Resolves platform-specific persistent app-data base directory.
+/// Infers the mediapm global root from one resolved tool-cache path.
 ///
-/// Platform policy:
-/// - Windows: `%APPDATA%` (roaming profile) with sane fallback,
-/// - macOS: `$HOME/Library/Application Support`,
-/// - other Unix-like: `$XDG_DATA_HOME` or `$HOME/.local/share`.
+/// The cache directory is one level below the root: `<root>/cache`.
 #[must_use]
-fn default_global_data_base_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        env_path("APPDATA")
-            .or_else(|| env_path("USERPROFILE").map(|home| home.join("AppData").join("Roaming")))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        env_path("HOME").map(|home| home.join("Library").join("Application Support"))
-    }
-
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    {
-        env_path("XDG_DATA_HOME")
-            .or_else(|| env_path("HOME").map(|home| home.join(".local").join("share")))
-    }
-}
-
-/// Returns one trimmed environment-variable path when available.
-#[must_use]
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+fn infer_root_dir_from_tool_cache_dir(tool_cache_dir: &Path) -> PathBuf {
+    tool_cache_dir.parent().map_or_else(|| tool_cache_dir.to_path_buf(), Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -83,21 +89,27 @@ mod tests {
 
     use super::MediaPmGlobalPaths;
 
-    /// Ensures derived global paths keep the documented tool-cache layout.
+    /// Ensures derived global paths keep the documented flat cache layout.
     #[test]
-    fn from_data_base_dir_uses_global_tool_cache_layout() {
-        let base = PathBuf::from("/tmp/app-data");
-        let paths = MediaPmGlobalPaths::from_data_base_dir(&base);
+    fn from_cache_base_dir_uses_flat_cache_layout() {
+        let base = PathBuf::from("/tmp/cache-base");
+        let paths = MediaPmGlobalPaths::from_cache_base_dir(&base);
 
         assert_eq!(paths.root_dir, base.join("mediapm"));
-        assert_eq!(paths.tool_cache_dir, base.join("mediapm").join("tool-cache"));
-        assert_eq!(
-            paths.tool_cache_store_dir,
-            base.join("mediapm").join("tool-cache").join("store")
-        );
-        assert_eq!(
-            paths.tool_cache_index_jsonc,
-            base.join("mediapm").join("tool-cache").join("index.jsonc")
-        );
+        assert_eq!(paths.tool_cache_dir, base.join("mediapm").join("cache"));
+        assert_eq!(paths.tool_cache_store_dir, paths.tool_cache_dir.join("store"));
+        assert_eq!(paths.tool_cache_index_jsonc, paths.tool_cache_dir.join("tools.jsonc"));
+    }
+
+    /// Ensures tool-cache-root constructor infers root as one level above cache.
+    #[test]
+    fn from_tool_cache_dir_infers_root_dir_one_level_up() {
+        let tool_cache_dir = PathBuf::from("/tmp/cache-base/mediapm/cache");
+        let paths = MediaPmGlobalPaths::from_tool_cache_dir(&tool_cache_dir);
+
+        assert_eq!(paths.root_dir, PathBuf::from("/tmp/cache-base/mediapm"));
+        assert_eq!(paths.tool_cache_dir, tool_cache_dir);
+        assert_eq!(paths.tool_cache_store_dir, paths.tool_cache_dir.join("store"));
+        assert_eq!(paths.tool_cache_index_jsonc, paths.tool_cache_dir.join("tools.jsonc"));
     }
 }

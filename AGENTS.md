@@ -4,20 +4,20 @@
 
 - Root `AGENTS.md` is the workspace-wide source of truth. Do not add
   `.github/copilot-instructions.md`.
-- Treat this repository as a Rust workspace that is evolving toward the
-  mediapm phase architecture. Keep guidance aligned to concrete files and
+- Treat this repository as a Rust workspace organized around mediapm's
+  crate-oriented architecture. Keep guidance aligned to concrete files and
   current implementation state.
 - Keep this file short and durable. Put file-type and workflow-specific rules
   in `.agents/instructions/*.instructions.md`, reusable workflows in
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
 - `src/` now contains workspace member crates:
-  - `src/cas/` (Phase 1)
-  - `src/conductor/` (Phase 2)
-  - `src/conductor-builtins/*/` (Phase 2 built-ins)
-  - `src/mediapm/` (Phase 3)
-- Integration tests currently live with the phase crates (for example,
+  - `src/cas/` (CAS)
+  - `src/conductor/` (Conductor)
+  - `src/conductor-builtins/*/` (conductor built-ins)
+  - `src/mediapm/` (mediapm application)
+- Integration tests currently live with workspace crates (for example,
   `src/mediapm/tests/`).
-  Prefer one shared harness shape across phase crates:
+  Prefer one shared harness shape across crates:
   - top-level `tests/tests.rs` as the integration harness,
   - grouped submodules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
 
@@ -39,9 +39,9 @@
 ## Core Engineering Contract
 
 - This repository now treats `AGENTS.md` + `.agents/instructions/*.instructions.md`
-  as the durable implementation contract (the legacy phase-plan markdown files
+  as the durable implementation contract (the legacy planning markdown files
   are intentionally retired after policy migration).
-- Hard principles for all phase crates:
+- Hard principles for all workspace crates:
   - simplicity first;
   - performance is a user-visible feature;
   - functional core, imperative shell;
@@ -68,7 +68,7 @@
   - avoid hidden clones and tiny-syscall loops,
   - keep async handlers non-blocking and route unavoidable blocking work
     through bounded worker boundaries.
-- Definition-of-done expectations across phases:
+- Definition-of-done expectations across crates:
   - public APIs have integration coverage,
   - major features have end-to-end coverage,
   - determinism/idempotency behavior is tested,
@@ -78,9 +78,9 @@
 
 ## Rust Architecture Snapshot
 
-- `src/cas/` provides the Phase 1 CAS identity model and async API contracts.
+- `src/cas/` provides the CAS identity model and async API contracts.
   CAS topology visualization implementation also belongs in this crate.
-- `src/conductor/` provides the Phase 2 orchestration state model and
+- `src/conductor/` provides the orchestration state model and
   persistence-merge logic.
   Key cross-crate invariants:
   - `conductor.ncl` is user-owned intent; `conductor.machine.ncl` is
@@ -121,7 +121,7 @@
   not need to force CLI success into a pure string-only payload. CLI failures
   may use ordinary Rust error types; do not encode failures as fake success
   payloads.
-- `src/mediapm/` composes CAS + Conductor into the Phase 3 media-facing API
+- `src/mediapm/` composes CAS + Conductor into the media-facing API
   and CLI scaffold.
   `src/mediapm/` should depend directly on `mediapm-cas` and
   `mediapm-conductor`; do not add direct dependencies on individual
@@ -129,18 +129,90 @@
   Key cross-crate invariants:
   - Runtime state root defaults to `.mediapm/`; `mediapm.ncl` `runtime` may
     optionally override `mediapm_dir`, paths, and `inherited_env_vars`.
+  - Media-source entries may include optional human-readable `title` and
+    `description`; add flows should auto-populate them from lightweight source
+    metadata when available.
   - When `mediapm` invokes conductor, pass grouped runtime-storage paths so
-    conductor volatile writes do not fall back to standalone
-    `.conductor/state.ncl` defaults.
+    conductor volatile writes target
+    `<mediapm_dir>/state.conductor.ncl` (not standalone
+    `.conductor/state.ncl` defaults); `mediapm` machine-managed state persists
+    at `<mediapm_dir>/state.ncl` and uses `runtime.media_state_config` for overrides.
   - Materialized outputs are marked read-only after sync commit; runtime may
     clear read-only bits only for managed replacement/removal operations.
   - Materializer enforces NFD-only filenames and rejects reserved characters
     (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`).
-  - Link/write fallback order is deterministic: hardlink → symlink → reflink →
-    copy.
+  - Link/write materialization order follows
+    `runtime.materialization_preference_order` (must be non-empty and
+    duplicate-free); default order is hardlink → symlink → reflink → copy.
   - `yt-dlp` reconciliation defaults to one active concurrent call and one
-    outer conductor retry; `media-tagger` defaults to
-    `strict_identification = "true"`.
+    outer conductor retry, `sub_langs = "all"`, and unified subtitle capture
+    enabled (`write_subs = "true"`, mapped to manual + automatic subtitle
+    downloader toggles). Keep translated subtitle pressure low with precise
+    `options.sub_langs` selectors and optional `options.sleep_subtitles` when
+    provider throttling appears. Keep this mitigation anchored to documented
+    upstream incidents in
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3875360390`
+    and
+    `https://github.com/yt-dlp/yt-dlp/issues/13831#issuecomment-3712613129`:
+    broad translated subtitle requests are the highest-risk path for
+    `HTTP 429`, focused subtitle requests are usually lower risk, and
+    extractor-args
+    translation-skip knobs are not a reliable substitute for precise language
+    selectors,
+    `merge_output_format = "mkv"`, chapter embedding enabled
+    by default (`embed_chapters = "true"`, `split_chapters = "false"`),
+    `clean_info_json = "true"`, comments capture enabled by default
+    (`write_comments = "true"`), all internet-shortcut link outputs enabled
+    by default (`write_url_link`, `write_webloc_link`,
+    `write_desktop_link`), and highest-quality single-thumbnail capture by
+    default; `media-tagger` defaults to `strict_identification = "true"`,
+    `write_all_tags = "true"`, `write_all_images = "true"`, and
+    `cover_art_slot_count = tools.ffmpeg.max_input_slots - 1`.
+  - Managed `rsgain` defaults stay in single-track mode
+    (`album = "false"`, `album_mode = "false"`).
+  - Managed `media-tagger` cache defaults to `<mediapm_dir>/cache` and uses
+    the shared CAS/index layout (`cache/store/` + `cache/media-tagger.jsonc`)
+    without dedicated media-tagger subfolders under `store/`.
+  - Schema exports default to `<mediapm_dir>/config/mediapm` for mediapm;
+    standalone conductor defaults to `<conductor_dir>/config/conductor`; and
+    mediapm-driven conductor defaults to `<mediapm_dir>/config/conductor`.
+  - Tool requirements may set `ffmpeg_version` for `yt-dlp`, `rsgain`, and
+    `media-tagger` (inherit/global semantics when omitted).
+  - yt-dlp `output_variants` values must not embed `format`; any explicit
+    format selector belongs in step `options.format`.
+  - output-variant values are object-driven across managed tools: `kind`
+    controls default file-vs-folder capture policy, and optional
+    `capture_kind = "file"|"folder"` may override that default per
+    variant.
+  - output-variant kind naming is strict (no legacy aliases): use
+    `primary` for main transform outputs; yt-dlp folder-family kinds must use
+    plural names (`subtitles`, `thumbnails`, `links`,
+    `chapters`) while file-family kinds remain singular (`primary`,
+    `description`, `infojson`, `comment`, `archive`, `annotation`, playlist file sidecars).
+  - yt-dlp output-variant `langs` is an optional capture-filter hint for
+    subtitle-family artifacts only; downloader language selection remains
+    step-option owned via `options.sub_langs`.
+  - Hierarchy uses an ordered node-array schema (`hierarchy = [ { ... } ]`)
+    with recursive `children` and explicit kinds: `folder` (default),
+    `media`, `media_folder`, and `playlist`; legacy flat-map and `"/kind"`
+    forms are unsupported (no backward compatibility).
+    `media` uses singular `variant`, `media_folder` uses plural `variants`
+    and optional `rename_files`; hierarchy `id` is optional on all kinds and
+    must be unique when provided. `media_id` is optional on all kinds,
+    but `media`/`media_folder` require one effective non-empty value (direct
+    or inherited). Playlist `ids` resolve by ordered id entries that target
+    hierarchy-node ids, accept string shorthand and object entries
+    (`{ id, path }`), and remain file-leaf entries.
+  - Media-source entries must not define `media.<id>.id` overrides; playlist
+    membership is owned by hierarchy-node ids only.
+  - Hierarchy directory entries may define optional ordered
+    `rename_files = [{ pattern, replacement }, ...]` regex rewrites that
+    apply to extracted folder file members; file hierarchy targets must keep
+    `rename_files` empty.
+  - Managed executable materialization keeps all-platform `content_map` keys
+    (`windows/`, `linux/`, `macos/`, or shared `./` for platform-identical
+    payloads) and uses `${context.os == "<target>" ? ... | ...}` command
+    selectors.
   See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules,
   tool provisioning catalog, conductor integration boundary, and example policy.
 
@@ -161,8 +233,29 @@
   - Example: `cargo test-pkg mediapm` runs only mediapm tests
   - See `.cargo/config.toml` for available aliases and convenience shortcuts
 - For any change that touches `src/mediapm/**`, run
-  `cargo run --package mediapm --example demo_online` as a final runtime gate
+  `cargo run --package mediapm --example mediapm_demo_online` as a final runtime gate
   after targeted tests/lints so the managed online workflow remains healthy.
+  After the run, inspect generated artifacts under
+  `src/mediapm/examples/.artifacts/demo-online/` (including sidecar-family
+  content correctness, not only path existence).
+  To reduce third-party provider rate-limit risk (`HTTP 429`), run this gate
+  at most once per validation pass, avoid immediate repeat retries, and apply
+  backoff cool-down before re-running after transient provider failures.
+  If the run appears stuck, do triage before retrying: check whether
+  `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes are still active, inspect
+  artifact-root timestamps, and check stderr for fallback-root messages
+  (`demo-online-fallback-*`) when canonical cleanup is locked.
+  First-run bootstrap often needs several minutes for managed tool download
+  and extraction; be patient and avoid interrupting while progress is still
+  advancing.
+  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to keep runs bounded and treat
+  timeout failures as blockers (same as other provider/network failures).
+  `demo_online` enforces this as a hard timeout and exits with code `124`
+  when exceeded.
+  Keep timeout/watchdog notices user-facing and progress-safe: avoid periodic
+  heartbeat stderr lines during conductor progress rendering, and keep timeout
+  notice output plain text (no row-clear ANSI control sequences) so terminal
+  progress rows are not duplicated.
   Treat this as mandatory: do not replace failures with placeholder/skip
   success paths. If external providers block completion, report the failure
   explicitly and keep the task blocked until the run succeeds or the reviewer
@@ -178,6 +271,35 @@
 - Keep CI, editor automation, prompt examples, and instruction files aligned
   with the commands and configs that are actually present in the repository.
 
+## Dependency and Feature Discipline
+
+- Keep dependency surfaces minimal and explicit:
+  - prefer existing workspace dependencies before introducing new crates,
+  - remove now-unused direct dependencies when refactors eliminate them,
+  - avoid parallel libraries that solve the same concern in one crate.
+- Keep optional behavior feature-gated at compile time (not only runtime):
+  - optional dependencies must be wired behind explicit Cargo features,
+  - avoid hidden feature fan-out through default features,
+  - prefer `default-features = false` for internal cross-crate dependencies unless
+    one default behavior is intentionally required.
+- When changing crate features, validate representative feature matrices with
+  targeted `cargo check` invocations so minimal builds remain healthy.
+- Prefer small, atomic commits for dependency/feature-surface changes so
+  feature-boundary regressions are easy to audit and bisect.
+
+## CLI and API Parity
+
+- For each crate that exposes both a CLI binary and a reusable library API,
+  keep behavior parity as an explicit contract:
+  - new CLI operations should route through corresponding library/API entry
+    points instead of duplicating core logic in `main.rs`,
+  - programmatic APIs should expose the same validation and failure semantics as
+    CLI paths,
+  - CLI-only argument ergonomics are acceptable, but capability gaps between CLI
+    and API are not.
+- When adding/renaming CLI operations, update tests so parsing + API-backed
+  execution coverage protects the parity contract.
+
 ## Conventions
 
 - Distinguish between what is present today and what is only part of the
@@ -185,10 +307,10 @@
   exist.
 - Treat this file and focused `.agents/instructions/*.instructions.md` files
   as the active implementation contract. Keep these files in sync with code
-  and avoid reviving deleted standalone phase-plan documents.
+  and avoid reviving deleted standalone planning documents.
 - Do not regress to bootstrap assumptions (single-crate `src/main.rs` with only
   minimal `Cargo.toml` + `rust-toolchain.toml`). This repository is a
-  multi-member Rust workspace with phase crates under `src/`.
+  multi-member Rust workspace with crate members under `src/`.
 - When docs mention `application`, `configuration`, `domain`,
   `infrastructure`, and `support`, treat them as conceptual layering terms
   unless matching directories are explicitly introduced in the workspace.
@@ -214,6 +336,9 @@
   `foo/*.rs`, and place local unit tests in `foo/tests.rs` with
   `#[cfg(test)] mod tests;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and
   avoid `#[path = "..."]` for routine in-crate module/test placement.
+- Do not deliberately rename examples/tests solely to force workspace-wide
+  unique target names. Shared canonical names (for example `demo`) are allowed;
+  when running examples, use package-qualified invocations to disambiguate.
 - Preserve mirrored prompt content between `.agents/prompts/` and
   `.opencode/commands/` when both copies exist.
 - Respect the repository newline policy: Markdown and shell scripts use LF;
@@ -233,7 +358,7 @@
   `clippy.toml` — Rust package and quality configuration
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and
   validation guidance
-- `.agents/instructions/mediapm-architecture.instructions.md` — phase boundaries
+- `.agents/instructions/mediapm-architecture.instructions.md` — crate boundaries
   and cross-crate invariants
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test
   expectations and Rustdoc/docstring depth requirements

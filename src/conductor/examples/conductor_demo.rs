@@ -18,15 +18,17 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
     ConductorApi, ExternalContentRef, MachineNickelDocument, NickelDocumentMetadata,
-    NickelIdentity, OrchestrationState, OutputPolicy, RunSummary, RuntimeDiagnostics,
-    RuntimeStorageConfig, SimpleConductor, ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolSpec,
-    UserNickelDocument, WorkflowSpec, WorkflowStepSpec, persisted_state_json_pretty,
+    NickelIdentity, OrchestrationState, OutputPolicy, OutputSaveMode, RunSummary,
+    RuntimeDiagnostics, RuntimeStorageConfig, SimpleConductor, ToolConfigSpec, ToolInputSpec,
+    ToolKindSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
+    persisted_state_json_pretty,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -40,6 +42,12 @@ const DEMO_DEFAULT_STATE_CONFIG_FILE: &str = "state.ncl";
 /// Default CAS store folder name under `DEMO_DEFAULT_CONDUCTOR_DIR`.
 const DEMO_DEFAULT_CAS_STORE_DIR: &str = "store";
 
+/// Default temporary sandbox folder name under `DEMO_DEFAULT_CONDUCTOR_DIR`.
+const DEMO_DEFAULT_TMP_DIR: &str = "tmp";
+
+/// Default schema export subdirectory under `DEMO_DEFAULT_CONDUCTOR_DIR/config`.
+const DEMO_DEFAULT_SCHEMA_DIR: &str = "config/conductor";
+
 /// Shared result type for this example binary.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
@@ -47,20 +55,23 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RunSummarySnapshot {
     /// Number of instances executed in this run.
-    executed_instances: usize,
+    #[serde(rename = "executed_instances")]
+    executed: usize,
     /// Number of instances served from cache in this run.
-    cached_instances: usize,
+    #[serde(rename = "cached_instances")]
+    cached: usize,
     /// Number of instances re-materialized in this run.
-    rematerialized_instances: usize,
+    #[serde(rename = "rematerialized_instances")]
+    rematerialized: usize,
 }
 
 impl From<RunSummary> for RunSummarySnapshot {
     /// Converts a public runtime summary into a manifest-friendly snapshot.
     fn from(value: RunSummary) -> Self {
         Self {
-            executed_instances: value.executed_instances,
-            cached_instances: value.cached_instances,
-            rematerialized_instances: value.rematerialized_instances,
+            executed: value.executed_instances,
+            cached: value.cached_instances,
+            rematerialized: value.rematerialized_instances,
         }
     }
 }
@@ -88,7 +99,7 @@ impl From<RuntimeDiagnostics> for DiagnosticsSnapshot {
 }
 
 /// JSON manifest persisted under `.artifacts/demo/manifest.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct DemoManifest {
     /// Unix timestamp when the manifest was generated.
     generated_unix_epoch_seconds: u64,
@@ -124,6 +135,48 @@ struct DemoManifest {
     diagnostics_after_first_run: DiagnosticsSnapshot,
     /// Diagnostics after second run.
     diagnostics_after_second_run: DiagnosticsSnapshot,
+    /// Logical CAS store footprint without delta compression (bytes).
+    store_size_without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    store_size_with_delta_bytes: u64,
+    /// Ratio `with_delta / without_delta` for quick compression comparison.
+    ///
+    /// Values `< 1.0` indicate on-disk savings from delta compression; lower
+    /// values mean stronger compression.
+    ///
+    /// When `store_size_without_delta_bytes == 0`, this demo emits `1.0` so
+    /// empty/objectless stores report a neutral ratio instead of
+    /// divide-by-zero noise.
+    store_size_ratio_with_delta_over_without: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Aggregate CAS store-size metrics shared by manifest serialization.
+struct StoreSizeStats {
+    /// Logical CAS store footprint without delta compression (bytes).
+    without_delta_bytes: u64,
+    /// Effective CAS store footprint with delta compression (bytes).
+    with_delta_bytes: u64,
+}
+
+impl StoreSizeStats {
+    /// Returns `with_delta / without_delta` for manifest reporting.
+    ///
+    /// Values `< 1.0` indicate on-disk savings from delta compression.
+    ///
+    /// For zero-byte logical stores, this returns `1.0` to represent a neutral
+    /// no-change baseline and avoid divide-by-zero artifacts.
+    #[must_use]
+    fn ratio_with_delta_over_without(self) -> f64 {
+        if self.without_delta_bytes == 0 {
+            1.0
+        } else {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                self.with_delta_bytes as f64 / self.without_delta_bytes as f64
+            }
+        }
+    }
 }
 
 /// Output paths printed to stdout when the demo finishes.
@@ -270,6 +323,91 @@ where
     Ok(())
 }
 
+/// Returns whether one path segment is a hexadecimal fragment.
+#[must_use]
+fn is_hex_segment(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Parses one filesystem CAS object path into a canonical hash when possible.
+fn parse_hash_from_store_object_path(objects_root: &Path, path: &Path) -> Option<Hash> {
+    let relative = path.strip_prefix(objects_root).ok()?;
+    let mut components = relative.iter();
+    let algorithm = components.next()?.to_string_lossy().to_string();
+    if algorithm.is_empty() {
+        return None;
+    }
+
+    let mut hex = String::new();
+    for component in components {
+        let segment = component.to_string_lossy();
+        let segment = segment.strip_suffix(".diff").unwrap_or(segment.as_ref());
+        if !is_hex_segment(segment) {
+            return None;
+        }
+        hex.push_str(segment);
+    }
+
+    if hex.len() != 64 {
+        return None;
+    }
+
+    Hash::from_str(&format!("{algorithm}:{hex}")).ok()
+}
+
+/// Recursively visits one CAS object directory and records discovered hashes.
+fn collect_store_object_hashes_recursive(
+    objects_root: &Path,
+    current_dir: &Path,
+    hashes: &mut BTreeSet<Hash>,
+) -> ExampleResult<()> {
+    for entry in fs::read_dir(current_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_store_object_hashes_recursive(objects_root, &path, hashes)?;
+            continue;
+        }
+
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        if let Some(hash) = parse_hash_from_store_object_path(objects_root, &path) {
+            let _ = hashes.insert(hash);
+        }
+    }
+
+    Ok(())
+}
+
+/// Collects all persisted object hashes currently present in one CAS root.
+fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>> {
+    let mut hashes = BTreeSet::new();
+    let objects_root = cas_root.join("v1");
+    if !objects_root.exists() {
+        return Ok(hashes);
+    }
+
+    collect_store_object_hashes_recursive(&objects_root, &objects_root, &mut hashes)?;
+    Ok(hashes)
+}
+
+/// Computes logical and effective store-size totals from all persisted objects.
+async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats> {
+    let cas = FileSystemCas::open(cas_root).await?;
+    let mut without_delta = 0u64;
+    let mut with_delta = 0u64;
+
+    for hash in collect_store_object_hashes(cas_root)? {
+        let info = cas.info(hash).await?;
+        without_delta = without_delta.saturating_add(info.content_len);
+        with_delta = with_delta.saturating_add(info.payload_len);
+    }
+
+    Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
+}
+
 /// Converts one filesystem path into a normalized display string.
 fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
@@ -281,6 +419,10 @@ fn unix_timestamp_seconds() -> u64 {
 }
 
 /// Builds a user document that showcases broad conductor behavior.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
     let banner_binding = format!("${{external_data.{}}}", inputs.banner_hash);
 
@@ -291,15 +433,18 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
         },
         runtime: RuntimeStorageConfig {
             conductor_dir: Some(DEMO_DEFAULT_CONDUCTOR_DIR.to_string()),
-            state_config: Some(format!(
-                "{}/{}",
-                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_STATE_CONFIG_FILE
+            conductor_state_config: Some(format!(
+                "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_STATE_CONFIG_FILE}"
             )),
             cas_store_dir: Some(format!(
-                "{}/{}",
-                DEMO_DEFAULT_CONDUCTOR_DIR, DEMO_DEFAULT_CAS_STORE_DIR
+                "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_CAS_STORE_DIR}"
+            )),
+            conductor_tmp_dir: Some(format!("{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_TMP_DIR}")),
+            conductor_schema_dir: Some(format!(
+                "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_SCHEMA_DIR}"
             )),
             inherited_env_vars: None,
+            use_user_tool_cache: Some(true),
         },
         external_data: BTreeMap::from([(
             inputs.banner_hash,
@@ -307,6 +452,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                 description: Some(
                     format!("banner payload used by {banner_binding} bindings"),
                 ),
+                save: None,
             },
         )]),
         workflows: BTreeMap::from([
@@ -398,7 +544,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             depends_on: vec!["import_user_relative".to_string()],
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(true), force_full: Some(true) },
+                                OutputPolicy { save: Some(OutputSaveMode::Full) },
                             )]),
                         },
                         WorkflowStepSpec {
@@ -544,7 +690,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             depends_on: Vec::new(),
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(false), force_full: Some(false) },
+                                OutputPolicy { save: Some(OutputSaveMode::Unsaved) },
                             )]),
                         },
                         WorkflowStepSpec {
@@ -575,7 +721,7 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                             ],
                             outputs: BTreeMap::from([(
                                 "result".to_string(),
-                                OutputPolicy { save: Some(true), force_full: Some(true) },
+                                OutputPolicy { save: Some(OutputSaveMode::Full) },
                             )]),
                         },
                     ],
@@ -588,6 +734,10 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
 
 /// Builds a machine document that registers required demo builtins and
 /// per-tool runtime execution limits.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocument {
     let builtin_tool = |name: &str, version: &str, is_impure: bool| ToolSpec {
         is_impure,
@@ -621,12 +771,14 @@ fn build_machine_document(inputs: &DemoWorkflowBuildInputs) -> MachineNickelDocu
                 inputs.concat_tool_binary_hash,
                 ExternalContentRef {
                     description: Some("concat-tool executable payload root".to_string()),
+                    save: None,
                 },
             ),
             (
                 inputs.concat_tool_resource_hash,
                 ExternalContentRef {
                     description: Some("concat-tool fixed resource payload root".to_string()),
+                    save: None,
                 },
             ),
         ]),
@@ -740,8 +892,8 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
         if let Some(conductor_dir) = &document.runtime.conductor_dir {
             runtime.insert("conductor_dir".to_string(), json!(conductor_dir));
         }
-        if let Some(state_config) = &document.runtime.state_config {
-            runtime.insert("state_config".to_string(), json!(state_config));
+        if let Some(conductor_state_config) = &document.runtime.conductor_state_config {
+            runtime.insert("conductor_state_config".to_string(), json!(conductor_state_config));
         }
         if let Some(cas_store_dir) = &document.runtime.cas_store_dir {
             runtime.insert("cas_store_dir".to_string(), json!(cas_store_dir));
@@ -760,7 +912,7 @@ fn user_document_to_json(document: &UserNickelDocument) -> Value {
         object.insert("tools".to_string(), json!(tool_specs_to_wire_json(&document.tools)));
     }
 
-    object.insert("workflows".to_string(), json!(document.workflows));
+    object.insert("workflows".to_string(), json!(workflow_specs_to_wire_json(&document.workflows)));
 
     if !document.tool_configs.is_empty() {
         object.insert("tool_configs".to_string(), json!(document.tool_configs));
@@ -786,8 +938,8 @@ fn machine_document_to_json(document: &MachineNickelDocument) -> Value {
         if let Some(conductor_dir) = &document.runtime.conductor_dir {
             runtime.insert("conductor_dir".to_string(), json!(conductor_dir));
         }
-        if let Some(state_config) = &document.runtime.state_config {
-            runtime.insert("state_config".to_string(), json!(state_config));
+        if let Some(conductor_state_config) = &document.runtime.conductor_state_config {
+            runtime.insert("conductor_state_config".to_string(), json!(conductor_state_config));
         }
         if let Some(cas_store_dir) = &document.runtime.cas_store_dir {
             runtime.insert("cas_store_dir".to_string(), json!(cas_store_dir));
@@ -799,7 +951,7 @@ fn machine_document_to_json(document: &MachineNickelDocument) -> Value {
     }
     object.insert("external_data".to_string(), json!(document.external_data));
     object.insert("tools".to_string(), json!(tool_specs_to_wire_json(&document.tools)));
-    object.insert("workflows".to_string(), json!(document.workflows));
+    object.insert("workflows".to_string(), json!(workflow_specs_to_wire_json(&document.workflows)));
     object.insert("tool_configs".to_string(), json!(document.tool_configs));
     object.insert("impure_timestamps".to_string(), json!(document.impure_timestamps));
     object.insert("state_pointer".to_string(), json!(document.state_pointer));
@@ -811,6 +963,63 @@ fn tool_specs_to_wire_json(tools: &BTreeMap<String, ToolSpec>) -> BTreeMap<Strin
     tools
         .iter()
         .map(|(tool_name, tool_spec)| (tool_name.clone(), tool_spec_to_wire_json(tool_spec)))
+        .collect()
+}
+
+/// Converts runtime workflow specs into strict persisted v1 wire-shape JSON.
+fn workflow_specs_to_wire_json(
+    workflows: &BTreeMap<String, WorkflowSpec>,
+) -> BTreeMap<String, Value> {
+    workflows
+        .iter()
+        .map(|(workflow_name, workflow)| {
+            let mut workflow_object = serde_json::Map::new();
+            if let Some(name) = &workflow.name {
+                workflow_object.insert("name".to_string(), json!(name));
+            }
+            if let Some(description) = &workflow.description {
+                workflow_object.insert("description".to_string(), json!(description));
+            }
+            workflow_object.insert(
+                "steps".to_string(),
+                Value::Array(
+                    workflow
+                        .steps
+                        .iter()
+                        .map(|step| {
+                            let mut step_object = serde_json::Map::new();
+                            step_object.insert("id".to_string(), json!(step.id));
+                            step_object.insert("tool".to_string(), json!(step.tool));
+                            step_object.insert("inputs".to_string(), json!(step.inputs));
+                            step_object.insert("depends_on".to_string(), json!(step.depends_on));
+                            let outputs = step
+                                .outputs
+                                .iter()
+                                .map(|(output_name, policy)| {
+                                    let mut output_policy = serde_json::Map::new();
+                                    if let Some(save) = policy.save {
+                                        output_policy.insert(
+                                            "save".to_string(),
+                                            match save {
+                                                OutputSaveMode::Unsaved => Value::Bool(false),
+                                                OutputSaveMode::Saved => Value::Bool(true),
+                                                OutputSaveMode::Full => {
+                                                    Value::String("full".to_string())
+                                                }
+                                            },
+                                        );
+                                    }
+                                    (output_name.clone(), Value::Object(output_policy))
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            step_object.insert("outputs".to_string(), json!(outputs));
+                            Value::Object(step_object)
+                        })
+                        .collect(),
+                ),
+            );
+            (workflow_name.clone(), Value::Object(workflow_object))
+        })
         .collect()
 }
 
@@ -925,6 +1134,10 @@ fn collect_tool_names(state: &OrchestrationState) -> Vec<String> {
 }
 
 /// Executes the demo workflows and writes persistent artifacts.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
     let root = reset_artifact_root()?;
     let workspace_root = workspace_root()?;
@@ -985,7 +1198,7 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
     let tool_names_after_second_run = collect_tool_names(&state_after_second_run);
     let state_instance_count_after_second_run = state_after_second_run.instances.len();
 
-    if second_run.cached_instances == 0 {
+    if second_run.cached == 0 {
         return Err("expected second run to include cache hits".into());
     }
 
@@ -1022,6 +1235,8 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
         }
     }
 
+    let store_size_stats = summarize_store_sizes(&cas_root).await?;
+
     let manifest = DemoManifest {
         generated_unix_epoch_seconds: unix_timestamp_seconds(),
         artifact_root: display_path(&root),
@@ -1040,6 +1255,9 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
         second_run,
         diagnostics_after_first_run,
         diagnostics_after_second_run,
+        store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
+        store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
+        store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
     };
 
     let manifest_path = root.join("manifest.json");
@@ -1093,5 +1311,12 @@ mod tests {
             names,
             vec!["01_feature_showcase".to_string(), "02_cache_and_depends_on".to_string()]
         );
+    }
+
+    /// Ensures ratio rendering stays neutral for empty/objectless stores.
+    #[test]
+    fn store_size_ratio_uses_neutral_value_for_zero_denominator() {
+        let stats = super::StoreSizeStats { without_delta_bytes: 0, with_delta_bytes: 0 };
+        assert_eq!(stats.ratio_with_delta_over_without(), 1.0);
     }
 }

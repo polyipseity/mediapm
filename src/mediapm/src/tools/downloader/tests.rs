@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 
-use crate::config::ToolRequirement;
+use crate::config::{ToolRequirement, ToolRequirementDependencies};
 use crate::tools::catalog::ToolOs;
 use crate::tools::catalog::{
     DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor,
@@ -87,11 +87,17 @@ fn build_command_selector_accepts_single_os_path() {
 #[test]
 fn logical_name_matching_accepts_source_qualified_ids() {
     assert!(logical_name_matches_tool_id(
-        "mediapm.tools.yt-dlp+github-releases@abcdef12",
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@abcdef12",
         "yt-dlp"
     ));
-    assert!(logical_name_matches_tool_id("mediapm.tools.ffmpeg+github-btbn@latest", "ffmpeg"));
-    assert!(!logical_name_matches_tool_id("mediapm.tools.rsgain+github-releases@latest", "yt-dlp"));
+    assert!(logical_name_matches_tool_id(
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest",
+        "ffmpeg"
+    ));
+    assert!(!logical_name_matches_tool_id(
+        "mediapm.tools.rsgain+github-releases-complexlogic-rsgain@latest",
+        "yt-dlp"
+    ));
 }
 
 /// Verifies static catalog planning emits one action per supported OS target.
@@ -126,11 +132,12 @@ fn resolve_download_plan_emits_cross_platform_actions() {
     let requirement = ToolRequirement {
         version: Some("1.2.3".to_string()),
         tag: None,
+        dependencies: ToolRequirementDependencies::default(),
         recheck_seconds: None,
         max_input_slots: None,
         max_output_slots: None,
     };
-    let plan = run_async(resolve_download_plan(entry, &requirement, None))
+    let plan = run_async(resolve_download_plan(&entry, &requirement, None))
         .expect("static plan should resolve");
 
     assert_eq!(plan.per_os_actions.len(), 3);
@@ -173,11 +180,12 @@ fn resolve_download_plan_marks_shared_package_when_urls_match() {
     let requirement = ToolRequirement {
         version: Some("1.2.3".to_string()),
         tag: None,
+        dependencies: ToolRequirementDependencies::default(),
         recheck_seconds: None,
         max_input_slots: None,
         max_output_slots: None,
     };
-    let plan = run_async(resolve_download_plan(entry, &requirement, None))
+    let plan = run_async(resolve_download_plan(&entry, &requirement, None))
         .expect("static plan should resolve");
 
     assert!(plan.shared_package);

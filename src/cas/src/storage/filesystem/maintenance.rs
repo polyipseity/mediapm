@@ -48,7 +48,8 @@ impl CasMaintenanceApi for FileSystemState {
         targets.extend(unconstrained_targets);
 
         if targets.is_empty() {
-            let runtime_ms = optimize_started.elapsed().as_millis().max(1) as u64;
+            let runtime_ms =
+                u64::try_from(optimize_started.elapsed().as_millis().max(1)).unwrap_or(u64::MAX);
             self.record_optimizer_runtime_ms(runtime_ms);
             return Ok(OptimizeReport { rewritten_objects: 0 });
         }
@@ -70,7 +71,8 @@ impl CasMaintenanceApi for FileSystemState {
             }
         }
 
-        let runtime_ms = optimize_started.elapsed().as_millis().max(1) as u64;
+        let runtime_ms =
+            u64::try_from(optimize_started.elapsed().as_millis().max(1)).unwrap_or(u64::MAX);
         self.record_optimizer_runtime_ms(runtime_ms);
 
         let metrics = self.metrics_snapshot();

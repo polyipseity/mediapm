@@ -11,11 +11,14 @@
 //!   Rust structs here, and the corresponding latest `vX.ncl` together.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use fp_library::brands::RcBrand;
 use fp_library::types::optics::IsoPrime;
 use mediapm_cas::Hash;
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value;
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
 pub(crate) const NICKEL_VERSION_LATEST: u32 = 1;
@@ -29,12 +32,101 @@ pub(crate) const fn is_nickel_version_latest(marker: u32) -> bool {
 /// Optional per-output persistence override in the latest persisted schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct OutputPolicyLatest {
-    /// Optional `save` override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) save: Option<bool>,
-    /// Optional `force_full` override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) force_full: Option<bool>,
+    /// Optional tri-state `save` override.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_output_save_latest"
+    )]
+    pub(crate) save: Option<OutputSaveLatest>,
+}
+
+/// Persisted tri-state save mode for output-policy fields.
+///
+/// Wire shape intentionally remains compact:
+/// - `false` => unsaved,
+/// - `true` => saved,
+/// - `"full"` => full-data preferred save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputSaveLatest {
+    /// Boolean save mode (`false` or `true`).
+    Bool(bool),
+    /// Full-save mode keyword.
+    Full,
+}
+
+impl Serialize for OutputSaveLatest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Full => serializer.serialize_str("full"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputSaveLatest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct OutputSaveLatestVisitor;
+
+        impl Visitor<'_> for OutputSaveLatestVisitor {
+            type Value = OutputSaveLatest;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a boolean save mode or the string \"full\"")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(OutputSaveLatest::Bool(value))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if value == "full" {
+                    Ok(OutputSaveLatest::Full)
+                } else {
+                    Err(E::invalid_value(de::Unexpected::Str(value), &self))
+                }
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                self.visit_str(&value)
+            }
+        }
+
+        deserializer.deserialize_any(OutputSaveLatestVisitor)
+    }
+}
+
+/// Deserializes optional tri-state save values from persisted config records.
+fn deserialize_optional_output_save_latest<'de, D>(
+    deserializer: D,
+) -> Result<Option<OutputSaveLatest>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<Value>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(OutputSaveLatest::Bool(value))),
+        Some(Value::String(value)) if value == "full" => Ok(Some(OutputSaveLatest::Full)),
+        Some(other) => {
+            Err(de::Error::custom(format!("save must be false, true, or \"full\"; got {other}")))
+        }
+    }
 }
 
 /// Persisted kind selector for one declared tool input.
@@ -48,8 +140,12 @@ pub(crate) enum ToolInputKindLatest {
     StringList,
 }
 
-fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
-    matches!(kind, ToolInputKindLatest::String)
+/// Returns whether a value equals its type default for serde skip checks.
+fn is_default_value<T>(value: &T) -> bool
+where
+    T: Default + PartialEq,
+{
+    value == &T::default()
 }
 
 /// Declared tool input entry in the latest persisted schema.
@@ -57,7 +153,7 @@ fn is_default_tool_input_kind_latest(kind: &ToolInputKindLatest) -> bool {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ToolInputSpecLatest {
     /// Declared input value kind.
-    #[serde(default, skip_serializing_if = "is_default_tool_input_kind_latest")]
+    #[serde(default, skip_serializing_if = "is_default_value")]
     pub(crate) kind: ToolInputKindLatest,
 }
 
@@ -115,6 +211,8 @@ pub(crate) enum OutputCaptureLatest {
     ProcessCode {},
     /// Capture bytes from one relative file path.
     File { path: String },
+    /// Capture bytes from one regex-selected relative file path.
+    FileRegex { path_regex: String },
     /// Capture directory contents as one ZIP payload.
     Folder {
         /// Relative directory path that should be zipped.
@@ -123,6 +221,12 @@ pub(crate) enum OutputCaptureLatest {
         #[serde(default)]
         include_topmost_folder: bool,
     },
+    /// Capture one ZIP payload containing files selected by regex.
+    ///
+    /// When regex capture groups match a selected file path, the capture
+    /// strings are joined and used as the ZIP member path. If no capture
+    /// groups match, the original sandbox-relative path is preserved.
+    FolderRegex { path_regex: String },
 }
 
 fn default_success_codes() -> Vec<i32> {
@@ -156,10 +260,13 @@ where
             "expected integral success code, got {value}"
         )));
     }
-    if value < i32::MIN as f64 || value > i32::MAX as f64 {
+    if value < f64::from(i32::MIN) || value > f64::from(i32::MAX) {
         return Err(serde::de::Error::custom(format!("success code {value} is outside i32 range")));
     }
-    Ok(value as i32)
+
+    format!("{value:.0}")
+        .parse::<i32>()
+        .map_err(|_| serde::de::Error::custom(format!("success code {value} is outside i32 range")))
 }
 
 fn deserialize_integral_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
@@ -185,25 +292,19 @@ where
             "expected non-negative integral {field}, got {value}"
         )));
     }
-    if value > u64::MAX as f64 {
-        return Err(serde::de::Error::custom(format!("{field} {value} exceeds u64 range")));
-    }
-    Ok(value as u64)
+
+    format!("{value:.0}")
+        .parse::<u64>()
+        .map_err(|_| serde::de::Error::custom(format!("{field} {value} exceeds u64 range")))
 }
 
 fn parse_integral_u32<E>(value: f64, field: &str) -> Result<u32, E>
 where
     E: serde::de::Error,
 {
-    if !value.is_finite() || value.fract() != 0.0 || value < 0.0 {
-        return Err(serde::de::Error::custom(format!(
-            "expected non-negative integral {field}, got {value}"
-        )));
-    }
-    if value > u32::MAX as f64 {
-        return Err(serde::de::Error::custom(format!("{field} {value} exceeds u32 range")));
-    }
-    Ok(value as u32)
+    let parsed = parse_integral_u64::<E>(value, field)?;
+    u32::try_from(parsed)
+        .map_err(|_| serde::de::Error::custom(format!("{field} {value} exceeds u32 range")))
 }
 
 /// Timezone-independent impure execution timestamp in persisted schema.
@@ -225,14 +326,23 @@ pub(crate) struct RuntimeStorageLatest {
     pub(crate) conductor_dir: Option<String>,
     /// Optional volatile state document path override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state_config: Option<String>,
+    pub(crate) conductor_state_config: Option<String>,
     /// Optional filesystem CAS store directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cas_store_dir: Option<String>,
+    /// Optional temporary execution sandbox directory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) conductor_tmp_dir: Option<String>,
+    /// Optional schema export directory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) conductor_schema_dir: Option<String>,
     /// Optional additional inherited host environment-variable names keyed by
     /// platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
+    /// Optional toggle for shared global user-level managed-tool cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) use_user_tool_cache: Option<bool>,
 }
 
 impl RuntimeStorageLatest {
@@ -240,9 +350,12 @@ impl RuntimeStorageLatest {
     #[must_use]
     pub(crate) fn is_empty(&self) -> bool {
         self.conductor_dir.is_none()
-            && self.state_config.is_none()
+            && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
+            && self.conductor_tmp_dir.is_none()
+            && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.use_user_tool_cache.is_none()
     }
 }
 
@@ -251,6 +364,9 @@ impl RuntimeStorageLatest {
 pub(crate) struct ToolOutputSpecLatest {
     /// Capture source for this output.
     pub(crate) capture: OutputCaptureLatest,
+    /// Whether a missing capture is treated as empty rather than an error.
+    #[serde(default)]
+    pub(crate) allow_empty: bool,
 }
 
 /// External content metadata persisted in the latest Nickel schema.
@@ -259,6 +375,20 @@ pub(crate) struct ExternalContentRefLatest {
     /// Optional human description.
     #[serde(default)]
     pub(crate) description: Option<String>,
+    /// Optional persisted save override for this external-data root.
+    ///
+    /// Wire shape mirrors output-policy `save` values:
+    /// - `true` for regular saved mode,
+    /// - `"full"` for full-data preferred mode.
+    ///
+    /// `false` is parsed here for compatibility but rejected by runtime
+    /// validation when used under `external_data`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_output_save_latest"
+    )]
+    pub(crate) save: Option<OutputSaveLatest>,
 }
 
 /// Per-tool runtime execution configuration persisted in the latest schema.

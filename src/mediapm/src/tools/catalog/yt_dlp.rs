@@ -21,9 +21,9 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         linux: "GitHub Releases",
     },
     source_identifier: PlatformValue {
-        windows: "github-releases",
-        macos: "github-releases",
-        linux: "github-releases",
+        windows: "github-releases-yt-dlp-yt-dlp",
+        macos: "github-releases-yt-dlp-yt-dlp",
+        linux: "github-releases-yt-dlp-yt-dlp",
     },
     executable_name: PlatformValue { windows: "yt-dlp.exe", macos: "yt-dlp", linux: "yt-dlp" },
     download: ToolDownloadDescriptor::StaticUrls {

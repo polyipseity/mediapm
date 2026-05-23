@@ -140,7 +140,8 @@ async fn bulk_lookup_preserves_input_order_and_duplicates() {
 
             let mut hashes = Vec::new();
             for idx in 0..8usize {
-                let payload = synthetic_payload(31 + idx as u8, 4096 + idx * 137);
+                let seed = 31 + u8::try_from(idx).expect("idx in 0..8 always fits in u8");
+                let payload = synthetic_payload(seed, 4096 + idx * 137);
                 let hash = backend.put(payload).await.expect("put bulk object");
                 hashes.push(hash);
             }
@@ -269,7 +270,8 @@ async fn burst_load_keeps_integrity_within_coarse_budget() {
             let started = Instant::now();
             let mut hashes = Vec::with_capacity(72);
             for idx in 0..72usize {
-                let payload = synthetic_payload(101 + (idx % 13) as u8, 64 * 1024 + (idx % 64));
+                let seed = 101 + u8::try_from(idx % 13).expect("idx % 13 is always less than 13");
+                let payload = synthetic_payload(seed, 64 * 1024 + (idx % 64));
                 let hash = backend.put(payload).await.expect("burst put");
                 hashes.push(hash);
             }

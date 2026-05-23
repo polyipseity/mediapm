@@ -4,19 +4,27 @@
 //! - `api` for public contracts,
 //! - `error` for error taxonomy,
 //! - `model` for persisted schemas,
-//! - `orchestration` for runtime execution behavior.
+//! - `orchestration` for runtime execution behavior,
+//! - `tools` for common executable tool presets.
 
 pub mod api;
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod error;
 pub mod model;
 pub mod orchestration;
+pub mod runtime_env;
+pub mod tools;
 
+#[cfg(feature = "tool-presets")]
+pub use api::{
+    CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
+};
 pub use api::{
     ConductorApi, ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
     RuntimeStoragePaths, SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind,
-    ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths,
-    resolve_runtime_storage_paths,
+    StateMutationOptions, ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths,
+    export_nickel_config_schemas, resolve_runtime_storage_paths, schema_export_dir,
 };
 pub use error::ConductorError;
 pub use model::config::{
@@ -29,10 +37,16 @@ pub use model::config::{
     encode_user_document, evaluate_total_configuration_sources,
 };
 pub use model::state::{
-    OrchestrationState, OutputRef, PersistenceFlags, ResolvedInput, ToolCallInstance,
-    merge_persistence_flags, persisted_state_json_pretty, persisted_state_json_value,
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    ToolCallInstance, decode_state, encode_state, merge_persistence_flags,
+    persisted_state_json_pretty, persisted_state_json_value,
 };
 pub use orchestration::SimpleConductor;
+pub use orchestration::config::ENV_PROFILE_OUTPUT_PATH;
+pub use tools::downloader::{
+    UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
+    default_user_download_cache_root, use_user_download_cache_enabled,
+};
 
 /// Returns built-in tool ids known by the conductor runtime.
 ///

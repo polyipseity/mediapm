@@ -13,32 +13,47 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - sync idempotency,
   - sidecar/object integrity,
   - GC safety semantics.
-- For phase-crate integration tests (`src/*/tests/`), prefer one CAS-style
+- For workspace-crate integration tests (`src/*/tests/`), prefer one CAS-style
   harness layout:
   - top-level `tests/tests.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
     `tests/prop/`.
-- For examples that depend on external tools/network/media providers, prefer
-  compile-only coverage (`[[example]] ... test = false`) with explicit rustdoc
-  notes explaining why runtime execution is intentionally excluded from
-  automated test runs (for example `cargo run -p mediapm --example demo_online`).
-- Keep `src/mediapm/examples/demo.rs` executable within automated tests:
-  source ingest should stay local (`import-once` + bundled fixture bytes), and
-  tests may force configuration-only execution via
-  `MEDIAPM_DEMO_RUN_SYNC=false`.
-- Even when CI keeps these examples compile-only, changes under
+- For examples that depend on external tools/network/media providers, require
+  test-target-aware runtime gating: when compiled as Cargo test targets they
+  should default to configuration-only execution and avoid external
+  network/provider/tool side effects.
+- Keep `src/mediapm/examples/demo.rs` and
+  `src/mediapm/examples/demo_online.rs` full-sync for explicit manual runs
+  (`cargo run --example ...`) while supporting env overrides for forced-mode
+  diagnostics in test-target executions.
+- Keep `src/mediapm/examples/demo.rs` ffmpeg behavior fast for local fixture
+  execution: prefer stream-copy (`codec_copy = "true"`) over re-encode-heavy
+  demo transforms.
+- Even with automated test-target config-only behavior, changes under
   `src/mediapm/**` must still run
-  `cargo run --package mediapm --example demo_online` as the final local
+  `cargo run --package mediapm --example mediapm_demo_online` as the final local
   validation gate.
+  Execute this gate with rate-limit discipline: run once per validation pass,
+  avoid rapid consecutive retries, and apply cool-down backoff before retrying
+  transient provider (`HTTP 429`) failures.
+  If the run appears stuck, verify active process state
+  (`cargo`/`mediapm`/`yt-dlp`/`ffmpeg`), inspect artifact timestamp movement,
+  and check stderr for fallback-root messages (`demo-online-fallback-*`) before
+  deciding to rerun.
+  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to bound long runs and treat timeout
+  failures as blockers.
+  Keep timeout/watchdog notices as plain-text single-shot lines and avoid
+  periodic heartbeat stderr output while conductor progress rows are active so
+  progress output is not duplicated.
   This gate is strict: do not mark runs as passed via skip manifests,
   placeholder payload acceptance, or fallback success markers.
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.
-- Treat test coverage as a phased contract:
-  - Phase 1 CAS: store/get/constraint/optimize coverage,
-  - Phase 2 Conductor: tool import/run/cache/re-exec coverage,
-  - Phase 3 mediapm: tool lifecycle + media add/add-local + sync/materialize
+- Treat test coverage as a crate-scoped contract:
+  - `mediapm-cas`: store/get/constraint/optimize coverage,
+  - `mediapm-conductor`: tool import/run/cache/re-exec coverage,
+  - `mediapm`: tool lifecycle + media add/add-local + sync/materialize
     - lockfile/prune/verify coverage.
 
 ## Advanced correctness coverage
@@ -64,6 +79,9 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Make assertions specific and diagnostic (avoid vague boolean assertions when possible).
 - Keep tests platform-safe (normalize path separators when asserting path strings).
 - Use temporary directories for filesystem tests; avoid depending on host machine state.
+- Tests that validate missing-AcoustID-key behavior must explicitly blank
+  credentials (`ACOUSTID_API_KEY` and/or CLI override) so ambient host
+  environment variables cannot mask the expected failure path.
 - When splitting a module into folder form (`foo/mod.rs`), place module-local
   unit tests in `foo/tests.rs` and wire them with `#[cfg(test)] mod tests;`
   from `foo/mod.rs`.
@@ -77,6 +95,13 @@ If a code change alters user-visible behavior:
   directory-ZIP semantics (including explicit invalid ZIP failure paths),
   root-directory key (`./` or `.\\`) handling, and non-overwrite collision
   rejection when separate entries target the same file path.
+- For yt-dlp output-variant behavior changes, cover object semantics for
+  `kind` default capture behavior, optional `capture_kind` override,
+  optional `langs` capture filtering, and the ownership boundary where
+  downloader language selection remains step `options.sub_langs`.
+- For conductor regex capture behavior changes, assert `file_regex` exact-one
+  matching and `folder_regex` zero-to-many behavior (including zero-match
+  success paths).
 - Update CLI/reporting docs if command output contract changes.
 - Keep `verify` and `gc` expectations synchronized with sidecar model updates.
 
@@ -128,8 +153,20 @@ Before finishing, run targeted validation on affected crates:
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
 - `cargo clippy-pkg <crate>` (affected crate lint; e.g., `cargo clippy-pkg mediapm`)
 - For edits under `src/mediapm/**`, run
-  `cargo run --package mediapm --example demo_online` last and report
+  `cargo run --package mediapm --example mediapm_demo_online` last and report
   transient external-provider failures explicitly if encountered.
+  Inspect `src/mediapm/examples/.artifacts/demo-online/` after the run and
+  validate sidecar-family payload correctness (not only path existence).
+  Apply rate-limit-safe retry behavior here too: no rapid retry loops after
+  `HTTP 429`; wait for cool-down before a retry.
+  If the run appears stalled, confirm process activity and artifact timestamp
+  movement first, and check stderr for fallback-root messages
+  (`demo-online-fallback-*`) before reissuing the command.
+  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to cap runtime and treat timeout
+  failures as blockers until resolved or reviewer-accepted.
+  Keep timeout/watchdog notices as plain-text single-shot lines and avoid
+  periodic heartbeat stderr output while conductor progress rows are active so
+  progress output is not duplicated.
   Treat those failures as blockers until the run succeeds or the reviewer
   accepts the transient failure.
 

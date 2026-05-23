@@ -22,13 +22,13 @@
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
+use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::pin::Pin;
 use std::time::Duration;
 
-use futures_core::Stream;
 use tokio::io::AsyncRead;
 
 use crate::{CasError, Hash};
@@ -187,7 +187,7 @@ pub struct IndexRepairReport {
 /// Priority hint for one optimizer pass.
 ///
 /// This is a scheduling hint, not a hard guarantee. Backends may currently use
-/// it only for heuristics/logging and evolve toward stronger QoS later.
+/// it only for heuristics/logging and evolve toward stronger `QoS` later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OptimizePriority {
     /// Best-effort background maintenance.

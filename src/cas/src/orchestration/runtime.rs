@@ -95,10 +95,10 @@ impl Actor for StorageActor {
                     match call_t!(index, IndexActorMessage::FlushSnapshot, DEFAULT_RPC_TIMEOUT_MS) {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => {
-                            error!(%hash, error = %err, "index flush after delete failed")
+                            error!(%hash, error = %err, "index flush after delete failed");
                         }
                         Err(err) => {
-                            error!(%hash, error = %err, "index actor RPC after delete failed")
+                            error!(%hash, error = %err, "index actor RPC after delete failed");
                         }
                     }
                 }
@@ -115,10 +115,10 @@ impl Actor for StorageActor {
                     match call_t!(index, IndexActorMessage::FlushSnapshot, DEFAULT_RPC_TIMEOUT_MS) {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => {
-                            error!(error = %err, "index flush after set_constraint failed")
+                            error!(error = %err, "index flush after set_constraint failed");
                         }
                         Err(err) => {
-                            error!(error = %err, "index actor RPC after set_constraint failed")
+                            error!(error = %err, "index actor RPC after set_constraint failed");
                         }
                     }
                 }
@@ -129,9 +129,9 @@ impl Actor for StorageActor {
             }
             StorageActorMessage::ConstraintBases(target_hash, reply) => {
                 let result = state.cas.get_constraint(target_hash).await.map(|constraint| {
-                    constraint
-                        .map(|constraint| constraint.potential_bases.into_iter().collect())
-                        .unwrap_or_else(Vec::new)
+                    constraint.map_or_else(Vec::new, |constraint| {
+                        constraint.potential_bases.into_iter().collect()
+                    })
                 });
                 if let Err(err) = &result {
                     error!(%target_hash, error = %err, "storage actor constraint_bases failed");
@@ -271,10 +271,10 @@ async fn handle_storage_put(
                 ) {
                     Ok(Ok(_)) => {}
                     Ok(Err(err)) => {
-                        error!(error = %err, "optimizer prune failed under hard pressure")
+                        error!(error = %err, "optimizer prune failed under hard pressure");
                     }
                     Err(err) => {
-                        error!(error = %err, "optimizer prune RPC failed under hard pressure")
+                        error!(error = %err, "optimizer prune RPC failed under hard pressure");
                     }
                 }
             }
@@ -328,134 +328,159 @@ async fn execute_wire_command(
     command: CasWireCommand,
 ) -> Result<CasWireResponse, CasError> {
     match command {
-        CasWireCommand::Put { data } => {
-            let hash = call_t!(
-                state.storage,
-                StorageActorMessage::Put,
-                DEFAULT_RPC_TIMEOUT_MS,
-                Bytes::from(data)
-            )
-            .map_err(|err| CasError::actor_rpc("executing wire Put via storage actor", err))??;
-            Ok(CasWireResponse::Hash { hash: hash.to_string() })
-        }
-        CasWireCommand::Get { hash } => {
-            let hash: Hash = hash.parse()?;
-            let data =
-                call_t!(state.storage, StorageActorMessage::Get, DEFAULT_RPC_TIMEOUT_MS, hash)
-                    .map_err(|err| {
-                    CasError::actor_rpc("executing wire Get via storage actor", err)
-                })??;
-            Ok(CasWireResponse::Bytes { data: data.to_vec() })
-        }
+        CasWireCommand::Put { data } => execute_wire_put(state, data).await,
+        CasWireCommand::Get { hash } => execute_wire_get(state, hash).await,
         CasWireCommand::SetConstraint { target_hash, potential_bases } => {
-            let target_hash: Hash = target_hash.parse()?;
-            let potential_bases: Vec<Hash> =
-                potential_bases.into_iter().map(|hash| hash.parse()).collect::<Result<_, _>>()?;
-            let constraint = Constraint {
-                target_hash,
-                potential_bases: potential_bases.into_iter().collect::<BTreeSet<_>>(),
-            };
-
-            call_t!(
-                state.storage,
-                StorageActorMessage::SetConstraint,
-                DEFAULT_RPC_TIMEOUT_MS,
-                constraint
-            )
-            .map_err(|err| {
-                CasError::actor_rpc("executing wire SetConstraint via storage actor", err)
-            })??;
-            Ok(CasWireResponse::Ack)
+            execute_wire_set_constraint(state, target_hash, potential_bases).await
         }
         CasWireCommand::ConstraintBases { target_hash } => {
-            let target_hash: Hash = target_hash.parse()?;
-            let bases = call_t!(
-                state.storage,
-                StorageActorMessage::ConstraintBases,
-                DEFAULT_RPC_TIMEOUT_MS,
-                target_hash
-            )
-            .map_err(|err| {
-                CasError::actor_rpc("executing wire ConstraintBases via storage actor", err)
-            })??;
-            Ok(CasWireResponse::Bases {
-                hashes: bases.into_iter().map(|hash| hash.to_string()).collect(),
-            })
+            execute_wire_constraint_bases(state, target_hash).await
         }
-        CasWireCommand::Delete { hash } => {
-            let hash: Hash = hash.parse()?;
-            call_t!(state.storage, StorageActorMessage::Delete, DEFAULT_RPC_TIMEOUT_MS, hash)
-                .map_err(|err| {
-                    CasError::actor_rpc("executing wire Delete via storage actor", err)
-                })??;
-            Ok(CasWireResponse::Ack)
+        CasWireCommand::Delete { hash } => execute_wire_delete(state, hash).await,
+        CasWireCommand::OptimizeOnce => execute_wire_optimize_once(state).await,
+        CasWireCommand::PruneConstraints => execute_wire_prune_constraints(state).await,
+        CasWireCommand::FlushIndex => execute_wire_flush_index(state).await,
+        CasWireCommand::RepairIndex => execute_wire_repair_index(state).await,
+        CasWireCommand::MigrateIndex { target_version } => {
+            execute_wire_migrate_index(state, target_version).await
         }
-        CasWireCommand::OptimizeOnce => {
-            let report = call_t!(
-                state.optimizer,
-                OptimizerActorMessage::OptimizeOnce,
-                DEFAULT_RPC_TIMEOUT_MS
-            )
+        CasWireCommand::SetMaxCompressionMode { enabled } => {
+            execute_wire_set_max_compression_mode(state, enabled)
+        }
+    }
+}
+
+async fn execute_wire_put(
+    state: &CasNodeActorState,
+    data: Vec<u8>,
+) -> Result<CasWireResponse, CasError> {
+    let hash =
+        call_t!(state.storage, StorageActorMessage::Put, DEFAULT_RPC_TIMEOUT_MS, Bytes::from(data))
+            .map_err(|err| CasError::actor_rpc("executing wire Put via storage actor", err))??;
+    Ok(CasWireResponse::Hash { hash: hash.to_string() })
+}
+
+async fn execute_wire_get(
+    state: &CasNodeActorState,
+    hash: String,
+) -> Result<CasWireResponse, CasError> {
+    let hash: Hash = hash.parse()?;
+    let data = call_t!(state.storage, StorageActorMessage::Get, DEFAULT_RPC_TIMEOUT_MS, hash)
+        .map_err(|err| CasError::actor_rpc("executing wire Get via storage actor", err))??;
+    Ok(CasWireResponse::Bytes { data: data.to_vec() })
+}
+
+async fn execute_wire_set_constraint(
+    state: &CasNodeActorState,
+    target_hash: String,
+    potential_bases: Vec<String>,
+) -> Result<CasWireResponse, CasError> {
+    let target_hash: Hash = target_hash.parse()?;
+    let potential_bases: Vec<Hash> =
+        potential_bases.into_iter().map(|hash| hash.parse()).collect::<Result<_, _>>()?;
+    let constraint = Constraint {
+        target_hash,
+        potential_bases: potential_bases.into_iter().collect::<BTreeSet<_>>(),
+    };
+
+    call_t!(state.storage, StorageActorMessage::SetConstraint, DEFAULT_RPC_TIMEOUT_MS, constraint)
+        .map_err(|err| {
+            CasError::actor_rpc("executing wire SetConstraint via storage actor", err)
+        })??;
+    Ok(CasWireResponse::Ack)
+}
+
+async fn execute_wire_constraint_bases(
+    state: &CasNodeActorState,
+    target_hash: String,
+) -> Result<CasWireResponse, CasError> {
+    let target_hash: Hash = target_hash.parse()?;
+    let bases = call_t!(
+        state.storage,
+        StorageActorMessage::ConstraintBases,
+        DEFAULT_RPC_TIMEOUT_MS,
+        target_hash
+    )
+    .map_err(|err| {
+        CasError::actor_rpc("executing wire ConstraintBases via storage actor", err)
+    })??;
+    Ok(CasWireResponse::Bases { hashes: bases.into_iter().map(|hash| hash.to_string()).collect() })
+}
+
+async fn execute_wire_delete(
+    state: &CasNodeActorState,
+    hash: String,
+) -> Result<CasWireResponse, CasError> {
+    let hash: Hash = hash.parse()?;
+    call_t!(state.storage, StorageActorMessage::Delete, DEFAULT_RPC_TIMEOUT_MS, hash)
+        .map_err(|err| CasError::actor_rpc("executing wire Delete via storage actor", err))??;
+    Ok(CasWireResponse::Ack)
+}
+
+async fn execute_wire_optimize_once(
+    state: &CasNodeActorState,
+) -> Result<CasWireResponse, CasError> {
+    let report =
+        call_t!(state.optimizer, OptimizerActorMessage::OptimizeOnce, DEFAULT_RPC_TIMEOUT_MS)
             .map_err(|err| {
                 CasError::actor_rpc("executing wire OptimizeOnce via optimizer actor", err)
             })??;
-            Ok(CasWireResponse::OptimizeReport { rewritten_objects: report.rewritten_objects })
-        }
-        CasWireCommand::PruneConstraints => {
-            let report = call_t!(
-                state.optimizer,
-                OptimizerActorMessage::PruneConstraints,
-                DEFAULT_RPC_TIMEOUT_MS
-            )
+    Ok(CasWireResponse::OptimizeReport { rewritten_objects: report.rewritten_objects })
+}
+
+async fn execute_wire_prune_constraints(
+    state: &CasNodeActorState,
+) -> Result<CasWireResponse, CasError> {
+    let report =
+        call_t!(state.optimizer, OptimizerActorMessage::PruneConstraints, DEFAULT_RPC_TIMEOUT_MS)
             .map_err(|err| {
                 CasError::actor_rpc("executing wire PruneConstraints via optimizer actor", err)
             })??;
-            Ok(CasWireResponse::PruneReport { removed_candidates: report.removed_candidates })
-        }
-        CasWireCommand::FlushIndex => {
-            call_t!(state.index, IndexActorMessage::FlushSnapshot, DEFAULT_RPC_TIMEOUT_MS)
-                .map_err(|err| {
-                    CasError::actor_rpc("executing wire FlushIndex via index actor", err)
-                })??;
-            Ok(CasWireResponse::Ack)
-        }
-        CasWireCommand::RepairIndex => {
-            let report =
-                call_t!(state.index, IndexActorMessage::RepairIndex, DEFAULT_RPC_TIMEOUT_MS)
-                    .map_err(|err| {
-                        CasError::actor_rpc("executing wire RepairIndex via index actor", err)
-                    })??;
-            Ok(CasWireResponse::RepairIndexReport {
-                object_rows_rebuilt: report.object_rows_rebuilt,
-                explicit_constraint_rows_restored: report.explicit_constraint_rows_restored,
-                scanned_object_files: report.scanned_object_files,
-                skipped_object_files: report.skipped_object_files,
-                backup_snapshots_considered: report.backup_snapshots_considered,
-                constraint_source: report.constraint_source,
-            })
-        }
-        CasWireCommand::MigrateIndex { target_version } => {
-            call_t!(
-                state.index,
-                IndexActorMessage::MigrateIndexToVersion,
-                DEFAULT_RPC_TIMEOUT_MS,
-                target_version
-            )
-            .map_err(|err| {
-                CasError::actor_rpc("executing wire MigrateIndex via index actor", err)
-            })??;
-            Ok(CasWireResponse::Ack)
-        }
-        CasWireCommand::SetMaxCompressionMode { enabled } => {
-            state
-                .optimizer
-                .send_message(OptimizerActorMessage::SetMaxCompressionMode(enabled))
-                .map_err(|err| {
-                    CasError::actor_message("sending optimizer max-compression toggle", err)
-                })?;
-            Ok(CasWireResponse::Ack)
-        }
-    }
+    Ok(CasWireResponse::PruneReport { removed_candidates: report.removed_candidates })
+}
+
+async fn execute_wire_flush_index(state: &CasNodeActorState) -> Result<CasWireResponse, CasError> {
+    call_t!(state.index, IndexActorMessage::FlushSnapshot, DEFAULT_RPC_TIMEOUT_MS)
+        .map_err(|err| CasError::actor_rpc("executing wire FlushIndex via index actor", err))??;
+    Ok(CasWireResponse::Ack)
+}
+
+async fn execute_wire_repair_index(state: &CasNodeActorState) -> Result<CasWireResponse, CasError> {
+    let report = call_t!(state.index, IndexActorMessage::RepairIndex, DEFAULT_RPC_TIMEOUT_MS)
+        .map_err(|err| CasError::actor_rpc("executing wire RepairIndex via index actor", err))??;
+    Ok(CasWireResponse::RepairIndexReport {
+        object_rows_rebuilt: report.object_rows_rebuilt,
+        explicit_constraint_rows_restored: report.explicit_constraint_rows_restored,
+        scanned_object_files: report.scanned_object_files,
+        skipped_object_files: report.skipped_object_files,
+        backup_snapshots_considered: report.backup_snapshots_considered,
+        constraint_source: report.constraint_source,
+    })
+}
+
+async fn execute_wire_migrate_index(
+    state: &CasNodeActorState,
+    target_version: u32,
+) -> Result<CasWireResponse, CasError> {
+    call_t!(
+        state.index,
+        IndexActorMessage::MigrateIndexToVersion,
+        DEFAULT_RPC_TIMEOUT_MS,
+        target_version
+    )
+    .map_err(|err| CasError::actor_rpc("executing wire MigrateIndex via index actor", err))??;
+    Ok(CasWireResponse::Ack)
+}
+
+fn execute_wire_set_max_compression_mode(
+    state: &CasNodeActorState,
+    enabled: bool,
+) -> Result<CasWireResponse, CasError> {
+    state
+        .optimizer
+        .send_message(OptimizerActorMessage::SetMaxCompressionMode(enabled))
+        .map_err(|err| CasError::actor_message("sending optimizer max-compression toggle", err))?;
+    Ok(CasWireResponse::Ack)
 }
 
 /// Persists full index snapshot through index-actor call path.

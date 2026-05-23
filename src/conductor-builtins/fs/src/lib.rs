@@ -22,10 +22,13 @@
 //! details into the string-only success object.
 
 use std::collections::BTreeMap;
+#[cfg(feature = "cli")]
 use std::error::Error;
+#[cfg(feature = "cli")]
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
+#[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
 
 /// Stable builtin id used by topology registration.
@@ -56,6 +59,7 @@ enum PathMode {
 ///
 /// This crate currently expects explicit `--arg KEY VALUE` and
 /// `--input KEY VALUE` pairs and does not define a default option key.
+#[cfg(feature = "cli")]
 #[derive(Debug, Clone, PartialEq, Eq, Parser)]
 pub struct BuiltinCliArgs {
     /// Prints builtin descriptor metadata as JSON and exits.
@@ -88,8 +92,10 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
-pub fn describe_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&describe())
+#[cfg(feature = "cli")]
+#[must_use]
+pub fn describe_json() -> String {
+    describe_json_compact()
 }
 
 /// Executes one `fs` request using string-map arguments.
@@ -110,6 +116,12 @@ pub fn describe_json() -> Result<String, serde_json::Error> {
 ///
 /// Successful execution returns no payload bytes because the primary result is
 /// side effects on the filesystem.
+///
+/// # Errors
+///
+/// Returns an error when args/inputs violate the builtin contract, path-mode
+/// validation fails, path resolution fails, or the requested filesystem
+/// operation fails.
 pub fn execute_string_map(
     fs_root_dir: &Path,
     params: &StringMap,
@@ -158,12 +170,18 @@ pub fn execute_string_map(
 ///
 /// On success this command completes through filesystem side effects and emits
 /// no payload bytes.
+///
+/// # Errors
+///
+/// Returns an error when descriptor JSON writing fails, key/value pair parsing
+/// fails, or filesystem operation execution fails.
+#[cfg(feature = "cli")]
 pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
     writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
     if cli.describe {
-        let descriptor = describe_json()?;
+        let descriptor = describe_json();
         writer.write_all(descriptor.as_bytes())?;
         return Ok(());
     }
@@ -175,6 +193,21 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
+/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
+///
+/// This helper is always infallible and deterministic.
+#[must_use]
+pub fn describe_json_compat() -> String {
+    describe_json_compact()
+}
+
+/// Returns one deterministic descriptor JSON string without serde dependencies.
+#[must_use]
+fn describe_json_compact() -> String {
+    "{\n  \"is_impure\": \"true\",\n  \"summary\": \"filesystem operation builtin runtime with impure side-effecting behavior\",\n  \"tool_id\": \"builtins.fs@1.0.0\",\n  \"tool_name\": \"fs\",\n  \"tool_version\": \"1.0.0\"\n}"
+        .to_string()
+}
+
 /// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
 ///
 /// The helper rejects empty keys and incomplete pairs so builtin execution only
@@ -182,6 +215,7 @@ pub fn run_cli_command<W: Write>(
 ///
 /// When a builtin defines a default option key, that shorthand should be
 /// normalized into this same key/value map before validation.
+#[cfg(feature = "cli")]
 fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
     let mut map = StringMap::new();
     let mut chunks = pairs.chunks_exact(2);
@@ -191,7 +225,7 @@ fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String
         if key.is_empty() {
             return Err(format!("invalid {label} entry; key must be non-empty"));
         }
-        if map.insert(key.to_string(), value.to_string()).is_some() {
+        if map.insert(key.to_string(), value.clone()).is_some() {
             return Err(format!("duplicate {label} entry for key '{key}'"));
         }
     }
@@ -246,7 +280,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
 /// Parses and validates path-mode selector for one fs operation.
 fn parse_path_mode(params: &StringMap, op: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map(String::as_str).unwrap_or("relative") {
+    match params.get("path_mode").map_or("relative", String::as_str) {
         "relative" => Ok(PathMode::Relative),
         "absolute" => Ok(PathMode::Absolute),
         other => {
@@ -330,10 +364,13 @@ fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf, St
 mod tests {
     use std::collections::BTreeMap;
 
+    #[cfg(feature = "cli")]
     use clap::Parser;
     use tempfile::tempdir;
 
-    use super::{BuiltinCliArgs, describe_json, execute_string_map, run_cli_command};
+    #[cfg(feature = "cli")]
+    use super::{BuiltinCliArgs, run_cli_command};
+    use super::{describe_json, execute_string_map};
 
     /// Verifies the library API can create directories and write text files.
     #[test]
@@ -474,6 +511,7 @@ mod tests {
         assert!(error.contains("requires 'path'"));
     }
 
+    #[cfg(feature = "cli")]
     /// Verifies successful CLI execution emits no output payload bytes.
     #[test]
     fn run_cli_executes_invocation() {
@@ -502,7 +540,7 @@ mod tests {
     /// Verifies descriptor serialization keeps the stable builtin identifier.
     #[test]
     fn descriptor_json_contains_tool_id() {
-        let json = describe_json().expect("descriptor serialization should succeed");
+        let json = describe_json();
         assert!(json.contains("builtins.fs@1.0.0"));
     }
 }

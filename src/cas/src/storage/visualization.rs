@@ -53,6 +53,7 @@ pub struct CasTopologySnapshot {
 }
 
 /// Renders a CAS topology snapshot as Mermaid flowchart markup.
+#[must_use]
 pub fn render_topology_mermaid(snapshot: &CasTopologySnapshot) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "flowchart TD");
@@ -104,6 +105,7 @@ pub fn render_topology_mermaid(snapshot: &CasTopologySnapshot) -> String {
 ///
 /// Neighborhood steps are measured along both delta-base edges and explicit
 /// constraint edges. This keeps graph output bounded for large repositories.
+#[must_use]
 pub fn topology_neighborhood_snapshot(
     snapshot: &CasTopologySnapshot,
     target_hash: Hash,
@@ -169,6 +171,7 @@ pub fn topology_neighborhood_snapshot(
 }
 
 /// Renders a depth-limited neighborhood as Mermaid flowchart markup.
+#[must_use]
 pub fn render_topology_mermaid_neighborhood(
     snapshot: &CasTopologySnapshot,
     target_hash: Hash,

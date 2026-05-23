@@ -104,6 +104,7 @@ impl StorageActorClient {
     /// Returns the underlying actor reference.
     ///
     /// This is primarily intended for wiring/composition code.
+    #[must_use]
     pub const fn actor_ref(&self) -> &ActorRef<StorageActorMessage> {
         &self.actor
     }
@@ -151,6 +152,7 @@ impl OptimizerActorClient {
     }
 
     /// Returns the underlying actor reference.
+    #[must_use]
     pub const fn actor_ref(&self) -> &ActorRef<OptimizerActorMessage> {
         &self.actor
     }
@@ -198,6 +200,7 @@ impl IndexActorClient {
     }
 
     /// Returns the underlying actor reference.
+    #[must_use]
     pub const fn actor_ref(&self) -> &ActorRef<IndexActorMessage> {
         &self.actor
     }
@@ -333,6 +336,7 @@ impl CasNodeActorClient {
     }
 
     /// Returns the underlying actor reference.
+    #[must_use]
     pub const fn actor_ref(&self) -> &ActorRef<CasNodeActorMessage> {
         &self.actor
     }

@@ -27,7 +27,7 @@ use crate::codec::object::DeltaState;
 
 pub(crate) mod v1;
 
-/// Prefix bytes required to dispatch a delta envelope: magic_with_version[8].
+/// Prefix bytes required to dispatch a delta envelope: `magic_with_version`[8].
 const ENVELOPE_PREFIX_LEN: usize = 8;
 
 /// Stable family prefix; trailing two bytes in magic encode little-endian `u16` version.
@@ -105,7 +105,7 @@ fn dispatch_delta_wire_version(version: u16) -> Result<DeltaEnvelopeVersion, Cas
         return Ok(DeltaEnvelopeVersion::V1);
     }
 
-    Err(CasError::corrupt_object(format!("delta envelope: unsupported version {}", version)))
+    Err(CasError::corrupt_object(format!("delta envelope: unsupported version {version}")))
 }
 
 /// Optic-based migration trait between envelope versions.
@@ -137,7 +137,7 @@ pub(crate) fn latest_delta_state_iso<'a>()
 ///
 /// This function is the only version-dispatch entry point. It peeks at
 /// `magic_with_embedded_version` and delegates to the matching version module.
-pub(crate) fn decode_delta_state_borrowed<'a>(bytes: &'a [u8]) -> Result<DeltaState<'a>, CasError> {
+pub(crate) fn decode_delta_state_borrowed(bytes: &[u8]) -> Result<DeltaState<'_>, CasError> {
     if bytes.len() < ENVELOPE_PREFIX_LEN {
         return Err(CasError::corrupt_object(
             "delta envelope: buffer too short for magic-with-version prefix",
@@ -152,10 +152,10 @@ pub(crate) fn decode_delta_state_borrowed<'a>(bytes: &'a [u8]) -> Result<DeltaSt
 }
 
 /// Parses one delta envelope according to one already-dispatched wire version.
-fn decode_envelope_for_version<'a>(
-    bytes: &'a [u8],
+fn decode_envelope_for_version(
+    bytes: &[u8],
     version: u16,
-) -> Result<latest::Envelope<'a>, CasError> {
+) -> Result<latest::Envelope<'_>, CasError> {
     match dispatch_delta_wire_version(version)? {
         DeltaEnvelopeVersion::V1 => {
             let envelope = v1::V1Envelope::parse(bytes)?;
@@ -168,11 +168,11 @@ fn decode_envelope_for_version<'a>(
 /// Migrates one parsed envelope from one wire version to one target wire version.
 ///
 /// This is intentionally the central migration gateway used by decode paths.
-pub(crate) fn migrate_envelope_to_version<'a>(
-    envelope: latest::Envelope<'a>,
+pub(crate) fn migrate_envelope_to_version(
+    envelope: latest::Envelope<'_>,
     from_version: u16,
     target_version: u16,
-) -> Result<latest::Envelope<'a>, CasError> {
+) -> Result<latest::Envelope<'_>, CasError> {
     let from_layout = dispatch_delta_wire_version(from_version)?;
     let to_layout = dispatch_delta_wire_version(target_version)?;
 
@@ -189,7 +189,7 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState<'static>, Ca
 }
 
 /// Encodes unversioned runtime delta state using the latest wire version.
-pub(crate) fn encode_delta_state<'a>(state: DeltaState<'a>) -> Vec<u8> {
+pub(crate) fn encode_delta_state(state: DeltaState<'_>) -> Vec<u8> {
     let latest_version_state = latest_delta_state_iso().to(state);
     let envelope = latest::version_iso().to(latest_version_state);
     envelope.encode()
@@ -208,7 +208,7 @@ mod tests {
     fn collect_versioned_files(dir: &Path) -> Vec<(PathBuf, u32)> {
         let mut files = fs::read_dir(dir)
             .unwrap_or_else(|err| panic!("failed to read versions dir '{}': {err}", dir.display()))
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .filter_map(|entry| {
                 let path = entry.path();
                 if !path.is_file() {
@@ -426,13 +426,12 @@ mod tests {
                     continue;
                 }
 
-                if version == 1 {
-                    panic!(
-                        "{} (v1) must not reference any other version module; found v{}",
-                        path.display(),
-                        referenced
-                    );
-                }
+                assert!(
+                    version != 1,
+                    "{} (v1) must not reference any other version module; found v{}",
+                    path.display(),
+                    referenced
+                );
 
                 assert_eq!(
                     referenced,

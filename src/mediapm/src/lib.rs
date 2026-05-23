@@ -9,7 +9,7 @@
 //! - desired state: `mediapm.ncl`,
 //! - conductor runtime docs: `mediapm.conductor.ncl`,
 //!   `mediapm.conductor.machine.ncl` (both configurable),
-//! - realized state: `.mediapm/lock.jsonc` by default (configurable).
+//! - realized state: `.mediapm/state.ncl` by default (configurable).
 
 pub mod builtins;
 mod conductor_bridge;
@@ -24,11 +24,12 @@ mod tools;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use async_trait::async_trait;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
+use mediapm_conductor::runtime_env::{ensure_runtime_env_files, load_runtime_env_files};
 use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
     RuntimeStoragePaths, SimpleConductor,
@@ -37,15 +38,20 @@ use url::Url;
 
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
 pub use config::{
-    HierarchyEntry, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmDocument,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars,
-    ToolRequirement, TransformInputValue, load_mediapm_document, save_mediapm_document,
+    HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
+    HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars, PlaylistEntryPathMode,
+    PlaylistFormat, PlaylistItemRef, ToolRequirement, ToolRequirementDependencies,
+    TransformInputValue, flatten_hierarchy_value, load_mediapm_document,
+    load_mediapm_state_document, merge_mediapm_document_with_state, nest_hierarchy_value,
+    regex_variant_selector, save_mediapm_document, save_mediapm_state_document,
 };
 pub use error::MediaPmError;
 pub use global::MediaPmGlobalPaths;
 pub use lockfile::{
-    ManagedFileRecord, MediaLockFile, SafetyExternalDataRecord, ToolRegistryRecord,
-    ToolRegistryStatus, load_lockfile, save_lockfile,
+    MEDIAPM_LOCK_VERSION, ManagedFileRecord, MediaLockFile, ToolRegistryRecord, ToolRegistryStatus,
+    load_lockfile, save_lockfile,
 };
 pub use materializer::MaterializeReport;
 pub use paths::MediaPmPaths;
@@ -53,31 +59,6 @@ pub use paths::MediaPmPaths;
 use crate::tools::downloader::{
     ToolCachePruneReport, ToolDownloadCache, default_global_tool_cache_root,
 };
-
-/// Canonical generated dotenv template for runtime credential guidance.
-const RUNTIME_DOTENV_TEMPLATE: &str = concat!(
-    "# mediapm runtime credential file\n",
-    "#\n",
-    "# This file is generated and loaded automatically by mediapm.\n",
-    "# Keep secrets here instead of committing them into mediapm.ncl.\n",
-    "#\n",
-    "# Copy/paste and replace placeholder values as needed.\n",
-    "# Lines beginning with # are comments.\n",
-    "# By default every environment-variable assignment is commented so\n",
-    "# shell/user-level environment values remain visible without .env overrides.\n",
-    "\n",
-    "# AcoustID API key used by media-tagger lookups.\n",
-    "# For mediapm sync workflows, add ACOUSTID_API_KEY to runtime.inherited_env_vars\n",
-    "# so conductor forwards this variable to tool subprocesses.\n",
-    "# ACOUSTID_API_KEY=replace-with-your-acoustid-api-key\n",
-    "\n",
-    "# Optional endpoint overrides for advanced/self-hosted setups.\n",
-    "# ACOUSTID_ENDPOINT=https://api.acoustid.org/v2/lookup\n",
-    "# MUSICBRAINZ_ENDPOINT=https://musicbrainz.org/ws/2\n",
-);
-
-/// Canonical colocated `.gitignore` content for runtime dotenv protection.
-const RUNTIME_DOTENV_GITIGNORE: &str = "/.env\n";
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,20 +105,40 @@ pub struct ToolsSyncSummary {
     pub warnings: Vec<String>,
 }
 
-/// Status of the global tool-cache under user-scoped `mediapm` data.
+/// Preset families supported by `mediapm hierarchy add/remove`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaHierarchyPreset {
+    /// Local-source hierarchy preset.
+    Local,
+    /// Online-source (`yt-dlp`) hierarchy preset.
+    YtDlp,
+}
+
+impl MediaHierarchyPreset {
+    /// Returns stable identifier text for user-facing diagnostics and ids.
+    #[must_use]
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::YtDlp => "yt-dlp",
+        }
+    }
+}
+
+/// Status of the global user cache under the `mediapm` user-cache namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GlobalToolCacheStatus {
-    /// Root path of the global tool-cache directory.
+    /// Root path of the global user cache directory.
     pub tool_cache_dir: PathBuf,
-    /// CAS payload store directory (`tool-cache/store/`).
+    /// CAS payload store directory (`cache/store/`).
     pub store_dir: PathBuf,
-    /// Metadata index file path (`tool-cache/index.jsonc`).
+    /// Default metadata index file path (`cache/tools.jsonc`).
     pub index_jsonc: PathBuf,
     /// Number of logical cache-key rows currently tracked.
     pub entry_count: usize,
 }
 
-/// Summary of one global tool-cache prune run.
+/// Summary of one global user-cache prune run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GlobalToolCachePruneSummary {
     /// Number of expired key rows removed from index metadata.
@@ -153,6 +154,11 @@ pub fn resolve_default_global_paths() -> Option<MediaPmGlobalPaths> {
 }
 
 /// Ensures global user-directory layout exists and returns resolved paths.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when global path resolution fails or required
+/// directories cannot be created.
 pub fn ensure_global_directory_layout() -> Result<MediaPmGlobalPaths, MediaPmError> {
     let paths = resolve_global_paths_or_error()?;
 
@@ -162,7 +168,7 @@ pub fn ensure_global_directory_layout() -> Result<MediaPmGlobalPaths, MediaPmErr
         source,
     })?;
     fs::create_dir_all(&paths.tool_cache_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating global tool-cache directory".to_string(),
+        operation: "creating global user cache directory".to_string(),
         path: paths.tool_cache_dir.clone(),
         source,
     })?;
@@ -170,7 +176,12 @@ pub fn ensure_global_directory_layout() -> Result<MediaPmGlobalPaths, MediaPmErr
     Ok(paths)
 }
 
-/// Returns current status for the global tool-cache.
+/// Returns current status for the global user cache.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when global paths cannot be resolved or cache
+/// metadata cannot be opened/read.
 pub async fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, MediaPmError> {
     let paths = resolve_global_paths_or_error()?;
     let cache = ToolDownloadCache::open(&paths.tool_cache_dir).await?;
@@ -183,7 +194,12 @@ pub async fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, MediaPm
     })
 }
 
-/// Prunes expired rows from the global tool-cache and removes stale payloads.
+/// Prunes expired rows from the global user cache and removes stale payloads.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when global paths cannot be resolved, cache
+/// metadata cannot be opened, or cache pruning fails.
 pub async fn global_tool_cache_prune_expired() -> Result<GlobalToolCachePruneSummary, MediaPmError>
 {
     let tool_cache_root = default_global_tool_cache_root().ok_or_else(|| {
@@ -198,7 +214,12 @@ pub async fn global_tool_cache_prune_expired() -> Result<GlobalToolCachePruneSum
     Ok(GlobalToolCachePruneSummary { removed_entries, removed_payloads })
 }
 
-/// Removes all files under the global tool-cache directory.
+/// Removes all files under the global user cache directory.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when global paths cannot be resolved or existing
+/// cache directories cannot be removed.
 pub fn global_tool_cache_clear() -> Result<(), MediaPmError> {
     let paths = resolve_global_paths_or_error()?;
     if !paths.tool_cache_dir.exists() {
@@ -206,7 +227,7 @@ pub fn global_tool_cache_clear() -> Result<(), MediaPmError> {
     }
 
     fs::remove_dir_all(&paths.tool_cache_dir).map_err(|source| MediaPmError::Io {
-        operation: "clearing global tool-cache directory".to_string(),
+        operation: "clearing global user cache directory".to_string(),
         path: paths.tool_cache_dir,
         source,
     })
@@ -222,14 +243,16 @@ fn resolve_global_paths_or_error() -> Result<MediaPmGlobalPaths, MediaPmError> {
 }
 
 /// Async API contract for media source processing and sync.
-#[async_trait]
 pub trait MediaPmApi: Send + Sync {
     /// Processes a single source URI using the configured media pipeline policy.
-    async fn process_source(&self, uri: Url, permanent: bool)
-    -> Result<MediaPackage, MediaPmError>;
+    fn process_source(
+        &self,
+        uri: Url,
+        permanent: bool,
+    ) -> impl Future<Output = Result<MediaPackage, MediaPmError>> + Send;
 
     /// Reconciles declared media/tool state to filesystem/materialization state.
-    async fn sync_library(&self) -> Result<SyncSummary, MediaPmError>;
+    fn sync_library(&self) -> impl Future<Output = Result<SyncSummary, MediaPmError>> + Send;
 }
 
 /// Generic media service over a pluggable conductor implementation.
@@ -291,59 +314,238 @@ where
         merge_runtime_storage(config_runtime_storage, &self.runtime_storage_overrides)
     }
 
+    /// Reconciles managed workflows for config-only edit commands.
+    ///
+    /// This helper keeps conductor machine workflow rows synchronized after
+    /// source/hierarchy mutations even when explicit tool sync is deferred.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when conductor documents cannot be prepared,
+    /// workflow reconciliation fails, or lock state cannot be persisted.
+    fn reconcile_workflows_after_config_edit(
+        &self,
+        document: &MediaPmDocument,
+    ) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows_for_config_edits(
+            &effective_paths,
+            document,
+            &mut lock,
+        )?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)
+    }
+
     /// Adds one online media source to `mediapm.ncl`.
-    pub fn add_media_source(&self, uri: Url) -> Result<String, MediaPmError> {
-        validate_source_uri(&uri)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when source validation fails, config cannot be
+    /// loaded/saved, or default source metadata cannot be synthesized.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+    )]
+    pub fn add_media_source(&self, uri: &Url) -> Result<String, MediaPmError> {
+        validate_source_uri(uri)?;
 
         if uri.scheme() == "local" {
             return Err(MediaPmError::Workflow(
-                "use 'media add-local <path>' for local sources so CAS hash pointers are recorded"
+                "use 'media add --preset local <path>' for local sources so CAS hash pointers are recorded"
                     .to_string(),
             ));
         }
 
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let media_id = media_id_from_uri(&uri);
+        let media_id = media_id_from_uri(uri);
+        let OnlineSourceMetadata { title, author, description } = fetch_online_source_metadata(uri);
+        let source_title = title.unwrap_or_else(|| remote_default_title(uri));
+        let source_description = description
+            .unwrap_or_else(|| build_remote_default_description(&source_title, author.as_deref()));
 
         document.media.insert(
             media_id.clone(),
             MediaSourceSpec {
-                description: Some(build_remote_default_description(&uri)),
+                id: None,
+                description: Some(source_description),
+                title: Some(source_title),
                 workflow_id: None,
-                metadata: None,
-                variant_hashes: BTreeMap::new(),
-                steps: vec![MediaStep {
-                    tool: MediaStepTool::YtDlp,
-                    input_variants: Vec::new(),
-                    output_variants: BTreeMap::from([(
-                        "default".to_string(),
-                        serde_json::json!({
-                            "kind": "primary",
-                            "save": true,
-                            "save_full": false,
+                metadata: Some(BTreeMap::from([
+                    (
+                        "title".to_string(),
+                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: "title".to_string(),
+                            transform: None,
                         }),
-                    )]),
-                    options: BTreeMap::from([
-                        ("uri".to_string(), TransformInputValue::String(uri.to_string())),
-                        (
-                            "write_description".to_string(),
-                            TransformInputValue::String("true".to_string()),
-                        ),
-                        (
-                            "write_info_json".to_string(),
-                            TransformInputValue::String("true".to_string()),
-                        ),
-                    ]),
-                }],
+                    ),
+                    (
+                        "artist".to_string(),
+                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: "uploader".to_string(),
+                            transform: None,
+                        }),
+                    ),
+                    (
+                        "video_id".to_string(),
+                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: "id".to_string(),
+                            transform: None,
+                        }),
+                    ),
+                    (
+                        "video_ext".to_string(),
+                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
+                            variant: "video_tagged".to_string(),
+                            metadata_key: "format_name".to_string(),
+                            transform: Some(MediaMetadataRegexTransform {
+                                pattern: "(?i)matroska(?:,.*)?".to_string(),
+                                replacement: ".mkv".to_string(),
+                            }),
+                        }),
+                    ),
+                ])),
+                variant_hashes: BTreeMap::new(),
+                steps: vec![
+                    MediaStep {
+                        tool: MediaStepTool::YtDlp,
+                        input_variants: Vec::new(),
+                        output_variants: BTreeMap::from([
+                            (
+                                "video".to_string(),
+                                serde_json::json!({
+                                    "kind": "primary",
+                                }),
+                            ),
+                            (
+                                "subtitles".to_string(),
+                                serde_json::json!({
+                                    "kind": "subtitles",
+                                }),
+                            ),
+                            (
+                                "subtitles_en".to_string(),
+                                serde_json::json!({
+                                    "kind": "subtitles",
+                                    "capture_kind": "file",
+                                    "langs": "en",
+                                }),
+                            ),
+                            (
+                                "thumbnails".to_string(),
+                                serde_json::json!({
+                                    "kind": "thumbnails",
+                                }),
+                            ),
+                            (
+                                "description".to_string(),
+                                serde_json::json!({
+                                    "kind": "description",
+                                }),
+                            ),
+                            (
+                                "infojson".to_string(),
+                                serde_json::json!({
+                                    "kind": "infojson",
+                                }),
+                            ),
+                            (
+                                "links".to_string(),
+                                serde_json::json!({
+                                    "kind": "links",
+                                }),
+                            ),
+                            (
+                                "archive".to_string(),
+                                serde_json::json!({
+                                    "kind": "archive",
+                                }),
+                            ),
+                        ]),
+                        options: BTreeMap::from([
+                            ("uri".to_string(), TransformInputValue::String(uri.to_string())),
+                            (
+                                "format".to_string(),
+                                TransformInputValue::String(
+                                    "bestvideo[height<=144]+bestaudio/best[height<=144]/best"
+                                        .to_string(),
+                                ),
+                            ),
+                            (
+                                "sub_langs".to_string(),
+                                TransformInputValue::String(
+                                    "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig".to_string(),
+                                ),
+                            ),
+                        ]),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["video".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "video".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "idx": 0,
+                                "extension": "mkv",
+                            }),
+                        )]),
+                        options: BTreeMap::from([
+                            (
+                                "codec_copy".to_string(),
+                                TransformInputValue::String("true".to_string()),
+                            ),
+                            (
+                                "container".to_string(),
+                                TransformInputValue::String("matroska".to_string()),
+                            ),
+                        ]),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::MediaTagger,
+                        input_variants: vec!["video".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "video_tagged".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "extension": "mkv",
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Rsgain,
+                        input_variants: vec!["video_tagged".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "video_tagged".to_string(),
+                            serde_json::json!({
+                                "kind": "primary",
+                                "extension": "mkv",
+                            }),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                ],
             },
         );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
-    /// Adds one local media source to `mediapm.ncl` as an `import-once`
+    /// Adds one local media source to `mediapm.ncl` as an `import`
     /// CAS-hash ingest step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the local source path cannot be
+    /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
+    /// required conductor runtime documents cannot be prepared.
     pub async fn add_local_source(&self, local_path: &Path) -> Result<String, MediaPmError> {
         let absolute = local_path.canonicalize().map_err(|source| MediaPmError::Io {
             operation: "canonicalizing local media path".to_string(),
@@ -377,61 +579,232 @@ where
         })?;
 
         let media_id = media_id_from_local_path(&absolute);
-        let source_description = build_local_default_description(&absolute);
+        let LocalSourceMetadata { title, description } = fetch_local_source_metadata(&absolute);
+        let source_title = title.unwrap_or_else(|| local_default_title(&absolute));
+        let source_description = description
+            .unwrap_or_else(|| build_local_default_description(&absolute, &source_title));
+        let source_extension_with_dot = local_extension_with_dot(&absolute);
+        let hash_text = hash.to_string();
 
         document.media.insert(
             media_id.clone(),
             MediaSourceSpec {
+                id: None,
                 description: Some(source_description),
+                title: Some(source_title),
                 workflow_id: None,
-                metadata: None,
+                metadata: Some(BTreeMap::from([
+                    (
+                        "title".to_string(),
+                        MediaMetadataValue::Literal(local_default_title(&absolute)),
+                    ),
+                    (
+                        "video_ext".to_string(),
+                        MediaMetadataValue::Literal(source_extension_with_dot),
+                    ),
+                ])),
                 variant_hashes: BTreeMap::new(),
-                steps: vec![MediaStep {
-                    tool: MediaStepTool::ImportOnce,
-                    input_variants: Vec::new(),
-                    output_variants: BTreeMap::from([(
-                        "default".to_string(),
-                        serde_json::json!({
-                            "kind": "output_content",
-                            "save": true,
-                            "save_full": false,
-                        }),
-                    )]),
-                    options: BTreeMap::from([
-                        ("kind".to_string(), TransformInputValue::String("cas_hash".to_string())),
-                        ("hash".to_string(), TransformInputValue::String(hash.to_string())),
-                    ]),
-                }],
+                steps: local_source_default_steps(&hash_text),
             },
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-
+        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
+    /// Adds one hierarchy preset node tree for an existing media id.
+    ///
+    /// This operation is idempotent per `(preset, media_id, folder)` identity.
+    /// Repeated invocations with the same triple will not add duplicate nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the media id is unknown, `folder` is
+    /// empty/invalid, or `mediapm.ncl` cannot be loaded/saved.
+    pub fn add_media_hierarchy_preset(
+        &self,
+        preset: MediaHierarchyPreset,
+        media_id: &str,
+        folder: &str,
+    ) -> Result<(), MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+
+        if !document.media.contains_key(media_id) {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot add {} hierarchy preset: media id '{media_id}' does not exist",
+                preset.as_label()
+            )));
+        }
+
+        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
+        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
+            return Ok(());
+        }
+
+        document.hierarchy.push(build_hierarchy_preset_node(
+            preset,
+            media_id,
+            &normalized_folder,
+            hierarchy_id,
+        ));
+
+        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
+        Ok(())
+    }
+
+    /// Removes one media source id from `mediapm.ncl`.
+    ///
+    /// This operation also removes any hierarchy nodes whose effective
+    /// `media_id` equals the removed media id so configuration remains
+    /// self-consistent after source deletion.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the target media id is not registered or
+    /// when `mediapm.ncl` cannot be loaded/saved.
+    pub fn remove_media_source(&self, media_id: &str) -> Result<usize, MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        if document.media.remove(media_id).is_none() {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot remove media source: media id '{media_id}' does not exist"
+            )));
+        }
+
+        let removed_hierarchy_nodes =
+            remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
+        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        self.reconcile_workflows_after_config_edit(&document)?;
+        Ok(removed_hierarchy_nodes)
+    }
+
+    /// Removes one hierarchy preset node tree for one media id + folder root.
+    ///
+    /// This operation is idempotent. If the preset node does not exist,
+    /// no changes are written and `0` is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when `folder` is empty/invalid or
+    /// `mediapm.ncl` cannot be loaded/saved.
+    pub fn remove_media_hierarchy_preset(
+        &self,
+        preset: MediaHierarchyPreset,
+        media_id: &str,
+        folder: &str,
+    ) -> Result<usize, MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
+        let hierarchy_id = hierarchy_preset_node_id(preset, media_id, &normalized_folder);
+        let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
+        if removed_nodes > 0 {
+            save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+            self.reconcile_workflows_after_config_edit(&document)?;
+        }
+        Ok(removed_nodes)
+    }
+
     /// Lists currently registered tools from conductor machine config.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when config or state document cannot be loaded or
+    /// when conductor tool rows cannot be resolved.
     pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let lock = load_lockfile(&effective_paths.lock_jsonc)?;
+        let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::list_tools(&effective_paths, &lock)
     }
 
     /// Prunes one tool binary while preserving metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when config/state documents cannot be loaded,
+    /// prune operations fail, or state cannot be persisted.
     pub async fn prune_tool(&self, tool_id: &str) -> Result<usize, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let mut lock = load_lockfile(&effective_paths.lock_jsonc)?;
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
         let removed_hashes =
             conductor_bridge::prune_tool_binary(&effective_paths, &mut lock, tool_id).await?;
-        save_lockfile(&effective_paths.lock_jsonc, &lock)?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(removed_hashes)
     }
 
-    /// Reconciles only tool requirements and lock/runtime metadata.
+    /// Executes one managed tool binary directly with passthrough arguments.
+    ///
+    /// `tool_selector` accepts either an immutable tool id or one logical tool
+    /// name that resolves to exactly one active/installed managed tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when runtime docs/state cannot be loaded,
+    /// selector resolution is ambiguous/invalid, executable materialization is
+    /// missing, process launch fails, or the host does not provide an exit code.
+    pub fn run_managed_tool(
+        &self,
+        tool_selector: &str,
+        args: &[String],
+    ) -> Result<i32, MediaPmError> {
+        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let target = conductor_bridge::resolve_managed_tool_executable_target(
+            &effective_paths,
+            &lock,
+            tool_selector,
+        )?;
+
+        let status =
+            ProcessCommand::new(&target.command_path).args(args).status().map_err(|source| {
+                MediaPmError::Io {
+                    operation: format!("running managed tool '{}' executable", target.tool_id),
+                    path: target.command_path.clone(),
+                    source,
+                }
+            })?;
+
+        status.code().ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "managed tool '{}' terminated without a numeric exit code",
+                target.tool_id
+            ))
+        })
+    }
+
+    /// Refreshes mediapm-managed conductor runtime paths and dotenv files.
+    ///
+    /// This command updates machine-managed runtime defaults under
+    /// `mediapm.conductor.machine.ncl` so moved workspaces re-materialize
+    /// effective paths on next execution without running workflows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when config loading, dotenv setup, or document
+    /// normalization fails.
+    pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
+        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
+        load_runtime_dotenv(&effective_paths)?;
+        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        Ok(())
+    }
+
+    /// Reconciles only tool requirements and state/runtime metadata.
     ///
     /// This operation intentionally avoids running conductor workflows or
     /// hierarchy materialization, and is used by `mediapm tools sync`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when runtime/config preparation fails, tool
+    /// reconciliation fails, workflow reconciliation fails, or state
+    /// cannot be persisted.
     pub async fn sync_tools(&self) -> Result<ToolsSyncSummary, MediaPmError> {
         self.sync_tools_with_tag_update_checks(true).await
     }
@@ -440,50 +813,82 @@ where
     ///
     /// `check_tag_updates` controls whether tag-only tool selectors (for
     /// example `tag = "latest"`) trigger remote release checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when runtime/config preparation fails, tool
+    /// reconciliation fails, workflow reconciliation fails, or lock state
+    /// cannot be persisted.
     pub async fn sync_tools_with_tag_update_checks(
         &self,
         check_tag_updates: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let (summary, _lock) = self.sync_tools_from_document(&document, check_tag_updates).await?;
+        Ok(summary)
+    }
+
+    /// Internal helper: runs tool sync from an already-loaded mediapm document.
+    ///
+    /// Returns the sync summary together with the saved lock state so that
+    /// callers performing a full library sync can skip a redundant lock reload
+    /// and a redundant mediapm-document parse.
+    async fn sync_tools_from_document(
+        &self,
+        document: &MediaPmDocument,
+        check_tag_updates: bool,
+    ) -> Result<(ToolsSyncSummary, MediaLockFile), MediaPmError> {
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
         let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
         load_runtime_dotenv(&effective_paths)?;
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
         export_mediapm_nickel_config_schemas(&effective_paths)?;
+        mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
 
-        let mut lock = load_lockfile(&effective_paths.lock_jsonc)?;
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
         let resolved_inherited_env_vars =
             effective_runtime_storage.inherited_env_vars_with_defaults();
         let report = conductor_bridge::reconcile_desired_tools(
             &effective_paths,
-            &document,
+            document,
             &resolved_inherited_env_vars,
             &mut lock,
             check_tag_updates,
-            effective_runtime_storage.use_user_download_cache_enabled(),
+            effective_runtime_storage.use_user_tool_cache_enabled(),
         )
         .await?;
-        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &lock)?;
-        save_lockfile(&effective_paths.lock_jsonc, &lock)?;
+        conductor_bridge::reconcile_media_workflows(&effective_paths, document, &mut lock)?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
 
-        Ok(ToolsSyncSummary {
-            added_tools: report.added_tool_ids.len(),
-            updated_tools: report.updated_tool_ids.len(),
-            unchanged_tools: report.unchanged_tool_ids.len(),
-            warnings: report.warnings,
-        })
+        Ok((
+            ToolsSyncSummary {
+                added_tools: report.added_tool_ids.len(),
+                updated_tools: report.updated_tool_ids.len(),
+                unchanged_tools: report.unchanged_tool_ids.len(),
+                warnings: report.warnings,
+            },
+            lock,
+        ))
     }
 
     /// Reconciles full desired state with explicit tag-update-check policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when tool sync fails, conductor execution
+    /// fails (including filesystem-CAS fallback), hierarchy materialization
+    /// fails, or state cannot be persisted.
     pub async fn sync_library_with_tag_update_checks(
         &self,
         check_tag_updates: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        let tool_summary = self.sync_tools_with_tag_update_checks(check_tag_updates).await?;
+        // Load the mediapm document once and reuse it across both sync phases to
+        // avoid a redundant Nickel evaluation between tool-sync and library-sync.
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let (tool_summary, mut lock) =
+            self.sync_tools_from_document(&document, check_tag_updates).await?;
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
         let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
-        let mut lock = load_lockfile(&effective_paths.lock_jsonc)?;
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
@@ -543,9 +948,11 @@ where
         .await?;
         let mut warnings = tool_summary.warnings.clone();
         warnings.extend(materialize_report.notices.clone());
-        warnings.extend(orphaned_safety_external_data_warnings(&lock, 30 * 24 * 60 * 60));
 
-        save_lockfile(&effective_paths.lock_jsonc, &lock)?;
+        // Reconcile again after materialization so managed-file hashes written
+        // during this sync are immediately rooted in machine external_data.
+        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
 
         Ok(SyncSummary {
             executed_instances: conductor_summary.executed_instances,
@@ -589,7 +996,6 @@ impl MediaPmService<SimpleConductor<InMemoryCas>> {
     }
 }
 
-#[async_trait]
 impl<C> MediaPmApi for MediaPmService<C>
 where
     C: ConductorApi,
@@ -619,6 +1025,11 @@ pub fn registered_builtin_ids() -> [&'static str; 5] {
 ///
 /// This helper is intended for CLI entrypoints that need environment-backed
 /// credentials before invoking internal builtins directly.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when config cannot be loaded, effective runtime
+/// paths cannot be resolved, or dotenv loading fails.
 pub fn load_runtime_dotenv_for_root(
     root_dir: &Path,
     runtime_storage_overrides: &MediaRuntimeStorage,
@@ -641,74 +1052,277 @@ fn ensure_and_load_mediapm_document(path: &Path) -> Result<MediaPmDocument, Medi
     load_mediapm_document(path)
 }
 
+/// Returns true when any hierarchy node in one recursive tree declares
+/// `target_id`.
+fn hierarchy_contains_node_id(nodes: &[HierarchyNode], target_id: &str) -> bool {
+    nodes.iter().any(|node| {
+        node.id.as_deref().is_some_and(|value| value == target_id)
+            || hierarchy_contains_node_id(&node.children, target_id)
+    })
+}
+
+/// Removes all nodes in one recursive hierarchy tree whose `id` matches
+/// `target_id` and returns the number of removed nodes.
+fn remove_hierarchy_nodes_by_id(nodes: &mut Vec<HierarchyNode>, target_id: &str) -> usize {
+    let mut removed = 0;
+    let mut index = 0;
+
+    while index < nodes.len() {
+        if nodes[index].id.as_deref().is_some_and(|value| value == target_id) {
+            nodes.remove(index);
+            removed += 1;
+            continue;
+        }
+
+        removed += remove_hierarchy_nodes_by_id(&mut nodes[index].children, target_id);
+        index += 1;
+    }
+
+    removed
+}
+
+/// Removes all nodes in one recursive hierarchy tree whose `media_id` matches
+/// `target_media_id` and returns the number of removed nodes.
+fn remove_hierarchy_nodes_by_media_id(
+    nodes: &mut Vec<HierarchyNode>,
+    target_media_id: &str,
+) -> usize {
+    let mut removed = 0;
+    let mut index = 0;
+
+    while index < nodes.len() {
+        if nodes[index].media_id.as_deref().is_some_and(|value| value == target_media_id) {
+            nodes.remove(index);
+            removed += 1;
+            continue;
+        }
+
+        removed += remove_hierarchy_nodes_by_media_id(&mut nodes[index].children, target_media_id);
+        index += 1;
+    }
+
+    removed
+}
+
+/// Stable media-root folder template used by hierarchy presets.
+const HIERARCHY_MEDIA_ROOT_TEMPLATE: &str = "${media.metadata.title} [${media.id}]";
+
+/// Demo-style yt-dlp media-root folder template used by hierarchy presets.
+const HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
+
+/// Stable tagged-media filename template used by hierarchy presets.
+const HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE: &str =
+    "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+
+/// Demo-style yt-dlp untagged-media filename template.
+const HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
+
+/// Demo-style yt-dlp tagged-media filename template.
+const HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
+
+/// Demo-style yt-dlp info-json filename template.
+const HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json";
+
+/// Demo-style yt-dlp description filename template.
+const HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt";
+
+/// Demo-style yt-dlp selected subtitle filename template.
+const HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
+
+/// Demo-style root-sidecar rename pattern for flattened file-family variants.
+const HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN: &str = "^.*\\.([^.]*)$";
+
+/// Demo-style root-sidecar rename replacement for flattened file-family variants.
+const HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT: &str =
+    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1";
+
+/// Normalizes one hierarchy-root folder CLI value.
+///
+/// Returned values use slash separators and never carry surrounding slashes.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the provided folder is empty after trimming.
+fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, MediaPmError> {
+    let normalized = folder.trim().replace('\\', "/").trim_matches('/').to_string();
+    if normalized.is_empty() {
+        return Err(MediaPmError::Workflow(
+            "hierarchy preset folder must be non-empty".to_string(),
+        ));
+    }
+
+    Ok(normalized)
+}
+
+/// Builds deterministic hierarchy id for one `(preset, media, folder)` tuple.
+#[must_use]
+fn hierarchy_preset_node_id(
+    preset: MediaHierarchyPreset,
+    media_id: &str,
+    normalized_folder: &str,
+) -> String {
+    let digest = mediapm_cas::Hash::from_content(normalized_folder.as_bytes()).to_hex();
+    format!("{media_id}-hier-{}-{}", preset.as_label().replace('-', "_"), &digest[..12])
+}
+
+/// Builds one media-file hierarchy node bound to one output variant.
+#[must_use]
+fn hierarchy_media_file_node(path: &str, media_id: &str, variant: &str) -> HierarchyNode {
+    HierarchyNode {
+        path: path.to_string(),
+        kind: HierarchyNodeKind::Media,
+        id: None,
+        media_id: Some(media_id.to_string()),
+        variant: Some(variant.to_string()),
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: Vec::new(),
+    }
+}
+
+/// Builds one media-folder hierarchy node bound to ordered variant selectors.
+#[must_use]
+fn hierarchy_media_folder_node(
+    path: &str,
+    media_id: &str,
+    variants: Vec<String>,
+    rename_files: Vec<HierarchyFolderRenameRule>,
+) -> HierarchyNode {
+    HierarchyNode {
+        path: path.to_string(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: None,
+        media_id: Some(media_id.to_string()),
+        variant: None,
+        variants,
+        rename_files,
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: Vec::new(),
+    }
+}
+
+/// Builds media-root children for the local hierarchy preset.
+#[must_use]
+fn local_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
+    vec![hierarchy_media_file_node(HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "media")]
+}
+
+/// Builds media-root children for the yt-dlp hierarchy preset.
+#[must_use]
+fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
+    vec![
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE, media_id, "video"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE,
+            media_id,
+            "video_tagged",
+        ),
+        hierarchy_media_folder_node(
+            "subtitles",
+            media_id,
+            vec!["subtitles".to_string()],
+            Vec::new(),
+        ),
+        hierarchy_media_folder_node(
+            "thumbnails",
+            media_id,
+            vec!["thumbnails".to_string()],
+            Vec::new(),
+        ),
+        hierarchy_media_folder_node("links", media_id, vec!["links".to_string()], Vec::new()),
+        hierarchy_media_file_node("archive.txt", media_id, "archive"),
+        hierarchy_media_file_node("description.txt", media_id, "description"),
+        hierarchy_media_file_node("info.json", media_id, "infojson"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE,
+            media_id,
+            "description",
+        ),
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson"),
+        hierarchy_media_file_node(
+            HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE,
+            media_id,
+            "subtitles_en",
+        ),
+        hierarchy_media_folder_node(
+            "",
+            media_id,
+            vec!["thumbnails".to_string(), "links".to_string()],
+            vec![HierarchyFolderRenameRule {
+                pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+                replacement: HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT.to_string(),
+            }],
+        ),
+    ]
+}
+
+/// Builds one hierarchy node tree for the selected preset.
+#[must_use]
+fn build_hierarchy_preset_node(
+    preset: MediaHierarchyPreset,
+    media_id: &str,
+    normalized_folder: &str,
+    hierarchy_id: String,
+) -> HierarchyNode {
+    let (media_root_template, media_children) = match preset {
+        MediaHierarchyPreset::Local => {
+            (HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(), local_hierarchy_media_children(media_id))
+        }
+        MediaHierarchyPreset::YtDlp => (
+            HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE.to_string(),
+            yt_dlp_hierarchy_media_children(media_id),
+        ),
+    };
+
+    HierarchyNode {
+        path: normalized_folder.to_string(),
+        kind: HierarchyNodeKind::Folder,
+        id: Some(hierarchy_id),
+        media_id: Some(media_id.to_string()),
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::default(),
+        ids: Vec::new(),
+        children: vec![HierarchyNode {
+            path: media_root_template,
+            kind: HierarchyNodeKind::Folder,
+            id: None,
+            media_id: Some(media_id.to_string()),
+            variant: None,
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            children: media_children,
+        }],
+    }
+}
+
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
 fn load_runtime_dotenv(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    ensure_runtime_dotenv_files(paths)?;
-
-    dotenvy::from_path_override(&paths.env_file).map_err(|source| {
+    load_runtime_env_files(&paths.runtime_root).map_err(|source| {
         MediaPmError::Workflow(format!(
-            "loading runtime dotenv file '{}' failed: {source}",
-            paths.env_file.display()
+            "loading conductor runtime dotenv files under '{}' failed: {source}",
+            paths.runtime_root.display()
         ))
     })?;
 
     Ok(())
 }
 
-/// Creates runtime `.env` and colocated `.gitignore` files when absent.
-fn ensure_runtime_dotenv_files(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    let dotenv_parent = paths
-        .env_file
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| paths.runtime_root.clone());
-
-    fs::create_dir_all(&dotenv_parent).map_err(|source| MediaPmError::Io {
-        operation: "creating runtime dotenv parent directory".to_string(),
-        path: dotenv_parent.clone(),
-        source,
-    })?;
-
-    if !paths.env_file.exists() {
-        fs::write(&paths.env_file, RUNTIME_DOTENV_TEMPLATE.as_bytes()).map_err(|source| {
-            MediaPmError::Io {
-                operation: "writing runtime dotenv template".to_string(),
-                path: paths.env_file.clone(),
-                source,
-            }
-        })?;
-    }
-
-    let gitignore_path = dotenv_parent.join(".gitignore");
-    let should_write_gitignore = match fs::read_to_string(&gitignore_path) {
-        Ok(current) => current != RUNTIME_DOTENV_GITIGNORE,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(source) => {
-            return Err(MediaPmError::Io {
-                operation: "reading runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            });
-        }
-    };
-
-    if should_write_gitignore {
-        fs::write(&gitignore_path, RUNTIME_DOTENV_GITIGNORE.as_bytes()).map_err(|source| {
-            MediaPmError::Io {
-                operation: "writing runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            }
-        })?;
-    }
-
-    Ok(())
-}
-
 /// Exports embedded `mediapm.ncl` Nickel schemas into runtime storage.
 ///
-/// Export policy is controlled by `runtime.schema_config_dir`:
-/// - omitted: writes to `<runtime.mediapm_dir>/config`,
+/// Export policy is controlled by `runtime.mediapm_schema_dir`:
+/// - omitted: writes to `<runtime.mediapm_dir>/config/mediapm`,
 /// - explicit `null`: disables export,
 /// - explicit string: writes to that resolved path.
 fn export_mediapm_nickel_config_schemas(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
@@ -775,11 +1389,18 @@ fn merge_runtime_storage(
             .mediapm_dir
             .clone()
             .or_else(|| config_value.mediapm_dir.clone()),
-        library_dir: override_value
-            .library_dir
+        hierarchy_root_dir: override_value
+            .hierarchy_root_dir
             .clone()
-            .or_else(|| config_value.library_dir.clone()),
-        tmp_dir: override_value.tmp_dir.clone().or_else(|| config_value.tmp_dir.clone()),
+            .or_else(|| config_value.hierarchy_root_dir.clone()),
+        mediapm_tmp_dir: override_value
+            .mediapm_tmp_dir
+            .clone()
+            .or_else(|| config_value.mediapm_tmp_dir.clone()),
+        materialization_preference_order: override_value
+            .materialization_preference_order
+            .clone()
+            .or_else(|| config_value.materialization_preference_order.clone()),
         conductor_config: override_value
             .conductor_config
             .clone()
@@ -788,20 +1409,31 @@ fn merge_runtime_storage(
             .conductor_machine_config
             .clone()
             .or_else(|| config_value.conductor_machine_config.clone()),
-        conductor_state: override_value
-            .conductor_state
+        conductor_state_config: override_value
+            .conductor_state_config
             .clone()
-            .or_else(|| config_value.conductor_state.clone()),
+            .or_else(|| config_value.conductor_state_config.clone()),
+        conductor_tmp_dir: override_value
+            .conductor_tmp_dir
+            .clone()
+            .or_else(|| config_value.conductor_tmp_dir.clone()),
+        conductor_schema_dir: override_value
+            .conductor_schema_dir
+            .clone()
+            .or_else(|| config_value.conductor_schema_dir.clone()),
         inherited_env_vars: merged_inherited_env_vars,
-        lockfile: override_value.lockfile.clone().or_else(|| config_value.lockfile.clone()),
-        env_file: override_value.env_file.clone().or_else(|| config_value.env_file.clone()),
-        schema_config_dir: override_value
-            .schema_config_dir
+        media_state_config: override_value
+            .media_state_config
             .clone()
-            .or_else(|| config_value.schema_config_dir.clone()),
-        use_user_download_cache: override_value
-            .use_user_download_cache
-            .or(config_value.use_user_download_cache),
+            .or_else(|| config_value.media_state_config.clone()),
+        env_file: override_value.env_file.clone().or_else(|| config_value.env_file.clone()),
+        mediapm_schema_dir: override_value
+            .mediapm_schema_dir
+            .clone()
+            .or_else(|| config_value.mediapm_schema_dir.clone()),
+        use_user_tool_cache: override_value
+            .use_user_tool_cache
+            .or(config_value.use_user_tool_cache),
     }
 }
 
@@ -860,34 +1492,94 @@ fn conductor_run_workflow_options(
     RunWorkflowOptions {
         runtime_storage_paths: RuntimeStoragePaths {
             conductor_dir: paths.runtime_root.clone(),
-            config_state: Some(paths.conductor_state_config.clone()),
+            conductor_state_config: Some(paths.conductor_state_config.clone()),
             cas_store_dir: Some(paths.runtime_root.join("store")),
+            conductor_tmp_dir: Some(paths.conductor_tmp_dir.clone()),
+            conductor_schema_dir: Some(paths.conductor_schema_dir.clone()),
         },
         runtime_inherited_env_vars: runtime_storage.inherited_env_vars_with_defaults(),
         ..RunWorkflowOptions::default()
     }
 }
 
-/// Builds default description for one local media source.
-fn build_local_default_description(path: &Path) -> String {
-    let file_name = path
-        .file_name()
-        .map(|value| value.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string());
+/// Derives a fallback local title from one source path.
+fn local_default_title(path: &Path) -> String {
+    path.file_name()
+        .map_or_else(|| path.display().to_string(), |value| value.to_string_lossy().to_string())
+}
 
-    let title = file_name.clone();
+/// Builds default description for one local media source.
+fn build_local_default_description(path: &Path, title: &str) -> String {
+    let file_name = local_default_title(path);
     let mut lines = vec![format!("file: {file_name}")];
     lines.push(format!("title: {title}"));
     lines.push("author: unknown".to_string());
     lines.join("\n")
 }
 
-/// Builds default description for one remote media source.
-fn build_remote_default_description(uri: &Url) -> String {
-    let metadata = fetch_online_source_metadata(uri);
-    let title = metadata.title.unwrap_or_else(|| remote_default_title(uri));
-    let author = metadata.author.unwrap_or_else(|| "unknown".to_string());
+/// Resolves one local file extension value with a leading dot.
+///
+/// Missing extensions fall back to `.bin` so hierarchy interpolation keys can
+/// remain defined for all local sources added through `media add --preset local`.
+fn local_extension_with_dot(path: &Path) -> String {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| ".bin".to_string(), |value| format!(".{value}"))
+}
 
+/// Builds default managed transform chain for one local-source CAS hash.
+///
+/// The generated chain keeps local ingest semantics aligned with
+/// `media add --preset local` defaults:
+/// `import -> media-tagger -> rsgain`, while reusing one stable variant key
+/// across the full pipeline.
+#[must_use]
+fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
+    vec![
+        MediaStep {
+            tool: MediaStepTool::Import,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                }),
+            )]),
+            options: BTreeMap::from([
+                ("kind".to_string(), TransformInputValue::String("cas_hash".to_string())),
+                ("hash".to_string(), TransformInputValue::String(hash_text.to_string())),
+            ]),
+        },
+        MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec!["media".to_string()],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                }),
+            )]),
+            options: BTreeMap::new(),
+        },
+        MediaStep {
+            tool: MediaStepTool::Rsgain,
+            input_variants: vec!["media".to_string()],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({
+                    "kind": "primary",
+                }),
+            )]),
+            options: BTreeMap::new(),
+        },
+    ]
+}
+
+/// Builds default description for one remote media source.
+fn build_remote_default_description(title: &str, author: Option<&str>) -> String {
+    let author = author.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
     format!("title: {title}\nauthor: {author}")
 }
 
@@ -898,11 +1590,27 @@ struct OnlineSourceMetadata {
     title: Option<String>,
     /// Best-effort author/uploader label.
     author: Option<String>,
+    /// Best-effort textual description.
+    description: Option<String>,
+}
+
+/// Metadata tuple fetched by local-file probes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct LocalSourceMetadata {
+    /// Best-effort media title.
+    title: Option<String>,
+    /// Best-effort textual description.
+    description: Option<String>,
 }
 
 /// Resolves online metadata using downloader tools when available.
 fn fetch_online_source_metadata(uri: &Url) -> OnlineSourceMetadata {
     try_fetch_online_source_metadata_with_yt_dlp(uri).unwrap_or_default()
+}
+
+/// Resolves local metadata using media-probe tooling when available.
+fn fetch_local_source_metadata(path: &Path) -> LocalSourceMetadata {
+    try_fetch_local_source_metadata_with_ffprobe(path).unwrap_or_default()
 }
 
 /// Fetches online metadata by invoking `yt-dlp` when present on PATH.
@@ -920,17 +1628,61 @@ fn try_fetch_online_source_metadata_with_yt_dlp(uri: &Url) -> Option<OnlineSourc
     }
 
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let title = first_non_empty_json_string(&value, &["fulltitle", "title", "track"]);
-    let author = first_non_empty_json_string(
-        &value,
-        &["uploader", "channel", "artist", "creator", "uploader_id"],
-    );
+    let metadata = parse_online_source_metadata(&value);
 
-    if title.is_none() && author.is_none() {
+    if metadata.title.is_none() && metadata.author.is_none() && metadata.description.is_none() {
         None
     } else {
-        Some(OnlineSourceMetadata { title, author })
+        Some(metadata)
     }
+}
+
+/// Fetches local metadata by invoking `ffprobe` when present on PATH.
+fn try_fetch_local_source_metadata_with_ffprobe(path: &Path) -> Option<LocalSourceMetadata> {
+    let output = ProcessCommand::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-print_format")
+        .arg("json")
+        .arg("-show_format")
+        .arg(path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let metadata = parse_local_source_metadata_from_ffprobe_json(&value);
+
+    if metadata.title.is_none() && metadata.description.is_none() { None } else { Some(metadata) }
+}
+
+/// Parses online metadata fields from one downloader JSON payload.
+fn parse_online_source_metadata(value: &serde_json::Value) -> OnlineSourceMetadata {
+    let title = first_non_empty_json_string(value, &["fulltitle", "title", "track"]);
+    let author = first_non_empty_json_string(
+        value,
+        &["uploader", "channel", "artist", "creator", "uploader_id"],
+    );
+    let description = first_non_empty_json_string(value, &["description", "summary"]);
+
+    OnlineSourceMetadata { title, author, description }
+}
+
+/// Parses local metadata fields from one ffprobe JSON payload.
+fn parse_local_source_metadata_from_ffprobe_json(value: &serde_json::Value) -> LocalSourceMetadata {
+    let tags = value
+        .get("format")
+        .and_then(|format| format.get("tags"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let title = first_non_empty_json_string(&tags, &["title", "track"]);
+    let description = first_non_empty_json_string(&tags, &["description", "comment", "synopsis"]);
+
+    LocalSourceMetadata { title, description }
 }
 
 /// Returns first non-empty string value from one JSON object key list.
@@ -938,6 +1690,17 @@ fn first_non_empty_json_string(value: &serde_json::Value, keys: &[&str]) -> Opti
     keys.iter().find_map(|key| {
         value
             .get(*key)
+            .or_else(|| {
+                value.as_object().and_then(|object| {
+                    object.iter().find_map(|(candidate, candidate_value)| {
+                        if candidate.eq_ignore_ascii_case(key) {
+                            Some(candidate_value)
+                        } else {
+                            None
+                        }
+                    })
+                })
+            })
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|text| !text.is_empty())
@@ -1013,30 +1776,7 @@ fn should_retry_workflow_with_filesystem_cas(error: &ConductorError) -> bool {
 }
 
 /// Produces warnings for stale safety-external-data entries.
-fn orphaned_safety_external_data_warnings(lock: &MediaLockFile, ttl_seconds: u64) -> Vec<String> {
-    let now = now_unix_seconds();
-
-    lock.safety_external_data
-        .iter()
-        .filter_map(|(id, record)| {
-            let age = now.saturating_sub(record.last_referenced_unix_seconds);
-            if age >= ttl_seconds && !lock.tool_registry.contains_key(&record.tool_id) {
-                Some(format!(
-                    "safety external data '{id}' is orphaned for {} days and should be pruned or re-linked",
-                    age / (24 * 60 * 60)
-                ))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// Returns current Unix timestamp in seconds.
-fn now_unix_seconds() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1044,9 +1784,12 @@ mod tests {
 
     use mediapm_cas::Hash;
     use mediapm_conductor::{MachineNickelDocument, ToolConfigSpec};
+    use serde_json::json;
 
     use super::{
-        MediaPmApi, MediaPmService, MediaRuntimeStorage, merge_runtime_storage,
+        HierarchyNodeKind, LocalSourceMetadata, MediaHierarchyPreset, MediaPmApi, MediaPmService,
+        MediaRuntimeStorage, OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
+        parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
         should_prefer_filesystem_workflow_runner, validate_source_uri,
     };
     use tempfile::tempdir;
@@ -1069,7 +1812,7 @@ mod tests {
         assert!(validate_source_uri(&ftp).is_err());
     }
 
-    /// Ensures sync bootstraps default docs and lockfile on a fresh workspace.
+    /// Ensures sync bootstraps default docs and state on a fresh workspace.
     #[tokio::test]
     async fn sync_library_bootstraps_default_phase3_state_files() {
         let root = tempdir().expect("tempdir");
@@ -1080,20 +1823,37 @@ mod tests {
         assert!(service.paths().mediapm_ncl.exists());
         assert!(service.paths().conductor_user_ncl.exists());
         assert!(service.paths().conductor_machine_ncl.exists());
-        assert!(service.paths().lock_jsonc.exists());
+        assert!(service.paths().mediapm_state_ncl.exists());
         assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
         assert!(service.paths().runtime_root.join(".gitignore").exists());
 
         let dotenv_text =
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
-        assert!(dotenv_text.contains("# ACOUSTID_ENDPOINT="));
-        assert!(dotenv_text.contains("# MUSICBRAINZ_ENDPOINT="));
+        assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        assert!(dotenv_generated_text.contains("# @generated by mediapm tool sync"));
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
 
         let schema_dir =
             service.paths().schema_export_dir.as_ref().expect("default schema export dir");
         assert!(schema_dir.join("mod.ncl").exists());
         assert!(schema_dir.join("v1.ncl").exists());
+
+        let conductor_schema_dir = service.paths().conductor_schema_dir.clone();
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
     }
 
     /// Ensures tools-only sync bootstraps documents without running workflows.
@@ -1110,30 +1870,50 @@ mod tests {
         assert!(service.paths().mediapm_ncl.exists());
         assert!(service.paths().conductor_user_ncl.exists());
         assert!(service.paths().conductor_machine_ncl.exists());
-        assert!(service.paths().lock_jsonc.exists());
+        assert!(service.paths().mediapm_state_ncl.exists());
         assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
         assert!(service.paths().runtime_root.join(".gitignore").exists());
 
         let dotenv_text =
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
-        assert!(dotenv_text.contains("# ACOUSTID_ENDPOINT="));
-        assert!(dotenv_text.contains("# MUSICBRAINZ_ENDPOINT="));
+        assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        assert!(dotenv_generated_text.contains("# @generated by mediapm tool sync"));
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
 
         let schema_dir =
             service.paths().schema_export_dir.as_ref().expect("default schema export dir");
         assert!(schema_dir.join("mod.ncl").exists());
         assert!(schema_dir.join("v1.ncl").exists());
+
+        let conductor_schema_dir = service.paths().conductor_schema_dir.clone();
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
     }
 
-    /// Ensures explicit `runtime.schema_config_dir = null` disables schema
+    /// Ensures explicit `runtime.mediapm_schema_dir = null` disables schema
     /// file export during sync.
     #[tokio::test]
     async fn sync_tools_skips_schema_export_when_runtime_schema_dir_is_null() {
         let root = tempdir().expect("tempdir");
         let service = MediaPmService::new_in_memory_at_with_runtime_storage_overrides(
             root.path(),
-            MediaRuntimeStorage { schema_config_dir: Some(None), ..MediaRuntimeStorage::default() },
+            MediaRuntimeStorage {
+                mediapm_schema_dir: Some(None),
+                ..MediaRuntimeStorage::default()
+            },
         );
 
         let summary = service.sync_tools().await.expect("tool sync");
@@ -1141,7 +1921,207 @@ mod tests {
         assert_eq!(summary.added_tools, 0);
         assert_eq!(summary.updated_tools, 0);
         assert_eq!(summary.unchanged_tools, 0);
-        assert!(!root.path().join(".mediapm").join("config").exists());
+        assert!(!root.path().join(".mediapm").join("config").join("mediapm").exists());
+        let conductor_schema_dir = root.path().join(".mediapm").join("config").join("conductor");
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
+    }
+
+    /// Ensures local hierarchy preset insertion is idempotent for one
+    /// `(media, folder)` target and emits the expected folder tree.
+    #[tokio::test]
+    async fn add_local_hierarchy_preset_is_idempotent_for_existing_media() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("first hierarchy preset insertion should succeed");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("second hierarchy preset insertion should remain idempotent");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+
+        let matching_nodes: Vec<_> = document
+            .hierarchy
+            .iter()
+            .filter(|node| {
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == folder
+                    && node.media_id.as_deref() == Some(media_id.as_str())
+                    && node.children.len() == 1
+            })
+            .collect();
+
+        assert_eq!(
+            matching_nodes.len(),
+            1,
+            "local hierarchy preset should exist exactly once for one media id/folder"
+        );
+        let media_root = &matching_nodes[0].children[0];
+        assert_eq!(
+            media_root.path, "${media.metadata.title} [${media.id}]",
+            "local hierarchy preset should keep stable media-root template"
+        );
+        let variants: Vec<_> =
+            media_root.children.iter().map(|node| node.variant.as_deref().unwrap_or("")).collect();
+        assert_eq!(variants, vec!["media"]);
+    }
+
+    /// Ensures yt-dlp hierarchy preset adds infojson projection while keeping
+    /// the same media-root style as the online demo (without sidecars folder).
+    #[test]
+    fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(&Url::parse("https://example.com/video").expect("url"))
+            .expect("add remote source");
+
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::YtDlp, &media_id, "music videos")
+            .expect("add yt-dlp hierarchy preset");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let media_root = document
+            .hierarchy
+            .iter()
+            .find(|node| {
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == "music videos"
+                    && node.media_id.as_deref() == Some(media_id.as_str())
+            })
+            .and_then(|node| node.children.first())
+            .expect("yt-dlp preset should create media-root child folder");
+
+        let variants: std::collections::BTreeSet<_> = media_root
+            .children
+            .iter()
+            .flat_map(|node| {
+                let mut values = Vec::new();
+                if let Some(variant) = node.variant.as_deref() {
+                    values.push(variant.to_string());
+                }
+                values.extend(node.variants.iter().cloned());
+                values
+            })
+            .collect();
+        assert_eq!(
+            variants,
+            std::collections::BTreeSet::from([
+                "archive".to_string(),
+                "description".to_string(),
+                "infojson".to_string(),
+                "links".to_string(),
+                "subtitles".to_string(),
+                "subtitles_en".to_string(),
+                "thumbnails".to_string(),
+                "video".to_string(),
+                "video_tagged".to_string(),
+            ])
+        );
+    }
+
+    /// Ensures hierarchy preset insertion fails for unknown media ids.
+    #[test]
+    fn add_hierarchy_preset_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .add_media_hierarchy_preset(
+                MediaHierarchyPreset::Local,
+                "missing-media",
+                "music videos",
+            )
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "cannot add local hierarchy preset: media id 'missing-media' does not exist"
+            ),
+            "error should explain missing media id"
+        );
+    }
+
+    /// Ensures hierarchy preset removal is idempotent for one media/folder.
+    #[tokio::test]
+    async fn remove_hierarchy_preset_is_idempotent() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("add hierarchy preset");
+
+        let removed_first = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("first hierarchy-preset removal should succeed");
+        let removed_second = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("second hierarchy-preset removal should remain idempotent");
+
+        assert_eq!(removed_first, 1, "first removal should remove one node");
+        assert_eq!(removed_second, 0, "second removal should remove zero nodes");
+    }
+
+    /// Ensures media-source removal drops matching hierarchy nodes.
+    #[tokio::test]
+    async fn remove_media_source_removes_matching_hierarchy_nodes() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+
+        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
+            .expect("add hierarchy preset");
+
+        let removed_hierarchy_nodes =
+            service.remove_media_source(&media_id).expect("remove media source");
+        assert_eq!(
+            removed_hierarchy_nodes, 1,
+            "media-source removal should cascade one matching hierarchy node"
+        );
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        assert!(!document.media.contains_key(&media_id), "removed media id should no longer exist");
+        assert!(
+            document.hierarchy.iter().all(|node| node.media_id.as_deref() != Some(&media_id)),
+            "matching hierarchy nodes should also be removed"
+        );
+    }
+
+    /// Ensures media-source removal rejects unknown media ids.
+    #[test]
+    fn remove_media_source_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .remove_media_source("missing-media")
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot remove media source: media id 'missing-media' does not exist"),
+            "error should explain missing media id"
+        );
     }
 
     /// Ensures service-level runtime overrides take precedence for cache toggle
@@ -1154,7 +2134,7 @@ mod tests {
                 "windows".to_string(),
                 vec!["SYSTEMROOT".to_string(), "PATH".to_string()],
             )])),
-            use_user_download_cache: Some(true),
+            use_user_tool_cache: Some(true),
             ..MediaRuntimeStorage::default()
         };
         let override_value = MediaRuntimeStorage {
@@ -1163,15 +2143,15 @@ mod tests {
                 ("WINDOWS".to_string(), vec!["path".to_string(), "TMPDIR".to_string()]),
                 ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()]),
             ])),
-            use_user_download_cache: Some(false),
+            use_user_tool_cache: Some(false),
             ..MediaRuntimeStorage::default()
         };
 
         let merged = merge_runtime_storage(&config, &override_value);
 
         assert_eq!(merged.env_file.as_deref(), Some("override.env"));
-        assert_eq!(merged.use_user_download_cache, Some(false));
-        assert!(!merged.use_user_download_cache_enabled());
+        assert_eq!(merged.use_user_tool_cache, Some(false));
+        assert!(!merged.use_user_tool_cache_enabled());
         assert_eq!(
             merged.inherited_env_vars,
             Some(BTreeMap::from([
@@ -1191,7 +2171,51 @@ mod tests {
         let merged =
             merge_runtime_storage(&MediaRuntimeStorage::default(), &MediaRuntimeStorage::default());
 
-        assert!(merged.use_user_download_cache_enabled());
+        assert!(merged.use_user_tool_cache_enabled());
+    }
+
+    /// Ensures online metadata parsing extracts title/author/description when
+    /// downloader JSON includes those fields.
+    #[test]
+    fn parse_online_metadata_reads_title_author_and_description() {
+        let payload = json!({
+            "fulltitle": "Demo Song",
+            "uploader": "Demo Artist",
+            "description": "A short description"
+        });
+
+        let metadata = parse_online_source_metadata(&payload);
+        assert_eq!(
+            metadata,
+            OnlineSourceMetadata {
+                title: Some("Demo Song".to_string()),
+                author: Some("Demo Artist".to_string()),
+                description: Some("A short description".to_string()),
+            }
+        );
+    }
+
+    /// Ensures local metadata parsing extracts title/description from ffprobe
+    /// `format.tags` payloads with case-insensitive key matching.
+    #[test]
+    fn parse_local_metadata_reads_ffprobe_tags_case_insensitively() {
+        let payload = json!({
+            "format": {
+                "tags": {
+                    "TITLE": "Local Demo",
+                    "Comment": "Local description"
+                }
+            }
+        });
+
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&payload);
+        assert_eq!(
+            metadata,
+            LocalSourceMetadata {
+                title: Some("Local Demo".to_string()),
+                description: Some("Local description".to_string()),
+            }
+        );
     }
 
     /// Ensures workflow execution prefers filesystem CAS when managed runtime
@@ -1200,7 +2224,7 @@ mod tests {
     fn prefer_filesystem_workflow_runner_when_content_map_hashes_exist() {
         let machine = MachineNickelDocument {
             tool_configs: BTreeMap::from([(
-                "mediapm.tools.ffmpeg+github-btbn@latest".to_string(),
+                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ToolConfigSpec {
                     content_map: Some(BTreeMap::from([(
                         "./".to_string(),
@@ -1221,7 +2245,7 @@ mod tests {
     fn prefer_filesystem_workflow_runner_is_false_without_content_map_hashes() {
         let machine = MachineNickelDocument {
             tool_configs: BTreeMap::from([(
-                "mediapm.tools.ffmpeg+github-btbn@latest".to_string(),
+                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ToolConfigSpec::default(),
             )]),
             ..MachineNickelDocument::default()

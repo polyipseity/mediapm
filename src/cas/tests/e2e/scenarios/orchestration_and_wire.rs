@@ -157,7 +157,8 @@ async fn optimizer_actor_runs_maintenance_with_constraints() {
 
         let mut targets = Vec::new();
         for idx in 0..12usize {
-            let target_payload = synthetic_payload(132 + (idx % 7) as u8, 32 * 1024);
+            let seed = 132 + u8::try_from(idx % 7).expect("idx % 7 is always less than 7");
+            let target_payload = synthetic_payload(seed, 32 * 1024);
             let target = cas.put(target_payload).await.expect("put target");
             cas.set_constraint(Constraint {
                 target_hash: target,

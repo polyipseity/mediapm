@@ -64,7 +64,7 @@ pub(crate) async fn provision_tool_payload(
 ) -> Result<ProvisionedToolPayload, MediaPmError> {
     let entry = tool_catalog_entry(tool_name)?;
     let resolved =
-        resolve::resolve_download_plan(entry, requirement, download_cache.clone()).await?;
+        resolve::resolve_download_plan(&entry, requirement, download_cache.clone()).await?;
     let suffix = resolve::tool_id_suffix_from_identity(&resolved.identity)?;
     let tool_name_id = resolve::sanitize_tool_id_fragment(entry.name);
     let source_id = resolve::sanitize_tool_id_fragment(&resolved.source_identifier);
@@ -77,6 +77,25 @@ pub(crate) async fn provision_tool_payload(
     let install_root = paths.tools_dir.join(&tool_id);
 
     if install_root.exists() {
+        if let Ok(executable_paths) =
+            materialize::resolve_executable_paths(&entry, &resolved, &install_root)
+            && let Ok(command_selector) = materialize::build_command_selector(&executable_paths)
+            && let Ok(content_entries) =
+                materialize::collect_materialized_content_entries(&resolved, &install_root)
+            && !content_entries.is_empty()
+        {
+            return Ok(ProvisionedToolPayload {
+                tool_id,
+                command_selector,
+                content_entries,
+                identity: resolved.identity,
+                source_label: resolved.source_label,
+                source_identifier: resolved.source_identifier,
+                catalog: entry,
+                warnings: resolved.warnings,
+            });
+        }
+
         fs::remove_dir_all(&install_root).map_err(|source| MediaPmError::Io {
             operation: format!("resetting existing tool install directory for '{tool_id}'"),
             path: install_root.clone(),
@@ -90,7 +109,7 @@ pub(crate) async fn provision_tool_payload(
     })?;
 
     materialize::materialize_download_plan(
-        entry,
+        &entry,
         &resolved,
         &install_root,
         download_progress,
@@ -98,7 +117,7 @@ pub(crate) async fn provision_tool_payload(
     )
     .await?;
 
-    let executable_paths = materialize::resolve_executable_paths(entry, &resolved, &install_root)?;
+    let executable_paths = materialize::resolve_executable_paths(&entry, &resolved, &install_root)?;
     let command_selector = materialize::build_command_selector(&executable_paths)?;
     let content_entries =
         materialize::collect_materialized_content_entries(&resolved, &install_root)?;

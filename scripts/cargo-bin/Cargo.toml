@@ -4,5 +4,8 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.94.0"
 
+[lints]
+workspace = true
+
 [dependencies]
 cargo-run-bin = { version = "1.7.5", features = ["cli"] }

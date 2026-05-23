@@ -6,6 +6,7 @@
 mod ffmpeg;
 mod media_tagger;
 mod rsgain;
+mod sd;
 mod yt_dlp;
 
 use crate::error::MediaPmError;
@@ -65,6 +66,8 @@ pub(crate) enum DownloadPayloadMode {
     DirectBinary,
     /// Response bytes are treated as ZIP archive content.
     ZipArchive,
+    /// Response bytes are treated as TAR.GZ archive content.
+    TarGzArchive,
     /// Response bytes are treated as TAR.XZ archive content.
     TarXzArchive,
 }
@@ -161,8 +164,8 @@ impl ToolCatalogEntry {
 }
 
 /// In-memory catalog used for requirement reconciliation and downloads.
-const TOOL_CATALOG: [ToolCatalogEntry; 4] =
-    [ffmpeg::ENTRY, yt_dlp::ENTRY, rsgain::ENTRY, media_tagger::ENTRY];
+const TOOL_CATALOG: [ToolCatalogEntry; 5] =
+    [ffmpeg::ENTRY, yt_dlp::ENTRY, rsgain::ENTRY, media_tagger::ENTRY, sd::ENTRY];
 
 /// Resolves one catalog entry for a logical tool name.
 pub(crate) fn tool_catalog_entry(tool_name: &str) -> Result<ToolCatalogEntry, MediaPmError> {
@@ -194,11 +197,13 @@ mod tests {
         let yt_dlp = tool_catalog_entry("yt-dlp").expect("yt-dlp entry");
         let rsgain = tool_catalog_entry("rsgain").expect("rsgain entry");
         let media_tagger = tool_catalog_entry("media-tagger").expect("media-tagger entry");
+        let sd = tool_catalog_entry("sd").expect("sd entry");
 
         assert_eq!(ffmpeg.registry_track, "latest");
         assert_eq!(yt_dlp.registry_track, "latest");
         assert_eq!(rsgain.registry_track, "latest");
         assert_eq!(media_tagger.registry_track, "latest");
+        assert_eq!(sd.registry_track, "latest");
     }
 
     /// Verifies unknown logical tool names include supported-name diagnostics.
@@ -235,6 +240,48 @@ mod tests {
                 assert_eq!(release_repo, Some("yt-dlp/yt-dlp"));
             }
             other => panic!("expected static yt-dlp strategy, got {other:?}"),
+        }
+    }
+
+    /// Verifies managed executable tools keep cross-platform provisioning
+    /// metadata so planner/reconciler logic can build all-platform selectors
+    /// and content-map entries.
+    #[test]
+    fn managed_executable_catalog_entries_define_all_platform_metadata() {
+        for tool_name in ["ffmpeg", "yt-dlp", "rsgain", "sd"] {
+            let entry = tool_catalog_entry(tool_name).unwrap_or_else(|error| {
+                panic!("missing tool catalog entry '{tool_name}': {error}")
+            });
+
+            for os in super::ToolOs::all() {
+                assert!(
+                    !entry.executable_name.for_os(os).trim().is_empty(),
+                    "tool '{tool_name}' executable name for '{}' must be non-empty",
+                    os.as_str()
+                );
+            }
+
+            match entry.download {
+                ToolDownloadDescriptor::StaticUrls { urls, .. } => {
+                    for os in super::ToolOs::all() {
+                        assert!(
+                            !urls.for_os(os).is_empty(),
+                            "tool '{tool_name}' static URLs for '{}' must be non-empty",
+                            os.as_str()
+                        );
+                    }
+                }
+                ToolDownloadDescriptor::GitHubLatestZipAsset { markers, .. } => {
+                    for os in super::ToolOs::all() {
+                        assert!(
+                            !markers.for_os(os).is_empty(),
+                            "tool '{tool_name}' GitHub markers for '{}' must be non-empty",
+                            os.as_str()
+                        );
+                    }
+                }
+                ToolDownloadDescriptor::InternalLauncher => {}
+            }
         }
     }
 }
