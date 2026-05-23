@@ -965,7 +965,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let metadata_hash = import_source_fixture_into_cas(&cas, &metadata_bytes).await?;
     let metadata_hash_text = metadata_hash.to_string();
 
-    let auto_added_media_id = ingest_service.add_local_source(&source_path).await?;
+    let auto_added_media_id = ingest_service.add_local_source(&source_path, None).await?;
     let auto_added_document = load_mediapm_document(&paths.mediapm_ncl)?;
     let auto_added_source = auto_added_document.media.get(&auto_added_media_id).ok_or_else(|| {
         std::io::Error::other(format!(

@@ -28,6 +28,8 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
+use musicbrainz_rs::entity::recording::Recording;
+use musicbrainz_rs::prelude::*;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::runtime_env::{ensure_runtime_env_files, load_runtime_env_files};
 use mediapm_conductor::{
@@ -350,7 +352,11 @@ where
         clippy::too_many_lines,
         reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
     )]
-    pub fn add_media_source(&self, uri: &Url) -> Result<String, MediaPmError> {
+    pub async fn add_media_source(
+        &self,
+        uri: &Url,
+        recording_id: Option<&str>,
+    ) -> Result<String, MediaPmError> {
         validate_source_uri(uri)?;
 
         if uri.scheme() == "local" {
@@ -360,11 +366,21 @@ where
             ));
         }
 
+        let mb = if let Some(rid) = recording_id {
+            Some(fetch_mb_recording_metadata(rid).await?)
+        } else {
+            None
+        };
+
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let media_id = media_id_from_uri(uri);
         let OnlineSourceMetadata { title, artist, description } = fetch_online_source_metadata(uri);
-        let source_title = title.unwrap_or_else(|| remote_default_title(uri));
-        let source_description = description
+        let source_title = mb.as_ref().map(|m| m.title.clone()).or(title).unwrap_or_else(|| remote_default_title(uri));
+        let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
+        let source_description = mb
+            .as_ref()
+            .map(|m| build_remote_default_description(&m.title, Some(&m.artist)))
+            .or(description)
             .unwrap_or_else(|| build_remote_default_description(&source_title, artist.as_deref()));
 
         document.media.insert(
@@ -414,7 +430,9 @@ where
                                 metadata_key: "uploader".to_string(),
                                 transform: None,
                             }),
-                            MediaMetadataValueCandidate::Literal("unknown".to_string()),
+                            MediaMetadataValueCandidate::Literal(
+                                source_artist_literal.unwrap_or_else(|| "unknown".to_string()),
+                            ),
                         ]),
                     ),
                     (
@@ -554,7 +572,11 @@ where
     /// Returns [`MediaPmError`] when the local source path cannot be
     /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
     /// required conductor runtime documents cannot be prepared.
-    pub async fn add_local_source(&self, local_path: &Path) -> Result<String, MediaPmError> {
+    pub async fn add_local_source(
+        &self,
+        local_path: &Path,
+        recording_id: Option<&str>,
+    ) -> Result<String, MediaPmError> {
         let absolute = local_path.canonicalize().map_err(|source| MediaPmError::Io {
             operation: "canonicalizing local media path".to_string(),
             path: local_path.to_path_buf(),
@@ -586,10 +608,20 @@ where
             MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
         })?;
 
+        let mb = if let Some(rid) = recording_id {
+            Some(fetch_mb_recording_metadata(rid).await?)
+        } else {
+            None
+        };
+
         let media_id = media_id_from_local_path(&absolute);
         let LocalSourceMetadata { title, description } = fetch_local_source_metadata(&absolute);
-        let source_title = title.unwrap_or_else(|| local_default_title(&absolute));
-        let source_description = description
+        let source_title = mb.as_ref().map(|m| m.title.clone()).or(title).unwrap_or_else(|| local_default_title(&absolute));
+        let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
+        let source_description = mb
+            .as_ref()
+            .map(|m| build_remote_default_description(&m.title, Some(&m.artist)))
+            .or(description)
             .unwrap_or_else(|| build_local_default_description(&absolute, &source_title));
         let source_extension_with_dot = local_extension_with_dot(&absolute);
         let hash_text = hash.to_string();
@@ -631,7 +663,9 @@ where
                                 metadata_key: "album_artist".to_string(),
                                 transform: None,
                             }),
-                            MediaMetadataValueCandidate::Literal("unknown".to_string()),
+                            MediaMetadataValueCandidate::Literal(
+                                source_artist_literal.unwrap_or_else(|| "unknown".to_string()),
+                            ),
                         ]),
                     ),
                     (
@@ -1696,6 +1730,69 @@ fn build_remote_default_description(title: &str, artist: Option<&str>) -> String
     format!("title: {title}\nartist: {artist}")
 }
 
+/// Metadata resolved from a `MusicBrainz` recording ID.
+struct MbRecordingMetadata {
+    /// Recording title.
+    title: String,
+    /// Combined artist credit text (may be `"unknown"` when absent).
+    artist: String,
+}
+
+/// Validates that `id` is a well-formed UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
+fn validate_recording_id_format(id: &str) -> Result<(), MediaPmError> {
+    let parts: Vec<&str> = id.split('-').collect();
+    let valid = parts.len() == 5
+        && parts[0].len() == 8
+        && parts[1].len() == 4
+        && parts[2].len() == 4
+        && parts[3].len() == 4
+        && parts[4].len() == 12
+        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(MediaPmError::Workflow(format!(
+            "recording id '{id}' is not a valid UUID (expected 8-4-4-4-12 lowercase hex)"
+        )))
+    }
+}
+
+/// Fetches and validates a `MusicBrainz` recording, returning title and artist credit.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when the recording id is not a valid UUID or the
+/// `MusicBrainz` API call fails (network error, unknown id, etc.).
+async fn fetch_mb_recording_metadata(recording_id: &str) -> Result<MbRecordingMetadata, MediaPmError> {
+    validate_recording_id_format(recording_id)?;
+    let recording = Recording::fetch()
+        .id(recording_id)
+        .with_artists()
+        .execute_async()
+        .await
+        .map_err(|e| MediaPmError::Workflow(format!(
+            "MusicBrainz lookup for recording '{recording_id}' failed: {e}"
+        )))?;
+    let title = recording.title.clone();
+    let artist = recording
+        .artist_credit
+        .as_deref()
+        .filter(|credits| !credits.is_empty())
+        .map(|credits| {
+            let mut combined = String::new();
+            for credit in credits {
+                combined.push_str(&credit.name);
+                if let Some(join_phrase) = credit.joinphrase.as_deref() {
+                    combined.push_str(join_phrase);
+                }
+            }
+            combined
+        })
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    Ok(MbRecordingMetadata { title, artist })
+}
+
 /// Metadata tuple fetched by downloader-aware online probes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct OnlineSourceMetadata {
@@ -2050,7 +2147,7 @@ mod tests {
         fs::write(&local_file, b"local-bytes").expect("write local source");
         let folder = "music videos";
 
-        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
 
         service
             .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
@@ -2100,12 +2197,13 @@ mod tests {
 
     /// Ensures yt-dlp hierarchy preset adds infojson projection while keeping
     /// the same media-root style as the online demo (without sidecars folder).
-    #[test]
-    fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
+    #[tokio::test]
+    async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
         let root = tempdir().expect("tempdir");
         let service = MediaPmService::new_in_memory_at(root.path());
         let media_id = service
-            .add_media_source(&Url::parse("https://example.com/video").expect("url"))
+            .add_media_source(&Url::parse("https://example.com/video").expect("url"), None)
+            .await
             .expect("add remote source");
 
         service
@@ -2201,7 +2299,7 @@ mod tests {
         fs::write(&local_file, b"local-bytes").expect("write local source");
         let folder = "music videos";
 
-        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
         service
             .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
             .expect("add hierarchy preset");
@@ -2225,7 +2323,7 @@ mod tests {
         let local_file = root.path().join("local-source.txt");
         fs::write(&local_file, b"local-bytes").expect("write local source");
 
-        let media_id = service.add_local_source(&local_file).await.expect("add local source");
+        let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
         service
             .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
             .expect("add hierarchy preset");

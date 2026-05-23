@@ -151,6 +151,13 @@ struct MediaAddArgs {
     /// - `yt-dlp`: online URI (`http` or `https`)
     /// - `local`: filesystem path
     source: String,
+    /// Optional `MusicBrainz` recording UUID.
+    ///
+    /// When supplied the recording is validated and its title, artist, and
+    /// description are used as the authoritative source metadata instead of
+    /// the values probed from the source file or downloader tool.
+    #[arg(long)]
+    recording_id: Option<String>,
 }
 
 /// Media-add presets.
@@ -446,11 +453,11 @@ async fn main() -> anyhow::Result<()> {
                 let media_id = match args.preset {
                     MediaAddPreset::YtDlp => {
                         let uri = Url::parse(&args.source)?;
-                        service.add_media_source(&uri)?
+                        service.add_media_source(&uri, args.recording_id.as_deref()).await?
                     }
                     MediaAddPreset::Local => {
                         let path = PathBuf::from(args.source);
-                        service.add_local_source(&path).await?
+                        service.add_local_source(&path, args.recording_id.as_deref()).await?
                     }
                 };
                 println!("registered media source id={media_id}");

@@ -91,8 +91,8 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let service = MediaPmService::new_in_memory_at(&root);
 
     let local_source_path = write_dummy_local_source(&root)?;
-    let local_media_id = service.add_local_source(&local_source_path).await?;
-    let remote_media_id = service.add_media_source(&Url::parse(DUMMY_YOUTUBE_URL)?)?;
+    let local_media_id = service.add_local_source(&local_source_path, None).await?;
+    let remote_media_id = service.add_media_source(&Url::parse(DUMMY_YOUTUBE_URL)?, None).await?;
 
     service.add_media_hierarchy_preset(
         MediaHierarchyPreset::Local,
