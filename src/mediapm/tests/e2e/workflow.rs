@@ -197,21 +197,9 @@ async fn add_media_source_sets_remote_download_defaults() {
         Some(&TransformInputValue::String("https://example.com/video.mkv".to_string())),
     );
     assert_eq!(
-        yt_dlp_step.options.get("format"),
-        Some(&TransformInputValue::String(
-            "bestvideo[height<=144]+bestaudio/best[height<=144]/best".to_string(),
-        )),
-    );
-    assert_eq!(
-        yt_dlp_step.options.get("sub_langs"),
-        Some(&TransformInputValue::String(
-            "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig".to_string(),
-        )),
-    );
-    assert_eq!(
         yt_dlp_step.options.len(),
-        3,
-        "add_media_source should keep demo-style yt-dlp defaults"
+        1,
+        "add_media_source should only store the uri option (format and sub_langs are auto-selected by yt-dlp)"
     );
     assert_eq!(
         yt_dlp_step.output_variants.get("video"),

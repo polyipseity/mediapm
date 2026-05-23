@@ -485,22 +485,7 @@ where
                                 }),
                             ),
                         ]),
-                        options: BTreeMap::from([
-                            ("uri".to_string(), TransformInputValue::String(uri.to_string())),
-                            (
-                                "format".to_string(),
-                                TransformInputValue::String(
-                                    "bestvideo[height<=144]+bestaudio/best[height<=144]/best"
-                                        .to_string(),
-                                ),
-                            ),
-                            (
-                                "sub_langs".to_string(),
-                                TransformInputValue::String(
-                                    "en-en,en-AU,en-CA,en-IN,en-IE,en-GB,en-US,en-orig".to_string(),
-                                ),
-                            ),
-                        ]),
+                        options: BTreeMap::from([("uri".to_string(), TransformInputValue::String(normalize_source_uri(uri).to_string()))]),
                     },
                     MediaStep {
                         tool: MediaStepTool::Ffmpeg,
@@ -1407,6 +1392,28 @@ fn export_mediapm_nickel_config_schemas(paths: &MediaPmPaths) -> Result<(), Medi
     }
 
     Ok(())
+}
+
+/// `YouTube` URLs are canonicalized to `https://www.youtube.com/watch?v={video_id}`
+/// so that tracking parameters are stripped and short (`youtu.be`) links are
+/// expanded.  All other URLs are returned unchanged.
+fn normalize_source_uri(uri: &Url) -> Url {
+    // Extract YouTube video id from www.youtube.com or youtu.be forms.
+    let host = uri.host_str().unwrap_or("");
+    let video_id: Option<String> = if host == "www.youtube.com" || host == "youtube.com" {
+        uri.query_pairs().find(|(k, _)| k == "v").map(|(_, v)| v.into_owned())
+    } else if host == "youtu.be" {
+        uri.path_segments().and_then(|mut s| s.next()).map(ToOwned::to_owned)
+    } else {
+        None
+    };
+
+    if let Some(id) = video_id {
+        Url::parse(&format!("https://www.youtube.com/watch?v={id}"))
+            .unwrap_or_else(|_| uri.clone())
+    } else {
+        uri.clone()
+    }
 }
 
 /// Validates source URI policy (`http`, `https`, `local`).
