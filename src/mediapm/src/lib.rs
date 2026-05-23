@@ -1256,7 +1256,11 @@ fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
         hierarchy_media_file_node(HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "video");
     video.id = Some(format!("{media_id}.video"));
 
-    let mut archive = hierarchy_media_file_node("archive.txt", media_id, "archive");
+    let mut archive = hierarchy_media_file_node(
+        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].archive.txt",
+        media_id,
+        "archive",
+    );
     archive.id = Some(format!("{media_id}.archive"));
 
     let mut description = hierarchy_media_file_node(
@@ -1304,7 +1308,7 @@ fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
             replacement: "folder.$1".to_string(),
         }],
     );
-    thumbnails_root.id = Some(format!("{media_id}.thumbnails_root"));
+    thumbnails_root.id = Some(format!("{media_id}.thumbnails.folder"));
 
     let mut links = hierarchy_media_folder_node(
         "links",
