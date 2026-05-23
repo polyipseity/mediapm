@@ -344,11 +344,11 @@ fn render_field_name(name: &str) -> String {
 /// Renders a serde JSON value as deterministic Nickel source.
 /// Renders `text` as a Nickel multiline string literal using 2-percent delimiters.
 ///
-/// Uses `m%%"..."%%m` so content that contains the 1-percent closing sequence
-/// `"%m` is still safe.  Literal `%{` interpolation markers are escaped to `%%{`.
+/// Uses `m%%"..."%%` so content that contains the 1-percent closing sequence
+/// `"%` is still safe. Literal `%{` interpolation markers are escaped to `%%{`.
 fn render_nickel_multiline_string(text: &str) -> String {
     let escaped = text.replace("%{", "%%{");
-    format!("m%%\"\n{escaped}\n\"%%m")
+    format!("m%%\"\n{escaped}\n\"%%")
 }
 
 /// Renders a serde JSON value as deterministic Nickel source.

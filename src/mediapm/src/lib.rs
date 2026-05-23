@@ -2274,7 +2274,7 @@ mod tests {
                 format!("{media_id}.links"),
                 format!("{media_id}.subtitles"),
                 format!("{media_id}.thumbnails"),
-                format!("{media_id}.thumbnails_root"),
+                format!("{media_id}.thumbnails.folder"),
                 format!("{media_id}.video"),
             ])
         );

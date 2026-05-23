@@ -3868,11 +3868,11 @@ fn is_nickel_reserved_identifier(input: &str) -> bool {
 /// Renders JSON as deterministic Nickel source with sorted object keys.
 /// Renders `text` as a Nickel multiline string literal using 2-percent delimiters.
 ///
-/// Uses `m%%"..."%%m` so content that contains the 1-percent closing sequence
-/// `"%m` is still safe.  Literal `%{` interpolation markers are escaped to `%%{`.
+/// Uses `m%%"..."%%` so content that contains the 1-percent closing sequence
+/// `"%` is still safe. Literal `%{` interpolation markers are escaped to `%%{`.
 fn render_nickel_multiline_string(text: &str) -> String {
     let escaped = text.replace("%{", "%%{");
-    format!("m%%\"\n{escaped}\n\"%%m")
+    format!("m%%\"\n{escaped}\n\"%%")
 }
 
 /// Renders JSON as deterministic Nickel source with sorted object keys.
