@@ -34,6 +34,7 @@ use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
     RuntimeStoragePaths, SimpleConductor,
 };
+use rand::Rng as _;
 use url::Url;
 
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
@@ -485,7 +486,10 @@ where
                                 }),
                             ),
                         ]),
-                        options: BTreeMap::from([("uri".to_string(), TransformInputValue::String(normalize_source_uri(uri).to_string()))]),
+                        options: BTreeMap::from([(
+                            "uri".to_string(),
+                            TransformInputValue::String(normalize_source_uri(uri).to_string()),
+                        )]),
                     },
                     MediaStep {
                         tool: MediaStepTool::Ffmpeg,
@@ -1409,8 +1413,7 @@ fn normalize_source_uri(uri: &Url) -> Url {
     };
 
     if let Some(id) = video_id {
-        Url::parse(&format!("https://www.youtube.com/watch?v={id}"))
-            .unwrap_or_else(|_| uri.clone())
+        Url::parse(&format!("https://www.youtube.com/watch?v={id}")).unwrap_or_else(|_| uri.clone())
     } else {
         uri.clone()
     }
@@ -1426,16 +1429,58 @@ fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
     }
 }
 
-/// Derives stable media id from canonical source URI.
-fn media_id_from_uri(uri: &Url) -> String {
-    let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
-    format!("media-{}", &hash[..12])
+/// `NanoID` alphabet: URL-safe characters (`A-Za-z0-9_-`), 64 symbols.
+const NANOID_ALPHABET: &[u8; 64] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
+
+/// Generates an 8-character `NanoID` using the thread-local RNG.
+///
+/// The ID is drawn from the 64-symbol URL-safe alphabet and is suitable for
+/// stable user-facing identifiers.  Each call produces an independent,
+/// non-deterministic value; test code that requires determinism must use a
+/// seeded `StdRng` with the `NANOID_ALPHABET` constant directly.
+fn nanoid_8() -> String {
+    let mut rng = rand::rng();
+    (0..8)
+        .map(|_| {
+            let idx = (rng.random::<u8>() & 0x3F) as usize;
+            NANOID_ALPHABET[idx] as char
+        })
+        .collect()
 }
 
-/// Derives stable local media id from canonical filesystem path.
-fn media_id_from_local_path(path: &Path) -> String {
-    let hash = mediapm_cas::Hash::from_content(path.to_string_lossy().as_bytes()).to_hex();
-    format!("local-{}", &hash[..12])
+/// Derives a yt-dlp media id from a canonical source URI.
+///
+/// For `YouTube` (`www.youtube.com` / `youtube.com` / `youtu.be`), the id is
+/// `youtube.<video_id>` using the `v=` query parameter so the identifier is
+/// stable and human-readable.  For all other hosts the id falls back to
+/// `<host_slug>.<content_hash_12>` where the hash provides collision
+/// resistance.
+fn media_id_from_uri(uri: &Url) -> String {
+    let host = uri.host_str().unwrap_or("");
+    if host == "www.youtube.com" || host == "youtube.com" {
+        if let Some((_, video_id)) = uri.query_pairs().find(|(k, _)| k == "v") {
+            return format!("youtube.{video_id}");
+        }
+    } else if host == "youtu.be"
+        && let Some(video_id) = uri.path_segments().and_then(|mut s| s.next())
+        && !video_id.is_empty()
+    {
+        return format!("youtube.{video_id}");
+    }
+    // Generic fallback: domain slug + 12-char content hash for stability.
+    let host_slug = host.trim_start_matches("www.").replace('.', "-");
+    let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
+    format!("{host_slug}.{}", &hash[..12])
+}
+
+/// Derives a stable local media id for a new local source registration.
+///
+/// Each call returns a fresh 8-character `NanoID` so that multiple imports of
+/// different files never collide even when the file names are identical.
+/// The `local.` prefix makes the id preset visible in config files.
+fn media_id_from_local_path(_path: &Path) -> String {
+    format!("local.{}", nanoid_8())
 }
 
 /// Merges config-declared runtime storage with service-level overrides.
