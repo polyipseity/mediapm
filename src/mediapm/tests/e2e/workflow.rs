@@ -226,14 +226,6 @@ async fn add_media_source_sets_remote_download_defaults() {
         })),
     );
     assert_eq!(
-        yt_dlp_step.output_variants.get("subtitles_en"),
-        Some(&serde_json::json!({
-            "kind": "subtitles",
-            "capture_kind": "file",
-            "langs": "en",
-        })),
-    );
-    assert_eq!(
         yt_dlp_step.output_variants.get("thumbnails"),
         Some(&serde_json::json!({
             "kind": "thumbnails",
@@ -263,7 +255,7 @@ async fn add_media_source_sets_remote_download_defaults() {
             "kind": "archive",
         })),
     );
-    assert_eq!(yt_dlp_step.output_variants.len(), 8);
+    assert_eq!(yt_dlp_step.output_variants.len(), 7);
 
     assert_eq!(ffmpeg_step.tool, MediaStepTool::Ffmpeg);
     assert_eq!(ffmpeg_step.input_variants, vec!["video".to_string()]);
@@ -287,7 +279,7 @@ async fn add_media_source_sets_remote_download_defaults() {
     assert_eq!(media_tagger_step.tool, MediaStepTool::MediaTagger);
     assert_eq!(media_tagger_step.input_variants, vec!["video".to_string()]);
     assert_eq!(
-        media_tagger_step.output_variants.get("video_tagged"),
+        media_tagger_step.output_variants.get("video"),
         Some(&serde_json::json!({
             "kind": "primary",
             "extension": "mkv",
@@ -295,9 +287,9 @@ async fn add_media_source_sets_remote_download_defaults() {
     );
 
     assert_eq!(rsgain_step.tool, MediaStepTool::Rsgain);
-    assert_eq!(rsgain_step.input_variants, vec!["video_tagged".to_string()]);
+    assert_eq!(rsgain_step.input_variants, vec!["video".to_string()]);
     assert_eq!(
-        rsgain_step.output_variants.get("video_tagged"),
+        rsgain_step.output_variants.get("video"),
         Some(&serde_json::json!({
             "kind": "primary",
             "extension": "mkv",
@@ -315,7 +307,7 @@ async fn add_media_source_sets_remote_download_defaults() {
                     MediaMetadataValueCandidate::Variant(second),
                     MediaMetadataValueCandidate::Literal(_),
                 ]
-                if first.variant == "video_tagged"
+                if first.variant == "video"
                     && first.metadata_key == "title"
                     && second.variant == "infojson"
                     && second.metadata_key == "title"
@@ -331,7 +323,7 @@ async fn add_media_source_sets_remote_download_defaults() {
                     MediaMetadataValueCandidate::Variant(second),
                     MediaMetadataValueCandidate::Literal(literal),
                 ]
-                if first.variant == "video_tagged"
+                if first.variant == "video"
                     && first.metadata_key == "artist"
                     && second.variant == "infojson"
                     && second.metadata_key == "uploader"
@@ -344,7 +336,7 @@ async fn add_media_source_sets_remote_download_defaults() {
     assert!(matches!(
         metadata.get("video_ext"),
         Some(MediaMetadataValue::Variant(binding))
-            if binding.variant == "video_tagged"
+            if binding.variant == "video"
                 && binding.metadata_key == "format_name"
                 && binding
                     .transform

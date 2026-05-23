@@ -378,7 +378,7 @@ where
                         "title".to_string(),
                         MediaMetadataValue::Fallback(vec![
                             MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video_tagged".to_string(),
+                                variant: "video".to_string(),
                                 metadata_key: "title".to_string(),
                                 transform: None,
                             }),
@@ -394,7 +394,7 @@ where
                         "artist".to_string(),
                         MediaMetadataValue::Fallback(vec![
                             MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video_tagged".to_string(),
+                                variant: "video".to_string(),
                                 metadata_key: "artist".to_string(),
                                 transform: None,
                             }),
@@ -417,7 +417,7 @@ where
                     (
                         "video_ext".to_string(),
                         MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                            variant: "video_tagged".to_string(),
+                            variant: "video".to_string(),
                             metadata_key: "format_name".to_string(),
                             transform: Some(MediaMetadataRegexTransform {
                                 pattern: "(?i)matroska(?:,.*)?".to_string(),
@@ -442,14 +442,6 @@ where
                                 "subtitles".to_string(),
                                 serde_json::json!({
                                     "kind": "subtitles",
-                                }),
-                            ),
-                            (
-                                "subtitles_en".to_string(),
-                                serde_json::json!({
-                                    "kind": "subtitles",
-                                    "capture_kind": "file",
-                                    "langs": "en",
                                 }),
                             ),
                             (
@@ -526,7 +518,7 @@ where
                         tool: MediaStepTool::MediaTagger,
                         input_variants: vec!["video".to_string()],
                         output_variants: BTreeMap::from([(
-                            "video_tagged".to_string(),
+                            "video".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
                                 "extension": "mkv",
@@ -536,9 +528,9 @@ where
                     },
                     MediaStep {
                         tool: MediaStepTool::Rsgain,
-                        input_variants: vec!["video_tagged".to_string()],
+                        input_variants: vec!["video".to_string()],
                         output_variants: BTreeMap::from([(
-                            "video_tagged".to_string(),
+                            "video".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
                                 "extension": "mkv",
@@ -1160,9 +1152,6 @@ const HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE: &str =
 const HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE: &str =
     "${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
 
-/// Demo-style yt-dlp untagged-media filename template.
-const HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE: &str = "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}";
-
 /// Demo-style yt-dlp tagged-media filename template.
 const HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}";
@@ -1175,16 +1164,8 @@ const HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE: &str =
 const HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt";
 
-/// Demo-style yt-dlp selected subtitle filename template.
-const HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
-
 /// Demo-style root-sidecar rename pattern for flattened file-family variants.
 const HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN: &str = "^.*\\.([^.]*)$";
-
-/// Demo-style root-sidecar rename replacement for flattened file-family variants.
-const HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1";
 
 /// Normalizes one hierarchy-root folder CLI value.
 ///
@@ -1257,56 +1238,71 @@ fn hierarchy_media_folder_node(
 /// Builds media-root children for the local hierarchy preset.
 #[must_use]
 fn local_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
-    vec![hierarchy_media_file_node(HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "media")]
+    let mut media =
+        hierarchy_media_file_node(HIERARCHY_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "media");
+    media.id = Some(format!("{media_id}.media"));
+    vec![media]
 }
 
 /// Builds media-root children for the yt-dlp hierarchy preset.
 #[must_use]
 fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNode> {
-    vec![
-        hierarchy_media_file_node(HIERARCHY_YT_DLP_UNTAGGED_MEDIA_FILE_TEMPLATE, media_id, "video"),
-        hierarchy_media_file_node(
-            HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE,
-            media_id,
-            "video_tagged",
-        ),
-        hierarchy_media_folder_node(
-            "subtitles",
-            media_id,
-            vec!["subtitles".to_string()],
-            Vec::new(),
-        ),
-        hierarchy_media_folder_node(
-            "thumbnails",
-            media_id,
-            vec!["thumbnails".to_string()],
-            Vec::new(),
-        ),
-        hierarchy_media_folder_node("links", media_id, vec!["links".to_string()], Vec::new()),
-        hierarchy_media_file_node("archive.txt", media_id, "archive"),
-        hierarchy_media_file_node("description.txt", media_id, "description"),
-        hierarchy_media_file_node("info.json", media_id, "infojson"),
-        hierarchy_media_file_node(
-            HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE,
-            media_id,
-            "description",
-        ),
-        hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson"),
-        hierarchy_media_file_node(
-            HIERARCHY_YT_DLP_SUBTITLE_EN_FILE_TEMPLATE,
-            media_id,
-            "subtitles_en",
-        ),
-        hierarchy_media_folder_node(
-            "",
-            media_id,
-            vec!["thumbnails".to_string(), "links".to_string()],
-            vec![HierarchyFolderRenameRule {
-                pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
-                replacement: HIERARCHY_YT_DLP_ROOT_RENAME_REPLACEMENT.to_string(),
-            }],
-        ),
-    ]
+    let mut video =
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_TAGGED_MEDIA_FILE_TEMPLATE, media_id, "video");
+    video.id = Some(format!("{media_id}.video"));
+
+    let mut archive = hierarchy_media_file_node("archive.txt", media_id, "archive");
+    archive.id = Some(format!("{media_id}.archive"));
+
+    let mut description = hierarchy_media_file_node(
+        HIERARCHY_YT_DLP_DESCRIPTION_FILE_TEMPLATE,
+        media_id,
+        "description",
+    );
+    description.id = Some(format!("{media_id}.description"));
+
+    let mut infojson =
+        hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson");
+    infojson.id = Some(format!("{media_id}.infojson"));
+
+    let mut subtitles = hierarchy_media_folder_node(
+        "subtitles",
+        media_id,
+        vec!["subtitles".to_string()],
+        vec![HierarchyFolderRenameRule {
+            pattern: "^([^.]+)\\.([^.]*)$".to_string(),
+            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1.$2"
+                .to_string(),
+        }],
+    );
+    subtitles.id = Some(format!("{media_id}.subtitles"));
+
+    let mut thumbnails = hierarchy_media_folder_node(
+        "thumbnails",
+        media_id,
+        vec!["thumbnails".to_string()],
+        vec![HierarchyFolderRenameRule {
+            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+            replacement:
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
+                    .to_string(),
+        }],
+    );
+    thumbnails.id = Some(format!("{media_id}.thumbnails"));
+
+    let mut links = hierarchy_media_folder_node(
+        "links",
+        media_id,
+        vec!["links".to_string()],
+        vec![HierarchyFolderRenameRule {
+            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
+                .to_string(),
+        }],
+    );
+    links.id = Some(format!("{media_id}.links"));
+
+    vec![video, archive, description, infojson, subtitles, thumbnails, links]
 }
 
 /// Builds one hierarchy node tree for the selected preset.
@@ -1330,7 +1326,7 @@ fn build_hierarchy_preset_node(
     HierarchyNode {
         path: normalized_folder.to_string(),
         kind: HierarchyNodeKind::Folder,
-        id: Some(hierarchy_id),
+        id: None,
         media_id: Some(media_id.to_string()),
         variant: None,
         variants: Vec::new(),
@@ -1340,7 +1336,7 @@ fn build_hierarchy_preset_node(
         children: vec![HierarchyNode {
             path: media_root_template,
             kind: HierarchyNodeKind::Folder,
-            id: None,
+            id: Some(hierarchy_id),
             media_id: Some(media_id.to_string()),
             variant: None,
             variants: Vec::new(),
@@ -2010,7 +2006,9 @@ mod tests {
             1,
             "local hierarchy preset should exist exactly once for one media id/folder"
         );
+        assert!(matching_nodes[0].id.is_none(), "outer hierarchy folder should not carry an id");
         let media_root = &matching_nodes[0].children[0];
+        assert!(media_root.id.is_some(), "inner media-root folder should retain a stable id");
         assert_eq!(
             media_root.path, "${media.metadata.title} [${media.id}]",
             "local hierarchy preset should keep stable media-root template"
@@ -2018,6 +2016,10 @@ mod tests {
         let variants: Vec<_> =
             media_root.children.iter().map(|node| node.variant.as_deref().unwrap_or("")).collect();
         assert_eq!(variants, vec!["media"]);
+        assert_eq!(
+            media_root.children[0].id.as_deref(),
+            Some(format!("{media_id}.media").as_str())
+        );
     }
 
     /// Ensures yt-dlp hierarchy preset adds infojson projection while keeping
@@ -2067,10 +2069,26 @@ mod tests {
                 "infojson".to_string(),
                 "links".to_string(),
                 "subtitles".to_string(),
-                "subtitles_en".to_string(),
                 "thumbnails".to_string(),
                 "video".to_string(),
-                "video_tagged".to_string(),
+            ])
+        );
+
+        let variant_ids: std::collections::BTreeSet<_> = media_root
+            .children
+            .iter()
+            .map(|node| node.id.as_deref().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(
+            variant_ids,
+            std::collections::BTreeSet::from([
+                format!("{media_id}.archive"),
+                format!("{media_id}.description"),
+                format!("{media_id}.infojson"),
+                format!("{media_id}.links"),
+                format!("{media_id}.subtitles"),
+                format!("{media_id}.thumbnails"),
+                format!("{media_id}.video"),
             ])
         );
     }
