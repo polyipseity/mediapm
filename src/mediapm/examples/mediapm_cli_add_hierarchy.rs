@@ -175,7 +175,15 @@ mod tests {
             .map(|node| {
                 assert_eq!(node.kind, HierarchyNodeKind::Folder);
                 assert!(node.id.is_none(), "outer hierarchy folder should not carry an id");
-                node.media_id.as_deref().expect("preset root should set media_id").to_string()
+                assert!(
+                    node.media_id.is_none(),
+                    "preset root folder should not carry media_id"
+                );
+                node.children
+                    .first()
+                    .and_then(|child| child.media_id.as_deref())
+                    .expect("media-root child should set media_id")
+                    .to_string()
             })
             .collect();
 
@@ -193,7 +201,7 @@ mod tests {
                     node.children.first().expect("preset root should include media root");
                 assert_eq!(
                     media_root.id.as_deref(),
-                    node.media_id.as_deref(),
+                    media_root.media_id.as_deref(),
                     "media-root child id should match the media id"
                 );
                 let variants: BTreeSet<_> = media_root

@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mediapm::{
-    MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage, ToolRegistryStatus,
+    AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage,
+    ToolRegistryStatus,
     builtins::media_tagger::InternalMediaTaggerOptions, ensure_global_directory_layout,
     global_tool_cache_clear, global_tool_cache_prune_expired, global_tool_cache_status,
     load_runtime_dotenv_for_root, resolve_default_global_paths,
@@ -158,6 +159,9 @@ struct MediaAddArgs {
     /// the values probed from the source file or downloader tool.
     #[arg(long)]
     recording_id: Option<String>,
+    /// Insertion position policy for media-map mutation.
+    #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
+    insert_position: InsertPosition,
 }
 
 /// Media-add presets.
@@ -175,11 +179,18 @@ struct HierarchyAddArgs {
     /// Hierarchy-add preset.
     #[arg(long, value_enum)]
     preset: HierarchyPreset,
-    /// Hierarchy root folder where this preset should be applied.
-    #[arg(long)]
-    folder: String,
+    /// Optional hierarchy root folder.
+    ///
+    /// When omitted, preset defaults are used:
+    /// - local: `music videos/local`
+    /// - yt-dlp: `music videos/online`
+    #[arg(long = "root-folder", alias = "folder")]
+    root_folder: Option<String>,
     /// Existing media id in `mediapm.ncl`.
     media_id: String,
+    /// Insertion position policy inside the affected root-folder group.
+    #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
+    insert_position: InsertPosition,
 }
 
 /// Arguments for `mediapm hierarchy remove`.
@@ -188,11 +199,27 @@ struct HierarchyRemoveArgs {
     /// Hierarchy-remove preset.
     #[arg(long, value_enum)]
     preset: HierarchyPreset,
-    /// Hierarchy root folder where this preset was applied.
-    #[arg(long)]
-    folder: String,
+    /// Optional hierarchy root folder.
+    ///
+    /// When omitted, preset defaults are used:
+    /// - local: `music videos/local`
+    /// - yt-dlp: `music videos/online`
+    #[arg(long = "root-folder", alias = "folder")]
+    root_folder: Option<String>,
     /// Existing media id in `mediapm.ncl`.
     media_id: String,
+}
+
+/// CLI insertion-position values for add commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum InsertPosition {
+    /// Keep deterministic sorted insertion behavior.
+    #[default]
+    Sorted,
+    /// Insert at the beginning of the affected logical group.
+    Beginning,
+    /// Insert at the end of the affected logical group.
+    End,
 }
 
 /// Hierarchy presets.
@@ -453,11 +480,23 @@ async fn main() -> anyhow::Result<()> {
                 let media_id = match args.preset {
                     MediaAddPreset::YtDlp => {
                         let uri = Url::parse(&args.source)?;
-                        service.add_media_source(&uri, args.recording_id.as_deref()).await?
+                        service
+                            .add_media_source_with_position(
+                                &uri,
+                                args.recording_id.as_deref(),
+                                map_insert_position(args.insert_position),
+                            )
+                            .await?
                     }
                     MediaAddPreset::Local => {
                         let path = PathBuf::from(args.source);
-                        service.add_local_source(&path, args.recording_id.as_deref()).await?
+                        service
+                            .add_local_source_with_position(
+                                &path,
+                                args.recording_id.as_deref(),
+                                map_insert_position(args.insert_position),
+                            )
+                            .await?
                     }
                 };
                 println!("registered media source id={media_id}");
@@ -472,23 +511,36 @@ async fn main() -> anyhow::Result<()> {
         Command::Hierarchy { command } => match command {
             HierarchyCommand::Add(args) => {
                 let preset = map_hierarchy_preset(args.preset);
-                service.add_media_hierarchy_preset(preset, &args.media_id, &args.folder)?;
+                let effective_root = args
+                    .root_folder
+                    .as_deref()
+                    .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
+                service.add_media_hierarchy_preset_with_position(
+                    preset,
+                    &args.media_id,
+                    args.root_folder.as_deref(),
+                    map_insert_position(args.insert_position),
+                )?;
                 println!(
                     "registered hierarchy preset={} for media id={} at folder={}",
                     args.preset.to_possible_value().expect("value enum").get_name(),
                     args.media_id,
-                    args.folder
+                    effective_root
                 );
             }
             HierarchyCommand::Remove(args) => {
                 let preset = map_hierarchy_preset(args.preset);
+                let effective_root = args
+                    .root_folder
+                    .as_deref()
+                    .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
                 let removed_nodes =
-                    service.remove_media_hierarchy_preset(preset, &args.media_id, &args.folder)?;
+                    service.remove_media_hierarchy_preset(preset, &args.media_id, effective_root)?;
                 println!(
                     "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
                     args.preset.to_possible_value().expect("value enum").get_name(),
                     args.media_id,
-                    args.folder
+                    effective_root
                 );
             }
         },
@@ -576,6 +628,25 @@ fn map_hierarchy_preset(preset: HierarchyPreset) -> MediaHierarchyPreset {
     }
 }
 
+/// Converts CLI insertion-position values into service-layer insertion policy.
+#[must_use]
+fn map_insert_position(position: InsertPosition) -> AddInsertPosition {
+    match position {
+        InsertPosition::Sorted => AddInsertPosition::Sorted,
+        InsertPosition::Beginning => AddInsertPosition::Beginning,
+        InsertPosition::End => AddInsertPosition::End,
+    }
+}
+
+/// Returns preset-specific default hierarchy root folder for CLI add/remove.
+#[must_use]
+fn default_hierarchy_root_for_preset(preset: HierarchyPreset) -> &'static str {
+    match preset {
+        HierarchyPreset::Local => "music videos/local",
+        HierarchyPreset::YtDlp => "music videos/online",
+    }
+}
+
 /// Executes Phase-1 CAS CLI passthrough in-process.
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
@@ -633,59 +704,75 @@ mod tests {
         assert!(parsed.is_ok(), "media remove route must parse");
     }
 
-    /// Protects hierarchy-add local preset route with required folder.
+    /// Protects hierarchy-add local preset route with explicit root folder.
     #[test]
-    fn hierarchy_add_local_route_with_folder_is_parsed() {
+    fn hierarchy_add_local_route_with_root_folder_is_parsed() {
         let parsed = Cli::try_parse_from([
             "mediapm",
             "hierarchy",
             "add",
             "--preset",
             "local",
-            "--folder",
+            "--root-folder",
             "music videos",
             "media-123",
         ]);
         assert!(parsed.is_ok(), "hierarchy add local route must parse");
     }
 
-    /// Protects hierarchy-add yt-dlp preset route with required folder.
+    /// Protects hierarchy-add yt-dlp preset route with explicit root folder.
     #[test]
-    fn hierarchy_add_yt_dlp_route_with_folder_is_parsed() {
+    fn hierarchy_add_yt_dlp_route_with_root_folder_is_parsed() {
         let parsed = Cli::try_parse_from([
             "mediapm",
             "hierarchy",
             "add",
             "--preset",
             "yt-dlp",
-            "--folder",
+            "--root-folder",
             "music videos",
             "media-123",
         ]);
         assert!(parsed.is_ok(), "hierarchy add yt-dlp route must parse");
     }
 
-    /// Protects hierarchy-remove route with required folder.
+    /// Protects hierarchy-remove route with explicit root folder.
     #[test]
-    fn hierarchy_remove_route_with_folder_is_parsed() {
+    fn hierarchy_remove_route_with_root_folder_is_parsed() {
         let parsed = Cli::try_parse_from([
             "mediapm",
             "hierarchy",
             "remove",
             "--preset",
             "yt-dlp",
-            "--folder",
+            "--root-folder",
             "music videos",
             "media-123",
         ]);
         assert!(parsed.is_ok(), "hierarchy remove route must parse");
     }
 
-    /// Protects required folder argument for hierarchy-add commands.
+    /// Protects hierarchy-add route when preset default root folder is used.
     #[test]
-    fn hierarchy_add_requires_folder_argument() {
+    fn hierarchy_add_allows_omitting_root_folder_for_default() {
         let parsed =
             Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "yt-dlp", "media-123"]);
-        assert!(parsed.is_err(), "hierarchy add must require --folder");
+        assert!(parsed.is_ok(), "hierarchy add should allow preset default root folder");
+    }
+
+    /// Protects media-add insertion-position CLI parsing.
+    #[test]
+    fn media_add_accepts_insert_position() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "media",
+            "add",
+            "--preset",
+            "yt-dlp",
+            "--insert-position",
+            "beginning",
+            "https://example.com/media",
+        ]);
+        assert!(parsed.is_ok(), "media add should parse insert-position values");
     }
 }

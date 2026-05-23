@@ -118,6 +118,17 @@ pub enum MediaHierarchyPreset {
     YtDlp,
 }
 
+/// Supported insertion policies for add-command mutations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddInsertPosition {
+    /// Keep deterministic sorted insertion behavior (default).
+    Sorted,
+    /// Insert at the beginning of the affected logical group.
+    Beginning,
+    /// Insert at the end of the affected logical group.
+    End,
+}
+
 impl MediaHierarchyPreset {
     /// Returns stable identifier text for user-facing diagnostics and ids.
     #[must_use]
@@ -348,14 +359,31 @@ where
     ///
     /// Returns [`MediaPmError`] when source validation fails, config cannot be
     /// loaded/saved, or default source metadata cannot be synthesized.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-    )]
     pub async fn add_media_source(
         &self,
         uri: &Url,
         recording_id: Option<&str>,
+    ) -> Result<String, MediaPmError> {
+        self.add_media_source_with_position(uri, recording_id, AddInsertPosition::Sorted).await
+    }
+
+    /// Adds one online media source to `mediapm.ncl` with one insertion
+    /// policy hint for CLI parity.
+    ///
+    /// `media` registry entries are key-addressed and persisted in sorted key
+    /// order, so all insertion modes currently converge to deterministic key
+    /// insertion semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when source validation fails, config cannot be
+    /// loaded/saved, or default source metadata cannot be synthesized.
+    #[allow(clippy::too_many_lines)]
+    pub async fn add_media_source_with_position(
+        &self,
+        uri: &Url,
+        recording_id: Option<&str>,
+        _position: AddInsertPosition,
     ) -> Result<String, MediaPmError> {
         validate_source_uri(uri)?;
 
@@ -570,14 +598,33 @@ where
     /// Returns [`MediaPmError`] when the local source path cannot be
     /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
     /// required conductor runtime documents cannot be prepared.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-    )]
     pub async fn add_local_source(
         &self,
         local_path: &Path,
         recording_id: Option<&str>,
+    ) -> Result<String, MediaPmError> {
+        self.add_local_source_with_position(local_path, recording_id, AddInsertPosition::Sorted)
+            .await
+    }
+
+    /// Adds one local media source to `mediapm.ncl` with one insertion-policy
+    /// hint for CLI parity.
+    ///
+    /// `media` registry entries are key-addressed and persisted in sorted key
+    /// order, so all insertion modes currently converge to deterministic key
+    /// insertion semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the local source path cannot be
+    /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
+    /// required conductor runtime documents cannot be prepared.
+    #[allow(clippy::too_many_lines)]
+    pub async fn add_local_source_with_position(
+        &self,
+        local_path: &Path,
+        recording_id: Option<&str>,
+        _position: AddInsertPosition,
     ) -> Result<String, MediaPmError> {
         let absolute = local_path.canonicalize().map_err(|source| MediaPmError::Io {
             operation: "canonicalizing local media path".to_string(),
@@ -703,6 +750,34 @@ where
         media_id: &str,
         folder: &str,
     ) -> Result<(), MediaPmError> {
+        self.add_media_hierarchy_preset_with_position(
+            preset,
+            media_id,
+            Some(folder),
+            AddInsertPosition::Sorted,
+        )
+    }
+
+    /// Adds one hierarchy preset node tree for an existing media id with one
+    /// insertion policy.
+    ///
+    /// `folder` may be omitted to use preset-specific defaults:
+    /// - local: `music videos/local`
+    /// - yt-dlp: `music videos/online`
+    ///
+    /// This operation is idempotent by generated hierarchy id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the media id is unknown, effective folder
+    /// root is empty/invalid, or `mediapm.ncl` cannot be loaded/saved.
+    pub fn add_media_hierarchy_preset_with_position(
+        &self,
+        preset: MediaHierarchyPreset,
+        media_id: &str,
+        folder: Option<&str>,
+        position: AddInsertPosition,
+    ) -> Result<(), MediaPmError> {
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
 
         if !document.media.contains_key(media_id) {
@@ -712,18 +787,25 @@ where
             )));
         }
 
+        let folder = folder.unwrap_or_else(|| default_hierarchy_folder_root_for_preset(preset));
         let normalized_folder = normalize_hierarchy_folder_root(folder)?;
         let hierarchy_id = hierarchy_preset_node_id(media_id);
         if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
             return Ok(());
         }
 
-        document.hierarchy.push(build_hierarchy_preset_node(
+        let node = build_hierarchy_preset_node(
             preset,
             media_id,
             &normalized_folder,
             hierarchy_id,
-        ));
+        );
+        insert_hierarchy_preset_node(
+            &mut document.hierarchy,
+            node,
+            &normalized_folder,
+            position,
+        );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
         self.reconcile_workflows_after_config_edit(&document)?;
@@ -1224,6 +1306,92 @@ fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, MediaPmError>
     Ok(normalized)
 }
 
+/// Returns default hierarchy root folder for one preset.
+#[must_use]
+fn default_hierarchy_folder_root_for_preset(preset: MediaHierarchyPreset) -> &'static str {
+    match preset {
+        MediaHierarchyPreset::Local => "music videos/local",
+        MediaHierarchyPreset::YtDlp => "music videos/online",
+    }
+}
+
+/// Returns sortable hierarchy-id text from one preset root node.
+#[must_use]
+fn hierarchy_preset_sort_id(node: &HierarchyNode) -> Option<&str> {
+    node.children.first().and_then(|child| child.id.as_deref())
+}
+
+/// Compares two optional hierarchy ids with explicit missing-id precedence.
+///
+/// Ordering policy:
+/// - missing id (`None`) comes first,
+/// - empty id (`Some("")`) comes after missing,
+/// - non-empty ids compare lexicographically.
+#[must_use]
+fn compare_hierarchy_ids(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    let rank = |value: Option<&str>| match value {
+        None => 0u8,
+        Some("") => 1u8,
+        Some(_) => 2u8,
+    };
+
+    let left_rank = rank(left);
+    let right_rank = rank(right);
+    match left_rank.cmp(&right_rank) {
+        Ordering::Equal => match (left, right) {
+            (Some(left), Some(right)) => left.cmp(right),
+            _ => Ordering::Equal,
+        },
+        other => other,
+    }
+}
+
+/// Inserts one top-level hierarchy preset node according to the selected
+/// insertion policy within the affected root-folder group.
+fn insert_hierarchy_preset_node(
+    hierarchy: &mut Vec<HierarchyNode>,
+    node: HierarchyNode,
+    normalized_folder: &str,
+    position: AddInsertPosition,
+) {
+    let matching_indices = hierarchy
+        .iter()
+        .enumerate()
+        .filter_map(|(index, existing)| {
+            (existing.kind == HierarchyNodeKind::Folder && existing.path == normalized_folder)
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
+
+    if matching_indices.is_empty() {
+        hierarchy.push(node);
+        return;
+    }
+
+    match position {
+        AddInsertPosition::Beginning => {
+            hierarchy.insert(matching_indices[0], node);
+        }
+        AddInsertPosition::End => {
+            hierarchy.insert(matching_indices[matching_indices.len() - 1] + 1, node);
+        }
+        AddInsertPosition::Sorted => {
+            let new_id = hierarchy_preset_sort_id(&node);
+            let insert_at = matching_indices
+                .iter()
+                .copied()
+                .find(|index| {
+                    let existing_id = hierarchy_preset_sort_id(&hierarchy[*index]);
+                    compare_hierarchy_ids(new_id, existing_id).is_lt()
+                })
+                .unwrap_or_else(|| matching_indices[matching_indices.len() - 1] + 1);
+            hierarchy.insert(insert_at, node);
+        }
+    }
+}
+
 /// Builds hierarchy id for one media-root folder.
 #[must_use]
 fn hierarchy_preset_node_id(media_id: &str) -> String {
@@ -1376,7 +1544,7 @@ fn build_hierarchy_preset_node(
         path: normalized_folder.to_string(),
         kind: HierarchyNodeKind::Folder,
         id: None,
-        media_id: Some(media_id.to_string()),
+        media_id: None,
         variant: None,
         variants: Vec::new(),
         rename_files: Vec::new(),
@@ -2003,8 +2171,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        HierarchyNodeKind, LocalSourceMetadata, MediaHierarchyPreset, MediaPmApi, MediaPmService,
-        MediaRuntimeStorage, OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
+        AddInsertPosition, HierarchyNode, HierarchyNodeKind, LocalSourceMetadata,
+        MediaHierarchyPreset, MediaPmApi, MediaPmService, MediaRuntimeStorage,
+        OnlineSourceMetadata, load_mediapm_document, merge_runtime_storage,
         parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
         should_prefer_filesystem_workflow_runner, validate_source_uri,
     };
@@ -2171,7 +2340,7 @@ mod tests {
             .filter(|node| {
                 node.kind == HierarchyNodeKind::Folder
                     && node.path == folder
-                    && node.media_id.as_deref() == Some(media_id.as_str())
+                    && node.media_id.is_none()
                     && node.children.len() == 1
             })
             .collect();
@@ -2224,7 +2393,7 @@ mod tests {
             .find(|node| {
                 node.kind == HierarchyNodeKind::Folder
                     && node.path == "music videos"
-                    && node.media_id.as_deref() == Some(media_id.as_str())
+                    && node.media_id.is_none()
             })
             .and_then(|node| node.children.first())
             .expect("yt-dlp preset should create media-root child folder");
@@ -2271,6 +2440,137 @@ mod tests {
                 format!("{media_id}.thumbnails.folder"),
                 format!("{media_id}.video"),
             ])
+        );
+    }
+
+    /// Ensures sorted hierarchy insertion places missing ids first, then empty
+    /// ids, then lexicographically ordered non-empty ids within one root
+    /// folder.
+    #[test]
+    fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
+        let root_folder = "music videos/online";
+        let mut hierarchy = vec![
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: super::PlaylistFormat::default(),
+                ids: Vec::new(),
+                children: vec![HierarchyNode {
+                    path: "missing-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: None,
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: super::PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    children: Vec::new(),
+                }],
+            },
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: super::PlaylistFormat::default(),
+                ids: Vec::new(),
+                children: vec![HierarchyNode {
+                    path: "empty-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: Some(String::new()),
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: super::PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    children: Vec::new(),
+                }],
+            },
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: super::PlaylistFormat::default(),
+                ids: Vec::new(),
+                children: vec![HierarchyNode {
+                    path: "zzz-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: Some("zzz".to_string()),
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: super::PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    children: Vec::new(),
+                }],
+            },
+        ];
+
+        let inserted = super::build_hierarchy_preset_node(
+            MediaHierarchyPreset::YtDlp,
+            "aaa",
+            root_folder,
+            "aaa".to_string(),
+        );
+        super::insert_hierarchy_preset_node(
+            &mut hierarchy,
+            inserted,
+            root_folder,
+            AddInsertPosition::Sorted,
+        );
+
+        let observed_ids: Vec<Option<String>> = hierarchy
+            .iter()
+            .filter(|node| node.path == root_folder)
+            .map(|node| node.children.first().and_then(|child| child.id.clone()))
+            .collect();
+
+        assert_eq!(
+            observed_ids,
+            vec![None, Some(String::new()), Some("aaa".to_string()), Some("zzz".to_string())]
+        );
+    }
+
+    /// Ensures hierarchy add defaults to preset-specific root folder when no
+    /// folder is provided.
+    #[tokio::test]
+    async fn add_hierarchy_preset_uses_default_root_folder_when_omitted() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(&Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"), None)
+            .await
+            .expect("add media source");
+
+        service
+            .add_media_hierarchy_preset_with_position(
+                MediaHierarchyPreset::YtDlp,
+                &media_id,
+                None,
+                AddInsertPosition::Sorted,
+            )
+            .expect("add hierarchy preset with default folder");
+
+        let document = load_mediapm_document(&service.paths().mediapm_ncl)
+            .expect("load mediapm document");
+        assert!(
+            document.hierarchy.iter().any(|node| node.path == "music videos/online"),
+            "yt-dlp hierarchy preset should default to music videos/online root"
         );
     }
 
