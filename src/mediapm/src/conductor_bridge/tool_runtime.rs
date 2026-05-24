@@ -359,6 +359,23 @@ const FFMPEG_OPTION_INPUTS: &[&str] = &[
     "hide_banner",
 ];
 
+/// MOV/ISOBMFF-family container values that should receive managed
+/// `-movflags +faststart` auto-injection.
+///
+/// These values include common file extensions (`mp4`, `m4a`, `m4v`) and
+/// ffmpeg muxer names/aliases (`ism`, `ismv`, `ipod`, `psp`, `f4v`).
+const FFMPEG_MOV_FASTSTART_CONTAINERS: &[&str] = &[
+    "mp4", "mov", "m4a", "m4v", "3gp", "3g2", "f4v", "ism", "ismv", "ipod", "psp",
+];
+
+/// Matroska-family container values that should receive managed
+/// `-cues_to_front 1` auto-injection.
+///
+/// Includes extension-style aliases (`mkv`, `mka`, `mks`, `mk3d`) and the
+/// canonical muxer name (`matroska`) plus `webm`.
+const FFMPEG_MATROSKA_CUES_TO_FRONT_CONTAINERS: &[&str] =
+    &["matroska", "mkv", "mka", "mks", "mk3d", "webm"];
+
 /// Ordered rsgain option-input names injected into the generated command.
 const RSGAIN_OPTION_INPUTS: &[&str] = &[
     "option_args",
@@ -511,27 +528,24 @@ pub(super) fn build_tool_command(
         command.extend(command_option_tokens_for_tool("ffmpeg", FFMPEG_OPTION_INPUTS));
 
         // Auto-inject container-conditional flags after the regular options block.
-        // These fire only when the `container` input is explicitly set to a
-        // recognised family member, so workflows that do not set `container`
-        // are unaffected.  If the user also sets `movflags` or `cues_to_front`
-        // explicitly, ffmpeg treats multiple `-movflags` / `-cues_to_front`
-        // occurrences additively, so both values are honoured.
+        // `container` may be set explicitly by users or inferred by workflow
+        // synthesis from the effective output extension when omitted.
+        // If the user also sets `movflags`/`cues_to_front` explicitly, ffmpeg
+        // treats repeated occurrences additively so both values remain valid.
 
-        // MOV/MPEG-4 family: inject `-movflags +faststart` so progressive
-        // download starts without waiting for the full moov atom at EOF.
-        let mp4_family_condition = "inputs.container == \"mp4\" || inputs.container == \"mov\" \
-             || inputs.container == \"m4a\" || inputs.container == \"m4v\" \
-             || inputs.container == \"3gp\" || inputs.container == \"3g2\"";
-        command.push(format!("${{{mp4_family_condition} ? -movflags | ''}}"));
-        command.push(format!("${{{mp4_family_condition} ? +faststart | ''}}"));
+        // MOV/ISOBMFF family: inject `-movflags +faststart` so progressive
+        // download can start without waiting for the full moov atom at EOF.
+        let mov_family_condition =
+            ffmpeg_container_any_of_condition(FFMPEG_MOV_FASTSTART_CONTAINERS);
+        command.push(format!("${{{mov_family_condition} ? -movflags | ''}}"));
+        command.push(format!("${{{mov_family_condition} ? +faststart | ''}}"));
 
-        // Matroska/WebM family: inject `-cues_to_front 1` so cue entries
-        // are written before the cluster data, enabling immediate seeking
-        // without a full container scan.
-        let mkv_family_condition = "inputs.container == \"mkv\" || inputs.container == \"mka\" \
-             || inputs.container == \"mks\" || inputs.container == \"webm\"";
-        command.push(format!("${{{mkv_family_condition} ? -cues_to_front | ''}}"));
-        command.push(format!("${{{mkv_family_condition} ? 1 | ''}}"));
+        // Matroska/WebM family: inject `-cues_to_front 1` so cue entries are
+        // written toward the front for faster seekability.
+        let matroska_family_condition =
+            ffmpeg_container_any_of_condition(FFMPEG_MATROSKA_CUES_TO_FRONT_CONTAINERS);
+        command.push(format!("${{{matroska_family_condition} ? -cues_to_front | ''}}"));
+        command.push(format!("${{{matroska_family_condition} ? 1 | ''}}"));
 
         command.push(format!("${{*inputs.{INPUT_TRAILING_ARGS}}}"));
         command.extend(ffmpeg_cover_art_tokens(ffmpeg_slot_limits));
@@ -1437,6 +1451,17 @@ fn ffmpeg_cover_art_tokens(ffmpeg_slot_limits: FfmpegSlotLimits) -> Vec<String> 
     }
 
     tokens
+}
+
+/// Builds one OR-joined container-equality condition string for conductor
+/// template expressions.
+#[must_use]
+fn ffmpeg_container_any_of_condition(containers: &[&str]) -> String {
+    containers
+        .iter()
+        .map(|container| format!("inputs.container == \"{container}\""))
+        .collect::<Vec<_>>()
+        .join(" || ")
 }
 
 /// Builds one unpack conditional token gated on non-empty scalar presence.
