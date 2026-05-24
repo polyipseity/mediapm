@@ -93,10 +93,14 @@ fn demo_configures_playlist_hierarchy_entry() {
             && source.contains("kind: HierarchyNodeKind::Playlist")
             && source.contains("PlaylistItemRef {")
             && source.contains("id: DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()")
+            && source.contains("id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string())")
+            && source.contains("variant: Some(\"video_untagged\".to_string())")
+            && source.contains("variant: Some(\"audio\".to_string())")
+            && !source.contains("audio_tagged")
             && source.contains("path: PlaylistEntryPathMode::Relative")
             && source.contains("path: PlaylistEntryPathMode::Absolute")
             && source.contains("children: media_hierarchy_children")
             && source.contains("document.hierarchy = vec!["),
-        "demo should configure nested playlist hierarchy entries with duplicated target ids and relative+absolute path modes"
+        "demo should configure nested playlist hierarchy entries with duplicated target ids, media-folder id, and aligned tagged/untagged variants"
     );
 }

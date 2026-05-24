@@ -53,6 +53,9 @@ const DEMO_MEDIA_ID: &str = "local.dQw4w9WgXcQ";
 /// Hierarchy id used by playlist entries to reference the tagged media file.
 const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "local.dQw4w9WgXcQ.tagged";
 
+/// Hierarchy id assigned to the media-containing folder node.
+const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "local.dQw4w9WgXcQ.media_folder";
+
 /// Demo metadata title value used in hierarchy interpolation.
 const DEMO_METADATA_TITLE: &str = "Never Gonna Give You Up";
 
@@ -689,7 +692,10 @@ fn configure_document_for_local_tool_chain(
         MediaStep {
             tool: MediaStepTool::Import,
             input_variants: Vec::new(),
-            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "result" }))]),
+            output_variants: BTreeMap::from([(
+                "video_untagged".to_string(),
+                json!({ "kind": "result" }),
+            )]),
             options: BTreeMap::from([
                 ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),
                 ("hash".to_string(), TransformInputValue::String(source_hash.to_string())),
@@ -697,7 +703,7 @@ fn configure_document_for_local_tool_chain(
         },
         MediaStep {
             tool: MediaStepTool::Ffmpeg,
-            input_variants: vec!["video".to_string()],
+            input_variants: vec!["video_untagged".to_string()],
             output_variants: BTreeMap::from([(
                 "audio_m4a".to_string(),
                 json!({ "kind": "primary", "idx": 0, "extension": "m4a" }),
@@ -710,10 +716,7 @@ fn configure_document_for_local_tool_chain(
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["audio_m4a".to_string()],
-            output_variants: BTreeMap::from([(
-                "audio_tagged".to_string(),
-                json!({ "kind": "primary" }),
-            )]),
+            output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
@@ -724,8 +727,8 @@ fn configure_document_for_local_tool_chain(
         },
         MediaStep {
             tool: MediaStepTool::Rsgain,
-            input_variants: vec!["audio_tagged".to_string()],
-            output_variants: BTreeMap::from([("tagged".to_string(), json!({ "kind": "primary" }))]),
+            input_variants: vec!["audio".to_string()],
+            output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
             options: BTreeMap::new(),
         },
     ];
@@ -805,7 +808,7 @@ fn configure_document_for_local_tool_chain(
     let media_hierarchy_children = vec![HierarchyNode {
         path: DEMO_MEDIA_FOLDER_TEMPLATE.to_string(),
         kind: HierarchyNodeKind::Folder,
-        id: None,
+        id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string()),
         media_id: None,
         variant: None,
         variants: Vec::new(),
@@ -818,7 +821,7 @@ fn configure_document_for_local_tool_chain(
                 kind: HierarchyNodeKind::Media,
                 id: None,
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
-                variant: Some("video".to_string()),
+                variant: Some("video_untagged".to_string()),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
@@ -830,7 +833,7 @@ fn configure_document_for_local_tool_chain(
                 kind: HierarchyNodeKind::Media,
                 id: Some(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
-                variant: Some("tagged".to_string()),
+                variant: Some("audio".to_string()),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
