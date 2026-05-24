@@ -1213,9 +1213,51 @@ fn import_step_synthesizes_builtin_import_binding() {
     assert!(step.depends_on.is_empty());
     assert_eq!(step.inputs.get("kind"), Some(&InputBinding::String("cas_hash".to_string())));
     assert_eq!(
-        step.outputs.get("primary").and_then(|policy| policy.save),
+        step.outputs.get("result").and_then(|policy| policy.save),
         Some(OutputSaveMode::Full),
     );
+}
+
+/// Protects import-step bridging by translating mediapm primary-kind outputs
+/// to the builtin import contract's `result` output name for downstream wiring.
+#[test]
+fn import_variant_binding_uses_builtin_result_output_name() {
+    let source = MediaSourceSpec {
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::new(),
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Import,
+            input_variants: Vec::new(),
+            output_variants: BTreeMap::from([(
+                "local_media".to_string(),
+                generic_output_variant("primary"),
+            )]),
+            options: BTreeMap::from([
+                (
+                    "kind".to_string(),
+                    TransformInputValue::String("cas_hash".to_string()),
+                ),
+                (
+                    "hash".to_string(),
+                    TransformInputValue::String(
+                        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    ),
+                ),
+            ]),
+        }],
+    };
+
+    let binding =
+        resolve_media_variant_output_binding(&source, "local_media").expect("resolve binding");
+    let binding = binding.expect("binding should exist for imported variant");
+
+    assert_eq!(binding.step_id, "0-0-import");
+    assert_eq!(binding.output_name, "result");
 }
 
 /// Protects per-variant output policy mapping from mediapm schema into

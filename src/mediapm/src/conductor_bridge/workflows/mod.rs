@@ -53,6 +53,8 @@ const LEGACY_MANAGED_EXTERNAL_DESCRIPTION_PREFIX: &str = "managed local variant 
 
 /// Output name exposed by generated executable tool contracts.
 const OUTPUT_CONTENT: &str = "content";
+/// Output name exposed by the builtin import tool contract.
+const OUTPUT_IMPORT_RESULT: &str = "result";
 /// Preferred generated output name for primary media payloads.
 const OUTPUT_PRIMARY: &str = "primary";
 /// Output name exposing full sandbox artifact bundles.
@@ -1548,6 +1550,8 @@ fn resolve_step_output_binding(
                     )));
                 }
                 ffmpeg_output_capture_name(output_index)
+            } else if matches!(tool, MediaStepTool::Import) {
+                OUTPUT_IMPORT_RESULT.to_string()
             } else {
                 config.kind
             };
