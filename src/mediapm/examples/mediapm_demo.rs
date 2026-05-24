@@ -694,7 +694,7 @@ fn configure_document_for_local_tool_chain(
             input_variants: Vec::new(),
             output_variants: BTreeMap::from([(
                 "video_untagged".to_string(),
-                json!({ "kind": "result" }),
+                json!({ "kind": "primary" }),
             )]),
             options: BTreeMap::from([
                 ("kind".to_string(), TransformInputValue::String(IMPORT_KIND_CAS_HASH.to_string())),

@@ -111,12 +111,12 @@ fn demo_online_uses_in_memory_service_wiring() {
     );
 
     assert!(
-        source.contains("\"extension\": \"mkv\"")
+        !source.contains("\"extension\": \"mkv\"")
             && source.contains("\"format\".to_string()")
             && source.contains("height<=144")
             && !source.contains("height<=720")
             && !source.contains("\"format\": \"bestvideo*+bestaudio/best\""),
-        "demo_online should keep yt-dlp format selection in step options (not output variants) and force 144p outputs"
+        "demo_online should keep yt-dlp format selection in step options (not output variants), rely on default extension inheritance, and force 144p outputs"
     );
 
     assert!(

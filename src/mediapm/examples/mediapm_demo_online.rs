@@ -1092,7 +1092,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([(
                 "video_untagged".to_string(),
-                json!({ "kind": "primary", "idx": 0, "extension": "mkv" }),
+                json!({ "kind": "primary", "idx": 0 }),
             )]),
             options: BTreeMap::from([(
                 "container".to_string(),
@@ -1102,7 +1102,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         MediaStep {
             tool: MediaStepTool::MediaTagger,
             input_variants: vec!["video_untagged".to_string()],
-            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary", "extension": "mkv" }))]),
+            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
@@ -1114,7 +1114,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         MediaStep {
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["video".to_string()],
-            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary", "extension": "mkv" }))]),
+            output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
             options: BTreeMap::new(),
         },
     ];
