@@ -209,6 +209,7 @@ fn main() -> ExampleResult<()> {
 mod tests {
     use std::fs;
 
+    use mediapm::MediaMetadataValue;
     use mediapm_conductor::{decode_machine_document, decode_user_document};
 
     use super::{DUMMY_YOUTUBE_URL, run_cli_add_sources_example};
@@ -243,6 +244,43 @@ mod tests {
             remote_source.steps[0].options.get("uri"),
             Some(&TransformInputValue::String(DUMMY_YOUTUBE_URL.to_string())),
             "remote add should preserve provided URI"
+        );
+        assert_eq!(
+            remote_source
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("video_ext")),
+            Some(&MediaMetadataValue::Literal(".mkv".to_string())),
+            "yt-dlp preset should hardcode .mkv for video_ext when ffmpeg container is fixed to matroska"
+        );
+
+        let ffmpeg_step = remote_source
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::Ffmpeg)
+            .expect("remote add should include ffmpeg step");
+        let media_tagger_step = remote_source
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::MediaTagger)
+            .expect("remote add should include media-tagger step");
+        let rsgain_step = remote_source
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::Rsgain)
+            .expect("remote add should include rsgain step");
+
+        assert!(
+            ffmpeg_step.output_variants["video"].get("extension").is_some(),
+            "ffmpeg preset should keep the explicit mkv extension that establishes downstream inheritance"
+        );
+        assert!(
+            media_tagger_step.output_variants["video"].get("extension").is_none(),
+            "media-tagger preset should rely on inherited extension instead of redundantly restating mkv"
+        );
+        assert!(
+            rsgain_step.output_variants["video"].get("extension").is_none(),
+            "rsgain preset should rely on inherited extension instead of redundantly restating mkv"
         );
 
         let user_bytes =

@@ -477,14 +477,7 @@ where
                     ),
                     (
                         "video_ext".to_string(),
-                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                            variant: "video".to_string(),
-                            metadata_key: "format_name".to_string(),
-                            transform: Some(MediaMetadataRegexTransform {
-                                pattern: "(?i)matroska(?:,.*)?".to_string(),
-                                replacement: ".mkv".to_string(),
-                            }),
-                        }),
+                        MediaMetadataValue::Literal(".mkv".to_string()),
                     ),
                 ])),
                 variant_hashes: BTreeMap::new(),
@@ -564,7 +557,6 @@ where
                             "video".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
-                                "extension": "mkv",
                             }),
                         )]),
                         options: BTreeMap::new(),
@@ -576,7 +568,6 @@ where
                             "video".to_string(),
                             serde_json::json!({
                                 "kind": "primary",
-                                "extension": "mkv",
                             }),
                         )]),
                         options: BTreeMap::new(),

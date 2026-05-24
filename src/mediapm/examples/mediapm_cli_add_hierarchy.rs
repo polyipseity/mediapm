@@ -152,7 +152,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
-    use mediapm::{HierarchyNodeKind, load_mediapm_document};
+    use mediapm::{HierarchyNodeKind, MediaMetadataValue, MediaStepTool, load_mediapm_document};
     use mediapm_conductor::{decode_machine_document, decode_user_document};
 
     use super::run_add_hierarchy_example;
@@ -192,6 +192,39 @@ mod tests {
                 .into_iter()
                 .collect();
         assert_eq!(observed_media_ids, expected_media_ids);
+
+        let remote_source = document
+            .media
+            .get(&manifest.remote_media_id)
+            .expect("remote source should exist");
+        assert_eq!(
+            remote_source
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("video_ext")),
+            Some(&MediaMetadataValue::Literal(".mkv".to_string())),
+            "yt-dlp hierarchy example should hardcode .mkv for video_ext"
+        );
+
+        let media_tagger_step = remote_source
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::MediaTagger)
+            .expect("remote hierarchy example should include media-tagger step");
+        let rsgain_step = remote_source
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::Rsgain)
+            .expect("remote hierarchy example should include rsgain step");
+
+        assert!(
+            media_tagger_step.output_variants["video"].get("extension").is_none(),
+            "media-tagger hierarchy preset should rely on inherited extension"
+        );
+        assert!(
+            rsgain_step.output_variants["video"].get("extension").is_none(),
+            "rsgain hierarchy preset should rely on inherited extension"
+        );
 
         let hierarchy_by_folder: BTreeMap<_, _> = document
             .hierarchy

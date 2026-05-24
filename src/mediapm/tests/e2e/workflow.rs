@@ -280,7 +280,6 @@ async fn add_media_source_sets_remote_download_defaults() {
         media_tagger_step.output_variants.get("video"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "extension": "mkv",
         })),
     );
 
@@ -290,7 +289,6 @@ async fn add_media_source_sets_remote_download_defaults() {
         rsgain_step.output_variants.get("video"),
         Some(&serde_json::json!({
             "kind": "primary",
-            "extension": "mkv",
         })),
     );
 
@@ -337,16 +335,9 @@ async fn add_media_source_sets_remote_download_defaults() {
     assert!(
         matches!(metadata.get("video_id"), Some(MediaMetadataValue::Variant(binding)) if binding.variant == "infojson" && binding.metadata_key == "id")
     );
-    assert!(matches!(
-        metadata.get("video_ext"),
-        Some(MediaMetadataValue::Variant(binding))
-            if binding.variant == "video"
-                && binding.metadata_key == "format_name"
-                && binding
-                    .transform
-                    .as_ref()
-                    .is_some_and(|transform| transform.pattern == "(?i)matroska(?:,.*)?" && transform.replacement == ".mkv")
-    ));
+    assert!(
+        matches!(metadata.get("video_ext"), Some(MediaMetadataValue::Literal(value)) if value == ".mkv")
+    );
 
     assert!(source.title.as_deref().is_some_and(|title| !title.trim().is_empty()));
     let description = source.description.as_deref().expect("description should be set");
