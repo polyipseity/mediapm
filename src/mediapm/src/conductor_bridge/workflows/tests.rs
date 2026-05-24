@@ -1320,6 +1320,121 @@ fn ffmpeg_output_variant_extension_updates_output_path_binding() {
     );
 }
 
+/// Protects ffmpeg extension-default behavior by inheriting upstream producer
+/// extension when output `extension` is omitted.
+#[test]
+fn ffmpeg_output_variant_without_extension_inherits_upstream_extension() {
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(
+            "ffmpeg-inherit-extension".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::from([(
+                    "source".to_string(),
+                    "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                )]),
+                steps: vec![
+                    MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["source".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "audio_m4a".to_string(),
+                            ffmpeg_output_variant_with_extension(0, "m4a"),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["audio_m4a".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "normalized".to_string(),
+                            ffmpeg_output_variant(0),
+                        )]),
+                        options: BTreeMap::new(),
+                    },
+                ],
+            },
+        )]),
+        ..MediaPmDocument::default()
+    };
+
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([(
+            "ffmpeg".to_string(),
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let machine = machine_with_active_tool_specs(&lock);
+    let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
+    let workflow =
+        plan.workflows.get("mediapm.media.ffmpeg-inherit-extension").expect("managed workflow");
+    let second_step = workflow.steps.get(1).expect("second ffmpeg step");
+
+    assert_eq!(
+        second_step.inputs.get("output_path_0"),
+        Some(&InputBinding::String("output-0.m4a".to_string()))
+    );
+}
+
+/// Protects ffmpeg container-default behavior by inferring container from the
+/// effective primary output extension when `options.container` is omitted.
+#[test]
+fn ffmpeg_infers_container_from_primary_output_extension() {
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(
+            "ffmpeg-infer-container".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::from([(
+                    "source".to_string(),
+                    "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                )]),
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::Ffmpeg,
+                    input_variants: vec!["source".to_string()],
+                    output_variants: BTreeMap::from([(
+                        "normalized".to_string(),
+                        ffmpeg_output_variant_with_extension(0, "matroska"),
+                    )]),
+                    options: BTreeMap::new(),
+                }],
+            },
+        )]),
+        ..MediaPmDocument::default()
+    };
+
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([(
+            "ffmpeg".to_string(),
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let machine = machine_with_active_tool_specs(&lock);
+    let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
+    let workflow =
+        plan.workflows.get("mediapm.media.ffmpeg-infer-container").expect("managed workflow");
+    let step = workflow.steps.first().expect("workflow step");
+
+    assert_eq!(
+        step.inputs.get("container"),
+        Some(&InputBinding::String("matroska".to_string()))
+    );
+}
+
 /// Protects yt-dlp artifact variants by mapping non-primary outputs to
 /// artifact-bundle capture outputs instead of `content`.
 #[test]

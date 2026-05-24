@@ -14,7 +14,7 @@ use super::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, FfmpegSlotLimits,
     INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, VariantProducer, conductor_output_save_mode,
     extract_step_list_args, ffmpeg_input_content_name, ffmpeg_output_capture_name,
-    ffmpeg_output_path_input_name, ffmpeg_output_path_with_extension,
+    ffmpeg_output_path_input_name, ffmpeg_output_path_with_extension, normalize_output_extension,
     resolve_input_variant_producer, resolved_ffmpeg_family_output_extension,
     step_option_input_bindings,
 };
@@ -74,6 +74,9 @@ pub(super) fn synthesize_ffmpeg_step(
     inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
     inputs.insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
     inputs.extend(option_inputs);
+    if let Some(InputBinding::String(container)) = inputs.get_mut("container") {
+        *container = container.trim().to_ascii_lowercase();
+    }
     if !inputs.contains_key("movflags") {
         inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
     }
@@ -81,6 +84,7 @@ pub(super) fn synthesize_ffmpeg_step(
     let mut outputs = BTreeMap::new();
     let mut pending_variant_updates = Vec::new();
     let mut seen_output_indexes = BTreeSet::new();
+    let mut inferred_primary_container = None::<String>;
 
     for mapping in mappings {
         let variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
@@ -128,12 +132,36 @@ pub(super) fn synthesize_ffmpeg_step(
             )));
         }
 
+        let Some(input_producer) = resolve_input_variant_producer(&mapping.input, producer_snapshot)
+        else {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' step #{step_index} references unknown input variant '{}'",
+                mapping.input
+            )));
+        };
+
+        let resolved_extension = match config.extension.as_deref().map(str::trim) {
+            Some("") => None,
+            Some(_) => normalize_output_extension(config.extension.as_deref()),
+            None => input_producer
+                .output_extension()
+                .map(ToString::to_string)
+                .or_else(|| resolved_ffmpeg_family_output_extension(None)),
+        };
+
+        if output_index == 0
+            && inferred_primary_container.is_none()
+            && let Some(extension) = resolved_extension.as_deref()
+        {
+            inferred_primary_container = Some(extension.to_string());
+        }
+
         let output_name = ffmpeg_output_capture_name(output_index);
         inputs.insert(
             ffmpeg_output_path_input_name(output_index),
             InputBinding::String(ffmpeg_output_path_with_extension(
                 output_index,
-                config.extension.as_deref(),
+                resolved_extension.as_deref(),
             )),
         );
 
@@ -151,9 +179,19 @@ pub(super) fn synthesize_ffmpeg_step(
                 step_id: step_id.clone(),
                 output_name,
                 zip_member: config.zip_member,
-                extension: resolved_ffmpeg_family_output_extension(config.extension.as_deref()),
+                extension: resolved_extension,
             },
         ));
+    }
+
+    let should_infer_container = match inputs.get("container") {
+        Some(InputBinding::String(container)) => container.trim().is_empty(),
+        _ => true,
+    };
+    if should_infer_container
+        && let Some(inferred_container) = inferred_primary_container
+    {
+        inputs.insert("container".to_string(), InputBinding::String(inferred_container));
     }
 
     workflow.steps.push(WorkflowStepSpec {
