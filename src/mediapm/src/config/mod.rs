@@ -29,6 +29,7 @@ use regex::Regex;
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
 use crate::error::MediaPmError;
@@ -114,6 +115,12 @@ fn normalize_hierarchy_node_path(raw_path: &str, context_label: &str) -> Result<
         if value == "." || value == ".." {
             return Err(format!(
                 "{context_label} path '{raw_path}' must not contain '.' or '..' segments"
+            ));
+        }
+        let value_nfd = value.nfd().collect::<String>();
+        if value_nfd != value {
+            return Err(format!(
+                "{context_label} path '{raw_path}' must be Unicode NFD normalized"
             ));
         }
         segments.push(value.to_string());
@@ -4481,6 +4488,93 @@ mod tests {
             load_mediapm_document(&path).expect_err("media leaf without explicit kind should fail");
 
         assert!(err.to_string().contains("kind 'folder' must not define 'variant'"));
+    }
+
+    /// Ensures configured hierarchy path literals are rejected when segments
+    /// are not Unicode NFD normalized.
+    #[test]
+    fn hierarchy_path_rejects_non_nfd_literal_segments() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("mediapm.ncl");
+        let source = r#"
+{
+    version = 1,
+    media = {
+        demo = {
+            steps = [
+                {
+                    tool = "yt-dlp",
+                    output_variants = {
+                        video = { kind = "primary", save = "full" },
+                    },
+                    options = {
+                        uri = "https://example.com/video",
+                    },
+                },
+            ],
+        },
+    },
+    hierarchy = [
+        {
+            path = "library/épisode.mkv",
+            kind = "media",
+            id = "demo-video",
+            media_id = "demo",
+            variant = "video",
+        },
+    ],
+}
+"#;
+
+        std::fs::write(&path, source).expect("write source");
+        let err =
+            load_mediapm_document(&path).expect_err("non-NFD hierarchy path should fail decode");
+        assert!(err.to_string().contains("must be Unicode NFD normalized"));
+    }
+
+    /// Ensures configured hierarchy path templates still enforce NFD on the
+    /// literal path text around placeholders.
+    #[test]
+    fn hierarchy_path_template_rejects_non_nfd_literal_segments() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let path = root.path().join("mediapm.ncl");
+        let source = r#"
+{
+    version = 1,
+    media = {
+        demo = {
+            metadata = {
+                artist = "demo",
+            },
+            steps = [
+                {
+                    tool = "yt-dlp",
+                    output_variants = {
+                        video = { kind = "primary", save = "full" },
+                    },
+                    options = {
+                        uri = "https://example.com/video",
+                    },
+                },
+            ],
+        },
+    },
+    hierarchy = [
+        {
+            path = "library/${media.metadata.artist}/épisode.mkv",
+            kind = "media",
+            id = "demo-video",
+            media_id = "demo",
+            variant = "video",
+        },
+    ],
+}
+"#;
+
+        std::fs::write(&path, source).expect("write source");
+        let err = load_mediapm_document(&path)
+            .expect_err("non-NFD template literal path segment should fail decode");
+        assert!(err.to_string().contains("must be Unicode NFD normalized"));
     }
 
     /// Protects persistence rendering by serializing hierarchy as ordered node
