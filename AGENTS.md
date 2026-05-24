@@ -327,6 +327,10 @@
   blocks into multiple customization files.
 - Keep customization files narrowly scoped: repo-wide defaults in `AGENTS.md`,
   detailed file-specific guidance in `.agents/instructions/`.
+- Commit headers must use Conventional Commits with mandatory scope
+  (`type(scope): subject`). Do not use crate/tool-prefixed headers like
+  `mediapm: ...`, `conductor: ...`, `cas: ...`, or similar `<name>:` forms;
+  put crate/tool identity in `scope` instead.
 - Prefer updating `AGENTS.md` and `.agents/instructions/*.instructions.md`
   directly for durable repository policy. Do not keep long-lived policy only in
   `/memories/repo/`; if temporary repo memory notes are used, merge them into
@@ -348,6 +352,8 @@
 
 - `AGENTS.md` — workspace-wide defaults
 - `.agents/instructions/*.instructions.md` — focused authoring rules by file type
+- `.agents/instructions/commit-message-policy.instructions.md` — Conventional
+  Commit scope policy and crate-prefix header ban
 - `.agents/prompts/commit-staged.prompt.md` and
   `.opencode/commands/commit-staged.prompt.md` — mirrored commit workflow prompt
 - `opencode.jsonc` — instruction and skill discovery
