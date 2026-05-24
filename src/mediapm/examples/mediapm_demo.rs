@@ -12,6 +12,12 @@
 //! auto-switches to configuration-only mode so automated runs avoid external
 //! tool downloads/execution. Operators can still override via
 //! `MEDIAPM_DEMO_RUN_SYNC`.
+//!
+//! Intentional deviations from `mediapm media add-local` presets kept here:
+//! - explicit untagged hierarchy output alongside tagged output,
+//! - explicit `media-tagger` options (`recording_mbid`, `write_all_images=false`),
+//! - explicit runtime-default block so `mediapm.ncl` documents all knobs,
+//! - explicit playlist hierarchy entry with duplicated id refs/path modes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -42,10 +48,10 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
 /// Canonical demo media id.
-const DEMO_MEDIA_ID: &str = "local-av";
+const DEMO_MEDIA_ID: &str = "local.dQw4w9WgXcQ";
 
 /// Hierarchy id used by playlist entries to reference the tagged media file.
-const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "local-av-tagged";
+const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "local.dQw4w9WgXcQ.tagged";
 
 /// Demo metadata title value used in hierarchy interpolation.
 const DEMO_METADATA_TITLE: &str = "Never Gonna Give You Up";
@@ -699,8 +705,6 @@ fn configure_document_for_local_tool_chain(
             options: BTreeMap::from([
                 ("container".to_string(), TransformInputValue::String("mp4".to_string())),
                 ("vn".to_string(), TransformInputValue::String("true".to_string())),
-                ("codec_copy".to_string(), TransformInputValue::String("true".to_string())),
-                ("map_metadata".to_string(), TransformInputValue::String("0".to_string())),
             ]),
         },
         MediaStep {
@@ -1211,8 +1215,9 @@ mod tests {
             "demo should not route local sample ingest through yt-dlp"
         );
         assert!(
-            demo_config.contains("codec_copy = \"true\""),
-            "demo ffmpeg step should keep stream-copy enabled for fast local runs"
+            !demo_config.contains("codec_copy = \"true\"")
+                && !demo_config.contains("map_metadata = \"0\""),
+            "demo should omit explicit ffmpeg defaults and rely on managed codec_copy/map_metadata defaults"
         );
         assert!(
             demo_config.contains("materialization_preference_order")
