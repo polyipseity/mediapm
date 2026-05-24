@@ -92,15 +92,16 @@ fn demo_online_uses_in_memory_service_wiring() {
 
     assert!(
         source.contains("fn final_demo_output_variant() -> &'static str")
-            && source.contains("\"video\"")
+            && source.contains("\"video_untagged\"")
             && source.contains("input_variants: vec![\"video\".to_string()]")
-            && source.contains("input_variants: vec![\"video_tagged\".to_string()]")
+            && source.contains("input_variants: vec![\"video_untagged\".to_string()]")
             && !source.contains("regex_variant_selector(\"^video$\")")
-            && !source.contains("regex_variant_selector(\"^video_tagged$\")")
-            && source.contains("\"video_tagged\".to_string()")
+            && !source.contains("regex_variant_selector(\"^video_untagged$\")")
+            && source.contains("\"video_untagged\".to_string()")
+            && source.contains("\"video\".to_string()")
             && !source.contains("\"video_mkv\"")
             && !source.contains("\"tagged_metadata\""),
-        "demo_online should keep exact-string video/video_tagged variant selectors and remove legacy names"
+        "demo_online should keep exact-string video/video_untagged variant selectors and remove legacy names"
     );
 
     assert!(
@@ -137,7 +138,7 @@ fn demo_online_uses_in_memory_service_wiring() {
     );
 
     assert!(
-        source.contains("const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 7] =")
+        source.contains("const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] =")
             && source.contains("(\"subtitles_sidecars\", \"subtitles\", \"sidecars/subtitles/\")")
             && source.contains("\"subtitles_en_sidecars\"")
             && source.contains("\"subtitles_en\".to_string()")
@@ -154,11 +155,20 @@ fn demo_online_uses_in_memory_service_wiring() {
                 "(\"description_sidecars\", \"description\", \"sidecars/description.txt\")"
             )
             && source.contains("(\"infojson_sidecars\", \"infojson\", \"sidecars/info.json\")")
+            && source.contains("\"description_media\"")
+            && source.contains(
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt"
+            )
+            && source.contains("\"infojson_media\"")
+            && source.contains(
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json"
+            )
+            && source.contains("\"subtitles_en_media\"")
+            && source.contains(
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt"
+            )
             && source.contains("DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME")
             && source.contains("sidecars/subtitles.en.vtt")
-            && !source.contains("\"description_media\"")
-            && !source.contains("\"infojson_media\"")
-            && !source.contains("\"subtitles_en_media\"")
             && !source.contains(
                 "${media.metadata.artist} - ${media.metadata.title} [${media.id}]-description.txt"
             )
@@ -235,7 +245,7 @@ fn demo_online_uses_in_memory_service_wiring() {
     assert!(
         source.contains("MediaMetadataValue::Literal")
             && source.contains("MediaMetadataValue::Variant")
-            && source.contains("variant: \"video_tagged\".to_string()")
+            && source.contains("variant: \"video\".to_string()")
             && !source.contains("variant: \"infojson\".to_string(),\n                        metadata_key: DEMO_METADATA_TITLE_KEY.to_string()")
             && source.contains("metadata_key: DEMO_METADATA_ARTIST_KEY.to_string()")
             && source.contains("metadata_key: DEMO_METADATA_TITLE_KEY.to_string()")
@@ -268,15 +278,15 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("DEMO_HIERARCHY_ROOT_TEMPLATE")
             && source.contains("DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE")
             && source.contains("DEMO_LIBRARY_ROOT")
-            && !source.contains("rename_files: vec![")
-            && !source.contains("HierarchyFolderRenameRule {")
+            && source.contains("rename_files: vec![")
+            && source.contains("HierarchyFolderRenameRule {")
             && source.contains(
                 "assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)"
             )
-            && source.contains("unexpected flattened sidecar files")
+            && source.contains("expected flattened media root")
             && source.contains("resolve_interpolated_demo_root")
             && source.contains("DEMO_EXPECTED_VIDEO_ID"),
-        "demo_online should materialize both primary/tagged media outputs and keep yt-dlp sidecars in the dedicated sidecars hierarchy"
+        "demo_online should materialize both primary/tagged media outputs, keep dedicated sidecars hierarchy, and preserve preset-like root-sidecar projections"
     );
 
     assert!(
@@ -354,6 +364,7 @@ fn demo_online_configures_playlist_hierarchy_entry() {
             && source.contains("kind: HierarchyNodeKind::Playlist")
             && source.contains("PlaylistItemRef {")
             && source.contains("id: DEMO_TAGGED_HIERARCHY_ID.to_string()")
+            && source.contains("id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string())")
             && source.contains("path: PlaylistEntryPathMode::Relative")
             && source.contains("path: PlaylistEntryPathMode::Absolute")
             && source.contains("children: media_root_children")
