@@ -119,15 +119,14 @@ fn demo_online_uses_in_memory_service_wiring() {
     );
 
     assert!(
-        source.contains("\"codec_copy\".to_string()")
-            && source.contains("\"true\".to_string()")
+        !source.contains("\"codec_copy\".to_string()")
             && source.contains("\"container\".to_string()")
             && source.contains("matroska")
             && !source
                 .contains("\"vn\".to_string(), TransformInputValue::String(\"true\".to_string())")
             && !source.contains("libmp3lame")
             && !source.contains("audio_bitrate"),
-        "demo_online should preserve full video+audio streams in MKV instead of forcing audio-only MP3 transcodes"
+        "demo_online should rely on managed ffmpeg codec-copy defaults while preserving MKV output"
     );
 
     assert!(
@@ -138,8 +137,9 @@ fn demo_online_uses_in_memory_service_wiring() {
     );
 
     assert!(
-        source.contains("const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 9] =")
+        source.contains("const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 7] =")
             && source.contains("(\"subtitles_sidecars\", \"subtitles\", \"sidecars/subtitles/\")")
+            && source.contains("\"subtitles_en_sidecars\"")
             && source.contains("\"subtitles_en\".to_string()")
             && source.contains("\"langs\": \"en\"")
             && source.contains("\"capture_kind\": \"file\"")
@@ -154,18 +154,11 @@ fn demo_online_uses_in_memory_service_wiring() {
                 "(\"description_sidecars\", \"description\", \"sidecars/description.txt\")"
             )
             && source.contains("(\"infojson_sidecars\", \"infojson\", \"sidecars/info.json\")")
-            && source.contains("\"description_media\"")
-            && source.contains(
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt"
-            )
-            && source.contains("\"infojson_media\"")
-            && source.contains(
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json"
-            )
-            && source.contains("\"subtitles_en_media\"")
-            && source.contains(
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt"
-            )
+            && source.contains("DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME")
+            && source.contains("sidecars/subtitles.en.vtt")
+            && !source.contains("\"description_media\"")
+            && !source.contains("\"infojson_media\"")
+            && !source.contains("\"subtitles_en_media\"")
             && !source.contains(
                 "${media.metadata.artist} - ${media.metadata.title} [${media.id}]-description.txt"
             )
@@ -190,7 +183,7 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("\"media-tagger\".to_string()")
             && source.contains("dependencies: ToolRequirementDependencies {")
             && source.contains("ffmpeg_version: Some(\"inherit\".to_string())")
-            && source.contains("\"rsgain\".to_string(),\n            ToolRequirement {\n                version: None,\n                tag: Some(\"latest\".to_string()),\n                dependencies: ToolRequirementDependencies {\n                    ffmpeg_version: Some(\"inherit\".to_string()),\n                    sd_version: Some(\"inherit\".to_string()),")
+            && source.contains("sd_version: Some(\"inherit\".to_string())")
             && !source.contains("\"ffmpeg_version\".to_string()"),
         "demo_online should demonstrate inherit dependencies for yt-dlp/media-tagger/rsgain via tool requirements, not media step options"
     );
@@ -269,32 +262,21 @@ fn demo_online_uses_in_memory_service_wiring() {
         source.contains("music videos/")
             && source.contains("sidecars/")
             && source.contains("(\"links_sidecars\", \"links\", \"sidecars/links/\")")
-            && source.contains("DEMO_MEDIA_ROOT_FLAT_VARIANTS")
             && source.contains("DEMO_ROOT_SELECTED_SUBTITLE_VARIANT")
             && source.contains("DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME")
-            && source.contains("DEMO_MEDIA_ROOT_RENAME_PATTERN")
-            && source.contains("DEMO_MEDIA_ROOT_RENAME_REPLACEMENT")
-            && source.contains(r"^.*\\.([^.]*)$")
-            && source.contains(
-                "\"${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1\""
-            )
-            && !source.contains("^.+ \\[{DEMO_MEDIA_ID}\\](\\.[^/\\\\]+)$")
-            && !source
-                .contains("{DEMO_EXPECTED_ARTIST} - {DEMO_EXPECTED_TITLE} [{DEMO_MEDIA_ID}]$1")
-            && source.contains(".en.vtt")
-            && !source.contains("format!(\"{DEMO_HIERARCHY_ROOT_TEMPLATE}/subtitles/\")")
+            && source.contains("sidecars/subtitles.en.vtt")
             && source.contains("DEMO_HIERARCHY_ROOT_TEMPLATE")
             && source.contains("DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE")
             && source.contains("DEMO_LIBRARY_ROOT")
-            && source.contains("must not contain dedicated root subtitles folder")
-            && source.contains("rename_files: vec![")
-            && source.contains("HierarchyFolderRenameRule {")
+            && !source.contains("rename_files: vec![")
+            && !source.contains("HierarchyFolderRenameRule {")
             && source.contains(
                 "assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)"
             )
+            && source.contains("unexpected flattened sidecar files")
             && source.contains("resolve_interpolated_demo_root")
             && source.contains("DEMO_EXPECTED_VIDEO_ID"),
-        "demo_online should materialize both primary/tagged media outputs, keep sidecar hierarchy, and mirror one language-selected subtitle file at media root"
+        "demo_online should materialize both primary/tagged media outputs and keep yt-dlp sidecars in the dedicated sidecars hierarchy"
     );
 
     assert!(

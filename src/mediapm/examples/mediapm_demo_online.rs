@@ -24,6 +24,15 @@
 //!    `${media.metadata.artist} - ${media.metadata.title} [${media.id}]`
 //!    filename templates.
 //! 8. Writes a compact `manifest.json` with generated paths and sync metadata.
+//!
+//! Intentional deviations from `mediapm media add` presets kept here:
+//! - explicit untagged hierarchy output alongside tagged output,
+//! - explicit `media-tagger` options (`recording_mbid`, `write_all_images=false`),
+//! - explicit runtime-default block so `mediapm.ncl` documents all knobs,
+//! - explicit playlist hierarchy entry with duplicated id refs/path modes,
+//! - explicit bounded `yt-dlp` options (`format`, safe `sub_langs`),
+//! - sidecar-only hierarchy materialization plus one `subtitles_en` file capture
+//!   to demonstrate `capture_kind = "file"`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -37,11 +46,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
-    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_lockfile, load_mediapm_document, save_mediapm_document,
+    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform,
+    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat,
+    PlaylistItemRef, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
+    load_lockfile, load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -53,12 +62,12 @@ use serde::Serialize;
 use serde_json::json;
 
 /// Stable media id used by the online demo media workflow.
-const DEMO_MEDIA_ID: &str = "rickroll";
+const DEMO_MEDIA_ID: &str = "youtube.dQw4w9WgXcQ";
 /// Hierarchy id assigned to the tagged media-file node and playlist target.
 ///
 /// Only nodes that appear in playlist `ids` entries require a hierarchy id.
 /// The untagged media node and sidecar nodes intentionally omit ids.
-const DEMO_TAGGED_HIERARCHY_ID: &str = "rickroll-tagged";
+const DEMO_TAGGED_HIERARCHY_ID: &str = "youtube.dQw4w9WgXcQ.tagged";
 /// Online source URI processed by the demo workflow.
 const DEMO_SOURCE_URI: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
 /// Human-facing description mirrored into managed workflow metadata.
@@ -136,54 +145,26 @@ const DEMO_HIERARCHY_ROOT_TEMPLATE: &str =
 /// Each tuple is `(entry_label, variant_name, relative_path)`. Labels remain
 /// unique even when one variant is materialized to multiple hierarchy paths.
 ///
-/// This demo keeps directory-style sidecars under `sidecars/` and mirrors
-/// selected file sidecars directly beside media outputs.
-const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 9] = [
+/// This demo keeps all yt-dlp sidecars under a dedicated `sidecars/` folder.
+const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 7] = [
     ("subtitles_sidecars", "subtitles", "sidecars/subtitles/"),
+    (
+        "subtitles_en_sidecars",
+        DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
+        DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME,
+    ),
     ("thumbnails_sidecars", "thumbnails", "sidecars/thumbnails/"),
     ("links_sidecars", "links", "sidecars/links/"),
     ("archive_sidecars", "archive", "sidecars/archive.txt"),
     ("description_sidecars", "description", "sidecars/description.txt"),
     ("infojson_sidecars", "infojson", "sidecars/info.json"),
-    (
-        "description_media",
-        "description",
-        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].description.txt",
-    ),
-    (
-        "infojson_media",
-        "infojson",
-        "${media.metadata.artist} - ${media.metadata.title} [${media.id}].info.json",
-    ),
-    (
-        "subtitles_en_media",
-        DEMO_ROOT_SELECTED_SUBTITLE_VARIANT,
-        DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME,
-    ),
 ];
 
-/// Flat non-subtitle sidecar-family variants materialized directly in media root.
-const DEMO_MEDIA_ROOT_FLAT_VARIANTS: [&str; 2] = ["thumbnails", "links"];
-
-/// One language-scoped subtitle variant materialized outside `sidecars/`.
+/// One language-scoped subtitle variant used to demonstrate file capture.
 const DEMO_ROOT_SELECTED_SUBTITLE_VARIANT: &str = "subtitles_en";
 
-/// Root-level subtitle file name bound to the media output base-name template.
-const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].en.vtt";
-
-/// Root-sidecar rename rule that rebases any filename onto the media output
-/// base by preserving only the final extension.
-///
-/// Pattern captures the extension after the last dot. Replacement applies
-/// the metadata-interpolated base and re-attaches the captured extension so
-/// thumbnails, link sidecars, and other root-flat captures adopt the
-/// canonical `<artist> - <title> [<id>].<ext>` naming automatically.
-const DEMO_MEDIA_ROOT_RENAME_PATTERN: &str = "^.*\\.([^.]*)$";
-/// Replacement used with `DEMO_MEDIA_ROOT_RENAME_PATTERN` after metadata
-/// template resolution.
-const DEMO_MEDIA_ROOT_RENAME_REPLACEMENT: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1";
+/// Sidecar-local subtitle file used for the selected subtitle capture.
+const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vtt";
 
 /// Expected yt-dlp step count.
 ///
@@ -1080,10 +1061,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 "video".to_string(),
                 json!({ "kind": "primary", "idx": 0, "extension": "mkv" }),
             )]),
-            options: BTreeMap::from([
-                ("codec_copy".to_string(), TransformInputValue::String("true".to_string())),
-                ("container".to_string(), TransformInputValue::String("matroska".to_string())),
-            ]),
+            options: BTreeMap::from([(
+                "container".to_string(),
+                TransformInputValue::String("matroska".to_string()),
+            )]),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
@@ -1230,25 +1211,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             });
         }
     }
-
-    media_root_children.push(HierarchyNode {
-        path: String::new(),
-        kind: HierarchyNodeKind::MediaFolder,
-        id: None,
-        media_id: Some(DEMO_MEDIA_ID.to_string()),
-        variant: None,
-        variants: DEMO_MEDIA_ROOT_FLAT_VARIANTS
-            .iter()
-            .map(|variant| (*variant).to_string())
-            .collect(),
-        rename_files: vec![HierarchyFolderRenameRule {
-            pattern: DEMO_MEDIA_ROOT_RENAME_PATTERN.to_string(),
-            replacement: DEMO_MEDIA_ROOT_RENAME_REPLACEMENT.to_string(),
-        }],
-        format: PlaylistFormat::M3u8,
-        ids: Vec::new(),
-        children: Vec::new(),
-    });
 
     if !sidecar_folder_children.is_empty() {
         media_root_children.push(HierarchyNode {
@@ -1722,128 +1684,55 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
     Ok(())
 }
 
-/// Validates root-level sidecar layout outside `sidecars/`.
+/// Validates sidecar-only layout policy at the media root.
 ///
 /// Policy:
-/// - one selected subtitle file is projected directly into media root,
-/// - root subtitle naming must follow the media output base template,
-/// - thumbnails and links remain flattened next to media files.
-#[expect(
-    clippy::too_many_lines,
-    reason = "this helper keeps all media-root sidecar invariants in one place so failures are easy to diagnose"
-)]
+/// - sidecars must live under `sidecars/`,
+/// - media root may contain the two primary media files,
+/// - no extra sidecar-like files should be flattened beside media outputs.
 fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
 ) -> ExampleResult<()> {
-    let expected_media_id =
-        parse_jellyfin_root_folder_name(expected_output_base).map(|(_, _, media_id)| media_id);
-
-    let subtitles_root = interpolated_root.join("subtitles");
-    if subtitles_root.exists() {
-        return Err(format!(
-            "media root '{}' must not contain dedicated root subtitles folder '{}'",
-            interpolated_root.display(),
-            subtitles_root.display()
-        )
-        .into());
-    }
-
     let root_files = fs::read_dir(interpolated_root)?
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .collect::<Vec<_>>();
-    let subtitle_files = root_files
+
+    let sidecars_root = interpolated_root.join("sidecars");
+    if !sidecars_root.is_dir() {
+        return Err(format!("expected sidecar root '{}' to exist", sidecars_root.display()).into());
+    }
+
+    let unexpected_sidecars = root_files
         .iter()
-        .filter(|path| lowercase_extension(path).as_deref().is_some_and(is_subtitle_extension))
-        .cloned()
-        .collect::<Vec<_>>();
-    if subtitle_files.is_empty() {
-        return Err(format!(
-            "expected flattened media root '{}' to contain subtitle sidecar files",
-            interpolated_root.display()
-        )
-        .into());
-    }
+        .filter_map(|path| {
+            let extension = lowercase_extension(path)?;
+            let is_sidecar_extension = is_subtitle_extension(&extension)
+                || is_image_extension(&extension)
+                || matches!(extension.as_str(), "url" | "webloc" | "desktop" | "txt" | "json");
+            if !is_sidecar_extension {
+                return None;
+            }
 
-    if !subtitle_files.iter().all(|path| {
-        path.file_name()
-            .and_then(|value| value.to_str())
-            .is_some_and(|name| name.starts_with(expected_output_base))
-    }) {
-        return Err(format!(
-            "expected flattened subtitle sidecar names in '{}' to start with media output base '{}': {:?}",
-            interpolated_root.display(),
-            expected_output_base,
-            subtitle_files
-                .iter()
-                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
-                .collect::<Vec<_>>()
-        )
-        .into());
-    }
+            let file_name = path.file_name()?.to_str()?;
+            if file_name.starts_with(expected_output_base)
+                && matches!(extension.as_str(), "mkv" | "webm" | "mp4")
+            {
+                return None;
+            }
 
-    let has_selected_subtitle = subtitle_files.iter().any(|path| {
-        path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
-            let normalized = name.to_ascii_lowercase();
-            normalized.ends_with(".en.vtt")
-        })
-    });
-    if !has_selected_subtitle {
-        return Err(format!(
-            "expected flattened media root '{}' to include selected subtitle filename suffix '.en.vtt'",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    let root_extensions =
-        root_files.iter().filter_map(|path| lowercase_extension(path)).collect::<Vec<_>>();
-
-    if !root_extensions.iter().any(|extension| is_image_extension(extension)) {
-        return Err(format!(
-            "expected flattened media root '{}' to contain thumbnail sidecar files",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    if !root_extensions
-        .iter()
-        .any(|extension| matches!(extension.as_str(), "url" | "webloc" | "desktop"))
-    {
-        return Err(format!(
-            "expected flattened media root '{}' to contain link sidecar files",
-            interpolated_root.display()
-        )
-        .into());
-    }
-
-    let non_subtitle_root_sidecars = root_files
-        .iter()
-        .filter(|path| {
-            lowercase_extension(path).as_deref().is_some_and(|extension| {
-                is_image_extension(extension) || matches!(extension, "url" | "webloc" | "desktop")
-            })
+            Some(file_name.to_string())
         })
         .collect::<Vec<_>>();
-    if !non_subtitle_root_sidecars.iter().all(|path| {
-        path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
-            name.starts_with(expected_output_base)
-                || expected_media_id
-                    .as_deref()
-                    .is_some_and(|media_id| name.contains(&format!(" [{media_id}].")))
-        })
-    }) {
+
+    if !unexpected_sidecars.is_empty() {
         return Err(format!(
-            "expected flattened thumbnail/link sidecar names in '{}' to start with media output base '{}': {:?}",
+            "unexpected flattened sidecar files in '{}': {:?}; move sidecars under '{}'",
             interpolated_root.display(),
-            expected_output_base,
-            non_subtitle_root_sidecars
-                .iter()
-                .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
-                .collect::<Vec<_>>()
+            unexpected_sidecars,
+            sidecars_root.display()
         )
         .into());
     }
@@ -2871,65 +2760,60 @@ mod tests {
         assert!(super::derive_ffprobe_path_from_ffmpeg_command(" ").is_none());
     }
 
-    /// Ensures media-root sidecar projection keeps selected subtitles as
-    /// root files named from the shared media output base.
+    /// Ensures sidecar-only layout accepts media root with only primary outputs.
     #[test]
-    fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
+    fn media_root_sidecars_accept_no_flattened_sidecar_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [rickroll]";
+        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
-        std::fs::write(root.join("Artist - Title [rickroll].en.vtt"), b"WEBVTT")
-            .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [rickroll].jpg"), b"jpg")
-            .expect("write thumbnail");
-        std::fs::write(root.join("Artist - Title [rickroll].url"), b"[InternetShortcut]")
-            .expect("write link");
+        std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
+        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].mkv"), b"mkv")
+            .expect("write primary output");
+        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].untagged.mkv"), b"mkv")
+            .expect("write untagged output");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
-            .expect("flat media root sidecars should be accepted");
+            .expect("sidecar-only media root should be accepted");
     }
 
-    /// Ensures media-root subtitle projection rejects a dedicated `subtitles/`
-    /// folder outside the `sidecars/` hierarchy.
+    /// Ensures sidecar-only layout rejects flattened subtitle files at media root.
     #[test]
-    fn media_root_sidecars_reject_dedicated_subtitles_folder() {
+    fn media_root_sidecars_reject_flattened_subtitle_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [rickroll]";
+        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
-        std::fs::create_dir_all(root.join("subtitles")).expect("create subtitles folder");
-        std::fs::write(root.join("Artist - Title [rickroll].en.vtt"), b"WEBVTT")
+        std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
+        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [rickroll].jpg"), b"jpg")
-            .expect("write thumbnail");
-        std::fs::write(root.join("Artist - Title [rickroll].url"), b"[InternetShortcut]")
-            .expect("write link");
 
         let error = super::assert_flat_media_root_sidecar_families(root, output_base)
-            .expect_err("subtitles folder projection should be rejected");
-        assert!(error.to_string().contains("must not contain dedicated root subtitles folder"));
+            .expect_err("flattened subtitle should be rejected");
+        assert!(error.to_string().contains("unexpected flattened sidecar files"));
     }
 
-    /// Ensures flattened non-subtitle sidecars can retain provider-native
-    /// title text as long as they are aligned to the media-id suffix.
+    /// Ensures sidecar-only layout rejects flattened thumbnail/link files.
     #[test]
-    fn media_root_sidecars_accept_non_subtitle_files_aligned_by_media_id_suffix() {
+    fn media_root_sidecars_reject_flattened_thumbnail_and_link_files() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-        let output_base = "Artist - Title [rickroll]";
+        let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
-        std::fs::write(root.join("Artist - Title [rickroll].en.vtt"), b"WEBVTT")
-            .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title (Official Video) [rickroll].webp"), b"webp")
-            .expect("write thumbnail");
+        std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
         std::fs::write(
-            root.join("Artist - Title (Official Video) [rickroll].url"),
+            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].webp"),
+            b"webp",
+        )
+        .expect("write thumbnail");
+        std::fs::write(
+            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].url"),
             b"[InternetShortcut]",
         )
         .expect("write link");
 
-        super::assert_flat_media_root_sidecar_families(root, output_base)
-            .expect("media-id-aligned non-subtitle sidecars should be accepted");
+        let error = super::assert_flat_media_root_sidecar_families(root, output_base)
+            .expect_err("flattened thumbnail/link files should be rejected");
+        assert!(error.to_string().contains("unexpected flattened sidecar files"));
     }
 }
