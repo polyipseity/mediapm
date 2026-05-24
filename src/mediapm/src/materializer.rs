@@ -406,6 +406,16 @@ fn join_relative_paths(base: &str, child: &str) -> String {
     }
 }
 
+/// Normalizes one resolved hierarchy relative path to Unicode NFD form.
+///
+/// This is applied after full placeholder/template expansion so runtime path
+/// materialization remains macOS-compatible even when metadata/media-id values
+/// contain NFC-composed characters.
+#[must_use]
+fn normalize_resolved_hierarchy_path_to_nfd(relative_path: &str) -> String {
+    relative_path.nfd().collect::<String>()
+}
+
 /// Renders absolute playlist path text from one library-relative target path.
 fn render_absolute_playlist_path(paths: &MediaPmPaths, target_path: &str) -> String {
     let absolute = paths.hierarchy_root_dir.join(target_path);
@@ -571,6 +581,7 @@ pub async fn sync_hierarchy(
             } else {
                 relative_path_template.to_string()
             };
+        let relative_path = normalize_resolved_hierarchy_path_to_nfd(&relative_path);
         validate_hierarchy_path(&relative_path)?;
 
         let fs_relative_path = relative_path.as_str();
@@ -2633,6 +2644,7 @@ mod tests {
         ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowSpec, WorkflowStepSpec,
         encode_state_document,
     };
+    use unicode_normalization::UnicodeNormalization;
 
     use crate::config::{
         HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
@@ -2897,6 +2909,120 @@ mod tests {
     fn hierarchy_path_rejects_non_nfd_segments() {
         let err = validate_hierarchy_path("movies/épisode.mkv").expect_err("NFD should fail");
         assert!(err.to_string().contains("NFD"));
+    }
+
+    /// Ensures media metadata placeholder expansion is normalized to NFD
+    /// before filesystem-path validation and materialization.
+    #[tokio::test]
+    async fn sync_hierarchy_normalizes_expanded_metadata_placeholder_paths_to_nfd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+        let cas_root = paths.root_dir.join(".mediapm").join("store");
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+
+        let artist_name = "Beyoncé".to_string();
+
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                "media-a".to_string(),
+                MediaSourceSpec {
+                    id: None,
+                    description: Some("file: source.bin".to_string()),
+                    title: None,
+                    workflow_id: None,
+                    metadata: Some(BTreeMap::from([(
+                        "artist".to_string(),
+                        MediaMetadataValue::Literal(artist_name.clone()),
+                    )])),
+                    variant_hashes: BTreeMap::from([("default".to_string(), hash.to_string())]),
+                    steps: Vec::new(),
+                },
+            )]),
+            hierarchy: hierarchy_nodes(BTreeMap::from([(
+                "library/${media.metadata.artist}/track.mkv".to_string(),
+                HierarchyEntry {
+                    kind: HierarchyEntryKind::Media,
+                    format: PlaylistFormat::M3u8,
+                    ids: Vec::new(),
+                    media_id: "media-a".to_string(),
+                    variants: vec!["default".to_string()],
+                    rename_files: Vec::new(),
+                },
+            )])),
+            ..MediaPmDocument::default()
+        };
+
+        let mut lock = MediaLockFile::default();
+        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
+            .await
+            .expect("sync hierarchy");
+
+        let normalized_path =
+            format!("library/{}/track.mkv", artist_name.nfd().collect::<String>());
+        let composed_path = format!("library/{artist_name}/track.mkv");
+
+        assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
+        assert!(lock.managed_files.contains_key(&normalized_path));
+        assert!(
+            !paths.hierarchy_root_dir.join(&composed_path).exists(),
+            "materializer should commit normalized NFD path, not NFC literal"
+        );
+    }
+
+    /// Ensures `${media.id}` expansion is also normalized to NFD before path
+    /// validation/commit.
+    #[tokio::test]
+    async fn sync_hierarchy_normalizes_expanded_media_id_placeholder_paths_to_nfd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+        let cas_root = paths.root_dir.join(".mediapm").join("store");
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+
+        let media_id = "média-a".to_string();
+
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                media_id.clone(),
+                MediaSourceSpec {
+                    id: None,
+                    description: Some("file: source.bin".to_string()),
+                    title: None,
+                    workflow_id: None,
+                    metadata: None,
+                    variant_hashes: BTreeMap::from([("default".to_string(), hash.to_string())]),
+                    steps: Vec::new(),
+                },
+            )]),
+            hierarchy: hierarchy_nodes(BTreeMap::from([(
+                "library/${media.id}/track.mkv".to_string(),
+                HierarchyEntry {
+                    kind: HierarchyEntryKind::Media,
+                    format: PlaylistFormat::M3u8,
+                    ids: Vec::new(),
+                    media_id: media_id.clone(),
+                    variants: vec!["default".to_string()],
+                    rename_files: Vec::new(),
+                },
+            )])),
+            ..MediaPmDocument::default()
+        };
+
+        let mut lock = MediaLockFile::default();
+        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
+            .await
+            .expect("sync hierarchy");
+
+        let normalized_path = format!("library/{}/track.mkv", media_id.nfd().collect::<String>());
+        let composed_path = format!("library/{media_id}/track.mkv");
+
+        assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
+        assert!(lock.managed_files.contains_key(&normalized_path));
+        assert!(
+            !paths.hierarchy_root_dir.join(&composed_path).exists(),
+            "materializer should commit normalized NFD path, not NFC literal"
+        );
     }
 
     /// Protects flattened sidecar materialization by allowing duplicate ZIP
