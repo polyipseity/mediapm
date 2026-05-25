@@ -259,7 +259,7 @@ impl Default for StateMutationOptions {
     }
 }
 
-/// Async API contract for Phase 2 conductor.
+/// Async API contract for the conductor.
 #[async_trait]
 pub trait ConductorApi: Send + Sync {
     /// Executes workflows using user and machine configuration inputs.
@@ -394,7 +394,7 @@ pub trait ConductorApi: Send + Sync {
     async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError>;
 }
 
-/// Canonical default configuration paths for Phase 2.
+/// Canonical default conductor configuration paths.
 #[must_use]
 pub fn default_state_paths() -> (PathBuf, PathBuf) {
     (PathBuf::from("conductor.ncl"), PathBuf::from("conductor.machine.ncl"))

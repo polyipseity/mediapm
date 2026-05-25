@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
-description = "Phase 2 built-in export tool contract"
+description = "Built-in export tool contract"
 
 [features]
 default = ["cli"]

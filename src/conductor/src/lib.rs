@@ -1,4 +1,4 @@
-//! Phase 2 Conductor orchestration contracts and deterministic runtime.
+//! Conductor orchestration contracts and deterministic runtime.
 //!
 //! The crate is organized in CAS-inspired modules:
 //! - `api` for public contracts,
@@ -50,7 +50,7 @@ pub use tools::downloader::{
 
 /// Returns built-in tool ids known by the conductor runtime.
 ///
-/// This exposes builtin identity from Phase 2 so higher layers (such as
+/// This exposes builtin identity from the conductor so higher layers (such as
 /// `mediapm`) can inspect builtin registration without depending directly on
 /// individual builtin crates.
 #[must_use]

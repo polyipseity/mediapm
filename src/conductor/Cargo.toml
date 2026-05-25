@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
-description = "Phase 2 orchestration contracts and state model for mediapm"
+description = "Orchestration contracts and state model for mediapm"
 
 [features]
 default = ["cli"]

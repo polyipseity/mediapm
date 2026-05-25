@@ -1,4 +1,4 @@
-//! Contract-focused integration scenarios for Phase 2.
+//! Contract-focused integration scenarios for the conductor.
 
 /// Bootstrap, validation, and state-shape focused checks.
 mod bootstrap;

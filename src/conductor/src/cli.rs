@@ -90,7 +90,7 @@ struct RuntimePathArgs {
 
 /// Top-level conductor CLI parser.
 #[derive(Debug, Parser)]
-#[command(name = "conductor", about = "Phase 2 mediapm conductor CLI")]
+#[command(name = "conductor", about = "mediapm conductor CLI")]
 pub struct Cli {
     /// Grouped runtime storage path arguments.
     #[command(flatten)]
