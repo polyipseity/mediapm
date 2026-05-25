@@ -214,6 +214,7 @@
     payloads) and uses `${context.os == "<target>" ? ... | ...}` command
     selectors.
   See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules,
+
   tool provisioning catalog, conductor integration boundary, and example policy.
 
 ## Build and Test

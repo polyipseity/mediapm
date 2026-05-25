@@ -357,6 +357,7 @@ For `media.<id>` semantics and runtime reconciliation:
   - refresh when explicit user-facing step config changes, or
   - refresh when mediapm-managed step `impure_timestamp` is missing.
   Unchanged explicit config with a present timestamp must preserve prior
+
   immutable step tool ids so existing outputs stay reusable across newer tool
   activations until users explicitly change config or clear timestamp state.
 

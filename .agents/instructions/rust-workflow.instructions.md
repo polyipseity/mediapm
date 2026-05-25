@@ -78,6 +78,7 @@ When editing Rust source, validate changes with targeted checks first:
     exits as blocker failures, not soft skips.
     - `mediapm_demo_online` hard-enforces this limit and returns exit code `124` on
     timeout; treat that exit as equivalent to any other blocker failure.
+
   - Keep timeout/watchdog messaging progress-safe: avoid periodic heartbeat
     stderr output while conductor progress bars are rendering, and keep timeout
     notices plain text (no row-clear ANSI control sequences).

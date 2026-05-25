@@ -21,9 +21,9 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
 
 2. **Compose commit message**
    - Inspect Command 1 output and repository conventions (CONTRIBUTING.md, `.agents/`, `package.json`, `commitlint`, `.husky`, `CHANGELOG.md`, etc.).
-    - Enforce repository commit policy:
-       - header must be `type(scope): subject` (scope is required),
-       - never use crate/tool-prefixed headers like `mediapm: ...`,
+   - Enforce repository commit policy:
+     - header must be `type(scope): subject` (scope is required),
+     - never use crate/tool-prefixed headers like `mediapm: ...`,
           `conductor: ...`, `cas: ...`, or similar `<name>:` forms.
    - Produce a commit message with:
      - Short subject (~50 chars)
@@ -36,7 +36,7 @@ argument-hint: Optional extras (e.g., ticket=ABC-123). To skip committing, pass 
 3. **Create the commit**
    - If `${input:commitNow}` is `no`, skip this step and only present the message.
    - Otherwise, present the exact command to create the commit from stdin and print the new SHA. **Both commands must be run in the same shell command block to ensure correct context.** Use the correct heredoc/here-string syntax for the detected shell:
-     - **PowerShell (Windows):**
+   - **PowerShell (Windows):**
 
         ```powershell
         (@'

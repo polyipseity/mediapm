@@ -405,6 +405,7 @@ Guidance:
   - API input uses `BTreeMap<String, String>` args plus optional raw payload
     bytes for content-oriented operations.
   Builtins may optionally define one default CLI option key so one value can be
+
   provided without spelling the key, but explicit keyed input must remain
   supported and map to the same API key.
   Builtin execution must fail fast on undeclared keys, missing required keys,
@@ -417,6 +418,7 @@ Guidance:
   map in API).
   CLI failures may use ordinary Rust error types; do not coerce failures into
   fake string-only success payloads.
+
 - Builtin crates must use explicit crate versions in their own `Cargo.toml`
   (`version = "..."`) instead of inheriting workspace package version.
 - Ensure process execution errors preserve useful stderr context.
