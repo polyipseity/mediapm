@@ -838,7 +838,7 @@ fn merge_tool_config_defaults_seeds_curated_media_tool_input_defaults() {
     assert_eq!(
         media_tagger.input_defaults.get("cover_art_slot_count"),
         Some(&mediapm_conductor::InputBinding::String(
-            default_ffmpeg_slot_limits().max_input_slots.saturating_sub(1).to_string()
+            default_ffmpeg_slot_limits().max_input_slots.to_string()
         ))
     );
     assert_eq!(

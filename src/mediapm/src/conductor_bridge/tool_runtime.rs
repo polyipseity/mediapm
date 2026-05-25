@@ -1113,7 +1113,7 @@ fn default_input_defaults_for_tool(
             .insert("write_all_images".to_string(), InputBinding::String("true".to_string()));
         input_defaults.insert(
             "cover_art_slot_count".to_string(),
-            InputBinding::String(ffmpeg_slot_limits.max_input_slots.saturating_sub(1).to_string()),
+            InputBinding::String(ffmpeg_slot_limits.max_input_slots.to_string()),
         );
         input_defaults.insert(
             "acoustid_endpoint".to_string(),

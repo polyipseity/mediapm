@@ -240,7 +240,7 @@ For `media.<id>` semantics and runtime reconciliation:
   unless callers explicitly override that input, and should default
   `write_all_tags = "true"` plus `write_all_images = "true"`.
   Managed tool defaults should also set `cover_art_slot_count` to
-  `tools.ffmpeg.max_input_slots - 1` so media-tagger and ffmpeg apply stages
+  `tools.ffmpeg.max_input_slots` so media-tagger and ffmpeg apply stages
   agree on deterministic attachment-slot fanout.
 - `media-tagger` metadata-fetch mode should allow explicit MBID-driven runs
   without `input_content`; fingerprint/AcoustID autodetection still requires

@@ -167,7 +167,7 @@
     `write_desktop_link`), and highest-quality single-thumbnail capture by
     default; `media-tagger` defaults to `strict_identification = "true"`,
     `write_all_tags = "true"`, `write_all_images = "true"`, and
-    `cover_art_slot_count = tools.ffmpeg.max_input_slots - 1`.
+    `cover_art_slot_count = tools.ffmpeg.max_input_slots`.
   - Managed `rsgain` defaults stay in single-track mode
     (`album = "false"`, `album_mode = "false"`).
   - Managed `media-tagger` cache defaults to `<mediapm_dir>/cache` and uses
