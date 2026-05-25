@@ -1,4 +1,4 @@
-//! Built-in downloader catalog for managed Phase 3 tools.
+//! Built-in downloader catalog for managed mediapm tools.
 //!
 //! Catalog entries are split into one Rust file per logical tool so source
 //! details remain isolated and easy to review.

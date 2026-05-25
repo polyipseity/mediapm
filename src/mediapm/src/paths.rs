@@ -1,4 +1,4 @@
-//! Filesystem path layout helpers for Phase 3 `mediapm` state.
+//! Filesystem path layout helpers for `mediapm` state.
 //!
 //! This module centralizes where `mediapm` keeps user policy, conductor-facing
 //! Nickel documents, machine-managed state, and staging directories.
@@ -16,15 +16,15 @@ pub struct MediaPmPaths {
     pub root_dir: PathBuf,
     /// User-edited `mediapm` policy/config Nickel document.
     pub mediapm_ncl: PathBuf,
-    /// Conductor user Nickel document used by Phase 3 orchestration.
+    /// Conductor user Nickel document used by mediapm orchestration.
     pub conductor_user_ncl: PathBuf,
-    /// Conductor machine Nickel document used by Phase 3 orchestration.
+    /// Conductor machine Nickel document used by mediapm orchestration.
     pub conductor_machine_ncl: PathBuf,
-    /// Conductor volatile runtime state document path used by Phase 3 orchestration.
+    /// Conductor volatile runtime state document path used by mediapm orchestration.
     pub conductor_state_config: PathBuf,
-    /// Conductor execution-sandbox temporary directory used by Phase 3 orchestration.
+    /// Conductor execution-sandbox temporary directory used by mediapm orchestration.
     pub conductor_tmp_dir: PathBuf,
-    /// Conductor schema export directory used by Phase 3 orchestration.
+    /// Conductor schema export directory used by mediapm orchestration.
     pub conductor_schema_dir: PathBuf,
     /// `mediapm` machine-managed state document (`state.ncl`).
     pub mediapm_state_ncl: PathBuf,
@@ -45,7 +45,7 @@ pub struct MediaPmPaths {
 }
 
 impl MediaPmPaths {
-    /// Computes canonical Phase 3 paths from one workspace root.
+    /// Computes canonical mediapm paths from one workspace root.
     #[must_use]
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();

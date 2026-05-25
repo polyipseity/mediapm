@@ -23,7 +23,7 @@ pub(super) fn resolve_cas_store_path(
 
 /// Returns the default conductor runtime-storage values used by `mediapm`.
 ///
-/// These defaults intentionally point Phase 2 runtime state under the
+/// These defaults intentionally point conductor runtime state under the
 /// effective `mediapm` runtime folder (default `.mediapm/`) instead of
 /// conductor's standalone `.conductor/` default tree.
 #[must_use]

@@ -33,7 +33,7 @@ const GENERATED_CONDUCTOR_MACHINE_BANNER: &str = concat!(
     "# Do not edit directly; edit mediapm.ncl and rerun sync.\n\n",
 );
 
-/// Ensures conductor user/machine Nickel files exist for Phase 3 orchestration.
+/// Ensures conductor user/machine Nickel files exist for mediapm orchestration.
 pub(crate) fn ensure_conductor_documents(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
     if paths.conductor_user_ncl.exists() {
         let mut user_document = load_user_document(&paths.conductor_user_ncl)?;

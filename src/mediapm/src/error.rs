@@ -1,4 +1,4 @@
-//! Phase 3 `mediapm` error taxonomy.
+//! `mediapm` error taxonomy.
 //!
 //! This module centralizes crate-level error variants so all submodules share
 //! one consistent error contract while preserving operation/path context.
@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use mediapm_conductor::ConductorError;
 use thiserror::Error;
 
-/// Error category for Phase 3 orchestration and runtime coordination.
+/// Error category for mediapm orchestration and runtime coordination.
 #[derive(Debug, Error)]
 pub enum MediaPmError {
     /// Source URI does not satisfy scheme requirements.
@@ -31,7 +31,7 @@ pub enum MediaPmError {
         #[source]
         source: std::io::Error,
     },
-    /// Error propagated from Phase 2 conductor.
+    /// Error propagated from the conductor.
     #[error("conductor error: {0}")]
     Conductor(#[from] ConductorError),
 }

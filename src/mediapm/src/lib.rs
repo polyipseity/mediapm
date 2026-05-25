@@ -1,11 +1,11 @@
-//! Phase 3 `mediapm` media orchestration facade.
+//! `mediapm` media orchestration facade.
 //!
 //! This crate composes:
-//! - Phase 1 CAS for content identity/storage,
-//! - Phase 2 Conductor for declarative workflow execution,
-//! - Phase 3 policy/lock/materialization logic specialized for media libraries.
+//! - CAS (`mediapm-cas`) for content identity/storage,
+//! - Conductor (`mediapm-conductor`) for declarative workflow execution,
+//! - `mediapm` policy/lock/materialization logic specialized for media libraries.
 //!
-//! Phase 3 state contract:
+//! State contract:
 //! - desired state: `mediapm.ncl`,
 //! - conductor runtime docs: `mediapm.conductor.ncl`,
 //!   `mediapm.conductor.machine.ncl` (both configurable),
@@ -277,7 +277,7 @@ where
 {
     /// Conductor backend used for workflow execution and state coordination.
     conductor: C,
-    /// Canonical Phase 3 path set for this service instance.
+    /// Canonical path set for this service instance.
     paths: MediaPmPaths,
     /// Optional runtime-storage overrides applied after `mediapm.ncl` values.
     runtime_storage_overrides: MediaRuntimeStorage,
@@ -306,13 +306,13 @@ where
         Self { conductor, paths, runtime_storage_overrides }
     }
 
-    /// Returns canonical Phase 3 paths used by this service.
+    /// Returns canonical paths used by this service.
     #[must_use]
     pub fn paths(&self) -> &MediaPmPaths {
         &self.paths
     }
 
-    /// Resolves effective Phase 3 paths by merging config + service overrides.
+    /// Resolves effective paths by merging config + service overrides.
     fn resolve_effective_paths(
         &self,
         config_runtime_storage: &MediaRuntimeStorage,
@@ -1148,7 +1148,7 @@ where
     }
 }
 
-/// Returns built-in tool ids that phase 3 expects to be available.
+/// Returns built-in tool ids that mediapm expects to be available.
 #[must_use]
 pub fn registered_builtin_ids() -> [&'static str; 5] {
     mediapm_conductor::registered_builtin_ids()
@@ -1774,11 +1774,11 @@ fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
     }
 }
 
-/// Builds conductor runtime options from resolved Phase 3 paths.
+/// Builds conductor runtime options from resolved mediapm paths.
 ///
 /// `mediapm` always provides grouped runtime-storage paths explicitly when it
-/// invokes conductor so phase-2 runtime writes (volatile state + CAS store)
-/// stay aligned with effective phase-3 path policy rather than falling back to
+/// invokes conductor so conductor runtime writes (volatile state + CAS store)
+/// stay aligned with effective mediapm path policy rather than falling back to
 /// standalone conductor defaults under `.conductor/`.
 #[must_use]
 fn conductor_run_workflow_options(

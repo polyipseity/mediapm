@@ -2,7 +2,7 @@
 
 use mediapm::registered_builtin_ids;
 
-/// Ensures the Phase 3 built-in registry exposes the migrated import/export
+/// Ensures the mediapm built-in registry exposes the migrated import/export
 /// tool set with stable date-versioned identifiers.
 #[test]
 fn builtins_are_date_versioned_and_registered() {

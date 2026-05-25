@@ -1,8 +1,8 @@
-//! Nickel-backed Phase 3 `mediapm.ncl` and `state.ncl` document model and I/O
+//! Nickel-backed `mediapm.ncl` and `state.ncl` document model and I/O
 //! helpers.
 //!
-//! The `mediapm.ncl` file is the declarative desired-state surface for Phase
-//! 3: media sources, hierarchy mapping, and desired tool enablement.
+//! The `mediapm.ncl` file is the declarative desired-state surface for
+//! mediapm: media sources, hierarchy mapping, and desired tool enablement.
 //! The `state.ncl` file is the machine-managed realized-state surface. Both
 //! documents share the same versioned Nickel schema and merge into one runtime
 //! `MediaPmDocument`.
@@ -779,13 +779,13 @@ pub(crate) fn expand_variant_selectors(
     Ok(resolved)
 }
 
-/// Top-level Phase 3 Nickel document.
+/// Top-level mediapm Nickel document.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmDocument {
     /// Explicit schema marker for migration safety.
     pub version: u32,
-    /// Optional runtime-path overrides for Phase 3 local state.
+    /// Optional runtime-path overrides for mediapm local state.
     #[serde(default)]
     pub runtime: MediaRuntimeStorage,
     /// Declarative desired tool requirements keyed by logical tool name.
@@ -1022,7 +1022,7 @@ pub struct ToolRegistryRecord {
     pub status: ToolRegistryStatus,
 }
 
-/// Runtime path overrides for Phase 3 local state.
+/// Runtime path overrides for mediapm local state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MediaRuntimeStorage {

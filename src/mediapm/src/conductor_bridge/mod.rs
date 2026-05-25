@@ -1,6 +1,6 @@
-//! Conductor-facing tool lifecycle helpers used by Phase 3 `mediapm`.
+//! Conductor-facing tool lifecycle helpers used by `mediapm`.
 //!
-//! This folder-module keeps Phase 3 orchestration glue readable by separating:
+//! This folder-module keeps mediapm orchestration glue readable by separating:
 //! - Nickel document bootstrapping and persistence,
 //! - runtime-storage policy/default handling,
 //! - desired-tool reconciliation and prune logic,

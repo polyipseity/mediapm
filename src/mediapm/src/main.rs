@@ -1,9 +1,9 @@
-//! Binary entrypoint for the Phase 3 `mediapm` CLI.
+//! Binary entrypoint for the `mediapm` CLI.
 //!
 //! This CLI exposes:
 //! - media/tool declarative state management,
 //! - sync/materialization orchestration,
-//! - passthrough command surfaces for Phase 1 CAS and Phase 2 conductor CLIs.
+//! - passthrough command surfaces for the CAS and conductor CLIs.
 
 use std::path::PathBuf;
 
@@ -84,9 +84,9 @@ enum Command {
         #[command(subcommand)]
         command: BuiltinsCommand,
     },
-    /// Passthrough to Phase 1 `mediapm-cas` CLI.
+    /// Passthrough to the `mediapm-cas` CLI.
     Cas(PassthroughArgs),
-    /// Passthrough to Phase 2 conductor CLI.
+    /// Passthrough to the conductor CLI.
     Conductor(PassthroughArgs),
 }
 

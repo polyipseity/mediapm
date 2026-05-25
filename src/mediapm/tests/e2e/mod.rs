@@ -1,4 +1,4 @@
-//! End-to-end tests for Phase 3 `mediapm` workflows.
+//! End-to-end tests for `mediapm` workflows.
 
 /// Offline CLI example execution guardrails.
 mod cli_examples;

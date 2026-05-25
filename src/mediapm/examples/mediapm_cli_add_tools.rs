@@ -1,7 +1,7 @@
 //! Offline example for adding managed tool requirements without downloading tool binaries.
 //!
 //! The example bootstraps a clean `mediapm` workspace, leaves `media` empty,
-//! populates the `tools` block with every managed tool in the default Phase 3
+//! populates the `tools` block with every managed tool in the default mediapm
 //! stack, and writes dummy tool payload files so the conductor machine config
 //! can show concrete `content_map` entries without fetching real releases.
 

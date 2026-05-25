@@ -1,4 +1,4 @@
-//! Integration tests for focused Phase 3 contracts.
+//! Integration tests for focused mediapm contracts.
 
 /// Source-level regression guardrails for the local demo example.
 mod demo;

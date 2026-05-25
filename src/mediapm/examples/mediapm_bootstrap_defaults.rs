@@ -1,4 +1,4 @@
-//! Minimal Phase 3 bootstrap example.
+//! Minimal mediapm bootstrap example.
 //!
 //! This example demonstrates how a fresh workspace is initialized by `mediapm`.
 //! It creates a temporary workspace, runs one `sync`, and prints the generated

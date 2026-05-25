@@ -1,4 +1,4 @@
-//! Atomic staging + commit materializer for Phase 3 hierarchy sync.
+//! Atomic staging + commit materializer for mediapm hierarchy sync.
 //!
 //! The materializer enforces path invariants, stages all outputs under
 //! the resolved runtime staging directory, and then commits with atomic rename
@@ -2579,7 +2579,7 @@ fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
     Ok(())
 }
 
-/// Validates one relative hierarchy path against Phase 3 invariants.
+/// Validates one relative hierarchy path against mediapm invariants.
 fn validate_hierarchy_path(relative_path: &str) -> Result<(), MediaPmError> {
     let path = Path::new(relative_path);
 

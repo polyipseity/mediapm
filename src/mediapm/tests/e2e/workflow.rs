@@ -1,4 +1,4 @@
-//! End-to-end workflow tests for mediapm phase composition.
+//! End-to-end workflow tests for mediapm layer composition.
 
 use mediapm::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaPmApi, MediaPmDocument, MediaPmService,
@@ -10,9 +10,9 @@ use mediapm_conductor::{decode_machine_document, decode_user_document};
 use tempfile::tempdir;
 use url::Url;
 
-/// Protects bootstrap behavior for freshly initialized Phase 3 workspaces.
+/// Protects bootstrap behavior for freshly initialized mediapm workspaces.
 #[tokio::test]
-async fn sync_library_bootstraps_phase3_state_files() {
+async fn sync_library_bootstraps_mediapm_state_files() {
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_in_memory_at(root.path());
 
@@ -48,7 +48,7 @@ async fn local_scheme_is_accepted() {
     assert!(result.is_ok());
 }
 
-/// Protects conductor runtime-storage defaults written by Phase 3 bootstrap.
+/// Protects conductor runtime-storage defaults written by mediapm bootstrap.
 #[tokio::test]
 async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
     let root = tempdir().expect("tempdir");
