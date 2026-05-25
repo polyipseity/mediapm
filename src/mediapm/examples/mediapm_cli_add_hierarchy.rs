@@ -175,10 +175,7 @@ mod tests {
             .map(|node| {
                 assert_eq!(node.kind, HierarchyNodeKind::Folder);
                 assert!(node.id.is_none(), "outer hierarchy folder should not carry an id");
-                assert!(
-                    node.media_id.is_none(),
-                    "preset root folder should not carry media_id"
-                );
+                assert!(node.media_id.is_none(), "preset root folder should not carry media_id");
                 node.children
                     .first()
                     .and_then(|child| child.media_id.as_deref())
@@ -193,15 +190,10 @@ mod tests {
                 .collect();
         assert_eq!(observed_media_ids, expected_media_ids);
 
-        let remote_source = document
-            .media
-            .get(&manifest.remote_media_id)
-            .expect("remote source should exist");
+        let remote_source =
+            document.media.get(&manifest.remote_media_id).expect("remote source should exist");
         assert_eq!(
-            remote_source
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.get("video_ext")),
+            remote_source.metadata.as_ref().and_then(|metadata| metadata.get("video_ext")),
             Some(&MediaMetadataValue::Literal(".mkv".to_string())),
             "yt-dlp hierarchy example should hardcode .mkv for video_ext"
         );

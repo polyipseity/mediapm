@@ -10,10 +10,9 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage,
-    ToolRegistryStatus,
-    builtins::media_tagger::InternalMediaTaggerOptions, ensure_global_directory_layout,
-    global_tool_cache_clear, global_tool_cache_prune_expired, global_tool_cache_status,
-    load_runtime_dotenv_for_root, resolve_default_global_paths,
+    ToolRegistryStatus, builtins::media_tagger::InternalMediaTaggerOptions,
+    ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
+    global_tool_cache_status, load_runtime_dotenv_for_root, resolve_default_global_paths,
 };
 use url::Url;
 
@@ -534,8 +533,11 @@ async fn main() -> anyhow::Result<()> {
                     .root_folder
                     .as_deref()
                     .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
-                let removed_nodes =
-                    service.remove_media_hierarchy_preset(preset, &args.media_id, effective_root)?;
+                let removed_nodes = service.remove_media_hierarchy_preset(
+                    preset,
+                    &args.media_id,
+                    effective_root,
+                )?;
                 println!(
                     "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
                     args.preset.to_possible_value().expect("value enum").get_name(),

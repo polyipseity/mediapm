@@ -364,9 +364,8 @@ const FFMPEG_OPTION_INPUTS: &[&str] = &[
 ///
 /// These values include common file extensions (`mp4`, `m4a`, `m4v`) and
 /// ffmpeg muxer names/aliases (`ism`, `ismv`, `ipod`, `psp`, `f4v`).
-const FFMPEG_MOV_FASTSTART_CONTAINERS: &[&str] = &[
-    "mp4", "mov", "m4a", "m4v", "3gp", "3g2", "f4v", "ism", "ismv", "ipod", "psp",
-];
+const FFMPEG_MOV_FASTSTART_CONTAINERS: &[&str] =
+    &["mp4", "mov", "m4a", "m4v", "3gp", "3g2", "f4v", "ism", "ismv", "ipod", "psp"];
 
 /// Matroska-family container values that should receive managed
 /// `-cues_to_front 1` auto-injection.

@@ -413,8 +413,7 @@ fn build_tool_command_includes_container_conditional_faststart_and_cues_to_front
     let has_mp4_value_token = command
         .iter()
         .any(|t| t.contains("inputs.container == \"mp4\"") && t.contains("+faststart"));
-    let has_ismv_alias =
-        command.iter().any(|t| t.contains("inputs.container == \"ismv\""));
+    let has_ismv_alias = command.iter().any(|t| t.contains("inputs.container == \"ismv\""));
     assert!(
         has_mp4_flag_token,
         "ffmpeg command should include container-conditional -movflags token for MP4 family"
@@ -434,8 +433,7 @@ fn build_tool_command_includes_container_conditional_faststart_and_cues_to_front
         .any(|t| t.contains("inputs.container == \"mkv\"") && t.contains("-cues_to_front"));
     let has_mkv_value_token =
         command.iter().any(|t| t.contains("inputs.container == \"mkv\"") && t.contains(" 1 | ''}"));
-    let has_matroska_alias =
-        command.iter().any(|t| t.contains("inputs.container == \"matroska\""));
+    let has_matroska_alias = command.iter().any(|t| t.contains("inputs.container == \"matroska\""));
     assert!(
         has_mkv_flag_token,
         "ffmpeg command should include container-conditional -cues_to_front token for MKV family"
@@ -444,10 +442,7 @@ fn build_tool_command_includes_container_conditional_faststart_and_cues_to_front
         has_mkv_value_token,
         "ffmpeg command should include container-conditional 1 value token for MKV family"
     );
-    assert!(
-        has_matroska_alias,
-        "ffmpeg command should include Matroska canonical alias coverage"
-    );
+    assert!(has_matroska_alias, "ffmpeg command should include Matroska canonical alias coverage");
 
     // Container-conditional tokens must appear before trailing_args so users
     // can override them via trailing_args if needed.

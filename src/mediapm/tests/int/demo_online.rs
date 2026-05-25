@@ -281,7 +281,8 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("DEMO_LIBRARY_ROOT")
             && source.contains("DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER")
             && source.contains("DEMO_MEDIA_ROOT_LINKS_FOLDER")
-            && source.contains("intentionally does not instantiate that `folder.<thumbnail_ext>` path")
+            && source
+                .contains("intentionally does not instantiate that `folder.<thumbnail_ext>` path")
             && source.contains("media_folder(path=\"\")")
             && source.contains(
                 "assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)"

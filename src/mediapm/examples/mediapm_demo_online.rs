@@ -49,8 +49,8 @@ use mediapm::{
     HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue,
     MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
     MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue,
-    load_lockfile, load_mediapm_document, save_mediapm_document,
+    ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
+    save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1841,11 +1841,9 @@ fn assert_flat_media_root_sidecar_families(
 
     let links_root = interpolated_root.join(DEMO_MEDIA_ROOT_LINKS_FOLDER);
     if !links_root.is_dir() {
-        return Err(format!(
-            "expected root links projection '{}' to exist",
-            links_root.display()
-        )
-        .into());
+        return Err(
+            format!("expected root links projection '{}' to exist", links_root.display()).into()
+        );
     }
     assert_sidecar_directory_family_content("links", &links_root)?;
 

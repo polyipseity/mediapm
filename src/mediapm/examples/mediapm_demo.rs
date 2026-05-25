@@ -708,9 +708,10 @@ fn configure_document_for_local_tool_chain(
                 "audio_m4a".to_string(),
                 json!({ "kind": "primary", "idx": 0, "extension": "m4a" }),
             )]),
-            options: BTreeMap::from([
-                ("vn".to_string(), TransformInputValue::String("true".to_string())),
-            ]),
+            options: BTreeMap::from([(
+                "vn".to_string(),
+                TransformInputValue::String("true".to_string()),
+            )]),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,

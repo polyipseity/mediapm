@@ -1237,10 +1237,7 @@ fn import_variant_binding_uses_builtin_result_output_name() {
                 generic_output_variant("primary"),
             )]),
             options: BTreeMap::from([
-                (
-                    "kind".to_string(),
-                    TransformInputValue::String("cas_hash".to_string()),
-                ),
+                ("kind".to_string(), TransformInputValue::String("cas_hash".to_string())),
                 (
                     "hash".to_string(),
                     TransformInputValue::String(
@@ -1472,10 +1469,7 @@ fn ffmpeg_infers_container_from_primary_output_extension() {
         plan.workflows.get("mediapm.media.ffmpeg-infer-container").expect("managed workflow");
     let step = workflow.steps.first().expect("workflow step");
 
-    assert_eq!(
-        step.inputs.get("container"),
-        Some(&InputBinding::String("matroska".to_string()))
-    );
+    assert_eq!(step.inputs.get("container"), Some(&InputBinding::String("matroska".to_string())));
 }
 
 /// Protects ffmpeg container inference for extension aliases by canonicalizing
@@ -1529,10 +1523,8 @@ fn ffmpeg_infers_canonical_container_from_extension_aliases() {
         };
 
         let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
-        let workflow = plan
-            .workflows
-            .get(&format!("mediapm.media.{media_id}"))
-            .expect("managed workflow");
+        let workflow =
+            plan.workflows.get(&format!("mediapm.media.{media_id}")).expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
         assert_eq!(
@@ -1598,10 +1590,8 @@ fn ffmpeg_explicit_container_aliases_are_canonicalized() {
         };
 
         let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
-        let workflow = plan
-            .workflows
-            .get(&format!("mediapm.media.{media_id}"))
-            .expect("managed workflow");
+        let workflow =
+            plan.workflows.get(&format!("mediapm.media.{media_id}")).expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
         assert_eq!(
