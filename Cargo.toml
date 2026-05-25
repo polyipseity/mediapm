@@ -96,5 +96,5 @@ zip = { version = "8.6.0", default-features = false, features = [
 ] }
 
 [workspace.metadata.bin]
-cargo-binstall = { version = "1.17.8" }
-rumdl = { version = "0.1.59" }
+cargo-binstall = { version = "1.19.1" }
+rumdl = { version = "0.2.0" }
