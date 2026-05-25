@@ -7,7 +7,8 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage,
     ToolRegistryStatus, builtins::media_tagger::InternalMediaTaggerOptions,
@@ -88,11 +89,25 @@ enum Command {
     Cas(PassthroughArgs),
     /// Passthrough to the conductor CLI.
     Conductor(PassthroughArgs),
+    /// Generates shell completion scripts for the `mediapm` CLI.
+    Completions {
+        /// Target shell for completion script generation.
+        shell: Shell,
+    },
 }
 
 /// Tool lifecycle commands.
 #[derive(Debug, Subcommand)]
 enum ToolsCommand {
+    /// Adds one tool requirement entry to `mediapm.ncl` by logical name.
+    ///
+    /// The tool must appear in the built-in downloader catalog. If a
+    /// requirement for this name already exists, the command is a no-op.
+    /// After adding, run `tools sync` to download and register the tool.
+    Add {
+        /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `rsgain`, `media-tagger`, `sd`).
+        name: String,
+    },
     /// Reconciles desired tool requirements only (no workflow/materialization run).
     ///
     /// Default policy checks remote updates for tag-only selectors unless
@@ -103,13 +118,11 @@ enum ToolsCommand {
     /// Removes one installed tool binary while keeping metadata.
     Prune {
         /// Immutable tool id.
-        #[arg(long)]
         id: String,
     },
     /// Runs one managed tool binary directly.
     Run {
         /// Immutable tool id or logical tool name.
-        #[arg(long)]
         tool: String,
         /// Trailing arguments passed to the managed tool executable.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -180,9 +193,7 @@ struct HierarchyAddArgs {
     preset: HierarchyPreset,
     /// Optional hierarchy root folder.
     ///
-    /// When omitted, preset defaults are used:
-    /// - local: `music videos/local`
-    /// - yt-dlp: `music videos/online`
+    /// When omitted, defaults to `media/` for all presets.
     #[arg(long = "root-folder", alias = "folder")]
     root_folder: Option<String>,
     /// Existing media id in `mediapm.ncl`.
@@ -200,9 +211,7 @@ struct HierarchyRemoveArgs {
     preset: HierarchyPreset,
     /// Optional hierarchy root folder.
     ///
-    /// When omitted, preset defaults are used:
-    /// - local: `music videos/local`
-    /// - yt-dlp: `music videos/online`
+    /// When omitted, defaults to `media/` for all presets.
     #[arg(long = "root-folder", alias = "folder")]
     root_folder: Option<String>,
     /// Existing media id in `mediapm.ncl`.
@@ -429,6 +438,14 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Tools { command } => match command {
+            ToolsCommand::Add { name } => {
+                let added = service.add_tool_requirement(&name)?;
+                if added {
+                    println!("added tool requirement '{name}' (tag = latest); run 'tools sync' to download");
+                } else {
+                    println!("tool requirement '{name}' already exists; run 'tools sync' to update");
+                }
+            }
             ToolsCommand::Sync(args) => {
                 let check_tag_updates = args.tag_update_policy.resolve(true);
                 let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
@@ -591,6 +608,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Conductor(args) => {
             passthrough_conductor(&args.args).await?;
         }
+        Command::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());
+        }
     }
     Ok(())
 }
@@ -642,11 +662,8 @@ fn map_insert_position(position: InsertPosition) -> AddInsertPosition {
 
 /// Returns preset-specific default hierarchy root folder for CLI add/remove.
 #[must_use]
-fn default_hierarchy_root_for_preset(preset: HierarchyPreset) -> &'static str {
-    match preset {
-        HierarchyPreset::Local => "music videos/local",
-        HierarchyPreset::YtDlp => "music videos/online",
-    }
+fn default_hierarchy_root_for_preset(_preset: HierarchyPreset) -> &'static str {
+    "media/"
 }
 
 /// Executes Phase-1 CAS CLI passthrough in-process.
