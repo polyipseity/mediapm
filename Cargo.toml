@@ -38,7 +38,10 @@ blake3 = "1.8.5"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 bytes = "1.10.1"
 chromaprint-next = "0.1.0"
-clap = { version = "4.6.1", default-features = false, features = ["derive", "std"] }
+clap = { version = "4.6.1", default-features = false, features = [
+	"derive",
+	"std",
+] }
 crc32fast = "1.5.0"
 dashmap = "6.1.0"
 dirs = "6.0.0"
@@ -63,7 +66,10 @@ ractor = { version = "0.15.12", features = ["tokio_runtime"] }
 rand = { version = "0.9", features = ["std_rng"] }
 redb = "4.1.0"
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
+reqwest = { version = "0.12", default-features = false, features = [
+	"rustls-tls",
+	"blocking",
+] }
 same-file = "1.0.6"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
@@ -85,10 +91,10 @@ unicode-normalization = "0.1.24"
 url = "2.5.7"
 xz2 = "0.1.7"
 zerocopy = { version = "0.8", features = ["derive"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "8.6.0", default-features = false, features = [
+	"deflate-flate2-zlib-rs",
+] }
 
 [workspace.metadata.bin]
-# <https://github.com/cargo-bins/cargo-binstall/issues/2476>
-# cargo-binstall = { version = "1.17.8" }
-commitlint-rs = { bins = ["commitlint"], version = "0.2.4" }
+cargo-binstall = { version = "1.17.8" }
 rumdl = { version = "0.1.59" }
