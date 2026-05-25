@@ -851,6 +851,40 @@ where
         conductor_bridge::list_tools(&effective_paths, &lock)
     }
 
+    /// Adds one tool requirement to `mediapm.ncl` by logical name.
+    ///
+    /// The tool name must appear in the built-in downloader catalog. If a
+    /// requirement for this name already exists, the method is a no-op and
+    /// returns `false`. Otherwise the entry is inserted with `tag = "latest"`
+    /// and the updated document is saved before returning `true`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the tool name is not in the catalog,
+    /// or when `mediapm.ncl` cannot be loaded or saved.
+    pub fn add_tool_requirement(&self, tool_name: &str) -> Result<bool, MediaPmError> {
+        // Validate against catalog before mutating config.
+        tools::catalog::tool_catalog_entry(tool_name)?;
+
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        if document.tools.contains_key(tool_name) {
+            return Ok(false);
+        }
+        document.tools.insert(
+            tool_name.to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        );
+        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        Ok(true)
+    }
+
     /// Prunes one tool binary while preserving metadata.
     ///
     /// # Errors
