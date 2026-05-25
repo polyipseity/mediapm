@@ -111,23 +111,22 @@ fn demo_online_uses_in_memory_service_wiring() {
     );
 
     assert!(
-        !source.contains("\"extension\": \"mkv\"")
+        source.contains("\"extension\": \"mkv\"")
             && source.contains("\"format\".to_string()")
             && source.contains("height<=144")
             && !source.contains("height<=720")
             && !source.contains("\"format\": \"bestvideo*+bestaudio/best\""),
-        "demo_online should keep yt-dlp format selection in step options (not output variants), rely on default extension inheritance, and force 144p outputs"
+        "demo_online should keep yt-dlp format selection in step options, set ffmpeg output extension to mkv, and force 144p outputs"
     );
 
     assert!(
         !source.contains("\"codec_copy\".to_string()")
-            && source.contains("\"container\".to_string()")
-            && source.contains("matroska")
+            && !source.contains("\"container\".to_string()")
             && !source
                 .contains("\"vn\".to_string(), TransformInputValue::String(\"true\".to_string())")
             && !source.contains("libmp3lame")
             && !source.contains("audio_bitrate"),
-        "demo_online should rely on managed ffmpeg codec-copy defaults while preserving MKV output"
+        "demo_online should rely on managed ffmpeg codec-copy defaults and extension-driven container inference while preserving MKV output"
     );
 
     assert!(
@@ -250,10 +249,12 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("metadata_key: DEMO_METADATA_ARTIST_KEY.to_string()")
             && source.contains("metadata_key: DEMO_METADATA_TITLE_KEY.to_string()")
             && source.contains("metadata_key: DEMO_METADATA_VIDEO_ID_KEY.to_string()")
-            && source.contains("metadata_key: DEMO_METADATA_VIDEO_EXT_KEY.to_string()")
+            && !source.contains("metadata_key: DEMO_METADATA_VIDEO_EXT_KEY.to_string()")
+            && source.contains("\"video_ext\".to_string()")
+            && source.contains("MediaMetadataValue::Literal(DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.to_string())")
             && source.contains("${media.id}")
             && source.contains("${media.metadata.video_ext}"),
-        "demo_online should derive hierarchy title/artist/video-ext metadata from tagged media bindings with strict object values"
+        "demo_online should derive title/artist/video-id metadata from tagged media bindings and set video_ext as a literal .mkv value"
     );
 
     assert!(
@@ -278,12 +279,15 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("DEMO_HIERARCHY_ROOT_TEMPLATE")
             && source.contains("DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE")
             && source.contains("DEMO_LIBRARY_ROOT")
-            && source.contains("rename_files: vec![")
-            && source.contains("HierarchyFolderRenameRule {")
+            && source.contains("DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER")
+            && source.contains("DEMO_MEDIA_ROOT_LINKS_FOLDER")
+            && source.contains("intentionally does not instantiate that `folder.<thumbnail_ext>` path")
+            && source.contains("media_folder(path=\"\")")
             && source.contains(
                 "assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)"
             )
-            && source.contains("expected flattened media root")
+            && source.contains("expected root thumbnail projection")
+            && source.contains("expected root links projection")
             && source.contains("resolve_interpolated_demo_root")
             && source.contains("DEMO_EXPECTED_VIDEO_ID"),
         "demo_online should materialize both primary/tagged media outputs, keep dedicated sidecars hierarchy, and preserve preset-like root-sidecar projections"

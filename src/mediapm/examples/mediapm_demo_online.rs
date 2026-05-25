@@ -46,11 +46,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
-    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_lockfile, load_mediapm_document, save_mediapm_document,
+    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue,
+    MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
+    MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, ToolRequirement,
+    ToolRequirementDependencies, TransformInputValue,
+    load_lockfile, load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -83,9 +83,6 @@ const DEMO_METADATA_ARTIST_KEY: &str = "artist";
 
 /// Metadata key used for variant-backed hierarchy interpolation.
 const DEMO_METADATA_VIDEO_ID_KEY: &str = "id";
-
-/// Metadata key used for extension extraction from tagged media metadata.
-const DEMO_METADATA_VIDEO_EXT_KEY: &str = "format_name";
 
 /// Additional literal metadata field value used by this demo.
 const DEMO_METADATA_SOURCE_LITERAL: &str = "youtube-demo";
@@ -178,9 +175,6 @@ const DEMO_SIDECAR_VARIANT_PATHS: [(&str, &str, &str); 10] = [
     ),
 ];
 
-/// Flat non-subtitle sidecar-family variants materialized directly in media root.
-const DEMO_MEDIA_ROOT_FLAT_VARIANTS: [&str; 2] = ["thumbnails", "links"];
-
 /// One language-scoped subtitle variant used to demonstrate file capture.
 const DEMO_ROOT_SELECTED_SUBTITLE_VARIANT: &str = "subtitles_en";
 
@@ -191,13 +185,10 @@ const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str =
 /// Sidecar-local subtitle file used for the selected subtitle capture.
 const DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vtt";
 
-/// Root-sidecar rename rule that rebases any filename onto the media output
-/// base by preserving only the final extension.
-const DEMO_MEDIA_ROOT_RENAME_PATTERN: &str = "^.*\\.([^.]*)$";
-/// Replacement used with `DEMO_MEDIA_ROOT_RENAME_PATTERN` after metadata
-/// template resolution.
-const DEMO_MEDIA_ROOT_RENAME_REPLACEMENT: &str =
-    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1";
+/// Root-level folder used for additional thumbnail projection.
+const DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER: &str = "thumbnails";
+/// Root-level folder used for additional internet-shortcut projection.
+const DEMO_MEDIA_ROOT_LINKS_FOLDER: &str = "links";
 
 /// Expected yt-dlp step count.
 ///
@@ -1092,12 +1083,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([(
                 "video_untagged".to_string(),
-                json!({ "kind": "primary", "idx": 0 }),
+                json!({ "kind": "primary", "idx": 0, "extension": "mkv" }),
             )]),
-            options: BTreeMap::from([(
-                "container".to_string(),
-                TransformInputValue::String("matroska".to_string()),
-            )]),
+            options: BTreeMap::new(),
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
@@ -1153,14 +1141,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 ),
                 (
                     "video_ext".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: "video".to_string(),
-                        metadata_key: DEMO_METADATA_VIDEO_EXT_KEY.to_string(),
-                        transform: Some(MediaMetadataRegexTransform {
-                            pattern: "(?i)matroska(?:,.*)?".to_string(),
-                            replacement: ".mkv".to_string(),
-                        }),
-                    }),
+                    MediaMetadataValue::Literal(DEMO_EXPECTED_VIDEO_EXTENSION_WITH_DOT.to_string()),
                 ),
                 (
                     "source".to_string(),
@@ -1240,23 +1221,59 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     }
 
     media_root_children.push(HierarchyNode {
-        path: String::new(),
-        kind: HierarchyNodeKind::MediaFolder,
+        path: DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER.to_string(),
+        kind: HierarchyNodeKind::Folder,
         id: None,
-        media_id: Some(DEMO_MEDIA_ID.to_string()),
+        media_id: None,
         variant: None,
-        variants: DEMO_MEDIA_ROOT_FLAT_VARIANTS
-            .iter()
-            .map(|variant| (*variant).to_string())
-            .collect(),
-        rename_files: vec![HierarchyFolderRenameRule {
-            pattern: DEMO_MEDIA_ROOT_RENAME_PATTERN.to_string(),
-            replacement: DEMO_MEDIA_ROOT_RENAME_REPLACEMENT.to_string(),
-        }],
+        variants: Vec::new(),
+        rename_files: Vec::new(),
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        children: Vec::new(),
+        children: vec![HierarchyNode {
+            path: String::new(),
+            kind: HierarchyNodeKind::MediaFolder,
+            id: None,
+            media_id: Some(DEMO_MEDIA_ID.to_string()),
+            variant: None,
+            variants: vec!["thumbnails".to_string()],
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            children: Vec::new(),
+        }],
     });
+
+    media_root_children.push(HierarchyNode {
+        path: DEMO_MEDIA_ROOT_LINKS_FOLDER.to_string(),
+        kind: HierarchyNodeKind::Folder,
+        id: None,
+        media_id: None,
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        children: vec![HierarchyNode {
+            path: String::new(),
+            kind: HierarchyNodeKind::MediaFolder,
+            id: None,
+            media_id: Some(DEMO_MEDIA_ID.to_string()),
+            variant: None,
+            variants: vec!["links".to_string()],
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            children: Vec::new(),
+        }],
+    });
+
+    // NOTE: The yt-dlp preset's extra root thumbnail projection uses
+    // `folder.$1` naming (`<media-id>.thumbnails.folder`). This demo
+    // intentionally does not instantiate that `folder.<thumbnail_ext>` path.
+    // Instead, it keeps preset-style thumbnail/link filenames inside explicit
+    // root folders (`thumbnails/` and `links/`) using two separate
+    // `media_folder(path="")` projections.
 
     if !sidecar_folder_children.is_empty() {
         media_root_children.push(HierarchyNode {
@@ -1735,14 +1752,26 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
 /// Policy:
 /// - dedicated `sidecars/` must exist,
 /// - selected subtitle file is projected in media root,
-/// - thumbnail/link families remain flattened in media root,
-/// - root-sidecar names must stay aligned with media output base.
+/// - thumbnail/link families are additionally projected via root folders,
+/// - root-projected sidecar names must stay aligned with media output base or media-id suffix.
 fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
 ) -> ExampleResult<()> {
     let expected_media_id =
         parse_jellyfin_root_folder_name(expected_output_base).map(|(_, _, media_id)| media_id);
+    let expected_media_suffixes = expected_media_id
+        .as_deref()
+        .map(|media_id| {
+            let mut suffixes = vec![media_id.to_string()];
+            if let Some((_, raw_video_id)) = media_id.rsplit_once('.')
+                && !raw_video_id.is_empty()
+            {
+                suffixes.push(raw_video_id.to_string());
+            }
+            suffixes
+        })
+        .unwrap_or_default();
 
     let root_files = fs::read_dir(interpolated_root)?
         .flatten()
@@ -1800,49 +1829,44 @@ fn assert_flat_media_root_sidecar_families(
         .into());
     }
 
-    let root_extensions =
-        root_files.iter().filter_map(|path| lowercase_extension(path)).collect::<Vec<_>>();
-
-    if !root_extensions.iter().any(|extension| is_image_extension(extension)) {
+    let thumbnails_root = interpolated_root.join(DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER);
+    if !thumbnails_root.is_dir() {
         return Err(format!(
-            "expected flattened media root '{}' to contain thumbnail sidecar files",
-            interpolated_root.display()
+            "expected root thumbnail projection '{}' to exist",
+            thumbnails_root.display()
         )
         .into());
     }
+    assert_sidecar_directory_family_content("thumbnails", &thumbnails_root)?;
 
-    if !root_extensions
-        .iter()
-        .any(|extension| matches!(extension.as_str(), "url" | "webloc" | "desktop"))
-    {
+    let links_root = interpolated_root.join(DEMO_MEDIA_ROOT_LINKS_FOLDER);
+    if !links_root.is_dir() {
         return Err(format!(
-            "expected flattened media root '{}' to contain link sidecar files",
-            interpolated_root.display()
+            "expected root links projection '{}' to exist",
+            links_root.display()
         )
         .into());
     }
+    assert_sidecar_directory_family_content("links", &links_root)?;
 
-    let non_subtitle_root_sidecars = root_files
-        .iter()
-        .filter(|path| {
-            lowercase_extension(path).as_deref().is_some_and(|extension| {
-                is_image_extension(extension) || matches!(extension, "url" | "webloc" | "desktop")
-            })
-        })
+    let root_projection_files = collect_regular_files_recursive(&thumbnails_root)?
+        .into_iter()
+        .chain(collect_regular_files_recursive(&links_root)?)
         .collect::<Vec<_>>();
-    if !non_subtitle_root_sidecars.iter().all(|path| {
+
+    if !root_projection_files.iter().all(|path| {
         path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
             name.starts_with(expected_output_base)
-                || expected_media_id
-                    .as_deref()
-                    .is_some_and(|media_id| name.contains(&format!(" [{media_id}].")))
+                || expected_media_suffixes
+                    .iter()
+                    .any(|media_suffix| name.contains(&format!(" [{media_suffix}].")))
         })
     }) {
         return Err(format!(
-            "expected flattened thumbnail/link sidecar names in '{}' to start with media output base '{}': {:?}",
+            "expected root thumbnail/link sidecar names in '{}' to align with media output base '{}' or media-id suffix: {:?}",
             interpolated_root.display(),
             expected_output_base,
-            non_subtitle_root_sidecars
+            root_projection_files
                 .iter()
                 .filter_map(|path| path.file_name().and_then(|value| value.to_str()))
                 .collect::<Vec<_>>()
@@ -2873,8 +2897,8 @@ mod tests {
         assert!(super::derive_ffprobe_path_from_ffmpeg_command(" ").is_none());
     }
 
-    /// Ensures additive sidecar layout accepts root subtitle + flattened
-    /// thumbnail/link sidecars while dedicated `sidecars/` also exists.
+    /// Ensures additive sidecar layout accepts root subtitle + dedicated
+    /// root thumbnail/link projections while `sidecars/` also exists.
     #[test]
     fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2882,12 +2906,24 @@ mod tests {
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
+            .expect("create thumbnails folder");
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
+            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"), b"jpg")
-            .expect("write thumbnail");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].url"), b"[InternetShortcut]")
-            .expect("write link");
+        std::fs::write(
+            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
+                .join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"),
+            b"jpg",
+        )
+        .expect("write thumbnail");
+        std::fs::write(
+            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
+                .join("Artist - Title [youtube.dQw4w9WgXcQ].url"),
+            b"[InternetShortcut]",
+        )
+        .expect("write link");
 
         super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect("flat media root sidecars should be accepted");
@@ -2901,19 +2937,31 @@ mod tests {
         let root = temp.path();
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
+            .expect("create thumbnails folder");
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
+            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"), b"jpg")
-            .expect("write thumbnail");
-        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].url"), b"[InternetShortcut]")
-            .expect("write link");
+        std::fs::write(
+            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
+                .join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"),
+            b"jpg",
+        )
+        .expect("write thumbnail");
+        std::fs::write(
+            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
+                .join("Artist - Title [youtube.dQw4w9WgXcQ].url"),
+            b"[InternetShortcut]",
+        )
+        .expect("write link");
 
         let error = super::assert_flat_media_root_sidecar_families(root, output_base)
             .expect_err("missing sidecars folder should be rejected");
         assert!(error.to_string().contains("expected sidecar root"));
     }
 
-    /// Ensures flattened non-subtitle sidecars may retain provider-native
+    /// Ensures root-projected non-subtitle sidecars may retain provider-native
     /// title text as long as names stay aligned by media-id suffix.
     #[test]
     fn media_root_sidecars_accept_non_subtitle_files_aligned_by_media_id_suffix() {
@@ -2922,15 +2970,21 @@ mod tests {
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
+            .expect("create thumbnails folder");
+        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
+            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
         std::fs::write(
-            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].webp"),
+            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
+                .join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].webp"),
             b"webp",
         )
         .expect("write thumbnail");
         std::fs::write(
-            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].url"),
+            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
+                .join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].url"),
             b"[InternetShortcut]",
         )
         .expect("write link");
