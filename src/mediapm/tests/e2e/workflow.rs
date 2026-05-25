@@ -259,9 +259,9 @@ async fn add_media_source_sets_remote_download_defaults() {
         !ffmpeg_step.options.contains_key("codec_copy"),
         "remote add should rely on ffmpeg codec_copy defaults and keep options minimal"
     );
-    assert_eq!(
-        ffmpeg_step.options.get("container"),
-        Some(&TransformInputValue::String("matroska".to_string())),
+    assert!(
+        ffmpeg_step.options.is_empty(),
+        "remote add ffmpeg preset should keep options empty when extension already implies container"
     );
     let rendered =
         std::fs::read_to_string(&service.paths().mediapm_ncl).expect("read rendered mediapm.ncl");

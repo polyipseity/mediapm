@@ -475,10 +475,7 @@ where
                             transform: None,
                         }),
                     ),
-                    (
-                        "video_ext".to_string(),
-                        MediaMetadataValue::Literal(".mkv".to_string()),
-                    ),
+                    ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
                 ])),
                 variant_hashes: BTreeMap::new(),
                 steps: vec![
@@ -545,10 +542,7 @@ where
                                 "extension": "mkv",
                             }),
                         )]),
-                        options: BTreeMap::from([(
-                            "container".to_string(),
-                            TransformInputValue::String("matroska".to_string()),
-                        )]),
+                        options: BTreeMap::new(),
                     },
                     MediaStep {
                         tool: MediaStepTool::MediaTagger,
@@ -785,18 +779,8 @@ where
             return Ok(());
         }
 
-        let node = build_hierarchy_preset_node(
-            preset,
-            media_id,
-            &normalized_folder,
-            hierarchy_id,
-        );
-        insert_hierarchy_preset_node(
-            &mut document.hierarchy,
-            node,
-            &normalized_folder,
-            position,
-        );
+        let node = build_hierarchy_preset_node(preset, media_id, &normalized_folder, hierarchy_id);
+        insert_hierarchy_preset_node(&mut document.hierarchy, node, &normalized_folder, position);
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
         self.reconcile_workflows_after_config_edit(&document)?;
@@ -2544,7 +2528,10 @@ mod tests {
         let root = tempdir().expect("tempdir");
         let service = MediaPmService::new_in_memory_at(root.path());
         let media_id = service
-            .add_media_source(&Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"), None)
+            .add_media_source(
+                &Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"),
+                None,
+            )
             .await
             .expect("add media source");
 
@@ -2557,8 +2544,8 @@ mod tests {
             )
             .expect("add hierarchy preset with default folder");
 
-        let document = load_mediapm_document(&service.paths().mediapm_ncl)
-            .expect("load mediapm document");
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
         assert!(
             document.hierarchy.iter().any(|node| node.path == "music videos/online"),
             "yt-dlp hierarchy preset should default to music videos/online root"

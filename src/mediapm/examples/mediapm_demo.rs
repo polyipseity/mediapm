@@ -709,7 +709,6 @@ fn configure_document_for_local_tool_chain(
                 json!({ "kind": "primary", "idx": 0, "extension": "m4a" }),
             )]),
             options: BTreeMap::from([
-                ("container".to_string(), TransformInputValue::String("mp4".to_string())),
                 ("vn".to_string(), TransformInputValue::String("true".to_string())),
             ]),
         },

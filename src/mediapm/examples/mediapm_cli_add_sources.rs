@@ -251,7 +251,7 @@ mod tests {
                 .as_ref()
                 .and_then(|metadata| metadata.get("video_ext")),
             Some(&MediaMetadataValue::Literal(".mkv".to_string())),
-            "yt-dlp preset should hardcode .mkv for video_ext when ffmpeg container is fixed to matroska"
+            "yt-dlp preset should hardcode .mkv for video_ext when ffmpeg output extension establishes container"
         );
 
         let ffmpeg_step = remote_source
@@ -273,6 +273,10 @@ mod tests {
         assert!(
             ffmpeg_step.output_variants["video"].get("extension").is_some(),
             "ffmpeg preset should keep the explicit mkv extension that establishes downstream inheritance"
+        );
+        assert!(
+            ffmpeg_step.options.get("container").is_none(),
+            "ffmpeg preset should not redundantly set container when extension already implies mkv/matroska"
         );
         assert!(
             media_tagger_step.output_variants["video"].get("extension").is_none(),
