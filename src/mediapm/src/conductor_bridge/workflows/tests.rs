@@ -1426,7 +1426,8 @@ fn ffmpeg_output_variant_without_extension_inherits_upstream_extension() {
 }
 
 /// Protects ffmpeg container-default behavior by inferring container from the
-/// effective primary output extension when `options.container` is omitted.
+/// effective primary output extension when `options.container` is omitted,
+/// including extension-alias canonicalization to valid muxer names.
 #[test]
 fn ffmpeg_infers_container_from_primary_output_extension() {
     let document = MediaPmDocument {
@@ -1448,7 +1449,7 @@ fn ffmpeg_infers_container_from_primary_output_extension() {
                     input_variants: vec!["source".to_string()],
                     output_variants: BTreeMap::from([(
                         "normalized".to_string(),
-                        ffmpeg_output_variant_with_extension(0, "matroska"),
+                        ffmpeg_output_variant_with_extension(0, "mkv"),
                     )]),
                     options: BTreeMap::new(),
                 }],
@@ -1475,6 +1476,140 @@ fn ffmpeg_infers_container_from_primary_output_extension() {
         step.inputs.get("container"),
         Some(&InputBinding::String("matroska".to_string()))
     );
+}
+
+/// Protects ffmpeg container inference for extension aliases by canonicalizing
+/// to ffmpeg-accepted muxer names.
+#[test]
+fn ffmpeg_infers_canonical_container_from_extension_aliases() {
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([(
+            "ffmpeg".to_string(),
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+        )]),
+        ..MediaLockFile::default()
+    };
+    let machine = machine_with_active_tool_specs(&lock);
+
+    for (alias_extension, expected_container) in [
+        ("m4a", "mp4"),
+        ("m2ts", "mpegts"),
+        ("wmv", "asf"),
+        ("ogv", "ogg"),
+        ("ism", "ismv"),
+        ("qt", "mov"),
+    ] {
+        let media_id = format!("ffmpeg-infer-{alias_extension}-container");
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                media_id.clone(),
+                MediaSourceSpec {
+                    id: None,
+                    description: None,
+                    title: None,
+                    workflow_id: None,
+                    metadata: None,
+                    variant_hashes: BTreeMap::from([(
+                        "source".to_string(),
+                        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    )]),
+                    steps: vec![MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["source".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "normalized".to_string(),
+                            ffmpeg_output_variant_with_extension(0, alias_extension),
+                        )]),
+                        options: BTreeMap::new(),
+                    }],
+                },
+            )]),
+            ..MediaPmDocument::default()
+        };
+
+        let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
+        let workflow = plan
+            .workflows
+            .get(&format!("mediapm.media.{media_id}"))
+            .expect("managed workflow");
+        let step = workflow.steps.first().expect("workflow step");
+
+        assert_eq!(
+            step.inputs.get("container"),
+            Some(&InputBinding::String(expected_container.to_string())),
+            "expected extension alias '{alias_extension}' to infer canonical container '{expected_container}'"
+        );
+    }
+}
+
+/// Protects explicit ffmpeg container aliases by canonicalizing extension-style
+/// values (e.g. `mkv`) to valid muxer names.
+#[test]
+fn ffmpeg_explicit_container_aliases_are_canonicalized() {
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([(
+            "ffmpeg".to_string(),
+            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+        )]),
+        ..MediaLockFile::default()
+    };
+    let machine = machine_with_active_tool_specs(&lock);
+
+    for (alias_container, expected_container) in [
+        ("mkv", "matroska"),
+        ("m4b", "mp4"),
+        ("m2ts", "mpegts"),
+        ("wma", "asf"),
+        ("oga", "ogg"),
+        ("isma", "ismv"),
+        ("qt", "mov"),
+    ] {
+        let media_id = format!("ffmpeg-explicit-{alias_container}-container-alias");
+        let document = MediaPmDocument {
+            media: BTreeMap::from([(
+                media_id.clone(),
+                MediaSourceSpec {
+                    id: None,
+                    description: None,
+                    title: None,
+                    workflow_id: None,
+                    metadata: None,
+                    variant_hashes: BTreeMap::from([(
+                        "source".to_string(),
+                        "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    )]),
+                    steps: vec![MediaStep {
+                        tool: MediaStepTool::Ffmpeg,
+                        input_variants: vec!["source".to_string()],
+                        output_variants: BTreeMap::from([(
+                            "normalized".to_string(),
+                            ffmpeg_output_variant_with_extension(0, "mkv"),
+                        )]),
+                        options: BTreeMap::from([(
+                            "container".to_string(),
+                            TransformInputValue::String(alias_container.to_string()),
+                        )]),
+                    }],
+                },
+            )]),
+            ..MediaPmDocument::default()
+        };
+
+        let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
+        let workflow = plan
+            .workflows
+            .get(&format!("mediapm.media.{media_id}"))
+            .expect("managed workflow");
+        let step = workflow.steps.first().expect("workflow step");
+
+        assert_eq!(
+            step.inputs.get("container"),
+            Some(&InputBinding::String(expected_container.to_string())),
+            "expected explicit alias '{alias_container}' to canonicalize to '{expected_container}'"
+        );
+    }
 }
 
 /// Protects yt-dlp artifact variants by mapping non-primary outputs to

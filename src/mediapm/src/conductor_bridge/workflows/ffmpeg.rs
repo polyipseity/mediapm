@@ -19,6 +19,33 @@ use super::{
     step_option_input_bindings,
 };
 
+/// Canonicalizes one ffmpeg container/muxer selector to a stable value.
+///
+/// `mediapm` accepts common extension-style aliases in `options.container`
+/// and from extension-derived inference. This helper rewrites aliases to
+/// ffmpeg muxer names accepted by `-f` so extension-only workflows remain
+/// executable without redundant explicit container declarations.
+fn canonicalize_ffmpeg_container(container: &str) -> String {
+    match container.trim().to_ascii_lowercase().as_str() {
+        // Matroska-family extension aliases.
+        "mkv" | "mka" | "mks" | "mk3d" => "matroska",
+        // ISO BMFF extension aliases that ffmpeg typically muxes via `mp4`.
+        "m4a" | "m4v" | "m4b" | "f4v" => "mp4",
+        // QuickTime extension alias.
+        "qt" => "mov",
+        // MPEG-TS extension aliases.
+        "ts" | "m2ts" | "mts" => "mpegts",
+        // ASF-family extension aliases.
+        "wmv" | "wma" => "asf",
+        // OGG-family extension aliases.
+        "oga" | "ogv" => "ogg",
+        // Smooth-streaming extension aliases.
+        "ism" | "isma" => "ismv",
+        other => other,
+    }
+    .to_string()
+}
+
 /// Expands one ffmpeg step with ordered indexed inputs/outputs.
 #[expect(
     clippy::too_many_lines,
@@ -75,7 +102,7 @@ pub(super) fn synthesize_ffmpeg_step(
     inputs.insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
     inputs.extend(option_inputs);
     if let Some(InputBinding::String(container)) = inputs.get_mut("container") {
-        *container = container.trim().to_ascii_lowercase();
+        *container = canonicalize_ffmpeg_container(container);
     }
     if !inputs.contains_key("movflags") {
         inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
@@ -132,7 +159,8 @@ pub(super) fn synthesize_ffmpeg_step(
             )));
         }
 
-        let Some(input_producer) = resolve_input_variant_producer(&mapping.input, producer_snapshot)
+        let Some(input_producer) =
+            resolve_input_variant_producer(&mapping.input, producer_snapshot)
         else {
             return Err(MediaPmError::Workflow(format!(
                 "media '{media_id}' step #{step_index} references unknown input variant '{}'",
@@ -188,10 +216,11 @@ pub(super) fn synthesize_ffmpeg_step(
         Some(InputBinding::String(container)) => container.trim().is_empty(),
         _ => true,
     };
-    if should_infer_container
-        && let Some(inferred_container) = inferred_primary_container
-    {
-        inputs.insert("container".to_string(), InputBinding::String(inferred_container));
+    if should_infer_container && let Some(inferred_container) = inferred_primary_container {
+        inputs.insert(
+            "container".to_string(),
+            InputBinding::String(canonicalize_ffmpeg_container(&inferred_container)),
+        );
     }
 
     workflow.steps.push(WorkflowStepSpec {
