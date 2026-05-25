@@ -104,19 +104,7 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
     }
 
     let gitignore_path = conductor_dir.join(".gitignore");
-    let should_write_gitignore = match fs::read_to_string(&gitignore_path) {
-        Ok(current) => current != RUNTIME_DOTENV_GITIGNORE,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(source) => {
-            return Err(ConductorError::Io {
-                operation: "reading conductor runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            });
-        }
-    };
-
-    if should_write_gitignore {
+    if !gitignore_path.exists() {
         fs::write(&gitignore_path, RUNTIME_DOTENV_GITIGNORE.as_bytes()).map_err(|source| {
             ConductorError::Io {
                 operation: "writing conductor runtime dotenv gitignore".to_string(),
