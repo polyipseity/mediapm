@@ -1,6 +1,6 @@
 //! CLI-friendly CAS topology visualization helpers.
 //!
-//! This module intentionally lives in the Phase 1 crate so visualization
+//! This module intentionally lives in the CAS crate so visualization
 //! rendering and topology snapshot formatting are owned by CAS, not by higher
 //! orchestration layers.
 //!
@@ -42,7 +42,7 @@ pub struct CasVisualizeRequest {
 }
 
 impl CasVisualizeRequest {
-    /// Creates one request with Phase 3 CLI-compatible defaults.
+    /// Creates one request with mediapm CLI-compatible defaults.
     #[must_use]
     pub fn with_default_root(root: Option<PathBuf>, format: CasVisualizeFormat) -> Self {
         Self {

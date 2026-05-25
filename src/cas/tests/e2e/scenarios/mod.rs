@@ -1,4 +1,4 @@
-//! Domain-grouped end-to-end scenario suite for Phase 1 CAS.
+//! Domain-grouped end-to-end scenario suite for the CAS.
 //!
 //! This module converts long-form user scenarios into executable tests,
 //! grouped by workflow domain so each file stays focused and maintainable.

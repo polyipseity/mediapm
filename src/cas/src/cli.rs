@@ -27,7 +27,7 @@ struct Cli {
     command: CasCommand,
 }
 
-/// Phase 1 CAS subcommands.
+/// CAS subcommands.
 #[derive(Debug, Subcommand)]
 enum CasCommand {
     /// Stores a file in CAS and prints its BLAKE3 hash.
@@ -182,7 +182,7 @@ pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
     run_from_argv(passthrough_argv).await
 }
 
-/// Executes one Phase 1 CAS command variant.
+/// Executes one CAS command variant.
 async fn run_command(command: CasCommand) -> anyhow::Result<()> {
     match command {
         CasCommand::Store(args) => {

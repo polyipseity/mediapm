@@ -1,7 +1,7 @@
-//! Public API contracts for Phase 1 CAS.
+//! Public API contracts for the CAS.
 //!
 //! This module is the main semantic boundary between the CAS implementation and
-//! higher layers such as Conductor or the Phase 3 CLI surface.
+//! higher layers such as Conductor or the mediapm CLI surface.
 //!
 //! The public types here intentionally focus on:
 //! - deterministic behavior,
@@ -82,7 +82,7 @@ pub type CasByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, CasError>> + Se
 /// full byte-or-bool payload per item.
 pub type CasExistenceBitmap = BitVec;
 
-/// Phase 1 optimization constraint for a target object.
+/// Optimization constraint for a target object.
 ///
 /// A constraint is an **explicit narrowing** of valid base choices for one
 /// already-stored target object. If no explicit constraint row exists, the
@@ -217,7 +217,7 @@ impl Default for OptimizeOptions {
     }
 }
 
-/// Async API contract for Phase 1 CAS behavior.
+/// Async API contract for CAS behavior.
 ///
 /// Implementations may differ internally (filesystem, in-memory, remote, or
 /// actor-mediated), but they must preserve the same observable semantics:

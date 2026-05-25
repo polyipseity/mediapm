@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
 publish.workspace = true
-description = "Phase 1 CAS foundation for mediapm"
+description = "CAS foundation for mediapm"
 
 [features]
 default = ["cli"]

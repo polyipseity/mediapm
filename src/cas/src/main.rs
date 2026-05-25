@@ -1,4 +1,4 @@
-//! Binary entrypoint for the Phase 1 `mediapm-cas` CLI.
+//! Binary entrypoint for the `mediapm-cas` CLI.
 
 /// Parses process arguments and executes the CAS CLI.
 #[tokio::main]

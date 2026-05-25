@@ -1,6 +1,6 @@
-//! Phase 1 high-performance unified-delta CAS.
+//! High-performance unified-delta CAS.
 //!
-//! This crate implements the core behaviors required by the Phase 1 plan:
+//! This crate implements the core behaviors of the CAS contract:
 //!
 //! - Algorithm-tagged content identity (`HashAlgorithm` + 32-byte digest).
 //! - Deterministic fan-out object layout:

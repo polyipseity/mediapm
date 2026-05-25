@@ -1693,7 +1693,7 @@ impl CasApi for FileSystemState {
 const FILESYSTEM_DEFAULT_DROP_GRACE_PERIOD: Duration = Duration::from_secs(2);
 /// Short actor-shutdown grace period for test constructors.
 const FILESYSTEM_TEST_DROP_GRACE_PERIOD: Duration = Duration::from_millis(25);
-/// On-disk Phase 1 CAS with mutation-focused actor coordination.
+/// On-disk CAS implementation with mutation-focused actor coordination.
 ///
 /// Read paths execute directly against shared CAS state for concurrency.
 /// A dedicated object actor is retained only for mutation/accounting tasks

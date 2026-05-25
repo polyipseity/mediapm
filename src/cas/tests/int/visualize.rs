@@ -1,7 +1,7 @@
 //! Integration tests for CAS-owned topology visualization helpers.
 //!
 //! These tests intentionally live in the CAS crate because topology rendering
-//! and visualization request execution are Phase 1 responsibilities.
+//! and visualization request execution are CAS responsibilities.
 
 use mediapm_cas::{
     CasApi, CasMaintenanceApi, CasVisualizeFormat, CasVisualizeRequest, Constraint, FileSystemCas,
