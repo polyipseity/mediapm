@@ -9,7 +9,7 @@ description = "CAS foundation for mediapm"
 
 [features]
 default = ["cli"]
-cli = ["dep:anyhow", "dep:clap"]
+cli = ["dep:anyhow", "dep:clap", "dep:clap_complete"]
 
 [lints]
 workspace = true
@@ -22,6 +22,7 @@ blake3.workspace = true
 bytemuck.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
+clap_complete = { workspace = true, optional = true }
 crc32fast.workspace = true
 dashmap.workspace = true
 fp-library.workspace = true

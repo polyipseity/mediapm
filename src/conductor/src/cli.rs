@@ -17,7 +17,8 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use mediapm_cas::{
     CasApi, CasConfig, CasLocatorParseOptions, CasMaintenanceApi, ConfiguredCas, Hash,
 };
@@ -129,6 +130,11 @@ pub enum CliCommand {
     Gc,
     /// Passthrough to Phase-1 CAS CLI.
     Cas(PassthroughArgs),
+    /// Generates shell completion scripts for the `mediapm-conductor` CLI.
+    Completions {
+        /// Target shell for completion script generation.
+        shell: Shell,
+    },
 }
 
 /// State command group.
@@ -331,6 +337,15 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
 
     match cli.command {
         CliCommand::Cas(args) => passthrough_cas(&args.args).await,
+        CliCommand::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "mediapm-conductor",
+                &mut std::io::stdout(),
+            );
+            Ok(())
+        }
         other => {
             let runtime_env_var_names =
                 load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
@@ -372,8 +387,8 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                     )
                     .await
                 }
-                CliCommand::Cas(_) => {
-                    unreachable!("passthrough handled above")
+                CliCommand::Cas(_) | CliCommand::Completions { .. } => {
+                    unreachable!("passthrough/completions handled above")
                 }
             }
         }

@@ -11,7 +11,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 
 use crate::{
     CasApi, CasMaintenanceApi, CasVisualizeRequest, Constraint, FileSystemCas, Hash,
@@ -50,6 +51,11 @@ enum CasCommand {
     MigrateIndex(CasMigrateIndexArgs),
     /// Visualizes object/base/constraint topology of a CAS repository.
     Visualize(CasVisualizeArgs),
+    /// Generates shell completion scripts for the `mediapm-cas` CLI.
+    Completions {
+        /// Target shell for completion script generation.
+        shell: Shell,
+    },
 }
 
 /// `cas store` arguments.
@@ -263,6 +269,14 @@ async fn run_command(command: CasCommand) -> anyhow::Result<()> {
                 output: args.output,
             };
             run_visualize_command(request).await?;
+        }
+        CasCommand::Completions { shell } => {
+            clap_complete::generate(
+                shell,
+                &mut Cli::command(),
+                "mediapm-cas",
+                &mut std::io::stdout(),
+            );
         }
     }
 

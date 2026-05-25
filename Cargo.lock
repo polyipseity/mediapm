@@ -518,6 +518,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2073,6 +2082,7 @@ dependencies = [
  "anyhow",
  "chromaprint-next",
  "clap",
+ "clap_complete",
  "dotenvy",
  "ffmetadata",
  "flate2",
@@ -2109,6 +2119,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "clap",
+ "clap_complete",
  "crc32fast",
  "dashmap",
  "fp-library",
@@ -2142,6 +2153,7 @@ dependencies = [
  "async-trait",
  "blake3",
  "clap",
+ "clap_complete",
  "dirs",
  "dotenvy",
  "flate2",
@@ -3607,7 +3619,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54254b8531cafa275c5e096f62d48c81435d1015405a91198ddb11e967301d40"
 dependencies = [
- "heck 0.4.1",
+ "heck 0.5.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
