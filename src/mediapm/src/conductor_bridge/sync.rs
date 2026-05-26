@@ -887,9 +887,6 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
         paths.tools_dir.join(tool_id).join(ffmpeg_selector_path)
     };
     let candidate_dir = ffmpeg_path.parent().map(Path::to_path_buf).or(Some(ffmpeg_path))?;
-    if let Some(host_directory) = search_host_ffmpeg_directory_on_path() {
-        return Some(host_directory.to_string_lossy().to_string());
-    }
 
     if managed_ffmpeg_directory_contains_companion_pair(&candidate_dir) {
         return Some(candidate_dir.to_string_lossy().to_string());
@@ -919,19 +916,6 @@ fn managed_ffmpeg_directory_contains_companion_pair(directory: &Path) -> bool {
     let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
     let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
     directory.join(ffmpeg_file_name).exists() && directory.join(ffprobe_file_name).exists()
-}
-
-/// Searches `PATH` for one directory that contains both `ffmpeg` and `ffprobe`.
-#[must_use]
-fn search_host_ffmpeg_directory_on_path() -> Option<PathBuf> {
-    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-
-    std::env::var_os("PATH").and_then(|path| {
-        std::env::split_paths(&path).find(|directory| {
-            directory.join(ffmpeg_file_name).exists() && directory.join(ffprobe_file_name).exists()
-        })
-    })
 }
 
 /// Returns true when requested selector equals ffmpeg hash/version/tag.
@@ -2078,6 +2062,7 @@ mod tests {
                 macos: "fixture",
             },
             download,
+            companion_download: None,
         }
     }
 

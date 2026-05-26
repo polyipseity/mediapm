@@ -83,6 +83,7 @@ pub(crate) async fn provision_tool_payload(
             && let Ok(content_entries) =
                 materialize::collect_materialized_content_entries(&resolved, &install_root)
             && !content_entries.is_empty()
+            && materialize::companion_downloads_present(&entry, &resolved, &install_root)
         {
             return Ok(ProvisionedToolPayload {
                 tool_id,

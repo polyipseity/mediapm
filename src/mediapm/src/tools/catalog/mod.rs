@@ -124,6 +124,24 @@ pub(crate) enum ToolDownloadDescriptor {
     InternalLauncher,
 }
 
+/// Optional companion binary to download alongside the main tool payload.
+///
+/// Used when the primary download source does not bundle all required companion
+/// executables; for example, `evermeet.cx` provides only `ffmpeg` on macOS, so
+/// `ffprobe` must be fetched separately from `evermeet.cx/ffprobe`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolCompanionDownload {
+    /// Per-OS download URL candidates, tried in-order. Empty slice means no
+    /// companion download is needed for that OS (e.g., when the main archive
+    /// already includes the companion binary).
+    pub urls: PlatformValue<&'static [&'static str]>,
+    /// Payload handling mode per OS.
+    pub mode: PlatformValue<DownloadPayloadMode>,
+    /// Expected companion executable file name per OS, used to verify that the
+    /// companion binary is present before skipping re-provisioning.
+    pub executable_name: PlatformValue<&'static str>,
+}
+
 /// Catalog entry for one logical tool declared in `mediapm.ncl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ToolCatalogEntry {
@@ -141,6 +159,10 @@ pub(crate) struct ToolCatalogEntry {
     pub executable_name: PlatformValue<&'static str>,
     /// Download strategy for this tool.
     pub download: ToolDownloadDescriptor,
+    /// Optional companion binary to download alongside the main tool payload.
+    ///
+    /// Set to `None` when no additional companion binary is needed.
+    pub companion_download: Option<ToolCompanionDownload>,
 }
 
 impl ToolCatalogEntry {

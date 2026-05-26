@@ -13,7 +13,7 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::error::MediaPmError;
-use crate::tools::catalog::{ToolCatalogEntry, ToolOs};
+use crate::tools::catalog::{ToolCatalogEntry, ToolCompanionDownload, ToolOs};
 
 use super::ToolDownloadCache;
 use super::http::fetch_bytes_from_candidates;
@@ -23,6 +23,7 @@ use super::models::{OsDownloadAction, ResolvedDownloadPlan};
 use super::{DownloadProgressCallback, DownloadProgressSnapshot};
 
 /// Materializes resolved download actions into one install root.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn materialize_download_plan(
     entry: &ToolCatalogEntry,
     plan: &ResolvedDownloadPlan,
@@ -49,10 +50,23 @@ pub(super) async fn materialize_download_plan(
             first_action,
             install_root,
             download_progress,
-            download_cache,
+            download_cache.clone(),
             &cache_identity,
         )
         .await?;
+
+        if let Some(companion) = entry.companion_download {
+            materialize_companion_downloads(
+                entry,
+                companion,
+                plan,
+                install_root,
+                download_cache,
+                &cache_identity,
+            )
+            .await?;
+        }
+
         return Ok(());
     }
 
@@ -118,7 +132,110 @@ pub(super) async fn materialize_download_plan(
         }
     }
 
+    if let Some(companion) = entry.companion_download {
+        materialize_companion_downloads(
+            entry,
+            companion,
+            plan,
+            install_root,
+            download_cache,
+            &cache_identity,
+        )
+        .await?;
+    }
+
     Ok(())
+}
+
+/// Materializes companion binary downloads alongside the main OS-specific payloads.
+///
+/// Some download sources omit companion executables that must reside in the same
+/// directory as the main binary; for example, `evermeet.cx` provides only `ffmpeg`
+/// on macOS, so `ffprobe` must be fetched separately and placed in the same
+/// per-OS sub-directory. OS targets with empty URL lists are skipped silently.
+async fn materialize_companion_downloads(
+    entry: &ToolCatalogEntry,
+    companion: ToolCompanionDownload,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+    download_cache: Option<Arc<ToolDownloadCache>>,
+    cache_identity: &str,
+) -> Result<(), MediaPmError> {
+    for action in plan.per_os_actions.values() {
+        let companion_urls: Vec<String> =
+            companion.urls.for_os(action.os).iter().map(|s| (*s).to_string()).collect();
+        if companion_urls.is_empty() {
+            continue;
+        }
+
+        let destination = if plan.shared_package {
+            install_root.to_path_buf()
+        } else {
+            install_root.join(action.os.as_str())
+        };
+
+        let companion_action = OsDownloadAction {
+            os: action.os,
+            mode: companion.mode.for_os(action.os),
+            urls: companion_urls,
+        };
+        let cache_key = format!(
+            "identity={cache_identity}|tool={}|os={}|companion|urls={}",
+            entry.name,
+            action.os.as_str(),
+            companion_action.urls.join("\n")
+        );
+
+        materialize_one_os_payload(
+            entry,
+            &companion_action,
+            &destination,
+            None,
+            download_cache.clone(),
+            &cache_key,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Returns `true` when all expected companion binaries are already present in `install_root`.
+///
+/// An entry with no `companion_download` always returns `true`. For entries that require
+/// companion binaries, each OS target with non-empty URLs is checked for the presence of
+/// the companion executable using a recursive directory scan. Returns `false` when any
+/// expected companion binary is missing, which causes the caller to re-provision.
+pub(super) fn companion_downloads_present(
+    entry: &ToolCatalogEntry,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+) -> bool {
+    let Some(companion) = entry.companion_download else {
+        return true;
+    };
+
+    for action in plan.per_os_actions.values() {
+        if companion.urls.for_os(action.os).is_empty() {
+            continue;
+        }
+
+        let executable_name = companion.executable_name.for_os(action.os);
+        if executable_name.is_empty() {
+            continue;
+        }
+
+        let destination = if plan.shared_package {
+            install_root.to_path_buf()
+        } else {
+            install_root.join(action.os.as_str())
+        };
+
+        if find_file_named(&destination, executable_name).is_none() {
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Materializes locally generated command-launcher shims for internal tools.

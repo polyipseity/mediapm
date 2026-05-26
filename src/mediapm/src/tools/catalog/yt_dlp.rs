@@ -39,4 +39,5 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         },
         release_repo: Some("yt-dlp/yt-dlp"),
     },
+    companion_download: None,
 };

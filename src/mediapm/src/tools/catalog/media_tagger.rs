@@ -23,4 +23,5 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         linux: "media-tagger",
     },
     download: ToolDownloadDescriptor::InternalLauncher,
+    companion_download: None,
 };
