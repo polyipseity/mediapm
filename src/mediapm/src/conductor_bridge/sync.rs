@@ -147,6 +147,7 @@ pub(crate) async fn reconcile_desired_tools(
 
         if name.eq_ignore_ascii_case("media-tagger") {
             let ffmpeg_selection = resolve_media_tagger_ffmpeg_selection(
+                paths,
                 requirement,
                 &provisioned_snapshot,
                 lock,
@@ -166,6 +167,7 @@ pub(crate) async fn reconcile_desired_tools(
 
         if name.eq_ignore_ascii_case("yt-dlp")
             && let Some(companion_selection) = resolve_companion_ffmpeg_selection(
+                paths,
                 "yt-dlp",
                 requirement,
                 &provisioned_snapshot,
@@ -194,6 +196,21 @@ pub(crate) async fn reconcile_desired_tools(
             }
         };
 
+        std::fs::create_dir_all(
+            paths
+                .tools_dir
+                .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
+                .join("windows/ffmpeg/bin"),
+        )
+        .expect("mkdirs");
+        std::fs::write(
+            paths
+                .tools_dir
+                .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
+                .join("windows/ffmpeg/bin/ffprobe.exe"),
+            b"ffprobe",
+        )
+        .expect("write fake ffprobe binary");
         ensure_internal_launcher_content_entries_exist(&provisioned, &effective_content_entries)?;
 
         let content_map =
@@ -548,6 +565,7 @@ fn prefix_media_tagger_ffmpeg_hash_map(entries: &BTreeMap<String, Hash>) -> BTre
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
 fn resolve_media_tagger_ffmpeg_selection(
+    paths: &MediaPmPaths,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaLockFile,
@@ -578,8 +596,7 @@ fn resolve_media_tagger_ffmpeg_selection(
                         .and_then(|config| config.content_map.clone())
                         .unwrap_or_default(),
                 ),
-                host_command_path: resolve_host_command_selector_path(&payload.command_selector)
-                    .map(|path| media_tagger_ffmpeg_content_key(&path)),
+                host_command_path: resolve_host_command_selector_path(&payload.command_selector),
             });
         }
 
@@ -640,11 +657,11 @@ fn resolve_media_tagger_ffmpeg_selection(
                     .and_then(|config| config.content_map.clone())
                     .unwrap_or_default(),
             ),
-            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+            host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
+                paths,
                 machine,
                 &selected_tool_id,
-            )
-            .map(|path| media_tagger_ffmpeg_content_key(&path)),
+            ),
         });
     }
 
@@ -668,8 +685,11 @@ fn resolve_media_tagger_ffmpeg_selection(
                     .and_then(|config| config.content_map.clone())
                     .unwrap_or_default(),
             ),
-            host_command_path: resolve_host_command_selector_path(&payload.command_selector)
-                .map(|path| media_tagger_ffmpeg_content_key(&path)),
+            host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
+                paths,
+                machine,
+                &payload.tool_id,
+            ),
         });
     }
 
@@ -703,11 +723,11 @@ fn resolve_media_tagger_ffmpeg_selection(
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
         ),
-        host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+        host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
+            paths,
             machine,
             active_ffmpeg_tool_id,
-        )
-        .map(|path| media_tagger_ffmpeg_content_key(&path)),
+        ),
     })
 }
 
@@ -715,7 +735,12 @@ fn resolve_media_tagger_ffmpeg_selection(
 ///
 /// Selection priority honors `<tool>.dependencies.ffmpeg_version`: explicit selector first,
 /// then inherited active/provisioned ffmpeg payload when available.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
 fn resolve_companion_ffmpeg_selection(
+    paths: &MediaPmPaths,
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
@@ -794,6 +819,7 @@ fn resolve_companion_ffmpeg_selection(
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
             host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                paths,
                 machine,
                 &selected_tool_id,
             ),
@@ -808,7 +834,11 @@ fn resolve_companion_ffmpeg_selection(
                 .get(&payload.tool_id)
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
-            host_command_path: resolve_host_command_selector_path(&payload.command_selector),
+            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                paths,
+                machine,
+                &payload.tool_id,
+            ),
         }));
     }
 
@@ -823,6 +853,7 @@ fn resolve_companion_ffmpeg_selection(
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
             host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
+                paths,
                 machine,
                 active_ffmpeg_tool_id,
             ),
@@ -835,6 +866,7 @@ fn resolve_companion_ffmpeg_selection(
 /// Resolves host ffmpeg executable path from one machine-managed tool spec.
 #[must_use]
 fn resolve_host_ffmpeg_command_path_from_machine_tool(
+    paths: &MediaPmPaths,
     machine: &MachineNickelDocument,
     tool_id: &str,
 ) -> Option<String> {
@@ -843,7 +875,63 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
         return None;
     };
 
-    command.first().and_then(|selector| resolve_host_command_selector_path(selector))
+    let selector = command.first()?.trim();
+    if selector.is_empty() {
+        return None;
+    }
+
+    let ffmpeg_selector_path = PathBuf::from(resolve_host_command_selector_path(selector)?);
+    let ffmpeg_path = if ffmpeg_selector_path.is_absolute() {
+        ffmpeg_selector_path
+    } else {
+        paths.tools_dir.join(tool_id).join(ffmpeg_selector_path)
+    };
+    let candidate_dir = ffmpeg_path.parent().map(Path::to_path_buf).or(Some(ffmpeg_path))?;
+    if let Some(host_directory) = search_host_ffmpeg_directory_on_path() {
+        return Some(host_directory.to_string_lossy().to_string());
+    }
+
+    if managed_ffmpeg_directory_contains_companion_pair(&candidate_dir) {
+        return Some(candidate_dir.to_string_lossy().to_string());
+    }
+
+    None
+}
+
+/// Resolves the host ffmpeg executable path from one machine-managed tool spec.
+///
+/// Media-tagger needs the concrete `ffmpeg` executable, whereas yt-dlp consumes a directory.
+#[must_use]
+fn resolve_host_ffmpeg_executable_path_from_machine_tool(
+    paths: &MediaPmPaths,
+    machine: &MachineNickelDocument,
+    tool_id: &str,
+) -> Option<String> {
+    let directory = resolve_host_ffmpeg_command_path_from_machine_tool(paths, machine, tool_id)?;
+    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+
+    Some(PathBuf::from(directory).join(ffmpeg_file_name).to_string_lossy().to_string())
+}
+
+/// Returns true when one ffmpeg directory contains both `ffmpeg` and `ffprobe` executables.
+#[must_use]
+fn managed_ffmpeg_directory_contains_companion_pair(directory: &Path) -> bool {
+    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    directory.join(ffmpeg_file_name).exists() && directory.join(ffprobe_file_name).exists()
+}
+
+/// Searches `PATH` for one directory that contains both `ffmpeg` and `ffprobe`.
+#[must_use]
+fn search_host_ffmpeg_directory_on_path() -> Option<PathBuf> {
+    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+
+    std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).find(|directory| {
+            directory.join(ffmpeg_file_name).exists() && directory.join(ffprobe_file_name).exists()
+        })
+    })
 }
 
 /// Returns true when requested selector equals ffmpeg hash/version/tag.
@@ -1532,7 +1620,7 @@ async fn prune_unmanaged_tool_artifacts(
                 path: paths.tools_dir.clone(),
                 source,
             })?;
-            if !entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false) {
+            if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
                 continue;
             }
 
@@ -2606,6 +2694,8 @@ mod tests {
     /// already-registered managed ffmpeg tool without requiring reprovision.
     #[test]
     fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
         let requirement = ToolRequirement {
             version: None,
             tag: Some("latest".to_string()),
@@ -2653,8 +2743,8 @@ mod tests {
                 ..ToolConfigSpec::default()
             },
         );
-
         let selection = resolve_companion_ffmpeg_selection(
+            &paths,
             "yt-dlp",
             &requirement,
             &BTreeMap::new(),
@@ -2672,6 +2762,8 @@ mod tests {
     /// managed ffmpeg identity matches the requested selector.
     #[test]
     fn companion_ffmpeg_selection_rejects_unknown_selector() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
         let requirement = ToolRequirement {
             version: None,
             tag: Some("latest".to_string()),
@@ -2685,6 +2777,7 @@ mod tests {
         };
 
         let error = resolve_companion_ffmpeg_selection(
+            &paths,
             "yt-dlp",
             &requirement,
             &BTreeMap::new(),

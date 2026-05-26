@@ -778,17 +778,14 @@ const fn decode_hex_nibble(byte: u8) -> Option<u8> {
 
 /// Returns current UNIX epoch milliseconds, saturating on conversion bounds.
 fn unix_epoch_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| {
-            u64::try_from(duration.as_millis().min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
-        })
-        .unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| {
+        u64::try_from(duration.as_millis().min(u128::from(u64::MAX))).unwrap_or(u64::MAX)
+    })
 }
 
 /// Returns current UNIX epoch nanoseconds (best-effort).
 fn unix_epoch_nanos() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_nanos()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos())
 }
 
 #[cfg(test)]

@@ -136,10 +136,8 @@ pub(super) fn validate_filesystem_root_writable(root: &Path) -> Result<(), CasEr
     std::fs::create_dir_all(root)
         .map_err(|source| CasError::io("creating filesystem locator root", root, source))?;
 
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let nonce =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let probe = root.join(format!(".cas-write-probe-{}-{nonce}", std::process::id()));
 
     let mut file = std::fs::OpenOptions::new().create_new(true).write(true).open(&probe).map_err(

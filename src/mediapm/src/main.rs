@@ -449,9 +449,13 @@ async fn main() -> anyhow::Result<()> {
             ToolsCommand::Add { name } => {
                 let added = service.add_tool_requirement(&name)?;
                 if added {
-                    println!("added tool requirement '{name}' (tag = latest); run 'tools sync' to download");
+                    println!(
+                        "added tool requirement '{name}' (tag = latest); run 'tools sync' to download"
+                    );
                 } else {
-                    println!("tool requirement '{name}' already exists; run 'tools sync' to update");
+                    println!(
+                        "tool requirement '{name}' already exists; run 'tools sync' to update"
+                    );
                 }
             }
             ToolsCommand::Sync(args) => {

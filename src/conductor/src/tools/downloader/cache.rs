@@ -202,7 +202,7 @@ impl UserDownloadCache {
     /// Returns current number of logical cache-key rows in index metadata.
     #[must_use]
     pub fn entry_count(&self) -> usize {
-        self.index.lock().map(|index| index.entries.len()).unwrap_or(0)
+        self.index.lock().map_or(0, |index| index.entries.len())
     }
 
     /// Removes expired index rows and their unreferenced CAS payloads.

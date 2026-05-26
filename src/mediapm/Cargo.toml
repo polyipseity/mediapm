@@ -9,7 +9,13 @@ description = "Media orchestration facade over conductor and CAS"
 
 [features]
 default = ["cli"]
-cli = ["dep:anyhow", "dep:clap", "dep:clap_complete", "mediapm-cas/cli", "mediapm-conductor/cli"]
+cli = [
+  "dep:anyhow",
+  "dep:clap",
+  "dep:clap_complete",
+  "mediapm-cas/cli",
+  "mediapm-conductor/cli",
+]
 
 [lints]
 workspace = true

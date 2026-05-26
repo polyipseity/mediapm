@@ -100,7 +100,8 @@ pub fn default_mediapm_user_download_cache_root() -> Option<PathBuf> {
 /// Returns default user-scoped global cache root for one namespace.
 #[must_use]
 pub fn default_user_download_cache_root_for(namespace: UserToolCacheNamespace) -> Option<PathBuf> {
-    dirs::cache_dir().map(|root| root.join("mediapm").join(namespace.directory_name()).join("tools"))
+    dirs::cache_dir()
+        .map(|root| root.join("mediapm").join(namespace.directory_name()).join("tools"))
 }
 
 /// Summary of one cache-prune operation.
@@ -448,7 +449,10 @@ fn collect_referenced_hashes_from_jsonc_indexes(cache_root: &Path) -> BTreeSet<S
 }
 
 /// Writes one index envelope to disk with replace-on-rename semantics.
-fn write_index_file(index_path: &Path, index: &UserDownloadCacheIndex) -> Result<(), ConductorError> {
+fn write_index_file(
+    index_path: &Path,
+    index: &UserDownloadCacheIndex,
+) -> Result<(), ConductorError> {
     if let Some(parent) = index_path.parent() {
         fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
             operation: "creating user download cache index parent directory".to_string(),
@@ -510,7 +514,8 @@ mod tests {
     /// Protects crate-level cache separation by ensuring namespace roots differ.
     #[test]
     fn default_cache_roots_are_namespaced_per_crate() {
-        let conductor_root = default_user_download_cache_root_for(UserToolCacheNamespace::Conductor);
+        let conductor_root =
+            default_user_download_cache_root_for(UserToolCacheNamespace::Conductor);
         let mediapm_root = default_user_download_cache_root_for(UserToolCacheNamespace::Mediapm);
 
         if let (Some(conductor_root), Some(mediapm_root)) = (conductor_root, mediapm_root) {

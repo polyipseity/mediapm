@@ -415,7 +415,7 @@ fn artifact_root() -> PathBuf {
 
 /// Returns current Unix timestamp in seconds.
 fn unix_timestamp_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
 /// Resolves the online demo sync timeout from environment configuration.
@@ -662,10 +662,8 @@ fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
 /// Creates one unique fallback artifact root when the canonical path is
 /// temporarily locked by an external process.
 fn prepare_fallback_artifact_root(canonical_root: &Path) -> ExampleResult<PathBuf> {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let suffix =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let fallback_root =
         canonical_root.with_file_name(format!("demo-online-fallback-{}-{}", process::id(), suffix));
 
@@ -1380,7 +1378,13 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
         // Explicit host default inherited env-var map.
         // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: Some(default_runtime_inherited_env_vars_for_host()),
+        inherited_env_vars: Some({
+            let mut inherited_env_vars = default_runtime_inherited_env_vars_for_host();
+            inherited_env_vars.entry("linux".to_string()).or_default().push("PATH".to_string());
+            inherited_env_vars.entry("macos".to_string()).or_default().push("PATH".to_string());
+            inherited_env_vars.entry("windows".to_string()).or_default().push("PATH".to_string());
+            inherited_env_vars
+        }),
         // Machine-managed mediapm state path relative to workspace root.
         // Default: `.mediapm/state.ncl`.
         media_state_config: Some(".mediapm/state.ncl".to_string()),
@@ -1711,35 +1715,30 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
     let extensions = files.iter().filter_map(|path| lowercase_extension(path)).collect::<Vec<_>>();
 
     match variant {
-        "subtitles" => {
-            if !extensions.iter().any(|extension| is_subtitle_extension(extension)) {
-                return Err(format!(
-                    "expected sidecar variant '{variant}' at '{}' to contain subtitle files",
-                    directory.display()
-                )
-                .into());
-            }
+        "subtitles" if !extensions.iter().any(|extension| is_subtitle_extension(extension)) => {
+            return Err(format!(
+                "expected sidecar variant '{variant}' at '{}' to contain subtitle files",
+                directory.display()
+            )
+            .into());
         }
-        "thumbnails" => {
-            if !extensions.iter().any(|extension| is_image_extension(extension)) {
-                return Err(format!(
-                    "expected sidecar variant '{variant}' at '{}' to contain thumbnail image files",
-                    directory.display()
-                )
-                .into());
-            }
+        "thumbnails" if !extensions.iter().any(|extension| is_image_extension(extension)) => {
+            return Err(format!(
+                "expected sidecar variant '{variant}' at '{}' to contain thumbnail image files",
+                directory.display()
+            )
+            .into());
         }
-        "links" => {
+        "links"
             if !extensions
                 .iter()
-                .any(|extension| matches!(extension.as_str(), "url" | "webloc" | "desktop"))
-            {
-                return Err(format!(
-                    "expected sidecar variant '{variant}' at '{}' to contain internet shortcut files",
-                    directory.display()
-                )
-                .into());
-            }
+                .any(|extension| matches!(extension.as_str(), "url" | "webloc" | "desktop")) =>
+        {
+            return Err(format!(
+                "expected sidecar variant '{variant}' at '{}' to contain internet shortcut files",
+                directory.display()
+            )
+            .into());
         }
         _ => {}
     }
@@ -1847,9 +1846,28 @@ fn assert_flat_media_root_sidecar_families(
     }
     assert_sidecar_directory_family_content("links", &links_root)?;
 
-    let root_projection_files = collect_regular_files_recursive(&thumbnails_root)?
+    assert_root_projection_sidecar_names_align(
+        interpolated_root,
+        expected_output_base,
+        &expected_media_suffixes,
+        &thumbnails_root,
+        &links_root,
+    )?;
+
+    Ok(())
+}
+
+/// Validates that root-projected sidecar filenames stay aligned with media identity.
+fn assert_root_projection_sidecar_names_align(
+    interpolated_root: &Path,
+    expected_output_base: &str,
+    expected_media_suffixes: &[String],
+    thumbnails_root: &Path,
+    links_root: &Path,
+) -> ExampleResult<()> {
+    let root_projection_files = collect_regular_files_recursive(thumbnails_root)?
         .into_iter()
-        .chain(collect_regular_files_recursive(&links_root)?)
+        .chain(collect_regular_files_recursive(links_root)?)
         .collect::<Vec<_>>();
 
     if !root_projection_files.iter().all(|path| {

@@ -415,7 +415,7 @@ fn display_path(path: &Path) -> String {
 
 /// Returns current Unix timestamp in seconds.
 fn unix_timestamp_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|value| value.as_secs()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |value| value.as_secs())
 }
 
 /// Builds a user document that showcases broad conductor behavior.
@@ -1102,7 +1102,7 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
                 "{}".to_string()
             } else {
                 let mut ordered = entries.iter().collect::<Vec<_>>();
-                ordered.sort_by(|(left, _), (right, _)| left.cmp(right));
+                ordered.sort_by_key(|(left, _)| *left);
                 let rendered = ordered
                     .into_iter()
                     .map(|(key, entry)| {

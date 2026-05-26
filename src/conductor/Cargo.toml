@@ -9,7 +9,13 @@ description = "Orchestration contracts and state model for mediapm"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:clap_complete", "mediapm-cas/cli", "tool-presets", "fetch"]
+cli = [
+  "dep:clap",
+  "dep:clap_complete",
+  "mediapm-cas/cli",
+  "tool-presets",
+  "fetch",
+]
 fetch = ["mediapm-conductor-builtin-import/fetch"]
 tool-presets = ["dep:flate2", "dep:tar", "dep:reqwest", "dep:zip"]
 

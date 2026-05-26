@@ -378,7 +378,7 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
                 "{}".to_string()
             } else {
                 let mut ordered_entries = entries.iter().collect::<Vec<_>>();
-                ordered_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                ordered_entries.sort_by_key(|(key, _)| *key);
                 let rendered_entries = ordered_entries
                     .into_iter()
                     .map(|(key, entry_value)| {

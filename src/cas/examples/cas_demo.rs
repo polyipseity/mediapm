@@ -337,7 +337,7 @@ async fn generate_inspectable_artifacts() -> Result<DemoRunSummary, Box<dyn std:
     std::fs::write(&topology_json_path, serde_json::to_vec_pretty(&topology_snapshot)?)?;
 
     let generated_unix_epoch_seconds =
-        SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs());
     let store_size_stats = summarize_store_sizes(&cas, &cas_root).await?;
 
     let input_root = root.join("inputs");

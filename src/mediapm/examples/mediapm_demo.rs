@@ -250,7 +250,7 @@ fn artifact_root() -> PathBuf {
 
 /// Returns current Unix timestamp in seconds.
 fn unix_timestamp_seconds() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_secs()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
 /// Converts one filesystem path to a slash-normalized display string.
@@ -284,10 +284,8 @@ fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
 
 /// Creates one unique fallback artifact root when canonical cleanup is locked.
 fn prepare_fallback_artifact_root(canonical_root: &Path) -> ExampleResult<PathBuf> {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let suffix =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let fallback_root =
         canonical_root.with_file_name(format!("demo-fallback-{}-{suffix}", process::id()));
 

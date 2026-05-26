@@ -606,15 +606,21 @@ where
                 ']' if bracket_depth > 0 => bracket_depth = bracket_depth.saturating_sub(1),
                 '{' => brace_depth = brace_depth.saturating_add(1),
                 '}' if brace_depth > 0 => brace_depth = brace_depth.saturating_sub(1),
-                '&' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    if i + 1 < chars.len() && chars[i + 1].1 == '&' {
-                        return (&expression[..index], &expression[index..]);
-                    }
+                '&' if paren_depth == 0
+                    && bracket_depth == 0
+                    && brace_depth == 0
+                    && i + 1 < chars.len()
+                    && chars[i + 1].1 == '&' =>
+                {
+                    return (&expression[..index], &expression[index..]);
                 }
-                '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    if i + 1 < chars.len() && chars[i + 1].1 == '|' {
-                        return (&expression[..index], &expression[index..]);
-                    }
+                '|' if paren_depth == 0
+                    && bracket_depth == 0
+                    && brace_depth == 0
+                    && i + 1 < chars.len()
+                    && chars[i + 1].1 == '|' =>
+                {
+                    return (&expression[..index], &expression[index..]);
                 }
                 _ => {}
             }
@@ -703,9 +709,7 @@ where
                 '{' => brace_depth = brace_depth.saturating_add(1),
                 '}' => brace_depth = brace_depth.saturating_sub(1),
                 '?' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    if condition_separator_index.is_none() {
-                        condition_separator_index = Some(index);
-                    }
+                    condition_separator_index.get_or_insert(index);
                 }
                 '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
                     // Skip `||` (logical-or in condition) — treat lone `|` as branch separator.

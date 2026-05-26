@@ -1921,14 +1921,8 @@ fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
                 }),
             )]),
             options: BTreeMap::from([
-                (
-                    "recording_mbid".to_string(),
-                    TransformInputValue::String(String::new()),
-                ),
-                (
-                    "release_mbid".to_string(),
-                    TransformInputValue::String(String::new()),
-                ),
+                ("recording_mbid".to_string(), TransformInputValue::String(String::new())),
+                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
             ]),
         },
         MediaStep {
@@ -2719,7 +2713,7 @@ mod tests {
     }
 
     /// Ensures local preset media-tagger defaults explicitly include both
-    /// optional MusicBrainz identifier fields as empty placeholders.
+    /// optional `MusicBrainz` identifier fields as empty placeholders.
     #[test]
     fn local_preset_media_tagger_defaults_include_empty_mbids() {
         let steps = super::local_source_default_steps("blake3:deadbeef");
@@ -2739,7 +2733,7 @@ mod tests {
     }
 
     /// Ensures yt-dlp preset media-tagger defaults explicitly include both
-    /// optional MusicBrainz identifier fields as empty placeholders.
+    /// optional `MusicBrainz` identifier fields as empty placeholders.
     #[tokio::test]
     async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
         let root = tempdir().expect("tempdir");

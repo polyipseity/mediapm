@@ -18,8 +18,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, OptimizeOptions};
 fn unique_demo_root() -> std::path::PathBuf {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_nanos());
     std::env::temp_dir().join(format!("mediapm-cas-optimize-demo-{stamp}"))
 }
 

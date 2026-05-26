@@ -53,10 +53,8 @@ impl Drop for EphemeralRunDir {
 fn create_ephemeral_run_dir(example_name: &str) -> ExampleResult<EphemeralRunDir> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    let timestamp_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let timestamp_ns =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let process_id = std::process::id();
 
@@ -251,7 +249,7 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
                 "{}".to_string()
             } else {
                 let mut ordered_entries = entries.iter().collect::<Vec<_>>();
-                ordered_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                ordered_entries.sort_by_key(|(left, _)| *left);
                 let rendered_entries = ordered_entries
                     .into_iter()
                     .map(|(key, entry_value)| {

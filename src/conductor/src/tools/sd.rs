@@ -102,11 +102,10 @@ fn host_release_asset_markers() -> &'static [&'static str] {
 
 /// Fetches one JSON value from the latest `sd` release endpoint.
 fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
-    let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(
-        |source| {
+    let client =
+        Client::builder().timeout(std::time::Duration::from_mins(1)).build().map_err(|source| {
             ConductorError::Workflow(format!("building sd metadata HTTP client failed: {source}"))
-        },
-    )?;
+        })?;
     let response = client
         .get(SD_LATEST_RELEASE_API_URL)
         .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
@@ -203,11 +202,10 @@ fn select_host_release_asset(
 
 /// Downloads one release asset payload as raw bytes.
 fn download_release_asset(download_url: &str) -> Result<Vec<u8>, ConductorError> {
-    let client = Client::builder().timeout(std::time::Duration::from_secs(300)).build().map_err(
-        |source| {
+    let client =
+        Client::builder().timeout(std::time::Duration::from_mins(5)).build().map_err(|source| {
             ConductorError::Workflow(format!("building sd download HTTP client failed: {source}"))
-        },
-    )?;
+        })?;
     let response = client
         .get(download_url)
         .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
@@ -395,8 +393,24 @@ mod tests {
                     "browser_download_url": "https://example.invalid/sd.zip"
                 },
                 {
+                    "name": "sd-v1.0.0-aarch64-pc-windows-msvc.zip",
+                    "browser_download_url": "https://example.invalid/sd-windows-arm64.zip"
+                },
+                {
                     "name": "sd-v1.0.0-x86_64-unknown-linux-gnu.tar.gz",
                     "browser_download_url": "https://example.invalid/sd.tar.gz"
+                },
+                {
+                    "name": "sd-v1.0.0-aarch64-unknown-linux-gnu.tar.gz",
+                    "browser_download_url": "https://example.invalid/sd-linux-arm64.tar.gz"
+                },
+                {
+                    "name": "sd-v1.0.0-x86_64-apple-darwin.tar.gz",
+                    "browser_download_url": "https://example.invalid/sd-macos-x86_64.tar.gz"
+                },
+                {
+                    "name": "sd-v1.0.0-aarch64-apple-darwin.tar.gz",
+                    "browser_download_url": "https://example.invalid/sd-macos-arm64.tar.gz"
                 }
             ]
         });

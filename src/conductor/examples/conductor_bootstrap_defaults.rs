@@ -50,10 +50,8 @@ impl Drop for EphemeralRunDir {
 fn create_ephemeral_run_dir(example_name: &str) -> ExampleResult<EphemeralRunDir> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-    let timestamp_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+    let timestamp_ns =
+        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let process_id = std::process::id();
 

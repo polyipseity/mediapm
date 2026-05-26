@@ -279,7 +279,7 @@ fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
     }
 
     let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_mins(1))
         .build()
         .map_err(|err| format!("building import fetch HTTP client failed: {err}"))?;
 

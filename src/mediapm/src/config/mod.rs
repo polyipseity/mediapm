@@ -3742,7 +3742,7 @@ pub fn save_mediapm_state_document(path: &Path, state: &MediaPmState) -> Result<
 
 /// Returns true when `mediapm.ncl` is present and non-empty.
 pub fn mediapm_document_exists(path: &Path) -> bool {
-    path.exists() && fs::metadata(path).map(|meta| meta.len() > 0).unwrap_or(false)
+    path.exists() && fs::metadata(path).is_ok_and(|meta| meta.len() > 0)
 }
 
 /// Creates a temporary Nickel workspace that is cleaned up on drop.
@@ -3909,7 +3909,7 @@ fn render_nickel_value(value: &Value, indent: usize) -> String {
                 "{}".to_string()
             } else {
                 let mut ordered = entries.iter().collect::<Vec<_>>();
-                ordered.sort_by(|(left, _), (right, _)| left.cmp(right));
+                ordered.sort_by_key(|(key, _)| *key);
                 let body = ordered
                     .into_iter()
                     .map(|(key, item)| {

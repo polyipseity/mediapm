@@ -1661,7 +1661,7 @@ fn flatten_entity_json(prefix: &str, value: &Value, out: &mut BTreeMap<String, S
         match value {
             Value::Object(map) => {
                 let mut entries = map.iter().collect::<Vec<_>>();
-                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                entries.sort_by_key(|(key, _)| *key);
                 for (key, nested) in entries {
                     let nested_prefix = format!("{prefix}_{key}");
                     walk(&nested_prefix, nested, out);

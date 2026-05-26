@@ -44,7 +44,7 @@ pub fn default_worker_pool_size() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .and_then(NonZeroUsize::new)
         .map_or_else(
-            || std::thread::available_parallelism().map(usize::from).unwrap_or(1).max(1),
+            || std::thread::available_parallelism().map_or(1, usize::from).max(1),
             NonZeroUsize::get,
         )
 }

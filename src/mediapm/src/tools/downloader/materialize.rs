@@ -101,10 +101,10 @@ pub(super) async fn materialize_download_plan(
         )
         .await?;
 
-        let completed_snapshot = action_snapshot
-            .lock()
-            .map(|snapshot| *snapshot)
-            .unwrap_or(DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: None });
+        let completed_snapshot = action_snapshot.lock().map_or(
+            DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: None },
+            |snapshot| *snapshot,
+        );
         cumulative_downloaded_bytes =
             cumulative_downloaded_bytes.saturating_add(completed_snapshot.downloaded_bytes);
         if let Some(callback) = download_progress.as_ref() {
