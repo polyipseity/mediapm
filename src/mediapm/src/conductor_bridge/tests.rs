@@ -42,7 +42,7 @@ fn fixture_paths() -> MediaPmPaths {
     MediaPmPaths::from_root(std::path::Path::new("."))
 }
 
-/// Protects bootstrap invariant that phase-2 builtins are always available.
+/// Protects bootstrap invariant that conductor builtins are always available.
 #[test]
 fn ensure_conductor_documents_registers_builtin_tools_for_new_workspace() {
     let temp = tempfile::tempdir().expect("tempdir");

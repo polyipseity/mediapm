@@ -1,4 +1,4 @@
-//! Per-media workflow synthesis for phase-3 `mediapm` documents.
+//! Per-media workflow synthesis for `mediapm` documents.
 //!
 //! This module translates ordered `media.<id>.steps` declarations into managed
 //! conductor workflows so each media id maps to exactly one workflow.

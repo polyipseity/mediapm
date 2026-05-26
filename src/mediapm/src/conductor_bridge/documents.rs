@@ -69,7 +69,7 @@ pub(crate) fn ensure_conductor_documents(paths: &MediaPmPaths) -> Result<(), Med
     Ok(())
 }
 
-/// Registers missing phase-2 builtin tool identities in machine config.
+/// Registers missing conductor builtin tool identities in machine config.
 ///
 /// `mediapm` synthesized workflows may reference builtins directly
 /// (for example `import@1.0.0` for local-source ingest). This helper ensures

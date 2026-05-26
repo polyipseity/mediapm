@@ -1,4 +1,4 @@
-//! Native Phase-3 metadata tagging pipeline.
+//! Native mediapm metadata tagging pipeline.
 //!
 //! This module replaces the legacy external Picard step with an internal
 //! `mediapm` flow:
@@ -1859,7 +1859,7 @@ mod tests {
         assert_eq!(provided, "demo-key");
     }
 
-    /// Protects phase-3 behavior that when credentials are supplied, the
+    /// Protects behavior that when credentials are supplied, the
     /// `AcoustID` lookup path is attempted and failures are surfaced.
     #[tokio::test]
     async fn run_internal_media_tagger_with_key_attempts_lookup_path() {

@@ -1,6 +1,6 @@
 //! Runtime configuration document model.
 //!
-//! This module is the Phase-2 configuration surface used by runtime planning
+//! This module is the conductor configuration surface used by runtime planning
 //! and CLI workflows.
 //!
 //! Design notes:
