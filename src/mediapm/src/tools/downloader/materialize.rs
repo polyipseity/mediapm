@@ -13,7 +13,7 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::error::MediaPmError;
-use crate::tools::catalog::{ToolCatalogEntry, ToolCompanionDownload, ToolOs};
+use crate::tools::catalog::{ToolAdditionalDownloadSource, ToolCatalogEntry, ToolOs};
 
 use super::ToolDownloadCache;
 use super::http::fetch_bytes_from_candidates;
@@ -55,17 +55,14 @@ pub(super) async fn materialize_download_plan(
         )
         .await?;
 
-        if let Some(companion) = entry.companion_download {
-            materialize_companion_downloads(
-                entry,
-                companion,
-                plan,
-                install_root,
-                download_cache,
-                &cache_identity,
-            )
-            .await?;
-        }
+        materialize_additional_download_sources(
+            entry,
+            plan,
+            install_root,
+            download_cache,
+            &cache_identity,
+        )
+        .await?;
 
         return Ok(());
     }
@@ -132,39 +129,59 @@ pub(super) async fn materialize_download_plan(
         }
     }
 
-    if let Some(companion) = entry.companion_download {
-        materialize_companion_downloads(
-            entry,
-            companion,
-            plan,
-            install_root,
-            download_cache,
-            &cache_identity,
-        )
-        .await?;
-    }
+    materialize_additional_download_sources(
+        entry,
+        plan,
+        install_root,
+        download_cache,
+        &cache_identity,
+    )
+    .await?;
 
     Ok(())
 }
 
-/// Materializes companion binary downloads alongside the main OS-specific payloads.
+/// Materializes additional source downloads alongside main OS-specific payloads.
 ///
-/// Some download sources omit companion executables that must reside in the same
-/// directory as the main binary; for example, `evermeet.cx` provides only `ffmpeg`
-/// on macOS, so `ffprobe` must be fetched separately and placed in the same
-/// per-OS sub-directory. OS targets with empty URL lists are skipped silently.
-async fn materialize_companion_downloads(
+/// Some managed tools need content from multiple upstream sources merged into
+/// one install root. Sources with empty URL lists for one target OS are
+/// skipped silently for that OS.
+async fn materialize_additional_download_sources(
     entry: &ToolCatalogEntry,
-    companion: ToolCompanionDownload,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+    download_cache: Option<Arc<ToolDownloadCache>>,
+    cache_identity: &str,
+) -> Result<(), MediaPmError> {
+    for (source_index, source) in entry.additional_download_sources.iter().copied().enumerate() {
+        materialize_one_additional_download_source(
+            entry,
+            source,
+            source_index,
+            plan,
+            install_root,
+            download_cache.clone(),
+            cache_identity,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// Materializes one additional source across all planned OS targets.
+async fn materialize_one_additional_download_source(
+    entry: &ToolCatalogEntry,
+    source: ToolAdditionalDownloadSource,
+    source_index: usize,
     plan: &ResolvedDownloadPlan,
     install_root: &Path,
     download_cache: Option<Arc<ToolDownloadCache>>,
     cache_identity: &str,
 ) -> Result<(), MediaPmError> {
     for action in plan.per_os_actions.values() {
-        let companion_urls: Vec<String> =
-            companion.urls.for_os(action.os).iter().map(|s| (*s).to_string()).collect();
-        if companion_urls.is_empty() {
+        let source_urls: Vec<String> =
+            source.urls.for_os(action.os).iter().map(|value| (*value).to_string()).collect();
+        if source_urls.is_empty() {
             continue;
         }
 
@@ -174,21 +191,21 @@ async fn materialize_companion_downloads(
             install_root.join(action.os.as_str())
         };
 
-        let companion_action = OsDownloadAction {
+        let source_action = OsDownloadAction {
             os: action.os,
-            mode: companion.mode.for_os(action.os),
-            urls: companion_urls,
+            mode: source.mode.for_os(action.os),
+            urls: source_urls,
         };
         let cache_key = format!(
-            "identity={cache_identity}|tool={}|os={}|companion|urls={}",
+            "identity={cache_identity}|tool={}|os={}|additional-source={source_index}|urls={}",
             entry.name,
             action.os.as_str(),
-            companion_action.urls.join("\n")
+            source_action.urls.join("\n")
         );
 
         materialize_one_os_payload(
             entry,
-            &companion_action,
+            &source_action,
             &destination,
             None,
             download_cache.clone(),
@@ -199,27 +216,37 @@ async fn materialize_companion_downloads(
     Ok(())
 }
 
-/// Returns `true` when all expected companion binaries are already present in `install_root`.
+/// Returns `true` when all expected additional-source binaries are already present.
 ///
-/// An entry with no `companion_download` always returns `true`. For entries that require
-/// companion binaries, each OS target with non-empty URLs is checked for the presence of
-/// the companion executable using a recursive directory scan. Returns `false` when any
-/// expected companion binary is missing, which causes the caller to re-provision.
-pub(super) fn companion_downloads_present(
+/// An entry with no additional sources always returns `true`. For entries with
+/// additional sources, each OS target with non-empty URLs is checked for the
+/// expected executable name via recursive directory scan.
+pub(super) fn additional_download_sources_present(
     entry: &ToolCatalogEntry,
     plan: &ResolvedDownloadPlan,
     install_root: &Path,
 ) -> bool {
-    let Some(companion) = entry.companion_download else {
-        return true;
-    };
+    for source in entry.additional_download_sources.iter().copied() {
+        if !additional_source_present_for_all_os(source, plan, install_root) {
+            return false;
+        }
+    }
 
+    true
+}
+
+/// Returns whether one additional source is materialized for every required OS.
+fn additional_source_present_for_all_os(
+    source: ToolAdditionalDownloadSource,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+) -> bool {
     for action in plan.per_os_actions.values() {
-        if companion.urls.for_os(action.os).is_empty() {
+        if source.urls.for_os(action.os).is_empty() {
             continue;
         }
 
-        let executable_name = companion.executable_name.for_os(action.os);
+        let executable_name = source.expected_executable_name.for_os(action.os);
         if executable_name.is_empty() {
             continue;
         }

@@ -1,7 +1,7 @@
 //! Catalog entry for `ffmpeg` managed tool provisioning.
 
 use super::{
-    DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolCompanionDownload,
+    DownloadPayloadMode, PlatformValue, ToolAdditionalDownloadSource, ToolCatalogEntry,
     ToolDownloadDescriptor,
 };
 
@@ -29,14 +29,28 @@ const FFMPEG_LINUX_URLS: &[&str] = &[
 /// macOS URL candidate for ffmpeg payload downloads.
 const FFMPEG_MACOS_URLS: &[&str] = &["https://evermeet.cx/ffmpeg/getrelease/zip"];
 
-/// macOS URL candidate for ffprobe companion binary download.
+/// macOS URL candidate for ffprobe side-source binary download.
 ///
 /// `evermeet.cx` provides `ffprobe` as a separate ZIP download alongside its
-/// `ffmpeg` release. This companion is required because the macOS `ffmpeg`
-/// archive contains only the `ffmpeg` binary; `ffprobe` must be fetched
-/// separately to satisfy tools that require both executables in the same
-/// directory.
+/// `ffmpeg` release. The macOS `ffmpeg` archive contains only the `ffmpeg`
+/// binary, so `ffprobe` must be fetched from an additional source.
 const FFPROBE_MACOS_URLS: &[&str] = &["https://evermeet.cx/ffprobe/getrelease/zip"];
+
+/// Additional ffprobe source merged into the managed ffmpeg install root.
+const FFMPEG_ADDITIONAL_SOURCES: &[ToolAdditionalDownloadSource] =
+    &[ToolAdditionalDownloadSource {
+        urls: PlatformValue {
+            windows: &[], // BtbN archive already includes ffprobe.exe as a sibling binary
+            macos: FFPROBE_MACOS_URLS,
+            linux: &[], // BtbN archive already includes ffprobe as a sibling binary
+        },
+        mode: PlatformValue {
+            windows: DownloadPayloadMode::ZipArchive,
+            macos: DownloadPayloadMode::ZipArchive,
+            linux: DownloadPayloadMode::ZipArchive,
+        },
+        expected_executable_name: PlatformValue { windows: "", macos: "ffprobe", linux: "" },
+    }];
 
 /// Declarative catalog record for `ffmpeg`.
 pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
@@ -67,19 +81,7 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         },
         release_repo: Some("BtbN/FFmpeg-Builds"),
     },
-    companion_download: Some(ToolCompanionDownload {
-        urls: PlatformValue {
-            windows: &[], // BtbN archive already includes ffprobe.exe as a sibling binary
-            macos: FFPROBE_MACOS_URLS,
-            linux: &[], // BtbN archive already includes ffprobe as a sibling binary
-        },
-        mode: PlatformValue {
-            windows: DownloadPayloadMode::ZipArchive,
-            macos: DownloadPayloadMode::ZipArchive,
-            linux: DownloadPayloadMode::ZipArchive,
-        },
-        executable_name: PlatformValue { windows: "", macos: "ffprobe", linux: "" },
-    }),
+    additional_download_sources: FFMPEG_ADDITIONAL_SOURCES,
 };
 
 #[cfg(test)]

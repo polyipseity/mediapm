@@ -2062,7 +2062,7 @@ mod tests {
                 macos: "fixture",
             },
             download,
-            companion_download: None,
+            additional_download_sources: &[],
         }
     }
 

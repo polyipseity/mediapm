@@ -127,7 +127,7 @@ fn resolve_download_plan_emits_cross_platform_actions() {
             },
             release_repo: None,
         },
-        companion_download: None,
+        additional_download_sources: &[],
     };
 
     let requirement = ToolRequirement {
@@ -176,7 +176,7 @@ fn resolve_download_plan_marks_shared_package_when_urls_match() {
             },
             release_repo: None,
         },
-        companion_download: None,
+        additional_download_sources: &[],
     };
 
     let requirement = ToolRequirement {

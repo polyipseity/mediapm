@@ -124,22 +124,21 @@ pub(crate) enum ToolDownloadDescriptor {
     InternalLauncher,
 }
 
-/// Optional companion binary to download alongside the main tool payload.
+/// Optional additional source downloaded alongside the main tool payload.
 ///
-/// Used when the primary download source does not bundle all required companion
-/// executables; for example, `evermeet.cx` provides only `ffmpeg` on macOS, so
-/// `ffprobe` must be fetched separately from `evermeet.cx/ffprobe`.
+/// Use this when one managed tool must combine multiple upstream payload
+/// sources in the same install root. For example, `evermeet.cx` provides
+/// `ffmpeg` and `ffprobe` as separate ZIP downloads on macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ToolCompanionDownload {
-    /// Per-OS download URL candidates, tried in-order. Empty slice means no
-    /// companion download is needed for that OS (e.g., when the main archive
-    /// already includes the companion binary).
+pub(crate) struct ToolAdditionalDownloadSource {
+    /// Per-OS download URL candidates, tried in-order. Empty slice means this
+    /// additional source is not required for that OS.
     pub urls: PlatformValue<&'static [&'static str]>,
     /// Payload handling mode per OS.
     pub mode: PlatformValue<DownloadPayloadMode>,
-    /// Expected companion executable file name per OS, used to verify that the
-    /// companion binary is present before skipping re-provisioning.
-    pub executable_name: PlatformValue<&'static str>,
+    /// Expected executable file name per OS, used to verify this source has
+    /// been materialized before skipping re-provisioning.
+    pub expected_executable_name: PlatformValue<&'static str>,
 }
 
 /// Catalog entry for one logical tool declared in `mediapm.ncl`.
@@ -159,10 +158,11 @@ pub(crate) struct ToolCatalogEntry {
     pub executable_name: PlatformValue<&'static str>,
     /// Download strategy for this tool.
     pub download: ToolDownloadDescriptor,
-    /// Optional companion binary to download alongside the main tool payload.
+    /// Additional payload sources that are merged into the same install root.
     ///
-    /// Set to `None` when no additional companion binary is needed.
-    pub companion_download: Option<ToolCompanionDownload>,
+    /// Use an empty slice when the main tool download already contains all
+    /// required binaries/content for every target OS.
+    pub additional_download_sources: &'static [ToolAdditionalDownloadSource],
 }
 
 impl ToolCatalogEntry {

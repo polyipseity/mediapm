@@ -35,5 +35,5 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
             linux: RSGAIN_LINUX_MARKERS,
         },
     },
-    companion_download: None,
+    additional_download_sources: &[],
 };

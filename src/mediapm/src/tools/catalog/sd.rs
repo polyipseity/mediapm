@@ -45,5 +45,5 @@ pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
         },
         release_repo: Some("chmln/sd"),
     },
-    companion_download: None,
+    additional_download_sources: &[],
 };

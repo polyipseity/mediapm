@@ -720,7 +720,7 @@ mod tests {
                 macos: "media-tagger",
             },
             download: ToolDownloadDescriptor::InternalLauncher,
-            companion_download: None,
+            additional_download_sources: &[],
         };
 
         let requirement = ToolRequirement {
