@@ -553,7 +553,16 @@ where
                                 "kind": "primary",
                             }),
                         )]),
-                        options: BTreeMap::new(),
+                        options: BTreeMap::from([
+                            (
+                                "recording_mbid".to_string(),
+                                TransformInputValue::String(String::new()),
+                            ),
+                            (
+                                "release_mbid".to_string(),
+                                TransformInputValue::String(String::new()),
+                            ),
+                        ]),
                     },
                     MediaStep {
                         tool: MediaStepTool::Rsgain,
@@ -1911,7 +1920,16 @@ fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
                     "kind": "primary",
                 }),
             )]),
-            options: BTreeMap::new(),
+            options: BTreeMap::from([
+                (
+                    "recording_mbid".to_string(),
+                    TransformInputValue::String(String::new()),
+                ),
+                (
+                    "release_mbid".to_string(),
+                    TransformInputValue::String(String::new()),
+                ),
+            ]),
         },
         MediaStep {
             tool: MediaStepTool::Rsgain,
@@ -2697,6 +2715,59 @@ mod tests {
                 .to_string()
                 .contains("cannot remove media source: media id 'missing-media' does not exist"),
             "error should explain missing media id"
+        );
+    }
+
+    /// Ensures local preset media-tagger defaults explicitly include both
+    /// optional MusicBrainz identifier fields as empty placeholders.
+    #[test]
+    fn local_preset_media_tagger_defaults_include_empty_mbids() {
+        let steps = super::local_source_default_steps("blake3:deadbeef");
+        let media_tagger_step = steps
+            .iter()
+            .find(|step| step.tool == super::MediaStepTool::MediaTagger)
+            .expect("local preset should include media-tagger step");
+
+        assert_eq!(
+            media_tagger_step.options.get("recording_mbid"),
+            Some(&super::TransformInputValue::String(String::new()))
+        );
+        assert_eq!(
+            media_tagger_step.options.get("release_mbid"),
+            Some(&super::TransformInputValue::String(String::new()))
+        );
+    }
+
+    /// Ensures yt-dlp preset media-tagger defaults explicitly include both
+    /// optional MusicBrainz identifier fields as empty placeholders.
+    #[tokio::test]
+    async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(
+                &Url::parse("https://www.youtube.com/watch?v=mbid-defaults").expect("url"),
+                None,
+            )
+            .await
+            .expect("add online media source");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let media = document.media.get(&media_id).expect("media source should exist");
+        let media_tagger_step = media
+            .steps
+            .iter()
+            .find(|step| step.tool == super::MediaStepTool::MediaTagger)
+            .expect("yt-dlp preset should include media-tagger step");
+
+        assert_eq!(
+            media_tagger_step.options.get("recording_mbid"),
+            Some(&super::TransformInputValue::String(String::new()))
+        );
+        assert_eq!(
+            media_tagger_step.options.get("release_mbid"),
+            Some(&super::TransformInputValue::String(String::new()))
         );
     }
 
