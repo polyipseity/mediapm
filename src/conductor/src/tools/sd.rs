@@ -48,8 +48,9 @@ enum ReleaseArchiveKind {
 /// Selected release asset metadata for the current host platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReleaseAssetSelection {
-    /// Direct browser-download URL for the selected release asset.
-    download_url: String,
+    /// Ordered browser-download URLs for candidate assets matching one host
+    /// marker. URLs are attempted in-order until one download succeeds.
+    download_urls: Vec<String>,
     /// Archive format used by the selected payload URL.
     archive_kind: ReleaseArchiveKind,
 }
@@ -135,7 +136,7 @@ fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
     })
 }
 
-/// Selects one release asset URL + archive kind for the current host.
+/// Selects release-asset URL candidates + archive kind for the current host.
 fn select_host_release_asset(
     release_json: &serde_json::Value,
 ) -> Result<ReleaseAssetSelection, ConductorError> {
@@ -156,42 +157,59 @@ fn select_host_release_asset(
         })?;
 
     for marker in markers {
-        let Some(asset) = assets.iter().find(|asset| {
-            asset
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|name| name.contains(marker))
-        }) else {
-            continue;
-        };
+        let mut selection: Option<ReleaseAssetSelection> = None;
 
-        let name = asset.get("name").and_then(serde_json::Value::as_str).ok_or_else(|| {
-            ConductorError::Workflow(
-                "latest sd release asset missing string field 'name'".to_string(),
-            )
-        })?;
-
-        let download_url = asset
-            .get("browser_download_url")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                ConductorError::Workflow(format!(
-                    "latest sd release asset '{name}' missing string field 'browser_download_url'"
-                ))
+        for asset in assets {
+            let name = asset.get("name").and_then(serde_json::Value::as_str).ok_or_else(|| {
+                ConductorError::Workflow(
+                    "latest sd release asset missing string field 'name'".to_string(),
+                )
             })?;
+            if !name.contains(marker) {
+                continue;
+            }
 
-        let archive_kind =
-            if Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
-                ReleaseArchiveKind::Zip
-            } else if name.ends_with(".tar.gz") {
-                ReleaseArchiveKind::TarGz
-            } else {
-                return Err(ConductorError::Workflow(format!(
-                    "latest sd release asset '{name}' uses unsupported archive suffix"
-                )));
-            };
+            let download_url = asset
+                .get("browser_download_url")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    ConductorError::Workflow(format!(
+                        "latest sd release asset '{name}' missing string field 'browser_download_url'"
+                    ))
+                })?;
 
-        return Ok(ReleaseAssetSelection { download_url: download_url.to_string(), archive_kind });
+            let archive_kind =
+                if Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
+                    ReleaseArchiveKind::Zip
+                } else if name.ends_with(".tar.gz") {
+                    ReleaseArchiveKind::TarGz
+                } else {
+                    return Err(ConductorError::Workflow(format!(
+                        "latest sd release asset '{name}' uses unsupported archive suffix"
+                    )));
+                };
+
+            match selection.as_mut() {
+                Some(existing) => {
+                    if existing.archive_kind != archive_kind {
+                        return Err(ConductorError::Workflow(format!(
+                            "latest sd release assets matching marker '{marker}' mixed archive kinds"
+                        )));
+                    }
+                    existing.download_urls.push(download_url.to_string());
+                }
+                None => {
+                    selection = Some(ReleaseAssetSelection {
+                        download_urls: vec![download_url.to_string()],
+                        archive_kind,
+                    });
+                }
+            }
+        }
+
+        if let Some(selection) = selection {
+            return Ok(selection);
+        }
     }
 
     Err(ConductorError::Workflow(format!(
@@ -200,40 +218,61 @@ fn select_host_release_asset(
     )))
 }
 
-/// Downloads one release asset payload as raw bytes.
-fn download_release_asset(download_url: &str) -> Result<Vec<u8>, ConductorError> {
+/// Downloads one release asset payload as raw bytes from candidate URLs.
+fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, ConductorError> {
+    if download_urls.is_empty() {
+        return Err(ConductorError::Workflow(
+            "downloading sd release asset failed: candidate URL list was empty".to_string(),
+        ));
+    }
+
     let client =
         Client::builder().timeout(std::time::Duration::from_mins(5)).build().map_err(|source| {
             ConductorError::Workflow(format!("building sd download HTTP client failed: {source}"))
         })?;
-    let response = client
-        .get(download_url)
-        .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
-        .send()
-        .map_err(|source| {
-            ConductorError::Workflow(format!(
-                "downloading sd release asset from '{download_url}' failed: {source}"
-            ))
-        })?;
-    if !response.status().is_success() {
-        return Err(ConductorError::Workflow(format!(
-            "downloading sd release asset from '{download_url}' failed with status {}",
-            response.status().as_u16()
-        )));
+    let mut errors = Vec::new();
+
+    for download_url in download_urls {
+        let response = match client
+            .get(download_url)
+            .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
+            .send()
+        {
+            Ok(response) => response,
+            Err(source) => {
+                errors.push(format!("{download_url}: request failed: {source}"));
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            errors.push(format!(
+                "{download_url}: unexpected HTTP status {}",
+                response.status().as_u16()
+            ));
+            continue;
+        }
+
+        let payload = match response.bytes() {
+            Ok(payload) => payload.to_vec(),
+            Err(source) => {
+                errors.push(format!("{download_url}: reading response body failed: {source}"));
+                continue;
+            }
+        };
+
+        if payload.is_empty() {
+            errors.push(format!("{download_url}: downloaded payload was empty"));
+            continue;
+        }
+
+        return Ok(payload);
     }
 
-    let payload = response.bytes().map_err(|source| {
-        ConductorError::Workflow(format!("reading sd release asset response body failed: {source}"))
-    })?;
-    let payload = payload.to_vec();
-
-    if payload.is_empty() {
-        return Err(ConductorError::Workflow(format!(
-            "downloaded sd release asset from '{download_url}' was empty"
-        )));
-    }
-
-    Ok(payload)
+    Err(ConductorError::Workflow(format!(
+        "downloading sd release asset failed for all candidate URLs: {}",
+        errors.join("; ")
+    )))
 }
 
 /// Extracts `sd` executable bytes from one release-archive payload.
@@ -344,7 +383,7 @@ fn extract_release_executable_bytes(
 pub fn fetch_payload() -> Result<CommonExecutablePayload, ConductorError> {
     let release_json = fetch_latest_release_json()?;
     let selection = select_host_release_asset(&release_json)?;
-    let archive_payload = download_release_asset(&selection.download_url)?;
+    let archive_payload = download_release_asset(&selection.download_urls)?;
     let executable_file_name = executable_file_name();
     let executable_bytes =
         extract_release_executable_bytes(&archive_payload, selection.archive_kind)?;
@@ -426,7 +465,8 @@ mod tests {
             all(target_os = "macos", target_arch = "aarch64")
         ))]
         {
-            assert!(selection.is_ok(), "expected host asset selection to succeed");
+            let selection = selection.expect("expected host asset selection to succeed");
+            assert!(!selection.download_urls.is_empty());
         }
 
         #[cfg(not(any(
