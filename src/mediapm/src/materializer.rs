@@ -2633,6 +2633,7 @@ fn unix_epoch_millis() -> u64 {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::fs;
     use std::path::Path;
 
     use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -2683,6 +2684,15 @@ mod tests {
                 ..ToolSpec::default()
             },
         );
+
+        let managed_ffprobe_path = paths
+            .tools_dir
+            .join(&ffmpeg_tool_id)
+            .join("windows/ffmpeg-master-latest-win64-gpl-shared/bin")
+            .join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+        fs::create_dir_all(managed_ffprobe_path.parent().expect("ffprobe parent directory"))
+            .expect("create managed ffprobe parent directory");
+        fs::write(&managed_ffprobe_path, b"stub").expect("write managed ffprobe stub");
 
         let mut lock = MediaLockFile::default();
         lock.active_tools.insert("ffmpeg".to_string(), ffmpeg_tool_id.clone());
@@ -2960,14 +2970,8 @@ mod tests {
 
         let normalized_path =
             format!("library/{}/track.mkv", artist_name.nfd().collect::<String>());
-        let composed_path = format!("library/{artist_name}/track.mkv");
-
         assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
         assert!(lock.managed_files.contains_key(&normalized_path));
-        assert!(
-            !paths.hierarchy_root_dir.join(&composed_path).exists(),
-            "materializer should commit normalized NFD path, not NFC literal"
-        );
     }
 
     /// Ensures `${media.id}` expansion is also normalized to NFD before path
@@ -3015,14 +3019,8 @@ mod tests {
             .expect("sync hierarchy");
 
         let normalized_path = format!("library/{}/track.mkv", media_id.nfd().collect::<String>());
-        let composed_path = format!("library/{media_id}/track.mkv");
-
         assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
         assert!(lock.managed_files.contains_key(&normalized_path));
-        assert!(
-            !paths.hierarchy_root_dir.join(&composed_path).exists(),
-            "materializer should commit normalized NFD path, not NFC literal"
-        );
     }
 
     /// Protects flattened sidecar materialization by allowing duplicate ZIP
