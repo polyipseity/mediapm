@@ -115,6 +115,14 @@ enum ToolsCommand {
     Sync(ToolsSyncArgs),
     /// Lists registered tools and binary status.
     List,
+    /// Removes one tool requirement entry from `mediapm.ncl`.
+    ///
+    /// This updates desired tool state only. To remove already-downloaded
+    /// binaries for inactive entries, use `tools prune` with immutable tool id.
+    Remove {
+        /// Logical tool name.
+        name: String,
+    },
     /// Removes one installed tool binary while keeping metadata.
     Prune {
         /// Immutable tool id.
@@ -474,6 +482,16 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
+            ToolsCommand::Remove { name } => {
+                let removed = service.remove_tool_requirement(&name)?;
+                if removed {
+                    println!(
+                        "removed tool requirement '{name}'; run 'tools sync' to reconcile runtime state"
+                    );
+                } else {
+                    println!("tool requirement '{name}' was not present");
+                }
+            }
             ToolsCommand::Prune { id } => {
                 let removed_hashes = service.prune_tool(&id).await?;
                 println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
@@ -793,5 +811,12 @@ mod tests {
             "https://example.com/media",
         ]);
         assert!(parsed.is_ok(), "media add should parse insert-position values");
+    }
+
+    /// Protects tools-remove CLI route.
+    #[test]
+    fn tools_remove_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "tools", "remove", "yt-dlp"]);
+        assert!(parsed.is_ok(), "tools remove route must parse");
     }
 }

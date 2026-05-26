@@ -885,6 +885,26 @@ where
         Ok(true)
     }
 
+    /// Removes one tool requirement entry from `mediapm.ncl` by logical name.
+    ///
+    /// This method updates desired tool requirements only. Runtime tool
+    /// registration state is reconciled by a subsequent `tools sync` or
+    /// top-level `sync` execution.
+    ///
+    /// Returns `false` when no requirement with this name exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when `mediapm.ncl` cannot be loaded or saved.
+    pub fn remove_tool_requirement(&self, tool_name: &str) -> Result<bool, MediaPmError> {
+        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let removed = document.tools.remove(tool_name).is_some();
+        if removed {
+            save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        }
+        Ok(removed)
+    }
+
     /// Prunes one tool binary while preserving metadata.
     ///
     /// # Errors
