@@ -17,9 +17,9 @@ use mediapm::{
 };
 use url::Url;
 
-/// `mediapm` phase-3 CLI.
+/// `mediapm` orchestration CLI.
 #[derive(Debug, Parser)]
-#[command(author, version, about = "mediapm phase-3 orchestration CLI")]
+#[command(author, version, about = "mediapm orchestration CLI")]
 struct Cli {
     /// Workspace root that hosts `mediapm.ncl` and `.mediapm/` runtime state.
     #[arg(long, default_value = ".")]
@@ -56,10 +56,11 @@ enum Command {
     /// `--check-tag-updates` is provided.
     Sync(SyncArgs),
     /// Tool lifecycle commands.
-    Tools {
+    #[command(name = "tool", visible_alias = "tools")]
+    Tool {
         /// Tool subcommand selector.
         #[command(subcommand)]
-        command: ToolsCommand,
+        command: ToolCommand,
     },
     /// Media-source registry commands.
     Media {
@@ -80,10 +81,11 @@ enum Command {
         command: GlobalCommand,
     },
     /// Builtin command implementations exposed by the `mediapm` executable.
-    Builtins {
-        /// Builtins subcommand selector.
+    #[command(name = "builtin", visible_alias = "builtins")]
+    Builtin {
+        /// Builtin subcommand selector.
         #[command(subcommand)]
-        command: BuiltinsCommand,
+        command: BuiltinCommand,
     },
     /// Passthrough to the `mediapm-cas` CLI.
     Cas(PassthroughArgs),
@@ -98,12 +100,12 @@ enum Command {
 
 /// Tool lifecycle commands.
 #[derive(Debug, Subcommand)]
-enum ToolsCommand {
+enum ToolCommand {
     /// Adds one tool requirement entry to `mediapm.ncl` by logical name.
     ///
     /// The tool must appear in the built-in downloader catalog. If a
     /// requirement for this name already exists, the command is a no-op.
-    /// After adding, run `tools sync` to download and register the tool.
+    /// After adding, run `tool sync` to download and register the tool.
     Add {
         /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `rsgain`, `media-tagger`, `sd`).
         name: String,
@@ -112,13 +114,13 @@ enum ToolsCommand {
     ///
     /// Default policy checks remote updates for tag-only selectors unless
     /// `--no-check-tag-updates` is provided.
-    Sync(ToolsSyncArgs),
+    Sync(ToolSyncArgs),
     /// Lists registered tools and binary status.
     List,
     /// Removes one tool requirement entry from `mediapm.ncl`.
     ///
     /// This updates desired tool state only. To remove already-downloaded
-    /// binaries for inactive entries, use `tools prune` with immutable tool id.
+    /// binaries for inactive entries, use `tool prune` with immutable tool id.
     Remove {
         /// Logical tool name.
         name: String,
@@ -273,9 +275,9 @@ enum GlobalToolCacheCommand {
     Clear,
 }
 
-/// Builtin command implementations exposed by `mediapm builtins ...`.
+/// Builtin command implementations exposed by `mediapm builtin ...`.
 #[derive(Debug, Subcommand)]
-enum BuiltinsCommand {
+enum BuiltinCommand {
     /// Native metadata tagging flow (`Chromaprint -> AcoustID -> MusicBrainz`).
     #[command(name = "media-tagger")]
     MediaTagger(InternalMediaTaggerArgs),
@@ -380,9 +382,9 @@ struct SyncArgs {
     tag_update_policy: TagUpdatePolicyArgs,
 }
 
-/// Arguments for `mediapm tools sync`.
+/// Arguments for `mediapm tool sync`.
 #[derive(Debug, Args, Clone, Copy, Default)]
-struct ToolsSyncArgs {
+struct ToolSyncArgs {
     /// Optional override for tag-only tool update checks.
     #[command(flatten)]
     tag_update_policy: TagUpdatePolicyArgs,
@@ -415,10 +417,10 @@ async fn main() -> anyhow::Result<()> {
     if matches!(
         &cli.command,
         Command::Sync(_)
-            | Command::Tools { .. }
+            | Command::Tool { .. }
             | Command::Media { .. }
             | Command::Hierarchy { .. }
-            | Command::Builtins { .. }
+            | Command::Builtin { .. }
     ) {
         let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
     }
@@ -445,20 +447,18 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("warning: {warning}");
             }
         }
-        Command::Tools { command } => match command {
-            ToolsCommand::Add { name } => {
+        Command::Tool { command } => match command {
+            ToolCommand::Add { name } => {
                 let added = service.add_tool_requirement(&name)?;
                 if added {
                     println!(
-                        "added tool requirement '{name}' (tag = latest); run 'tools sync' to download"
+                        "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
                     );
                 } else {
-                    println!(
-                        "tool requirement '{name}' already exists; run 'tools sync' to update"
-                    );
+                    println!("tool requirement '{name}' already exists; run 'tool sync' to update");
                 }
             }
-            ToolsCommand::Sync(args) => {
+            ToolCommand::Sync(args) => {
                 let check_tag_updates = args.tag_update_policy.resolve(true);
                 let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
                 println!(
@@ -469,7 +469,7 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("warning: {warning}");
                 }
             }
-            ToolsCommand::List => {
+            ToolCommand::List => {
                 let rows = service.list_tools()?;
                 if rows.is_empty() {
                     println!("no tools registered");
@@ -486,27 +486,27 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }
-            ToolsCommand::Remove { name } => {
+            ToolCommand::Remove { name } => {
                 let removed = service.remove_tool_requirement(&name)?;
                 if removed {
                     println!(
-                        "removed tool requirement '{name}'; run 'tools sync' to reconcile runtime state"
+                        "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
                     );
                 } else {
                     println!("tool requirement '{name}' was not present");
                 }
             }
-            ToolsCommand::Prune { id } => {
+            ToolCommand::Prune { id } => {
                 let removed_hashes = service.prune_tool(&id).await?;
                 println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
             }
-            ToolsCommand::Run { tool, args } => {
+            ToolCommand::Run { tool, args } => {
                 let exit_code = service.run_managed_tool(&tool, &args)?;
                 if exit_code != 0 {
                     std::process::exit(exit_code);
                 }
             }
-            ToolsCommand::RefreshRuntime => {
+            ToolCommand::RefreshRuntime => {
                 service.refresh_runtime_configuration()?;
                 println!(
                     "refreshed mediapm-managed conductor runtime configuration and dotenv files"
@@ -621,8 +621,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             },
         },
-        Command::Builtins { command } => match command {
-            BuiltinsCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
+        Command::Builtin { command } => match command {
+            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
         },
         Command::Cas(args) => {
             passthrough_cas(&args.args).await?;
@@ -688,7 +688,7 @@ fn default_hierarchy_root_for_preset(_preset: HierarchyPreset) -> &'static str {
     "media/"
 }
 
-/// Executes Phase-1 CAS CLI passthrough in-process.
+/// Executes CAS CLI passthrough in-process.
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
 /// so `mediapm cas ...` does not require a sibling `mediapm-cas` executable.
@@ -696,7 +696,7 @@ async fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
     mediapm_cas::cli::run_from_passthrough_args(args).await
 }
 
-/// Executes Phase-2 conductor CLI passthrough in-process.
+/// Executes conductor CLI passthrough in-process.
 ///
 /// This path reuses `mediapm-conductor` clap parsing and command dispatch
 /// directly, so `mediapm conductor ...` does not require a sibling
@@ -817,10 +817,10 @@ mod tests {
         assert!(parsed.is_ok(), "media add should parse insert-position values");
     }
 
-    /// Protects tools-remove CLI route.
+    /// Protects tool-remove CLI route.
     #[test]
-    fn tools_remove_route_is_parsed() {
-        let parsed = Cli::try_parse_from(["mediapm", "tools", "remove", "yt-dlp"]);
-        assert!(parsed.is_ok(), "tools remove route must parse");
+    fn tool_remove_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "tool", "remove", "yt-dlp"]);
+        assert!(parsed.is_ok(), "tool remove route must parse");
     }
 }

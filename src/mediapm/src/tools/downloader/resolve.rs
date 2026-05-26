@@ -228,7 +228,7 @@ pub(super) async fn resolve_download_plan(
                     != normalize_selector_compare_value(CURRENT_MEDIAPM_VERSION)
             {
                 warnings.push(format!(
-                    "tool '{}' requested internal launcher version '{}', but mediapm builtins always resolve to running mediapm version '{}'",
+                    "tool '{}' requested internal launcher version '{}', but mediapm builtin executables always resolve to running mediapm version '{}'",
                     entry.name,
                     version,
                     CURRENT_MEDIAPM_VERSION
@@ -241,7 +241,7 @@ pub(super) async fn resolve_download_plan(
                     != normalize_selector_compare_value(CURRENT_MEDIAPM_VERSION)
             {
                 warnings.push(format!(
-                    "tool '{}' requested internal launcher tag '{}', but mediapm builtins always resolve to running mediapm version '{}'",
+                    "tool '{}' requested internal launcher tag '{}', but mediapm builtin executables always resolve to running mediapm version '{}'",
                     entry.name,
                     tag,
                     CURRENT_MEDIAPM_VERSION

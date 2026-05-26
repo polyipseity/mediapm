@@ -45,7 +45,7 @@ pub struct ToolSyncReport {
     pub warnings: Vec<String>,
 }
 
-/// One conductor tool row for `mediapm tools list` output.
+/// One conductor tool row for `mediapm tool list` output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConductorToolRow {
     /// Immutable tool id.

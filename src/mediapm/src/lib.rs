@@ -96,7 +96,7 @@ pub struct SyncSummary {
     pub warnings: Vec<String>,
 }
 
-/// Summary of one `mediapm tools sync` execution.
+/// Summary of one `mediapm tool sync` execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolsSyncSummary {
     /// Number of tool ids newly registered in conductor machine config.
@@ -994,7 +994,7 @@ where
     /// Reconciles only tool requirements and state/runtime metadata.
     ///
     /// This operation intentionally avoids running conductor workflows or
-    /// hierarchy materialization, and is used by `mediapm tools sync`.
+    /// hierarchy materialization, and is used by `mediapm tool sync`.
     ///
     /// # Errors
     ///
@@ -1670,7 +1670,7 @@ fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
     match uri.scheme() {
         "http" | "https" | "local" => Ok(()),
         _ => Err(MediaPmError::InvalidSource(
-            "phase-3 supports only http(s) and local:<id> schemes".to_string(),
+            "mediapm supports only http(s) and local:<id> schemes".to_string(),
         )),
     }
 }
