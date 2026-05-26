@@ -468,9 +468,21 @@ mod tests {
 
     #[test]
     fn locator_parser_expands_environment_variables() {
-        let (name, value) = std::env::vars()
-            .find(|(_, value)| !value.is_empty())
-            .expect("at least one non-empty environment variable");
+        let (name, value) = ["HOME", "TMPDIR"]
+            .into_iter()
+            .find_map(|name| {
+                let value = std::env::var(name).ok()?;
+                if value.trim().is_empty() {
+                    return None;
+                }
+
+                let path = std::path::Path::new(value.as_str());
+                if path.is_dir() { Some((name.to_string(), value)) } else { None }
+            })
+            .unwrap_or_else(|| {
+                let cwd = std::env::current_dir().expect("current_dir");
+                ("PWD".to_string(), cwd.to_string_lossy().into_owned())
+            });
 
         let locator = format!("cas://${{{name}}}/mediapm-cas-repo");
         let cfg = CasBackendConfig::from_locator(&locator).expect("env-expanded cas locator");
