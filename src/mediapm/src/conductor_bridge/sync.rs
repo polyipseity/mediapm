@@ -196,21 +196,6 @@ pub(crate) async fn reconcile_desired_tools(
             }
         };
 
-        std::fs::create_dir_all(
-            paths
-                .tools_dir
-                .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
-                .join("windows/ffmpeg/bin"),
-        )
-        .expect("mkdirs");
-        std::fs::write(
-            paths
-                .tools_dir
-                .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
-                .join("windows/ffmpeg/bin/ffprobe.exe"),
-            b"ffprobe",
-        )
-        .expect("write fake ffprobe binary");
         ensure_internal_launcher_content_entries_exist(&provisioned, &effective_content_entries)?;
 
         let content_map =

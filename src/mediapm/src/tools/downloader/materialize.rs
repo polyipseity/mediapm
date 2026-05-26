@@ -40,18 +40,38 @@ pub(super) async fn materialize_download_plan(
     }
 
     let cache_identity = download_cache_identity(plan);
+    let progress_actions = download_progress_actions(entry, plan);
+    let planned_total_bytes = if download_progress.is_some() {
+        planned_total_download_bytes(&progress_actions).await
+    } else {
+        None
+    };
+    let mut progress = ProgressAccumulator {
+        callback: download_progress.as_ref(),
+        planned_total_bytes,
+        cumulative_downloaded_bytes: 0,
+    };
+
+    if let Some(callback) = progress.callback {
+        callback(DownloadProgressSnapshot {
+            downloaded_bytes: 0,
+            total_bytes: progress.planned_total_bytes,
+        });
+    }
 
     if plan.shared_package {
         let first_action = plan.per_os_actions.values().next().ok_or_else(|| {
             MediaPmError::Workflow("resolved downloader plan has no actions".to_string())
         })?;
-        materialize_one_os_payload(
+
+        let main_cache_key = cache_identity.as_str();
+        materialize_action_with_progress(
             entry,
             first_action,
             install_root,
-            download_progress,
             download_cache.clone(),
-            &cache_identity,
+            main_cache_key,
+            &mut progress,
         )
         .await?;
 
@@ -61,72 +81,26 @@ pub(super) async fn materialize_download_plan(
             install_root,
             download_cache,
             &cache_identity,
+            &mut progress,
         )
         .await?;
 
         return Ok(());
     }
 
-    let mut cumulative_downloaded_bytes = 0_u64;
-    let planned_total_bytes = planned_total_download_bytes(plan).await;
-
-    if let Some(callback) = download_progress.as_ref() {
-        callback(DownloadProgressSnapshot {
-            downloaded_bytes: 0,
-            total_bytes: planned_total_bytes,
-        });
-    }
-
     for action in plan.per_os_actions.values() {
         let os_root = install_root.join(action.os.as_str());
+        let main_cache_key = cache_identity.as_str();
 
-        let action_snapshot = Arc::new(Mutex::new(DownloadProgressSnapshot {
-            downloaded_bytes: 0,
-            total_bytes: Some(0),
-        }));
-        let progress_callback = download_progress.as_ref().map(|callback| {
-            let callback = Arc::clone(callback);
-            let action_snapshot = Arc::clone(&action_snapshot);
-            let base_downloaded = cumulative_downloaded_bytes;
-
-            Arc::new(move |snapshot: DownloadProgressSnapshot| {
-                if let Ok(mut current) = action_snapshot.lock() {
-                    *current = snapshot;
-                }
-
-                callback(aggregate_progress_snapshot(
-                    base_downloaded,
-                    snapshot,
-                    planned_total_bytes,
-                ));
-            }) as DownloadProgressCallback
-        });
-
-        materialize_one_os_payload(
+        materialize_action_with_progress(
             entry,
             action,
             &os_root,
-            progress_callback,
             download_cache.clone(),
-            &cache_identity,
+            main_cache_key,
+            &mut progress,
         )
         .await?;
-
-        let completed_snapshot = action_snapshot.lock().map_or(
-            DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: None },
-            |snapshot| *snapshot,
-        );
-        cumulative_downloaded_bytes =
-            cumulative_downloaded_bytes.saturating_add(completed_snapshot.downloaded_bytes);
-        if let Some(callback) = download_progress.as_ref() {
-            let mut downloaded_bytes = cumulative_downloaded_bytes;
-            let total_bytes = planned_total_bytes;
-            if let Some(total_bytes) = total_bytes {
-                downloaded_bytes = downloaded_bytes.min(total_bytes);
-            }
-
-            callback(DownloadProgressSnapshot { downloaded_bytes, total_bytes });
-        }
     }
 
     materialize_additional_download_sources(
@@ -135,10 +109,122 @@ pub(super) async fn materialize_download_plan(
         install_root,
         download_cache,
         &cache_identity,
+        &mut progress,
     )
     .await?;
 
     Ok(())
+}
+
+/// Mutable aggregate progress state tracked across download actions.
+struct ProgressAccumulator<'a> {
+    /// Optional UI callback receiving cumulative transfer snapshots.
+    callback: Option<&'a DownloadProgressCallback>,
+    /// Precomputed total bytes for all actions when probe metadata is available.
+    planned_total_bytes: Option<u64>,
+    /// Total downloaded bytes across completed actions.
+    cumulative_downloaded_bytes: u64,
+}
+
+/// Materializes one payload action while forwarding aggregate progress snapshots.
+async fn materialize_action_with_progress(
+    entry: &ToolCatalogEntry,
+    action: &OsDownloadAction,
+    destination: &Path,
+    download_cache: Option<Arc<ToolDownloadCache>>,
+    cache_key: &str,
+    progress: &mut ProgressAccumulator<'_>,
+) -> Result<(), MediaPmError> {
+    let action_snapshot = Arc::new(Mutex::new(DownloadProgressSnapshot {
+        downloaded_bytes: 0,
+        total_bytes: Some(0),
+    }));
+
+    let progress_callback = progress.callback.map(|callback| {
+        let callback = Arc::clone(callback);
+        let action_snapshot = Arc::clone(&action_snapshot);
+        let base_downloaded_bytes = progress.cumulative_downloaded_bytes;
+        let planned_total_bytes = progress.planned_total_bytes;
+
+        Arc::new(move |snapshot: DownloadProgressSnapshot| {
+            if let Ok(mut current) = action_snapshot.lock() {
+                *current = snapshot;
+            }
+
+            callback(aggregate_progress_snapshot(
+                base_downloaded_bytes,
+                snapshot,
+                planned_total_bytes,
+            ));
+        }) as DownloadProgressCallback
+    });
+
+    materialize_one_os_payload(
+        entry,
+        action,
+        destination,
+        progress_callback,
+        download_cache,
+        cache_key,
+    )
+    .await?;
+
+    let completed_snapshot = action_snapshot
+        .lock()
+        .map_or(DownloadProgressSnapshot { downloaded_bytes: 0, total_bytes: None }, |snapshot| {
+            *snapshot
+        });
+    progress.cumulative_downloaded_bytes =
+        progress.cumulative_downloaded_bytes.saturating_add(completed_snapshot.downloaded_bytes);
+
+    if let Some(callback) = progress.callback {
+        let mut downloaded_bytes = progress.cumulative_downloaded_bytes;
+        if let Some(total_bytes) = progress.planned_total_bytes {
+            downloaded_bytes = downloaded_bytes.min(total_bytes);
+        }
+
+        callback(DownloadProgressSnapshot {
+            downloaded_bytes,
+            total_bytes: progress.planned_total_bytes,
+        });
+    }
+
+    Ok(())
+}
+
+/// Collects download actions that should be represented in transfer progress.
+#[must_use]
+fn download_progress_actions(
+    entry: &ToolCatalogEntry,
+    plan: &ResolvedDownloadPlan,
+) -> Vec<OsDownloadAction> {
+    let mut actions = Vec::new();
+
+    if plan.shared_package {
+        if let Some(first_action) = plan.per_os_actions.values().next() {
+            actions.push(first_action.clone());
+        }
+    } else {
+        actions.extend(plan.per_os_actions.values().cloned());
+    }
+
+    for source in entry.additional_download_sources.iter().copied() {
+        for action in plan.per_os_actions.values() {
+            let source_urls: Vec<String> =
+                source.urls.for_os(action.os).iter().map(|value| (*value).to_string()).collect();
+            if source_urls.is_empty() {
+                continue;
+            }
+
+            actions.push(OsDownloadAction {
+                os: action.os,
+                mode: source.mode.for_os(action.os),
+                urls: source_urls,
+            });
+        }
+    }
+
+    actions
 }
 
 /// Materializes additional source downloads alongside main OS-specific payloads.
@@ -152,67 +238,46 @@ async fn materialize_additional_download_sources(
     install_root: &Path,
     download_cache: Option<Arc<ToolDownloadCache>>,
     cache_identity: &str,
+    progress: &mut ProgressAccumulator<'_>,
 ) -> Result<(), MediaPmError> {
     for (source_index, source) in entry.additional_download_sources.iter().copied().enumerate() {
-        materialize_one_additional_download_source(
-            entry,
-            source,
-            source_index,
-            plan,
-            install_root,
-            download_cache.clone(),
-            cache_identity,
-        )
-        .await?;
-    }
-    Ok(())
-}
+        for action in plan.per_os_actions.values() {
+            let source_urls: Vec<String> =
+                source.urls.for_os(action.os).iter().map(|value| (*value).to_string()).collect();
+            if source_urls.is_empty() {
+                continue;
+            }
 
-/// Materializes one additional source across all planned OS targets.
-async fn materialize_one_additional_download_source(
-    entry: &ToolCatalogEntry,
-    source: ToolAdditionalDownloadSource,
-    source_index: usize,
-    plan: &ResolvedDownloadPlan,
-    install_root: &Path,
-    download_cache: Option<Arc<ToolDownloadCache>>,
-    cache_identity: &str,
-) -> Result<(), MediaPmError> {
-    for action in plan.per_os_actions.values() {
-        let source_urls: Vec<String> =
-            source.urls.for_os(action.os).iter().map(|value| (*value).to_string()).collect();
-        if source_urls.is_empty() {
-            continue;
+            let destination = if plan.shared_package {
+                install_root.to_path_buf()
+            } else {
+                install_root.join(action.os.as_str())
+            };
+
+            let source_action = OsDownloadAction {
+                os: action.os,
+                mode: source.mode.for_os(action.os),
+                urls: source_urls,
+            };
+            let cache_key = format!(
+                "identity={cache_identity}|tool={}|os={}|additional-source={source_index}|urls={}",
+                entry.name,
+                action.os.as_str(),
+                source_action.urls.join("\n")
+            );
+
+            materialize_action_with_progress(
+                entry,
+                &source_action,
+                &destination,
+                download_cache.clone(),
+                &cache_key,
+                progress,
+            )
+            .await?;
         }
-
-        let destination = if plan.shared_package {
-            install_root.to_path_buf()
-        } else {
-            install_root.join(action.os.as_str())
-        };
-
-        let source_action = OsDownloadAction {
-            os: action.os,
-            mode: source.mode.for_os(action.os),
-            urls: source_urls,
-        };
-        let cache_key = format!(
-            "identity={cache_identity}|tool={}|os={}|additional-source={source_index}|urls={}",
-            entry.name,
-            action.os.as_str(),
-            source_action.urls.join("\n")
-        );
-
-        materialize_one_os_payload(
-            entry,
-            &source_action,
-            &destination,
-            None,
-            download_cache.clone(),
-            &cache_key,
-        )
-        .await?;
     }
+
     Ok(())
 }
 
@@ -348,14 +413,14 @@ fn media_tagger_launcher_env_var(os: ToolOs) -> &'static str {
     }
 }
 
-/// Resolves planned total download bytes across all per-OS actions.
+/// Resolves planned total download bytes across all transfer actions.
 ///
 /// Returns `None` when any action cannot provide `Content-Length` during
 /// best-effort probing.
-async fn planned_total_download_bytes(plan: &ResolvedDownloadPlan) -> Option<u64> {
+async fn planned_total_download_bytes(actions: &[OsDownloadAction]) -> Option<u64> {
     let mut total = Some(0_u64);
 
-    for action in plan.per_os_actions.values() {
+    for action in actions {
         let action_total = probe_content_length_from_candidates(&action.urls).await;
         total = match (total, action_total) {
             (Some(base), Some(current)) => Some(base.saturating_add(current)),
@@ -869,10 +934,14 @@ mod tests {
     use xz2::write::XzEncoder;
 
     use super::{
-        aggregate_progress_snapshot, collect_materialized_content_entries, extract_tar_xz_payload,
-        materialize_internal_launcher, media_tagger_launcher_env_var,
+        aggregate_progress_snapshot, collect_materialized_content_entries,
+        download_progress_actions, extract_tar_xz_payload, materialize_internal_launcher,
+        media_tagger_launcher_env_var,
     };
-    use crate::tools::catalog::{DownloadPayloadMode, ToolOs, tool_catalog_entry};
+    use crate::tools::catalog::{
+        DownloadPayloadMode, PlatformValue, ToolAdditionalDownloadSource, ToolOs,
+        tool_catalog_entry,
+    };
     use crate::tools::downloader::DownloadProgressSnapshot;
     use crate::tools::downloader::models::{
         OsDownloadAction, ResolvedDownloadPlan, ResolvedToolIdentity,
@@ -931,6 +1000,102 @@ mod tests {
 
         assert_eq!(snapshot.total_bytes, None);
         assert_eq!(snapshot.downloaded_bytes, 80);
+    }
+
+    /// Protects transfer-progress accounting for ffmpeg by ensuring additional
+    /// download sources (like macOS ffprobe) are included in action planning.
+    #[test]
+    fn download_progress_actions_include_additional_sources() {
+        let mut per_os_actions = BTreeMap::new();
+        per_os_actions.insert(
+            ToolOs::Windows,
+            OsDownloadAction {
+                os: ToolOs::Windows,
+                urls: vec!["https://example.invalid/windows-main".to_string()],
+                mode: DownloadPayloadMode::ZipArchive,
+            },
+        );
+        per_os_actions.insert(
+            ToolOs::Linux,
+            OsDownloadAction {
+                os: ToolOs::Linux,
+                urls: vec!["https://example.invalid/linux-main".to_string()],
+                mode: DownloadPayloadMode::TarXzArchive,
+            },
+        );
+        per_os_actions.insert(
+            ToolOs::Macos,
+            OsDownloadAction {
+                os: ToolOs::Macos,
+                urls: vec!["https://example.invalid/macos-main".to_string()],
+                mode: DownloadPayloadMode::ZipArchive,
+            },
+        );
+
+        let plan = ResolvedDownloadPlan {
+            per_os_actions,
+            shared_package: false,
+            internal_launcher: false,
+            identity: ResolvedToolIdentity::default(),
+            source_label: "fixture".to_string(),
+            source_identifier: "fixture".to_string(),
+            warnings: Vec::new(),
+        };
+
+        let entry = crate::tools::catalog::ToolCatalogEntry {
+            name: "fixture",
+            description: "fixture",
+            registry_track: "latest",
+            source_label: PlatformValue { windows: "fixture", linux: "fixture", macos: "fixture" },
+            source_identifier: PlatformValue {
+                windows: "fixture",
+                linux: "fixture",
+                macos: "fixture",
+            },
+            executable_name: PlatformValue {
+                windows: "fixture.exe",
+                linux: "fixture",
+                macos: "fixture",
+            },
+            download: crate::tools::catalog::ToolDownloadDescriptor::StaticUrls {
+                modes: PlatformValue {
+                    windows: DownloadPayloadMode::ZipArchive,
+                    linux: DownloadPayloadMode::TarXzArchive,
+                    macos: DownloadPayloadMode::ZipArchive,
+                },
+                urls: PlatformValue {
+                    windows: &["https://example.invalid/windows-main"],
+                    linux: &["https://example.invalid/linux-main"],
+                    macos: &["https://example.invalid/macos-main"],
+                },
+                release_repo: None,
+            },
+            additional_download_sources: &[ToolAdditionalDownloadSource {
+                urls: PlatformValue {
+                    windows: &[],
+                    linux: &[],
+                    macos: &["https://example.invalid/macos-extra"],
+                },
+                mode: PlatformValue {
+                    windows: DownloadPayloadMode::ZipArchive,
+                    linux: DownloadPayloadMode::ZipArchive,
+                    macos: DownloadPayloadMode::ZipArchive,
+                },
+                expected_executable_name: PlatformValue {
+                    windows: "",
+                    linux: "",
+                    macos: "ffprobe",
+                },
+            }],
+        };
+
+        let actions = download_progress_actions(&entry, &plan);
+        assert_eq!(actions.len(), 4, "main actions plus one additional-source action");
+        assert!(actions.iter().any(|action| {
+            action.os == ToolOs::Macos
+                && action.urls == vec!["https://example.invalid/macos-extra".to_string()]
+                && action.mode == DownloadPayloadMode::ZipArchive
+        }));
     }
 
     /// Protects Windows launcher reliability by ensuring generated scripts
