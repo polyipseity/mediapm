@@ -1378,13 +1378,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
         // Explicit host default inherited env-var map.
         // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: Some({
-            let mut inherited_env_vars = default_runtime_inherited_env_vars_for_host();
-            inherited_env_vars.entry("linux".to_string()).or_default().push("PATH".to_string());
-            inherited_env_vars.entry("macos".to_string()).or_default().push("PATH".to_string());
-            inherited_env_vars.entry("windows".to_string()).or_default().push("PATH".to_string());
-            inherited_env_vars
-        }),
+        inherited_env_vars: Some(default_runtime_inherited_env_vars_for_host()),
         // Machine-managed mediapm state path relative to workspace root.
         // Default: `.mediapm/state.ncl`.
         media_state_config: Some(".mediapm/state.ncl".to_string()),
