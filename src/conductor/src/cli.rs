@@ -1,6 +1,6 @@
 //! Command-line interface for `mediapm-conductor`.
 //!
-//! This module exposes a Phase-2 oriented CLI surface:
+//! This module exposes a conductor-oriented CLI surface:
 //! - workflow execution/state inspection,
 //! - program-edited Nickel maintenance through `conductor.machine.ncl`,
 //! - direct passthrough command invocation for `cas`.
@@ -128,7 +128,7 @@ pub enum CliCommand {
     Remove(RemoveArgs),
     /// Runs root-based garbage collection in CAS.
     Gc,
-    /// Passthrough to Phase-1 CAS CLI.
+    /// Passthrough to CAS CLI.
     Cas(PassthroughArgs),
     /// Generates shell completion scripts for the `mediapm-conductor` CLI.
     Completions {
@@ -290,8 +290,10 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli =
-        Cli::try_parse_from(argv).map_err(|error| ConductorError::Workflow(error.to_string()))?;
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(cli) => cli,
+        Err(error) => return handle_clap_parse_error(&error),
+    };
     run(cli).await
 }
 
@@ -307,6 +309,22 @@ pub async fn run_from_passthrough_args(args: &[String]) -> Result<(), ConductorE
     let passthrough_argv =
         std::iter::once("mediapm-conductor".to_string()).chain(args.iter().cloned());
     run_from_argv(passthrough_argv).await
+}
+
+/// Prints clap parse diagnostics with formatting preserved and maps outcomes.
+fn handle_clap_parse_error(error: &clap::Error) -> Result<(), ConductorError> {
+    use clap::error::ErrorKind;
+
+    let is_help_or_version =
+        matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
+    let rendered = error.to_string();
+    error.print().map_err(|source| ConductorError::Io {
+        operation: "writing conductor CLI parse diagnostics".to_string(),
+        path: PathBuf::from("<stderr>"),
+        source,
+    })?;
+
+    if is_help_or_version { Ok(()) } else { Err(ConductorError::Workflow(rendered)) }
 }
 
 /// Executes one parsed CLI command.
@@ -1078,7 +1096,7 @@ async fn run_gc(
     Ok(())
 }
 
-/// Executes passthrough to the Phase-1 CAS CLI in-process.
+/// Executes passthrough to the CAS CLI in-process.
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
 /// so conductor does not require a sibling `mediapm-cas` executable.

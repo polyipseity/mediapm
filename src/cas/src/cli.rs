@@ -21,7 +21,7 @@ use crate::{
 
 /// Top-level `mediapm-cas` CLI arguments.
 #[derive(Debug, Parser)]
-#[command(author, version, about = "mediapm phase-1 CAS CLI")]
+#[command(author, version, about = "mediapm CAS CLI")]
 struct Cli {
     /// Top-level CAS command selector.
     #[command(subcommand)]
@@ -171,7 +171,10 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = Cli::try_parse_from(argv)?;
+    let cli = match Cli::try_parse_from(argv) {
+        Ok(cli) => cli,
+        Err(error) => return handle_clap_parse_error(&error),
+    };
     run_command(cli.command).await
 }
 
@@ -186,6 +189,18 @@ where
 pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
     let passthrough_argv = std::iter::once("mediapm-cas".to_string()).chain(args.iter().cloned());
     run_from_argv(passthrough_argv).await
+}
+
+/// Prints clap parse diagnostics with formatting preserved and maps outcomes.
+fn handle_clap_parse_error(error: &clap::Error) -> anyhow::Result<()> {
+    use clap::error::ErrorKind;
+
+    let is_help_or_version =
+        matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
+    let rendered = error.to_string();
+    error.print()?;
+
+    if is_help_or_version { Ok(()) } else { Err(anyhow::anyhow!(rendered)) }
 }
 
 /// Executes one CAS command variant.
