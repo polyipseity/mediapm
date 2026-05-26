@@ -34,7 +34,10 @@ const FFMPEG_MACOS_URLS: &[&str] = &["https://evermeet.cx/ffmpeg/getrelease/zip"
 /// `evermeet.cx` provides `ffprobe` as a separate ZIP download alongside its
 /// `ffmpeg` release. The macOS `ffmpeg` archive contains only the `ffmpeg`
 /// binary, so `ffprobe` must be fetched from an additional source.
-const FFPROBE_MACOS_URLS: &[&str] = &["https://evermeet.cx/ffprobe/getrelease/zip"];
+const FFPROBE_MACOS_URLS: &[&str] = &[
+    "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip",
+    "https://evermeet.cx/ffmpeg/get/ffprobe/zip",
+];
 
 /// Additional ffprobe source merged into the managed ffmpeg install root.
 const FFMPEG_ADDITIONAL_SOURCES: &[ToolAdditionalDownloadSource] =
@@ -113,5 +116,22 @@ mod tests {
     #[test]
     fn linux_source_identifier_uses_btbn() {
         assert_eq!(ENTRY.source_identifier.linux, "github-releases-btbn-ffmpeg-builds");
+    }
+
+    /// Protects macOS ffprobe companion provisioning by requiring dedicated
+    /// ffprobe API endpoints (not ffmpeg aliases) in additional-source URLs.
+    #[test]
+    fn macos_additional_ffprobe_urls_target_ffprobe_api() {
+        let additional = ENTRY.additional_download_sources;
+        assert!(
+            !additional.is_empty(),
+            "ffmpeg catalog should include macOS ffprobe companion source"
+        );
+
+        let macos_urls = additional[0].urls.macos;
+        assert!(
+            macos_urls.iter().all(|url| url.contains("/ffmpeg/get") && url.contains("ffprobe")),
+            "macOS ffprobe companion URLs must target ffprobe-specific evermeet API endpoints"
+        );
     }
 }
