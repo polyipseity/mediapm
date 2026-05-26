@@ -275,6 +275,14 @@ async fn materialize_additional_download_sources(
                 progress,
             )
             .await?;
+
+            let expected_executable_name = source.expected_executable_name.for_os(action.os);
+            if !expected_executable_name.is_empty()
+                && let Some(executable_path) =
+                    find_file_named(&destination, expected_executable_name)
+            {
+                ensure_executable_permissions(&executable_path)?;
+            }
         }
     }
 
@@ -541,6 +549,7 @@ pub(super) fn resolve_executable_paths(
                     os.as_str()
                 ))
             })?;
+            ensure_executable_permissions(&discovered)?;
 
             let relative = discovered.strip_prefix(install_root).map_err(|_| {
                 MediaPmError::Workflow(format!(
@@ -566,6 +575,7 @@ pub(super) fn resolve_executable_paths(
                 executable_name
             ))
         })?;
+        ensure_executable_permissions(&discovered)?;
 
         let relative = discovered.strip_prefix(install_root).map_err(|_| {
             MediaPmError::Workflow(format!(
