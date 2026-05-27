@@ -703,7 +703,7 @@ fn configure_document_for_local_tool_chain(
             tool: MediaStepTool::Ffmpeg,
             input_variants: vec!["video_untagged".to_string()],
             output_variants: BTreeMap::from([(
-                "audio_m4a".to_string(),
+                "audio".to_string(),
                 json!({ "kind": "primary", "idx": 0, "extension": "m4a" }),
             )]),
             options: BTreeMap::from([(
@@ -713,13 +713,14 @@ fn configure_document_for_local_tool_chain(
         },
         MediaStep {
             tool: MediaStepTool::MediaTagger,
-            input_variants: vec!["audio_m4a".to_string()],
+            input_variants: vec!["audio".to_string()],
             output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
             options: BTreeMap::from([
                 (
                     "recording_mbid".to_string(),
                     TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
                 ),
+                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
                 ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
             ]),
         },
@@ -912,9 +913,9 @@ fn configure_document_for_local_tool_chain(
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
-        // Conductor execution tmp path relative to workspace root.
+        // Conductor execution tmp path relative to `runtime.mediapm_dir`.
         // Default: `runtime.mediapm_tmp_dir`.
-        conductor_tmp_dir: Some(".mediapm/tmp".to_string()),
+        conductor_tmp_dir: Some("tmp".to_string()),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),

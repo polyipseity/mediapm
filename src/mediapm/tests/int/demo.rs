@@ -13,6 +13,7 @@ fn demo_relies_on_media_tagger_default_strict_identification() {
     assert!(
         !source.contains("\"strict_identification\".to_string()")
             && source.contains("\"recording_mbid\".to_string()")
+            && source.contains("\"release_mbid\".to_string()")
             && source.contains("tool: MediaStepTool::MediaTagger"),
         "demo should omit explicit strict_identification step options and rely on managed input defaults"
     );
@@ -35,7 +36,7 @@ fn demo_writes_explicit_runtime_defaults() {
             && source.contains(
                 "conductor_state_config: Some(\".mediapm/state.conductor.ncl\".to_string())"
             )
-            && source.contains("conductor_tmp_dir: Some(\".mediapm/tmp\".to_string())")
+            && source.contains("conductor_tmp_dir: Some(\"tmp\".to_string())")
             && source
                 .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
             && source.contains(

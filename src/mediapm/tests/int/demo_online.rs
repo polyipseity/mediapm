@@ -21,7 +21,7 @@ fn demo_online_writes_explicit_runtime_defaults() {
             && source.contains(
                 "conductor_state_config: Some(\".mediapm/state.conductor.ncl\".to_string())"
             )
-            && source.contains("conductor_tmp_dir: Some(\".mediapm/tmp\".to_string())")
+            && source.contains("conductor_tmp_dir: Some(\"tmp\".to_string())")
             && source
                 .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
             && source.contains(
@@ -106,7 +106,8 @@ fn demo_online_uses_in_memory_service_wiring() {
 
     assert!(
         !source.contains("\"strict_identification\".to_string()")
-            && source.contains("\"recording_mbid\".to_string()"),
+            && source.contains("\"recording_mbid\".to_string()")
+            && source.contains("\"release_mbid\".to_string()"),
         "demo_online should rely on managed media-tagger input defaults for strict identification and only set explicit non-default options"
     );
 

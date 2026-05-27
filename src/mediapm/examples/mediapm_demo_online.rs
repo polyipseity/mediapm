@@ -207,7 +207,7 @@ const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
 
 /// Default timeout for the online demo sync phase.
-const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 = 5 * 60;
+const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 = 10 * 60;
 
 /// Environment variable override for per-step conductor executable timeout.
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV: &str =
@@ -271,7 +271,7 @@ struct DemoOnlineTimeoutError {
 #[must_use]
 fn format_graceful_timeout_notice(timeout_seconds: u64) -> String {
     format!(
-        "Online demo timed out after {timeout_seconds} seconds. This is usually temporary provider/network throttling—wait briefly, then rerun."
+        "Online demo timed out after {timeout_seconds} seconds. This usually indicates a code, workflow, or environment issue; check logs/artifacts before retrying."
     )
 }
 
@@ -1067,7 +1067,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 (
                     "format".to_string(),
                     TransformInputValue::String(
-                        "bestvideo[height<=144]+bestaudio/best[height<=144]/best".to_string(),
+                        "best[height<=144][ext=mp4]/best[height<=144]/best".to_string(),
                     ),
                 ),
                 (
@@ -1094,6 +1094,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "recording_mbid".to_string(),
                     TransformInputValue::String("8f3471b5-7e6a-48da-86a9-c1c07a0f47ae".to_string()),
                 ),
+                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
                 ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
             ]),
         },
@@ -1370,9 +1371,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
-        // Conductor execution tmp path relative to workspace root.
+        // Conductor execution tmp path relative to `runtime.mediapm_dir`.
         // Default: `runtime.mediapm_tmp_dir`.
-        conductor_tmp_dir: Some(".mediapm/tmp".to_string()),
+        conductor_tmp_dir: Some("tmp".to_string()),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
@@ -2743,7 +2744,7 @@ mod tests {
         let message = super::DemoOnlineTimeoutError { timeout_seconds: 120 }.to_string();
         assert_eq!(
             message,
-            "Online demo timed out after 120 seconds. This is usually temporary provider/network throttling—wait briefly, then rerun."
+            "Online demo timed out after 120 seconds. This usually indicates a code, workflow, or environment issue; check logs/artifacts before retrying."
         );
     }
 
