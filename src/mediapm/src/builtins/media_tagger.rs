@@ -224,15 +224,18 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         return Ok(());
     };
 
-    let metadata_payload =
-        fetch_musicbrainz_payloads(&recording_mbid, detected_release_mbid.as_deref())
-            .await
-            .with_context(|| {
-                format!(
-                    "fetching MusicBrainz entities from '{}' for recording '{}'",
-                    options.musicbrainz_endpoint, recording_mbid
-                )
-            });
+    let metadata_payload = fetch_musicbrainz_payloads(
+        &recording_mbid,
+        detected_release_mbid.as_deref(),
+        &media_tagger_cache,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "fetching MusicBrainz entities from '{}' for recording '{}'",
+            options.musicbrainz_endpoint, recording_mbid
+        )
+    });
 
     let metadata_payload = match metadata_payload {
         Ok(payload) => payload,
@@ -628,7 +631,7 @@ async fn lookup_acoustid_match(
 }
 
 /// Recording + optional release payload fetched from MusicBrainz.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct MusicBrainzPayload {
     /// Recording entity resolved from MusicBrainz API.
     recording: Recording,
@@ -640,52 +643,80 @@ struct MusicBrainzPayload {
 async fn fetch_musicbrainz_payloads(
     recording_mbid: &str,
     release_mbid: Option<&str>,
+    cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
-    let recording = Recording::fetch()
-        .id(recording_mbid)
-        .with_artists()
-        .with_releases()
-        .with_isrcs()
-        .with_genres()
-        .with_tags()
-        .with_annotations()
-        .with_work_level_relations()
-        .execute_async()
-        .await
-        .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
+    let cached_payload = cache.read_musicbrainz_payload(recording_mbid, release_mbid).await;
+    if let Some(cached) = cached_payload.as_ref()
+        && cached.is_fresh
+    {
+        return Ok(cached.payload.clone());
+    }
 
-    let release_id = release_mbid.map(ToOwned::to_owned).or_else(|| {
-        recording
-            .releases
-            .as_ref()
-            .and_then(|releases| releases.first())
-            .map(|release| release.id.clone())
-    });
+    let stale_cached_payload = cached_payload.as_ref().map(|cached| cached.payload.clone());
 
-    let release = if let Some(release_id) = release_id {
-        Some(
-            Release::fetch()
-                .id(&release_id)
-                .with_artists()
-                .with_recordings()
-                .with_release_groups()
-                .with_media()
-                .with_labels()
-                .with_isrcs()
-                .with_genres()
-                .with_tags()
-                .with_annotations()
-                .with_recording_level_relations()
-                .with_release_group_level_relations()
-                .execute_async()
-                .await
-                .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,
-        )
-    } else {
-        None
-    };
+    let fetched_payload = async {
+        let recording = Recording::fetch()
+            .id(recording_mbid)
+            .with_artists()
+            .with_releases()
+            .with_isrcs()
+            .with_genres()
+            .with_tags()
+            .with_annotations()
+            .with_work_level_relations()
+            .execute_async()
+            .await
+            .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
 
-    Ok(MusicBrainzPayload { recording, release })
+        let release_id = release_mbid.map(ToOwned::to_owned).or_else(|| {
+            recording
+                .releases
+                .as_ref()
+                .and_then(|releases| releases.first())
+                .map(|release| release.id.clone())
+        });
+
+        let release = if let Some(release_id) = release_id {
+            Some(
+                Release::fetch()
+                    .id(&release_id)
+                    .with_artists()
+                    .with_recordings()
+                    .with_release_groups()
+                    .with_media()
+                    .with_labels()
+                    .with_isrcs()
+                    .with_genres()
+                    .with_tags()
+                    .with_annotations()
+                    .with_recording_level_relations()
+                    .with_release_group_level_relations()
+                    .execute_async()
+                    .await
+                    .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,
+            )
+        } else {
+            None
+        };
+
+        Ok::<_, anyhow::Error>(MusicBrainzPayload { recording, release })
+    }
+    .await;
+
+    match fetched_payload {
+        Ok(payload) => {
+            let _ = cache.write_musicbrainz_payload(recording_mbid, release_mbid, &payload).await;
+            Ok(payload)
+        }
+        Err(error) => stale_cached_payload.ok_or(error),
+    }
+}
+
+/// Builds deterministic cache key for one recording/release metadata lookup pair.
+#[must_use]
+fn musicbrainz_payload_cache_key(recording_mbid: &str, release_mbid: Option<&str>) -> String {
+    let release_mbid = release_mbid.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("");
+    format!("recording={recording_mbid}|release={release_mbid}")
 }
 
 /// Converts MusicBrainz payload into FFmetadata key/value map.
@@ -1009,6 +1040,35 @@ impl MediaTaggerHttpCache {
     /// Persists cached cover-art bytes for one artwork URL.
     async fn write_cover_art_bytes(&self, url: &str, payload: &[u8]) -> anyhow::Result<()> {
         self.write_bytes_payload("caa-images", url, payload).await
+    }
+
+    /// Reads cached MusicBrainz metadata payloads for one recording/release selection.
+    #[must_use]
+    async fn read_musicbrainz_payload(
+        &self,
+        recording_mbid: &str,
+        release_mbid: Option<&str>,
+    ) -> Option<CachedValue<MusicBrainzPayload>> {
+        self.read_json_payload(
+            "musicbrainz-payloads",
+            &musicbrainz_payload_cache_key(recording_mbid, release_mbid),
+        )
+        .await
+    }
+
+    /// Persists cached MusicBrainz metadata payloads for one recording/release selection.
+    async fn write_musicbrainz_payload(
+        &self,
+        recording_mbid: &str,
+        release_mbid: Option<&str>,
+        payload: &MusicBrainzPayload,
+    ) -> anyhow::Result<()> {
+        self.write_json_payload(
+            "musicbrainz-payloads",
+            &musicbrainz_payload_cache_key(recording_mbid, release_mbid),
+            payload,
+        )
+        .await
     }
 
     /// Builds deterministic logical index key for one namespace/key pair.
@@ -1797,9 +1857,10 @@ mod tests {
         DEFAULT_CACHE_EXPIRY_SECONDS, DEFAULT_MUSICBRAINZ_ENDPOINT, InternalMediaTaggerOptions,
         MediaTaggerHttpCache, SelectedCoverArt, cover_art_slot_flag_member_name,
         cover_art_slot_image_member_name, insert_extended_picard_tags,
-        insert_musicbrainz_image_tags, normalized_cover_art_types, parse_ffmetadata_global_map,
-        persist_cover_art_slot_artifacts, require_acoustid_api_key_for_lookup,
-        run_internal_media_tagger, select_highest_quality_cover_url,
+        insert_musicbrainz_image_tags, musicbrainz_payload_cache_key, normalized_cover_art_types,
+        parse_ffmetadata_global_map, persist_cover_art_slot_artifacts,
+        require_acoustid_api_key_for_lookup, run_internal_media_tagger,
+        select_highest_quality_cover_url,
     };
 
     /// Protects strict autodetection policy: when `recording_mbid` is absent,
@@ -2053,5 +2114,39 @@ mod tests {
         assert!(root.path().join("cache-store").join("store").exists());
         assert!(root.path().join("cache-store").join("media-tagger.jsonc").exists());
         assert!(!root.path().join("cache-store").join("store").join("media-tagger").exists());
+    }
+
+    /// Protects metadata-cache persistence so MusicBrainz payload rows share
+    /// the same CAS-backed expiry plumbing as cover-art cache rows.
+    #[tokio::test]
+    async fn media_tagger_http_cache_round_trips_musicbrainz_metadata_rows() {
+        let root = tempdir().expect("tempdir");
+        let cache = MediaTaggerHttpCache::new(
+            Some(root.path().join("cache-store")),
+            CacheExpiryPolicy::from_seconds(60),
+        );
+        let cache_key = musicbrainz_payload_cache_key("recording-demo", Some("release-demo"));
+        let payload = serde_json::json!({
+            "recording": {
+                "id": "recording-demo",
+                "title": "Demo Recording"
+            },
+            "release": {
+                "id": "release-demo",
+                "title": "Demo Release"
+            }
+        });
+
+        cache
+            .write_json_payload("musicbrainz-payloads", &cache_key, &payload)
+            .await
+            .expect("write cached metadata payload");
+
+        let loaded = cache
+            .read_json_payload::<serde_json::Value>("musicbrainz-payloads", &cache_key)
+            .await
+            .expect("read cached metadata payload");
+        assert!(loaded.is_fresh);
+        assert_eq!(loaded.payload, payload);
     }
 }
