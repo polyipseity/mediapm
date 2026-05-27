@@ -272,8 +272,11 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
         hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson");
     infojson.id = Some(format!("{media_id}.infojson"));
 
+    // Subtitles materialized directly to media root with path="" (empty)
+    // Only the sidecars/ folder should use nested directory organization.
+    // All other output variants materialize directly to prevent unnecessary intermediate nesting.
     let mut subtitles = hierarchy_media_folder_node(
-        "subtitles",
+        "",
         media_id,
         vec!["subtitles".to_string()],
         vec![HierarchyFolderRenameRule {
@@ -284,8 +287,10 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
     );
     subtitles.id = Some(format!("{media_id}.subtitles"));
 
+    // Thumbnails materialized directly to media root with path="" (empty)
+    // Only the sidecars/ folder should use nested directory organization.
     let mut thumbnails = hierarchy_media_folder_node(
-        "thumbnails",
+        "",
         media_id,
         vec!["thumbnails".to_string()],
         vec![HierarchyFolderRenameRule {
@@ -297,19 +302,10 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
     );
     thumbnails.id = Some(format!("{media_id}.thumbnails"));
 
-    let mut thumbnails_root = hierarchy_media_folder_node(
-        "",
-        media_id,
-        vec!["thumbnails".to_string()],
-        vec![HierarchyFolderRenameRule {
-            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
-            replacement: "folder.$1".to_string(),
-        }],
-    );
-    thumbnails_root.id = Some(format!("{media_id}.thumbnails.folder"));
-
+    // Links materialized directly to media root with path="" (empty)
+    // Only the sidecars/ folder should use nested directory organization.
     let mut links = hierarchy_media_folder_node(
-        "links",
+        "",
         media_id,
         vec!["links".to_string()],
         vec![HierarchyFolderRenameRule {
@@ -320,7 +316,7 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
     );
     links.id = Some(format!("{media_id}.links"));
 
-    vec![video, archive, description, infojson, subtitles, thumbnails, thumbnails_root, links]
+    vec![video, archive, description, infojson, subtitles, thumbnails, links]
 }
 
 /// Builds one hierarchy node tree for the selected preset.
