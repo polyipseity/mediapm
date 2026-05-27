@@ -594,6 +594,33 @@ fn build_tool_command_includes_sleep_subtitles_tokens() {
     );
 }
 
+/// Protects yt-dlp option forwarding by ensuring `js_runtimes` remains a
+/// standard key/value command option and maps to the expected CLI flag.
+#[test]
+fn build_tool_command_includes_js_runtimes_tokens() {
+    let yt_payload = ProvisionedToolPayload {
+        tool_id: "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
+        command_selector: "yt-dlp".to_string(),
+        content_entries: BTreeMap::new(),
+        identity: ResolvedToolIdentity::default(),
+        source_label: "GitHub Releases".to_string(),
+        source_identifier: "github-releases-yt-dlp-yt-dlp".to_string(),
+        catalog: tool_catalog_entry("yt-dlp").expect("catalog entry"),
+        warnings: Vec::new(),
+    };
+
+    let command = build_tool_command("yt-dlp", &yt_payload, default_ffmpeg_slot_limits());
+
+    assert!(
+        command.iter().any(|token| token == "${*inputs.js_runtimes ? --js-runtimes | ''}"),
+        "yt-dlp command should expose js_runtimes option key token"
+    );
+    assert!(
+        command.iter().any(|token| token == "${*inputs.js_runtimes}"),
+        "yt-dlp command should expose js_runtimes scalar value token"
+    );
+}
+
 /// Protects rsgain command synthesis so managed runs execute custom mode and
 /// pass options before file operands.
 #[test]

@@ -20,7 +20,7 @@ use crate::config::{
 use crate::error::MediaPmError;
 use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
-use crate::tools::catalog::{ToolDownloadDescriptor, tool_catalog_entry};
+use crate::tools::catalog::{ToolDownloadDescriptor, current_tool_os, tool_catalog_entry};
 use crate::tools::downloader::{
     ContentMapSource, DownloadProgressCallback, DownloadProgressSnapshot, ProvisionedToolPayload,
     ResolvedToolIdentity, ToolDownloadCache, default_global_tool_cache_root,
@@ -232,15 +232,21 @@ pub(crate) async fn reconcile_desired_tools(
             }
 
             if let Some(ffmpeg_path) = companion_ffmpeg_host_command_path
-                && matches!(
-                    desired_config.input_defaults.get("ffmpeg_location"),
-                    Some(InputBinding::String(value))
-                        if value.trim().is_empty() || value.eq_ignore_ascii_case("ffmpeg")
-                )
+                && should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults)
             {
                 desired_config
                     .input_defaults
                     .insert("ffmpeg_location".to_string(), InputBinding::String(ffmpeg_path));
+            }
+
+            if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults)
+                && let Some(js_runtimes_path) =
+                    resolve_yt_dlp_js_runtime_path(paths, &desired_tool_id)
+            {
+                desired_config.input_defaults.insert(
+                    "js_runtimes".to_string(),
+                    InputBinding::String(format!("deno:{js_runtimes_path}")),
+                );
             }
         }
         remove_redundant_inherited_env_vars_from_tool_config(
@@ -318,6 +324,24 @@ fn resolve_conductor_runtime_dir(paths: &MediaPmPaths, machine: &MachineNickelDo
         if candidate.is_absolute() { candidate } else { paths.root_dir.join(candidate) }
     } else {
         paths.runtime_root.clone()
+    }
+}
+
+/// Returns true when managed sync should inject a resolved yt-dlp
+/// `ffmpeg_location` input default.
+///
+/// Injection is allowed when the key is missing or currently points at the
+/// generic fallback (`ffmpeg` / empty). Explicit non-fallback values are
+/// preserved.
+#[must_use]
+fn should_set_yt_dlp_ffmpeg_location(input_defaults: &BTreeMap<String, InputBinding>) -> bool {
+    match input_defaults.get("ffmpeg_location") {
+        None => true,
+        Some(InputBinding::String(value)) => {
+            let trimmed = value.trim();
+            trimmed.is_empty() || trimmed.eq_ignore_ascii_case("ffmpeg")
+        }
+        Some(_) => false,
     }
 }
 
@@ -427,6 +451,28 @@ fn resolve_host_command_selector_path(command_selector: &str) -> Option<String> 
 
     let trimmed = command_selector.trim();
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
+/// Resolves the concrete bundled `deno` executable path for managed yt-dlp.
+#[must_use]
+fn resolve_yt_dlp_js_runtime_path(paths: &MediaPmPaths, tool_id: &str) -> Option<String> {
+    let runtime_file_name = if cfg!(windows) { "deno.exe" } else { "deno" };
+    let os_root = paths.tools_dir.join(tool_id).join(current_tool_os().as_str());
+    let tool_root = paths.tools_dir.join(tool_id);
+
+    find_file_named_in_tree(&os_root, runtime_file_name)
+        .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+/// Returns whether managed yt-dlp should receive a synthesized `js_runtimes` default.
+#[must_use]
+fn should_set_yt_dlp_js_runtimes(input_defaults: &BTreeMap<String, InputBinding>) -> bool {
+    match input_defaults.get("js_runtimes") {
+        None => true,
+        Some(InputBinding::String(value)) => value.trim().is_empty(),
+        Some(_) => false,
+    }
 }
 
 /// Resolved ffmpeg linkage used to stabilize managed media-tagger identity and
@@ -871,13 +917,20 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
     } else {
         paths.tools_dir.join(tool_id).join(ffmpeg_selector_path)
     };
-    let candidate_dir = ffmpeg_path.parent().map(Path::to_path_buf).or(Some(ffmpeg_path))?;
+    let candidate_dir =
+        ffmpeg_path.parent().map(Path::to_path_buf).or(Some(ffmpeg_path.clone()))?;
+    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
 
-    if managed_ffmpeg_directory_contains_companion_pair(&candidate_dir) {
+    if managed_ffmpeg_directory_contains_executable(&candidate_dir) {
         return Some(candidate_dir.to_string_lossy().to_string());
     }
 
-    None
+    let tool_root = paths.tools_dir.join(tool_id);
+    let discovered_ffmpeg = find_file_named_in_tree(&tool_root, ffmpeg_file_name)?;
+    let discovered_dir = discovered_ffmpeg.parent()?.to_path_buf();
+
+    managed_ffmpeg_directory_contains_executable(&discovered_dir)
+        .then(|| discovered_dir.to_string_lossy().to_string())
 }
 
 /// Resolves the host ffmpeg executable path from one machine-managed tool spec.
@@ -895,12 +948,40 @@ fn resolve_host_ffmpeg_executable_path_from_machine_tool(
     Some(PathBuf::from(directory).join(ffmpeg_file_name).to_string_lossy().to_string())
 }
 
-/// Returns true when one ffmpeg directory contains both `ffmpeg` and `ffprobe` executables.
+/// Returns true when one ffmpeg directory contains the host ffmpeg executable.
 #[must_use]
-fn managed_ffmpeg_directory_contains_companion_pair(directory: &Path) -> bool {
+fn managed_ffmpeg_directory_contains_executable(directory: &Path) -> bool {
     let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-    directory.join(ffmpeg_file_name).exists() && directory.join(ffprobe_file_name).exists()
+    directory.join(ffmpeg_file_name).is_file()
+}
+
+/// Finds the first regular file named `file_name` under `root` recursively.
+#[must_use]
+fn find_file_named_in_tree(root: &Path, file_name: &str) -> Option<PathBuf> {
+    if !root.exists() {
+        return None;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        let entries = fs::read_dir(&next).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            let path = entry.path();
+            let ty = entry.file_type().ok()?;
+
+            if ty.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if ty.is_file() && path.file_name().is_some_and(|name| name == file_name) {
+                return Some(path);
+            }
+        }
+    }
+
+    None
 }
 
 /// Returns true when requested selector equals ffmpeg hash/version/tag.
@@ -2085,6 +2166,25 @@ mod tests {
         let snapshot = DownloadProgressSnapshot { downloaded_bytes: 50, total_bytes: Some(200) };
 
         assert_eq!(tool_progress_position(snapshot), TOOL_PROGRESS_BAR_SCALE / 4);
+    }
+
+    /// Keeps companion ffmpeg auto-wiring active when yt-dlp defaults omit
+    /// `ffmpeg_location` entirely.
+    #[test]
+    fn should_set_yt_dlp_ffmpeg_location_when_missing() {
+        let input_defaults = BTreeMap::new();
+        assert!(should_set_yt_dlp_ffmpeg_location(&input_defaults));
+    }
+
+    /// Preserves explicit non-fallback ffmpeg paths instead of overwriting
+    /// user-provided yt-dlp defaults.
+    #[test]
+    fn should_not_set_yt_dlp_ffmpeg_location_for_explicit_value() {
+        let input_defaults = BTreeMap::from([(
+            "ffmpeg_location".to_string(),
+            InputBinding::String("/custom/ffmpeg/bin".to_string()),
+        )]);
+        assert!(!should_set_yt_dlp_ffmpeg_location(&input_defaults));
     }
 
     /// Protects message contract by preserving compact known-size transfer

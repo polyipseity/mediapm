@@ -3527,6 +3527,7 @@ fn is_allowed_step_option(tool: MediaStepTool, key: &str) -> bool {
                 | "cookies"
                 | "cookies_from_browser"
                 | "cache_dir"
+                | "js_runtimes"
                 | "ffmpeg_location"
                 | "paths"
                 | "output"

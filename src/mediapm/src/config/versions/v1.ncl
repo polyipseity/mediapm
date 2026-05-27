@@ -115,6 +115,7 @@ let MediaStepOptionsYtDlpV1 = {
   cookies | ToolOptionValueV1 | optional,
   cookies_from_browser | ToolOptionValueV1 | optional,
   cache_dir | ToolOptionValueV1 | optional,
+  js_runtimes | ToolOptionValueV1 | optional,
   ffmpeg_location | ToolOptionValueV1 | optional,
   paths | ToolOptionValueV1 | optional,
   output | ToolOptionValueV1 | optional,

@@ -364,45 +364,50 @@ fn remap_latest_download_url(
     url: &str,
 ) -> Option<String> {
     let filename = url.split("/releases/latest/download/").nth(1)?;
-    let markers = latest_download_asset_markers(filename)?;
+    let markers = latest_download_asset_markers(filename);
     let marker_refs = markers.iter().map(String::as_str).collect::<Vec<_>>();
     let require_zip = matches!(mode, DownloadPayloadMode::ZipArchive);
     github_release_asset_url_by_markers_from_release(release, &marker_refs, require_zip).ok()
 }
 
 /// Extracts marker tokens used to locate one concrete release asset.
-fn latest_download_asset_markers(filename: &str) -> Option<Vec<String>> {
+fn latest_download_asset_markers(filename: &str) -> Vec<String> {
     let filename = filename.to_ascii_lowercase();
     let suffix = filename.as_str();
 
     let (stem, archive_suffix) = if let Some(stem) = suffix.strip_suffix(".tar.xz") {
-        (stem, "tar.xz")
+        (stem, Some("tar.xz"))
     } else if let Some(stem) = suffix.strip_suffix(".tar.gz") {
-        (stem, "tar.gz")
+        (stem, Some("tar.gz"))
     } else if let Some(stem) = suffix.strip_suffix(".zip") {
-        (stem, "zip")
+        (stem, Some("zip"))
     } else {
-        return None;
+        (suffix, None)
     };
 
     let mut markers = Vec::new();
     markers.push(stem.to_string());
-    markers.push(archive_suffix.to_string());
+
+    if let Some(archive_suffix) = archive_suffix {
+        markers.push(archive_suffix.to_string());
+    }
 
     let stem_parts = stem
-        .split('-')
+        .split(['-', '_'])
         .filter(|part| !part.is_empty())
         .map(ToString::to_string)
         .collect::<Vec<_>>();
 
-    if let Some(last) = stem_parts.last() {
+    if let Some(archive_suffix) = archive_suffix
+        && let Some(last) = stem_parts.last()
+    {
         markers.push(format!("{last}.{archive_suffix}"));
     }
 
     markers.extend(stem_parts);
     markers.sort();
     markers.dedup();
-    Some(markers)
+    markers
 }
 
 /// Resolves one GitHub release payload from tool selectors.
@@ -745,8 +750,7 @@ mod tests {
     #[test]
     fn latest_download_marker_extraction_is_stable() {
         let markers =
-            latest_download_asset_markers("ffmpeg-master-latest-linux64-gpl-shared.tar.xz")
-                .expect("markers");
+            latest_download_asset_markers("ffmpeg-master-latest-linux64-gpl-shared.tar.xz");
 
         assert!(markers.contains(&"linux64".to_string()));
         assert!(markers.contains(&"gpl".to_string()));
@@ -779,6 +783,16 @@ mod tests {
                     mode: DownloadPayloadMode::ZipArchive,
                 },
             ),
+            (
+                ToolOs::Macos,
+                OsDownloadAction {
+                    os: ToolOs::Macos,
+                    urls: vec![
+                        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos".to_string(),
+                    ],
+                    mode: DownloadPayloadMode::DirectBinary,
+                },
+            ),
         ]);
 
         let release = json!({
@@ -790,6 +804,10 @@ mod tests {
                 {
                     "name": "ffmpeg-N-1-win64-gpl-shared.zip",
                     "browser_download_url": "https://example.test/win.zip"
+                },
+                {
+                    "name": "yt-dlp_macos",
+                    "browser_download_url": "https://example.test/yt-dlp_macos"
                 }
             ]
         });
@@ -806,6 +824,10 @@ mod tests {
                 .and_then(|action| action.urls.first())
                 .map(String::as_str),
             Some("https://example.test/win.zip")
+        );
+        assert_eq!(
+            actions.get(&ToolOs::Macos).and_then(|action| action.urls.first()).map(String::as_str),
+            Some("https://example.test/yt-dlp_macos")
         );
     }
 }
