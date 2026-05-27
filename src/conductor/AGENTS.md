@@ -142,6 +142,15 @@ Common executable tool presets must use one module file per preset under
 kept in `tools/mod.rs`; avoid re-centralizing preset implementation logic in
 `api.rs`.
 
+Tool preset download invariant:
+
+- executable tool presets are never host-platform-only downloads;
+- preset installation must always provision all supported platform payloads
+  (`windows`, `linux`, `macos`) into content-addressed storage/content maps;
+- runtime command selection must stay selector-driven via `${context.os == ...}`
+  conditionals so the correct executable is chosen at execution time without
+  changing the downloaded preset payload set.
+
 ## Tool Schema and Runtime Invariants
 
 When editing tool/config schema behavior, preserve these invariants:

@@ -397,6 +397,10 @@ For `media.<id>` semantics and runtime reconciliation:
   for platform-identical payloads, and generated command selectors should use
   `${context.os == "<target>" ? ... | ...}` so every selector branch maps to
   one materialized target.
+- Tool preset downloads are never platform-specific. Preset reconciliation must
+  always download/provision all supported platform payloads, then rely on
+  `${context.os}`-guarded command selectors to choose the correct executable at
+  runtime.
 - For GitHub release assets (especially ffmpeg), resolve concrete asset URLs
   from release metadata instead of assuming static
   `releases/latest/download/...` links.

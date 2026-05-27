@@ -361,6 +361,10 @@ is a narrow, documented reason.
     MusicBrainz + FFmetadata + FFmpeg,
   - downloader-plan resolution should remain cross-platform (`windows`,
     `linux`, `macos`) even if later import/materialization is host-filtered,
+  - tool preset downloads are never host-platform-only; preset reconciliation
+    must always provision all supported platform payloads and use
+    `${context.os}`-conditional command selectors to pick the runtime
+    executable,
   - for GitHub release assets (notably ffmpeg), resolve concrete asset URLs
     from release metadata instead of assuming static
     `releases/latest/download/...` paths,
