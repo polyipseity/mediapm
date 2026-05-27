@@ -10,7 +10,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::model::config::ImpureTimestamp;
@@ -18,6 +18,7 @@ use mediapm_conductor::{
     InputBinding, MachineNickelDocument, OrchestrationState, ToolCallInstance, ToolKindSpec,
     ToolSpec, decode_state, decode_state_document,
 };
+use pulsebar::MultiProgress;
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
@@ -582,6 +583,14 @@ pub async fn sync_hierarchy(
     let media_file_templates = collect_media_file_hierarchy_templates(&flattened_hierarchy)?;
     let mut resolved_playlist_media_targets = BTreeMap::<String, String>::new();
 
+    let total_entries = flattened_hierarchy.len();
+    let multi = MultiProgress::new();
+    let hierarchy_progress = multi
+        .add_bar(total_entries.max(1) as u64)
+        .with_message("syncing hierarchy")
+        .with_format("{msg}  {bar}  {pos}/{total}  {elapsed}");
+    hierarchy_progress.set_position(0);
+
     for flattened_entry in &flattened_hierarchy {
         let relative_path_template = flattened_entry.path.as_str();
         let entry = &flattened_entry.entry;
@@ -606,6 +615,7 @@ pub async fn sync_hierarchy(
         }
 
         let staged_path = staging_root.join(fs_relative_path);
+        hierarchy_progress.advance(1);
         let (managed_media_id, managed_file_variants, managed_file_hashes) = match entry.kind {
             HierarchyEntryKind::Media => {
                 let source = resolve_hierarchy_source(document, entry)?;
@@ -949,6 +959,8 @@ pub async fn sync_hierarchy(
     }
 
     let _ = fs::remove_dir_all(&staging_root);
+    hierarchy_progress.finish_success("done");
+    tokio::time::sleep(Duration::from_millis(75)).await;
     Ok(report)
 }
 
