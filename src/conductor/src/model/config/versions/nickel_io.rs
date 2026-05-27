@@ -2,8 +2,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
 use nickel_lang_core::error::{Error as NickelError, NullReporter};
 use nickel_lang_core::eval::cache::CacheImpl;
@@ -20,34 +19,26 @@ use super::{MOD_NCL_SOURCE, latest, resolve_version_contract};
 #[derive(Debug)]
 pub(super) struct TempNickelWorkspace {
     /// Root directory that hosts temporary `.ncl` files.
-    path: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempNickelWorkspace {
     /// Creates a unique temporary Nickel workspace root.
     pub(super) fn new() -> Result<Self, ConductorError> {
-        let pid = std::process::id();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let path = std::env::temp_dir().join(format!("mediapm-conductor-nickel-{pid}-{nanos}"));
+        let dir = tempfile::Builder::new().prefix("mediapm-conductor-nickel-").tempdir().map_err(
+            |source| ConductorError::Io {
+                operation: "creating temporary Nickel workspace".to_string(),
+                path: std::env::temp_dir(),
+                source,
+            },
+        )?;
 
-        fs::create_dir_all(&path).map_err(|source| ConductorError::Io {
-            operation: "creating temporary Nickel workspace".to_string(),
-            path: path.clone(),
-            source,
-        })?;
-
-        Ok(Self { path })
+        Ok(Self { dir })
     }
 
     /// Returns the workspace root path.
     pub(super) fn path(&self) -> &Path {
-        self.path.as_path()
-    }
-}
-
-impl Drop for TempNickelWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.dir.path()
     }
 }
 
