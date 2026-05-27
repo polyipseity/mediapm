@@ -42,6 +42,9 @@ use crate::paths::MediaPmPaths;
 pub struct MaterializeReport {
     /// Number of hierarchy entries staged and committed.
     pub materialized_paths: usize,
+    /// Number of hierarchy entries whose CAS hash matched the lock record and
+    /// whose final output path was confirmed present on disk — skipped.
+    pub skipped_paths: usize,
     /// Number of previously managed outputs removed as stale.
     pub removed_paths: usize,
     /// Link/copy fallback notices captured during materialization.
@@ -591,7 +594,7 @@ pub async fn sync_hierarchy(
         .with_format("{msg}  {bar}  {pos}/{total}  {elapsed}");
     hierarchy_progress.set_position(0);
 
-    for flattened_entry in &flattened_hierarchy {
+    'entries: for flattened_entry in &flattened_hierarchy {
         let relative_path_template = flattened_entry.path.as_str();
         let entry = &flattened_entry.entry;
 
@@ -645,6 +648,30 @@ pub async fn sync_hierarchy(
                 let variant = resolved_variants
                     .first()
                     .expect("checked non-empty and len==1 for hierarchy file path");
+
+                // Change detection: resolve the expected hash without fetching
+                // CAS bytes. When the lock already records the same hash and
+                // the final output path exists on disk, skip re-materialization
+                // entirely — this avoids large CAS object reads on repeat runs.
+                let final_path = paths.hierarchy_root_dir.join(fs_relative_path);
+                if let Some(hint_hash) =
+                    resolve_variant_source_hash(&lookup, &entry.media_id, source, variant).await?
+                {
+                    let hint_hash_str = hint_hash.to_string();
+                    if lock
+                        .managed_files
+                        .get(&relative_path)
+                        .is_some_and(|r| r.hash == hint_hash_str)
+                        && fs::symlink_metadata(&final_path).is_ok()
+                    {
+                        desired_paths.insert(relative_path.clone());
+                        if let Some(r) = lock.managed_files.get_mut(&relative_path) {
+                            r.last_synced_unix_millis = unix_epoch_millis();
+                        }
+                        report.skipped_paths += 1;
+                        continue 'entries;
+                    }
+                }
 
                 if let Some(parent) = staged_path.parent() {
                     tokio::fs::create_dir_all(parent).await.map_err(|source_err| {
@@ -958,9 +985,10 @@ pub async fn sync_hierarchy(
         lock.managed_files.remove(&stale);
     }
 
-    let _ = fs::remove_dir_all(&staging_root);
     hierarchy_progress.finish_success("done");
     tokio::time::sleep(Duration::from_millis(75)).await;
+
+    let _ = fs::remove_dir_all(&staging_root);
     Ok(report)
 }
 
@@ -1597,6 +1625,60 @@ fn collect_media_source_available_variants(source: &MediaSourceSpec) -> BTreeSet
 }
 
 /// Resolves one source variant into concrete bytes for staging.
+/// Resolves the direct CAS hash for one variant without fetching its payload
+/// bytes.
+///
+/// Returns `Some(hash)` when the hash can be determined from workflow state or
+/// local variant-hash metadata without performing a CAS object read. Returns
+/// `None` when the variant requires ZIP-member extraction (the hash depends on
+/// extracted content and cannot be determined without reading the archive) or
+/// when no hash source is available.
+///
+/// This is used as a lightweight pre-check in `sync_hierarchy`: when the
+/// returned hash matches an existing lock record and the final output path is
+/// present on disk the re-materialization can be skipped entirely, avoiding
+/// large CAS object reads for unchanged entries.
+async fn resolve_variant_source_hash(
+    lookup: &MaterializationLookupContext<'_>,
+    media_id: &str,
+    source: &MediaSourceSpec,
+    variant: &str,
+) -> Result<Option<Hash>, MediaPmError> {
+    // Workflow state path: resolve step output hash without fetching bytes.
+    if let Some(state) = lookup.orchestration_state {
+        if let Some((workflow_hash, _notice)) =
+            resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
+                .await?
+        {
+            // Only usable as a skip hint when the variant is not a ZIP member.
+            let binding = resolve_media_variant_output_binding_with_limits(
+                source,
+                variant,
+                lookup.ffmpeg_max_input_slots,
+                lookup.ffmpeg_max_output_slots,
+            )?;
+            if binding.is_none_or(|b| b.zip_member.is_none()) {
+                return Ok(Some(workflow_hash));
+            }
+        }
+        return Ok(None);
+    }
+
+    // Local variant-hashes path: hash is available directly without a CAS
+    // object read.
+    if !source.variant_hashes.is_empty() {
+        let hash_str =
+            source.variant_hashes.get(variant).or_else(|| source.variant_hashes.get("default"));
+        if let Some(hs) = hash_str
+            && let Ok(hash) = hs.parse::<Hash>()
+        {
+            return Ok(Some(hash));
+        }
+    }
+
+    Ok(None)
+}
+
 async fn resolve_variant_source_bytes(
     lookup: &MaterializationLookupContext<'_>,
     media_id: &str,
