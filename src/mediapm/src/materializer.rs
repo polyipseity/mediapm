@@ -134,23 +134,31 @@ struct RenderedPlaylistItem {
 /// Removes one destination path if it already exists.
 ///
 /// This helper treats broken symlinks as existing paths and removes them too.
-fn remove_existing_destination_path(path: &Path) -> Result<(), MediaPmError> {
-    if fs::symlink_metadata(path).is_ok() {
-        remove_path(path)?;
+/// Uses `tokio::task::spawn_blocking` to avoid blocking the async executor
+/// thread during the recursive readonly-clear and remove operations.
+async fn remove_existing_destination_path(path: &Path) -> Result<(), MediaPmError> {
+    if tokio::fs::symlink_metadata(path).await.is_ok() {
+        let owned = path.to_path_buf();
+        tokio::task::spawn_blocking(move || remove_path(&owned)).await.map_err(|e| {
+            MediaPmError::Workflow(format!("remove destination path task panicked: {e}"))
+        })?
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
-/// Creates one filesystem symlink for a regular file.
+/// Creates one filesystem symlink for a regular file using the async tokio
+/// runtime API.
 #[cfg(unix)]
-fn create_file_symlink(source_path: &Path, destination_path: &Path) -> io::Result<()> {
-    std::os::unix::fs::symlink(source_path, destination_path)
+async fn create_file_symlink_async(source_path: &Path, destination_path: &Path) -> io::Result<()> {
+    tokio::fs::symlink(source_path, destination_path).await
 }
 
-/// Creates one filesystem symlink for a regular file.
+/// Creates one filesystem symlink for a regular file using the async tokio
+/// runtime API.
 #[cfg(windows)]
-fn create_file_symlink(source_path: &Path, destination_path: &Path) -> io::Result<()> {
-    std::os::windows::fs::symlink_file(source_path, destination_path)
+async fn create_file_symlink_async(source_path: &Path, destination_path: &Path) -> io::Result<()> {
+    tokio::fs::symlink_file(source_path, destination_path).await
 }
 
 /// Attempts reflink/clone materialization for one file.
@@ -168,6 +176,9 @@ fn attempt_reflink_materialization(
 }
 
 /// Attempts one configured materialization method for one destination file.
+///
+/// All filesystem operations use `tokio::fs` to avoid blocking the async
+/// executor thread on potentially slow link, copy, or write I/O.
 async fn attempt_materialization_method(
     method: MaterializationMethod,
     cas: &FileSystemCas,
@@ -183,7 +194,7 @@ async fn attempt_materialization_method(
                     "CAS object file is unavailable for hardlink materialization",
                 )
             })?;
-            fs::hard_link(source, destination_path)
+            tokio::fs::hard_link(source, destination_path).await
         }
         MaterializationMethod::Symlink => {
             let source = source_path.ok_or_else(|| {
@@ -192,7 +203,7 @@ async fn attempt_materialization_method(
                     "CAS object file is unavailable for symlink materialization",
                 )
             })?;
-            create_file_symlink(source, destination_path)
+            create_file_symlink_async(source, destination_path).await
         }
         MaterializationMethod::Reflink => {
             let source = source_path.ok_or_else(|| {
@@ -205,14 +216,14 @@ async fn attempt_materialization_method(
         }
         MaterializationMethod::Copy => {
             if let Some(source) = source_path {
-                fs::copy(source, destination_path).map(|_| ())
+                tokio::fs::copy(source, destination_path).await.map(|_| ())
             } else {
                 let bytes = cas.get(hash).await.map_err(|error| {
                     io::Error::other(format!(
                         "reading CAS bytes for copy materialization failed: {error}"
                     ))
                 })?;
-                fs::write(destination_path, bytes.as_ref())
+                tokio::fs::write(destination_path, bytes.as_ref()).await
             }
         }
     }
@@ -232,7 +243,7 @@ async fn materialize_file_from_cas_with_order(
     let mut failures = Vec::new();
 
     for (method_index, method) in methods.iter().enumerate() {
-        remove_existing_destination_path(destination_path)?;
+        remove_existing_destination_path(destination_path).await?;
 
         match attempt_materialization_method(
             *method,
@@ -254,7 +265,7 @@ async fn materialize_file_from_cas_with_order(
             }
             Err(error) => {
                 failures.push(format!("{}: {error}", method.as_label()));
-                let _ = remove_existing_destination_path(destination_path);
+                let _ = remove_existing_destination_path(destination_path).await;
             }
         }
     }
@@ -532,10 +543,12 @@ pub async fn sync_hierarchy(
         path: paths.mediapm_tmp_dir.clone(),
         source,
     })?;
-    fs::create_dir_all(&paths.hierarchy_root_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating resolved library directory".to_string(),
-        path: paths.hierarchy_root_dir.clone(),
-        source,
+    tokio::fs::create_dir_all(&paths.hierarchy_root_dir).await.map_err(|source| {
+        MediaPmError::Io {
+            operation: "creating resolved library directory".to_string(),
+            path: paths.hierarchy_root_dir.clone(),
+            source,
+        }
     })?;
 
     let cas = FileSystemCas::open(conductor_cas_root).await.map_err(|source| {
@@ -556,7 +569,7 @@ pub async fn sync_hierarchy(
     };
 
     let staging_root = paths.mediapm_tmp_dir.join(format!("sync-{}", now_unix_seconds()));
-    fs::create_dir_all(&staging_root).map_err(|source| MediaPmError::Io {
+    tokio::fs::create_dir_all(&staging_root).await.map_err(|source| MediaPmError::Io {
         operation: "creating sync staging directory".to_string(),
         path: staging_root.clone(),
         source,
@@ -624,10 +637,12 @@ pub async fn sync_hierarchy(
                     .expect("checked non-empty and len==1 for hierarchy file path");
 
                 if let Some(parent) = staged_path.parent() {
-                    fs::create_dir_all(parent).map_err(|source_err| MediaPmError::Io {
-                        operation: "creating staged parent directory".to_string(),
-                        path: parent.to_path_buf(),
-                        source: source_err,
+                    tokio::fs::create_dir_all(parent).await.map_err(|source_err| {
+                        MediaPmError::Io {
+                            operation: "creating staged parent directory".to_string(),
+                            path: parent.to_path_buf(),
+                            source: source_err,
+                        }
                     })?;
                 }
 
@@ -683,10 +698,12 @@ pub async fn sync_hierarchy(
                         },
                     )?;
 
-                fs::create_dir_all(&staged_path).map_err(|source_err| MediaPmError::Io {
-                    operation: "creating staged output directory".to_string(),
-                    path: staged_path.clone(),
-                    source: source_err,
+                tokio::fs::create_dir_all(&staged_path).await.map_err(|source_err| {
+                    MediaPmError::Io {
+                        operation: "creating staged output directory".to_string(),
+                        path: staged_path.clone(),
+                        source: source_err,
+                    }
                 })?;
 
                 let resolved_rename_rules = resolve_hierarchy_folder_rename_rule_replacements(
@@ -735,11 +752,13 @@ pub async fn sync_hierarchy(
                     let managed_path = join_relative_paths(fs_relative_path, entry_path);
                     let staged_file_path = staged_path.join(entry_path);
                     let staged_bytes =
-                        fs::read(&staged_file_path).map_err(|source_err| MediaPmError::Io {
-                            operation: "reading extracted staged file bytes for CAS import"
-                                .to_string(),
-                            path: staged_file_path.clone(),
-                            source: source_err,
+                        tokio::fs::read(&staged_file_path).await.map_err(|source_err| {
+                            MediaPmError::Io {
+                                operation: "reading extracted staged file bytes for CAS import"
+                                    .to_string(),
+                                path: staged_file_path.clone(),
+                                source: source_err,
+                            }
                         })?;
                     let staged_hash = cas.put(staged_bytes).await.map_err(|source| {
                         MediaPmError::Workflow(format!(
@@ -823,10 +842,12 @@ pub async fn sync_hierarchy(
                 }
 
                 if let Some(parent) = staged_path.parent() {
-                    fs::create_dir_all(parent).map_err(|source_err| MediaPmError::Io {
-                        operation: "creating staged parent directory".to_string(),
-                        path: parent.to_path_buf(),
-                        source: source_err,
+                    tokio::fs::create_dir_all(parent).await.map_err(|source_err| {
+                        MediaPmError::Io {
+                            operation: "creating staged parent directory".to_string(),
+                            path: parent.to_path_buf(),
+                            source: source_err,
+                        }
                     })?;
                 }
 
@@ -861,13 +882,22 @@ pub async fn sync_hierarchy(
 
         let final_path = paths.hierarchy_root_dir.join(fs_relative_path);
         if let Some(parent) = final_path.parent() {
-            fs::create_dir_all(parent).map_err(|source_err| MediaPmError::Io {
+            tokio::fs::create_dir_all(parent).await.map_err(|source_err| MediaPmError::Io {
                 operation: "creating final output parent directory".to_string(),
                 path: parent.to_path_buf(),
                 source: source_err,
             })?;
         }
-        commit_staged_output(&staged_path, &final_path, entry.kind)?;
+        let staged_commit = staged_path.clone();
+        let final_commit = final_path.clone();
+        let entry_kind = entry.kind;
+        tokio::task::spawn_blocking(move || {
+            commit_staged_output(&staged_commit, &final_commit, entry_kind)
+        })
+        .await
+        .map_err(|e| {
+            MediaPmError::Workflow(format!("commit staged output task panicked: {e}"))
+        })??;
 
         for (managed_file_path, managed_hash) in managed_file_hashes {
             let managed_variant = managed_file_variants
@@ -908,8 +938,11 @@ pub async fn sync_hierarchy(
         }
 
         let final_path = paths.hierarchy_root_dir.join(&stale);
-        if final_path.exists() {
-            remove_path(&final_path)?;
+        if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
+            let owned = final_path.clone();
+            tokio::task::spawn_blocking(move || remove_path(&owned)).await.map_err(|e| {
+                MediaPmError::Workflow(format!("remove stale path task panicked: {e}"))
+            })??;
             report.removed_paths += 1;
         }
         lock.managed_files.remove(&stale);
