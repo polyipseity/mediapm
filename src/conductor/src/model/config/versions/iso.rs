@@ -1,4 +1,14 @@
 //! `IsoPrime` document bridges, encoding, decoding, and configuration source evaluation.
+//!
+//! # Why this file cannot be split further
+//!
+//! `user_runtime_iso` (~416 lines, already annotated with
+//! `#[expect(clippy::too_many_lines)]`) and `vet_latest_envelope` (~377 lines,
+//! also annotated) are single function bodies that together account for ~68% of
+//! this file.  A function body cannot be split across Rust source files, so any
+//! sub-module split would leave those two functions in the same file while only
+//! relocating the much smaller helpers (~122 lines total), yielding no meaningful
+//! reduction in file size.
 
 use std::collections::BTreeSet;
 
