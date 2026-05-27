@@ -350,7 +350,7 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("spawn_hard_timeout_guard")
             && source.contains("process::exit(124)")
             && source.contains("emit_watchdog_notice")
-            && source.contains("wait briefly, then rerun")
+            && source.contains("before retrying")
             && !source.contains("DEMO_ONLINE_SYNC_HEARTBEAT_SECS")
             && !source.contains("tokio::time::interval(")
             && !source.contains("\\u{1b}[2K"),
