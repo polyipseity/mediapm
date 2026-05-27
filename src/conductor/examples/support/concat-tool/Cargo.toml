@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 
 [dev-dependencies]
+tempfile.workspace = true
 
 [[bin]]
 name = "concat-tool"

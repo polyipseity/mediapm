@@ -2228,6 +2228,9 @@ dependencies = [
 [[package]]
 name = "mediapm-conductor-examples-concat-tool"
 version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "memchr"
