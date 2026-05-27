@@ -1,4 +1,11 @@
 //! `MediaPmApi` trait and `MediaPmService` generic implementation.
+//!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 1 000
+//! lines. Almost all logic lives inside `impl<C> MediaPmService<C>` whose
+//! methods take `&self` or `&mut self`. Splitting `impl` methods across files
+//! requires non-idiomatic `include!()`, so the module is kept whole.
 
 use std::collections::BTreeMap;
 use std::future::Future;
