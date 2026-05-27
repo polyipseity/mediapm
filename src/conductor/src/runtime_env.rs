@@ -54,7 +54,7 @@ const RUNTIME_DOTENV_GENERATED_TEMPLATE: &str = concat!(
 );
 
 /// Canonical colocated `.gitignore` content for conductor runtime dotenv files.
-const RUNTIME_DOTENV_GITIGNORE: &str = "/.env\n/.env.generated\n";
+const RUNTIME_DOTENV_GITIGNORE: &str = "/.env\n/.env.generated\n/cache/\n/tmp/\n";
 
 /// Returns the canonical `.env` path for one conductor runtime root.
 #[must_use]
@@ -103,18 +103,50 @@ pub fn ensure_runtime_env_files(conductor_dir: &Path) -> Result<(), ConductorErr
         )?;
     }
 
-    let gitignore_path = conductor_dir.join(".gitignore");
-    if !gitignore_path.exists() {
-        fs::write(&gitignore_path, RUNTIME_DOTENV_GITIGNORE.as_bytes()).map_err(|source| {
-            ConductorError::Io {
-                operation: "writing conductor runtime dotenv gitignore".to_string(),
-                path: gitignore_path,
-                source,
-            }
-        })?;
-    }
+    ensure_runtime_gitignore(&conductor_dir.join(".gitignore"))?;
 
     Ok(())
+}
+
+/// Ensures runtime `.gitignore` contains the canonical generated entries.
+fn ensure_runtime_gitignore(path: &Path) -> Result<(), ConductorError> {
+    let existing = if path.exists() {
+        fs::read_to_string(path).map_err(|source| ConductorError::Io {
+            operation: "reading conductor runtime dotenv gitignore".to_string(),
+            path: path.to_path_buf(),
+            source,
+        })?
+    } else {
+        String::new()
+    };
+
+    let rendered = merge_runtime_gitignore(&existing);
+    if path.exists() && rendered == existing {
+        return Ok(());
+    }
+
+    fs::write(path, rendered.as_bytes()).map_err(|source| ConductorError::Io {
+        operation: "writing conductor runtime dotenv gitignore".to_string(),
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Merges canonical runtime `.gitignore` entries into existing file content.
+#[must_use]
+fn merge_runtime_gitignore(existing: &str) -> String {
+    let mut lines = existing.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let required_lines =
+        RUNTIME_DOTENV_GITIGNORE.lines().filter(|line| !line.trim().is_empty()).collect::<Vec<_>>();
+
+    for required in required_lines {
+        if lines.iter().any(|line| line.trim() == required) {
+            continue;
+        }
+        lines.push(required.to_string());
+    }
+
+    if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) }
 }
 
 /// Loads conductor runtime dotenv files and returns inherited env-var names.
@@ -202,5 +234,44 @@ fn append_unique_env_var_name(target: &mut Vec<String>, raw_name: &str) {
 fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
     for name in source {
         append_unique_env_var_name(target, name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::{ensure_runtime_env_files, merge_runtime_gitignore};
+
+    /// Protects generated runtime `.gitignore` defaults so runtime cache and
+    /// temporary directories stay out of version control by default.
+    #[test]
+    fn merge_runtime_gitignore_adds_runtime_cache_and_tmp_entries() {
+        let merged = merge_runtime_gitignore("/.env\n");
+
+        assert!(merged.contains("/.env\n"));
+        assert!(merged.contains("/.env.generated\n"));
+        assert!(merged.contains("/cache/\n"));
+        assert!(merged.contains("/tmp/\n"));
+    }
+
+    /// Protects no-overwrite behavior by preserving existing custom ignore
+    /// lines while appending any missing generated runtime entries.
+    #[test]
+    fn ensure_runtime_env_files_preserves_existing_gitignore_content() {
+        let workspace = tempdir().expect("tempdir");
+        let runtime_dir = workspace.path().join(".conductor");
+        std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+        let gitignore_path = runtime_dir.join(".gitignore");
+        std::fs::write(&gitignore_path, "/custom/\n/.env\n").expect("seed gitignore");
+
+        ensure_runtime_env_files(&runtime_dir).expect("ensure runtime env files");
+
+        let rendered = std::fs::read_to_string(&gitignore_path).expect("read gitignore");
+        assert!(rendered.contains("/custom/\n"));
+        assert!(rendered.contains("/.env\n"));
+        assert!(rendered.contains("/.env.generated\n"));
+        assert!(rendered.contains("/cache/\n"));
+        assert!(rendered.contains("/tmp/\n"));
     }
 }
