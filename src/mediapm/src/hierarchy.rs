@@ -272,51 +272,41 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
         hierarchy_media_file_node(HIERARCHY_YT_DLP_INFOJSON_FILE_TEMPLATE, media_id, "infojson");
     infojson.id = Some(format!("{media_id}.infojson"));
 
-    // Subtitles materialized directly to media root with path="" (empty)
+    // Consolidate subtitles, thumbnails, and links into single media folder node
+    // materialized directly to media root with path="" (empty)
     // Only the sidecars/ folder should use nested directory organization.
     // All other output variants materialize directly to prevent unnecessary intermediate nesting.
-    let mut subtitles = hierarchy_media_folder_node(
+    let mut sidecar_variants = hierarchy_media_folder_node(
         "",
         media_id,
-        vec!["subtitles".to_string()],
-        vec![HierarchyFolderRenameRule {
-            pattern: "^([^.]+)\\.([^.]*)$".to_string(),
-            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1.$2"
-                .to_string(),
-        }],
+        vec!["subtitles".to_string(), "thumbnails".to_string(), "links".to_string()],
+        vec![
+            // Subtitles: rename with language code and extension preserved
+            HierarchyFolderRenameRule {
+                pattern: "^([^.]+)\\.([^.]*)$".to_string(),
+                replacement:
+                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1.$2"
+                        .to_string(),
+            },
+            // Thumbnails: rename with .thumbnail infix
+            HierarchyFolderRenameRule {
+                pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+                replacement:
+                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
+                        .to_string(),
+            },
+            // Links: rename with .link infix
+            HierarchyFolderRenameRule {
+                pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
+                replacement:
+                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
+                        .to_string(),
+            },
+        ],
     );
-    subtitles.id = Some(format!("{media_id}.subtitles"));
+    sidecar_variants.id = Some(format!("{media_id}.sidecar-variants"));
 
-    // Thumbnails materialized directly to media root with path="" (empty)
-    // Only the sidecars/ folder should use nested directory organization.
-    let mut thumbnails = hierarchy_media_folder_node(
-        "",
-        media_id,
-        vec!["thumbnails".to_string()],
-        vec![HierarchyFolderRenameRule {
-            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
-            replacement:
-                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
-                    .to_string(),
-        }],
-    );
-    thumbnails.id = Some(format!("{media_id}.thumbnails"));
-
-    // Links materialized directly to media root with path="" (empty)
-    // Only the sidecars/ folder should use nested directory organization.
-    let mut links = hierarchy_media_folder_node(
-        "",
-        media_id,
-        vec!["links".to_string()],
-        vec![HierarchyFolderRenameRule {
-            pattern: HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN.to_string(),
-            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
-                .to_string(),
-        }],
-    );
-    links.id = Some(format!("{media_id}.links"));
-
-    vec![video, archive, description, infojson, subtitles, thumbnails, links]
+    vec![video, archive, description, infojson, sidecar_variants]
 }
 
 /// Builds one hierarchy node tree for the selected preset.
