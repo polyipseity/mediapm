@@ -1217,11 +1217,39 @@ pub fn registered_builtin_ids() -> [&'static str; 5] {
     mediapm_conductor::registered_builtin_ids()
 }
 
+/// Resolves effective runtime paths for one workspace root without mutating
+/// workspace files.
+///
+/// Unlike `load_runtime_dotenv_for_root`, this helper does not bootstrap a
+/// missing `mediapm.ncl` and does not load dotenv files into process state.
+/// It is intended for passthrough CLI routing where the parent executable must
+/// inject its resolved runtime defaults into child CLI argv without creating
+/// configuration files as a side effect.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when an existing `mediapm.ncl` cannot be loaded or
+/// when effective runtime paths cannot be derived from config plus overrides.
+pub fn resolve_effective_paths_for_root(
+    root_dir: &Path,
+    runtime_storage_overrides: &MediaRuntimeStorage,
+) -> Result<MediaPmPaths, MediaPmError> {
+    let base_paths = MediaPmPaths::from_root(root_dir);
+    let document = if base_paths.mediapm_ncl.exists() {
+        load_mediapm_document(&base_paths.mediapm_ncl)?
+    } else {
+        MediaPmDocument::default()
+    };
+
+    let merged_runtime_storage =
+        merge_runtime_storage(&document.runtime, runtime_storage_overrides);
+    Ok(base_paths.with_runtime_storage(&merged_runtime_storage))
+}
+
 /// Loads runtime dotenv values for one workspace root using effective path policy.
 ///
 /// This helper is intended for CLI entrypoints that need environment-backed
 /// credentials before invoking internal builtins directly.
-///
 /// # Errors
 ///
 /// Returns [`MediaPmError`] when config cannot be loaded, effective runtime
@@ -1230,11 +1258,15 @@ pub fn load_runtime_dotenv_for_root(
     root_dir: &Path,
     runtime_storage_overrides: &MediaRuntimeStorage,
 ) -> Result<MediaPmPaths, MediaPmError> {
-    let base_paths = MediaPmPaths::from_root(root_dir);
-    let document = ensure_and_load_mediapm_document(&base_paths.mediapm_ncl)?;
-    let merged_runtime_storage =
-        merge_runtime_storage(&document.runtime, runtime_storage_overrides);
-    let effective_paths = base_paths.with_runtime_storage(&merged_runtime_storage);
+    let effective_paths = if MediaPmPaths::from_root(root_dir).mediapm_ncl.exists() {
+        resolve_effective_paths_for_root(root_dir, runtime_storage_overrides)?
+    } else {
+        let base_paths = MediaPmPaths::from_root(root_dir);
+        let document = ensure_and_load_mediapm_document(&base_paths.mediapm_ncl)?;
+        let merged_runtime_storage =
+            merge_runtime_storage(&document.runtime, runtime_storage_overrides);
+        base_paths.with_runtime_storage(&merged_runtime_storage)
+    };
     load_runtime_dotenv(&effective_paths)?;
     Ok(effective_paths)
 }

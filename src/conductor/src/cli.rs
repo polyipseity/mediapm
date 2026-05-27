@@ -354,7 +354,9 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
         .unwrap_or_else(|| resolved_runtime_paths.cas_store_dir.to_string_lossy().to_string());
 
     match cli.command {
-        CliCommand::Cas(args) => passthrough_cas(&args.args).await,
+        CliCommand::Cas(args) => {
+            passthrough_cas(&args.args, &resolved_runtime_paths.cas_store_dir).await
+        }
         CliCommand::Completions { shell } => {
             clap_complete::generate(
                 shell,
@@ -1100,10 +1102,22 @@ async fn run_gc(
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
 /// so conductor does not require a sibling `mediapm-cas` executable.
-async fn passthrough_cas(args: &[String]) -> Result<(), ConductorError> {
-    mediapm_cas::cli::run_from_passthrough_args(args)
+async fn passthrough_cas(args: &[String], default_root: &Path) -> Result<(), ConductorError> {
+    let injected = inject_cas_root_arg_if_missing(args, default_root);
+    mediapm_cas::cli::run_from_passthrough_args(&injected)
         .await
         .map_err(|error| ConductorError::Workflow(format!("cas passthrough failed: {error}")))
+}
+
+/// Injects resolved conductor-owned CAS root for passthrough CAS commands when absent.
+fn inject_cas_root_arg_if_missing(args: &[String], default_root: &Path) -> Vec<String> {
+    if args.iter().any(|arg| arg == "--root" || arg.starts_with("--root=")) {
+        return args.to_vec();
+    }
+
+    let mut injected = vec!["--root".to_string(), default_root.to_string_lossy().to_string()];
+    injected.extend(args.iter().cloned());
+    injected
 }
 
 /// Loads `conductor.ncl` through versioned decoder, returning default when absent.
@@ -1305,9 +1319,9 @@ mod tests {
     #[cfg(feature = "tool-presets")]
     use super::CommonExecutableTool;
     use super::{
-        Cli, CliCommand, ImportArgs, ImportCommand, StateArgs, StateCommand, parse_editor_command,
-        passthrough_cas, persisted_state_json_pretty, register_or_merge_imported_tool,
-        resolve_import_process_name,
+        Cli, CliCommand, ImportArgs, ImportCommand, StateArgs, StateCommand,
+        inject_cas_root_arg_if_missing, parse_editor_command, passthrough_cas,
+        persisted_state_json_pretty, register_or_merge_imported_tool, resolve_import_process_name,
     };
     use crate::model::config::{
         MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
@@ -1366,12 +1380,41 @@ mod tests {
     /// Protects in-process CAS passthrough routing with preserved trailing args.
     #[tokio::test]
     async fn passthrough_cas_reports_parse_errors_without_external_binary() {
-        let error = passthrough_cas(&["bad-subcommand".to_string()])
-            .await
-            .expect_err("invalid cas command should fail");
+        let error = passthrough_cas(
+            &["bad-subcommand".to_string()],
+            PathBuf::from(".conductor/store").as_path(),
+        )
+        .await
+        .expect_err("invalid cas command should fail");
         assert!(
             error.to_string().contains("cas passthrough failed"),
             "error should be wrapped with passthrough context"
+        );
+    }
+
+    #[test]
+    fn inject_cas_root_arg_if_missing_adds_resolved_conductor_root() {
+        let injected = inject_cas_root_arg_if_missing(
+            &["optimize".to_string()],
+            PathBuf::from(".conductor/store").as_path(),
+        );
+
+        assert_eq!(
+            injected,
+            vec!["--root".to_string(), ".conductor/store".to_string(), "optimize".to_string(),]
+        );
+    }
+
+    #[test]
+    fn inject_cas_root_arg_if_missing_respects_explicit_root() {
+        let injected = inject_cas_root_arg_if_missing(
+            &["--root".to_string(), "custom-store".to_string(), "optimize".to_string()],
+            PathBuf::from(".conductor/store").as_path(),
+        );
+
+        assert_eq!(
+            injected,
+            vec!["--root".to_string(), "custom-store".to_string(), "optimize".to_string()]
         );
     }
 

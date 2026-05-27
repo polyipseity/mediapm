@@ -14,6 +14,7 @@ use mediapm::{
     ToolRegistryStatus, builtins::media_tagger::InternalMediaTaggerOptions,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
     global_tool_cache_status, load_runtime_dotenv_for_root, resolve_default_global_paths,
+    resolve_effective_paths_for_root,
 };
 use url::Url;
 
@@ -414,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
         mediapm_schema_dir: None,
         use_user_tool_cache: None,
     };
+    let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
     if matches!(
         &cli.command,
         Command::Sync(_)
@@ -625,10 +627,18 @@ async fn main() -> anyhow::Result<()> {
             BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
         },
         Command::Cas(args) => {
-            passthrough_cas(&args.args).await?;
+            let effective_paths = resolve_effective_paths_for_root(
+                &cli.root,
+                &passthrough_runtime_storage_overrides,
+            )?;
+            passthrough_cas(&args.args, &effective_paths.runtime_root.join("store")).await?;
         }
         Command::Conductor(args) => {
-            passthrough_conductor(&args.args).await?;
+            let effective_paths = resolve_effective_paths_for_root(
+                &cli.root,
+                &passthrough_runtime_storage_overrides,
+            )?;
+            passthrough_conductor(&args.args, &effective_paths).await?;
         }
         Command::Completions { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());
@@ -692,8 +702,9 @@ fn default_hierarchy_root_for_preset(_preset: HierarchyPreset) -> &'static str {
 ///
 /// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
 /// so `mediapm cas ...` does not require a sibling `mediapm-cas` executable.
-async fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
-    mediapm_cas::cli::run_from_passthrough_args(args).await
+async fn passthrough_cas(args: &[String], default_root: &std::path::Path) -> anyhow::Result<()> {
+    let injected = inject_cas_passthrough_defaults(args, default_root);
+    mediapm_cas::cli::run_from_passthrough_args(&injected).await
 }
 
 /// Executes conductor CLI passthrough in-process.
@@ -701,15 +712,111 @@ async fn passthrough_cas(args: &[String]) -> anyhow::Result<()> {
 /// This path reuses `mediapm-conductor` clap parsing and command dispatch
 /// directly, so `mediapm conductor ...` does not require a sibling
 /// `mediapm-conductor` executable.
-async fn passthrough_conductor(args: &[String]) -> anyhow::Result<()> {
-    mediapm_conductor::cli::run_from_passthrough_args(args).await.map_err(anyhow::Error::from)
+async fn passthrough_conductor(
+    args: &[String],
+    effective_paths: &mediapm::MediaPmPaths,
+) -> anyhow::Result<()> {
+    let injected = inject_conductor_passthrough_defaults(args, effective_paths);
+    mediapm_conductor::cli::run_from_passthrough_args(&injected).await.map_err(anyhow::Error::from)
+}
+
+/// Injects default `cas` root when the caller did not provide one explicitly.
+fn inject_cas_passthrough_defaults(args: &[String], default_root: &std::path::Path) -> Vec<String> {
+    let mut injected = Vec::new();
+    if !passthrough_option_present(args, &["--root"]) {
+        injected.push("--root".to_string());
+        injected.push(default_root.to_string_lossy().to_string());
+    }
+    injected.extend(args.iter().cloned());
+    injected
+}
+
+/// Injects resolved mediapm-owned conductor runtime defaults into passthrough argv.
+fn inject_conductor_passthrough_defaults(
+    args: &[String],
+    effective_paths: &mediapm::MediaPmPaths,
+) -> Vec<String> {
+    let mut injected = Vec::new();
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--conductor-dir",
+        effective_paths.runtime_root.to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--config",
+        effective_paths.conductor_user_ncl.to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--config-machine",
+        effective_paths.conductor_machine_ncl.to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--config-state",
+        effective_paths.conductor_state_config.to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--cas-store-dir",
+        effective_paths.runtime_root.join("store").to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--conductor-tmp-dir",
+        effective_paths.conductor_tmp_dir.to_string_lossy().to_string(),
+    );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--conductor-schema-dir",
+        effective_paths.conductor_schema_dir.to_string_lossy().to_string(),
+    );
+    injected.extend(args.iter().cloned());
+    injected
+}
+
+/// Appends one key/value pair when the option is not already present.
+fn append_passthrough_option_if_missing(
+    injected: &mut Vec<String>,
+    args: &[String],
+    option_name: &str,
+    value: String,
+) {
+    if passthrough_option_present(args, &[option_name]) {
+        return;
+    }
+
+    injected.push(option_name.to_string());
+    injected.push(value);
+}
+
+/// Returns true when any long option name is already present in passthrough argv.
+fn passthrough_option_present(args: &[String], option_names: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        option_names.iter().any(|option_name| {
+            arg == option_name
+                || arg.strip_prefix(option_name).is_some_and(|suffix| suffix.starts_with('='))
+        })
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
 
-    use super::Cli;
+    use std::path::PathBuf;
+
+    use mediapm::MediaPmPaths;
+
+    use super::{Cli, inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults};
 
     /// Protects no-backcompat policy by rejecting removed hidden internal route.
     #[test]
@@ -822,5 +929,52 @@ mod tests {
     fn tool_remove_route_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "tool", "remove", "yt-dlp"]);
         assert!(parsed.is_ok(), "tool remove route must parse");
+    }
+
+    /// Protects parent-owned mediapm defaults for direct `cas` passthrough.
+    #[test]
+    fn inject_cas_passthrough_defaults_adds_root_when_missing() {
+        let injected = inject_cas_passthrough_defaults(
+            &["optimize".to_string()],
+            PathBuf::from(".mediapm/store").as_path(),
+        );
+
+        assert_eq!(injected[0], "--root");
+        assert_eq!(injected[1], ".mediapm/store");
+        assert_eq!(injected[2], "optimize");
+    }
+
+    /// Protects explicit passthrough overrides so user-supplied CAS roots win.
+    #[test]
+    fn inject_cas_passthrough_defaults_respects_explicit_root() {
+        let injected = inject_cas_passthrough_defaults(
+            &["--root".to_string(), "custom-store".to_string(), "optimize".to_string()],
+            PathBuf::from(".mediapm/store").as_path(),
+        );
+
+        assert_eq!(
+            injected,
+            vec!["--root".to_string(), "custom-store".to_string(), "optimize".to_string()]
+        );
+    }
+
+    /// Protects parent-owned mediapm defaults for `mediapm conductor ...`
+    /// passthrough invocations.
+    #[test]
+    fn inject_conductor_passthrough_defaults_adds_effective_runtime_paths() {
+        let paths = MediaPmPaths::from_root("/tmp/demo-root");
+        let injected = inject_conductor_passthrough_defaults(&["state".to_string()], &paths);
+
+        assert!(injected.contains(&"--conductor-dir".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/.mediapm".to_string()));
+        assert!(injected.contains(&"--config".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/mediapm.conductor.ncl".to_string()));
+        assert!(injected.contains(&"--config-machine".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/mediapm.conductor.machine.ncl".to_string()));
+        assert!(injected.contains(&"--config-state".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/.mediapm/state.conductor.ncl".to_string()));
+        assert!(injected.contains(&"--cas-store-dir".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/.mediapm/store".to_string()));
+        assert_eq!(injected.last().map(String::as_str), Some("state"));
     }
 }
