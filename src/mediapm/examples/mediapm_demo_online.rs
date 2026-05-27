@@ -185,11 +185,6 @@ const DEMO_ROOT_SELECTED_SUBTITLE_FILE_NAME: &str =
 /// Sidecar-local subtitle file used for the selected subtitle capture.
 const DEMO_SIDECAR_SELECTED_SUBTITLE_FILE_NAME: &str = "sidecars/subtitles.en.vtt";
 
-/// Root-level folder used for additional thumbnail projection.
-const DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER: &str = "thumbnails";
-/// Root-level folder used for additional internet-shortcut projection.
-const DEMO_MEDIA_ROOT_LINKS_FOLDER: &str = "links";
-
 /// Expected yt-dlp step count.
 ///
 /// Managed workflow synthesis now emits one shared yt-dlp step that can
@@ -1219,52 +1214,35 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }
     }
 
+    // NOTE: Thumbnail and link variants are materialized directly to the media root
+    // with path="" (empty) instead of in dedicated subfolder containers.
+    // Only the sidecars/ folder should use nested directory organization.
+    // This prevents unnecessary intermediate folder nesting while preserving
+    // sidecar-family artifact handling.
     media_root_children.push(HierarchyNode {
-        path: DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER.to_string(),
-        kind: HierarchyNodeKind::Folder,
+        path: String::new(),
+        kind: HierarchyNodeKind::MediaFolder,
         id: None,
-        media_id: None,
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
         variant: None,
-        variants: Vec::new(),
+        variants: vec!["thumbnails".to_string()],
         rename_files: Vec::new(),
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        children: vec![HierarchyNode {
-            path: String::new(),
-            kind: HierarchyNodeKind::MediaFolder,
-            id: None,
-            media_id: Some(DEMO_MEDIA_ID.to_string()),
-            variant: None,
-            variants: vec!["thumbnails".to_string()],
-            rename_files: Vec::new(),
-            format: PlaylistFormat::M3u8,
-            ids: Vec::new(),
-            children: Vec::new(),
-        }],
+        children: Vec::new(),
     });
 
     media_root_children.push(HierarchyNode {
-        path: DEMO_MEDIA_ROOT_LINKS_FOLDER.to_string(),
-        kind: HierarchyNodeKind::Folder,
+        path: String::new(),
+        kind: HierarchyNodeKind::MediaFolder,
         id: None,
-        media_id: None,
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
         variant: None,
-        variants: Vec::new(),
+        variants: vec!["links".to_string()],
         rename_files: Vec::new(),
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        children: vec![HierarchyNode {
-            path: String::new(),
-            kind: HierarchyNodeKind::MediaFolder,
-            id: None,
-            media_id: Some(DEMO_MEDIA_ID.to_string()),
-            variant: None,
-            variants: vec!["links".to_string()],
-            rename_files: Vec::new(),
-            format: PlaylistFormat::M3u8,
-            ids: Vec::new(),
-            children: Vec::new(),
-        }],
+        children: Vec::new(),
     });
 
     // NOTE: The yt-dlp preset's extra root thumbnail projection uses
@@ -1748,6 +1726,7 @@ fn assert_sidecar_directory_family_content(variant: &str, directory: &Path) -> E
 /// - selected subtitle file is projected in media root,
 /// - thumbnail/link families are additionally projected via root folders,
 /// - root-projected sidecar names must stay aligned with media output base or media-id suffix.
+#[allow(clippy::too_many_lines)]
 fn assert_flat_media_root_sidecar_families(
     interpolated_root: &Path,
     expected_output_base: &str,
@@ -1823,30 +1802,46 @@ fn assert_flat_media_root_sidecar_families(
         .into());
     }
 
-    let thumbnails_root = interpolated_root.join(DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER);
-    if !thumbnails_root.is_dir() {
+    let thumbnails_files = collect_regular_files_recursive(interpolated_root)?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(".thumbnail."))
+        })
+        .collect::<Vec<_>>();
+
+    if thumbnails_files.is_empty() {
         return Err(format!(
-            "expected root thumbnail projection '{}' to exist",
-            thumbnails_root.display()
+            "expected root thumbnail projection files in '{}' to exist",
+            interpolated_root.display()
         )
         .into());
     }
-    assert_sidecar_directory_family_content("thumbnails", &thumbnails_root)?;
 
-    let links_root = interpolated_root.join(DEMO_MEDIA_ROOT_LINKS_FOLDER);
-    if !links_root.is_dir() {
-        return Err(
-            format!("expected root links projection '{}' to exist", links_root.display()).into()
-        );
+    let links_files = collect_regular_files_recursive(interpolated_root)?
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .is_some_and(|name| name.contains(".link."))
+        })
+        .collect::<Vec<_>>();
+
+    if links_files.is_empty() {
+        return Err(format!(
+            "expected root links projection files in '{}' to exist",
+            interpolated_root.display()
+        )
+        .into());
     }
-    assert_sidecar_directory_family_content("links", &links_root)?;
 
     assert_root_projection_sidecar_names_align(
         interpolated_root,
         expected_output_base,
         &expected_media_suffixes,
-        &thumbnails_root,
-        &links_root,
+        &thumbnails_files,
+        &links_files,
     )?;
 
     Ok(())
@@ -1857,13 +1852,11 @@ fn assert_root_projection_sidecar_names_align(
     interpolated_root: &Path,
     expected_output_base: &str,
     expected_media_suffixes: &[String],
-    thumbnails_root: &Path,
-    links_root: &Path,
+    thumbnails_files: &[PathBuf],
+    links_files: &[PathBuf],
 ) -> ExampleResult<()> {
-    let root_projection_files = collect_regular_files_recursive(thumbnails_root)?
-        .into_iter()
-        .chain(collect_regular_files_recursive(links_root)?)
-        .collect::<Vec<_>>();
+    let root_projection_files =
+        thumbnails_files.iter().chain(links_files.iter()).cloned().collect::<Vec<_>>();
 
     if !root_projection_files.iter().all(|path| {
         path.file_name().and_then(|value| value.to_str()).is_some_and(|name| {
@@ -2908,8 +2901,8 @@ mod tests {
         assert!(super::derive_ffprobe_path_from_ffmpeg_command(" ").is_none());
     }
 
-    /// Ensures additive sidecar layout accepts root subtitle + dedicated
-    /// root thumbnail/link projections while `sidecars/` also exists.
+    /// Ensures additive sidecar layout accepts root subtitle + direct root
+    /// thumbnail/link file projections while `sidecars/` also exists.
     #[test]
     fn media_root_sidecars_accept_root_subtitle_file_named_from_output_base() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -2917,21 +2910,12 @@ mod tests {
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
-            .expect("create thumbnails folder");
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
-            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
+        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].thumbnail.jpg"), b"jpg")
+            .expect("write thumbnail");
         std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
-                .join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"),
-            b"jpg",
-        )
-        .expect("write thumbnail");
-        std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
-                .join("Artist - Title [youtube.dQw4w9WgXcQ].url"),
+            root.join("Artist - Title [youtube.dQw4w9WgXcQ].link.url"),
             b"[InternetShortcut]",
         )
         .expect("write link");
@@ -2948,21 +2932,12 @@ mod tests {
         let root = temp.path();
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
-            .expect("create thumbnails folder");
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
-            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
+        std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].thumbnail.jpg"), b"jpg")
+            .expect("write thumbnail");
         std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
-                .join("Artist - Title [youtube.dQw4w9WgXcQ].jpg"),
-            b"jpg",
-        )
-        .expect("write thumbnail");
-        std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
-                .join("Artist - Title [youtube.dQw4w9WgXcQ].url"),
+            root.join("Artist - Title [youtube.dQw4w9WgXcQ].link.url"),
             b"[InternetShortcut]",
         )
         .expect("write link");
@@ -2981,21 +2956,15 @@ mod tests {
         let output_base = "Artist - Title [youtube.dQw4w9WgXcQ]";
 
         std::fs::create_dir_all(root.join("sidecars")).expect("create sidecars folder");
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER))
-            .expect("create thumbnails folder");
-        std::fs::create_dir_all(root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER))
-            .expect("create links folder");
         std::fs::write(root.join("Artist - Title [youtube.dQw4w9WgXcQ].en.vtt"), b"WEBVTT")
             .expect("write subtitle");
         std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER)
-                .join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].webp"),
+            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].thumbnail.webp"),
             b"webp",
         )
         .expect("write thumbnail");
         std::fs::write(
-            root.join(super::DEMO_MEDIA_ROOT_LINKS_FOLDER)
-                .join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].url"),
+            root.join("Artist - Title (Official Video) [youtube.dQw4w9WgXcQ].link.url"),
             b"[InternetShortcut]",
         )
         .expect("write link");

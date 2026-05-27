@@ -280,11 +280,11 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("DEMO_HIERARCHY_ROOT_TEMPLATE")
             && source.contains("DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE")
             && source.contains("DEMO_LIBRARY_ROOT")
-            && source.contains("DEMO_MEDIA_ROOT_THUMBNAILS_FOLDER")
-            && source.contains("DEMO_MEDIA_ROOT_LINKS_FOLDER")
             && source
                 .contains("intentionally does not instantiate that `folder.<thumbnail_ext>` path")
             && source.contains("media_folder(path=\"\")")
+            && source
+                .contains("Only the sidecars/ folder should use nested directory organization")
             && source.contains(
                 "assert_flat_media_root_sidecar_families(&interpolated_root, &resolved_output_base)"
             )
@@ -292,7 +292,7 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("expected root links projection")
             && source.contains("resolve_interpolated_demo_root")
             && source.contains("DEMO_EXPECTED_VIDEO_ID"),
-        "demo_online should materialize both primary/tagged media outputs, keep dedicated sidecars hierarchy, and preserve preset-like root-sidecar projections"
+        "demo_online should materialize both primary/tagged media outputs, keep dedicated sidecars hierarchy, and preserve preset-like root-sidecar projections with flattened thumbnails/links"
     );
 
     assert!(
