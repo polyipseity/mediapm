@@ -17,9 +17,8 @@ use tracing::info;
 
 use crate::{CasError, Hash, StoredObject};
 
-use super::{
-    FILESYSTEM_MMAP_MIN_BYTES, STORAGE_VERSION, diff_object_path, object_path, write_object_atomic,
-};
+use super::util::write_object_atomic;
+use super::{FILESYSTEM_MMAP_MIN_BYTES, STORAGE_VERSION, diff_object_path, object_path};
 
 /// Message contract for the file-mutation actor.
 #[derive(Debug)]
