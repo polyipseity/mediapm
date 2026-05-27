@@ -12,11 +12,14 @@ use crate::config::{
 };
 use crate::error::MediaPmError;
 
+use super::yt_dlp_inputs::{
+    decode_yt_dlp_output_variant_config, resolve_step_output_binding,
+    yt_dlp_inputs_for_output_variants,
+};
 use super::{
     FfmpegSlotLimits, INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS, VariantProducer,
-    conductor_output_save_mode, decode_yt_dlp_output_variant_config, extract_step_list_args,
-    media_source_uri, resolve_step_output_binding, step_option_input_bindings, step_option_scalar,
-    yt_dlp_inputs_for_output_variants, yt_dlp_step_id,
+    conductor_output_save_mode, extract_step_list_args, media_source_uri,
+    step_option_input_bindings, step_option_scalar, yt_dlp_step_id,
 };
 
 /// Expands one yt-dlp step into one multi-output workflow step.
