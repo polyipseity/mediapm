@@ -4,6 +4,17 @@
 //! merge logic in one place while delegating side effects to dedicated actors:
 //! document loading, workflow-level execution, and CAS-backed state
 //! persistence.
+//!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 1 100
+//! lines. Most non-trivial logic lives in `impl WorkflowCoordinator<C>`
+//! methods that take `&mut self`, plus a set of closely related static
+//! associated functions (topological sort, state merge, impure-timestamp
+//! planning) that reference the coordinator's generic parameter `C`. Splitting
+//! the static helpers into a sibling file would impose `super::` noise on
+//! every call and require threading the `C` bound across file boundaries.
+//! The external `coordinator_tests.rs` already handles test isolation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

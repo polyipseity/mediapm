@@ -3,6 +3,15 @@
 //! This module isolates `${...}` interpolation mechanics from process
 //! execution plumbing so `step_worker.rs` can stay focused on actor/runtime
 //! orchestration.
+//!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 1 400
+//! lines. Every function belongs to one `impl<C> StepWorkerExecutor<C>` block
+//! and takes `&self`, so a child-module split would require `include!()` or a
+//! structural refactor that goes beyond the splitting goal. The cohesion of the
+//! template-rendering concern (parsing, conditionals, zip selectors, JS string
+//! decoding) also argues for keeping this file whole.
 
 use std::collections::BTreeMap;
 use std::path::Path;
