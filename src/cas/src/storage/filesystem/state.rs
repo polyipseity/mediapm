@@ -3,6 +3,16 @@
 //! This module owns [`FileSystemState`], the core in-memory state shared
 //! between all API paths, plus scoring types and pure utility functions used
 //! exclusively by the state implementation.
+//!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 1 700
+//! lines. The entire public surface is the `impl FileSystemState` block (plus
+//! the `impl CasApi for FileSystemState` trait implementation), every method
+//! of which takes `&self` or `&mut self`. Rust does not allow `impl` blocks
+//! to span multiple files without the non-idiomatic `include!()` macro, and
+//! the handful of standalone helper functions at the bottom (< 80 lines) are
+//! too small to justify a separate sibling file. Keep this file whole.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};

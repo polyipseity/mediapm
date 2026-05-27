@@ -5,6 +5,20 @@
 //! processes, and capturing declared outputs. The execution hub interacts with
 //! them through deterministic request/response messages while the coordinator
 //! keeps state merging separate.
+//!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 2 000
+//! lines. Every method in `impl StepWorkerExecutor` takes `&self` or
+//! `&mut self`, giving it access to the private fields of the struct. Rust
+//! does not allow `impl` blocks to span across multiple files (without the
+//! non-idiomatic `include!()` macro), so a child-module split would require
+//! either converting all methods to standalone functions (which would lose the
+//! ergonomics of associated-function call syntax and the implicit access to
+//! `&self`) or using the `include!()` escape hatch (which hides code
+//! structure). Neither trade-off is worth the gain here; keep this file whole
+//! and rely on the template, tests, and future sibling submodules for
+//! genuinely separable concerns.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;

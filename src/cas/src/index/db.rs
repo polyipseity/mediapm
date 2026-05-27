@@ -6,6 +6,15 @@
 //! - schema metadata markers,
 //! - and an optional persisted bloom prefilter.
 //!
+//! # Module structure note
+//!
+//! This file intentionally remains as a single module despite exceeding 1 100
+//! lines. The bulk is one `impl CasIndexDb` block whose methods share direct
+//! access to private `redb` table handles; those handles cannot be passed
+//! across file boundaries without wrapping them in a new type. A child-module
+//! split would require either `include!()` or a significant structural
+//! refactor that goes beyond the splitting goal. Keep this file whole.
+//!
 //! ## Data model boundaries
 //!
 //! - Runtime source of truth is [`IndexState`].
