@@ -376,6 +376,12 @@ is a narrow, documented reason.
     root when payloads are platform-identical), and generated command
     selectors should use `${context.os == "<target>" ? ... | ...}` branches
     that all map to one materialized target,
+  - managed runtime defaults and generated executable paths must resolve via
+    `<tools_dir>/<tool-id>/payload/<os>/...`; do not use or reintroduce
+    legacy `<tools_dir>/<tool-id>/<os>/...` runtime path projection,
+  - when one managed tool depends on another managed tool payload, sync must
+    bundle the dependency payload entries into the dependent tool's own
+    `content_map` so one conductor tool-content record is self-contained,
   - step execution order is the declared `steps` list order,
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under

@@ -84,7 +84,9 @@ Keep these mediapm defaults and path rules intact:
   `MediaPmPaths.tools_dir` automatically propagates into the conductor execution
   pipeline. The conductor tool-content cache is owned exclusively by the
   conductor crate; mediapm must not read from or write to
-  `<tools_dir>/<tool_id>/payload/` directly.
+  `<tools_dir>/<tool_id>/payload/` directly. Runtime defaults and generated
+  managed-tool paths must always resolve through `<tools_dir>/<tool_id>/payload/<os>`;
+  the legacy `<tools_dir>/<tool_id>/<os>` layout is invalid.
 - Runtime dotenv loading uses effective `runtime.env_file` (default
   `<mediapm_dir>/.env`) and keeps a colocated `.gitignore` containing only
   `/.env`.
@@ -171,6 +173,10 @@ For `media.<id>` semantics and runtime reconciliation:
   unless explicit `save = "full"` is needed.
 - Tool requirements may set `ffmpeg_version` on `yt-dlp`, `rsgain`, and
   `media-tagger` (defaulting to inherit/global behavior when omitted).
+  When a managed tool depends on another mediapm-managed tool, fold the
+  dependency payload into the same tool's `content_map` during sync so one
+  conductor tool-content bundle contains both the tool and its mediapm tool
+  dependencies.
 - Metadata entries must be strict per key:
   - literal form: `<key> = "value"`
   - variant-binding form:

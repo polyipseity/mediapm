@@ -489,6 +489,12 @@ Design invariants (implemented in
   ZIP payloads. `./` (or `.\\`) means the ZIP is unpacked directly into
   `payload/`.
 
+- **Bundled tool content**: one managed tool record should carry the tool's
+  own payload bytes and any mediapm-required dependent payload bytes together
+  in the same `tool_content_map`. Do not model dependent binaries by pointing
+  one tool at another tool's cache entry or by reading runtime files from the
+  sibling `<entry>` directory; `payload/` is the only runtime source of truth.
+
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is
   refreshed on every cache hit. `prune_expired_tool_content_cache_entries` is
   called best-effort at the start of each `prepare_tool_content_cache` call;
