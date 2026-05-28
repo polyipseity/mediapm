@@ -24,6 +24,7 @@ use mediapm_cas::Hash;
 
 pub use node::ConductorActorClient;
 pub use node::spawn_conductor_actor;
+pub use profiler::print_profile_timing;
 
 /// Public conductor API facade backed by a lazily spawned ractor node.
 pub struct SimpleConductor<C>

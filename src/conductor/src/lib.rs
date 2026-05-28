@@ -43,6 +43,7 @@ pub use model::state::{
 };
 pub use orchestration::SimpleConductor;
 pub use orchestration::config::ENV_PROFILE_OUTPUT_PATH;
+pub use orchestration::print_profile_timing;
 pub use tools::downloader::{
     UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
     default_user_download_cache_root, use_user_download_cache_enabled,
