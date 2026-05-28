@@ -248,6 +248,14 @@ fn copy_directory_recursive(source_dir: &Path, target_dir: &Path) -> Result<(), 
                 format!("creating parent directory '{}' failed: {err}", parent.display())
             })?;
         }
+
+        // Prefer hard-linking (near-instant metadata-only operation) so the
+        // sandbox setup cost is independent of payload size. Fall back to a
+        // byte-for-byte copy only when the link fails (e.g. cross-device).
+        if fs::hard_link(&path, &target_path).is_ok() {
+            continue;
+        }
+
         fs::copy(&path, &target_path).map_err(|err| {
             format!("copying '{}' to '{}' failed: {err}", path.display(), target_path.display())
         })?;
