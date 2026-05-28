@@ -650,7 +650,7 @@ pub async fn sync_hierarchy(
             multi
                 .add_bar(100)
                 .with_message(&format!("worker#{worker_index}: queued"))
-                .with_format("{msg}  [{bar:18}]  {pct}")
+                .with_format("{msg}  [{bar:18}]  {pct}  {elapsed}")
         })
         .collect::<Vec<_>>();
 
@@ -717,6 +717,15 @@ pub async fn sync_hierarchy(
                 )
                 .await;
 
+                if prepared.is_err() {
+                    worker_bar.set_position(100);
+                    worker_bar.set_message(&format!(
+                        "worker#{worker_index}: failed {} '{}'",
+                        hierarchy_entry_kind_label(flattened_entry.entry.kind),
+                        flattened_entry.path
+                    ));
+                }
+
                 let _ = sender.send((job_index, prepared));
             }
 
@@ -736,6 +745,9 @@ pub async fn sync_hierarchy(
 
         hierarchy_progress.advance(1);
         completed_entries += 1;
+        hierarchy_progress.set_message(&format!(
+            "syncing hierarchy ({worker_count} concurrent workers, prepared {completed_entries}/{total_entries})"
+        ));
 
         match prepared_result {
             Ok(prepared) => {
