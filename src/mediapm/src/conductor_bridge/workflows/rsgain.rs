@@ -330,6 +330,15 @@ pub(super) fn synthesize_rsgain_step_chain(
         metadata_export_inputs
             .insert("codec_copy".to_string(), InputBinding::String("true".to_string()));
         metadata_export_inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
+        // Suppress all stream processing: the ffmetadata output format reads
+        // only the container-level global metadata (tags and chapters) from the
+        // file header without demuxing any encoded frames.  Omitting these flags
+        // causes FFmpeg to transcode or probe every audio frame, adding ~28 s of
+        // unnecessary processing on large inputs.
+        metadata_export_inputs.insert("an".to_string(), InputBinding::String("true".to_string()));
+        metadata_export_inputs.insert("vn".to_string(), InputBinding::String("true".to_string()));
+        metadata_export_inputs.insert("sn".to_string(), InputBinding::String("true".to_string()));
+        metadata_export_inputs.insert("dn".to_string(), InputBinding::String("true".to_string()));
 
         workflow.steps.push(WorkflowStepSpec {
             id: metadata_export_step_id.clone(),
