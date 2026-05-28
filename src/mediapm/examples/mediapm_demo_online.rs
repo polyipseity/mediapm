@@ -700,47 +700,37 @@ fn remove_dir_all_with_retry(path: &Path) -> ExampleResult<()> {
     }
 }
 
-/// Best-effort recursive readonly-bit clearing for Windows cleanup retries.
+/// Best-effort recursive readonly-bit clearing for cleanup retries.
 ///
-/// Some tool archives mark extracted files/directories as readonly, which can
-/// make `remove_dir_all` fail with `PermissionDenied` on repeat demo runs.
-/// Clearing readonly flags before the next retry keeps cleanup deterministic
-/// without failing when metadata probing itself encounters transient locks.
-#[cfg_attr(
-    windows,
-    expect(
-        clippy::permissions_set_readonly_false,
-        reason = "Windows cleanup retries must clear readonly flags on downloaded artifacts so repeated demo runs can remove prior trees"
-    )
+/// The materializer marks output directories and files as readonly after a
+/// successful sync so accidental edits are caught early.  On repeated demo
+/// runs `remove_dir_all` then fails because it cannot remove entries from a
+/// readonly directory.  Stripping readonly bits recursively before the retry
+/// lets cleanup succeed on all platforms.
+#[expect(
+    clippy::permissions_set_readonly_false,
+    reason = "cleanup retries must clear readonly flags on artifacts so repeated demo runs can remove prior trees"
 )]
 fn clear_readonly_bits_recursively(path: &Path) {
-    #[cfg(not(windows))]
-    {
-        let _ = path;
+    if !path.exists() {
+        return;
     }
 
-    #[cfg(windows)]
-    {
-        if !path.exists() {
-            return;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(next) = stack.pop() {
+        if let Ok(metadata) = fs::metadata(&next) {
+            let mut permissions = metadata.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(&next, permissions);
+            }
         }
 
-        let mut stack = vec![path.to_path_buf()];
-        while let Some(next) = stack.pop() {
-            if let Ok(metadata) = fs::metadata(&next) {
-                let mut permissions = metadata.permissions();
-                if permissions.readonly() {
-                    permissions.set_readonly(false);
-                    let _ = fs::set_permissions(&next, permissions);
-                }
-            }
-
-            if next.is_dir()
-                && let Ok(entries) = fs::read_dir(&next)
-            {
-                for entry in entries.flatten() {
-                    stack.push(entry.path());
-                }
+        if next.is_dir()
+            && let Ok(entries) = fs::read_dir(&next)
+        {
+            for entry in entries.flatten() {
+                stack.push(entry.path());
             }
         }
     }
@@ -2728,6 +2718,15 @@ mod tests {
         let mut file_permissions = std::fs::metadata(&nested).expect("metadata").permissions();
         file_permissions.set_readonly(true);
         std::fs::set_permissions(&nested, file_permissions).expect("set readonly on file");
+
+        // Also mark the parent directory readonly: on Unix this prevents
+        // remove_dir_all from removing entries inside it, which is the real
+        // scenario caused by the materializer's ensure_managed_path_readonly.
+        let nested_dir = nested.parent().expect("parent");
+        let mut dir_permissions =
+            std::fs::metadata(nested_dir).expect("dir metadata").permissions();
+        dir_permissions.set_readonly(true);
+        std::fs::set_permissions(nested_dir, dir_permissions).expect("set readonly on dir");
 
         super::clear_readonly_bits_recursively(&tree_root);
         super::remove_dir_all_with_retry(&tree_root).expect("retrying remove should succeed");
