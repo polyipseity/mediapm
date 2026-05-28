@@ -28,7 +28,7 @@ use super::{
 };
 
 /// Protects managed ffprobe metadata lookup by resolving relative command
-/// selectors under the active managed ffmpeg tool root.
+/// selectors under the active managed ffmpeg payload root.
 #[test]
 fn resolve_managed_ffprobe_path_anchors_relative_selector_to_tool_root() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -53,7 +53,7 @@ fn resolve_managed_ffprobe_path_anchors_relative_selector_to_tool_root() {
     let managed_ffprobe_path = paths
         .tools_dir
         .join(&ffmpeg_tool_id)
-        .join("windows/ffmpeg-master-latest-win64-gpl-shared/bin")
+        .join("payload/windows/ffmpeg-master-latest-win64-gpl-shared/bin")
         .join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
     fs::create_dir_all(managed_ffprobe_path.parent().expect("ffprobe parent directory"))
         .expect("create managed ffprobe parent directory");
@@ -68,7 +68,7 @@ fn resolve_managed_ffprobe_path_anchors_relative_selector_to_tool_root() {
     let expected = paths
         .tools_dir
         .join(ffmpeg_tool_id)
-        .join("windows/ffmpeg-master-latest-win64-gpl-shared/bin")
+        .join("payload/windows/ffmpeg-master-latest-win64-gpl-shared/bin")
         .join(expected_file_name);
 
     assert_eq!(resolved, expected);
@@ -76,7 +76,7 @@ fn resolve_managed_ffprobe_path_anchors_relative_selector_to_tool_root() {
 
 /// Protects managed ffprobe lookup when only payload-layout binaries exist.
 #[test]
-fn resolve_managed_ffprobe_path_falls_back_to_payload_layout() {
+fn resolve_managed_ffprobe_path_requires_payload_layout() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
 

@@ -232,11 +232,9 @@ pub(super) fn resolve_ffmpeg_executable() -> String {
 
 /// Resolves one ffmpeg executable path from an optional configured override.
 ///
-/// When a configured path is present, this checks:
-/// 1. the configured path as-is,
-/// 2. one alternate managed-tool layout path with toggled `payload/` segment.
-///
-/// If neither exists, the configured value is preserved for diagnostics.
+/// Managed runtime paths are expected to already target the conductor
+/// `payload/` layout. The configured value is preserved as-is for diagnostics;
+/// no alternate layout rewrite is attempted.
 #[must_use]
 pub(super) fn resolve_ffmpeg_executable_from_configured_path(
     configured_path: Option<&str>,
@@ -252,39 +250,5 @@ pub(super) fn resolve_ffmpeg_executable_from_configured_path(
         return configured;
     }
 
-    if let Some(alternate) = alternate_managed_ffmpeg_layout_path(&configured)
-        && Path::new(&alternate).is_file()
-    {
-        return alternate;
-    }
-
     configured
-}
-
-/// Derives one alternate managed ffmpeg executable path across tool layouts.
-///
-/// Managed tool runs can transition between these two forms:
-/// - `<...>/tools/<tool-id>/payload/<os>/ffmpeg`
-/// - `<...>/tools/<tool-id>/<os>/ffmpeg`
-///
-/// This helper toggles between the two so media-tagger can recover from
-/// transient layout timing differences during sync/bootstrap.
-#[must_use]
-pub(super) fn alternate_managed_ffmpeg_layout_path(configured_path: &str) -> Option<String> {
-    let normalized = configured_path.trim().replace('\\', "/");
-    if normalized.is_empty() {
-        return None;
-    }
-
-    if let Some((prefix, suffix)) = normalized.split_once("/payload/") {
-        return Some(format!("{prefix}/{suffix}"));
-    }
-
-    let tools_marker = "/tools/";
-    let tools_index = normalized.find(tools_marker)?;
-    let after_tools = &normalized[tools_index + tools_marker.len()..];
-    let tool_id_end = after_tools.find('/')?;
-    let insert_at = tools_index + tools_marker.len() + tool_id_end + 1;
-
-    Some(format!("{}payload/{}", &normalized[..insert_at], &normalized[insert_at..]))
 }

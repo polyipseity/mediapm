@@ -445,11 +445,9 @@ fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmE
 
 /// Resolves host ffprobe path from active managed ffmpeg executable selector.
 ///
-/// Resolution accepts both managed tool layouts:
-/// - `<...>/tools/<tool-id>/<os>/...`
-/// - `<...>/tools/<tool-id>/payload/<os>/...`
-///
-/// The returned path always points to an existing file.
+/// Resolution always projects the selector into the conductor `payload/`
+/// layout, which is the only supported runtime location for managed tool
+/// content.
 #[must_use]
 pub(super) fn resolve_managed_ffprobe_path(
     paths: &MediaPmPaths,
@@ -471,7 +469,7 @@ pub(super) fn resolve_managed_ffprobe_path(
     let ffmpeg_path = if ffmpeg_selector_path.is_absolute() {
         ffmpeg_selector_path
     } else {
-        paths.tools_dir.join(ffmpeg_tool_id).join(ffmpeg_selector_path)
+        paths.tools_dir.join(ffmpeg_tool_id).join("payload").join(ffmpeg_selector_path)
     };
     let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
 
@@ -479,30 +477,7 @@ pub(super) fn resolve_managed_ffprobe_path(
         .parent()
         .map_or_else(|| PathBuf::from(ffprobe_file_name), |parent| parent.join(ffprobe_file_name));
 
-    if candidate.is_file() {
-        return Some(candidate);
-    }
-
-    let alternate = alternate_managed_tool_layout_path(&candidate)?;
-    alternate.is_file().then_some(alternate)
-}
-
-/// Derives one alternate managed-tool path across payload/non-payload layouts.
-#[must_use]
-fn alternate_managed_tool_layout_path(candidate: &Path) -> Option<PathBuf> {
-    let normalized = candidate.to_string_lossy().replace('\\', "/");
-
-    if let Some((prefix, suffix)) = normalized.split_once("/payload/") {
-        return Some(PathBuf::from(format!("{prefix}/{suffix}")));
-    }
-
-    let tools_marker = "/tools/";
-    let tools_index = normalized.find(tools_marker)?;
-    let after_tools = &normalized[tools_index + tools_marker.len()..];
-    let tool_id_end = after_tools.find('/')?;
-    let insert_at = tools_index + tools_marker.len() + tool_id_end + 1;
-
-    Some(PathBuf::from(format!("{}payload/{}", &normalized[..insert_at], &normalized[insert_at..])))
+    candidate.is_file().then_some(candidate)
 }
 
 /// Resolves a command selector expression to the host-specific path.

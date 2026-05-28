@@ -19,7 +19,6 @@ use self::tool_config::{
     resolve_yt_dlp_js_runtime_path, should_set_yt_dlp_ffmpeg_location,
     should_set_yt_dlp_js_runtimes, write_generated_runtime_env_file,
 };
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::sync::Arc;
@@ -49,6 +48,7 @@ use super::util::now_unix_seconds;
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
+#[allow(clippy::single_match, clippy::collapsible_if)]
 pub(crate) async fn reconcile_desired_tools(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
@@ -137,12 +137,13 @@ pub(crate) async fn reconcile_desired_tools(
             ))
         })?;
         report.warnings.extend(provisioned.warnings.clone());
-        let mut effective_content_entries = provisioned.content_entries.clone();
+        let mut effective_content_entries: BTreeMap<
+            String,
+            crate::tools::downloader::ContentMapSource,
+        > = provisioned.content_entries.clone();
         let mut desired_tool_id = provisioned.tool_id.clone();
-        let mut media_tagger_ffmpeg_content_map = BTreeMap::new();
+        #[allow(unused_assignments)]
         let mut media_tagger_ffmpeg_host_command_path: Option<String> = None;
-        let mut companion_ffmpeg_content_map = BTreeMap::new();
-        let mut companion_ffmpeg_host_command_path: Option<String> = None;
 
         if name.eq_ignore_ascii_case("media-tagger") {
             let ffmpeg_selection = resolve_media_tagger_ffmpeg_selection(
@@ -157,29 +158,24 @@ pub(crate) async fn reconcile_desired_tools(
                 &desired_tool_id,
                 &ffmpeg_selection.selector,
             );
-            media_tagger_ffmpeg_content_map = ffmpeg_selection.existing_content_map;
             media_tagger_ffmpeg_host_command_path = ffmpeg_selection.host_command_path;
             for (entry_key, entry_source) in ffmpeg_selection.provisioned_content_entries {
                 effective_content_entries.entry(entry_key).or_insert(entry_source);
             }
         }
 
-        if name.eq_ignore_ascii_case("yt-dlp")
-            && let Some(companion_selection) = resolve_companion_ffmpeg_selection(
-                paths,
-                "yt-dlp",
-                requirement,
-                &provisioned_snapshot,
-                lock,
-                &machine,
-            )?
-        {
-            companion_ffmpeg_content_map = companion_selection.existing_content_map;
-            companion_ffmpeg_host_command_path = companion_selection.host_command_path;
+        let companion_selection = resolve_companion_ffmpeg_selection(
+            paths,
+            "yt-dlp",
+            requirement,
+            &provisioned_snapshot,
+            lock,
+            &machine,
+        )?;
+        let companion_ffmpeg_host_command_path = companion_selection.host_command_path;
 
-            for (entry_key, entry_source) in companion_selection.provisioned_content_entries {
-                effective_content_entries.entry(entry_key).or_insert(entry_source);
-            }
+        for (entry_key, entry_source) in companion_selection.provisioned_content_entries {
+            effective_content_entries.entry(entry_key).or_insert(entry_source);
         }
 
         desired_tool_ids.insert(desired_tool_id.clone());
@@ -212,26 +208,9 @@ pub(crate) async fn reconcile_desired_tools(
             ),
             ffmpeg_slot_limits,
         );
-        if name.eq_ignore_ascii_case("media-tagger") {
-            for (relative_path, multihash) in media_tagger_ffmpeg_content_map {
-                desired_config
-                    .content_map
-                    .get_or_insert_with(BTreeMap::new)
-                    .entry(relative_path)
-                    .or_insert(multihash);
-            }
-        }
         if name.eq_ignore_ascii_case("yt-dlp") {
-            for (relative_path, multihash) in companion_ffmpeg_content_map {
-                desired_config
-                    .content_map
-                    .get_or_insert_with(BTreeMap::new)
-                    .entry(relative_path)
-                    .or_insert(multihash);
-            }
-
-            if let Some(ffmpeg_path) = companion_ffmpeg_host_command_path
-                && should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults)
+            if should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults)
+                && let Some(ffmpeg_path) = companion_ffmpeg_host_command_path
             {
                 desired_config
                     .input_defaults

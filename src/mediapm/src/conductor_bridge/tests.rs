@@ -1060,14 +1060,14 @@ fn tool_spec_has_binary_reads_executable_path() {
 }
 
 /// Protects direct-run selector resolution by honoring active logical-name
-/// mappings and resolving the installed executable under the managed tool root.
+/// mappings and resolving the executable under the managed tool payload root.
 #[test]
 fn resolve_managed_tool_target_uses_active_logical_name_mapping() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let tool_id = "mediapm.tools.ffmpeg+example-source@1.2.3".to_string();
     let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
-    let binary_path = paths.tools_dir.join(&tool_id).join(relative_command);
+    let binary_path = paths.tools_dir.join(&tool_id).join("payload").join(relative_command);
     fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
     fs::write(&binary_path, b"stub binary").expect("write managed binary");
 
@@ -1108,7 +1108,7 @@ fn resolve_managed_tool_target_rejects_ambiguous_logical_name_selector() {
 
     let mut machine = MachineNickelDocument::default();
     for tool_id in tool_ids {
-        let binary_path = paths.tools_dir.join(tool_id).join(relative_command);
+        let binary_path = paths.tools_dir.join(tool_id).join("payload").join(relative_command);
         fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
         fs::write(&binary_path, b"stub binary").expect("write managed binary");
         machine.tools.insert(

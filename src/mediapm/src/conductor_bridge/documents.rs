@@ -243,7 +243,8 @@ pub(crate) fn resolve_managed_tool_executable_target(
         ))
     })?;
 
-    let command_path = paths.tools_dir.join(&resolved_tool_id).join(Path::new(&relative));
+    let command_path =
+        paths.tools_dir.join(&resolved_tool_id).join("payload").join(Path::new(&relative));
     if !command_path.is_file() {
         return Err(MediaPmError::Workflow(format!(
             "managed tool binary for '{resolved_tool_id}' is missing at '{}'",

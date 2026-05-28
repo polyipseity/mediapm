@@ -514,16 +514,16 @@ fn media_tagger_ffmpeg_content_keys_are_namespaced() {
     assert_eq!(media_tagger_ffmpeg_content_key("ffmpeg/linux/ffmpeg"), "ffmpeg/linux/ffmpeg");
 }
 
-/// Verifies media-tagger ffmpeg env path prefers absolute managed-tool binary
-/// paths when the selected companion tool is installed locally.
+/// Verifies media-tagger ffmpeg env path resolves payload-layout binary paths
+/// for installed managed tools.
 #[test]
-fn resolve_managed_tool_command_absolute_path_prefers_installed_tool_binary() {
+fn resolve_managed_tool_command_absolute_path_prefers_payload_layout() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1";
     let relative = "windows/bin/ffmpeg.exe";
 
-    let absolute = paths.tools_dir.join(tool_id).join(relative);
+    let absolute = paths.tools_dir.join(tool_id).join("payload").join(relative);
     std::fs::create_dir_all(absolute.parent().expect("parent dir")).expect("mkdirs");
     std::fs::write(&absolute, b"ffmpeg").expect("write fake ffmpeg binary");
 
@@ -534,7 +534,7 @@ fn resolve_managed_tool_command_absolute_path_prefers_installed_tool_binary() {
 }
 
 /// Verifies media-tagger namespaced ffmpeg selectors resolve to the same
-/// installed managed-tool binary path.
+/// payload-layout managed-tool binary path.
 #[test]
 fn resolve_managed_tool_command_absolute_path_accepts_media_tagger_namespaced_paths() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -543,7 +543,7 @@ fn resolve_managed_tool_command_absolute_path_accepts_media_tagger_namespaced_pa
     let installed_relative = "windows/bin/ffmpeg.exe";
     let namespaced_relative = "ffmpeg/windows/bin/ffmpeg.exe";
 
-    let absolute = paths.tools_dir.join(tool_id).join(installed_relative);
+    let absolute = paths.tools_dir.join(tool_id).join("payload").join(installed_relative);
     std::fs::create_dir_all(absolute.parent().expect("parent dir")).expect("mkdirs");
     std::fs::write(&absolute, b"ffmpeg").expect("write fake ffmpeg binary");
 
@@ -727,26 +727,33 @@ fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
         &lock,
         &machine,
     )
-    .expect("companion selection should succeed")
-    .expect("selection should be present");
+    .expect("companion selection should succeed");
 
     assert!(selection.provisioned_content_entries.is_empty());
-    assert!(selection.existing_content_map.contains_key("windows/ffmpeg/bin/ffmpeg.exe"));
+    let expected_host_path = paths
+        .tools_dir
+        .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
+        .join("payload")
+        .join("windows/ffmpeg/bin");
+    assert_eq!(
+        selection.host_command_path.as_deref(),
+        Some(expected_host_path.to_string_lossy().as_ref())
+    );
 }
 
-/// Verifies companion ffmpeg linkage falls back to existing provisioner install
-/// layout when payload cache paths are not materialized yet.
+/// Verifies companion ffmpeg linkage resolves payload-layout paths for
+/// installed managed tools.
 #[test]
-fn companion_ffmpeg_selection_uses_existing_download_layout_when_payload_missing() {
+fn companion_ffmpeg_selection_uses_payload_layout() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1";
     let host_os = current_tool_os().as_str();
     let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
 
-    let download_dir = paths.tools_dir.join(tool_id).join(host_os);
-    std::fs::create_dir_all(&download_dir).expect("create tool download dir");
-    std::fs::write(download_dir.join(ffmpeg_file_name), b"ffmpeg").expect("write ffmpeg");
+    let payload_dir = paths.tools_dir.join(tool_id).join("payload").join(host_os);
+    std::fs::create_dir_all(&payload_dir).expect("create tool payload dir");
+    std::fs::write(payload_dir.join(ffmpeg_file_name), b"ffmpeg").expect("write ffmpeg");
 
     let requirement = ToolRequirement {
         version: None,
@@ -784,26 +791,25 @@ fn companion_ffmpeg_selection_uses_existing_download_layout_when_payload_missing
         &lock,
         &machine,
     )
-    .expect("companion selection should succeed")
-    .expect("selection should be present");
+    .expect("companion selection should succeed");
 
     assert_eq!(
         selection.host_command_path.as_deref(),
-        Some(download_dir.to_string_lossy().as_ref())
+        Some(payload_dir.to_string_lossy().as_ref())
     );
 }
 
-/// Verifies yt-dlp js runtime resolution falls back to one existing download
-/// layout path when payload cache paths are absent.
+/// Verifies yt-dlp js runtime resolution resolves payload-layout paths only.
 #[test]
-fn resolve_yt_dlp_js_runtime_path_uses_existing_download_layout_when_payload_missing() {
+fn resolve_yt_dlp_js_runtime_path_uses_payload_layout() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest";
     let host_os = current_tool_os().as_str();
     let runtime_file_name = if cfg!(windows) { "deno.exe" } else { "deno" };
 
-    let runtime_path = paths.tools_dir.join(tool_id).join(host_os).join(runtime_file_name);
+    let runtime_path =
+        paths.tools_dir.join(tool_id).join("payload").join(host_os).join(runtime_file_name);
     std::fs::create_dir_all(runtime_path.parent().expect("runtime parent")).expect("mkdir");
     std::fs::write(&runtime_path, b"deno").expect("write runtime");
 

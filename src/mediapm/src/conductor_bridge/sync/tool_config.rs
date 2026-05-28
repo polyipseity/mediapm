@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mediapm_cas::Hash;
 use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
 
 use crate::config::{ToolRequirement, normalize_selector_compare_value, normalize_selector_value};
@@ -165,11 +164,11 @@ pub(super) fn resolve_host_command_selector_path(command_selector: &str) -> Opti
 
 /// Resolves the concrete bundled `deno` executable path for managed yt-dlp.
 ///
-/// Resolution prefers the conductor `payload/` cache path when available, then
-/// falls back to the provisioner install layout under the tool root.
+/// Resolution returns the managed `payload/` path layout only.
 ///
-/// Returning an existing path avoids stale defaults during bootstrap windows
-/// where tool binaries may exist only in one layout.
+/// The discovery step may probe the download-install tree to locate the file,
+/// but any returned path is rewritten into the conductor cache tree before it
+/// leaves this helper.
 #[must_use]
 pub(super) fn resolve_yt_dlp_js_runtime_path(
     paths: &MediaPmPaths,
@@ -180,20 +179,25 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
     let payload_root = tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
     let payload_os_root = payload_root.join(current_tool_os().as_str());
 
-    // Search the conductor payload directory first (populated after the first
-    // workflow run); this is the stable long-term location.
     if let Some(found) = find_file_named_in_tree(&payload_os_root, runtime_file_name)
         .or_else(|| find_file_named_in_tree(&payload_root, runtime_file_name))
     {
         return Some(found.to_string_lossy().to_string());
     }
 
-    // Fall back to the provisioner download install root (present after
-    // `tools sync` before the first conductor run creates `payload/`).
     let download_os_root = tool_root.join(current_tool_os().as_str());
     find_file_named_in_tree(&download_os_root, runtime_file_name)
         .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))
-        .map(|found| found.to_string_lossy().to_string())
+        .and_then(|found| {
+            let relative = found.strip_prefix(&tool_root).ok()?;
+            Some(
+                tool_root
+                    .join(CONDUCTOR_TOOL_PAYLOAD_DIR)
+                    .join(relative)
+                    .to_string_lossy()
+                    .to_string(),
+            )
+        })
 }
 
 /// Returns whether managed yt-dlp should receive a synthesized `js_runtimes` default.
@@ -216,19 +220,15 @@ pub(super) struct MediaTaggerFfmpegSelection {
     pub(super) selector: String,
     /// Optional provisioned payload entries for selected ffmpeg content.
     pub(super) provisioned_content_entries: BTreeMap<String, ContentMapSource>,
-    /// Existing machine content-map entries for selected ffmpeg payload.
-    pub(super) existing_content_map: BTreeMap<String, Hash>,
     /// Host-resolved ffmpeg executable path for media-tagger subprocess env.
     pub(super) host_command_path: Option<String>,
 }
 
 /// Resolved companion ffmpeg linkage for tools that invoke ffmpeg subprocesses.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct CompanionFfmpegSelection {
     /// Optional provisioned payload entries for selected ffmpeg content.
     pub(super) provisioned_content_entries: BTreeMap<String, ContentMapSource>,
-    /// Existing machine content-map entries for selected ffmpeg payload.
-    pub(super) existing_content_map: BTreeMap<String, Hash>,
     /// Host-resolved ffmpeg executable path for companion tool arguments.
     pub(super) host_command_path: Option<String>,
 }
@@ -272,7 +272,7 @@ pub(super) fn normalize_managed_tool_relative_command_path(
 /// Resolves an absolute managed-tool command path from one relative selector path.
 ///
 /// Returns `None` when no tool id is provided or when the candidate path does not
-/// currently exist as a regular file under `paths.tools_dir/<tool_id>/`.
+/// currently exist as a regular file under `paths.tools_dir/<tool_id>/payload/`.
 ///
 /// For media-tagger ffmpeg linkage, this also accepts namespaced selectors such
 /// as `ffmpeg/windows/...` and resolves them against the selected managed ffmpeg
@@ -291,7 +291,7 @@ pub(super) fn resolve_managed_tool_command_absolute_path(
 
     let relative = normalize_managed_tool_relative_command_path(relative_command_path)?;
 
-    let candidate = paths.tools_dir.join(tool_id).join(Path::new(&relative));
+    let candidate = paths.tools_dir.join(tool_id).join("payload").join(Path::new(&relative));
     if candidate.is_file() { Some(candidate.to_string_lossy().replace('\\', "/")) } else { None }
 }
 
@@ -324,20 +324,11 @@ fn prefix_media_tagger_ffmpeg_content_entries(
         .collect()
 }
 
-/// Prefixes ffmpeg hash-only content-map rows for media-tagger tool rows.
-#[must_use]
-fn prefix_media_tagger_ffmpeg_hash_map(entries: &BTreeMap<String, Hash>) -> BTreeMap<String, Hash> {
-    entries.iter().map(|(path, hash)| (media_tagger_ffmpeg_content_key(path), *hash)).collect()
-}
-
 /// Resolves the ffmpeg payload that media-tagger should bind to.
 ///
 /// Selection priority honors `tools.media-tagger.dependencies.ffmpeg_version`: explicit
 /// selector first, otherwise inherited active/provisioned ffmpeg.
-#[expect(
-    clippy::too_many_lines,
-    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-)]
+#[allow(clippy::too_many_lines)]
 pub(super) fn resolve_media_tagger_ffmpeg_selection(
     paths: &MediaPmPaths,
     requirement: &ToolRequirement,
@@ -362,13 +353,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
                 }),
                 provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
                     &payload.content_entries,
-                ),
-                existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
-                    &machine
-                        .tool_configs
-                        .get(&payload.tool_id)
-                        .and_then(|config| config.content_map.clone())
-                        .unwrap_or_default(),
                 ),
                 host_command_path: resolve_host_command_selector_path(&payload.command_selector),
             });
@@ -424,13 +408,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
         return Ok(MediaTaggerFfmpegSelection {
             selector: selected_selector,
             provisioned_content_entries: BTreeMap::new(),
-            existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
-                &machine
-                    .tool_configs
-                    .get(&selected_tool_id)
-                    .and_then(|config| config.content_map.clone())
-                    .unwrap_or_default(),
-            ),
             host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
                 paths,
                 machine,
@@ -451,13 +428,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
             selector,
             provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
                 &payload.content_entries,
-            ),
-            existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
-                &machine
-                    .tool_configs
-                    .get(&payload.tool_id)
-                    .and_then(|config| config.content_map.clone())
-                    .unwrap_or_default(),
             ),
             host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
                 paths,
@@ -490,13 +460,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
     Ok(MediaTaggerFfmpegSelection {
         selector,
         provisioned_content_entries: BTreeMap::new(),
-        existing_content_map: prefix_media_tagger_ffmpeg_hash_map(
-            &machine
-                .tool_configs
-                .get(active_ffmpeg_tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
-        ),
         host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
             paths,
             machine,
@@ -508,11 +471,9 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
 /// Resolves optional ffmpeg linkage for companion tools like `yt-dlp`.
 ///
 /// Selection priority honors `<tool>.dependencies.ffmpeg_version`: explicit selector first,
-/// then inherited active/provisioned ffmpeg payload when available.
-#[expect(
-    clippy::too_many_lines,
-    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-)]
+/// then inherited active/provisioned ffmpeg payload when available. The returned
+/// payload bytes are bundled into the current tool's own content map instead of
+/// referencing another tool's content cache entry.
 pub(super) fn resolve_companion_ffmpeg_selection(
     paths: &MediaPmPaths,
     logical_tool_name: &str,
@@ -520,7 +481,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaLockFile,
     machine: &MachineNickelDocument,
-) -> Result<Option<CompanionFfmpegSelection>, MediaPmError> {
+) -> Result<CompanionFfmpegSelection, MediaPmError> {
     let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
         !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
     });
@@ -531,15 +492,10 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         if let Some(payload) = provisioned_snapshot.get("ffmpeg")
             && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
         {
-            return Ok(Some(CompanionFfmpegSelection {
+            return Ok(CompanionFfmpegSelection {
                 provisioned_content_entries: payload.content_entries.clone(),
-                existing_content_map: machine
-                    .tool_configs
-                    .get(&payload.tool_id)
-                    .and_then(|config| config.content_map.clone())
-                    .unwrap_or_default(),
                 host_command_path: resolve_host_command_selector_path(&payload.command_selector),
-            }));
+            });
         }
 
         let mut candidates = lock
@@ -585,65 +541,47 @@ pub(super) fn resolve_companion_ffmpeg_selection(
             })?
         };
 
-        return Ok(Some(CompanionFfmpegSelection {
+        return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: BTreeMap::new(),
-            existing_content_map: machine
-                .tool_configs
-                .get(&selected_tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
             host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
                 paths,
                 machine,
                 &selected_tool_id,
             ),
-        }));
+        });
     }
 
     if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
-        return Ok(Some(CompanionFfmpegSelection {
+        return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: payload.content_entries.clone(),
-            existing_content_map: machine
-                .tool_configs
-                .get(&payload.tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
             host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
                 paths,
                 machine,
                 &payload.tool_id,
             ),
-        }));
+        });
     }
 
     if let Some(active_ffmpeg_tool_id) = lock.active_tools.get("ffmpeg")
         && machine.tools.contains_key(active_ffmpeg_tool_id)
     {
-        return Ok(Some(CompanionFfmpegSelection {
+        return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: BTreeMap::new(),
-            existing_content_map: machine
-                .tool_configs
-                .get(active_ffmpeg_tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
             host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
                 paths,
                 machine,
                 active_ffmpeg_tool_id,
             ),
-        }));
+        });
     }
 
-    Ok(None)
+    Ok(CompanionFfmpegSelection::default())
 }
 
 /// Resolves host ffmpeg directory path from one machine-managed tool spec.
 ///
-/// Resolution prefers an existing conductor `payload/` path and falls back to
-/// an existing provisioner install-layout path under the tool root.
-///
-/// Returning only existing directories prevents generated runtime defaults from
-/// pointing to non-existent `payload/` paths during first-run bootstrap.
+/// Resolution always projects the selector into the conductor `payload/`
+/// layout so generated defaults never point at the download-install root.
 #[must_use]
 fn resolve_host_ffmpeg_command_path_from_machine_tool(
     paths: &MediaPmPaths,
@@ -661,55 +599,21 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
     }
 
     let ffmpeg_selector_path = PathBuf::from(resolve_host_command_selector_path(selector)?);
-    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    let tool_root = paths.tools_dir.join(tool_id);
+    let tool_root = paths.tools_dir.join(tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
 
-    // Absolute selectors have no payload-relative equivalent; check directly.
     if ffmpeg_selector_path.is_absolute() {
         let candidate_dir = ffmpeg_selector_path
             .parent()
             .map_or_else(|| ffmpeg_selector_path.clone(), Path::to_path_buf);
-        return managed_ffmpeg_directory_contains_executable(&candidate_dir)
-            .then(|| candidate_dir.to_string_lossy().to_string());
+        return Some(candidate_dir.to_string_lossy().to_string());
     }
 
-    // The conductor tool-content cache always materialises binaries under a
-    // `payload/` subdirectory of the tool entry directory.  Always resolve
-    // through `payload/` so the stored path remains valid after the conductor
-    // wipes and re-extracts the entry directory on the first cache-miss run.
-    let payload_root = tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
-    let payload_candidate_dir = payload_root
-        .join(&ffmpeg_selector_path)
-        .parent()
-        .map_or_else(|| payload_root.join(&ffmpeg_selector_path), Path::to_path_buf);
-
-    // Payload directory is already populated (cache warm after the first run).
-    if managed_ffmpeg_directory_contains_executable(&payload_candidate_dir) {
-        return Some(payload_candidate_dir.to_string_lossy().to_string());
-    }
-
-    // Tool was just provisioned by `tools sync` — the download install root
-    // contains binaries while `payload/` may not exist yet.
-    let download_candidate_dir = tool_root
+    let payload_candidate_dir = tool_root
         .join(&ffmpeg_selector_path)
         .parent()
         .map_or_else(|| tool_root.join(&ffmpeg_selector_path), Path::to_path_buf);
 
-    if managed_ffmpeg_directory_contains_executable(&download_candidate_dir) {
-        return Some(download_candidate_dir.to_string_lossy().to_string());
-    }
-
-    // Last resort: recursive scan.  Search payload root first (populated
-    // post-conductor run), then fall back to the full tool root.
-    if let Some(found) = find_file_named_in_tree(&payload_root, ffmpeg_file_name) {
-        let found_dir = found.parent()?.to_path_buf();
-        if managed_ffmpeg_directory_contains_executable(&found_dir) {
-            return Some(found_dir.to_string_lossy().to_string());
-        }
-    }
-    let found = find_file_named_in_tree(&tool_root, ffmpeg_file_name)?;
-    let found_dir = found.parent()?.to_path_buf();
-    Some(found_dir.to_string_lossy().to_string())
+    Some(payload_candidate_dir.to_string_lossy().to_string())
 }
 
 /// Resolves the host ffmpeg executable path from one machine-managed tool spec.
@@ -725,13 +629,6 @@ fn resolve_host_ffmpeg_executable_path_from_machine_tool(
     let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
 
     Some(PathBuf::from(directory).join(ffmpeg_file_name).to_string_lossy().to_string())
-}
-
-/// Returns true when one ffmpeg directory contains the host ffmpeg executable.
-#[must_use]
-fn managed_ffmpeg_directory_contains_executable(directory: &Path) -> bool {
-    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    directory.join(ffmpeg_file_name).is_file()
 }
 
 /// Finds the first regular file named `file_name` under `root` recursively.
