@@ -15,9 +15,10 @@ use self::tool_config::{
     augment_media_tagger_tool_id_with_ffmpeg_selector,
     ensure_machine_runtime_inherits_generated_env_vars,
     remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_ffmpeg_selection,
-    resolve_conductor_runtime_dir, resolve_media_tagger_ffmpeg_selection,
-    resolve_yt_dlp_js_runtime_path, should_set_yt_dlp_ffmpeg_location,
-    should_set_yt_dlp_js_runtimes, write_generated_runtime_env_file,
+    resolve_conductor_runtime_dir, resolve_managed_tool_payload_directory_from_selector,
+    resolve_media_tagger_ffmpeg_selection, resolve_yt_dlp_js_runtime_path,
+    should_set_yt_dlp_ffmpeg_location, should_set_yt_dlp_js_runtimes,
+    write_generated_runtime_env_file,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -144,6 +145,8 @@ pub(crate) async fn reconcile_desired_tools(
         let mut desired_tool_id = provisioned.tool_id.clone();
         #[allow(unused_assignments)]
         let mut media_tagger_ffmpeg_host_command_path: Option<String> = None;
+        let mut companion_ffmpeg_content_map = BTreeMap::new();
+        let mut companion_ffmpeg_host_command_path: Option<String> = None;
 
         if name.eq_ignore_ascii_case("media-tagger") {
             let ffmpeg_selection = resolve_media_tagger_ffmpeg_selection(
@@ -164,18 +167,21 @@ pub(crate) async fn reconcile_desired_tools(
             }
         }
 
-        let companion_selection = resolve_companion_ffmpeg_selection(
-            paths,
-            "yt-dlp",
-            requirement,
-            &provisioned_snapshot,
-            lock,
-            &machine,
-        )?;
-        let companion_ffmpeg_host_command_path = companion_selection.host_command_path;
+        if name.eq_ignore_ascii_case("yt-dlp") {
+            let companion_selection = resolve_companion_ffmpeg_selection(
+                paths,
+                name,
+                requirement,
+                &provisioned_snapshot,
+                lock,
+                &machine,
+            )?;
+            companion_ffmpeg_content_map = companion_selection.existing_content_map;
+            companion_ffmpeg_host_command_path = companion_selection.host_command_path;
 
-        for (entry_key, entry_source) in companion_selection.provisioned_content_entries {
-            effective_content_entries.entry(entry_key).or_insert(entry_source);
+            for (entry_key, entry_source) in companion_selection.provisioned_content_entries {
+                effective_content_entries.entry(entry_key).or_insert(entry_source);
+            }
         }
 
         desired_tool_ids.insert(desired_tool_id.clone());
@@ -209,8 +215,21 @@ pub(crate) async fn reconcile_desired_tools(
             ffmpeg_slot_limits,
         );
         if name.eq_ignore_ascii_case("yt-dlp") {
+            for (relative_path, multihash) in companion_ffmpeg_content_map {
+                desired_config
+                    .content_map
+                    .get_or_insert_with(BTreeMap::new)
+                    .entry(relative_path)
+                    .or_insert(multihash);
+            }
+
             if should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults)
-                && let Some(ffmpeg_path) = companion_ffmpeg_host_command_path
+                && let Some(companion_selector_path) = companion_ffmpeg_host_command_path.as_deref()
+                && let Some(ffmpeg_path) = resolve_managed_tool_payload_directory_from_selector(
+                    paths,
+                    &desired_tool_id,
+                    companion_selector_path,
+                )
             {
                 desired_config
                     .input_defaults

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mediapm_cas::Hash;
 use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
 
 use crate::config::{ToolRequirement, normalize_selector_compare_value, normalize_selector_value};
@@ -229,8 +230,47 @@ pub(super) struct MediaTaggerFfmpegSelection {
 pub(super) struct CompanionFfmpegSelection {
     /// Optional provisioned payload entries for selected ffmpeg content.
     pub(super) provisioned_content_entries: BTreeMap<String, ContentMapSource>,
-    /// Host-resolved ffmpeg executable path for companion tool arguments.
+    /// Existing machine content-map entries for selected ffmpeg payload.
+    pub(super) existing_content_map: BTreeMap<String, Hash>,
+    /// Host-resolved ffmpeg command selector directory path.
+    ///
+    /// Relative values are projected into the dependent tool's payload root
+    /// during sync. Absolute values are preserved as-is.
     pub(super) host_command_path: Option<String>,
+}
+
+/// Resolves one dependent-tool payload directory from a command selector path.
+///
+/// Relative selector paths are projected under
+/// `<tools_dir>/<tool_id>/payload/...`.
+#[must_use]
+pub(super) fn resolve_managed_tool_payload_directory_from_selector(
+    paths: &MediaPmPaths,
+    tool_id: &str,
+    command_selector_path: &str,
+) -> Option<String> {
+    let trimmed_tool_id = tool_id.trim();
+    if trimmed_tool_id.is_empty() {
+        return None;
+    }
+
+    let selector_path = PathBuf::from(command_selector_path.trim());
+    if selector_path.as_os_str().is_empty() {
+        return None;
+    }
+
+    if selector_path.is_absolute() {
+        let directory =
+            selector_path.parent().map_or_else(|| selector_path.clone(), Path::to_path_buf);
+        return Some(directory.to_string_lossy().to_string());
+    }
+
+    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let directory = tool_payload_root
+        .join(&selector_path)
+        .parent()
+        .map_or_else(|| tool_payload_root.join(&selector_path), Path::to_path_buf);
+    Some(directory.to_string_lossy().to_string())
 }
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
@@ -475,7 +515,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
 /// payload bytes are bundled into the current tool's own content map instead of
 /// referencing another tool's content cache entry.
 pub(super) fn resolve_companion_ffmpeg_selection(
-    paths: &MediaPmPaths,
+    _paths: &MediaPmPaths,
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
@@ -494,6 +534,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         {
             return Ok(CompanionFfmpegSelection {
                 provisioned_content_entries: payload.content_entries.clone(),
+                existing_content_map: BTreeMap::new(),
                 host_command_path: resolve_host_command_selector_path(&payload.command_selector),
             });
         }
@@ -543,8 +584,12 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 
         return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: BTreeMap::new(),
-            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
-                paths,
+            existing_content_map: machine
+                .tool_configs
+                .get(&selected_tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+            host_command_path: resolve_host_ffmpeg_command_selector_path_from_machine_tool(
                 machine,
                 &selected_tool_id,
             ),
@@ -554,11 +599,8 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
         return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: payload.content_entries.clone(),
-            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
-                paths,
-                machine,
-                &payload.tool_id,
-            ),
+            existing_content_map: BTreeMap::new(),
+            host_command_path: resolve_host_command_selector_path(&payload.command_selector),
         });
     }
 
@@ -567,8 +609,12 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     {
         return Ok(CompanionFfmpegSelection {
             provisioned_content_entries: BTreeMap::new(),
-            host_command_path: resolve_host_ffmpeg_command_path_from_machine_tool(
-                paths,
+            existing_content_map: machine
+                .tool_configs
+                .get(active_ffmpeg_tool_id)
+                .and_then(|config| config.content_map.clone())
+                .unwrap_or_default(),
+            host_command_path: resolve_host_ffmpeg_command_selector_path_from_machine_tool(
                 machine,
                 active_ffmpeg_tool_id,
             ),
@@ -614,6 +660,25 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
         .map_or_else(|| tool_root.join(&ffmpeg_selector_path), Path::to_path_buf);
 
     Some(payload_candidate_dir.to_string_lossy().to_string())
+}
+
+/// Resolves host ffmpeg command selector path from one machine-managed tool spec.
+#[must_use]
+fn resolve_host_ffmpeg_command_selector_path_from_machine_tool(
+    machine: &MachineNickelDocument,
+    tool_id: &str,
+) -> Option<String> {
+    let tool_spec = machine.tools.get(tool_id)?;
+    let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
+        return None;
+    };
+
+    let selector = command.first()?.trim();
+    if selector.is_empty() {
+        return None;
+    }
+
+    resolve_host_command_selector_path(selector)
 }
 
 /// Resolves the host ffmpeg executable path from one machine-managed tool spec.

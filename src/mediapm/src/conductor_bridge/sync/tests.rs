@@ -730,15 +730,8 @@ fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
     .expect("companion selection should succeed");
 
     assert!(selection.provisioned_content_entries.is_empty());
-    let expected_host_path = paths
-        .tools_dir
-        .join("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1")
-        .join("payload")
-        .join("windows/ffmpeg/bin");
-    assert_eq!(
-        selection.host_command_path.as_deref(),
-        Some(expected_host_path.to_string_lossy().as_ref())
-    );
+    assert!(selection.existing_content_map.contains_key("windows/ffmpeg/bin/ffmpeg.exe"));
+    assert_eq!(selection.host_command_path.as_deref(), Some("windows/ffmpeg/bin/ffmpeg.exe"));
 }
 
 /// Verifies companion ffmpeg linkage resolves payload-layout paths for
@@ -793,9 +786,10 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
     )
     .expect("companion selection should succeed");
 
+    assert!(selection.existing_content_map.is_empty());
     assert_eq!(
         selection.host_command_path.as_deref(),
-        Some(payload_dir.to_string_lossy().as_ref())
+        Some(format!("{host_os}/{ffmpeg_file_name}").as_str())
     );
 }
 
