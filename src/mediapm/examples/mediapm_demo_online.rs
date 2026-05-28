@@ -46,11 +46,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue,
-    MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
-    MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
-    save_mediapm_document,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
+    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat,
+    PlaylistItemRef, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
+    load_lockfile, load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1214,11 +1214,29 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }
     }
 
+    if !sidecar_folder_children.is_empty() {
+        media_root_children.insert(
+            0,
+            HierarchyNode {
+                path: "sidecars".to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::M3u8,
+                ids: Vec::new(),
+                children: sidecar_folder_children,
+            },
+        );
+    }
+
     // NOTE: Thumbnail and link variants are materialized directly to the media root
     // with path="" (empty) instead of in dedicated subfolder containers.
     // Only the sidecars/ folder should use nested directory organization.
-    // This prevents unnecessary intermediate folder nesting while preserving
-    // sidecar-family artifact handling.
+    // This ordering keeps the writable parent available long enough to create
+    // the nested `sidecars/` folder before the direct root projections are finalized.
     media_root_children.push(HierarchyNode {
         path: String::new(),
         kind: HierarchyNodeKind::MediaFolder,
@@ -1226,7 +1244,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         media_id: Some(DEMO_MEDIA_ID.to_string()),
         variant: None,
         variants: vec!["thumbnails".to_string()],
-        rename_files: Vec::new(),
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: "^(.*)\\.(.+)$".to_string(),
+            replacement: "$1.thumbnail.$2".to_string(),
+        }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
         children: Vec::new(),
@@ -1239,7 +1260,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         media_id: Some(DEMO_MEDIA_ID.to_string()),
         variant: None,
         variants: vec!["links".to_string()],
-        rename_files: Vec::new(),
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: "^(.*)\\.(.+)$".to_string(),
+            replacement: "$1.link.$2".to_string(),
+        }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
         children: Vec::new(),
@@ -1251,21 +1275,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     // Instead, it keeps preset-style thumbnail/link filenames inside explicit
     // root folders (`thumbnails/` and `links/`) using two separate
     // `media_folder(path="")` projections.
-
-    if !sidecar_folder_children.is_empty() {
-        media_root_children.push(HierarchyNode {
-            path: "sidecars".to_string(),
-            kind: HierarchyNodeKind::Folder,
-            id: None,
-            media_id: None,
-            variant: None,
-            variants: Vec::new(),
-            rename_files: Vec::new(),
-            format: PlaylistFormat::M3u8,
-            ids: Vec::new(),
-            children: sidecar_folder_children,
-        });
-    }
 
     document.hierarchy = vec![
         HierarchyNode {
