@@ -263,8 +263,9 @@ async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
             format!("{media_id}.archive"),
             format!("{media_id}.description"),
             format!("{media_id}.infojson"),
-            format!("{media_id}.video"),
-            format!("{media_id}.sidecar-variants"),
+            format!("{media_id}.links"),
+            format!("{media_id}.subtitles"),
+            format!("{media_id}.thumbnails"),
             format!("{media_id}.video"),
         ])
     );

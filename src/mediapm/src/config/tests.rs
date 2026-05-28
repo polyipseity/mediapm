@@ -1982,7 +1982,11 @@ hierarchy = [
     std::fs::write(&path, source).expect("write source");
     let document =
         load_mediapm_document(&path).expect("rename_files replacement placeholders should decode");
-    assert!(hierarchy_flat_map(&document).contains_key("demo/subtitles"));
+    let node = &document.hierarchy[0];
+    assert_eq!(node.path, "demo/subtitles");
+    assert_eq!(node.variants, vec!["subtitles".to_string()]);
+    assert_eq!(node.rename_files.len(), 1);
+    assert!(node.rename_files[0].replacement.contains("${media.metadata.title}"));
 }
 
 /// Protects rename replacement placeholder validation by rejecting

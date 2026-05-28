@@ -289,12 +289,11 @@ fn flatten_hierarchy_nodes_inner(
                     })
                     .transpose()?;
 
-                if resolved_node_path.is_empty() {
-                    return Err(
-                        "hierarchy media_folder node must not resolve to an empty path; use path = \"\" only on folder nodes"
-                            .to_string(),
-                    );
-                }
+                // NOTE: media_folder nodes may resolve to empty path (path="") when multiple
+                // nodes with different variants materialize to the same location.
+                // The variants and rename_files rules ensure different final output paths
+                // at materialization time. Duplicate path validation occurs after flattening
+                // and allows same path with different variants.
 
                 flattened.push(FlattenedHierarchyEntry {
                     path: resolved_node_path,
@@ -382,14 +381,39 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     flatten_hierarchy_nodes_inner(hierarchy, "", None, &mut flattened)
         .map_err(MediaPmError::Workflow)?;
 
-    let mut seen_paths = BTreeMap::<String, usize>::new();
+    let mut seen_paths = BTreeMap::<String, Vec<usize>>::new();
     let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
     for (index, entry) in flattened.iter().enumerate() {
-        if let Some(previous_index) = seen_paths.insert(entry.path.clone(), index) {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy flattening produced duplicate path '{}' (entries #{previous_index} and #{index})",
-                entry.path
-            )));
+        seen_paths.entry(entry.path.clone()).or_default().push(index);
+
+        // Check for true duplicate paths: same path AND same variants (or both lack variants).
+        // Allow same path with different variants since rename_files rules differentiate outputs.
+        if seen_paths[&entry.path].len() > 1 {
+            let current_variants =
+                entry.entry.variants.iter().collect::<std::collections::BTreeSet<_>>();
+            let previous_index = seen_paths[&entry.path][seen_paths[&entry.path].len() - 2];
+            let previous_variants = flattened[previous_index]
+                .entry
+                .variants
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>();
+
+            // Only error if both have empty variants (true duplicate) or if they have overlapping variants
+            if current_variants.is_empty() && previous_variants.is_empty() {
+                return Err(MediaPmError::Workflow(format!(
+                    "hierarchy flattening produced duplicate path '{}' with no differentiating variants (entries #{previous_index} and #{index})",
+                    entry.path
+                )));
+            }
+
+            // Check for overlapping variants which would conflict
+            let overlap: Vec<_> = current_variants.intersection(&previous_variants).collect();
+            if !overlap.is_empty() {
+                return Err(MediaPmError::Workflow(format!(
+                    "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} (entries #{previous_index} and #{index})",
+                    entry.path, overlap
+                )));
+            }
         }
 
         if let Some(hierarchy_id) = entry.hierarchy_id.as_deref()
