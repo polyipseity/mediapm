@@ -164,18 +164,40 @@ pub(super) fn resolve_host_command_selector_path(command_selector: &str) -> Opti
 }
 
 /// Resolves the concrete bundled `deno` executable path for managed yt-dlp.
+///
+/// The returned path always points into the conductor tool-content-cache
+/// `payload/` subdirectory so it remains valid after the first `media sync`
+/// run materialises the conductor sandbox.  The conductor wipes the provisioner
+/// download install root on the first cache-miss run and re-extracts content
+/// under `payload/`; recording a payload-relative path here keeps the stored
+/// `js_runtimes` input default from becoming stale after that event.
 #[must_use]
 pub(super) fn resolve_yt_dlp_js_runtime_path(
     paths: &MediaPmPaths,
     tool_id: &str,
 ) -> Option<String> {
     let runtime_file_name = if cfg!(windows) { "deno.exe" } else { "deno" };
-    let os_root = paths.tools_dir.join(tool_id).join(current_tool_os().as_str());
     let tool_root = paths.tools_dir.join(tool_id);
+    let payload_root = tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let payload_os_root = payload_root.join(current_tool_os().as_str());
 
-    find_file_named_in_tree(&os_root, runtime_file_name)
-        .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))
-        .map(|path| path.to_string_lossy().to_string())
+    // Search the conductor payload directory first (populated after the first
+    // workflow run); this is the stable long-term location.
+    if let Some(found) = find_file_named_in_tree(&payload_os_root, runtime_file_name)
+        .or_else(|| find_file_named_in_tree(&payload_root, runtime_file_name))
+    {
+        return Some(found.to_string_lossy().to_string());
+    }
+
+    // Fall back to the provisioner download install root (present after
+    // `tools sync` before the first conductor run creates `payload/`).
+    // Project the discovered path onto its `payload/` equivalent so the
+    // stored value remains valid after conductor materialisation.
+    let download_os_root = tool_root.join(current_tool_os().as_str());
+    let found = find_file_named_in_tree(&download_os_root, runtime_file_name)
+        .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))?;
+    let rel = found.strip_prefix(&tool_root).ok()?;
+    Some(payload_root.join(rel).to_string_lossy().to_string())
 }
 
 /// Returns whether managed yt-dlp should receive a synthesized `js_runtimes` default.
@@ -217,6 +239,14 @@ pub(super) struct CompanionFfmpegSelection {
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
 const MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX: &str = "ffmpeg/";
+
+/// Subdirectory name within a tool entry directory where the conductor
+/// tool-content cache stores extracted payload content alongside `metadata.json`.
+///
+/// This mirrors `TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME` in the conductor crate's
+/// `tool_content_cache` module.  Both values must remain in sync if either is
+/// renamed.
+const CONDUCTOR_TOOL_PAYLOAD_DIR: &str = "payload";
 
 /// Normalizes one managed-tool relative command path for install-root lookup.
 #[must_use]
@@ -611,7 +641,16 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     Ok(None)
 }
 
-/// Resolves host ffmpeg executable path from one machine-managed tool spec.
+/// Resolves host ffmpeg directory path from one machine-managed tool spec.
+///
+/// The returned path always points into the conductor tool-content-cache
+/// `payload/` subdirectory so it remains valid after the first `media sync`
+/// run materialises the tool sandbox.  During `tools sync`, managed tool
+/// binaries are extracted into the download install root; the conductor then
+/// wipes that root on the first cache-miss run and re-extracts under `payload/`.
+/// Storing the payload-relative path in `.env.generated` keeps managed tools
+/// (such as `media-tagger`) from losing their bundled ffmpeg binary path after
+/// that initial conductor materialisation.
 #[must_use]
 fn resolve_host_ffmpeg_command_path_from_machine_tool(
     paths: &MediaPmPaths,
@@ -629,25 +668,63 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
     }
 
     let ffmpeg_selector_path = PathBuf::from(resolve_host_command_selector_path(selector)?);
-    let ffmpeg_path = if ffmpeg_selector_path.is_absolute() {
-        ffmpeg_selector_path
-    } else {
-        paths.tools_dir.join(tool_id).join(ffmpeg_selector_path)
-    };
-    let candidate_dir =
-        ffmpeg_path.parent().map(Path::to_path_buf).or(Some(ffmpeg_path.clone()))?;
     let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    let tool_root = paths.tools_dir.join(tool_id);
 
-    if managed_ffmpeg_directory_contains_executable(&candidate_dir) {
-        return Some(candidate_dir.to_string_lossy().to_string());
+    // Absolute selectors have no payload-relative equivalent; check directly.
+    if ffmpeg_selector_path.is_absolute() {
+        let candidate_dir = ffmpeg_selector_path
+            .parent()
+            .map_or_else(|| ffmpeg_selector_path.clone(), Path::to_path_buf);
+        return managed_ffmpeg_directory_contains_executable(&candidate_dir)
+            .then(|| candidate_dir.to_string_lossy().to_string());
     }
 
-    let tool_root = paths.tools_dir.join(tool_id);
-    let discovered_ffmpeg = find_file_named_in_tree(&tool_root, ffmpeg_file_name)?;
-    let discovered_dir = discovered_ffmpeg.parent()?.to_path_buf();
+    // The conductor tool-content cache always materialises binaries under a
+    // `payload/` subdirectory of the tool entry directory.  Always resolve
+    // through `payload/` so the stored path remains valid after the conductor
+    // wipes and re-extracts the entry directory on the first cache-miss run.
+    let payload_root = tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let payload_candidate_dir = payload_root
+        .join(&ffmpeg_selector_path)
+        .parent()
+        .map_or_else(|| payload_root.join(&ffmpeg_selector_path), Path::to_path_buf);
 
-    managed_ffmpeg_directory_contains_executable(&discovered_dir)
-        .then(|| discovered_dir.to_string_lossy().to_string())
+    // Payload directory is already populated (cache warm after the first run).
+    if managed_ffmpeg_directory_contains_executable(&payload_candidate_dir) {
+        return Some(payload_candidate_dir.to_string_lossy().to_string());
+    }
+
+    // Tool was just provisioned by `tools sync` — the download install root
+    // contains the binaries but `payload/` does not exist yet.  The conductor
+    // will wipe the install root and re-extract under `payload/` on the first
+    // workflow run.  Return the *expected* payload path so `.env.generated`
+    // points to the stable post-materialisation location.
+    let download_candidate_dir = tool_root
+        .join(&ffmpeg_selector_path)
+        .parent()
+        .map_or_else(|| tool_root.join(&ffmpeg_selector_path), Path::to_path_buf);
+
+    if managed_ffmpeg_directory_contains_executable(&download_candidate_dir) {
+        // Content is at the provisioner download path; return the future payload
+        // location that the conductor will create on the next cache-miss run.
+        return Some(payload_candidate_dir.to_string_lossy().to_string());
+    }
+
+    // Last resort: recursive scan.  Search payload root first (populated
+    // post-conductor run), then fall back to the full tool root.  Project any
+    // non-payload result onto its `payload/` equivalent so the returned
+    // directory is always inside `payload/`.
+    if let Some(found) = find_file_named_in_tree(&payload_root, ffmpeg_file_name) {
+        let found_dir = found.parent()?.to_path_buf();
+        if managed_ffmpeg_directory_contains_executable(&found_dir) {
+            return Some(found_dir.to_string_lossy().to_string());
+        }
+    }
+    let found = find_file_named_in_tree(&tool_root, ffmpeg_file_name)?;
+    let found_dir = found.parent()?.to_path_buf();
+    let rel = found_dir.strip_prefix(&tool_root).ok()?;
+    Some(payload_root.join(rel).to_string_lossy().to_string())
 }
 
 /// Resolves the host ffmpeg executable path from one machine-managed tool spec.
