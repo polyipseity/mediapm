@@ -1116,6 +1116,7 @@ async fn main() -> ExampleResult<()> {
     println!("generated library root: {}", paths.library_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: {run_sync}");
+    mediapm_conductor::print_profile_timing(&paths.artifact_root.join("profile.json"));
     Ok(())
 }
 
