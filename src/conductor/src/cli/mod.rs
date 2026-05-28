@@ -86,6 +86,14 @@ struct RuntimePathArgs {
     #[arg(long, global = true)]
     conductor_schema_dir: Option<PathBuf>,
 
+    /// Optional override directory for the tool-content cache.
+    ///
+    /// The tool-content cache stores one ready-to-execute payload directory per
+    /// tool id.  Entries are keyed on the full `content_map` and expire after
+    /// 24 hours of non-use.  Defaults to `<conductor_dir>/tools`.
+    #[arg(long, global = true)]
+    conductor_tools_dir: Option<PathBuf>,
+
     /// Optional JSON profile artifact output path.
     ///
     /// When set, conductor writes one per-run profiler report at this path.
@@ -361,6 +369,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
         cas_store_dir: None,
         conductor_tmp_dir: cli.runtime_paths.conductor_tmp_dir,
         conductor_schema_dir: cli.runtime_paths.conductor_schema_dir,
+        conductor_tools_dir: cli.runtime_paths.conductor_tools_dir,
     };
     let resolved_runtime_paths =
         resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &runtime_storage_paths);

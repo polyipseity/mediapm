@@ -332,7 +332,7 @@ where
                 &request.step.tool,
                 &tool.tool_content_map,
                 execution_cwd,
-                &request.runtime_tmp_dir,
+                &request.runtime_tools_dir,
             )
             .await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
@@ -1311,20 +1311,15 @@ where
     /// collision-checked, and extracted into a fresh `payload/` directory.
     /// The sandbox is populated via hard links from the cache payload directory
     /// (falling back to copies on cross-device setups).
-    ///
-    /// `runtime_tmp_dir` is used to derive `tools_dir` as its sibling `tools/`
-    /// directory.  Commit 2 of the redesign will replace this derivation with
-    /// an explicit `tools_dir` path threaded through `StepExecutionRequest`.
     async fn materialize_tool_content_map(
         &self,
         tool_id: &str,
         tool_content_map: &BTreeMap<String, Hash>,
         tool_cwd: &Path,
-        runtime_tmp_dir: &Path,
+        tools_dir: &Path,
     ) -> Result<(), ConductorError> {
-        let tools_dir = runtime_tmp_dir.parent().unwrap_or(runtime_tmp_dir).join("tools");
         let payload_dir = tool_content_cache::prepare_tool_content_cache(
-            &tools_dir,
+            tools_dir,
             tool_id,
             tool_content_map,
             &self.cas,

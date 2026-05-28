@@ -236,6 +236,7 @@ where
                 &mut state_document,
                 &mut state,
                 &resolved_runtime_paths.conductor_tmp_dir,
+                &resolved_runtime_paths.conductor_tools_dir,
                 &outermost_config_dir,
             )
             .await;
@@ -468,6 +469,10 @@ where
         clippy::too_many_lines,
         reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument represents a distinct runtime context that must be threaded through to the execution pipeline; grouping them would create an ad-hoc context struct with no additional clarity"
+    )]
     async fn execute_workflows(
         &self,
         execution_hub: ExecutionHubClient,
@@ -475,6 +480,7 @@ where
         state_document: &mut crate::model::config::StateNickelDocument,
         state: &mut OrchestrationState,
         runtime_tmp_dir: &Path,
+        tools_dir: &Path,
         outermost_config_dir: &Path,
     ) -> Result<ExecutionOutcome, ConductorError> {
         let unified_shared = Arc::new(unified.clone());
@@ -558,6 +564,7 @@ where
                             unified: unified_shared.clone(),
                             state_snapshot,
                             runtime_tmp_dir: runtime_tmp_dir.to_path_buf(),
+                            runtime_tools_dir: tools_dir.to_path_buf(),
                             outermost_config_dir: outermost_config_dir.to_path_buf(),
                             step_outputs: step_outputs_snapshot,
                             required_outputs_by_step: required_outputs_by_step.clone(),

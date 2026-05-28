@@ -29,6 +29,9 @@ const DEFAULT_CAS_STORE_DIR_NAME: &str = "store";
 /// conductor directory.
 const DEFAULT_TMP_DIR_NAME: &str = "tmp";
 
+/// Default tool-content cache directory name under the resolved conductor directory.
+const DEFAULT_TOOLS_DIR_NAME: &str = "tools";
+
 /// Default schema export directory under one resolved runtime root.
 const DEFAULT_SCHEMA_EXPORT_DIR_NAME: &str = "conductor";
 
@@ -42,14 +45,16 @@ const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 /// - `conductor_state_config` optionally overrides the volatile state document path,
 /// - `cas_store_dir` optionally overrides the default CAS filesystem root,
 /// - `conductor_tmp_dir` optionally overrides the execution sandbox root,
-/// - `conductor_schema_dir` optionally overrides the schema export directory.
+/// - `conductor_schema_dir` optionally overrides the schema export directory,
+/// - `conductor_tools_dir` optionally overrides the tool-content cache root.
 ///
 /// When optional fields are `None`, defaults are derived from
 /// `conductor_dir`:
 /// - `<conductor_dir>/state.ncl` for state,
 /// - `<conductor_dir>/store` for CAS,
 /// - `<conductor_dir>/tmp` for temporary execution sandboxes,
-/// - `<conductor_dir>/config/conductor` for schema export.
+/// - `<conductor_dir>/config/conductor` for schema export,
+/// - `<conductor_dir>/tools` for the tool-content cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStoragePaths {
     /// Root folder for runtime-owned artifacts.
@@ -73,6 +78,14 @@ pub struct RuntimeStoragePaths {
     ///
     /// Default: `<conductor_dir>/config/conductor`.
     pub conductor_schema_dir: Option<PathBuf>,
+    /// Optional override path for the tool-content cache root.
+    ///
+    /// The tool-content cache stores one ready-to-execute payload directory per
+    /// tool id.  Entries are keyed on the full `content_map` and expire after
+    /// 24 hours of non-use.
+    ///
+    /// Default: `<conductor_dir>/tools`.
+    pub conductor_tools_dir: Option<PathBuf>,
 }
 
 impl RuntimeStoragePaths {
@@ -85,6 +98,7 @@ impl RuntimeStoragePaths {
             cas_store_dir: None,
             conductor_tmp_dir: None,
             conductor_schema_dir: None,
+            conductor_tools_dir: None,
         }
     }
 
@@ -113,6 +127,10 @@ impl RuntimeStoragePaths {
             || schema_export_dir(&conductor_dir),
             |path| Self::resolve_path(anchor, path),
         );
+        let conductor_tools_dir = self.conductor_tools_dir.as_ref().map_or_else(
+            || conductor_dir.join(DEFAULT_TOOLS_DIR_NAME),
+            |path| Self::resolve_path(anchor, path),
+        );
 
         ResolvedRuntimeStoragePaths {
             conductor_dir,
@@ -120,6 +138,7 @@ impl RuntimeStoragePaths {
             cas_store_dir,
             conductor_tmp_dir,
             conductor_schema_dir,
+            conductor_tools_dir,
         }
     }
 
@@ -149,6 +168,8 @@ pub struct ResolvedRuntimeStoragePaths {
     pub conductor_tmp_dir: PathBuf,
     /// Resolved schema export directory path.
     pub conductor_schema_dir: PathBuf,
+    /// Resolved tool-content cache root path.
+    pub conductor_tools_dir: PathBuf,
 }
 
 /// Summary of one workflow run.
@@ -644,6 +665,10 @@ mod tests {
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join(".conductor").join("config").join("conductor")
         );
+        assert_eq!(
+            resolved.conductor_tools_dir,
+            PathBuf::from("workspace").join(".conductor").join("tools")
+        );
     }
 
     /// Protects explicit runtime path overrides while preserving grouped
@@ -661,6 +686,7 @@ mod tests {
                 cas_store_dir: None,
                 conductor_tmp_dir: Some(PathBuf::from("runtime/custom-tmp")),
                 conductor_schema_dir: Some(PathBuf::from("runtime/custom-schemas")),
+                conductor_tools_dir: None,
             },
         );
 

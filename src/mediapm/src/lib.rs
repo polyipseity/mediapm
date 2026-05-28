@@ -523,6 +523,7 @@ pub(crate) fn conductor_run_workflow_options(
             cas_store_dir: Some(paths.runtime_root.join("store")),
             conductor_tmp_dir: Some(paths.conductor_tmp_dir.clone()),
             conductor_schema_dir: Some(paths.conductor_schema_dir.clone()),
+            conductor_tools_dir: None,
         },
         runtime_inherited_env_vars: runtime_storage.inherited_env_vars_with_defaults(),
         profiler_enabled: runtime_storage.profiler_enabled.unwrap_or(false),
