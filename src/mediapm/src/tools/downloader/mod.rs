@@ -53,6 +53,19 @@ pub(crate) type DownloadProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) 
 /// Stable prefix for `mediapm`-managed immutable tool ids.
 const MANAGED_TOOL_ID_PREFIX: &str = "mediapm.tools.";
 
+/// Subdirectory within a tool entry directory where the conductor tool-content
+/// cache stores extracted payload content alongside `metadata.json`.
+///
+/// The conductor wipes the provisioner download install root and re-extracts
+/// content here on the first cache-miss run.  When this subdirectory is
+/// present, `provision_tool_payload` treats it as the effective root for
+/// executable discovery and content-map reconstruction, avoiding an unnecessary
+/// re-download on every `tools sync` call after the first `media sync`.
+///
+/// This mirrors `TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME` in the conductor crate's
+/// `tool_content_cache` module.  Both values must remain in sync.
+const CONDUCTOR_TOOL_PAYLOAD_DIR: &str = "payload";
+
 /// Ensures one managed tool payload is provisioned into workspace-local
 /// storage and converted into conductor-ready command/content-map metadata.
 pub(crate) async fn provision_tool_payload(
@@ -77,13 +90,24 @@ pub(crate) async fn provision_tool_payload(
     let install_root = paths.tools_dir.join(&tool_id);
 
     if install_root.exists() {
+        // When the conductor has already materialised the tool payload into the
+        // `payload/` subdirectory (on a previous `media sync` run), treat that
+        // subdirectory as the effective root for executable discovery and
+        // content-map reconstruction.  The uncompressed ZIP hash of `payload/`
+        // is identical to the hash of the original download root (same file
+        // names and bytes at the same relative paths), so the conductor
+        // cache-hit check continues to pass and no re-download is triggered.
+        let payload_dir = install_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+        let effective_root =
+            if payload_dir.is_dir() { payload_dir.as_path() } else { install_root.as_path() };
+
         if let Ok(executable_paths) =
-            materialize::resolve_executable_paths(&entry, &resolved, &install_root)
+            materialize::resolve_executable_paths(&entry, &resolved, effective_root)
             && let Ok(command_selector) = materialize::build_command_selector(&executable_paths)
             && let Ok(content_entries) =
-                materialize::collect_materialized_content_entries(&resolved, &install_root)
+                materialize::collect_materialized_content_entries(&resolved, effective_root)
             && !content_entries.is_empty()
-            && materialize::additional_download_sources_present(&entry, &resolved, &install_root)
+            && materialize::additional_download_sources_present(&entry, &resolved, effective_root)
         {
             return Ok(ProvisionedToolPayload {
                 tool_id,
