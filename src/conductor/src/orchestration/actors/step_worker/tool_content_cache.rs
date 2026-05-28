@@ -62,12 +62,6 @@ pub(super) fn prune_expired_tool_content_cache_entries(
         }
 
         let metadata_path = path.join(TOOL_CONTENT_CACHE_METADATA_FILE_NAME);
-        if !metadata_path.exists() {
-            // Orphaned directory — left over from a previous nested cache key
-            // scheme or a partially-created entry. Remove it best-effort.
-            let _ = fs::remove_dir_all(&path);
-            continue;
-        }
         let Ok(raw) = fs::read_to_string(&metadata_path) else {
             continue;
         };

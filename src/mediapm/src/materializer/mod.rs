@@ -226,6 +226,7 @@ async fn prepare_hierarchy_entry(
     playlist_media_index: &BTreeMap<String, String>,
     media_file_templates: &BTreeMap<String, crate::config::HierarchyEntry>,
     flattened_entry: &FlattenedHierarchyEntry,
+    job_index: usize,
     progress_bar: &ProgressBar,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
     let relative_path_template = flattened_entry.path.as_str();
@@ -255,7 +256,24 @@ async fn prepare_hierarchy_entry(
         )));
     }
 
-    let staged_path = staging_root.join(fs_relative_path);
+    // MediaFolder entries must each have their own isolated staging directory.
+    //
+    // Two or more MediaFolder entries may resolve to the same final path (for
+    // example two `path=""` nodes materializing thumbnails and links into the
+    // same media-root folder). If their staged paths shared a common prefix, the
+    // first commit's `merge_staged_directory_into_existing` call would
+    // recursively consume and remove nested staging directories that still
+    // belong to sibling entries, leaving those siblings with a missing staged
+    // path on their own commit.
+    //
+    // Using a flat `staging_root/{job_index}/` directory for every MediaFolder
+    // entry guarantees isolation: no commit can ever traverse into another
+    // entry's staging area.
+    let staged_path = if matches!(entry.kind, HierarchyEntryKind::MediaFolder) {
+        staging_root.join(job_index.to_string())
+    } else {
+        staging_root.join(fs_relative_path)
+    };
     let final_path = paths.hierarchy_root_dir.join(fs_relative_path);
     progress_bar.set_position(10);
 
@@ -713,6 +731,7 @@ pub async fn sync_hierarchy(
                     worker_playlist_media_index.as_ref(),
                     worker_media_file_templates.as_ref(),
                     &flattened_entry,
+                    job_index,
                     &worker_bar,
                 )
                 .await;
