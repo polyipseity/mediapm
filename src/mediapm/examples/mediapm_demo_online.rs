@@ -1476,6 +1476,31 @@ fn derive_ffprobe_path_from_ffmpeg_command(ffmpeg_command: &str) -> Option<PathB
     None
 }
 
+/// Derives one alternate managed-tool path across payload/non-payload layouts.
+///
+/// Managed tool extraction can expose binaries under either:
+/// - `<...>/tools/<tool-id>/payload/<os>/...`
+/// - `<...>/tools/<tool-id>/<os>/...`
+///
+/// Demo-side binary probing accepts both shapes so validation remains stable
+/// across bootstrap transitions.
+#[must_use]
+fn alternate_managed_tool_layout_path(candidate: &Path) -> Option<PathBuf> {
+    let normalized = candidate.to_string_lossy().replace('\\', "/");
+
+    if let Some((prefix, suffix)) = normalized.split_once("/payload/") {
+        return Some(PathBuf::from(format!("{prefix}/{suffix}")));
+    }
+
+    let tools_marker = "/tools/";
+    let tools_index = normalized.find(tools_marker)?;
+    let after_tools = &normalized[tools_index + tools_marker.len()..];
+    let tool_id_end = after_tools.find('/')?;
+    let insert_at = tools_index + tools_marker.len() + tool_id_end + 1;
+
+    Some(PathBuf::from(format!("{}payload/{}", &normalized[..insert_at], &normalized[insert_at..])))
+}
+
 /// Configures the demo-local `ffprobe` command selector from managed tools.
 ///
 /// Falls back to bare `ffprobe` when no managed sibling binary is available.
@@ -1488,7 +1513,14 @@ fn configure_demo_ffprobe_command(
     let ffprobe_command = tool_binaries
         .get(&ffmpeg_tool_id)
         .and_then(|command| derive_ffprobe_path_from_ffmpeg_command(command))
-        .filter(|candidate| candidate.is_file())
+        .and_then(|candidate| {
+            if candidate.is_file() {
+                Some(candidate)
+            } else {
+                alternate_managed_tool_layout_path(&candidate)
+                    .filter(|alternate| alternate.is_file())
+            }
+        })
         .map_or_else(|| "ffprobe".to_string(), |candidate| candidate.display().to_string());
 
     let _ = DEMO_FFPROBE_COMMAND.set(ffprobe_command);

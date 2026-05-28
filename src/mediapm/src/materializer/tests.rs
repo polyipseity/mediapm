@@ -74,6 +74,46 @@ fn resolve_managed_ffprobe_path_anchors_relative_selector_to_tool_root() {
     assert_eq!(resolved, expected);
 }
 
+/// Protects managed ffprobe lookup when only payload-layout binaries exist.
+#[test]
+fn resolve_managed_ffprobe_path_falls_back_to_payload_layout() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(temp.path());
+
+    let ffmpeg_tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@demo".to_string();
+    let mut machine = MachineNickelDocument::default();
+    machine.tools.insert(
+        ffmpeg_tool_id.clone(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec![
+                    "windows/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe".to_string(),
+                ],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        },
+    );
+
+    let payload_ffprobe_path = paths
+        .tools_dir
+        .join(&ffmpeg_tool_id)
+        .join("payload/windows/ffmpeg-master-latest-win64-gpl-shared/bin")
+        .join(if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" });
+    fs::create_dir_all(payload_ffprobe_path.parent().expect("ffprobe parent directory"))
+        .expect("create payload managed ffprobe parent directory");
+    fs::write(&payload_ffprobe_path, b"stub").expect("write payload managed ffprobe stub");
+
+    let mut lock = MediaLockFile::default();
+    lock.active_tools.insert("ffmpeg".to_string(), ffmpeg_tool_id.clone());
+
+    let resolved = resolve_managed_ffprobe_path(&paths, &machine, &lock)
+        .expect("managed ffprobe payload path should resolve");
+
+    assert_eq!(resolved, payload_ffprobe_path);
+}
+
 fn yt_dlp_output_variant(kind: &str) -> serde_json::Value {
     serde_json::json!({ "kind": kind, "save": "full" })
 }

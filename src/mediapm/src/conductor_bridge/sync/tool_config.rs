@@ -165,12 +165,11 @@ pub(super) fn resolve_host_command_selector_path(command_selector: &str) -> Opti
 
 /// Resolves the concrete bundled `deno` executable path for managed yt-dlp.
 ///
-/// The returned path always points into the conductor tool-content-cache
-/// `payload/` subdirectory so it remains valid after the first `media sync`
-/// run materialises the conductor sandbox.  The conductor wipes the provisioner
-/// download install root on the first cache-miss run and re-extracts content
-/// under `payload/`; recording a payload-relative path here keeps the stored
-/// `js_runtimes` input default from becoming stale after that event.
+/// Resolution prefers the conductor `payload/` cache path when available, then
+/// falls back to the provisioner install layout under the tool root.
+///
+/// Returning an existing path avoids stale defaults during bootstrap windows
+/// where tool binaries may exist only in one layout.
 #[must_use]
 pub(super) fn resolve_yt_dlp_js_runtime_path(
     paths: &MediaPmPaths,
@@ -191,13 +190,10 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
 
     // Fall back to the provisioner download install root (present after
     // `tools sync` before the first conductor run creates `payload/`).
-    // Project the discovered path onto its `payload/` equivalent so the
-    // stored value remains valid after conductor materialisation.
     let download_os_root = tool_root.join(current_tool_os().as_str());
-    let found = find_file_named_in_tree(&download_os_root, runtime_file_name)
-        .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))?;
-    let rel = found.strip_prefix(&tool_root).ok()?;
-    Some(payload_root.join(rel).to_string_lossy().to_string())
+    find_file_named_in_tree(&download_os_root, runtime_file_name)
+        .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))
+        .map(|found| found.to_string_lossy().to_string())
 }
 
 /// Returns whether managed yt-dlp should receive a synthesized `js_runtimes` default.
@@ -643,14 +639,11 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 
 /// Resolves host ffmpeg directory path from one machine-managed tool spec.
 ///
-/// The returned path always points into the conductor tool-content-cache
-/// `payload/` subdirectory so it remains valid after the first `media sync`
-/// run materialises the tool sandbox.  During `tools sync`, managed tool
-/// binaries are extracted into the download install root; the conductor then
-/// wipes that root on the first cache-miss run and re-extracts under `payload/`.
-/// Storing the payload-relative path in `.env.generated` keeps managed tools
-/// (such as `media-tagger`) from losing their bundled ffmpeg binary path after
-/// that initial conductor materialisation.
+/// Resolution prefers an existing conductor `payload/` path and falls back to
+/// an existing provisioner install-layout path under the tool root.
+///
+/// Returning only existing directories prevents generated runtime defaults from
+/// pointing to non-existent `payload/` paths during first-run bootstrap.
 #[must_use]
 fn resolve_host_ffmpeg_command_path_from_machine_tool(
     paths: &MediaPmPaths,
@@ -696,25 +689,18 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
     }
 
     // Tool was just provisioned by `tools sync` — the download install root
-    // contains the binaries but `payload/` does not exist yet.  The conductor
-    // will wipe the install root and re-extract under `payload/` on the first
-    // workflow run.  Return the *expected* payload path so `.env.generated`
-    // points to the stable post-materialisation location.
+    // contains binaries while `payload/` may not exist yet.
     let download_candidate_dir = tool_root
         .join(&ffmpeg_selector_path)
         .parent()
         .map_or_else(|| tool_root.join(&ffmpeg_selector_path), Path::to_path_buf);
 
     if managed_ffmpeg_directory_contains_executable(&download_candidate_dir) {
-        // Content is at the provisioner download path; return the future payload
-        // location that the conductor will create on the next cache-miss run.
-        return Some(payload_candidate_dir.to_string_lossy().to_string());
+        return Some(download_candidate_dir.to_string_lossy().to_string());
     }
 
     // Last resort: recursive scan.  Search payload root first (populated
-    // post-conductor run), then fall back to the full tool root.  Project any
-    // non-payload result onto its `payload/` equivalent so the returned
-    // directory is always inside `payload/`.
+    // post-conductor run), then fall back to the full tool root.
     if let Some(found) = find_file_named_in_tree(&payload_root, ffmpeg_file_name) {
         let found_dir = found.parent()?.to_path_buf();
         if managed_ffmpeg_directory_contains_executable(&found_dir) {
@@ -723,8 +709,7 @@ fn resolve_host_ffmpeg_command_path_from_machine_tool(
     }
     let found = find_file_named_in_tree(&tool_root, ffmpeg_file_name)?;
     let found_dir = found.parent()?.to_path_buf();
-    let rel = found_dir.strip_prefix(&tool_root).ok()?;
-    Some(payload_root.join(rel).to_string_lossy().to_string())
+    Some(found_dir.to_string_lossy().to_string())
 }
 
 /// Resolves the host ffmpeg executable path from one machine-managed tool spec.

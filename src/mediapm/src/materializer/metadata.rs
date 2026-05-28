@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use regex::Regex;
 
 use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
@@ -357,6 +360,8 @@ fn extract_metadata_key_with_ffprobe(
     let temp_path = std::env::temp_dir()
         .join(format!("mediapm-metadata-probe-{}-{unique}.bin", std::process::id()));
 
+    ensure_managed_ffprobe_executable(ffprobe_path)?;
+
     fs::write(&temp_path, variant_bytes).map_err(|source| MediaPmError::Io {
         operation: "writing temporary metadata probe payload".to_string(),
         path: temp_path.clone(),
@@ -406,7 +411,45 @@ fn extract_metadata_key_with_ffprobe(
     })
 }
 
+/// Ensures managed ffprobe binary is executable on current host.
+fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmError> {
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(ffprobe_path).map_err(|source| {
+            MediaPmError::Workflow(format!(
+                "reading managed ffprobe '{}' metadata failed: {source}",
+                ffprobe_path.display()
+            ))
+        })?;
+
+        let mode = metadata.permissions().mode();
+        if mode & 0o111 == 0 {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(mode | 0o111);
+            fs::set_permissions(ffprobe_path, permissions).map_err(|source| {
+                MediaPmError::Workflow(format!(
+                    "setting execute permission for managed ffprobe '{}' failed: {source}",
+                    ffprobe_path.display()
+                ))
+            })?;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = ffprobe_path;
+    }
+
+    Ok(())
+}
+
 /// Resolves host ffprobe path from active managed ffmpeg executable selector.
+///
+/// Resolution accepts both managed tool layouts:
+/// - `<...>/tools/<tool-id>/<os>/...`
+/// - `<...>/tools/<tool-id>/payload/<os>/...`
+///
+/// The returned path always points to an existing file.
 #[must_use]
 pub(super) fn resolve_managed_ffprobe_path(
     paths: &MediaPmPaths,
@@ -432,11 +475,34 @@ pub(super) fn resolve_managed_ffprobe_path(
     };
     let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
 
-    if let Some(parent) = ffmpeg_path.parent() {
-        Some(parent.join(ffprobe_file_name))
-    } else {
-        Some(PathBuf::from(ffprobe_file_name))
+    let candidate = ffmpeg_path
+        .parent()
+        .map_or_else(|| PathBuf::from(ffprobe_file_name), |parent| parent.join(ffprobe_file_name));
+
+    if candidate.is_file() {
+        return Some(candidate);
     }
+
+    let alternate = alternate_managed_tool_layout_path(&candidate)?;
+    alternate.is_file().then_some(alternate)
+}
+
+/// Derives one alternate managed-tool path across payload/non-payload layouts.
+#[must_use]
+fn alternate_managed_tool_layout_path(candidate: &Path) -> Option<PathBuf> {
+    let normalized = candidate.to_string_lossy().replace('\\', "/");
+
+    if let Some((prefix, suffix)) = normalized.split_once("/payload/") {
+        return Some(PathBuf::from(format!("{prefix}/{suffix}")));
+    }
+
+    let tools_marker = "/tools/";
+    let tools_index = normalized.find(tools_marker)?;
+    let after_tools = &normalized[tools_index + tools_marker.len()..];
+    let tool_id_end = after_tools.find('/')?;
+    let insert_at = tools_index + tools_marker.len() + tool_id_end + 1;
+
+    Some(PathBuf::from(format!("{}payload/{}", &normalized[..insert_at], &normalized[insert_at..])))
 }
 
 /// Resolves a command selector expression to the host-specific path.

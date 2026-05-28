@@ -225,6 +225,66 @@ pub(super) fn normalize_optional_text(value: Option<&str>) -> Option<String> {
 /// `MEDIA_TAGGER_FFMPEG_BIN_ENV` so internal launchers can run without relying
 /// on ambient PATH state.
 pub(super) fn resolve_ffmpeg_executable() -> String {
-    normalize_optional_text(std::env::var(MEDIA_TAGGER_FFMPEG_BIN_ENV).ok().as_deref())
-        .unwrap_or_else(|| FFMPEG_EXECUTABLE.to_string())
+    resolve_ffmpeg_executable_from_configured_path(
+        std::env::var(MEDIA_TAGGER_FFMPEG_BIN_ENV).ok().as_deref(),
+    )
+}
+
+/// Resolves one ffmpeg executable path from an optional configured override.
+///
+/// When a configured path is present, this checks:
+/// 1. the configured path as-is,
+/// 2. one alternate managed-tool layout path with toggled `payload/` segment.
+///
+/// If neither exists, the configured value is preserved for diagnostics.
+#[must_use]
+pub(super) fn resolve_ffmpeg_executable_from_configured_path(
+    configured_path: Option<&str>,
+) -> String {
+    let configured = normalize_optional_text(configured_path)
+        .map(|value| value.trim_matches('"').trim_matches('\'').to_string());
+
+    let Some(configured) = configured else {
+        return FFMPEG_EXECUTABLE.to_string();
+    };
+
+    if Path::new(&configured).is_file() {
+        return configured;
+    }
+
+    if let Some(alternate) = alternate_managed_ffmpeg_layout_path(&configured)
+        && Path::new(&alternate).is_file()
+    {
+        return alternate;
+    }
+
+    configured
+}
+
+/// Derives one alternate managed ffmpeg executable path across tool layouts.
+///
+/// Managed tool runs can transition between these two forms:
+/// - `<...>/tools/<tool-id>/payload/<os>/ffmpeg`
+/// - `<...>/tools/<tool-id>/<os>/ffmpeg`
+///
+/// This helper toggles between the two so media-tagger can recover from
+/// transient layout timing differences during sync/bootstrap.
+#[must_use]
+pub(super) fn alternate_managed_ffmpeg_layout_path(configured_path: &str) -> Option<String> {
+    let normalized = configured_path.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+
+    if let Some((prefix, suffix)) = normalized.split_once("/payload/") {
+        return Some(format!("{prefix}/{suffix}"));
+    }
+
+    let tools_marker = "/tools/";
+    let tools_index = normalized.find(tools_marker)?;
+    let after_tools = &normalized[tools_index + tools_marker.len()..];
+    let tool_id_end = after_tools.find('/')?;
+    let insert_at = tools_index + tools_marker.len() + tool_id_end + 1;
+
+    Some(format!("{}payload/{}", &normalized[..insert_at], &normalized[insert_at..]))
 }

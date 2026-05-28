@@ -9,7 +9,7 @@ use crate::config::ToolRequirement;
 use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::{
-    DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor,
+    DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor, current_tool_os,
     tool_catalog_entry,
 };
 use crate::tools::downloader::{
@@ -34,7 +34,8 @@ use super::tool_config::{
     augment_media_tagger_tool_id_with_ffmpeg_selector, ffmpeg_selector_from_registry_or_tool_id,
     media_tagger_ffmpeg_content_key, remove_redundant_inherited_env_vars_from_tool_config,
     resolve_companion_ffmpeg_selection, resolve_host_command_selector_path,
-    resolve_managed_tool_command_absolute_path, should_set_yt_dlp_ffmpeg_location,
+    resolve_managed_tool_command_absolute_path, resolve_yt_dlp_js_runtime_path,
+    should_set_yt_dlp_ffmpeg_location,
 };
 
 fn catalog_entry_fixture(download: ToolDownloadDescriptor) -> ToolCatalogEntry {
@@ -731,6 +732,84 @@ fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
 
     assert!(selection.provisioned_content_entries.is_empty());
     assert!(selection.existing_content_map.contains_key("windows/ffmpeg/bin/ffmpeg.exe"));
+}
+
+/// Verifies companion ffmpeg linkage falls back to existing provisioner install
+/// layout when payload cache paths are not materialized yet.
+#[test]
+fn companion_ffmpeg_selection_uses_existing_download_layout_when_payload_missing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(temp.path());
+    let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1";
+    let host_os = current_tool_os().as_str();
+    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+
+    let download_dir = paths.tools_dir.join(tool_id).join(host_os);
+    std::fs::create_dir_all(&download_dir).expect("create tool download dir");
+    std::fs::write(download_dir.join(ffmpeg_file_name), b"ffmpeg").expect("write ffmpeg");
+
+    let requirement = ToolRequirement {
+        version: None,
+        tag: Some("latest".to_string()),
+        dependencies: crate::config::ToolRequirementDependencies {
+            ffmpeg_version: Some("inherit".to_string()),
+            sd_version: None,
+        },
+        recheck_seconds: None,
+        max_input_slots: None,
+        max_output_slots: None,
+    };
+
+    let mut lock = MediaLockFile::default();
+    lock.active_tools.insert("ffmpeg".to_string(), tool_id.to_string());
+
+    let mut machine = MachineNickelDocument::default();
+    machine.tools.insert(
+        tool_id.to_string(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec![format!("{host_os}/{ffmpeg_file_name}")],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        },
+    );
+
+    let selection = resolve_companion_ffmpeg_selection(
+        &paths,
+        "yt-dlp",
+        &requirement,
+        &BTreeMap::new(),
+        &lock,
+        &machine,
+    )
+    .expect("companion selection should succeed")
+    .expect("selection should be present");
+
+    assert_eq!(
+        selection.host_command_path.as_deref(),
+        Some(download_dir.to_string_lossy().as_ref())
+    );
+}
+
+/// Verifies yt-dlp js runtime resolution falls back to one existing download
+/// layout path when payload cache paths are absent.
+#[test]
+fn resolve_yt_dlp_js_runtime_path_uses_existing_download_layout_when_payload_missing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(temp.path());
+    let tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest";
+    let host_os = current_tool_os().as_str();
+    let runtime_file_name = if cfg!(windows) { "deno.exe" } else { "deno" };
+
+    let runtime_path = paths.tools_dir.join(tool_id).join(host_os).join(runtime_file_name);
+    std::fs::create_dir_all(runtime_path.parent().expect("runtime parent")).expect("mkdir");
+    std::fs::write(&runtime_path, b"deno").expect("write runtime");
+
+    let resolved = resolve_yt_dlp_js_runtime_path(&paths, tool_id).expect("resolved path");
+
+    assert_eq!(resolved, runtime_path.to_string_lossy());
 }
 
 /// Verifies explicit yt-dlp companion ffmpeg selectors fail fast when no

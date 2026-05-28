@@ -10,6 +10,9 @@ use super::cover_art::{
 };
 use super::ffmetadata::parse_ffmetadata_global_map;
 use super::musicbrainz::{insert_extended_picard_tags, musicbrainz_payload_cache_key};
+use super::util::{
+    alternate_managed_ffmpeg_layout_path, resolve_ffmpeg_executable_from_configured_path,
+};
 use super::*;
 
 /// Protects strict autodetection policy: when `recording_mbid` is absent,
@@ -297,4 +300,62 @@ async fn media_tagger_http_cache_round_trips_musicbrainz_metadata_rows() {
         .expect("read cached metadata payload");
     assert!(loaded.is_fresh);
     assert_eq!(loaded.payload, payload);
+}
+
+/// Protects managed ffmpeg path recovery by deriving payload-layout paths from
+/// install-layout selectors when bootstrap has not materialized payload yet.
+#[test]
+fn alternate_managed_ffmpeg_layout_path_inserts_payload_segment() {
+    let input = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg";
+    let expected = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg";
+
+    assert_eq!(alternate_managed_ffmpeg_layout_path(input).as_deref(), Some(expected));
+}
+
+/// Protects managed ffmpeg path recovery by deriving install-layout paths from
+/// payload-layout selectors when payload entries are temporarily absent.
+#[test]
+fn alternate_managed_ffmpeg_layout_path_removes_payload_segment() {
+    let input = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg";
+    let expected = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg";
+
+    assert_eq!(alternate_managed_ffmpeg_layout_path(input).as_deref(), Some(expected));
+}
+
+/// Protects executable resolution by preferring payload-layout binaries when
+/// configured install-layout paths no longer exist.
+#[test]
+fn resolve_ffmpeg_executable_from_configured_path_prefers_existing_payload_path() {
+    let root = tempdir().expect("tempdir");
+    let payload_path =
+        root.path().join(".mediapm/tools/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg");
+    std::fs::create_dir_all(payload_path.parent().expect("payload parent")).expect("mkdir");
+    std::fs::write(&payload_path, b"ffmpeg").expect("write ffmpeg payload binary");
+
+    let configured_install_path =
+        root.path().join(".mediapm/tools/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg");
+
+    let resolved = resolve_ffmpeg_executable_from_configured_path(Some(
+        configured_install_path.to_string_lossy().as_ref(),
+    ));
+
+    assert_eq!(resolved, payload_path.to_string_lossy());
+}
+
+/// Protects executable resolution by preferring install-layout binaries when
+/// configured payload-layout paths are stale and quoted by dotenv parsing.
+#[test]
+fn resolve_ffmpeg_executable_from_configured_path_prefers_existing_install_path() {
+    let root = tempdir().expect("tempdir");
+    let install_path = root.path().join(".mediapm/tools/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg");
+    std::fs::create_dir_all(install_path.parent().expect("install parent")).expect("mkdir");
+    std::fs::write(&install_path, b"ffmpeg").expect("write ffmpeg install binary");
+
+    let configured_payload_path =
+        root.path().join(".mediapm/tools/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg");
+    let quoted_configured = format!("\"{}\"", configured_payload_path.to_string_lossy());
+
+    let resolved = resolve_ffmpeg_executable_from_configured_path(Some(&quoted_configured));
+
+    assert_eq!(resolved, install_path.to_string_lossy());
 }
