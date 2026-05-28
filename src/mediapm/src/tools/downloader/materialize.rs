@@ -660,26 +660,13 @@ fn is_archive_mode(mode: crate::tools::catalog::DownloadPayloadMode) -> bool {
 
 /// Collects directory-form content-map entries for archive payloads.
 fn collect_archive_directory_entries(
-    plan: &ResolvedDownloadPlan,
+    _plan: &ResolvedDownloadPlan,
     root: &Path,
 ) -> BTreeMap<String, ContentMapSource> {
-    if plan.shared_package {
-        return BTreeMap::from([(
-            "./".to_string(),
-            ContentMapSource::DirectoryZip { root_dir: root.to_path_buf() },
-        )]);
-    }
-
-    let mut entries = BTreeMap::new();
-    for action in plan.per_os_actions.values() {
-        let key = format!("{}/", action.os.as_str());
-        entries.insert(
-            key,
-            ContentMapSource::DirectoryZip { root_dir: root.join(action.os.as_str()) },
-        );
-    }
-
-    entries
+    BTreeMap::from([(
+        "./".to_string(),
+        ContentMapSource::DirectoryZip { root_dir: root.to_path_buf() },
+    )])
 }
 
 /// Collects all regular files in one install root as direct file entries.
