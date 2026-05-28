@@ -1,66 +1,376 @@
-//! Runtime-local cache helpers for directory-form tool-content-map entries.
+//! Persistent tool-content cache for the conductor step worker.
 //!
-//! The step worker uses this cache to avoid repeatedly unpacking the same ZIP
-//! payloads when a workflow step reuses the same managed tool content. The
-//! cache lives under the conductor runtime root's `tools/` directory so
-//! `mediapm` inherits the same layout automatically when it invokes conductor
-//! with its own runtime root.
+//! Each conductor tool that declares a `tool_content_map` gets one cache entry
+//! under `<tools_dir>/<sanitized_tool_id>/`.  An entry contains:
+//!
+//! - `metadata.json` — version marker, the full `content_map` from the
+//!   conductor config (the cache-validity key), and `last_used_unix_seconds`
+//!   for TTL-based expiry.
+//! - `payload/` — the fully-extracted, ready-to-execute tool content tree.
+//!   Archive (`./` or `dir/`) keys are unpacked here; raw-file keys are
+//!   written here verbatim.  The payload tree mirrors the execution sandbox
+//!   layout, so sandbox setup is just a hard-link pass over `payload/`.
+//!
+//! # Cache lifecycle
+//!
+//! - **Hit** — `metadata.json` is present, its `content_map` equals the
+//!   current tool config entry-for-entry, and `payload/` exists as a
+//!   directory.  The entry's `last_used_unix_seconds` is refreshed before
+//!   returning the payload path.
+//! - **Miss** — CAS bytes for every entry are fetched concurrently; any
+//!   previous entry directory is removed; all content is extracted into a
+//!   fresh `payload/` tree; `metadata.json` is written atomically.
+//! - **Expiry** — entries not used within 24 hours are pruned by
+//!   [`prune_expired_tool_content_cache_entries`] on a best-effort basis that
+//!   never blocks workflow execution.
+//!
+//! # Multi-step sharing
+//!
+//! The cache is keyed by tool identity, not by step or sandbox.  All steps in
+//! one run that reference the same conductor tool share a single `payload/`
+//! tree.  Hard-linking from `payload/` into each sandbox means sandbox setup
+//! is a metadata-only operation regardless of payload size.
+//!
+//! # Module ownership
+//!
+//! This module is intentionally `pub(super)` — only the step worker and its
+//! direct collaborators may call it.  `mediapm` accesses the cache indirectly
+//! by supplying its own `tools_dir` to conductor via
+//! [`RuntimeStoragePaths`][crate::api::RuntimeStoragePaths].
 
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+
+use futures_util::future::try_join_all;
+use mediapm_cas::{CasApi, Hash};
+use serde::{Deserialize, Serialize};
+use tokio::task;
 
 use crate::error::ConductorError;
 
+/// Seconds since last use after which a cache entry is eligible for pruning.
 const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 24 * 60 * 60;
+/// File name of the per-entry JSON metadata document.
 const TOOL_CONTENT_CACHE_METADATA_FILE_NAME: &str = "metadata.json";
+/// Subdirectory name under the entry root that holds extracted tool content.
 const TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME: &str = "payload";
+/// Schema version marker for `metadata.json`.
 const TOOL_CONTENT_CACHE_VERSION: u32 = 1;
-const TOOL_CONTENT_CACHE_ROOT_DIR_NAME: &str = "tools";
-const TOOL_CONTENT_CACHE_ROOT_SENTINEL: &str = "__root__";
 
-/// Returns the runtime-local tool cache root for one conductor invocation.
-#[must_use]
-pub(super) fn runtime_tool_cache_root(runtime_tmp_dir: &Path) -> PathBuf {
-    runtime_tmp_dir
-        .parent()
-        .map_or_else(|| runtime_tmp_dir.to_path_buf(), Path::to_path_buf)
-        .join(TOOL_CONTENT_CACHE_ROOT_DIR_NAME)
+/// Persistent metadata stored alongside every cache entry.
+///
+/// `content_map` is the canonical cache-validity key: two entries are
+/// considered equivalent when their `content_map` values compare equal
+/// key-for-key and hash-for-hash.  Any change in the tool config — new key,
+/// updated hash, removed key — produces a cache miss and triggers full
+/// re-extraction.
+///
+/// `last_used_unix_seconds` is updated on every cache hit to drive TTL expiry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ToolContentCacheMetadata {
+    version: u32,
+    /// Full `tool_content_map` as it appeared in the conductor config at the
+    /// time the cache entry was last extracted or validated.
+    ///
+    /// [`Hash`] serializes as `"blake3:<hex>"` via its [`Serialize`] impl.
+    content_map: BTreeMap<String, Hash>,
+    /// Unix timestamp (seconds) of the most recent cache access.
+    last_used_unix_seconds: u64,
 }
 
-/// Removes stale runtime-local tool cache entries.
+/// Classified kind for one raw `content_map` key.
+#[derive(Debug)]
+enum ContentMapKeyKind {
+    /// Regular file: bytes are written verbatim to `payload/<relative_path>`.
+    File {
+        /// Normalized sandbox-relative destination path.
+        relative_path: PathBuf,
+    },
+    /// Directory ZIP: archive bytes are unpacked into `payload/<relative_dir>`.
+    ///
+    /// `relative_dir` is empty (`PathBuf::new()`) for the special `./` root
+    /// key, meaning the ZIP content is unpacked directly at `payload/`.
+    Directory {
+        /// Normalized destination directory, empty for root.
+        relative_dir: PathBuf,
+    },
+}
+
+/// Prepares the persistent cache entry for one conductor tool and returns the
+/// `payload/` directory path.
 ///
-/// Cache entries that have not been used for at least 24 hours are removed
-/// best-effort. Missing or malformed entries are ignored so cache cleanup never
-/// blocks workflow execution.
+/// # Cache-hit path
+///
+/// When the entry's `metadata.json` contains a `content_map` that equals
+/// `content_map` entry-for-entry and `payload/` exists as a directory, the
+/// entry is reused: `last_used_unix_seconds` is refreshed and the existing
+/// payload path is returned without touching the CAS.
+///
+/// # Cache-miss path
+///
+/// CAS bytes for every entry in `content_map` are fetched concurrently.  Any
+/// previous entry directory is removed.  All content is then extracted into a
+/// fresh `payload/` tree (CPU-bound ZIP extraction runs in a blocking task).
+/// Finally, `metadata.json` is written atomically via a temp-file rename.
+///
+/// The caller should populate the execution sandbox from the returned path via
+/// [`link_payload_to_sandbox`].
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when:
+/// - CAS retrieval fails for any entry,
+/// - a `content_map` key is invalid (absolute path, sandbox escape, or
+///   malformed directory key),
+/// - two entries claim the same target file path,
+/// - ZIP extraction fails for a directory-form key, or
+/// - filesystem operations fail.
+#[expect(
+    clippy::too_many_lines,
+    reason = "preflight classification, concurrent CAS fetch, blocking extraction, and metadata persistence each need full context; splitting them across helpers would obscure the sequential invariants the function encodes"
+)]
+pub(super) async fn prepare_tool_content_cache<C>(
+    tools_dir: &Path,
+    tool_id: &str,
+    content_map: &BTreeMap<String, Hash>,
+    cas: &Arc<C>,
+) -> Result<PathBuf, ConductorError>
+where
+    C: CasApi + Send + Sync + 'static,
+{
+    let entry_dir = tools_dir.join(sanitize_tool_id(tool_id));
+    let payload_dir = entry_dir.join(TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME);
+    let metadata_path = entry_dir.join(TOOL_CONTENT_CACHE_METADATA_FILE_NAME);
+    let now = now_unix_seconds();
+
+    // Best-effort expiry pruning: errors are intentionally swallowed so
+    // cleanup never blocks workflow execution.
+    let _ = prune_expired_tool_content_cache_entries(tools_dir);
+
+    // --- Cache hit ---
+    if payload_dir.is_dir()
+        && let Ok(raw) = fs::read_to_string(&metadata_path)
+        && let Ok(metadata) = serde_json::from_str::<ToolContentCacheMetadata>(&raw)
+        && metadata.version == TOOL_CONTENT_CACHE_VERSION
+        && metadata.content_map == *content_map
+    {
+        // Refresh last-used timestamp (best-effort; miss is harmless).
+        let _ = persist_cache_metadata(
+            &metadata_path,
+            &ToolContentCacheMetadata {
+                version: TOOL_CONTENT_CACHE_VERSION,
+                content_map: content_map.clone(),
+                last_used_unix_seconds: now,
+            },
+        );
+        return Ok(payload_dir);
+    }
+
+    // --- Cache miss: classify keys ---
+    let classified: Vec<(String, Hash, ContentMapKeyKind)> = content_map
+        .iter()
+        .map(|(key, hash)| {
+            let kind = classify_content_map_key(key)?;
+            Ok::<_, ConductorError>((key.clone(), *hash, kind))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // --- Fetch all CAS bytes concurrently ---
+    let entries_with_bytes: Vec<(String, ContentMapKeyKind, Vec<u8>)> =
+        try_join_all(classified.into_iter().map(|(key, hash, kind)| {
+            let cas = cas.clone();
+            async move {
+                let bytes = cas.get(hash).await?.to_vec();
+                Ok::<_, ConductorError>((key, kind, bytes))
+            }
+        }))
+        .await?;
+
+    // --- Extract in a blocking task (CPU-bound + sync I/O) ---
+    let entry_dir_for_task = entry_dir;
+    let payload_dir_for_task = payload_dir;
+    let metadata_path_for_task = metadata_path;
+    let content_map_for_task = content_map.clone();
+
+    task::spawn_blocking(move || {
+        // Remove stale entry so extraction starts clean.
+        if entry_dir_for_task.exists() {
+            fs::remove_dir_all(&entry_dir_for_task).map_err(|source| ConductorError::Io {
+                operation: "removing stale tool-content cache entry".to_string(),
+                path: entry_dir_for_task.clone(),
+                source,
+            })?;
+        }
+        fs::create_dir_all(&payload_dir_for_task).map_err(|source| ConductorError::Io {
+            operation: "creating tool-content cache payload directory".to_string(),
+            path: payload_dir_for_task.clone(),
+            source,
+        })?;
+
+        // Phase 1 — collision detection.
+        //
+        // Build a map of every file path that will be written to `payload/`.
+        // File entries contribute a single path; directory entries contribute
+        // all member file paths from their ZIP archive.  Overlapping paths
+        // across two distinct content-map entries are rejected before any
+        // extraction starts.
+        let mut claimed: BTreeMap<PathBuf, String> = BTreeMap::new();
+
+        for (key, kind, bytes) in &entries_with_bytes {
+            match kind {
+                ContentMapKeyKind::File { relative_path } => {
+                    if let Some(prev) = claimed.insert(relative_path.clone(), key.clone()) {
+                        return Err(ConductorError::Workflow(format!(
+                            "tool content map entries '{}' and '{}' both materialize '{}' and would overwrite each other",
+                            prev,
+                            key,
+                            relative_path.display()
+                        )));
+                    }
+                }
+                ContentMapKeyKind::Directory { relative_dir } => {
+                    let members =
+                        mediapm_conductor_builtin_archive::list_zip_member_file_paths(bytes)
+                            .map_err(|err| {
+                                ConductorError::Workflow(format!(
+                                    "tool content map directory key '{key}' expects ZIP payload, but member listing failed: {err}"
+                                ))
+                            })?;
+                    for member in members {
+                        let full_path = if relative_dir.as_os_str().is_empty() {
+                            PathBuf::from(&member)
+                        } else {
+                            relative_dir.join(&member)
+                        };
+                        if let Some(prev) = claimed.insert(full_path.clone(), key.clone()) {
+                            return Err(ConductorError::Workflow(format!(
+                                "tool content map entries '{}' and '{}' both materialize '{}' and would overwrite each other",
+                                prev,
+                                key,
+                                full_path.display()
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 2 — extraction.
+        for (key, kind, bytes) in entries_with_bytes {
+            match kind {
+                ContentMapKeyKind::File { relative_path } => {
+                    let target_path = payload_dir_for_task.join(&relative_path);
+                    if let Some(parent) = target_path.parent() {
+                        fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
+                            operation: "creating tool-content file parent directories".to_string(),
+                            path: parent.to_path_buf(),
+                            source,
+                        })?;
+                    }
+                    fs::write(&target_path, &bytes).map_err(|source| ConductorError::Io {
+                        operation: "writing tool-content file to cache payload".to_string(),
+                        path: target_path,
+                        source,
+                    })?;
+                }
+                ContentMapKeyKind::Directory { relative_dir } => {
+                    let unpack_dir = if relative_dir.as_os_str().is_empty() {
+                        payload_dir_for_task.clone()
+                    } else {
+                        payload_dir_for_task.join(&relative_dir)
+                    };
+                    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
+                        &bytes,
+                        &unpack_dir,
+                    )
+                    .map_err(|err| {
+                        ConductorError::Workflow(format!(
+                            "tool content map directory key '{key}' expects ZIP payload, but unpack failed: {err}"
+                        ))
+                    })?;
+                }
+            }
+        }
+
+        // Phase 3 — write metadata atomically.
+        persist_cache_metadata(
+            &metadata_path_for_task,
+            &ToolContentCacheMetadata {
+                version: TOOL_CONTENT_CACHE_VERSION,
+                content_map: content_map_for_task,
+                last_used_unix_seconds: now,
+            },
+        )?;
+
+        Ok::<PathBuf, ConductorError>(payload_dir_for_task)
+    })
+    .await
+    .map_err(|join_err| {
+        ConductorError::Internal(format!(
+            "joining tool-content cache extraction task failed: {join_err}"
+        ))
+    })?
+}
+
+/// Hard-links (or copies as fallback) all files from a cached `payload/`
+/// directory into an execution sandbox directory.
+///
+/// Because all steps that use the same conductor tool share a single
+/// `payload/` tree, this is the only step-specific operation: files are
+/// linked into the per-step sandbox without re-extracting or copying bytes.
+///
+/// Hard links are attempted first (near-zero-cost metadata operation).  If the
+/// link fails (e.g. cross-device), a byte-for-byte copy is used as fallback.
+///
+/// # Errors
+///
+/// Returns a descriptive `String` on failure.  Callers should wrap this into
+/// an appropriate [`ConductorError`] variant.
+pub(super) fn link_payload_to_sandbox(
+    payload_dir: &Path,
+    sandbox_dir: &Path,
+) -> Result<(), String> {
+    if !payload_dir.exists() {
+        return Err(format!(
+            "tool-content cache payload directory '{}' does not exist",
+            payload_dir.display()
+        ));
+    }
+    copy_directory_recursive(payload_dir, sandbox_dir)
+}
+
+/// Removes tool-content cache entries that have not been used within 24 hours.
+///
+/// Skips missing entries, unreadable metadata, or version-mismatched entries
+/// silently so cleanup never blocks workflow execution.
 pub(super) fn prune_expired_tool_content_cache_entries(
-    cache_root: &Path,
+    tools_dir: &Path,
 ) -> Result<(), ConductorError> {
-    if !cache_root.exists() {
+    if !tools_dir.exists() {
         return Ok(());
     }
 
     let now = now_unix_seconds();
     let cutoff = now.saturating_sub(TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS);
 
-    let entries = fs::read_dir(cache_root).map_err(|source| ConductorError::Io {
+    let entries = fs::read_dir(tools_dir).map_err(|source| ConductorError::Io {
         operation: "enumerating tool-content cache root".to_string(),
-        path: cache_root.to_path_buf(),
+        path: tools_dir.to_path_buf(),
         source,
     })?;
 
     for entry in entries {
         let entry = entry.map_err(|source| ConductorError::Io {
-            operation: "reading tool-content cache entry".to_string(),
-            path: cache_root.to_path_buf(),
+            operation: "reading tool-content cache directory entry".to_string(),
+            path: tools_dir.to_path_buf(),
             source,
         })?;
         let path = entry.path();
         if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
             continue;
         }
-
         let metadata_path = path.join(TOOL_CONTENT_CACHE_METADATA_FILE_NAME);
         let Ok(raw) = fs::read_to_string(&metadata_path) else {
             continue;
@@ -74,154 +384,114 @@ pub(super) fn prune_expired_tool_content_cache_entries(
         if metadata.last_used_unix_seconds > cutoff {
             continue;
         }
-
         let _ = fs::remove_dir_all(&path);
     }
 
     Ok(())
 }
 
-/// Prepares one cached directory payload and returns the cache entry payload
-/// directory.
+/// Returns a filesystem-safe directory name derived from one conductor tool identifier.
 ///
-/// A cache hit refreshes the last-used timestamp and returns the existing
-/// extracted payload directory. A cache miss unpacks the ZIP payload into a new
-/// cache entry and then returns the extracted payload directory.
-pub(super) fn prepare_cached_tool_content_directory(
-    cache_root: &Path,
-    raw_relative_path: &str,
-    relative_dir: &Path,
-    zip_content: &[u8],
+/// Characters unsafe on major platforms (`/`, `\`, `:`, `?`, `*`, `<`, `>`,
+/// `|`, `"`) are replaced with `_` so the name can be used directly as a
+/// subdirectory under `tools/`.
+///
+/// Typical tool IDs (e.g.
+/// `ffmpeg+evermeet-ffmpeg@6e66d4d1e81f75b5f34dc2a369cc341e12edc531`) contain
+/// only `.`, `+`, `@`, `-`, and alphanumeric characters, none of which require
+/// sanitization.
+fn sanitize_tool_id(tool_id: &str) -> String {
+    tool_id
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '/' | '\\' | ':' | '?' | '*' | '<' | '>' | '|' | '"') {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect()
+}
+
+/// Classifies one raw `content_map` key into a file or directory extraction
+/// target.
+///
+/// Rules:
+/// - Keys ending with `/` or `\` are directory ZIP targets.
+/// - The special `./` (or `.\`) key unpacks a ZIP directly at `payload/` root.
+/// - All other keys are regular file targets.
+///
+/// Absolute paths, sandbox-escaping paths (`../`), and trailing-slash keys
+/// without a concrete path component are rejected.
+fn classify_content_map_key(raw: &str) -> Result<ContentMapKeyKind, ConductorError> {
+    if raw.ends_with('/') || raw.ends_with('\\') {
+        let trimmed = raw.trim_end_matches(['/', '\\']);
+        if trimmed == "." {
+            // `./` or `.\` — unpack ZIP at payload root.
+            return Ok(ContentMapKeyKind::Directory { relative_dir: PathBuf::new() });
+        }
+        if trimmed.trim().is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "tool content map directory key '{raw}' must contain at least one path component before trailing slash"
+            )));
+        }
+        let relative_dir = normalize_sandbox_relative_path(trimmed, raw)?;
+        return Ok(ContentMapKeyKind::Directory { relative_dir });
+    }
+
+    let relative_path = normalize_sandbox_relative_path(raw, raw)?;
+    Ok(ContentMapKeyKind::File { relative_path })
+}
+
+/// Normalizes and validates one sandbox-relative path string.
+///
+/// `raw` is the path string to normalize; `context_key` is included in error
+/// messages for diagnostic clarity.
+///
+/// Accepts only relative paths that do not escape the sandbox root:
+/// absolute paths, `..` components, and empty-after-normalization paths are
+/// all rejected.
+fn normalize_sandbox_relative_path(
+    raw: &str,
+    context_key: &str,
 ) -> Result<PathBuf, ConductorError> {
-    fs::create_dir_all(cache_root).map_err(|source| ConductorError::Io {
-        operation: "creating tool-content cache root".to_string(),
-        path: cache_root.to_path_buf(),
-        source,
-    })?;
-
-    let payload_hash = blake3::hash(zip_content).to_hex().to_string();
-    let cache_entry_dir =
-        cache_root.join(cache_key_path(raw_relative_path, relative_dir, &payload_hash)?);
-    let payload_dir = cache_entry_dir.join(TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME);
-    let metadata_path = cache_entry_dir.join(TOOL_CONTENT_CACHE_METADATA_FILE_NAME);
-    let now = now_unix_seconds();
-
-    if let Ok(raw) = fs::read_to_string(&metadata_path)
-        && let Ok(metadata) = serde_json::from_str::<ToolContentCacheMetadata>(&raw)
-        && metadata.version == TOOL_CONTENT_CACHE_VERSION
-        && metadata.payload_hash == payload_hash
-        && payload_dir.is_dir()
-    {
-        persist_cache_metadata(
-            &metadata_path,
-            &ToolContentCacheMetadata {
-                version: TOOL_CONTENT_CACHE_VERSION,
-                payload_hash,
-                last_used_unix_seconds: now,
-            },
-        )?;
-        return Ok(payload_dir);
+    if raw.trim().is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "tool content map key '{context_key}' path must be non-empty"
+        )));
     }
-
-    if cache_entry_dir.exists() {
-        let _ = fs::remove_dir_all(&cache_entry_dir);
+    let parsed = Path::new(raw);
+    if parsed.is_absolute() {
+        return Err(ConductorError::Workflow(format!(
+            "tool content map key '{context_key}' path must be relative"
+        )));
     }
-    fs::create_dir_all(&payload_dir).map_err(|source| ConductorError::Io {
-        operation: "creating tool-content cache payload directory".to_string(),
-        path: payload_dir.clone(),
-        source,
-    })?;
-
-    mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(zip_content, &payload_dir)
-        .map_err(|err| {
-            ConductorError::Workflow(format!(
-                "tool content map directory key '{raw_relative_path}' expects ZIP payload, but unpack failed: {err}"
-            ))
-        })?;
-
-    persist_cache_metadata(
-        &metadata_path,
-        &ToolContentCacheMetadata {
-            version: TOOL_CONTENT_CACHE_VERSION,
-            payload_hash,
-            last_used_unix_seconds: now,
-        },
-    )?;
-
-    Ok(payload_dir)
-}
-
-/// Copies one cached payload directory into the execution sandbox.
-pub(super) fn copy_cached_tool_content_directory(
-    cached_dir: &Path,
-    target_dir: &Path,
-) -> Result<(), String> {
-    if !cached_dir.exists() {
-        return Err(format!(
-            "cached tool-content directory '{}' does not exist",
-            cached_dir.display()
-        ));
-    }
-    copy_directory_recursive(cached_dir, target_dir)
-}
-
-/// Collects sandbox-relative file paths from one directory tree.
-pub(super) fn collect_relative_files_recursive(
-    root_dir: &Path,
-    scan_dir: &Path,
-) -> Result<BTreeSet<PathBuf>, ConductorError> {
-    let mut out = BTreeSet::new();
-    collect_relative_files_recursive_into(root_dir, scan_dir, &mut out)?;
-    Ok(out)
-}
-
-fn collect_relative_files_recursive_into(
-    root_dir: &Path,
-    scan_dir: &Path,
-    out: &mut BTreeSet<PathBuf>,
-) -> Result<(), ConductorError> {
-    if !scan_dir.exists() {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(scan_dir).map_err(|source| ConductorError::Io {
-        operation: "reading tool-content cache directory".to_string(),
-        path: scan_dir.to_path_buf(),
-        source,
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|source| ConductorError::Io {
-            operation: "iterating tool-content cache directory".to_string(),
-            path: scan_dir.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|source| ConductorError::Io {
-            operation: "reading tool-content cache entry type".to_string(),
-            path: path.clone(),
-            source,
-        })?;
-
-        if file_type.is_dir() {
-            collect_relative_files_recursive_into(root_dir, &path, out)?;
-            continue;
-        }
-
-        if file_type.is_file() {
-            let relative = path.strip_prefix(root_dir).map_err(|err| {
-                ConductorError::Internal(format!(
-                    "failed deriving relative path for cached tool-content file '{}': {err}",
-                    path.display()
-                ))
-            })?;
-            out.insert(relative.to_path_buf());
+    let mut normalized = PathBuf::new();
+    for component in parsed.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(ConductorError::Workflow(format!(
+                    "tool content map key '{context_key}' must not escape the tool sandbox"
+                )));
+            }
         }
     }
-
-    Ok(())
+    if normalized.as_os_str().is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "tool content map key '{context_key}' must contain a concrete path component"
+        )));
+    }
+    Ok(normalized)
 }
 
+/// Copies (preferring hard links) all files from `source_dir` into `target_dir`.
+///
+/// The directory tree under `source_dir` is reproduced under `target_dir`.
+/// Hard links are attempted first (near-zero-cost metadata-only operation);
+/// when a link fails (e.g. cross-device), a byte-for-byte copy with permission
+/// preservation is used as fallback.
 fn copy_directory_recursive(source_dir: &Path, target_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(target_dir)
         .map_err(|err| format!("creating destination '{}' failed: {err}", target_dir.display()))?;
@@ -249,9 +519,8 @@ fn copy_directory_recursive(source_dir: &Path, target_dir: &Path) -> Result<(), 
             })?;
         }
 
-        // Prefer hard-linking (near-instant metadata-only operation) so the
-        // sandbox setup cost is independent of payload size. Fall back to a
-        // byte-for-byte copy only when the link fails (e.g. cross-device).
+        // Prefer hard links (metadata-only) to avoid copying bytes when
+        // cache and sandbox share the same filesystem.
         if fs::hard_link(&path, &target_path).is_ok() {
             continue;
         }
@@ -271,52 +540,10 @@ fn copy_directory_recursive(source_dir: &Path, target_dir: &Path) -> Result<(), 
     Ok(())
 }
 
-/// Derives a flat, hash-disambiguated cache directory name for one content-map
-/// directory entry.
+/// Writes cache metadata atomically via a temporary-file rename.
 ///
-/// The key is `<path_part>@<hash_prefix>` where `<path_part>` joins the
-/// normalized path components with `+` (never `/`) so all cache entries sit
-/// directly under the cache root regardless of nesting depth. `<hash_prefix>`
-/// is the first 16 hex characters of the payload hash, ensuring that two tools
-/// whose `content_map` keys share the same relative path but carry different
-/// payloads never share a cache directory.
-fn cache_key_path(
-    raw_relative_path: &str,
-    relative_dir: &Path,
-    payload_hash: &str,
-) -> Result<PathBuf, ConductorError> {
-    let path_part = if relative_dir.as_os_str().is_empty() {
-        TOOL_CONTENT_CACHE_ROOT_SENTINEL.to_string()
-    } else {
-        let mut components = Vec::new();
-        for component in relative_dir.components() {
-            let raw = component.as_os_str().to_string_lossy();
-            let sanitized = sanitize_cache_key_component(&raw);
-            if sanitized.is_empty() {
-                return Err(ConductorError::Workflow(format!(
-                    "tool content map directory key '{raw_relative_path}' normalizes to an empty cache key"
-                )));
-            }
-            components.push(sanitized);
-        }
-        components.join("+")
-    };
-    let hash_prefix = payload_hash.get(..16).unwrap_or(payload_hash);
-    Ok(PathBuf::from(format!("{path_part}@{hash_prefix}")))
-}
-
-fn sanitize_cache_key_component(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() { TOOL_CONTENT_CACHE_ROOT_SENTINEL.to_string() } else { out }
-}
-
+/// The metadata is written to a `.json.tmp` sibling first, then renamed into
+/// place so any interrupted write leaves the old metadata intact.
 fn persist_cache_metadata(
     metadata_path: &Path,
     metadata: &ToolContentCacheMetadata,
@@ -348,13 +575,7 @@ fn persist_cache_metadata(
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ToolContentCacheMetadata {
-    version: u32,
-    payload_hash: String,
-    last_used_unix_seconds: u64,
-}
-
+/// Returns the current Unix timestamp in whole seconds.
 #[must_use]
 fn now_unix_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()
@@ -364,81 +585,64 @@ fn now_unix_seconds() -> u64 {
 mod tests {
     use super::*;
 
+    /// Confirms that tool IDs containing only safe characters are not altered.
     #[test]
-    fn runtime_tool_cache_root_follows_runtime_tmp_parent() {
-        let runtime_tmp_dir = Path::new("/tmp/example/.conductor/tmp");
-        let cache_root = runtime_tool_cache_root(runtime_tmp_dir);
-
-        assert_eq!(cache_root, PathBuf::from("/tmp/example/.conductor/tools"));
+    fn sanitize_tool_id_preserves_safe_characters() {
+        let safe = "ffmpeg+evermeet-ffmpeg@6e66d4d1e81f75b5f34dc2a369cc341e12edc531";
+        assert_eq!(sanitize_tool_id(safe), safe);
     }
 
+    /// Confirms that all filesystem-unsafe characters are replaced with `_`.
     #[test]
-    fn cache_key_path_flattens_components_and_appends_hash_prefix() {
-        // Simple single-component path.
-        let key = cache_key_path("macos/", Path::new("macos"), "83e87ee4a2609f5babc123").unwrap();
-        assert_eq!(key, PathBuf::from("macos@83e87ee4a2609f5b"));
-
-        // Multi-component path must be flattened with '+' so the cache entry
-        // sits directly under cache_root rather than in a nested subdirectory.
-        let key =
-            cache_key_path("ffmpeg/macos/", Path::new("ffmpeg/macos"), "83e87ee4a2609f5babc123")
-                .unwrap();
-        assert_eq!(key, PathBuf::from("ffmpeg+macos@83e87ee4a2609f5b"));
-
-        // Empty relative_dir uses the sentinel.
-        let key = cache_key_path("", Path::new(""), "deadbeef12345678xyz").unwrap();
-        assert_eq!(key, PathBuf::from("__root__@deadbeef12345678"));
+    fn sanitize_tool_id_replaces_unsafe_characters() {
+        let input = r#"tool/a:b*c?d<e>f|g"h\i"#;
+        let sanitized = sanitize_tool_id(input);
+        assert_eq!(sanitized, "tool_a_b_c_d_e_f_g_h_i");
     }
 
+    /// `./` or `.\` key must classify as Directory with an empty `relative_dir`.
     #[test]
-    fn cache_key_path_different_hashes_produce_different_dirs() {
-        // Two tools may use the same content_map key path (e.g. both have a
-        // `macos/` entry) but carry different payloads. Their cache entries
-        // must be in different directories.
-        let key_a = cache_key_path("macos/", Path::new("macos"), "aaaa1111bbbb2222ccc").unwrap();
-        let key_b = cache_key_path("macos/", Path::new("macos"), "bbbb2222cccc3333ddd").unwrap();
-        assert_ne!(key_a, key_b);
-    }
-
-    #[test]
-    fn prepare_cached_tool_content_directory_reuses_existing_entry() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let cache_root = root.path().join("tools");
-        let zip_bytes = build_zip_bytes();
-
-        let first = prepare_cached_tool_content_directory(
-            &cache_root,
-            "tool-content/assets/",
-            Path::new("tool-content/assets"),
-            &zip_bytes,
-        )
-        .expect("first extraction");
-        let second = prepare_cached_tool_content_directory(
-            &cache_root,
-            "tool-content/assets/",
-            Path::new("tool-content/assets"),
-            &zip_bytes,
-        )
-        .expect("cache hit");
-
-        assert_eq!(first, second);
-        assert!(first.join("nested/file.txt").exists());
-        assert!(first.join("nested").join("inner.txt").exists());
-    }
-
-    fn build_zip_bytes() -> Vec<u8> {
-        let mut buffer = Vec::new();
-        {
-            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-            writer.add_directory("nested/", options).expect("add directory");
-            writer.start_file("nested/file.txt", options).expect("start file");
-            std::io::Write::write_all(&mut writer, b"alpha").expect("write file");
-            writer.start_file("nested/inner.txt", options).expect("start inner file");
-            std::io::Write::write_all(&mut writer, b"beta").expect("write inner file");
-            writer.finish().expect("finish zip");
+    fn classify_dot_slash_key_maps_to_empty_relative_dir() {
+        match classify_content_map_key("./").expect("classify ./") {
+            ContentMapKeyKind::Directory { relative_dir } => {
+                assert!(relative_dir.as_os_str().is_empty(), "expected empty relative_dir for ./");
+            }
+            ContentMapKeyKind::File { .. } => panic!("expected Directory for ./"),
         }
-        buffer
+    }
+
+    /// A named directory key (`linux/`) must classify as Directory with the
+    /// named component as `relative_dir`.
+    #[test]
+    fn classify_named_directory_key_maps_to_relative_dir() {
+        match classify_content_map_key("linux/").expect("classify linux/") {
+            ContentMapKeyKind::Directory { relative_dir } => {
+                assert_eq!(relative_dir, PathBuf::from("linux"));
+            }
+            ContentMapKeyKind::File { .. } => panic!("expected Directory for linux/"),
+        }
+    }
+
+    /// A file-form key must classify as File with the normalized path.
+    #[test]
+    fn classify_file_key_maps_to_relative_path() {
+        match classify_content_map_key("bin/tool").expect("classify bin/tool") {
+            ContentMapKeyKind::File { relative_path } => {
+                assert_eq!(relative_path, PathBuf::from("bin/tool"));
+            }
+            ContentMapKeyKind::Directory { .. } => panic!("expected File for bin/tool"),
+        }
+    }
+
+    /// A bare `/` key (no component before the trailing slash) must be rejected.
+    #[test]
+    fn classify_bare_slash_key_is_rejected() {
+        let err = classify_content_map_key("/").expect_err("bare slash should be rejected");
+        match err {
+            ConductorError::Workflow(msg) => {
+                assert!(msg.contains("must contain at least one path component"), "{msg}");
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
     }
 }

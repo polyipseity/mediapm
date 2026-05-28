@@ -1017,6 +1017,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
 
     executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
             temp.path(),
             runtime_tmp_dir.as_path(),
@@ -1043,6 +1044,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
 
     executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
             temp.path(),
             runtime_tmp_dir.as_path(),
@@ -1070,6 +1072,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
 
     executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([("./".to_string(), hash)]),
             temp.path(),
             runtime_tmp_dir.as_path(),
@@ -1095,6 +1098,7 @@ async fn content_map_directory_entry_rejects_non_zip_payload() {
 
     let error = executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
             temp.path(),
             runtime_tmp_dir.as_path(),
@@ -1124,6 +1128,7 @@ async fn content_map_directory_entry_requires_non_empty_prefix() {
 
     let error = executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([("/".to_string(), hash)]),
             temp.path(),
             runtime_tmp_dir.as_path(),
@@ -1153,6 +1158,7 @@ async fn content_map_rejects_file_overwrite_between_entries() {
 
     let error = executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([
                 ("tool/".to_string(), directory_hash),
                 ("tool/run.sh".to_string(), file_hash),
@@ -1187,6 +1193,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
 
     executor
         .materialize_tool_content_map(
+            "test-tool",
             &BTreeMap::from([
                 ("tool/".to_string(), first_hash),
                 ("tool/nested/".to_string(), second_hash),

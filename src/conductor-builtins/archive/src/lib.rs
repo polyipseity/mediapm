@@ -315,6 +315,39 @@ fn pack_directory_entries_recursively(
 ///
 /// The implementation rejects escaping ZIP entries (`../`) through
 /// `enclosed_name` checks.
+/// Lists all file member paths inside one ZIP payload.
+///
+/// Only file entries are returned; directory entries are skipped.  Each
+/// returned path is the portable (forward-slash) relative path of the member
+/// as it appears inside the archive.
+///
+/// This is used by the conductor step worker to enumerate ZIP member paths
+/// before extraction so it can perform collision detection across multiple
+/// `tool_content_map` entries that target overlapping sandbox paths.
+///
+/// # Errors
+///
+/// Returns an error when ZIP decoding fails or a member has an unsafe
+/// (path-escaping) name.
+pub fn list_zip_member_file_paths(zip_bytes: &[u8]) -> Result<Vec<String>, String> {
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|err| format!("reading zip archive bytes failed: {err}"))?;
+    let mut paths = Vec::new();
+    for index in 0..archive.len() {
+        let entry =
+            archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
+        if entry.name().ends_with('/') {
+            continue;
+        }
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            format!("unsafe zip entry name '{}', escaping destination", entry.name())
+        })?;
+        paths.push(enclosed.to_string_lossy().into_owned());
+    }
+    Ok(paths)
+}
+
 ///
 /// # Errors
 ///

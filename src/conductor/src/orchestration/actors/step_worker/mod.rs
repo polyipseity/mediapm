@@ -26,11 +26,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::future::try_join_all;
 use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
-use tokio::task;
 
 use crate::error::{ConductorError, CorruptWorkflowOutputContext};
 use crate::model::config::{
@@ -174,51 +172,6 @@ enum ExtractedZipSelection {
     File(Vec<u8>),
     /// All descendant file payloads selected from one ZIP directory entry.
     Directory(BTreeMap<std::path::PathBuf, Vec<u8>>),
-}
-
-/// Normalized interpretation of one executable `content_map` entry key.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolContentMapEntry {
-    /// Regular file materialization (`key` does not end with `/` or `\`).
-    File {
-        /// Normalized sandbox-relative file path.
-        relative_path: std::path::PathBuf,
-    },
-    /// Directory materialization from ZIP payload (`key` ends with `/` or `\`).
-    DirectoryFromZip {
-        /// Normalized sandbox-relative destination directory path.
-        relative_dir: std::path::PathBuf,
-    },
-}
-
-/// One planned `content_map` materialization entry prepared before writes.
-#[derive(Debug, Clone)]
-struct PlannedToolContentMaterialization {
-    /// Original `content_map` key used for diagnostics.
-    raw_relative_path: String,
-    /// Concrete payload write/unpack action for this entry.
-    payload: PlannedToolContentPayload,
-    /// Concrete sandbox-relative file paths this entry will create or replace.
-    claimed_relative_files: BTreeSet<std::path::PathBuf>,
-}
-
-/// Concrete payload action for one planned `content_map` entry.
-#[derive(Debug, Clone)]
-enum PlannedToolContentPayload {
-    /// Writes one file payload directly into one sandbox-relative path.
-    File {
-        /// Destination file path relative to the execution sandbox.
-        relative_path: std::path::PathBuf,
-        /// Raw file bytes resolved from CAS.
-        plain_content: Vec<u8>,
-    },
-    /// Unpacks one ZIP payload into one sandbox-relative directory.
-    DirectoryFromZip {
-        /// Destination directory path relative to the execution sandbox.
-        relative_dir: std::path::PathBuf,
-        /// Runtime-local cache directory containing the extracted ZIP payload.
-        cached_dir: std::path::PathBuf,
-    },
 }
 
 /// Resolved selector source for one template interpolation token.
@@ -376,6 +329,7 @@ where
             let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
             let execution_cwd = execution_cwd_temp.path();
             self.materialize_tool_content_map(
+                &request.step.tool,
                 &tool.tool_content_map,
                 execution_cwd,
                 &request.runtime_tmp_dir,
@@ -1351,226 +1305,34 @@ where
 
     /// Materializes per-tool `content_map` entries from CAS into the sandbox.
     ///
-    /// Key semantics:
-    /// - keys ending with `/` or `\\` denote directories and require ZIP
-    ///   payload hashes,
-    /// - key `./` (or `.\\`) denotes sandbox-root directory unpack,
-    /// - all other keys denote regular files and write raw bytes.
+    /// Delegates to the persistent tool-content cache (`tool_content_cache`
+    /// module) keyed by `tool_id`.  On a cache hit the payload tree is already
+    /// extracted; on a miss CAS bytes for all entries are fetched concurrently,
+    /// collision-checked, and extracted into a fresh `payload/` directory.
+    /// The sandbox is populated via hard links from the cache payload directory
+    /// (falling back to copies on cross-device setups).
     ///
-    /// Every key is normalized and validated as a sandbox-relative path before
-    /// any write or unpack operation occurs. Runtime preflights all entries
-    /// and rejects conflicts where two entries would materialize the same file
-    /// path.
+    /// `runtime_tmp_dir` is used to derive `tools_dir` as its sibling `tools/`
+    /// directory.  Commit 2 of the redesign will replace this derivation with
+    /// an explicit `tools_dir` path threaded through `StepExecutionRequest`.
     async fn materialize_tool_content_map(
         &self,
+        tool_id: &str,
         tool_content_map: &BTreeMap<String, Hash>,
         tool_cwd: &Path,
         runtime_tmp_dir: &Path,
     ) -> Result<(), ConductorError> {
-        let plans =
-            self.plan_tool_content_map_materialization(tool_content_map, runtime_tmp_dir).await?;
-
-        for planned in plans {
-            match planned.payload {
-                PlannedToolContentPayload::File { relative_path, plain_content } => {
-                    let target_path = tool_cwd.join(relative_path);
-                    if let Some(parent) = target_path.parent() {
-                        std::fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
-                            operation: "creating tool-content parent directories".to_string(),
-                            path: parent.to_path_buf(),
-                            source,
-                        })?;
-                    }
-
-                    std::fs::write(&target_path, plain_content).map_err(|source| {
-                        ConductorError::Io {
-                            operation: "materializing tool content from CAS".to_string(),
-                            path: target_path,
-                            source,
-                        }
-                    })?;
-                }
-                PlannedToolContentPayload::DirectoryFromZip { relative_dir, cached_dir } => {
-                    self.materialize_tool_content_directory_from_cached_dir(
-                        &planned.raw_relative_path,
-                        &relative_dir,
-                        &cached_dir,
-                        tool_cwd,
-                    )
-                    .await?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Resolves and validates all `content_map` entries before writing anything.
-    ///
-    /// This preflight phase enforces collision safety: two separate
-    /// `content_map` entries are not allowed to materialize the same target
-    /// file path in the execution sandbox.
-    async fn plan_tool_content_map_materialization(
-        &self,
-        tool_content_map: &BTreeMap<String, Hash>,
-        runtime_tmp_dir: &Path,
-    ) -> Result<Vec<PlannedToolContentMaterialization>, ConductorError> {
-        let cache_root = tool_content_cache::runtime_tool_cache_root(runtime_tmp_dir);
-        tool_content_cache::prune_expired_tool_content_cache_entries(&cache_root)?;
-
-        let planned = try_join_all(tool_content_map.iter().map(|(raw_relative_path, hash)| {
-            let raw_relative_path = raw_relative_path.clone();
-            let cache_root = cache_root.clone();
-            let cas = self.cas.clone();
-            async move {
-                let payload_bytes = cas.get(*hash).await?.to_vec();
-                Ok::<_, ConductorError>(
-                    match self.classify_tool_content_map_entry(&raw_relative_path)? {
-                        ToolContentMapEntry::File { relative_path } => {
-                            PlannedToolContentMaterialization {
-                                raw_relative_path,
-                                payload: PlannedToolContentPayload::File {
-                                    relative_path: relative_path.clone(),
-                                    plain_content: payload_bytes,
-                                },
-                                claimed_relative_files: BTreeSet::from([relative_path]),
-                            }
-                        }
-                        ToolContentMapEntry::DirectoryFromZip { relative_dir } => {
-                            let relative_dir_for_task = relative_dir.clone();
-                            let raw_relative_path_for_task = raw_relative_path.clone();
-                            let payload_bytes_for_task = payload_bytes.clone();
-                            let cached_dir = task::spawn_blocking(move || {
-                                tool_content_cache::prepare_cached_tool_content_directory(
-                                    &cache_root,
-                                    &raw_relative_path_for_task,
-                                    &relative_dir_for_task,
-                                    &payload_bytes_for_task,
-                                )
-                            })
-                            .await
-                            .map_err(|join_err| {
-                                ConductorError::Internal(format!(
-                                    "joining tool-content cache extraction task failed: {join_err}"
-                                ))
-                            })??;
-
-                            let claimed_relative_files =
-                                tool_content_cache::collect_relative_files_recursive(
-                                    &cached_dir,
-                                    &cached_dir,
-                                )?
-                                .into_iter()
-                                .map(|relative_file| {
-                                    if relative_dir.as_os_str().is_empty() {
-                                        relative_file
-                                    } else {
-                                        relative_dir.join(relative_file)
-                                    }
-                                })
-                                .collect();
-
-                            PlannedToolContentMaterialization {
-                                raw_relative_path,
-                                payload: PlannedToolContentPayload::DirectoryFromZip {
-                                    relative_dir,
-                                    cached_dir,
-                                },
-                                claimed_relative_files,
-                            }
-                        }
-                    },
-                )
-            }
-        }))
+        let tools_dir = runtime_tmp_dir.parent().unwrap_or(runtime_tmp_dir).join("tools");
+        let payload_dir = tool_content_cache::prepare_tool_content_cache(
+            &tools_dir,
+            tool_id,
+            tool_content_map,
+            &self.cas,
+        )
         .await?;
-
-        let mut claim_owners: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
-        for entry in &planned {
-            for claimed_file in &entry.claimed_relative_files {
-                if let Some(previous_owner) =
-                    claim_owners.insert(claimed_file.clone(), entry.raw_relative_path.clone())
-                {
-                    return Err(ConductorError::Workflow(format!(
-                        "tool content map entries '{}' and '{}' both materialize '{}' and would overwrite each other",
-                        previous_owner,
-                        entry.raw_relative_path,
-                        claimed_file.to_string_lossy()
-                    )));
-                }
-            }
-        }
-
-        Ok(planned)
-    }
-
-    /// Classifies one `content_map` key as file or ZIP-backed directory materialization.
-    ///
-    /// Semantics:
-    /// - keys ending with `/` or `\\` are directory targets and therefore
-    ///   expect ZIP payload bytes,
-    /// - key `./` (or `.\\`) means directory-target unpack at sandbox root,
-    /// - keys without trailing slash/backslash are regular file targets.
-    ///
-    /// Every accepted key is normalized and validated as a sandbox-relative
-    /// path; absolute or escaping paths are rejected.
-    fn classify_tool_content_map_entry(
-        &self,
-        raw_relative_path: &str,
-    ) -> Result<ToolContentMapEntry, ConductorError> {
-        if raw_relative_path.ends_with('/') || raw_relative_path.ends_with('\\') {
-            let trimmed = raw_relative_path.trim_end_matches(['/', '\\']);
-            if trimmed == "." {
-                return Ok(ToolContentMapEntry::DirectoryFromZip {
-                    relative_dir: std::path::PathBuf::new(),
-                });
-            }
-            if trimmed.trim().is_empty() {
-                return Err(ConductorError::Workflow(format!(
-                    "tool content map directory key '{raw_relative_path}' must contain at least one path component before trailing slash"
-                )));
-            }
-            let relative_dir = self.normalized_relative_tool_path(trimmed, "tool content map")?;
-            return Ok(ToolContentMapEntry::DirectoryFromZip { relative_dir });
-        }
-
-        let relative_path =
-            self.normalized_relative_tool_path(raw_relative_path, "tool content map")?;
-        Ok(ToolContentMapEntry::File { relative_path })
-    }
-
-    /// Materializes one directory-form `content_map` entry by unpacking ZIP bytes.
-    ///
-    /// The `raw_relative_path` must be a directory key ending in `/` or `\\`.
-    /// `relative_dir` is already normalized and guaranteed to stay inside
-    /// `tool_cwd`. The referenced CAS payload must be a ZIP archive; invalid
-    /// archives fail fast with an actionable workflow error.
-    #[expect(
-        clippy::unused_async,
-        reason = "async signature preserves parity with other materialization helpers in the execution pipeline"
-    )]
-    async fn materialize_tool_content_directory_from_cached_dir(
-        &self,
-        raw_relative_path: &str,
-        relative_dir: &Path,
-        cached_dir: &Path,
-        tool_cwd: &Path,
-    ) -> Result<(), ConductorError> {
-        let target_dir = tool_cwd.join(relative_dir);
-        std::fs::create_dir_all(&target_dir).map_err(|source| ConductorError::Io {
-            operation: "creating tool-content destination directory".to_string(),
-            path: target_dir.clone(),
-            source,
+        tool_content_cache::link_payload_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
+            ConductorError::Workflow(format!("materializing tool content sandbox: {err}"))
         })?;
-
-        tool_content_cache::copy_cached_tool_content_directory(cached_dir, &target_dir).map_err(
-            |err| {
-                ConductorError::Workflow(format!(
-                    "tool content map directory key '{raw_relative_path}' failed copying cached payload: {err}"
-                ))
-            },
-        )?;
-
         Ok(())
     }
 
