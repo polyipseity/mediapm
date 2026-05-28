@@ -78,6 +78,13 @@ Keep these mediapm defaults and path rules intact:
 - Relative `runtime.conductor_config`, `runtime.conductor_machine_config`,
   `runtime.conductor_state_config`, and `runtime.media_state_config` resolve relative to the
   topmost `mediapm.ncl` directory.
+- `MediaPmPaths.tools_dir` (default `<mediapm_dir>/tools`) is passed to
+  conductor as `RuntimeStoragePaths.conductor_tools_dir` so the conductor
+  tool-content cache lives under the same workspace-scoped root. Customising
+  `MediaPmPaths.tools_dir` automatically propagates into the conductor execution
+  pipeline. The conductor tool-content cache is owned exclusively by the
+  conductor crate; mediapm must not read from or write to
+  `<tools_dir>/<tool_id>/payload/` directly.
 - Runtime dotenv loading uses effective `runtime.env_file` (default
   `<mediapm_dir>/.env`) and keeps a colocated `.gitignore` containing only
   `/.env`.

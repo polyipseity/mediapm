@@ -75,6 +75,7 @@ Grouped runtime path defaults:
 - volatile state path (`conductor_state_config`): `<conductor_dir>/state.ncl`
 - filesystem CAS store (`cas_store_dir`): `<conductor_dir>/store`
 - schema export directory: `<conductor_dir>/config/conductor`
+- tool-content cache directory (`conductor_tools_dir`): `<conductor_dir>/tools`
 
 Schema export behavior contract:
 
@@ -459,6 +460,48 @@ Guidance:
   zero matches are valid.
 - `folder_regex` capture rename expansions (capture-group based) must remain
   deterministic and fail fast on post-rename path collisions.
+
+## Tool-Content Cache
+
+The tool-content cache lives at `<conductor_tools_dir>/` (default
+`<conductor_dir>/tools/`, overridable via `--conductor-tools-dir` on the CLI
+or `RuntimeStoragePaths.conductor_tools_dir` in the API).
+
+**This cache is owned exclusively by the conductor crate.** No other crate
+(`mediapm`, etc.) may read from or write to it.
+
+Design invariants (implemented in
+`src/conductor/src/orchestration/actors/step_worker/tool_content_cache.rs`):
+
+- **Cache key**: the tool id from the conductor config (the map key in
+  `tool_configs`), sanitized to a filesystem-safe name. One cache entry per
+  tool id: `<conductor_tools_dir>/<sanitized_tool_id>/`.
+
+- **Cache-hit check**: `<entry>/metadata.json` stores the complete
+  `tool_content_map` (`BTreeMap<String, Hash>`) alongside a version sentinel
+  and a last-used Unix timestamp. A cache hit requires the stored map to equal
+  the current map exactly; any change in keys or hashes causes a miss and
+  triggers full re-extraction.
+
+- **Payload root**: `<entry>/payload/` is the extraction root for all
+  `tool_content_map` entries. File entries are written at their relative key
+  paths; directory entries (keys with a trailing `/` or `\\`) are unpacked from
+  ZIP payloads. `./` (or `.\\`) means the ZIP is unpacked directly into
+  `payload/`.
+
+- **TTL**: cache entries expire after 24 hours of non-use. Last-used time is
+  refreshed on every cache hit. `prune_expired_tool_content_cache_entries` is
+  called best-effort at the start of each `prepare_tool_content_cache` call;
+  prune errors are logged and ignored.
+
+- **Sandbox materialization**: step workers hard-link (with copy fallback)
+  files from `<entry>/payload/` into the per-step sandbox cwd via
+  `link_payload_to_sandbox`.
+
+When modifying the cache implementation, keep all three exported functions
+(`prepare_tool_content_cache`, `link_payload_to_sandbox`,
+`prune_expired_tool_content_cache_entries`) in
+`tool_content_cache.rs` and their callers in `step_worker/mod.rs`.
 
 ## Versioned Schema Editing Policy
 
