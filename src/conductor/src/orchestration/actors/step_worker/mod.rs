@@ -26,9 +26,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures_util::future::try_join_all;
 use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
+use tokio::task;
 
 use crate::error::{ConductorError, CorruptWorkflowOutputContext};
 use crate::model::config::{
@@ -44,6 +46,7 @@ use crate::orchestration::protocol::{
 };
 
 mod template;
+mod tool_content_cache;
 
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
@@ -213,8 +216,8 @@ enum PlannedToolContentPayload {
     DirectoryFromZip {
         /// Destination directory path relative to the execution sandbox.
         relative_dir: std::path::PathBuf,
-        /// ZIP bytes resolved from CAS.
-        zip_content: Vec<u8>,
+        /// Runtime-local cache directory containing the extracted ZIP payload.
+        cached_dir: std::path::PathBuf,
     },
 }
 
@@ -372,7 +375,12 @@ where
         if needs_execution {
             let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
             let execution_cwd = execution_cwd_temp.path();
-            self.materialize_tool_content_map(&tool.tool_content_map, execution_cwd).await?;
+            self.materialize_tool_content_map(
+                &tool.tool_content_map,
+                execution_cwd,
+                &request.runtime_tmp_dir,
+            )
+            .await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
             let capture = self
                 .execute_tool(
@@ -1357,8 +1365,10 @@ where
         &self,
         tool_content_map: &BTreeMap<String, Hash>,
         tool_cwd: &Path,
+        runtime_tmp_dir: &Path,
     ) -> Result<(), ConductorError> {
-        let plans = self.plan_tool_content_map_materialization(tool_content_map).await?;
+        let plans =
+            self.plan_tool_content_map_materialization(tool_content_map, runtime_tmp_dir).await?;
 
         for planned in plans {
             match planned.payload {
@@ -1380,11 +1390,11 @@ where
                         }
                     })?;
                 }
-                PlannedToolContentPayload::DirectoryFromZip { relative_dir, zip_content } => {
-                    self.materialize_tool_content_directory_from_zip(
+                PlannedToolContentPayload::DirectoryFromZip { relative_dir, cached_dir } => {
+                    self.materialize_tool_content_directory_from_cached_dir(
                         &planned.raw_relative_path,
                         &relative_dir,
-                        &zip_content,
+                        &cached_dir,
                         tool_cwd,
                     )
                     .await?;
@@ -1403,41 +1413,77 @@ where
     async fn plan_tool_content_map_materialization(
         &self,
         tool_content_map: &BTreeMap<String, Hash>,
+        runtime_tmp_dir: &Path,
     ) -> Result<Vec<PlannedToolContentMaterialization>, ConductorError> {
-        let mut planned = Vec::with_capacity(tool_content_map.len());
+        let cache_root = tool_content_cache::runtime_tool_cache_root(runtime_tmp_dir);
+        tool_content_cache::prune_expired_tool_content_cache_entries(&cache_root)?;
 
-        for (raw_relative_path, hash) in tool_content_map {
-            let payload_bytes = self.cas.get(*hash).await?.to_vec();
-            match self.classify_tool_content_map_entry(raw_relative_path)? {
-                ToolContentMapEntry::File { relative_path } => {
-                    planned.push(PlannedToolContentMaterialization {
-                        raw_relative_path: raw_relative_path.clone(),
-                        payload: PlannedToolContentPayload::File {
-                            relative_path: relative_path.clone(),
-                            plain_content: payload_bytes,
-                        },
-                        claimed_relative_files: BTreeSet::from([relative_path]),
-                    });
-                }
-                ToolContentMapEntry::DirectoryFromZip { relative_dir } => {
-                    let claimed_relative_files = self
-                        .list_tool_content_directory_target_files(
-                            raw_relative_path,
-                            &relative_dir,
-                            &payload_bytes,
-                        )
-                        .await?;
-                    planned.push(PlannedToolContentMaterialization {
-                        raw_relative_path: raw_relative_path.clone(),
-                        payload: PlannedToolContentPayload::DirectoryFromZip {
-                            relative_dir,
-                            zip_content: payload_bytes,
-                        },
-                        claimed_relative_files,
-                    });
-                }
+        let planned = try_join_all(tool_content_map.iter().map(|(raw_relative_path, hash)| {
+            let raw_relative_path = raw_relative_path.clone();
+            let cache_root = cache_root.clone();
+            let cas = self.cas.clone();
+            async move {
+                let payload_bytes = cas.get(*hash).await?.to_vec();
+                Ok::<_, ConductorError>(
+                    match self.classify_tool_content_map_entry(&raw_relative_path)? {
+                        ToolContentMapEntry::File { relative_path } => {
+                            PlannedToolContentMaterialization {
+                                raw_relative_path,
+                                payload: PlannedToolContentPayload::File {
+                                    relative_path: relative_path.clone(),
+                                    plain_content: payload_bytes,
+                                },
+                                claimed_relative_files: BTreeSet::from([relative_path]),
+                            }
+                        }
+                        ToolContentMapEntry::DirectoryFromZip { relative_dir } => {
+                            let relative_dir_for_task = relative_dir.clone();
+                            let raw_relative_path_for_task = raw_relative_path.clone();
+                            let payload_bytes_for_task = payload_bytes.clone();
+                            let cached_dir = task::spawn_blocking(move || {
+                                tool_content_cache::prepare_cached_tool_content_directory(
+                                    &cache_root,
+                                    &raw_relative_path_for_task,
+                                    &relative_dir_for_task,
+                                    &payload_bytes_for_task,
+                                )
+                            })
+                            .await
+                            .map_err(|join_err| {
+                                ConductorError::Internal(format!(
+                                    "joining tool-content cache extraction task failed: {join_err}"
+                                ))
+                            })??;
+
+                            let claimed_relative_files =
+                                tool_content_cache::collect_relative_files_recursive(
+                                    &cached_dir,
+                                    &cached_dir,
+                                )?
+                                .into_iter()
+                                .map(|relative_file| {
+                                    if relative_dir.as_os_str().is_empty() {
+                                        relative_file
+                                    } else {
+                                        relative_dir.join(relative_file)
+                                    }
+                                })
+                                .collect();
+
+                            PlannedToolContentMaterialization {
+                                raw_relative_path,
+                                payload: PlannedToolContentPayload::DirectoryFromZip {
+                                    relative_dir,
+                                    cached_dir,
+                                },
+                                claimed_relative_files,
+                            }
+                        }
+                    },
+                )
             }
-        }
+        }))
+        .await?;
 
         let mut claim_owners: BTreeMap<std::path::PathBuf, String> = BTreeMap::new();
         for entry in &planned {
@@ -1456,106 +1502,6 @@ where
         }
 
         Ok(planned)
-    }
-
-    /// Lists all concrete file paths one directory-form entry would materialize.
-    ///
-    /// This uses the same archive unpack path as runtime execution to ensure
-    /// collision checks reflect real unpack behavior.
-    #[expect(
-        clippy::unused_async,
-        reason = "method stays async to align with the surrounding async planning pipeline"
-    )]
-    async fn list_tool_content_directory_target_files(
-        &self,
-        raw_relative_path: &str,
-        relative_dir: &Path,
-        zip_content: &[u8],
-    ) -> Result<BTreeSet<std::path::PathBuf>, ConductorError> {
-        let inspect_workspace = tempfile::tempdir().map_err(|source| ConductorError::Io {
-            operation: "creating temporary tool-content ZIP inspection workspace".to_string(),
-            path: std::env::temp_dir(),
-            source,
-        })?;
-        let unpack_dir = inspect_workspace.path().join("unpacked");
-
-        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(zip_content, &unpack_dir)
-        .map_err(|err| {
-            ConductorError::Workflow(format!(
-                "tool content map directory key '{raw_relative_path}' expects ZIP payload, but unpack failed: {err}"
-            ))
-        })?;
-
-        let mut collected_relative_files = BTreeSet::new();
-        self.collect_relative_files_recursive(
-            &unpack_dir,
-            &unpack_dir,
-            &mut collected_relative_files,
-        )?;
-
-        Ok(collected_relative_files
-            .into_iter()
-            .map(|relative_file| {
-                if relative_dir.as_os_str().is_empty() {
-                    relative_file
-                } else {
-                    relative_dir.join(relative_file)
-                }
-            })
-            .collect())
-    }
-
-    /// Collects all regular files under one directory as sandbox-relative paths.
-    #[expect(
-        clippy::self_only_used_in_recursion,
-        reason = "recursive helper intentionally remains a method to share executor-scoped error style"
-    )]
-    fn collect_relative_files_recursive(
-        &self,
-        root_dir: &Path,
-        scan_dir: &Path,
-        out: &mut BTreeSet<std::path::PathBuf>,
-    ) -> Result<(), ConductorError> {
-        if !scan_dir.exists() {
-            return Ok(());
-        }
-
-        let entries = std::fs::read_dir(scan_dir).map_err(|source| ConductorError::Io {
-            operation: "reading unpacked tool-content inspection directory".to_string(),
-            path: scan_dir.to_path_buf(),
-            source,
-        })?;
-
-        for entry in entries {
-            let entry = entry.map_err(|source| ConductorError::Io {
-                operation: "iterating unpacked tool-content inspection directory".to_string(),
-                path: scan_dir.to_path_buf(),
-                source,
-            })?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|source| ConductorError::Io {
-                operation: "reading unpacked tool-content entry type".to_string(),
-                path: path.clone(),
-                source,
-            })?;
-
-            if file_type.is_dir() {
-                self.collect_relative_files_recursive(root_dir, &path, out)?;
-                continue;
-            }
-
-            if file_type.is_file() {
-                let relative = path.strip_prefix(root_dir).map_err(|err| {
-                    ConductorError::Internal(format!(
-                        "failed deriving relative path for unpacked tool-content file '{}': {err}",
-                        path.display()
-                    ))
-                })?;
-                out.insert(relative.to_path_buf());
-            }
-        }
-
-        Ok(())
     }
 
     /// Classifies one `content_map` key as file or ZIP-backed directory materialization.
@@ -1603,11 +1549,11 @@ where
         clippy::unused_async,
         reason = "async signature preserves parity with other materialization helpers in the execution pipeline"
     )]
-    async fn materialize_tool_content_directory_from_zip(
+    async fn materialize_tool_content_directory_from_cached_dir(
         &self,
         raw_relative_path: &str,
         relative_dir: &Path,
-        zip_content: &[u8],
+        cached_dir: &Path,
         tool_cwd: &Path,
     ) -> Result<(), ConductorError> {
         let target_dir = tool_cwd.join(relative_dir);
@@ -1617,12 +1563,13 @@ where
             source,
         })?;
 
-        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(zip_content, &target_dir)
-        .map_err(|err| {
-            ConductorError::Workflow(format!(
-                "tool content map directory key '{raw_relative_path}' expects ZIP payload, but unpack failed: {err}"
-            ))
-        })?;
+        tool_content_cache::copy_cached_tool_content_directory(cached_dir, &target_dir).map_err(
+            |err| {
+                ConductorError::Workflow(format!(
+                    "tool content map directory key '{raw_relative_path}' failed copying cached payload: {err}"
+                ))
+            },
+        )?;
 
         Ok(())
     }
