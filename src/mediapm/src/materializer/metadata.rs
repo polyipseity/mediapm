@@ -27,7 +27,7 @@ pub(super) async fn resolve_hierarchy_relative_path(
     relative_path_template: &str,
     entry: &HierarchyEntry,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
 ) -> Result<String, MediaPmError> {
     let context_label = format!("hierarchy path '{relative_path_template}'");
     resolve_media_placeholder_template(
@@ -49,7 +49,7 @@ async fn resolve_media_placeholder_template(
     template: &str,
     entry: &HierarchyEntry,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     context_label: &str,
 ) -> Result<String, MediaPmError> {
     let placeholder_keys = hierarchy_metadata_placeholder_keys(template).map_err(|reason| {
@@ -116,7 +116,7 @@ pub(super) async fn resolve_hierarchy_folder_rename_rule_replacements(
     hierarchy_path: &str,
     entry: &HierarchyEntry,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
 ) -> Result<Vec<HierarchyFolderRenameRule>, MediaPmError> {
     let mut resolved_rules = Vec::with_capacity(rules.len());
 
@@ -147,7 +147,7 @@ async fn resolve_media_metadata_string_value(
     metadata_key: &str,
     metadata_value: &MediaMetadataValue,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
 ) -> Result<String, MediaPmError> {
     match metadata_value {
         MediaMetadataValue::Literal(value) => Ok(value.clone()),
@@ -192,7 +192,7 @@ async fn resolve_media_metadata_candidate_value(
     metadata_key: &str,
     candidate: &MediaMetadataValueCandidate,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
 ) -> Result<String, MediaPmError> {
     match candidate {
         MediaMetadataValueCandidate::Literal(value) => Ok(value.clone()),
@@ -225,7 +225,7 @@ async fn resolve_media_metadata_candidate_value(
 /// Resolution first attempts JSON lookup, then falls back to running ffprobe
 /// against the variant bytes when JSON extraction does not produce the key.
 fn extract_metadata_value_from_variant_payload(
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     media_id: &str,
     metadata_name: &str,
     variant_name: &str,

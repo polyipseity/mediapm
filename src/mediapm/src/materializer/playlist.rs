@@ -75,7 +75,7 @@ pub(super) fn collect_media_file_hierarchy_templates(
 /// Resolves one media output relative path used by playlist generation.
 pub(super) async fn resolve_playlist_media_target_relative_path(
     document: &MediaPmDocument,
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     media_path_template: &str,
     media_file_templates: &BTreeMap<String, HierarchyEntry>,
     cache: &mut BTreeMap<String, String>,

@@ -121,13 +121,13 @@ pub(super) fn collect_media_source_available_variants(
 /// present on disk the re-materialization can be skipped entirely, avoiding
 /// large CAS object reads for unchanged entries.
 pub(super) async fn resolve_variant_source_hash(
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     media_id: &str,
     source: &MediaSourceSpec,
     variant: &str,
 ) -> Result<Option<Hash>, MediaPmError> {
     // Workflow state path: resolve step output hash without fetching bytes.
-    if let Some(state) = lookup.orchestration_state {
+    if let Some(state) = lookup.orchestration_state.as_deref() {
         if let Some((workflow_hash, _notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
                 .await?
@@ -162,14 +162,14 @@ pub(super) async fn resolve_variant_source_hash(
 }
 
 pub(super) async fn resolve_variant_source_bytes(
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     media_id: &str,
     source: &MediaSourceSpec,
     variant: &str,
 ) -> Result<VariantSourceBytes, MediaPmError> {
     let source_uri = media_source_uri(media_id, source);
 
-    if let Some(state) = lookup.orchestration_state
+    if let Some(state) = lookup.orchestration_state.as_deref()
         && let Some((workflow_hash, fallback_notice)) =
             resolve_variant_hash_from_workflow_state(lookup, state, media_id, source, variant)
                 .await?
@@ -263,7 +263,7 @@ pub(super) async fn resolve_variant_source_bytes(
 /// when no managed workflow exists for the source, or when matching runtime
 /// step instances are unavailable in current orchestration state.
 async fn resolve_variant_hash_from_workflow_state(
-    lookup: &MaterializationLookupContext<'_>,
+    lookup: &MaterializationLookupContext,
     state: &OrchestrationState,
     media_id: &str,
     source: &MediaSourceSpec,
@@ -284,8 +284,13 @@ async fn resolve_variant_hash_from_workflow_state(
         return Ok(None);
     };
 
-    let Some(step_output_hashes) =
-        resolve_workflow_step_output_hashes(lookup.cas, lookup.machine, state, workflow).await?
+    let Some(step_output_hashes) = resolve_workflow_step_output_hashes(
+        lookup.cas.as_ref(),
+        lookup.machine.as_ref(),
+        state,
+        workflow,
+    )
+    .await?
     else {
         return Ok(None);
     };
