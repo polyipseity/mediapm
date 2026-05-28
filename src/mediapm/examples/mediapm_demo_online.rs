@@ -1380,6 +1380,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // across runs without re-downloading from the network.
         // Default when omitted: true.
         use_user_tool_cache: Some(true),
+        // Enable conductor profiling so every sync run produces a per-step
+        // timing profile at `.mediapm/profile.json` for latency investigation.
+        profiler_enabled: Some(true),
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;
@@ -2386,18 +2389,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let service = MediaPmService::new_in_memory_at(&workspace_root);
     let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
 
-    // Auto-enable conductor profiling to the artifact root so every sync run
-    // produces a per-step timing profile for latency investigation.
-    // Users can override by setting MEDIAPM_CONDUCTOR_PROFILE_JSON before running.
-    let profile_path = root.join("profile.json");
-    if std::env::var_os(mediapm_conductor::ENV_PROFILE_OUTPUT_PATH).is_none() {
-        // SAFETY: set before tokio workers are spawned; written once and
-        // not mutated during the concurrent sync execution.
-        unsafe {
-            std::env::set_var(mediapm_conductor::ENV_PROFILE_OUTPUT_PATH, &profile_path);
-        }
-    }
-
     eprintln!(
         "[demo_online] starting sync (timeout={}s) in '{}'",
         sync_timeout.as_secs(),
@@ -2492,7 +2483,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         added_tools: summary.added_tools,
         updated_tools: summary.updated_tools,
         warning_count: summary.warnings.len(),
-        profile_path: display_path(&profile_path),
+        profile_path: display_path(&service.paths().runtime_root.join("profile.json")),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
         store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
@@ -2629,7 +2620,10 @@ async fn main() -> ExampleResult<()> {
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: {run_sync}");
-    mediapm_conductor::print_profile_timing(&paths.artifact_root.join("profile.json"));
+    // Profile is now written by conductor to <mediapm_dir>/profile.json when
+    // profiler_enabled is set in MediaRuntimeStorage (set above to Some(true)).
+    // The workspace_root/.mediapm/ directory is the service runtime root.
+    mediapm_conductor::print_profile_timing(&paths.workspace_root.join(".mediapm/profile.json"));
 
     Ok(())
 }

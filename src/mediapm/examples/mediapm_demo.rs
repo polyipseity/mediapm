@@ -935,6 +935,9 @@ fn configure_document_for_local_tool_chain(
         // across runs without re-downloading from the network.
         // Default when omitted: true.
         use_user_tool_cache: Some(true),
+        // Enable conductor profiling so every sync run produces a per-step
+        // timing profile at `.mediapm/profile.json` for latency investigation.
+        profiler_enabled: Some(true),
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;
@@ -994,18 +997,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     )?;
 
     let service = MediaPmService::new(SimpleConductor::new(cas), paths);
-
-    // Auto-enable conductor profiling to the artifact root so every sync run
-    // produces a per-step timing profile for latency investigation.
-    // Users can override by setting MEDIAPM_CONDUCTOR_PROFILE_JSON before running.
-    let profile_path = root.join("profile.json");
-    if std::env::var_os(mediapm_conductor::ENV_PROFILE_OUTPUT_PATH).is_none() {
-        // SAFETY: set before tokio workers are spawned; written once and
-        // not mutated during the concurrent sync execution.
-        unsafe {
-            std::env::set_var(mediapm_conductor::ENV_PROFILE_OUTPUT_PATH, &profile_path);
-        }
-    }
 
     let maybe_summary = if run_sync { Some(service.sync_library().await?) } else { None };
     let cas_root = service.paths().runtime_root.join("store");
@@ -1084,7 +1075,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         materialized_paths: maybe_summary.as_ref().map_or(0, |summary| summary.materialized_paths),
         removed_paths: maybe_summary.as_ref().map_or(0, |summary| summary.removed_paths),
         warning_count: maybe_summary.as_ref().map_or(0, |summary| summary.warnings.len()),
-        profile_path: display_path(&profile_path),
+        profile_path: display_path(&service.paths().runtime_root.join("profile.json")),
         mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
         conductor_user_ncl_path: display_path(&service.paths().conductor_user_ncl),
         conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
@@ -1116,7 +1107,9 @@ async fn main() -> ExampleResult<()> {
     println!("generated library root: {}", paths.library_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: {run_sync}");
-    mediapm_conductor::print_profile_timing(&paths.artifact_root.join("profile.json"));
+    // Profile is written by conductor to <mediapm_dir>/profile.json when
+    // profiler_enabled is set in MediaRuntimeStorage (set above to Some(true)).
+    mediapm_conductor::print_profile_timing(&paths.workspace_root.join(".mediapm/profile.json"));
     Ok(())
 }
 

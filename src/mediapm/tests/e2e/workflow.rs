@@ -117,6 +117,7 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
             env_file: None,
             mediapm_schema_dir: None,
             use_user_tool_cache: None,
+            profiler_enabled: None,
         },
         ..MediaPmDocument::default()
     };
@@ -156,6 +157,7 @@ async fn sync_honors_explicit_conductor_state_override() {
             env_file: None,
             mediapm_schema_dir: None,
             use_user_tool_cache: None,
+            profiler_enabled: None,
         },
         ..MediaPmDocument::default()
     };

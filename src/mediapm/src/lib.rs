@@ -460,6 +460,7 @@ pub(crate) fn merge_runtime_storage(
         use_user_tool_cache: override_value
             .use_user_tool_cache
             .or(config_value.use_user_tool_cache),
+        profiler_enabled: override_value.profiler_enabled.or(config_value.profiler_enabled),
     }
 }
 
@@ -524,6 +525,11 @@ pub(crate) fn conductor_run_workflow_options(
             conductor_schema_dir: Some(paths.conductor_schema_dir.clone()),
         },
         runtime_inherited_env_vars: runtime_storage.inherited_env_vars_with_defaults(),
+        profiler_enabled: runtime_storage.profiler_enabled.unwrap_or(false),
+        profile_output_path: runtime_storage
+            .profiler_enabled
+            .is_some_and(|enabled| enabled)
+            .then(|| paths.runtime_root.join("profile.json")),
         ..RunWorkflowOptions::default()
     }
 }

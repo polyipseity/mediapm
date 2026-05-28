@@ -288,6 +288,7 @@ mod tests {
             env_file: Some("state/custom.env".to_string()),
             mediapm_schema_dir: Some(Some("schemas/mediapm".to_string())),
             use_user_tool_cache: None,
+            profiler_enabled: None,
         };
 
         let resolved = base.with_runtime_storage(&runtime_storage);

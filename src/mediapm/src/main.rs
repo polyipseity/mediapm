@@ -414,6 +414,7 @@ async fn main() -> anyhow::Result<()> {
         env_file: option_path_to_string(cli.env_file),
         mediapm_schema_dir: None,
         use_user_tool_cache: None,
+        profiler_enabled: None,
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
     if matches!(

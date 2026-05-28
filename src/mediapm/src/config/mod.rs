@@ -397,6 +397,15 @@ pub struct MediaRuntimeStorage {
     /// When omitted, the cache is enabled by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_user_tool_cache: Option<bool>,
+    /// Optional toggle for conductor workflow profiling during managed runs.
+    ///
+    /// When `Some(true)`, conductor writes a per-step timing profile to
+    /// `<mediapm_dir>/profile.json` after each successful workflow execution.
+    /// When `Some(false)` or `None`, profiling is disabled.
+    ///
+    /// Default: `None` (disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiler_enabled: Option<bool>,
 }
 
 /// Returns whether runtime schema-export policy was omitted from config.
