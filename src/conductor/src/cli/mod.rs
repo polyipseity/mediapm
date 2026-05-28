@@ -123,6 +123,19 @@ pub enum CliCommand {
         /// machine definitions for the same immutable tool name.
         #[arg(long, default_value_t = false)]
         allow_tool_redefinition: bool,
+        /// Enables conductor profiling for this run.
+        ///
+        /// When set and no explicit `--profile-json` path is provided, the
+        /// profile is written to `<conductor-dir>/profile.json`. The
+        /// `MEDIAPM_CONDUCTOR_PROFILE_JSON` environment variable is consulted
+        /// as an override first.
+        #[arg(long, default_value_t = false)]
+        enable_profiler: bool,
+    },
+    /// Prints a formatted profiler report from a conductor profile JSON file.
+    Profiler {
+        /// Path to the conductor profile JSON file to visualize.
+        path: PathBuf,
     },
     /// State inspection and mutation operations.
     State(StateArgs),
@@ -370,6 +383,10 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
             );
             Ok(())
         }
+        CliCommand::Profiler { path } => {
+            crate::orchestration::print_profile_timing(&path);
+            Ok(())
+        }
         other => {
             let runtime_env_var_names =
                 load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
@@ -377,12 +394,13 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
             export_nickel_config_schemas(schema_anchor)?;
             let cas = open_cas(&cas_locator).await?;
             match other {
-                CliCommand::Run { allow_tool_redefinition } => {
+                CliCommand::Run { allow_tool_redefinition, enable_profiler } => {
                     run_workflow(
                         cas,
                         &user_ncl,
                         &machine_ncl,
                         allow_tool_redefinition,
+                        enable_profiler,
                         runtime_storage_paths,
                         runtime_env_var_names,
                         cli.runtime_paths.profile_json.clone(),
@@ -411,8 +429,10 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                     )
                     .await
                 }
-                CliCommand::Cas(_) | CliCommand::Completions { .. } => {
-                    unreachable!("passthrough/completions handled above")
+                CliCommand::Cas(_)
+                | CliCommand::Completions { .. }
+                | CliCommand::Profiler { .. } => {
+                    unreachable!("passthrough/completions/profiler handled above")
                 }
             }
         }
@@ -489,11 +509,13 @@ async fn open_cas(locator: &str) -> Result<ConfiguredCas, ConductorError> {
 }
 
 /// Executes workflow and prints run summary as pretty JSON.
+#[allow(clippy::too_many_arguments)]
 async fn run_workflow(
     cas: ConfiguredCas,
     user_ncl: &Path,
     machine_ncl: &Path,
     allow_tool_redefinition: bool,
+    enable_profiler: bool,
     runtime_storage_paths: RuntimeStoragePaths,
     runtime_inherited_env_vars: Vec<String>,
     profile_output_path: Option<PathBuf>,
@@ -508,6 +530,7 @@ async fn run_workflow(
                 runtime_storage_paths,
                 runtime_inherited_env_vars,
                 profile_output_path,
+                profiler_enabled: enable_profiler,
             },
         )
         .await?;

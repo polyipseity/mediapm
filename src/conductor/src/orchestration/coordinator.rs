@@ -199,8 +199,15 @@ where
             &runtime_env_names,
         );
         let conductor_state_config = resolved_runtime_paths.conductor_state_config.clone();
-        let profile_output_path =
-            effective_options.profile_output_path.clone().or_else(profile_output_path_from_env);
+        let profile_output_path = effective_options
+            .profile_output_path
+            .clone()
+            .or_else(profile_output_path_from_env)
+            .or_else(|| {
+                effective_options
+                    .profiler_enabled
+                    .then(|| resolved_runtime_paths.conductor_dir.join("profile.json"))
+            });
 
         self.ensure_runtime_support().await?;
         let document_loader = self.document_loader.clone().ok_or_else(|| {
@@ -328,6 +335,7 @@ where
             runtime_storage_paths: options.runtime_storage_paths,
             runtime_inherited_env_vars,
             profile_output_path: None,
+            profiler_enabled: false,
         };
         let LoadedDocuments { prior_state_pointer, unified, .. } = document_loader
             .load_and_unify(
@@ -377,6 +385,7 @@ where
             runtime_storage_paths: options.runtime_storage_paths,
             runtime_inherited_env_vars,
             profile_output_path: None,
+            profiler_enabled: false,
         };
         let LoadedDocuments { mut state_document, unified, .. } = document_loader
             .load_and_unify(

@@ -203,7 +203,22 @@ pub struct RunWorkflowOptions {
     ///
     /// When set, conductor writes one structured runtime profile report after
     /// successful workflow execution and state persistence.
+    ///
+    /// Takes precedence over [`profiler_enabled`](Self::profiler_enabled). The
+    /// `MEDIAPM_CONDUCTOR_PROFILE_JSON` environment variable is also consulted
+    /// as a fallback when neither this field nor the environment variable are
+    /// set but `profiler_enabled` is `true`.
     pub profile_output_path: Option<PathBuf>,
+    /// Enables conductor workflow profiling when no explicit
+    /// [`profile_output_path`](Self::profile_output_path) is provided.
+    ///
+    /// When `true` and `profile_output_path` is `None`, conductor automatically
+    /// resolves the profile output path to `<conductor_dir>/profile.json`.
+    /// The environment variable `MEDIAPM_CONDUCTOR_PROFILE_JSON` is still
+    /// consulted first as an override before this auto-path fires.
+    ///
+    /// Defaults to `false` so profiling is opt-in per call site.
+    pub profiler_enabled: bool,
 }
 
 impl RunWorkflowOptions {
@@ -215,6 +230,7 @@ impl RunWorkflowOptions {
             runtime_storage_paths: RuntimeStoragePaths::default(),
             runtime_inherited_env_vars: Vec::new(),
             profile_output_path: None,
+            profiler_enabled: false,
         }
     }
 }

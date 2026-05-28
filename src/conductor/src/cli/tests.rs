@@ -106,7 +106,7 @@ fn inject_cas_root_arg_if_missing_respects_explicit_root() {
 fn parse_run_with_allow_tool_redefinition_flag() {
     let cli = Cli::parse_from(["conductor", "run", "--allow-tool-redefinition"]);
     match cli.command {
-        CliCommand::Run { allow_tool_redefinition } => {
+        CliCommand::Run { allow_tool_redefinition, .. } => {
             assert!(allow_tool_redefinition);
         }
         other => panic!("expected run command, got {other:?}"),
