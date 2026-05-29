@@ -1572,6 +1572,7 @@ async fn execute_executable_tool_enforces_timeout_budget() {
             &env_vars,
             &BTreeSet::from([0]),
             sandbox.path(),
+            None,
             Duration::from_millis(200),
         )
         .await

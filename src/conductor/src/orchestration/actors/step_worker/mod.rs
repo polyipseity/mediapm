@@ -328,13 +328,19 @@ where
         if needs_execution {
             let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
             let execution_cwd = execution_cwd_temp.path();
-            self.materialize_tool_content_map(
-                &request.step.tool,
-                &tool.tool_content_map,
-                execution_cwd,
-                &request.runtime_tools_dir,
-            )
-            .await?;
+            // payload_dir is Some for all managed executable tools (non-empty
+            // content_map). Passed to the subprocess spawner so the binary is
+            // executed from its stable persistent cache path rather than from
+            // the per-step sandbox hard-link, avoiding repeated macOS
+            // Gatekeeper/XProtect per-path security scans on every step.
+            let payload_dir = self
+                .materialize_tool_content_map(
+                    &request.step.tool,
+                    &tool.tool_content_map,
+                    execution_cwd,
+                    &request.runtime_tools_dir,
+                )
+                .await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
             let capture = self
                 .execute_tool(
@@ -342,6 +348,7 @@ where
                     &resolved_inputs,
                     execution_cwd,
                     &request.outermost_config_dir,
+                    payload_dir.as_deref(),
                 )
                 .await?;
 
@@ -1092,11 +1099,19 @@ where
         resolved_inputs: &BTreeMap<String, ResolvedInput>,
         tool_cwd: &Path,
         outermost_config_dir: &Path,
+        payload_dir: Option<&Path>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         match process {
             ResolvedProcessExecution::Executable { executable, args, env_vars, success_codes } => {
-                self.execute_executable_tool(executable, args, env_vars, success_codes, tool_cwd)
-                    .await
+                self.execute_executable_tool(
+                    executable,
+                    args,
+                    env_vars,
+                    success_codes,
+                    tool_cwd,
+                    payload_dir,
+                )
+                .await
             }
             ResolvedProcessExecution::Builtin { name, version, args } => {
                 self.execute_builtin_tool(
@@ -1153,6 +1168,7 @@ where
         env_vars: &BTreeMap<String, String>,
         success_codes: &BTreeSet<i32>,
         tool_cwd: &Path,
+        payload_dir: Option<&Path>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         let executable_timeout = Self::resolve_executable_timeout_duration()?;
 
@@ -1162,6 +1178,7 @@ where
             env_vars,
             success_codes,
             tool_cwd,
+            payload_dir,
             executable_timeout,
         )
         .await
@@ -1221,6 +1238,10 @@ where
     ///
     /// Returns [`ConductorError::Workflow`] when process startup succeeds but
     /// execution exceeds `executable_timeout`.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flat argument list avoids an ad-hoc parameter struct for a single call site"
+    )]
     async fn execute_executable_tool_with_timeout(
         &self,
         executable_name: &str,
@@ -1228,6 +1249,7 @@ where
         env_vars: &BTreeMap<String, String>,
         success_codes: &BTreeSet<i32>,
         tool_cwd: &Path,
+        payload_dir: Option<&Path>,
         executable_timeout: Duration,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         if executable_name.trim().is_empty() {
@@ -1236,8 +1258,20 @@ where
             ));
         }
 
-        let executable_path =
-            self.resolve_tool_relative_path(executable_name, tool_cwd, "tool process executable")?;
+        // On macOS, Gatekeeper/XProtect caches scan results per file path (not
+        // per inode). Hard-linking the tool binary into a fresh per-step tmpdir
+        // path on each step triggers a new ~4-5 s scan every time. By resolving
+        // the executable from its stable persistent payload-cache path we pay
+        // that cost only once per tool version; the sandbox CWD is still used
+        // for all relative I/O paths.
+        let executable_path = if let Some(pd) = payload_dir {
+            let normalized =
+                self.normalized_relative_tool_path(executable_name, "tool process executable")?;
+            let candidate = pd.join(&normalized);
+            if candidate.exists() { candidate } else { tool_cwd.join(normalized) }
+        } else {
+            self.resolve_tool_relative_path(executable_name, tool_cwd, "tool process executable")?
+        };
 
         #[cfg(unix)]
         {
@@ -1317,7 +1351,10 @@ where
         tool_content_map: &BTreeMap<String, Hash>,
         tool_cwd: &Path,
         tools_dir: &Path,
-    ) -> Result<(), ConductorError> {
+    ) -> Result<Option<PathBuf>, ConductorError> {
+        if tool_content_map.is_empty() {
+            return Ok(None);
+        }
         let payload_dir = tool_content_cache::prepare_tool_content_cache(
             tools_dir,
             tool_id,
@@ -1328,7 +1365,7 @@ where
         tool_content_cache::link_payload_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
             ConductorError::Workflow(format!("materializing tool content sandbox: {err}"))
         })?;
-        Ok(())
+        Ok(Some(payload_dir))
     }
 
     /// Executes one builtin implementation and returns synthetic stdout/stderr.
