@@ -40,7 +40,9 @@ use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor
 use super::actors::execution_hub::{ExecutionHubClient, spawn_execution_hub_actor};
 use super::actors::state_store::{StateStoreClient, spawn_state_store_actor};
 use super::config::profile_output_path_from_env;
-use super::profiler::{StepExecutionProfile, WorkflowRunProfile, write_profile_json};
+use super::profiler::{
+    StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, write_profile_json,
+};
 use super::protocol::{
     CommitStateRequest, LevelExecutionRequest, LoadedDocuments, StepExecutionBundle, StepOutputs,
     UnifiedNickelDocument, UnifiedToolSpec,
@@ -651,6 +653,15 @@ where
                             elapsed_ms: result.elapsed_ms,
                             requested_output_count: result.requested_output_names.len(),
                             pending_unsaved_hashes_count: result.pending_unsaved_hashes.len(),
+                            phase_timings: StepPhaseTimingProfile {
+                                resolve_inputs_ms: result.phase_timings.resolve_inputs_ms,
+                                resolve_specs_ms: result.phase_timings.resolve_specs_ms,
+                                cache_probe_ms: result.phase_timings.cache_probe_ms,
+                                materialization_ms: result.phase_timings.materialization_ms,
+                                execution_ms: result.phase_timings.execution_ms,
+                                capture_outputs_ms: result.phase_timings.capture_outputs_ms,
+                                persistence_merge_ms: result.phase_timings.persistence_merge_ms,
+                            },
                         });
 
                         if result.executed {
@@ -868,6 +879,7 @@ where
             rematerialized: _,
             pending_unsaved_hashes: _,
             elapsed_ms: _,
+            phase_timings: _,
             fallback_used: _,
         } = result;
 

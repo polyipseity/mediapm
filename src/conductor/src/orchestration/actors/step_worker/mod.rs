@@ -40,9 +40,9 @@ use crate::model::state::{
     merge_persistence_flags,
 };
 use crate::orchestration::protocol::{
-    StepExecutionBundle, StepExecutionRequest, StepOutputs, UnifiedNickelDocument, UnifiedToolSpec,
+    StepExecutionBundle, StepExecutionPhaseTimings, StepExecutionRequest, StepOutputs,
+    UnifiedNickelDocument, UnifiedToolSpec,
 };
-
 mod template;
 mod tool_content_cache;
 
@@ -250,7 +250,10 @@ where
             ))
         })?;
 
+        let mut phase_timings = StepExecutionPhaseTimings::default();
+
         let mut template_file_writes = Vec::new();
+        let resolve_inputs_started_at = Instant::now();
         let resolved_inputs = self
             .resolve_inputs(
                 request.unified.as_ref(),
@@ -260,6 +263,10 @@ where
                 request.step_outputs.as_ref(),
             )
             .await?;
+        phase_timings.resolve_inputs_ms =
+            resolve_inputs_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        let resolve_specs_started_at = Instant::now();
         let resolved_process =
             self.resolve_process_execution(tool, &resolved_inputs, &mut template_file_writes)?;
         let metadata = Self::tool_spec_from_unified(tool);
@@ -275,6 +282,7 @@ where
             &resolved_inputs,
             &mut template_file_writes,
         )?;
+        phase_timings.resolve_specs_ms = resolve_specs_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let mut effective_output_names = request.required_output_names.clone();
         effective_output_names.extend(request.step.outputs.keys().cloned());
@@ -291,6 +299,7 @@ where
         }
         let requested_output_names: Vec<String> = effective_output_names.iter().cloned().collect();
 
+        let cache_probe_started_at = Instant::now();
         let existing_instance = request.state_snapshot.instances.get(&instance_key).cloned();
         let mut rematerialized = false;
         let mut needs_execution = existing_instance.is_none();
@@ -306,6 +315,7 @@ where
                 }
             }
         }
+        phase_timings.cache_probe_ms = cache_probe_started_at.elapsed().as_secs_f64() * 1000.0;
 
         let mut instance = if let Some(existing) = existing_instance {
             ToolCallInstance {
@@ -326,6 +336,7 @@ where
         };
 
         if needs_execution {
+            let materialization_started_at = Instant::now();
             let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
             let execution_cwd = execution_cwd_temp.path();
             // payload_dir is Some for all managed executable tools (non-empty
@@ -343,6 +354,10 @@ where
                 )
                 .await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
+            phase_timings.materialization_ms =
+                materialization_started_at.elapsed().as_secs_f64() * 1000.0;
+
+            let execution_started_at = Instant::now();
             let capture = self
                 .execute_tool(
                     &resolved_process,
@@ -352,7 +367,9 @@ where
                     payload_dir.as_deref(),
                 )
                 .await?;
+            phase_timings.execution_ms = execution_started_at.elapsed().as_secs_f64() * 1000.0;
 
+            let capture_outputs_started_at = Instant::now();
             for output_name in &effective_output_names {
                 let output_spec = output_specs.get(output_name).ok_or_else(|| {
                     ConductorError::Internal(format!(
@@ -387,8 +404,11 @@ where
                     );
                 }
             }
+            phase_timings.capture_outputs_ms =
+                capture_outputs_started_at.elapsed().as_secs_f64() * 1000.0;
         }
 
+        let persistence_merge_started_at = Instant::now();
         let mut pending_unsaved_hashes = BTreeSet::new();
         for output_name in &effective_output_names {
             let output_spec = output_specs.get(output_name).ok_or_else(|| {
@@ -423,6 +443,8 @@ where
                 pending_unsaved_hashes.insert(output_ref.hash);
             }
         }
+        phase_timings.persistence_merge_ms =
+            persistence_merge_started_at.elapsed().as_secs_f64() * 1000.0;
 
         Ok(StepExecutionBundle {
             step_id: request.step.id,
@@ -435,6 +457,7 @@ where
             rematerialized,
             pending_unsaved_hashes,
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+            phase_timings,
             fallback_used: false,
         })
     }

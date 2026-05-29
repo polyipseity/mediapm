@@ -146,6 +146,26 @@ pub(super) struct StepExecutionRequest {
     pub required_output_names: BTreeSet<String>,
 }
 
+/// Fine-grained phase timings captured within one step execution.
+#[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_field_names)]
+pub(super) struct StepExecutionPhaseTimings {
+    /// Time spent resolving step/default input bindings.
+    pub resolve_inputs_ms: f64,
+    /// Time spent resolving process and output specs from templates.
+    pub resolve_specs_ms: f64,
+    /// Time spent evaluating cache-hit/rematerialization requirements.
+    pub cache_probe_ms: f64,
+    /// Time spent preparing execution sandbox content before process start.
+    pub materialization_ms: f64,
+    /// Time spent running the tool process or builtin implementation.
+    pub execution_ms: f64,
+    /// Time spent capturing declared outputs into CAS.
+    pub capture_outputs_ms: f64,
+    /// Time spent applying persistence policies and CAS save hints.
+    pub persistence_merge_ms: f64,
+}
+
 /// Result of one worker step execution.
 #[derive(Debug)]
 pub(super) struct StepExecutionBundle {
@@ -169,6 +189,8 @@ pub(super) struct StepExecutionBundle {
     pub pending_unsaved_hashes: BTreeSet<Hash>,
     /// Observed execution duration in milliseconds.
     pub elapsed_ms: f64,
+    /// Fine-grained timing breakdown for internal execution phases.
+    pub phase_timings: StepExecutionPhaseTimings,
     /// Whether execution happened via local fallback after worker RPC failure.
     pub fallback_used: bool,
 }

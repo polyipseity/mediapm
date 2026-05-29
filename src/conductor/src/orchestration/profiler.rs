@@ -15,7 +15,7 @@ use crate::api::{RunSummary, RuntimeDiagnostics};
 use crate::error::ConductorError;
 
 /// Wire-format version for serialized workflow profiler reports.
-pub(super) const WORKFLOW_RUN_PROFILE_VERSION: u32 = 1;
+pub(super) const WORKFLOW_RUN_PROFILE_VERSION: u32 = 2;
 
 /// End-to-end workflow run profile captured from one conductor invocation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,6 +78,26 @@ impl WorkflowRunProfile {
     }
 }
 
+/// Fine-grained execution-phase timings for one workflow step.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
+pub(super) struct StepPhaseTimingProfile {
+    /// Time spent resolving step/default input bindings.
+    pub resolve_inputs_ms: f64,
+    /// Time spent resolving process and output specs from templates.
+    pub resolve_specs_ms: f64,
+    /// Time spent evaluating cache-hit/rematerialization requirements.
+    pub cache_probe_ms: f64,
+    /// Time spent preparing execution sandbox content before process start.
+    pub materialization_ms: f64,
+    /// Time spent running the tool process or builtin implementation.
+    pub execution_ms: f64,
+    /// Time spent capturing declared outputs into CAS.
+    pub capture_outputs_ms: f64,
+    /// Time spent applying persistence policies and CAS save hints.
+    pub persistence_merge_ms: f64,
+}
+
 /// One workflow-step execution timing sample.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct StepExecutionProfile {
@@ -107,6 +127,8 @@ pub(super) struct StepExecutionProfile {
     pub requested_output_count: usize,
     /// Number of unsaved output hashes reported by this step.
     pub pending_unsaved_hashes_count: usize,
+    /// Fine-grained phase timing breakdown captured by the step worker.
+    pub phase_timings: StepPhaseTimingProfile,
 }
 
 /// Persists one workflow run profile as pretty JSON.
@@ -298,6 +320,38 @@ fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
         right.elapsed_ms.partial_cmp(&left.elapsed_ms).unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    let mut phase_totals = BTreeMap::<&'static str, f64>::new();
+    for step in &profile.step_executions {
+        phase_totals
+            .entry("resolve_inputs")
+            .and_modify(|ms| *ms += step.phase_timings.resolve_inputs_ms)
+            .or_insert(step.phase_timings.resolve_inputs_ms);
+        phase_totals
+            .entry("resolve_specs")
+            .and_modify(|ms| *ms += step.phase_timings.resolve_specs_ms)
+            .or_insert(step.phase_timings.resolve_specs_ms);
+        phase_totals
+            .entry("cache_probe")
+            .and_modify(|ms| *ms += step.phase_timings.cache_probe_ms)
+            .or_insert(step.phase_timings.cache_probe_ms);
+        phase_totals
+            .entry("materialization")
+            .and_modify(|ms| *ms += step.phase_timings.materialization_ms)
+            .or_insert(step.phase_timings.materialization_ms);
+        phase_totals
+            .entry("execution")
+            .and_modify(|ms| *ms += step.phase_timings.execution_ms)
+            .or_insert(step.phase_timings.execution_ms);
+        phase_totals
+            .entry("capture_outputs")
+            .and_modify(|ms| *ms += step.phase_timings.capture_outputs_ms)
+            .or_insert(step.phase_timings.capture_outputs_ms);
+        phase_totals
+            .entry("persistence_merge")
+            .and_modify(|ms| *ms += step.phase_timings.persistence_merge_ms)
+            .or_insert(step.phase_timings.persistence_merge_ms);
+    }
+
     let percent = |part: f64, whole: f64| -> f64 {
         if whole <= f64::EPSILON { 0.0 } else { (part / whole) * 100.0 }
     };
@@ -327,9 +381,21 @@ fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
             profile.summary.rematerialized_instances,
             profile.runtime_diagnostics.scheduler.rpc_fallbacks_total,
         ),
+        "Scope note: this profile covers conductor workflow runtime only; mediapm post-sync checks and manifest generation are outside this timing scope.".to_string(),
         String::new(),
-        "-- Phase breakdown --".to_string(),
+        "-- Internal step phase totals --".to_string(),
     ];
+
+    for (phase_name, total_ms) in &phase_totals {
+        lines.push(format!(
+            "  {phase_name:<18}  {} ({:.1}% of step sum)",
+            format_duration_ms(*total_ms),
+            percent(*total_ms, step_total_ms)
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("-- Phase breakdown --".to_string());
 
     for (_, substeps) in &phase_groups {
         let phase_total_ms: f64 = substeps.iter().map(|(_, _, elapsed)| *elapsed).sum();
@@ -436,7 +502,8 @@ mod tests {
     use crate::api::{RuntimeDiagnostics, SchedulerDiagnostics};
 
     use super::{
-        StepExecutionProfile, WorkflowRunProfile, render_profile_timing, write_profile_json,
+        StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, render_profile_timing,
+        write_profile_json,
     };
 
     /// Verifies profiler reports serialize to JSON with expected core fields.
@@ -470,6 +537,15 @@ mod tests {
                 elapsed_ms: 123.0,
                 requested_output_count: 1,
                 pending_unsaved_hashes_count: 0,
+                phase_timings: StepPhaseTimingProfile {
+                    resolve_inputs_ms: 1.0,
+                    resolve_specs_ms: 1.0,
+                    cache_probe_ms: 1.0,
+                    materialization_ms: 1.0,
+                    execution_ms: 100.0,
+                    capture_outputs_ms: 1.0,
+                    persistence_merge_ms: 1.0,
+                },
             }],
             RuntimeDiagnostics {
                 worker_pool_size: 1,
@@ -489,7 +565,7 @@ mod tests {
         let text = std::fs::read_to_string(&output_path).expect("read profile");
         let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
 
-        assert_eq!(value["version"].as_u64(), Some(1));
+        assert_eq!(value["version"].as_u64(), Some(2));
         assert_eq!(value["step_executions"][0]["step_id"].as_str(), Some("step-a"));
         assert_eq!(value["summary"]["executed_instances"].as_u64(), Some(1));
     }
@@ -525,6 +601,15 @@ mod tests {
                     elapsed_ms: 4000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
+                    phase_timings: StepPhaseTimingProfile {
+                        resolve_inputs_ms: 100.0,
+                        resolve_specs_ms: 100.0,
+                        cache_probe_ms: 100.0,
+                        materialization_ms: 100.0,
+                        execution_ms: 3500.0,
+                        capture_outputs_ms: 50.0,
+                        persistence_merge_ms: 50.0,
+                    },
                 },
                 StepExecutionProfile {
                     workflow_name: "wf".to_string(),
@@ -540,6 +625,15 @@ mod tests {
                     elapsed_ms: 3000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
+                    phase_timings: StepPhaseTimingProfile {
+                        resolve_inputs_ms: 100.0,
+                        resolve_specs_ms: 100.0,
+                        cache_probe_ms: 100.0,
+                        materialization_ms: 100.0,
+                        execution_ms: 2500.0,
+                        capture_outputs_ms: 50.0,
+                        persistence_merge_ms: 50.0,
+                    },
                 },
             ],
             RuntimeDiagnostics {
@@ -557,6 +651,7 @@ mod tests {
 
         let rendered = render_profile_timing(&profile).join("\n");
         assert!(rendered.contains("orchestration overhead"));
+        assert!(rendered.contains("-- Internal step phase totals --"));
         assert!(rendered.contains("-- Tool breakdown --"));
         assert!(rendered.contains("-- Slowest steps --"));
     }
