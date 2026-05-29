@@ -626,17 +626,13 @@ fn parse_online_metadata_reads_title_artist_and_description() {
 fn resolve_online_metadata_for_add_warns_when_yt_dlp_is_missing() {
     let url = Url::parse("https://example.com/demo-video").expect("url");
 
-    let resolved = resolve_online_source_metadata_for_add(&url, false, None);
+    let warning = "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source 'https://example.com/demo-video'".to_string();
+    let resolved = resolve_online_source_metadata_for_add(&url, None, Some(warning.clone()));
 
     assert_eq!(resolved.title, "demo-video");
     assert_eq!(resolved.description, "title: demo-video\nartist: unknown");
     assert_eq!(resolved.artist, None);
-    assert!(
-        resolved
-            .warning
-            .as_ref()
-            .is_some_and(|warning| warning.contains("yt-dlp managed tool is not configured"))
-    );
+    assert_eq!(resolved.warning.as_deref(), Some(warning.as_str()));
 }
 
 /// Ensures remote add-flow metadata prefers yt-dlp-fetched title, artist, and
@@ -650,12 +646,22 @@ fn resolve_online_metadata_for_add_prefers_yt_dlp_values_when_configured() {
         description: Some("Fetched Description".to_string()),
     };
 
-    let resolved = resolve_online_source_metadata_for_add(&url, true, Some(fetched));
+    let resolved = resolve_online_source_metadata_for_add(&url, Some(fetched), None);
 
     assert_eq!(resolved.title, "Fetched Title");
     assert_eq!(resolved.description, "Fetched Description");
     assert_eq!(resolved.artist, Some("Fetched Artist".to_string()));
     assert!(resolved.warning.is_none());
+}
+
+/// Ensures short `YouTube` links are normalized to the canonical watch URL.
+#[test]
+fn normalize_source_uri_expands_short_youtube_links() {
+    let short = Url::parse("https://youtu.be/dQw4w9WgXcQ?t=43").expect("url");
+
+    let normalized = crate::normalize_source_uri(&short);
+
+    assert_eq!(normalized.as_str(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
 }
 
 /// Ensures local metadata parsing extracts title/description from ffprobe

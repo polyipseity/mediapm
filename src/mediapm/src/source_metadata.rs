@@ -115,41 +115,31 @@ pub(crate) struct LocalSourceMetadata {
     pub(crate) description: Option<String>,
 }
 
-/// Resolves online metadata using downloader tools when available.
-pub(crate) fn fetch_online_source_metadata(uri: &Url) -> OnlineSourceMetadata {
-    try_fetch_online_source_metadata_with_yt_dlp(uri).unwrap_or_default()
+/// Resolves online metadata using a managed `yt-dlp` executable.
+pub(crate) fn fetch_online_source_metadata(
+    uri: &Url,
+    yt_dlp_command: &Path,
+) -> OnlineSourceMetadata {
+    try_fetch_online_source_metadata_with_yt_dlp(uri, yt_dlp_command).unwrap_or_default()
 }
 
 /// Resolves add-flow metadata for one remote source.
 ///
-/// When `yt-dlp` is configured, the fetched metadata is preferred for the
-/// title, description, and artist fields. When it is not configured, the
-/// returned values fall back to the repository's generic remote-source
-/// defaults and `warning` explains why yt-dlp metadata could not be fetched.
+/// When yt-dlp metadata is available, the fetched values are preferred for the
+/// title, description, and artist fields. The warning is carried through so
+/// the caller can report why metadata fell back to defaults.
 pub(crate) fn resolve_online_source_metadata_for_add(
     uri: &Url,
-    yt_dlp_configured: bool,
     yt_dlp_metadata: Option<OnlineSourceMetadata>,
+    warning: Option<String>,
 ) -> ResolvedOnlineSourceMetadata {
-    if !yt_dlp_configured {
-        let title = remote_default_title(uri);
-        return ResolvedOnlineSourceMetadata {
-            title: title.clone(),
-            description: build_remote_default_description_for_remote_source(&title, None),
-            artist: None,
-            warning: Some(format!(
-                "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source '{uri}'"
-            )),
-        };
-    }
-
     let metadata = yt_dlp_metadata.unwrap_or_default();
     let title = metadata.title.unwrap_or_else(|| remote_default_title(uri));
     let description = metadata.description.unwrap_or_else(|| {
         build_remote_default_description_for_remote_source(&title, metadata.artist.as_deref())
     });
 
-    ResolvedOnlineSourceMetadata { title, description, artist: metadata.artist, warning: None }
+    ResolvedOnlineSourceMetadata { title, description, artist: metadata.artist, warning }
 }
 
 /// Resolves local metadata using media-probe tooling when available.
@@ -157,11 +147,12 @@ pub(crate) fn fetch_local_source_metadata(path: &Path) -> LocalSourceMetadata {
     try_fetch_local_source_metadata_with_ffprobe(path).unwrap_or_default()
 }
 
-/// Fetches online metadata by invoking `yt-dlp` when present on PATH.
+/// Fetches online metadata by invoking `yt-dlp` from one explicit executable path.
 pub(crate) fn try_fetch_online_source_metadata_with_yt_dlp(
     uri: &Url,
+    yt_dlp_command: &Path,
 ) -> Option<OnlineSourceMetadata> {
-    let output = ProcessCommand::new("yt-dlp")
+    let output = ProcessCommand::new(yt_dlp_command)
         .arg("--dump-single-json")
         .arg("--skip-download")
         .arg("--no-warnings")

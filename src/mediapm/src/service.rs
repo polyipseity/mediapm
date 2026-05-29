@@ -194,12 +194,50 @@ where
         };
 
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let media_id = media_id_from_uri(uri);
+        let normalized_uri = normalize_source_uri(uri);
+        let media_id = media_id_from_uri(&normalized_uri);
+        let effective_paths = self.resolve_effective_paths(&document.runtime);
         let yt_dlp_configured = document.tools.contains_key("yt-dlp");
-        let yt_dlp_metadata =
-            if yt_dlp_configured { Some(fetch_online_source_metadata(uri)) } else { None };
+        let (yt_dlp_metadata, warning) = if yt_dlp_configured {
+            let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+            match conductor_bridge::resolve_managed_tool_executable_target(
+                &effective_paths,
+                &lock,
+                "yt-dlp",
+            ) {
+                Ok(target) => {
+                    let metadata =
+                        fetch_online_source_metadata(&normalized_uri, &target.command_path);
+                    let warning = if metadata.title.is_none()
+                        && metadata.artist.is_none()
+                        && metadata.description.is_none()
+                    {
+                        Some(format!(
+                            "managed yt-dlp binary at '{}' returned no usable metadata for remote source '{normalized_uri}'",
+                            target.command_path.display()
+                        ))
+                    } else {
+                        None
+                    };
+                    (Some(metadata), warning)
+                }
+                Err(error) => {
+                    let warning = Some(format!(
+                        "yt-dlp managed tool is configured but unavailable for metadata fetch: {error}"
+                    ));
+                    (None, warning)
+                }
+            }
+        } else {
+            (
+                None,
+                Some(format!(
+                    "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source '{normalized_uri}'"
+                )),
+            )
+        };
         let resolved_online_metadata =
-            resolve_online_source_metadata_for_add(uri, yt_dlp_configured, yt_dlp_metadata);
+            resolve_online_source_metadata_for_add(&normalized_uri, yt_dlp_metadata, warning);
         if let Some(warning) = resolved_online_metadata.warning.as_ref() {
             eprintln!("warning: {warning}");
         }
@@ -330,7 +368,7 @@ where
                         ]),
                         options: BTreeMap::from([(
                             "uri".to_string(),
-                            TransformInputValue::String(normalize_source_uri(uri).to_string()),
+                            TransformInputValue::String(normalized_uri.to_string()),
                         )]),
                     },
                     MediaStep {
