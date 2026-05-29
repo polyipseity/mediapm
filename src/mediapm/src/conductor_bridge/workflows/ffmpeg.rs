@@ -96,7 +96,16 @@ pub(super) fn synthesize_ffmpeg_step(
         }
     }
 
-    let (leading_args, trailing_args) = extract_step_list_args(step);
+    let (step_leading_args, trailing_args) = extract_step_list_args(step);
+    // Keep input probing tight for managed ffmpeg steps; the demo artifacts
+    // are local files and benefit from avoiding broad demuxer analysis.
+    let mut leading_args = vec![
+        "-probesize".to_string(),
+        "32k".to_string(),
+        "-analyzeduration".to_string(),
+        "0".to_string(),
+    ];
+    leading_args.extend(step_leading_args);
     let option_inputs = step_option_input_bindings(step.tool, &step.options);
     inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
     inputs.insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));

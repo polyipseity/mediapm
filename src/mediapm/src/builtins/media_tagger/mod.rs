@@ -320,6 +320,12 @@ async fn extract_existing_ffmetadata_map(
     let output = Command::new(&ffmpeg_executable)
         .arg("-v")
         .arg("error")
+        // Probe just enough for container metadata so we avoid wasting time
+        // on large stream tables when the FFmetadata muxer only needs tags.
+        .arg("-probesize")
+        .arg("32k")
+        .arg("-analyzeduration")
+        .arg("0")
         .arg("-i")
         .arg(input_path)
         // Skip codec initialization: the FFmetadata muxer reads only
