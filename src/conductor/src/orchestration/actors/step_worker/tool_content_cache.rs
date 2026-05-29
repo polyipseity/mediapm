@@ -156,6 +156,7 @@ where
         && metadata.version == TOOL_CONTENT_CACHE_VERSION
         && metadata.content_map == *content_map
     {
+        ensure_payload_tree_user_execute_bits(&payload_dir)?;
         // Refresh last-used timestamp (best-effort; miss is harmless).
         let _ = persist_cache_metadata(
             &metadata_path,
@@ -271,9 +272,10 @@ where
                     }
                     fs::write(&target_path, &bytes).map_err(|source| ConductorError::Io {
                         operation: "writing tool-content file to cache payload".to_string(),
-                        path: target_path,
+                        path: target_path.clone(),
                         source,
                     })?;
+                    ensure_user_execute_bit(&target_path)?;
                 }
                 ContentMapKeyKind::Directory { relative_dir } => {
                     let unpack_dir = if relative_dir.as_os_str().is_empty() {
@@ -294,6 +296,8 @@ where
             }
         }
 
+        ensure_payload_tree_user_execute_bits(&payload_dir_for_task)?;
+
         // Phase 3 — write metadata atomically.
         persist_cache_metadata(
             &metadata_path_for_task,
@@ -312,6 +316,74 @@ where
             "joining tool-content cache extraction task failed: {join_err}"
         ))
     })?
+}
+
+/// Ensures one extracted payload file is executable by the current user.
+///
+/// On Unix hosts this sets `u+x` while preserving all existing permission
+/// bits. Non-Unix hosts leave permissions unchanged.
+fn ensure_user_execute_bit(path: &Path) -> Result<(), ConductorError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata = fs::metadata(path).map_err(|source| ConductorError::Io {
+            operation: "reading extracted tool-content file permissions".to_string(),
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let mut permissions = metadata.permissions();
+        let mode = permissions.mode();
+        if mode & 0o100 == 0 {
+            permissions.set_mode(mode | 0o100);
+            fs::set_permissions(path, permissions).map_err(|source| ConductorError::Io {
+                operation: "marking extracted tool-content file executable".to_string(),
+                path: path.to_path_buf(),
+                source,
+            })?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively ensures all regular files under one payload tree have owner
+/// execute permissions so bundled companion binaries remain runnable.
+fn ensure_payload_tree_user_execute_bits(root: &Path) -> Result<(), ConductorError> {
+    if !root.exists() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        let entries = fs::read_dir(root).map_err(|source| ConductorError::Io {
+            operation: "enumerating tool-content payload tree for permission refresh".to_string(),
+            path: root.to_path_buf(),
+            source,
+        })?;
+
+        for entry in entries {
+            let entry = entry.map_err(|source| ConductorError::Io {
+                operation: "reading tool-content payload directory entry".to_string(),
+                path: root.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            let file_type = entry.file_type().map_err(|source| ConductorError::Io {
+                operation: "reading tool-content payload entry file type".to_string(),
+                path: path.clone(),
+                source,
+            })?;
+
+            if file_type.is_dir() {
+                ensure_payload_tree_user_execute_bits(&path)?;
+            } else if file_type.is_file() {
+                ensure_user_execute_bit(&path)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Hard-links (or copies as fallback) all files from a cached `payload/`
@@ -644,5 +716,26 @@ mod tests {
             }
             other => panic!("unexpected error kind: {other:?}"),
         }
+    }
+
+    /// Extracted raw-file entries should gain `u+x` so bundled companion
+    /// executables remain runnable from payload cache trees.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_user_execute_bit_sets_owner_execute_permission() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file_path = temp.path().join("tool.bin");
+        fs::write(&file_path, b"tool-bytes").expect("write file");
+
+        let mut permissions = fs::metadata(&file_path).expect("metadata").permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&file_path, permissions).expect("set non-executable mode");
+
+        ensure_user_execute_bit(&file_path).expect("set execute bit");
+
+        let mode = fs::metadata(&file_path).expect("metadata after").permissions().mode();
+        assert_ne!(mode & 0o100, 0, "owner execute bit should be set");
     }
 }
