@@ -402,6 +402,22 @@ fn ensure_payload_tree_user_execute_bits(root: &Path) -> Result<(), ConductorErr
     Ok(())
 }
 
+/// Platform directory names that are never relevant on the current OS.
+///
+/// Top-level `payload/` subdirectories whose name matches one of these strings
+/// are skipped during sandbox hard-linking to avoid materialising hundreds of
+/// files that will never be executed.  The names are the conventional
+/// sub-directory names used by mediapm tool bundles (`linux`, `macos`,
+/// `windows`).
+#[cfg(target_os = "macos")]
+const FOREIGN_PLATFORM_DIRS: &[&str] = &["linux", "windows"];
+#[cfg(target_os = "linux")]
+const FOREIGN_PLATFORM_DIRS: &[&str] = &["macos", "windows"];
+#[cfg(target_os = "windows")]
+const FOREIGN_PLATFORM_DIRS: &[&str] = &["linux", "macos"];
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+const FOREIGN_PLATFORM_DIRS: &[&str] = &[];
+
 /// Hard-links (or copies as fallback) all files from a cached `payload/`
 /// directory into an execution sandbox directory.
 ///
@@ -411,6 +427,11 @@ fn ensure_payload_tree_user_execute_bits(root: &Path) -> Result<(), ConductorErr
 ///
 /// Hard links are attempted first (near-zero-cost metadata operation).  If the
 /// link fails (e.g. cross-device), a byte-for-byte copy is used as fallback.
+///
+/// Top-level subdirectories whose name matches a known foreign-platform
+/// identifier (`linux`, `macos`, `windows` — whichever do not apply to the
+/// current OS) are skipped entirely.  This avoids materialising hundreds of
+/// files that will never execute on the host.
 ///
 /// # Errors
 ///
@@ -426,7 +447,61 @@ pub(super) fn link_payload_to_sandbox(
             payload_dir.display()
         ));
     }
-    copy_directory_recursive(payload_dir, sandbox_dir)
+
+    fs::create_dir_all(sandbox_dir).map_err(|err| {
+        format!("creating sandbox directory '{}' failed: {err}", sandbox_dir.display())
+    })?;
+
+    let entries = fs::read_dir(payload_dir).map_err(|err| {
+        format!("reading payload directory '{}' failed: {err}", payload_dir.display())
+    })?;
+
+    for entry in entries {
+        let entry =
+            entry.map_err(|err| format!("reading payload directory entry failed: {err}"))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        let path = entry.path();
+        let target_path = sandbox_dir.join(&file_name);
+
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("reading file type for '{}' failed: {err}", path.display()))?;
+
+        // Skip top-level directories that belong to a foreign platform.
+        // This avoids hard-linking hundreds of binary files that can never
+        // run on the current OS (e.g. Linux/Windows ffmpeg on macOS).
+        if file_type.is_dir() && FOREIGN_PLATFORM_DIRS.contains(&name.as_ref()) {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&path, &target_path)?;
+        } else {
+            // Non-directory top-level entry — hard-link or copy as usual.
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).map_err(|err| {
+                    format!("creating parent directory '{}' failed: {err}", parent.display())
+                })?;
+            }
+            if fs::hard_link(&path, &target_path).is_ok() {
+                continue;
+            }
+            fs::copy(&path, &target_path).map_err(|err| {
+                format!("copying '{}' to '{}' failed: {err}", path.display(), target_path.display())
+            })?;
+            let source_permissions = fs::metadata(&path)
+                .map_err(|err| {
+                    format!("reading permissions for '{}' failed: {err}", path.display())
+                })?
+                .permissions();
+            fs::set_permissions(&target_path, source_permissions).map_err(|err| {
+                format!("setting permissions on '{}' failed: {err}", target_path.display())
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Removes tool-content cache entries that have not been used within 24 hours.
