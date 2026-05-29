@@ -337,6 +337,7 @@ where
                 .materialize_tool_content_map(
                     &request.step.tool,
                     &tool.tool_content_map,
+                    &resolved_process,
                     execution_cwd,
                     &request.runtime_tools_dir,
                 )
@@ -1349,6 +1350,7 @@ where
         &self,
         tool_id: &str,
         tool_content_map: &BTreeMap<String, Hash>,
+        resolved_process: &ResolvedProcessExecution,
         tool_cwd: &Path,
         tools_dir: &Path,
     ) -> Result<Option<PathBuf>, ConductorError> {
@@ -1362,6 +1364,22 @@ where
             &self.cas,
         )
         .await?;
+
+        // Optimization for ffmpeg-family managed tools: when command[0]
+        // resolves directly inside the persistent payload cache, skip the
+        // per-step recursive payload linking pass and execute from that stable
+        // cache path. This avoids repeated `O(n_files)` metadata work for
+        // large multi-platform ffmpeg payload trees.
+        if tool_id.contains(".ffmpeg+")
+            && let ResolvedProcessExecution::Executable { executable, .. } = resolved_process
+        {
+            let normalized =
+                self.normalized_relative_tool_path(executable, "tool process executable")?;
+            if payload_dir.join(normalized).is_file() {
+                return Ok(Some(payload_dir));
+            }
+        }
+
         tool_content_cache::link_payload_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
             ConductorError::Workflow(format!("materializing tool content sandbox: {err}"))
         })?;

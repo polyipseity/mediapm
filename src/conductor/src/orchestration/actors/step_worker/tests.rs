@@ -18,7 +18,40 @@ use crate::model::config::{
 use crate::model::state::{OutputSaveMode, PersistenceFlags, ResolvedInput};
 use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 
-use super::{ResolvedOutputCapture, ResolvedOutputSpec, StepWorkerExecutor, ToolExecutionCapture};
+use super::{
+    ResolvedOutputCapture, ResolvedOutputSpec, ResolvedProcessExecution, StepWorkerExecutor,
+    ToolExecutionCapture,
+};
+
+/// Builds one minimal executable-process descriptor for helper invocations.
+fn test_executable_process(executable: &str) -> ResolvedProcessExecution {
+    ResolvedProcessExecution::Executable {
+        executable: executable.to_string(),
+        args: Vec::new(),
+        env_vars: BTreeMap::new(),
+        success_codes: BTreeSet::from([0]),
+    }
+}
+
+/// Returns the host platform directory label used by managed tool payloads.
+fn host_payload_platform_dir() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "macos"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "linux"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        "host"
+    }
+}
 
 /// Builds one ZIP payload for template-selector tests.
 fn build_test_zip_payload(entry_relative_path: &str, entry_content: &[u8]) -> Vec<u8> {
@@ -1019,6 +1052,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
+            &test_executable_process("bin/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1028,6 +1062,40 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
     assert_eq!(
         std::fs::read(temp.path().join("bin").join("run.sh")).expect("read output"),
         payload
+    );
+}
+
+/// Protects ffmpeg execution-path optimization by skipping per-step recursive
+/// payload relinking when the host executable exists in persistent cache.
+#[tokio::test]
+async fn ffmpeg_content_map_skips_sandbox_relink_when_payload_executable_exists() {
+    let cas = Arc::new(InMemoryCas::new());
+    let payload = b"#!/usr/bin/env sh\necho ffmpeg\n".to_vec();
+    let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
+    let executor = StepWorkerExecutor { cas };
+    let temp = tempfile::tempdir().expect("tempdir");
+    let runtime_tools_dir = temp.path().join("tools");
+
+    let executable_relative = format!("{}/ffmpeg", host_payload_platform_dir());
+    let payload_dir = executor
+        .materialize_tool_content_map(
+            "mediapm.tools.ffmpeg+demo@1.0.0",
+            &BTreeMap::from([(executable_relative.clone(), hash)]),
+            &test_executable_process(&executable_relative),
+            temp.path(),
+            runtime_tools_dir.as_path(),
+        )
+        .await
+        .expect("ffmpeg payload should materialize")
+        .expect("payload dir should be returned");
+
+    assert!(
+        payload_dir.join(&executable_relative).is_file(),
+        "payload cache should contain host ffmpeg executable"
+    );
+    assert!(
+        !temp.path().join(&executable_relative).exists(),
+        "ffmpeg optimization should skip recursive payload relinking into sandbox"
     );
 }
 
@@ -1046,6 +1114,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
+            &test_executable_process("tool/bin/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1074,6 +1143,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("./".to_string(), hash)]),
+            &test_executable_process("bin/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1100,6 +1170,7 @@ async fn content_map_directory_entry_rejects_non_zip_payload() {
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
+            &test_executable_process("tool/bin/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1130,6 +1201,7 @@ async fn content_map_directory_entry_requires_non_empty_prefix() {
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("/".to_string(), hash)]),
+            &test_executable_process("bin/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1163,6 +1235,7 @@ async fn content_map_rejects_file_overwrite_between_entries() {
                 ("tool/".to_string(), directory_hash),
                 ("tool/run.sh".to_string(), file_hash),
             ]),
+            &test_executable_process("tool/run.sh"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
@@ -1198,6 +1271,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
                 ("tool/".to_string(), first_hash),
                 ("tool/nested/".to_string(), second_hash),
             ]),
+            &test_executable_process("tool/a.txt"),
             temp.path(),
             runtime_tmp_dir.as_path(),
         )
