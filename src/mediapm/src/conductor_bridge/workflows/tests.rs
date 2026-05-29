@@ -1948,7 +1948,7 @@ fn rsgain_chain_reuses_supported_upstream_extension_to_avoid_transcoding() {
     let apply = workflow
         .steps
         .iter()
-        .find(|step| step.id.ends_with("-ffmpeg-apply"))
+        .find(|step| step.id.contains("rsgain-ffmpeg-apply"))
         .expect("rsgain apply step");
 
     assert_eq!(

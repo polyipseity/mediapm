@@ -895,7 +895,7 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
                 );
                 (
                     format!(
-                        "{}-apply",
+                        "{}-ffmpeg-apply",
                         media_step_id(step_index, apply_step_index, step.tool, mapping)
                     ),
                     ffmpeg_output_capture_name(0),

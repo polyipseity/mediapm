@@ -143,8 +143,10 @@ pub(super) fn synthesize_media_tagger_step_pair(
             "{}-metadata",
             media_step_id(step_index, metadata_step_index, step.tool, mapping)
         );
-        let apply_step_id =
-            format!("{}-apply", media_step_id(step_index, apply_step_index, step.tool, mapping));
+        let apply_step_id = format!(
+            "{}-ffmpeg-apply",
+            media_step_id(step_index, apply_step_index, step.tool, mapping)
+        );
         let output_variant_value = step.output_variants.get(&mapping.output).ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "missing output variant '{}' while resolving output policy",
