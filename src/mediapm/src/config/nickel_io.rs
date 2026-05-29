@@ -2,7 +2,10 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Monotonically increasing counter used to generate unique workspace names.
+static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use nickel_lang_core::error::{Error as NickelError, NullReporter};
 use nickel_lang_core::eval::cache::CacheImpl;
@@ -23,8 +26,8 @@ impl TempNickelWorkspace {
     /// Allocates one unique temporary Nickel workspace directory.
     fn new() -> Result<Self, MediaPmError> {
         let pid = std::process::id();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-        let path = std::env::temp_dir().join(format!("mediapm-nickel-{pid}-{nanos}"));
+        let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("mediapm-nickel-{pid}-{seq}"));
 
         fs::create_dir_all(&path).map_err(|source| MediaPmError::Io {
             operation: "creating temporary Nickel workspace".to_string(),
