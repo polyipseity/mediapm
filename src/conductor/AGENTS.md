@@ -428,7 +428,6 @@ Guidance:
   map in API).
   CLI failures may use ordinary Rust error types; do not coerce failures into
   fake string-only success payloads.
-
 - Builtin crates must use explicit crate versions in their own `Cargo.toml`
   (`version = "..."`) instead of inheriting workspace package version.
 - Ensure process execution errors preserve useful stderr context.
