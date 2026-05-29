@@ -21,7 +21,7 @@ pub(crate) struct ResolvedToolIdentity {
     pub release_description: Option<String>,
 }
 
-/// Provisioned tool payload prepared under `.mediapm/tools/<tool-id>/`.
+/// Provisioned tool payload prepared under the runtime cache root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProvisionedToolPayload {
     /// Fully resolved immutable tool id.
