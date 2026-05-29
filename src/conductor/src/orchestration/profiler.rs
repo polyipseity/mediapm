@@ -4,6 +4,7 @@
 //! example `mediapm` demos) can enable deep timing diagnostics without
 //! depending on in-process tracing subscribers.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -158,6 +159,248 @@ fn display_path(path: &Path) -> String {
 /// remainder after the second dash; `elapsed_ms` is the raw step duration.
 type PhaseSubstep = (String, String, f64);
 
+/// Aggregated timing and execution counters for one tool.
+#[derive(Debug, Clone, PartialEq)]
+struct ToolTimingAggregate {
+    /// Number of step samples recorded for this tool.
+    samples: usize,
+    /// Sum of observed step durations in milliseconds.
+    total_ms: f64,
+    /// Fastest observed step duration in milliseconds.
+    min_ms: f64,
+    /// Slowest observed step duration in milliseconds.
+    max_ms: f64,
+    /// Number of executed (non-cache-hit) steps.
+    executed_samples: usize,
+    /// Number of cache-hit steps.
+    cached_samples: usize,
+    /// Number of rematerialized executions.
+    rematerialized_samples: usize,
+    /// Number of fallback-path executions.
+    fallback_samples: usize,
+}
+
+impl ToolTimingAggregate {
+    /// Creates an empty aggregate with sentinel bounds.
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            samples: 0,
+            total_ms: 0.0,
+            min_ms: f64::INFINITY,
+            max_ms: 0.0,
+            executed_samples: 0,
+            cached_samples: 0,
+            rematerialized_samples: 0,
+            fallback_samples: 0,
+        }
+    }
+
+    /// Adds one execution sample into this aggregate.
+    fn update(&mut self, sample: &StepExecutionProfile) {
+        self.samples = self.samples.saturating_add(1);
+        self.total_ms += sample.elapsed_ms;
+        self.min_ms = self.min_ms.min(sample.elapsed_ms);
+        self.max_ms = self.max_ms.max(sample.elapsed_ms);
+        if sample.executed {
+            self.executed_samples = self.executed_samples.saturating_add(1);
+        } else {
+            self.cached_samples = self.cached_samples.saturating_add(1);
+        }
+        if sample.rematerialized {
+            self.rematerialized_samples = self.rematerialized_samples.saturating_add(1);
+        }
+        if sample.fallback_used {
+            self.fallback_samples = self.fallback_samples.saturating_add(1);
+        }
+    }
+}
+
+/// Formats one duration value in milliseconds into compact human text.
+#[must_use]
+fn format_duration_ms(ms: f64) -> String {
+    let secs = ms / 1000.0;
+    if secs >= 60.0 {
+        let mins = (secs / 60.0).floor();
+        format!("{mins:.0}m {:.1}s", secs % 60.0)
+    } else {
+        format!("{secs:.1}s")
+    }
+}
+
+/// Renders one profile into human-readable timing lines.
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this function intentionally assembles one complete timing report so section ordering stays explicit and reviewable"
+)]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "profile output is display-focused and millisecond-level precision is sufficient for human diagnostics"
+)]
+fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
+    if profile.step_executions.is_empty() {
+        return Vec::new();
+    }
+
+    let wall_total_ms =
+        profile.run_finished_unix_nanos.saturating_sub(profile.run_started_unix_nanos) as f64
+            / 1_000_000.0;
+    let step_total_ms: f64 = profile.step_executions.iter().map(|exec| exec.elapsed_ms).sum();
+
+    let mut per_level_critical_ms = BTreeMap::<(String, usize, usize), f64>::new();
+    for exec in &profile.step_executions {
+        let key = (exec.workflow_display_name.clone(), exec.workflow_attempt, exec.level_index);
+        per_level_critical_ms
+            .entry(key)
+            .and_modify(|max_elapsed| *max_elapsed = max_elapsed.max(exec.elapsed_ms))
+            .or_insert(exec.elapsed_ms);
+    }
+    let level_critical_path_ms: f64 = per_level_critical_ms.values().copied().sum();
+
+    let parallelism_dividend_ms = (step_total_ms - level_critical_path_ms).max(0.0);
+    let orchestration_overhead_ms = (wall_total_ms - level_critical_path_ms).max(0.0);
+
+    let mut phase_groups: Vec<(String, Vec<PhaseSubstep>)> = Vec::new();
+    for exec in &profile.step_executions {
+        let id = &exec.step_id;
+        let parts: Vec<&str> = id.splitn(3, '-').collect();
+        let phase_key = match parts.first().and_then(|s| s.parse::<u64>().ok()) {
+            Some(n) => n.to_string(),
+            None => id.clone(),
+        };
+        let step_prefix = match (parts.first(), parts.get(1)) {
+            (Some(a), Some(b)) => format!("{a}-{b}"),
+            _ => id.clone(),
+        };
+        let substep_name = parts.get(2).copied().unwrap_or(id.as_str()).to_string();
+        if let Some(group) = phase_groups.iter_mut().find(|(key, _)| key == &phase_key) {
+            group.1.push((step_prefix, substep_name, exec.elapsed_ms));
+        } else {
+            phase_groups.push((phase_key, vec![(step_prefix, substep_name, exec.elapsed_ms)]));
+        }
+    }
+
+    let mut tool_aggregates = BTreeMap::<String, ToolTimingAggregate>::new();
+    for exec in &profile.step_executions {
+        tool_aggregates
+            .entry(exec.tool_name.clone())
+            .or_insert_with(ToolTimingAggregate::new)
+            .update(exec);
+    }
+    let mut tool_rows = tool_aggregates.into_iter().collect::<Vec<_>>();
+    tool_rows.sort_by(|(_, left), (_, right)| {
+        right.total_ms.partial_cmp(&left.total_ms).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut slowest_steps = profile.step_executions.clone();
+    slowest_steps.sort_by(|left, right| {
+        right.elapsed_ms.partial_cmp(&left.elapsed_ms).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let percent = |part: f64, whole: f64| -> f64 {
+        if whole <= f64::EPSILON { 0.0 } else { (part / whole) * 100.0 }
+    };
+
+    let mut lines = vec![
+        String::new(),
+        "=== Conductor Timing Profile ===".to_string(),
+        format!(
+            "Run wall: {}  |  step sum: {}",
+            format_duration_ms(wall_total_ms),
+            format_duration_ms(step_total_ms)
+        ),
+        format!(
+            "Level critical path: {} ({:.1}% of wall)",
+            format_duration_ms(level_critical_path_ms),
+            percent(level_critical_path_ms, wall_total_ms)
+        ),
+        format!(
+            "Parallelism dividend: {}  |  orchestration overhead: {}",
+            format_duration_ms(parallelism_dividend_ms),
+            format_duration_ms(orchestration_overhead_ms)
+        ),
+        format!(
+            "Summary: executed={}  cached={}  rematerialized={}  rpc_fallbacks={}",
+            profile.summary.executed_instances,
+            profile.summary.cached_instances,
+            profile.summary.rematerialized_instances,
+            profile.runtime_diagnostics.scheduler.rpc_fallbacks_total,
+        ),
+        String::new(),
+        "-- Phase breakdown --".to_string(),
+    ];
+
+    for (_, substeps) in &phase_groups {
+        let phase_total_ms: f64 = substeps.iter().map(|(_, _, elapsed)| *elapsed).sum();
+        let phase_label = {
+            let names: Vec<&str> = substeps.iter().map(|(_, name, _)| name.as_str()).collect();
+            let first = names[0];
+            if names.len() == 1 {
+                first.to_string()
+            } else {
+                let prefix_len = names.iter().skip(1).fold(first.len(), |acc, value| {
+                    first.bytes().zip(value.bytes()).take_while(|(a, b)| a == b).count().min(acc)
+                });
+                let trimmed =
+                    first[..prefix_len].trim_end_matches(|char_: char| !char_.is_alphanumeric());
+                if trimmed.is_empty() { first.to_string() } else { trimmed.to_string() }
+            }
+        };
+
+        lines.push(format!(
+            "  {} ({} step{}) — {} ({:.1}% of wall)",
+            phase_label,
+            substeps.len(),
+            if substeps.len() == 1 { "" } else { "s" },
+            format_duration_ms(phase_total_ms),
+            percent(phase_total_ms, wall_total_ms)
+        ));
+        for (prefix, name, elapsed_ms) in substeps {
+            lines.push(format!("    {prefix:<5}  {name:<40}  {}", format_duration_ms(*elapsed_ms)));
+        }
+        lines.push(String::new());
+    }
+
+    lines.push("-- Tool breakdown --".to_string());
+    for (tool_name, aggregate) in tool_rows {
+        let mean_ms = if aggregate.samples == 0 {
+            0.0
+        } else {
+            aggregate.total_ms / aggregate.samples as f64
+        };
+        lines.push(format!(
+            "  {tool_name}\n    total={} ({:.1}% wall)  samples={}  mean={}  min={}  max={}\n    executed={}  cached={}  rematerialized={}  fallback={}",
+            format_duration_ms(aggregate.total_ms),
+            percent(aggregate.total_ms, wall_total_ms),
+            aggregate.samples,
+            format_duration_ms(mean_ms),
+            format_duration_ms(if aggregate.min_ms.is_finite() { aggregate.min_ms } else { 0.0 }),
+            format_duration_ms(aggregate.max_ms),
+            aggregate.executed_samples,
+            aggregate.cached_samples,
+            aggregate.rematerialized_samples,
+            aggregate.fallback_samples,
+        ));
+    }
+
+    lines.push(String::new());
+    lines.push("-- Slowest steps --".to_string());
+    for sample in slowest_steps.iter().take(12) {
+        lines.push(format!(
+            "  {}  {:<24}  lvl {:>2}  worker {:>2}  {}",
+            format_duration_ms(sample.elapsed_ms),
+            sample.workflow_display_name,
+            sample.level_index,
+            sample.worker_index,
+            sample.step_id,
+        ));
+    }
+    lines.push(String::new());
+
+    lines
+}
+
 /// Prints a human-readable timing breakdown from a conductor profile JSON file.
 ///
 /// Reads the file at `profile_path`, deserializes it as a [`WorkflowRunProfile`],
@@ -181,84 +424,9 @@ type PhaseSubstep = (String, String, f64);
 pub fn print_profile_timing(profile_path: &Path) {
     let Ok(content) = fs::read_to_string(profile_path) else { return };
     let Ok(profile) = serde_json::from_str::<WorkflowRunProfile>(&content) else { return };
-    if profile.step_executions.is_empty() {
-        return;
+    for line in render_profile_timing(&profile) {
+        println!("{line}");
     }
-
-    // Group step_executions by phase: the leading numeric segment of step_id.
-    // Entry layout: (step_prefix such as "2-0", substep_name, elapsed_ms).
-    let mut phases: Vec<(String, Vec<PhaseSubstep>)> = Vec::new();
-    for exec in &profile.step_executions {
-        let id = &exec.step_id;
-        let parts: Vec<&str> = id.splitn(3, '-').collect();
-        let phase_key = match parts.first().and_then(|s| s.parse::<u64>().ok()) {
-            Some(n) => n.to_string(),
-            None => id.clone(),
-        };
-        let step_prefix = match (parts.first(), parts.get(1)) {
-            (Some(a), Some(b)) => format!("{a}-{b}"),
-            _ => id.clone(),
-        };
-        let substep_name = parts.get(2).copied().unwrap_or(id.as_str()).to_string();
-        if let Some(group) = phases.iter_mut().find(|(k, _)| k == &phase_key) {
-            group.1.push((step_prefix, substep_name, exec.elapsed_ms));
-        } else {
-            phases.push((phase_key, vec![(step_prefix, substep_name, exec.elapsed_ms)]));
-        }
-    }
-
-    let steps_total_ms: f64 = phases.iter().flat_map(|(_, s)| s.iter().map(|(_, _, ms)| *ms)).sum();
-    let wall_total_ms =
-        profile.run_finished_unix_nanos.saturating_sub(profile.run_started_unix_nanos) as f64
-            / 1_000_000.0;
-
-    let fmt = |ms: f64| -> String {
-        let secs = ms / 1000.0;
-        if secs >= 60.0 {
-            let mins = secs as u64 / 60;
-            format!("{mins}m {:.1}s", secs % 60.0)
-        } else {
-            format!("{secs:.1}s")
-        }
-    };
-
-    println!();
-    println!("=== Conductor Timing Profile ===");
-    println!("Total (steps): {}  |  wall: {}", fmt(steps_total_ms), fmt(wall_total_ms));
-
-    for (_, substeps) in &phases {
-        let phase_ms: f64 = substeps.iter().map(|(_, _, ms)| *ms).sum();
-
-        // Derive phase label as the common byte-prefix of all substep names,
-        // trimmed of trailing non-alphanumeric separator characters.
-        // Step names generated by mediapm are ASCII identifiers, making
-        // byte-level prefix safe and sufficient.
-        let phase_label = {
-            let names: Vec<&str> = substeps.iter().map(|(_, n, _)| n.as_str()).collect();
-            let first = names[0];
-            if names.len() == 1 {
-                first.to_string()
-            } else {
-                let prefix_len = names.iter().skip(1).fold(first.len(), |acc, s| {
-                    first.bytes().zip(s.bytes()).take_while(|(a, b)| a == b).count().min(acc)
-                });
-                let trimmed = first[..prefix_len].trim_end_matches(|c: char| !c.is_alphanumeric());
-                if trimmed.is_empty() { first.to_string() } else { trimmed.to_string() }
-            }
-        };
-
-        println!();
-        if substeps.len() == 1 {
-            let (prefix, name, ms) = &substeps[0];
-            println!("  {prefix:<5}  {name:<42}  {}", fmt(*ms));
-        } else {
-            println!("  {} ({} substeps) — {}", phase_label, substeps.len(), fmt(phase_ms));
-            for (prefix, name, ms) in substeps {
-                println!("    {prefix:<5}  {name:<40}  {}", fmt(*ms));
-            }
-        }
-    }
-    println!();
 }
 
 #[cfg(test)]
@@ -267,7 +435,9 @@ mod tests {
 
     use crate::api::{RuntimeDiagnostics, SchedulerDiagnostics};
 
-    use super::{StepExecutionProfile, WorkflowRunProfile, write_profile_json};
+    use super::{
+        StepExecutionProfile, WorkflowRunProfile, render_profile_timing, write_profile_json,
+    };
 
     /// Verifies profiler reports serialize to JSON with expected core fields.
     #[test]
@@ -322,5 +492,72 @@ mod tests {
         assert_eq!(value["version"].as_u64(), Some(1));
         assert_eq!(value["step_executions"][0]["step_id"].as_str(), Some("step-a"));
         assert_eq!(value["summary"]["executed_instances"].as_u64(), Some(1));
+    }
+
+    /// Verifies rendered profiler output includes overhead and tool sections.
+    #[test]
+    fn render_profile_timing_reports_overhead_and_tool_breakdown() {
+        let temp = tempdir().expect("tempdir");
+        let profile = WorkflowRunProfile::new(
+            0,
+            10_000_000_000,
+            temp.path().join("conductor.ncl").as_path(),
+            temp.path().join("conductor.machine.ncl").as_path(),
+            temp.path().join(".conductor").as_path(),
+            temp.path().join(".conductor/state.ncl").as_path(),
+            crate::api::RunSummary {
+                executed_instances: 2,
+                cached_instances: 0,
+                rematerialized_instances: 0,
+            },
+            vec![
+                StepExecutionProfile {
+                    workflow_name: "wf".to_string(),
+                    workflow_display_name: "wf".to_string(),
+                    workflow_attempt: 0,
+                    level_index: 0,
+                    step_id: "1-0-first".to_string(),
+                    tool_name: "ffmpeg@1".to_string(),
+                    worker_index: 0,
+                    executed: true,
+                    rematerialized: false,
+                    fallback_used: false,
+                    elapsed_ms: 4000.0,
+                    requested_output_count: 1,
+                    pending_unsaved_hashes_count: 0,
+                },
+                StepExecutionProfile {
+                    workflow_name: "wf".to_string(),
+                    workflow_display_name: "wf".to_string(),
+                    workflow_attempt: 0,
+                    level_index: 1,
+                    step_id: "1-1-second".to_string(),
+                    tool_name: "ffmpeg@1".to_string(),
+                    worker_index: 0,
+                    executed: true,
+                    rematerialized: false,
+                    fallback_used: false,
+                    elapsed_ms: 3000.0,
+                    requested_output_count: 1,
+                    pending_unsaved_hashes_count: 0,
+                },
+            ],
+            RuntimeDiagnostics {
+                worker_pool_size: 1,
+                scheduler: SchedulerDiagnostics {
+                    ewma_alpha: 0.35,
+                    unknown_cost_ms: 10.0,
+                    tool_estimates: Vec::new(),
+                    rpc_fallbacks_total: 0,
+                },
+                workers: Vec::new(),
+                recent_traces: Vec::new(),
+            },
+        );
+
+        let rendered = render_profile_timing(&profile).join("\n");
+        assert!(rendered.contains("orchestration overhead"));
+        assert!(rendered.contains("-- Tool breakdown --"));
+        assert!(rendered.contains("-- Slowest steps --"));
     }
 }
