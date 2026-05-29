@@ -78,6 +78,14 @@ struct ToolContentCacheMetadata {
     content_map: BTreeMap<String, Hash>,
     /// Unix timestamp (seconds) of the most recent cache access.
     last_used_unix_seconds: u64,
+    /// Set to `true` after the payload tree has been fully extracted and its
+    /// execute bits have been verified.  Allows the cache-hit path to skip the
+    /// `O(n_files)` permission walk on subsequent steps.
+    ///
+    /// Defaults to `false` so that older entries (written before this field
+    /// existed) trigger one re-verification on next access.
+    #[serde(default)]
+    execute_bits_verified: bool,
 }
 
 /// Classified kind for one raw `content_map` key.
@@ -156,14 +164,21 @@ where
         && metadata.version == TOOL_CONTENT_CACHE_VERSION
         && metadata.content_map == *content_map
     {
-        ensure_payload_tree_user_execute_bits(&payload_dir)?;
-        // Refresh last-used timestamp (best-effort; miss is harmless).
+        // Skip the O(n_files) permission walk when it has already been done
+        // for this payload tree.  The flag defaults to false so entries
+        // written by older code trigger one re-verification on first access.
+        if !metadata.execute_bits_verified {
+            ensure_payload_tree_user_execute_bits(&payload_dir)?;
+        }
+        // Refresh last-used timestamp and record verified status (best-effort;
+        // miss is harmless).
         let _ = persist_cache_metadata(
             &metadata_path,
             &ToolContentCacheMetadata {
                 version: TOOL_CONTENT_CACHE_VERSION,
                 content_map: content_map.clone(),
                 last_used_unix_seconds: now,
+                execute_bits_verified: true,
             },
         );
         return Ok(payload_dir);
@@ -305,6 +320,7 @@ where
                 version: TOOL_CONTENT_CACHE_VERSION,
                 content_map: content_map_for_task,
                 last_used_unix_seconds: now,
+                execute_bits_verified: true,
             },
         )?;
 
