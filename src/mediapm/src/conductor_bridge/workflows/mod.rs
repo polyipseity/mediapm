@@ -995,6 +995,15 @@ fn resolve_input_variant_producer<'a>(
 /// Resolves selected dependency tool id for managed steps that depend on
 /// additional logical tools.
 ///
+/// Dependency class policy:
+/// - cross-step dependency (this helper): resolve one standalone conductor tool
+///   id per dependent step, do not inline dependency content-map bytes into the
+///   requesting tool, and do not mutate the requesting tool id with dependency
+///   selector fragments;
+/// - same-step companion dependency: handled in sync/tool-config synthesis where
+///   dependency bytes are inlined and requesting tool ids encode dependency
+///   selector identity.
+///
 /// Selector behavior:
 /// - omitted / `global` / `inherit`: use active logical dependency tool,
 /// - explicit selector text: pick matching registered dependency tool version.
