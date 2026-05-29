@@ -108,8 +108,8 @@ Keep these mediapm defaults and path rules intact:
   at 30 days of inactivity. Conductor standalone uses a separate base
   directory (`<os-cache-dir>/mediapm-conductor/cache/`) with the same flat
   layout.
-- `tools.ffmpeg.max_input_slots` and
-  `tools.ffmpeg.max_output_slots` default to `64` when omitted and
+- `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
+  `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
   bound generated ffmpeg indexed input/output slot fan-out.
 
 ## Media workflow pipeline expectations
@@ -259,9 +259,12 @@ For `media.<id>` semantics and runtime reconciliation:
   `write_all_tags = "true"` plus `write_all_images = "true"`.
   Managed defaults should also keep
   `embed_only_one_front_image = "true"` to mirror Picard tag-embedding
-  behavior (embed only the first front image when available), and default
-  `cover_art_slot_count = 16` while workflow synthesis clamps effective slot
-  fanout to available ffmpeg auxiliary input slots.
+  behavior (embed only the first front image when available; set to `"false"`
+  to enable all CAA image types: front, back, booklet, medium, tray, obi,
+  spine, track, liner, sticker, poster, watermark, raw/unedited, matrix/runout,
+  top, bottom, panel, other), and default `cover_art_slot_count = 16` while
+  workflow synthesis clamps effective slot fanout to available ffmpeg auxiliary
+  input slots.
 - `media-tagger` metadata-fetch mode should allow explicit MBID-driven runs
   without `input_content`; fingerprint/AcoustID autodetection still requires
   input media.

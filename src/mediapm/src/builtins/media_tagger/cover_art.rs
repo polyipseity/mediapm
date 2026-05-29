@@ -601,6 +601,12 @@ pub(super) fn normalized_cover_art_types(image: &CoverArtArchiveImage) -> Vec<St
 }
 
 /// Returns stable sort priority for normalized cover-art kind tags.
+///
+/// Follows the MusicBrainz Cover Art Archive canonical type ordering,
+/// supporting all CAA image types: `front`, `back`, `booklet`, `medium`,
+/// `tray`, `obi`, `spine`, `track`, `liner`, `sticker`, `poster`,
+/// `watermark`, `raw/unedited`, `matrix/runout`, `top`, `bottom`, `panel`,
+/// `other`. Unknown types default to priority 100.
 #[must_use]
 pub(super) fn cover_art_type_priority(kind: &str) -> usize {
     match kind {
@@ -611,10 +617,17 @@ pub(super) fn cover_art_type_priority(kind: &str) -> usize {
         "tray" => 4,
         "obi" => 5,
         "spine" => 6,
-        "sticker" => 7,
-        "poster" => 8,
-        "liner" => 9,
-        "watermark" => 10,
+        "track" => 7,
+        "liner" => 8,
+        "sticker" => 9,
+        "poster" => 10,
+        "watermark" => 11,
+        "raw/unedited" => 12,
+        "matrix/runout" => 13,
+        "top" => 14,
+        "bottom" => 15,
+        "panel" => 16,
+        "other" => 17,
         _ => 100,
     }
 }
@@ -657,7 +670,10 @@ pub(super) fn insert_musicbrainz_image_tags(
 ///
 /// When `embed_only_one_front_image` is enabled, only the first image with
 /// normalized type `front` is kept. If no front image exists, no image is
-/// embedded. When disabled, all discovered images are retained.
+/// embedded. When disabled, all discovered images are retained, including all
+/// supported CAA image types: `front`, `back`, `booklet`, `medium`, `tray`,
+/// `obi`, `spine`, `track`, `liner`, `sticker`, `poster`, `watermark`,
+/// `raw/unedited`, `matrix/runout`, `top`, `bottom`, `panel`, `other`.
 ///
 /// This mirrors Picard's `ImageList.to_be_saved_to_tags` semantics from
 /// `picard/util/imagelist.py` without copying implementation text.

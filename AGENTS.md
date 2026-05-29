@@ -167,7 +167,9 @@
     `write_desktop_link`), and highest-quality single-thumbnail capture by
     default; `media-tagger` defaults to `strict_identification = "true"`,
     `write_all_tags = "true"`, `write_all_images = "true"`,
-    `embed_only_one_front_image = "true"` (Picard-aligned tag embedding),
+    `embed_only_one_front_image = "true"` (Picard-aligned tag embedding,
+    embeds only the first front image when available; set to `"false"` to
+    embed all discovered CAA image types),
     and `cover_art_slot_count = 16` (clamped by ffmpeg auxiliary-slot
     availability during workflow synthesis).
   - Managed `rsgain` defaults stay in single-track mode
