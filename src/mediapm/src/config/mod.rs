@@ -31,7 +31,7 @@ pub const MEDIAPM_DOCUMENT_VERSION: u32 = versions::latest_nickel_version();
 
 /// Default max number of ffmpeg indexed input slots when `tools.ffmpeg`
 /// does not provide an explicit override.
-pub const DEFAULT_FFMPEG_MAX_INPUT_SLOTS: u32 = 4;
+pub const DEFAULT_FFMPEG_MAX_INPUT_SLOTS: u32 = 16;
 /// Default max number of ffmpeg indexed output slots when `tools.ffmpeg`
 /// does not provide an explicit override.
 pub const DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS: u32 = 4;

@@ -182,8 +182,8 @@ is a narrow, documented reason.
     `cache/tools.jsonc`, optional additional indexes `cache/*.jsonc`, and
     fixed 30-day eviction; conductor standalone uses
     `<os-cache-dir>/mediapm-conductor/cache/` with the same layout,
-  - `tools.ffmpeg.max_input_slots` and
-    `tools.ffmpeg.max_output_slots` default to `64` when omitted and
+  - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
+    `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
     bound generated ffmpeg indexed input/output slot fan-out,
   - runtime dotenv loading uses effective `runtime.env_file`
     (default `<mediapm_dir>/.env`), keeps a colocated `.gitignore` containing
