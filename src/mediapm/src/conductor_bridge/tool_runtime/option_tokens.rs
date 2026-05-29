@@ -257,9 +257,18 @@ pub(super) fn option_tokens_for_input(tool_name: &str, input_name: &str) -> Vec<
             "strict_identification" => bool_flag_tokens(input_name, "--strict-identification"),
             "write_all_tags" => bool_flag_tokens(input_name, "--write-all-tags"),
             "write_all_images" => bool_flag_tokens(input_name, "--write-all-images"),
+            "save_images_to_tags" => bool_flag_tokens(input_name, "--save-images-to-tags"),
             "embed_only_one_front_image" => {
                 bool_flag_tokens(input_name, "--embed-only-one-front-image")
             }
+            "ca_providers" => pair_option_tokens(input_name, "--ca-providers"),
+            "caa_image_types" => pair_option_tokens(input_name, "--caa-image-types"),
+            "caa_image_size" => pair_option_tokens(input_name, "--caa-image-size"),
+            "caa_approved_only" => bool_flag_tokens(input_name, "--caa-approved-only"),
+            "preserve_images" => bool_flag_tokens(input_name, "--preserve-images"),
+            "clear_existing_tags" => bool_flag_tokens(input_name, "--clear-existing-tags"),
+            "enable_tag_saving" => bool_flag_tokens(input_name, "--enable-tag-saving"),
+            "release_ars" => bool_flag_tokens(input_name, "--release-ars"),
             "cover_art_slot_count" => pair_option_tokens(input_name, "--cover-art-slot-count"),
             "recording_mbid" => pair_option_tokens(input_name, "--recording-mbid"),
             "release_mbid" => pair_option_tokens(input_name, "--release-mbid"),

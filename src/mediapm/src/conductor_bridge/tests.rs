@@ -871,7 +871,17 @@ fn merge_tool_config_defaults_seeds_curated_media_tool_input_defaults() {
     );
     assert_eq!(
         media_tagger.input_defaults.get("embed_only_one_front_image"),
+        Some(&mediapm_conductor::InputBinding::String("false".to_string()))
+    );
+    assert_eq!(
+        media_tagger.input_defaults.get("save_images_to_tags"),
         Some(&mediapm_conductor::InputBinding::String("true".to_string()))
+    );
+    assert_eq!(
+        media_tagger.input_defaults.get("caa_image_size"),
+        Some(&mediapm_conductor::InputBinding::String(
+            crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string()
+        ))
     );
     assert_eq!(
         media_tagger.input_defaults.get("cover_art_slot_count"),

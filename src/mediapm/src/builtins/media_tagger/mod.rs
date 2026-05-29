@@ -68,8 +68,53 @@ const MAX_FLATTENED_METADATA_ENTRIES: usize = 1_024;
 const MAX_FLATTENED_VALUE_LEN: usize = 4_096;
 /// Default number of cover-art attachment slots prepared per invocation.
 pub const DEFAULT_COVER_ART_SLOT_COUNT: usize = 16;
-/// Picard-compatible default: embed one front image when available.
-pub const DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE: bool = true;
+/// Managed default for embedding image payloads into output tags.
+///
+/// Picard default: `save_images_to_tags = true`.
+pub const DEFAULT_SAVE_IMAGES_TO_TAGS: bool = true;
+/// Managed default for Picard-compatible embedding subset selection.
+///
+/// Picard default: `embed_only_one_front_image = true`.
+/// mediapm intentionally defaults to `false` so all selected CAA image kinds
+/// can be embedded when image embedding is enabled.
+pub const DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE: bool = false;
+/// Managed default cover-art provider selector list.
+///
+/// This mirrors Picard's default provider order:
+/// `Cover Art Archive`, `Allowed Cover Art URLs`,
+/// `Cover Art Archive: Release Group`.
+pub const DEFAULT_CA_PROVIDERS: &str = "caa_release,url_relationships,caa_release_group";
+/// Managed default CAA image-type selector expression.
+///
+/// Expression syntax supports:
+/// - `all` / `*` include-all token,
+/// - comma-separated explicit include tokens,
+/// - exclusion tokens prefixed with `-` / `!`.
+///
+/// Default keeps all known CAA kinds except `matrix/runout`,
+/// `raw/unedited`, and `watermark`.
+pub const DEFAULT_CAA_IMAGE_TYPES: &str = "all,-matrix/runout,-raw/unedited,-watermark";
+/// Managed default CAA image-size selector.
+///
+/// Picard default is typically thumbnail-sized requests; mediapm intentionally
+/// defaults to `full` for maximum-quality source retention.
+pub const DEFAULT_CAA_IMAGE_SIZE: &str = "full";
+/// Managed default CAA approval filter.
+///
+/// Picard default: `caa_approved_only = false`.
+pub const DEFAULT_CAA_APPROVED_ONLY: bool = false;
+/// Managed default policy for preserving embedded images when clear-tags mode
+/// is requested.
+pub const DEFAULT_PRESERVE_IMAGES: bool = false;
+/// Managed default policy for clearing existing textual tags before applying
+/// new metadata.
+pub const DEFAULT_CLEAR_EXISTING_TAGS: bool = false;
+/// Managed default policy for writing tags to output media.
+pub const DEFAULT_ENABLE_TAG_SAVING: bool = true;
+/// Managed default release-relationship lookup toggle.
+///
+/// Picard default: `release_ars = true`.
+pub const DEFAULT_RELEASE_ARS: bool = true;
 /// Default media-tagger HTTP cache expiry budget in seconds (one day).
 pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
 /// Cache-index format marker for media-tagger JSONC metadata rows.
@@ -133,6 +178,8 @@ pub struct InternalMediaTaggerOptions {
     pub write_all_tags: bool,
     /// Whether to enrich metadata with `Picard`-compatible `coverart_*` tags.
     pub write_all_images: bool,
+    /// Whether cover-art images should be embedded into saved tags.
+    pub save_images_to_tags: bool,
     /// Whether embedding should keep only one front cover image.
     ///
     /// Mirrors Picard's default `embed_only_one_front_image = true` behavior:
@@ -145,6 +192,27 @@ pub struct InternalMediaTaggerOptions {
     /// populated slots carry image bytes and "true" flags, unused slots carry
     /// empty payloads and empty flags.
     pub cover_art_slot_count: usize,
+    /// Ordered provider selector list for cover-art discovery.
+    pub ca_providers: String,
+    /// CAA type-selector expression controlling which cover-art image kinds
+    /// are eligible for embedding/tag metadata.
+    pub caa_image_types: String,
+    /// Requested CAA image-size selector.
+    pub caa_image_size: String,
+    /// Whether only CAA entries approved by the CAA moderation flow should be
+    /// considered.
+    pub caa_approved_only: bool,
+    /// Whether existing embedded images should be preserved when
+    /// `clear_existing_tags` is enabled.
+    pub preserve_images: bool,
+    /// Whether existing textual tags should be cleared before applying newly
+    /// resolved metadata.
+    pub clear_existing_tags: bool,
+    /// Whether metadata/tag writing is enabled for this invocation.
+    pub enable_tag_saving: bool,
+    /// Whether release relationships should be considered by provider logic
+    /// that depends on relationship metadata.
+    pub release_ars: bool,
     /// Optional direct recording MBID override.
     pub recording_mbid: Option<String>,
     /// Optional direct release MBID override.
@@ -197,6 +265,25 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         options.cache_dir.clone(),
         CacheExpiryPolicy::from_seconds(options.cache_expiry_seconds),
     );
+    if !options.enable_tag_saving {
+        let fallback_map = if options.clear_existing_tags {
+            BTreeMap::new()
+        } else {
+            fallback_ffmetadata_map(resolved_input.as_deref()).await
+        };
+
+        persist_cover_art_slot_artifacts(
+            &options.output_path,
+            &[],
+            options.cover_art_slot_count,
+            &media_tagger_cache,
+        )
+        .await
+        .context("writing media-tagger cover-art slot artifacts")?;
+        write_ffmetadata_document(&options.output_path, &fallback_map)?;
+        return Ok(());
+    }
+
     let mut detected_recording_mbid = normalize_optional_text(options.recording_mbid.as_deref());
     let mut detected_release_mbid = normalize_optional_text(options.release_mbid.as_deref());
 
@@ -272,11 +359,18 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         .context("building FFmetadata mapping from MusicBrainz payload")?;
 
     let mut selected_cover_art = Vec::new();
-    if options.write_all_images {
-        let discovered_cover_art =
-            collect_musicbrainz_cover_art(&metadata_payload, &media_tagger_cache)
-                .await
-                .context("collecting MusicBrainz cover-art entries")?;
+    if options.write_all_images && options.save_images_to_tags {
+        let discovered_cover_art = collect_musicbrainz_cover_art(
+            &metadata_payload,
+            &media_tagger_cache,
+            &options.ca_providers,
+            &options.caa_image_types,
+            &options.caa_image_size,
+            options.caa_approved_only,
+            options.release_ars,
+        )
+        .await
+        .context("collecting MusicBrainz cover-art entries")?;
         selected_cover_art = select_cover_art_for_tag_embedding(
             &discovered_cover_art,
             options.embed_only_one_front_image,
@@ -284,7 +378,9 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         insert_musicbrainz_image_tags(&mut ffmetadata_map, &selected_cover_art);
     }
 
-    if let Some(input_path) = resolved_input.as_deref() {
+    if !options.clear_existing_tags
+        && let Some(input_path) = resolved_input.as_deref()
+    {
         let existing_metadata = extract_existing_ffmetadata_map(input_path).await?;
         if !existing_metadata.is_empty() {
             let mut merged = existing_metadata;

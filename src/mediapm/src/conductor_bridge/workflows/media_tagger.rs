@@ -53,9 +53,10 @@ fn resolve_media_tagger_output_extension(
 /// Resolves the number of cover-art slots that should be wired into the
 /// managed media-tagger apply step.
 ///
-/// Explicit `write_all_images = "false"` disables slot wiring entirely.
-/// Explicit/default `embed_only_one_front_image = "true"` limits fanout to
-/// one slot because only one front image can be embedded in that mode.
+/// Explicit `write_all_images = "false"`, `save_images_to_tags = "false"`,
+/// or `enable_tag_saving = "false"` disables slot wiring entirely.
+/// Explicit `embed_only_one_front_image = "true"` limits fanout to one slot
+/// because only one front image can be embedded in that mode.
 /// Otherwise, optional `cover_art_slot_count` is honored; when omitted, the
 /// media-tagger default is used. In either case the effective value is clamped
 /// to available ffmpeg auxiliary input slots.
@@ -71,7 +72,17 @@ fn resolve_cover_art_slot_count(
         .filter(|value| !value.is_empty())
         .is_none_or(|value| value.eq_ignore_ascii_case("true"));
 
-    if !write_all_images_enabled {
+    let save_images_to_tags_enabled = step_option_scalar(step, "save_images_to_tags")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| value.eq_ignore_ascii_case("true"));
+
+    let enable_tag_saving = step_option_scalar(step, "enable_tag_saving")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| value.eq_ignore_ascii_case("true"));
+
+    if !write_all_images_enabled || !save_images_to_tags_enabled || !enable_tag_saving {
         return Ok(0);
     }
 

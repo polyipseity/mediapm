@@ -137,8 +137,32 @@ fn media_tagger_defaults_include_workspace_cache_and_expiry() {
     );
     assert_eq!(
         defaults.get("embed_only_one_front_image"),
+        Some(&InputBinding::String("false".to_string()))
+    );
+    assert_eq!(
+        defaults.get("save_images_to_tags"),
         Some(&InputBinding::String("true".to_string()))
     );
+    assert_eq!(
+        defaults.get("ca_providers"),
+        Some(&InputBinding::String(
+            crate::builtins::media_tagger::DEFAULT_CA_PROVIDERS.to_string()
+        ))
+    );
+    assert_eq!(
+        defaults.get("caa_image_types"),
+        Some(&InputBinding::String(
+            crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES.to_string()
+        ))
+    );
+    assert_eq!(
+        defaults.get("caa_image_size"),
+        Some(&InputBinding::String(
+            crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string()
+        ))
+    );
+    assert_eq!(defaults.get("caa_approved_only"), Some(&InputBinding::String("false".to_string())));
+    assert_eq!(defaults.get("enable_tag_saving"), Some(&InputBinding::String("true".to_string())));
 
     assert_eq!(defaults.get("cache_dir"), Some(&InputBinding::String(String::new())));
     assert_eq!(

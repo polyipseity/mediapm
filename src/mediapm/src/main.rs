@@ -86,7 +86,7 @@ enum Command {
     Builtin {
         /// Builtin subcommand selector.
         #[command(subcommand)]
-        command: BuiltinCommand,
+        command: Box<BuiltinCommand>,
     },
     /// Passthrough to the `mediapm-cas` CLI.
     Cas(PassthroughArgs),
@@ -285,7 +285,7 @@ enum BuiltinCommand {
 }
 
 /// Arguments for one internal media-tagger invocation.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "builtin media-tagger CLI intentionally exposes independent boolean toggles"
@@ -332,13 +332,57 @@ struct InternalMediaTaggerArgs {
     /// `coverart_*` metadata enrichment.
     #[arg(long, default_value_t = true)]
     write_all_images: bool,
-    /// Mirrors Picard default embedding policy by keeping only one `front`
-    /// cover image when available.
+    /// Enables embedding selected cover-art images into output tags.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS
+    )]
+    save_images_to_tags: bool,
+    /// Keeps only one `front` cover image when available.
+    ///
+    /// Picard defaults this to enabled; mediapm defaults it to disabled so
+    /// selected non-front image kinds can also be embedded.
     #[arg(
         long,
         default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE
     )]
     embed_only_one_front_image: bool,
+    /// Ordered cover-art provider selector list.
+    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CA_PROVIDERS)]
+    ca_providers: String,
+    /// CAA image-type selector expression (`all` with optional excludes).
+    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES)]
+    caa_image_types: String,
+    /// Requested CAA image-size selector (`full`, `large`, `medium`, `small`).
+    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE)]
+    caa_image_size: String,
+    /// Restricts CAA entries to approved-only when enabled.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY
+    )]
+    caa_approved_only: bool,
+    /// Preserves existing embedded image payloads during clear-tag mode when enabled.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES
+    )]
+    preserve_images: bool,
+    /// Clears existing textual tags before applying newly resolved metadata.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS
+    )]
+    clear_existing_tags: bool,
+    /// Enables output-tag writing.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING
+    )]
+    enable_tag_saving: bool,
+    /// Enables release relationship processing for provider logic that uses ARs.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_RELEASE_ARS)]
+    release_ars: bool,
     /// Internal slot count used when emitting deterministic cover-art
     /// attachment members for downstream ffmpeg apply stages.
     #[arg(
@@ -635,8 +679,8 @@ async fn main() -> anyhow::Result<()> {
                 }
             },
         },
-        Command::Builtin { command } => match command {
-            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await?,
+        Command::Builtin { command } => match command.as_ref() {
+            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args.clone()).await?,
         },
         Command::Cas(args) => {
             let effective_paths = resolve_effective_paths_for_root(
@@ -672,7 +716,16 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
         strict_identification: args.strict_identification,
         write_all_tags: args.write_all_tags,
         write_all_images: args.write_all_images,
+        save_images_to_tags: args.save_images_to_tags,
         embed_only_one_front_image: args.embed_only_one_front_image,
+        ca_providers: args.ca_providers,
+        caa_image_types: args.caa_image_types,
+        caa_image_size: args.caa_image_size,
+        caa_approved_only: args.caa_approved_only,
+        preserve_images: args.preserve_images,
+        clear_existing_tags: args.clear_existing_tags,
+        enable_tag_saving: args.enable_tag_saving,
+        release_ars: args.release_ars,
         cover_art_slot_count: args.cover_art_slot_count,
         recording_mbid: args.recording_mbid,
         release_mbid: args.release_mbid,

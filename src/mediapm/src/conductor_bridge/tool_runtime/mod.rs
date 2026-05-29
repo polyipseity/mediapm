@@ -938,10 +938,58 @@ fn default_input_defaults_for_tool(
         input_defaults
             .insert("write_all_images".to_string(), InputBinding::String("true".to_string()));
         input_defaults.insert(
+            "save_images_to_tags".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS.to_string(),
+            ),
+        );
+        input_defaults.insert(
             "embed_only_one_front_image".to_string(),
             InputBinding::String(
                 crate::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE.to_string(),
             ),
+        );
+        input_defaults.insert(
+            "ca_providers".to_string(),
+            InputBinding::String(crate::builtins::media_tagger::DEFAULT_CA_PROVIDERS.to_string()),
+        );
+        input_defaults.insert(
+            "caa_image_types".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES.to_string(),
+            ),
+        );
+        input_defaults.insert(
+            "caa_image_size".to_string(),
+            InputBinding::String(crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string()),
+        );
+        input_defaults.insert(
+            "caa_approved_only".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY.to_string(),
+            ),
+        );
+        input_defaults.insert(
+            "preserve_images".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES.to_string(),
+            ),
+        );
+        input_defaults.insert(
+            "clear_existing_tags".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS.to_string(),
+            ),
+        );
+        input_defaults.insert(
+            "enable_tag_saving".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING.to_string(),
+            ),
+        );
+        input_defaults.insert(
+            "release_ars".to_string(),
+            InputBinding::String(crate::builtins::media_tagger::DEFAULT_RELEASE_ARS.to_string()),
         );
         input_defaults.insert(
             "cover_art_slot_count".to_string(),

@@ -57,6 +57,57 @@ pub(super) struct CoverArtArchiveImage {
     /// Optional artwork comment text.
     #[serde(default)]
     pub(super) comment: Option<String>,
+    /// Optional CAA moderation approval marker.
+    #[serde(default)]
+    pub(super) approved: Option<bool>,
+}
+
+/// Canonical Cover Art Archive type labels recognized by managed filtering.
+const CAA_SUPPORTED_TYPES: [&str; 18] = [
+    "front",
+    "back",
+    "booklet",
+    "medium",
+    "tray",
+    "obi",
+    "spine",
+    "track",
+    "liner",
+    "sticker",
+    "poster",
+    "watermark",
+    "raw/unedited",
+    "matrix/runout",
+    "top",
+    "bottom",
+    "panel",
+    "other",
+];
+
+/// Parsed CAA image-size preference used for URL selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaaImageSizePreference {
+    /// Prefer the canonical original payload URL when available.
+    Full,
+    /// Prefer the 1200px thumbnail class.
+    Large,
+    /// Prefer the 500px thumbnail class.
+    Medium,
+    /// Prefer the 250px thumbnail class.
+    Small,
+}
+
+/// Parsed cover-art provider selector used by metadata fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CoverArtProvider {
+    /// Cover Art Archive release endpoint.
+    CaaRelease,
+    /// URL-relationship provider (accepted for Picard compatibility).
+    UrlRelationships,
+    /// Cover Art Archive release-group endpoint.
+    CaaReleaseGroup,
+    /// Local-files provider (accepted for Picard compatibility).
+    LocalFiles,
 }
 
 /// Cache-expiry policy used by media-tagger HTTP response caches.
@@ -441,23 +492,56 @@ pub(super) async fn http_get_with_retry(
 pub(super) async fn collect_musicbrainz_cover_art(
     payload: &MusicBrainzPayload,
     cache: &MediaTaggerHttpCache,
+    providers_expression: &str,
+    caa_image_types_expression: &str,
+    caa_image_size: &str,
+    caa_approved_only: bool,
+    release_ars: bool,
 ) -> anyhow::Result<Vec<SelectedCoverArt>> {
+    let providers = parse_cover_art_providers_expression(providers_expression)?;
+    let allowed_types = parse_caa_image_types_expression(caa_image_types_expression)?;
+    let image_size = parse_caa_image_size_preference(caa_image_size)?;
+
     let mut unique = BTreeMap::new();
 
     if let Some(release) = payload.release.as_ref() {
-        for path in [
-            format!("https://coverartarchive.org/release/{}", release.id),
-            release
-                .release_group
-                .as_ref()
-                .map(|group| format!("https://coverartarchive.org/release-group/{}", group.id))
-                .unwrap_or_default(),
-        ] {
-            if path.trim().is_empty() {
-                continue;
-            }
-            for entry in fetch_cover_art_entries(&path, cache).await? {
-                unique.entry(entry.url.clone()).or_insert(entry);
+        for provider in providers {
+            match provider {
+                CoverArtProvider::CaaRelease => {
+                    let endpoint = format!("https://coverartarchive.org/release/{}", release.id);
+                    for entry in fetch_cover_art_entries(
+                        &endpoint,
+                        cache,
+                        &allowed_types,
+                        image_size,
+                        caa_approved_only,
+                    )
+                    .await?
+                    {
+                        unique.entry(entry.url.clone()).or_insert(entry);
+                    }
+                }
+                CoverArtProvider::CaaReleaseGroup => {
+                    if let Some(group) = release.release_group.as_ref() {
+                        let endpoint =
+                            format!("https://coverartarchive.org/release-group/{}", group.id);
+                        for entry in fetch_cover_art_entries(
+                            &endpoint,
+                            cache,
+                            &allowed_types,
+                            image_size,
+                            caa_approved_only,
+                        )
+                        .await?
+                        {
+                            unique.entry(entry.url.clone()).or_insert(entry);
+                        }
+                    }
+                }
+                CoverArtProvider::UrlRelationships => {
+                    let _ = release_ars;
+                }
+                CoverArtProvider::LocalFiles => {}
             }
         }
     }
@@ -474,9 +558,12 @@ pub(super) async fn collect_musicbrainz_cover_art(
 }
 
 /// Queries one Cover Art Archive endpoint and returns one selected URL per entry.
-pub(super) async fn fetch_cover_art_entries(
+async fn fetch_cover_art_entries(
     endpoint: &str,
     cache: &MediaTaggerHttpCache,
+    allowed_types: &BTreeSet<String>,
+    image_size: CaaImageSizePreference,
+    caa_approved_only: bool,
 ) -> anyhow::Result<Vec<SelectedCoverArt>> {
     let http_client = shared_http_client()
         .map_err(|error| anyhow::anyhow!("initializing shared HTTP client failed: {error}"))?;
@@ -516,11 +603,19 @@ pub(super) async fn fetch_cover_art_entries(
 
     let mut entries = Vec::new();
     for image in payload.images {
-        let Some(url) = select_highest_quality_cover_url(&image) else {
+        if caa_approved_only && image.approved != Some(true) {
+            continue;
+        }
+
+        let types = normalized_cover_art_types(&image);
+        if !types.iter().any(|kind| allowed_types.contains(kind)) {
+            continue;
+        }
+
+        let Some(url) = select_highest_quality_cover_url_with_preference(&image, image_size) else {
             continue;
         };
 
-        let types = normalized_cover_art_types(&image);
         let maintype = types
             .iter()
             .min_by_key(|value| cover_art_type_priority(value))
@@ -540,7 +635,18 @@ pub(super) async fn fetch_cover_art_entries(
 }
 
 /// Returns one normalized highest-quality URL for one CAA image entry.
+#[cfg(test)]
 pub(super) fn select_highest_quality_cover_url(image: &CoverArtArchiveImage) -> Option<String> {
+    select_highest_quality_cover_url_with_preference(image, CaaImageSizePreference::Full)
+}
+
+/// Returns one normalized highest-quality URL for one CAA image entry,
+/// honoring one parsed size preference.
+#[must_use]
+fn select_highest_quality_cover_url_with_preference(
+    image: &CoverArtArchiveImage,
+    preference: CaaImageSizePreference,
+) -> Option<String> {
     let mut candidates = Vec::new();
 
     if let Some(original) = normalize_optional_text(image.image.as_deref()) {
@@ -565,12 +671,162 @@ pub(super) fn select_highest_quality_cover_url(image: &CoverArtArchiveImage) -> 
         candidates.push((quality_score, normalized_url));
     }
 
-    candidates
-        .into_iter()
-        .max_by(|(left_score, left_url), (right_score, right_url)| {
-            left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let pick_exact_key = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            image.thumbnails.get(*key).and_then(|value| normalize_optional_text(Some(value)))
         })
-        .map(|(_, url)| url)
+    };
+
+    match preference {
+        CaaImageSizePreference::Full => candidates
+            .into_iter()
+            .max_by(|(left_score, left_url), (right_score, right_url)| {
+                left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
+            })
+            .map(|(_, url)| url),
+        CaaImageSizePreference::Large => pick_exact_key(&["1200", "large"]).or_else(|| {
+            candidates
+                .into_iter()
+                .max_by(|(left_score, left_url), (right_score, right_url)| {
+                    left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
+                })
+                .map(|(_, url)| url)
+        }),
+        CaaImageSizePreference::Medium => pick_exact_key(&["500"])
+            .or_else(|| pick_exact_key(&["1200", "large", "250", "small"]))
+            .or_else(|| {
+                candidates
+                    .into_iter()
+                    .max_by(|(left_score, left_url), (right_score, right_url)| {
+                        left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
+                    })
+                    .map(|(_, url)| url)
+            }),
+        CaaImageSizePreference::Small => pick_exact_key(&["250", "small"])
+            .or_else(|| pick_exact_key(&["500", "1200", "large"]))
+            .or_else(|| {
+                candidates
+                    .into_iter()
+                    .max_by(|(left_score, left_url), (right_score, right_url)| {
+                        left_score.cmp(right_score).then_with(|| left_url.cmp(right_url))
+                    })
+                    .map(|(_, url)| url)
+            }),
+    }
+}
+
+/// Parses one CAA image-size selector string.
+fn parse_caa_image_size_preference(raw: &str) -> anyhow::Result<CaaImageSizePreference> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(CaaImageSizePreference::Full);
+    }
+
+    match normalized.as_str() {
+        "full" | "original" => Ok(CaaImageSizePreference::Full),
+        "large" | "1200" => Ok(CaaImageSizePreference::Large),
+        "500" | "medium" => Ok(CaaImageSizePreference::Medium),
+        "small" | "250" => Ok(CaaImageSizePreference::Small),
+        _ => bail!(
+            "unsupported caa_image_size '{raw}'; supported values: full, large/1200, medium/500, small/250"
+        ),
+    }
+}
+
+/// Parses one CAA image-type selector expression.
+fn parse_caa_image_types_expression(raw: &str) -> anyhow::Result<BTreeSet<String>> {
+    let mut include_all = false;
+    let mut includes = BTreeSet::new();
+    let mut excludes = BTreeSet::new();
+
+    for token in raw.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+        let is_exclusion = token.starts_with('-') || token.starts_with('!');
+        let normalized =
+            token.trim_start_matches('-').trim_start_matches('!').trim().to_ascii_lowercase();
+
+        if normalized.is_empty() {
+            continue;
+        }
+
+        if matches!(normalized.as_str(), "all" | "*") {
+            include_all = true;
+            continue;
+        }
+
+        if !CAA_SUPPORTED_TYPES.contains(&normalized.as_str()) {
+            bail!(
+                "unsupported caa_image_types token '{normalized}'; supported types: {}",
+                CAA_SUPPORTED_TYPES.join(", ")
+            );
+        }
+
+        if is_exclusion {
+            excludes.insert(normalized);
+        } else {
+            includes.insert(normalized);
+        }
+    }
+
+    let mut resolved = if include_all || includes.is_empty() {
+        CAA_SUPPORTED_TYPES.iter().map(|value| (*value).to_string()).collect::<BTreeSet<_>>()
+    } else {
+        includes
+    };
+
+    for excluded in excludes {
+        resolved.remove(&excluded);
+    }
+
+    if resolved.is_empty() {
+        bail!("caa_image_types resolved to an empty set; include at least one CAA image type");
+    }
+
+    Ok(resolved)
+}
+
+/// Parses one cover-art provider selector expression.
+fn parse_cover_art_providers_expression(raw: &str) -> anyhow::Result<Vec<CoverArtProvider>> {
+    let mut providers = Vec::new();
+
+    for token in raw.split(',').map(str::trim).filter(|token| !token.is_empty()) {
+        let normalized = token.to_ascii_lowercase();
+        let provider = match normalized.as_str() {
+            "caa_release" | "cover_art_archive" | "cover art archive" => {
+                CoverArtProvider::CaaRelease
+            }
+            "url_relationships"
+            | "allowed_cover_art_urls"
+            | "allowed cover art urls"
+            | "urlrels" => CoverArtProvider::UrlRelationships,
+            "caa_release_group"
+            | "cover_art_archive_release_group"
+            | "cover art archive: release group" => CoverArtProvider::CaaReleaseGroup,
+            "local_files" | "local files" => CoverArtProvider::LocalFiles,
+            _ => {
+                bail!(
+                    "unsupported ca_providers token '{token}'; supported providers: caa_release, url_relationships, caa_release_group, local_files"
+                )
+            }
+        };
+
+        if !providers.contains(&provider) {
+            providers.push(provider);
+        }
+    }
+
+    if providers.is_empty() {
+        Ok(vec![
+            CoverArtProvider::CaaRelease,
+            CoverArtProvider::UrlRelationships,
+            CoverArtProvider::CaaReleaseGroup,
+        ])
+    } else {
+        Ok(providers)
+    }
 }
 
 /// Normalizes one CAA image-entry kind list into deterministic lowercase tags.
