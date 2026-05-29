@@ -107,8 +107,10 @@ fn demo_online_uses_in_memory_service_wiring() {
     assert!(
         !source.contains("\"strict_identification\".to_string()")
             && source.contains("\"recording_mbid\".to_string()")
-            && source.contains("\"release_mbid\".to_string()"),
-        "demo_online should rely on managed media-tagger input defaults for strict identification and only set explicit non-default options"
+            && source.contains("\"release_mbid\".to_string()")
+            && source.contains("\"write_all_tags\".to_string()")
+            && source.contains("\"write_all_images\".to_string()"),
+        "demo_online should rely on managed media-tagger input defaults for strict identification while explicitly trimming tag/image fan-out"
     );
 
     assert!(

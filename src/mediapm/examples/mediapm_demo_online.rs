@@ -27,7 +27,7 @@
 //!
 //! Intentional deviations from `mediapm media add` presets kept here:
 //! - explicit untagged hierarchy output alongside tagged output,
-//! - explicit `media-tagger` options (`recording_mbid`, `write_all_images=false`),
+//! - explicit `media-tagger` options (`recording_mbid`, `write_all_images=false`, `write_all_tags=false`),
 //! - explicit runtime-default block so `mediapm.ncl` documents all knobs,
 //! - explicit playlist hierarchy entry with duplicated id refs/path modes,
 //! - explicit bounded `yt-dlp` options (`format`, safe `sub_langs`),
@@ -1081,6 +1081,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 ),
                 ("release_mbid".to_string(), TransformInputValue::String(String::new())),
                 ("write_all_images".to_string(), TransformInputValue::String("false".to_string())),
+                ("write_all_tags".to_string(), TransformInputValue::String("false".to_string())),
             ]),
         },
         MediaStep {
