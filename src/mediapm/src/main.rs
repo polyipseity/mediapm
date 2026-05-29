@@ -845,6 +845,12 @@ fn inject_conductor_passthrough_defaults(
         "--conductor-schema-dir",
         effective_paths.conductor_schema_dir.to_string_lossy().to_string(),
     );
+    append_passthrough_option_if_missing(
+        &mut injected,
+        args,
+        "--conductor-tools-dir",
+        effective_paths.tools_dir.to_string_lossy().to_string(),
+    );
     injected.extend(args.iter().cloned());
     injected
 }
@@ -1041,6 +1047,8 @@ mod tests {
         assert!(injected.contains(&"/tmp/demo-root/.mediapm/state.conductor.ncl".to_string()));
         assert!(injected.contains(&"--cas-store-dir".to_string()));
         assert!(injected.contains(&"/tmp/demo-root/.mediapm/store".to_string()));
+        assert!(injected.contains(&"--conductor-tools-dir".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/.mediapm/tools".to_string()));
         assert_eq!(injected.last().map(String::as_str), Some("state"));
     }
 }

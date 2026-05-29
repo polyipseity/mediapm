@@ -393,7 +393,7 @@ async fn media_tagger_http_cache_round_trips_musicbrainz_metadata_rows() {
 /// managed ffmpeg payload path as-is.
 #[test]
 fn resolve_ffmpeg_executable_from_configured_path_preserves_payload_path() {
-    let input = "/tmp/demo/.mediapm/cache/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg";
+    let input = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/macos/ffmpeg";
 
     assert_eq!(resolve_ffmpeg_executable_from_configured_path(Some(input)), input);
 }
@@ -402,7 +402,7 @@ fn resolve_ffmpeg_executable_from_configured_path_preserves_payload_path() {
 /// when the target file has not been materialized yet.
 #[test]
 fn resolve_ffmpeg_executable_from_configured_path_preserves_missing_payload_path() {
-    let payload_path = "/tmp/demo/.mediapm/cache/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg";
+    let payload_path = "/tmp/demo/.mediapm/tools/mediapm.tools.ffmpeg+demo@v1/payload/macos/ffmpeg";
 
     assert_eq!(resolve_ffmpeg_executable_from_configured_path(Some(payload_path)), payload_path);
 }

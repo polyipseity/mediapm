@@ -21,7 +21,7 @@ pub(crate) struct ResolvedToolIdentity {
     pub release_description: Option<String>,
 }
 
-/// Provisioned tool payload prepared under the runtime cache root.
+/// Provisioned tool payload prepared under the workspace tools cache root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProvisionedToolPayload {
     /// Fully resolved immutable tool id.
