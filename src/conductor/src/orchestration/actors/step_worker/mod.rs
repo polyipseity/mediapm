@@ -1338,14 +1338,22 @@ where
         Ok(ToolExecutionCapture { stdout: output.stdout, stderr: output.stderr, process_code })
     }
 
-    /// Materializes per-tool `content_map` entries from CAS into the sandbox.
+    /// Materializes per-tool `content_map` entries from CAS into the persistent
+    /// payload cache and, when necessary, links the payload tree into the sandbox.
     ///
     /// Delegates to the persistent tool-content cache (`tool_content_cache`
     /// module) keyed by `tool_id`.  On a cache hit the payload tree is already
     /// extracted; on a miss CAS bytes for all entries are fetched concurrently,
     /// collision-checked, and extracted into a fresh `payload/` directory.
-    /// The sandbox is populated via hard links from the cache payload directory
-    /// (falling back to copies on cross-device setups).
+    ///
+    /// When the managed-tool executable resolves directly inside the returned
+    /// payload cache directory, the function returns early with that path so
+    /// the subprocess launcher can execute from the stable cache location.  This
+    /// skips the per-step `O(n_files)` sandbox hard-link pass and, on macOS,
+    /// avoids Gatekeeper/XProtect re-scan costs that would otherwise trigger
+    /// for each new hard-link path.  When the executable is absent from the
+    /// cache, the sandbox is populated via hard links from the cache payload
+    /// directory (falling back to copies on cross-device setups).
     async fn materialize_tool_content_map(
         &self,
         tool_id: &str,
@@ -1365,17 +1373,16 @@ where
         )
         .await?;
 
-        // Optimization for ffmpeg-family managed tools: when command[0]
-        // resolves directly inside the persistent payload cache, skip the
-        // per-step recursive payload linking pass and execute from that stable
-        // cache path. This avoids repeated `O(n_files)` metadata work for
-        // large multi-platform ffmpeg payload trees.
-        if tool_id.contains(".ffmpeg+")
-            && let ResolvedProcessExecution::Executable { executable, .. } = resolved_process
-        {
+        // Optimization: when command[0] resolves directly inside the persistent
+        // payload cache, skip the per-step recursive sandbox linking pass and
+        // execute from that stable cache path. This avoids repeated O(n_files)
+        // metadata operations for large managed-tool payload trees on each step.
+        // On macOS this also avoids Gatekeeper/XProtect re-scan costs that
+        // would otherwise trigger for each new hard-link path.
+        if let ResolvedProcessExecution::Executable { executable, .. } = resolved_process {
             let normalized =
                 self.normalized_relative_tool_path(executable, "tool process executable")?;
-            if payload_dir.join(normalized).is_file() {
+            if payload_dir.join(&normalized).is_file() {
                 return Ok(Some(payload_dir));
             }
         }

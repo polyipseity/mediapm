@@ -1039,6 +1039,9 @@ fn tool_relative_paths_reject_absolute_and_escape_components() {
 
 /// Protects regular file materialization for `content_map` entries whose keys
 /// do not end with `/` or `\\`.
+///
+/// With the sandbox-relinking optimization the payload stays in the persistent
+/// cache directory; the assertion checks the cache path, not the sandbox.
 #[tokio::test]
 async fn content_map_file_entry_materializes_plain_file_bytes() {
     let cas = Arc::new(InMemoryCas::new());
@@ -1048,7 +1051,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tmp_dir = temp.path().join("tmp");
 
-    executor
+    let payload_dir = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
@@ -1057,50 +1060,56 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
             runtime_tmp_dir.as_path(),
         )
         .await
-        .expect("file-form content_map entry should materialize bytes");
+        .expect("file-form content_map entry should materialize bytes")
+        .expect("payload dir should be returned");
 
     assert_eq!(
-        std::fs::read(temp.path().join("bin").join("run.sh")).expect("read output"),
+        std::fs::read(payload_dir.join("bin").join("run.sh"))
+            .expect("read output from payload cache"),
         payload
     );
 }
 
-/// Protects ffmpeg execution-path optimization by skipping per-step recursive
-/// payload relinking when the host executable exists in persistent cache.
+/// Protects the general execution-path optimization by skipping per-step
+/// recursive payload relinking when the managed-tool executable exists in the
+/// persistent payload cache.
 #[tokio::test]
-async fn ffmpeg_content_map_skips_sandbox_relink_when_payload_executable_exists() {
+async fn content_map_skips_sandbox_relink_when_payload_executable_in_cache() {
     let cas = Arc::new(InMemoryCas::new());
-    let payload = b"#!/usr/bin/env sh\necho ffmpeg\n".to_vec();
+    let payload = b"#!/usr/bin/env sh\necho tool\n".to_vec();
     let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tools_dir = temp.path().join("tools");
 
-    let executable_relative = format!("{}/ffmpeg", host_payload_platform_dir());
+    let executable_relative = format!("{}/my-tool", host_payload_platform_dir());
     let payload_dir = executor
         .materialize_tool_content_map(
-            "mediapm.tools.ffmpeg+demo@1.0.0",
+            "mediapm.tools.my-tool@1.0.0",
             &BTreeMap::from([(executable_relative.clone(), hash)]),
             &test_executable_process(&executable_relative),
             temp.path(),
             runtime_tools_dir.as_path(),
         )
         .await
-        .expect("ffmpeg payload should materialize")
+        .expect("managed-tool payload should materialize")
         .expect("payload dir should be returned");
 
     assert!(
         payload_dir.join(&executable_relative).is_file(),
-        "payload cache should contain host ffmpeg executable"
+        "payload cache should contain the managed-tool executable"
     );
     assert!(
         !temp.path().join(&executable_relative).exists(),
-        "ffmpeg optimization should skip recursive payload relinking into sandbox"
+        "optimization should skip recursive payload relinking into sandbox when executable is in cache"
     );
 }
 
 /// Protects directory materialization semantics for trailing-slash
 /// `content_map` keys where CAS payloads are ZIP archives.
+///
+/// With the sandbox-relinking optimization the payload stays in the persistent
+/// cache directory; the assertion checks the cache path, not the sandbox.
 #[tokio::test]
 async fn content_map_directory_entry_unpacks_zip_payload() {
     let cas = Arc::new(InMemoryCas::new());
@@ -1110,7 +1119,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tmp_dir = temp.path().join("tmp");
 
-    executor
+    let payload_dir = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
@@ -1119,17 +1128,21 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
             runtime_tmp_dir.as_path(),
         )
         .await
-        .expect("directory-form content_map entry should unpack ZIP");
+        .expect("directory-form content_map entry should unpack ZIP")
+        .expect("payload dir should be returned");
 
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("tool").join("bin").join("run.sh"))
-            .expect("read unpacked script"),
+        std::fs::read_to_string(payload_dir.join("tool").join("bin").join("run.sh"))
+            .expect("read unpacked script from payload cache"),
         "echo from zip\n"
     );
 }
 
 /// Protects support for `./` as a directory-form key that unpacks directly
-/// into the execution sandbox root.
+/// into the payload cache root.
+///
+/// With the sandbox-relinking optimization the payload stays in the persistent
+/// cache directory; the assertion checks the cache path, not the sandbox.
 #[tokio::test]
 async fn content_map_directory_entry_accepts_current_directory_root() {
     let cas = Arc::new(InMemoryCas::new());
@@ -1139,7 +1152,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tmp_dir = temp.path().join("tmp");
 
-    executor
+    let payload_dir = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("./".to_string(), hash)]),
@@ -1148,11 +1161,12 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
             runtime_tmp_dir.as_path(),
         )
         .await
-        .expect("'./' directory-form content_map entry should unpack ZIP at sandbox root");
+        .expect("'./' directory-form content_map entry should unpack ZIP at payload root")
+        .expect("payload dir should be returned");
 
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("bin").join("run.sh"))
-            .expect("read unpacked root script"),
+        std::fs::read_to_string(payload_dir.join("bin").join("run.sh"))
+            .expect("read unpacked root script from payload cache"),
         "echo from zip\n"
     );
 }
@@ -1253,6 +1267,9 @@ async fn content_map_rejects_file_overwrite_between_entries() {
 }
 
 /// Protects merged directory behavior when entries target different files.
+///
+/// With the sandbox-relinking optimization the payload stays in the persistent
+/// cache directory; assertions check the cache path, not the sandbox.
 #[tokio::test]
 async fn content_map_allows_distinct_paths_across_directory_entries() {
     let cas = Arc::new(InMemoryCas::new());
@@ -1264,7 +1281,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tmp_dir = temp.path().join("tmp");
 
-    executor
+    let payload_dir = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([
@@ -1276,15 +1293,17 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
             runtime_tmp_dir.as_path(),
         )
         .await
-        .expect("non-overlapping directory entries should merge successfully");
+        .expect("non-overlapping directory entries should merge successfully")
+        .expect("payload dir should be returned");
 
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("tool").join("a.txt")).expect("read first"),
+        std::fs::read_to_string(payload_dir.join("tool").join("a.txt"))
+            .expect("read first from payload cache"),
         "A"
     );
     assert_eq!(
-        std::fs::read_to_string(temp.path().join("tool").join("nested").join("b.txt"))
-            .expect("read second"),
+        std::fs::read_to_string(payload_dir.join("tool").join("nested").join("b.txt"))
+            .expect("read second from payload cache"),
         "B"
     );
 }

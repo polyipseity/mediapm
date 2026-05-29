@@ -123,8 +123,10 @@ enum ContentMapKeyKind {
 /// fresh `payload/` tree (CPU-bound ZIP extraction runs in a blocking task).
 /// Finally, `metadata.json` is written atomically via a temp-file rename.
 ///
-/// The caller should populate the execution sandbox from the returned path via
-/// [`link_payload_to_sandbox`].
+/// When the tool executable resolves directly inside the returned payload
+/// path, the caller may execute from it without populating the sandbox.
+/// Otherwise, the caller populates the execution sandbox from the returned
+/// path via [`link_payload_to_sandbox`].
 ///
 /// # Errors
 ///
