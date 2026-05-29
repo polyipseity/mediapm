@@ -34,15 +34,15 @@ matching directories are explicitly introduced.
 
 ## Validation workflow
 
-When editing Rust source, validate changes with targeted checks first:
+When editing Rust source, validate changes with selective checks first:
 
 - **During development** (recommended for speed — these run in seconds):
   - `cargo test-pkg <crate>` — test only the affected crate(s)
-  - `cargo clippy-pkg <crate>` — lint only the affected crate(s)
   - `cargo build-pkg <crate>` — build only the affected crate(s)
+  - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal development loops; `prek.toml` pre-commit hooks already run formatting + check + clippy on commit.
   - Examples:
     - `cargo test-pkg mediapm` runs only mediapm tests
-    - `cargo clippy-pkg mediapm-conductor` lints only mediapm-conductor
+    - `cargo build-pkg mediapm-conductor` builds only mediapm-conductor
     - `cargo test-pkg mediapm-cas` for CAS-specific validation
   - See `.cargo/config.toml` for the alias definitions
 
@@ -60,32 +60,9 @@ When editing Rust source, validate changes with targeted checks first:
   - `cargo test -p mediapm --all-targets --all-features` → same as `cargo test-pkg mediapm`
   - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
 
-- For edits under `src/mediapm/**`, include one final runtime validation run:
-  - `cargo run --package mediapm --example mediapm_demo_online`
-  - Run this after targeted crate tests/lints so generated managed-tool
-    workflows are exercised end to end.
-  - Inspect generated artifacts under
-    `src/mediapm/examples/.artifacts/demo-online/` after the run, including
-    sidecar-family payload correctness (not only path existence).
-  - To reduce third-party provider rate-limit risk (`HTTP 429`), run this
-    gate at most once per validation pass, avoid immediate back-to-back reruns,
-    and use a cool-down backoff before retrying transient provider failures.
-  - If the run appears stuck, triage before rerunning: verify active
-    `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes, inspect artifact timestamp
-    movement, and check stderr for fallback-root messages
-    (`demo-online-fallback-*`) when canonical cleanup is locked.
-  - Bound long runs with `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` and treat timeout
-    exits as blocker failures, not soft skips.
-    - `mediapm_demo_online` hard-enforces this limit and returns exit code `124` on timeout; treat that exit as equivalent to any other blocker failure.
-
-  - Keep timeout/watchdog messaging progress-safe: avoid periodic heartbeat
-    stderr output while conductor progress bars are rendering, and keep timeout
-    notices plain text (no row-clear ANSI control sequences).
-  - This is a strict gate: do not downgrade failures into skip manifests,
-    placeholder payload acceptance, or "soft-success" status.
-  - If external network/tool providers prevent success, report that blocker
-    explicitly and treat the change as blocked until the run succeeds or the
-    reviewer accepts the transient failure.
+- For edits under `src/mediapm/**`, avoid full online demo runs during normal development.
+  - Run targeted tests only while iterating.
+  - Reserve full integration/demo runs for push/pre-push workflows handled by hooks/CI unless a reviewer explicitly asks for local runtime verification.
 
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
 
@@ -104,7 +81,9 @@ When refactoring touches multiple crates or splits large modules:
 This repository uses the pre-commit framework (configured via `prek.toml`) to manage local git hooks. The hooks run automatically on `git commit` and `git push` to catch issues early and auto-fix formatting:
 
 - **pre-commit stage** (on `git commit`): runs `cargo fmt` (formats code), `cargo check`, `cargo clippy`, and `rumdl fmt` (formats markdown)
-- **pre-push stage** (on `git push`): runs `cargo test --all`
+- **pre-push stage** (on `git push`): runs full test validation
+
+Treat these hooks as the canonical lint/format/check gate. During normal coding, prefer selective test/build runs and rely on commit/push hooks for full lint/format/check execution.
 
 To install or update hooks locally, run:
 
@@ -157,9 +136,8 @@ SKIP=cargo-test git commit -m "message"
 - Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module
   purpose stays discoverable.
 - After a split, run targeted validation:
-  - `cargo fmt-check` (all files)
   - `cargo test-pkg <crate>` (affected crate tests)
-  - `cargo clippy-pkg <crate>` (affected crate lint)
+  - `cargo build-pkg <crate>` (affected crate build)
 
 ## Example target naming convention
 

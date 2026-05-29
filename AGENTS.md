@@ -239,38 +239,14 @@
   inputs for validation commands and expectations.
 - Prefer targeted cargo validation by default for faster feedback:
   - `cargo test-pkg <crate>` for specific crate testing
-  - `cargo clippy-pkg <crate>` for specific crate linting
   - `cargo build-pkg <crate>` for specific crate building
   - Example: `cargo test-pkg mediapm` runs only mediapm tests
   - See `.cargo/config.toml` for available aliases and convenience shortcuts
-- For any change that touches `src/mediapm/**`, run
-  `cargo run --package mediapm --example mediapm_demo_online` as a final runtime gate
-  after targeted tests/lints so the managed online workflow remains healthy.
-  After the run, inspect generated artifacts under
-  `src/mediapm/examples/.artifacts/demo-online/` (including sidecar-family
-  content correctness, not only path existence).
-  To reduce third-party provider rate-limit risk (`HTTP 429`), run this gate
-  at most once per validation pass, avoid immediate repeat retries, and apply
-  backoff cool-down before re-running after transient provider failures.
-  If the run appears stuck, do triage before retrying: check whether
-  `cargo`/`mediapm`/`yt-dlp`/`ffmpeg` processes are still active, inspect
-  artifact-root timestamps, and check stderr for fallback-root messages
-  (`demo-online-fallback-*`) when canonical cleanup is locked.
-  First-run bootstrap often needs several minutes for managed tool download
-  and extraction; be patient and avoid interrupting while progress is still
-  advancing.
-  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to keep runs bounded and treat
-  timeout failures as blockers (same as other provider/network failures).
-  `demo_online` enforces this as a hard timeout and exits with code `124`
-  when exceeded.
-  Keep timeout/watchdog notices user-facing and progress-safe: avoid periodic
-  heartbeat stderr lines during conductor progress rendering, and keep timeout
-  notice output plain text (no row-clear ANSI control sequences) so terminal
-  progress rows are not duplicated.
-  Treat this as mandatory: do not replace failures with placeholder/skip
-  success paths. If external providers block completion, report the failure
-  explicitly and keep the task blocked until the run succeeds or the reviewer
-  accepts the transient failure.
+- During normal development loops, run only selective tests/builds and avoid
+  full-suite churn.
+- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during
+  normal development loops; `prek.toml` commit hooks already enforce those
+  gates on commit.
 - Use full-workspace validation only for pre-push checks and CI:
   - `cargo fmt-check` (checks formatting on all files)
   - `cargo clippy-all` (lints entire workspace)

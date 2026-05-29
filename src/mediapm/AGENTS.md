@@ -50,8 +50,7 @@ Keep these mediapm defaults and path rules intact:
   `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
   `conductor_state_config`, `inherited_env_vars`, `media_state_config`,
   `env_file`, `hierarchy_root_dir`, `mediapm_tmp_dir`,
-  `conductor_tmp_dir`, `conductor_schema_dir`, `mediapm_schema_dir`, and
-  `use_user_tool_cache`.
+  `conductor_tmp_dir`, `conductor_schema_dir`, and `mediapm_schema_dir`.
 - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
   `macos`, ...) where each value is an ordered list of environment-variable
   names. Runtime reads only the active host platform entry.
@@ -100,8 +99,7 @@ Keep these mediapm defaults and path rules intact:
 - Generated default dotenv environment-variable lines stay commented (`# ...`)
   so user/shell environment values are picked up unless operators explicitly
   opt into file-based overrides by uncommenting entries.
-- `runtime.use_user_tool_cache` defaults to enabled when omitted. When
-  enabled, both `mediapm` and the conductor it invokes share one cache root:
+- Managed-tool downloads always use one shared user-level cache root:
   `<os-cache-dir>/mediapm/cache/`. The layout is `cache/store/` for CAS
   payloads plus `cache/tools.jsonc`; additional `*.jsonc` indexes are allowed
   and participate in shared payload-retention decisions. Eviction stays fixed
@@ -498,8 +496,11 @@ Effective grouped defaults:
 During development, prefer targeted cargo aliases from `.cargo/config.toml`:
 
 - `cargo test-pkg mediapm`
-- `cargo clippy-pkg mediapm`
 - `cargo build-pkg mediapm`
+- Run selective tests for changed behavior only; avoid full-suite churn during
+  normal development loops.
+- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
+  development loops; `prek.toml` commit hooks enforce those gates on commit.
 
 Pre-push/full-workspace validation:
 
@@ -507,47 +508,8 @@ Pre-push/full-workspace validation:
 - `cargo clippy-all`
 - `cargo test-all`
 
-Hard runtime gate for `src/mediapm/**` edits:
-
-- Run `cargo run --package mediapm --example mediapm_demo_online` after targeted
-  tests/lints.
-- Inspect generated artifacts under
-  `src/mediapm/examples/.artifacts/demo-online/` after the run and verify
-  sidecar-family payload correctness (not only file/path presence).
-- Confirm the interpolated media root under `music videos/` contains the
-  metadata-templated demo filenames
-  `${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}`
-  and
-  `${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}`;
-  both should keep video+audio streams, while sidecar hierarchy stays under
-  `sidecars/` and selected sidecar families are additionally mirrored at
-  media root (including regex-selected subtitle folders).
-- Keep demo tool dependency examples explicit: `yt-dlp` and `media-tagger`
-  inherit `ffmpeg`, `rsgain` inherits both `ffmpeg` and `sd`, while `ffmpeg`
-  and `sd` declare no dependencies.
-- To reduce provider rate-limit risk (`HTTP 429`), run this gate once per
-  validation pass, avoid rapid consecutive reruns, and wait with backoff
-  before retrying transient provider failures.
-- If the run appears stuck, triage before rerun: confirm active process state
-  (`cargo`/`mediapm`/`yt-dlp`/`ffmpeg`), inspect artifact timestamp movement,
-  and check stderr for fallback-root messages (`demo-online-fallback-*`) when
-  canonical cleanup is locked.
-- First-run demo bootstrap can spend several minutes downloading/extracting
-  managed tools; be patient and avoid interrupting while progress is still
-  moving.
-- Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to cap long demo runs and treat
-  timeout failures as blockers unless reviewer explicitly accepts them.
-- Keep `mediapm_demo_online` timeout/watchdog notices as single-shot plain-text lines
-  and avoid periodic heartbeat stderr logging while conductor progress bars
-  are active, so progress rows are not duplicated or visually corrupted.
-- Treat provider/network failures as blockers unless reviewer explicitly
-  accepts the transient failure.
-- Keep `demo_online` comment-sidecar validation realistic: do not
-  intentionally force zero comments (for example via
-  `youtube:max_comments=0`) when validating comments capture flows.
-- When a `demo_online` pass does not validate comment sidecars, prefer
-  disabling comment extraction explicitly (for example
-  `write_comments = "false"`) to reduce provider-throttling timeout risk.
+Reserve full demo/integration runs for push/pre-push workflows or explicit
+reviewer requests.
 
 Example policy:
 

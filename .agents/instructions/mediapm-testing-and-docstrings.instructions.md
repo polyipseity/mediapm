@@ -29,24 +29,9 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Keep `src/mediapm/examples/demo.rs` ffmpeg behavior fast for local fixture
   execution: prefer stream-copy (`codec_copy = "true"`) over re-encode-heavy
   demo transforms.
-- Even with automated test-target config-only behavior, changes under
-  `src/mediapm/**` must still run
-  `cargo run --package mediapm --example mediapm_demo_online` as the final local
-  validation gate.
-  Execute this gate with rate-limit discipline: run once per validation pass,
-  avoid rapid consecutive retries, and apply cool-down backoff before retrying
-  transient provider (`HTTP 429`) failures.
-  If the run appears stuck, verify active process state
-  (`cargo`/`mediapm`/`yt-dlp`/`ffmpeg`), inspect artifact timestamp movement,
-  and check stderr for fallback-root messages (`demo-online-fallback-*`) before
-  deciding to rerun.
-  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to bound long runs and treat timeout
-  failures as blockers.
-  Keep timeout/watchdog notices as plain-text single-shot lines and avoid
-  periodic heartbeat stderr output while conductor progress rows are active so
-  progress output is not duplicated.
-  This gate is strict: do not mark runs as passed via skip manifests,
-  placeholder payload acceptance, or fallback success markers.
+- For development loops under `src/mediapm/**`, prefer selective tests and
+  avoid full online demo runs unless explicitly requested for local runtime
+  diagnosis.
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
 - Keep unit tests close to module-level invariants (`#[cfg(test)]` in same file)
   when they validate tight internal helpers.
@@ -149,26 +134,13 @@ Before finishing, run targeted validation on affected crates:
 
 **Standard development workflow:**
 
-- `cargo fmt-check` (formatting check on all Rust files)
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
-- `cargo clippy-pkg <crate>` (affected crate lint; e.g., `cargo clippy-pkg mediapm`)
-- For edits under `src/mediapm/**`, run
-  `cargo run --package mediapm --example mediapm_demo_online` last and report
-  transient external-provider failures explicitly if encountered.
-  Inspect `src/mediapm/examples/.artifacts/demo-online/` after the run and
-  validate sidecar-family payload correctness (not only path existence).
-  Apply rate-limit-safe retry behavior here too: no rapid retry loops after
-  `HTTP 429`; wait for cool-down before a retry.
-  If the run appears stalled, confirm process activity and artifact timestamp
-  movement first, and check stderr for fallback-root messages
-  (`demo-online-fallback-*`) before reissuing the command.
-  Use `MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS` to cap runtime and treat timeout
-  failures as blockers until resolved or reviewer-accepted.
-  Keep timeout/watchdog notices as plain-text single-shot lines and avoid
-  periodic heartbeat stderr output while conductor progress rows are active so
-  progress output is not duplicated.
-  Treat those failures as blockers until the run succeeds or the reviewer
-  accepts the transient failure.
+- `cargo build-pkg <crate>` (affected crate build; e.g., `cargo build-pkg mediapm`)
+- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
+  development loops; `prek.toml` commit hooks already enforce formatting and
+  lint/check gates.
+- Add or update tests selectively for the touched behavior; avoid full test
+  suite runs during development.
 
 **Before submitting (pre-push):**
 

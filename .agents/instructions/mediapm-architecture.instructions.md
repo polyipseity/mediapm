@@ -135,8 +135,7 @@ is a narrow, documented reason.
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
     `conductor_state_config`, `inherited_env_vars`, `media_state_config`,
     `hierarchy_root_dir`, `mediapm_tmp_dir`, `conductor_tmp_dir`,
-    `conductor_schema_dir`, `env_file`, `mediapm_schema_dir`, and
-    `use_user_tool_cache`,
+    `conductor_schema_dir`, `env_file`, and `mediapm_schema_dir`,
   - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
     `macos`, ...) and each platform key maps to an ordered list of
     inherited environment-variable names,
@@ -175,13 +174,12 @@ is a narrow, documented reason.
     `mediapm.ncl` directory,
   - relative `runtime.mediapm_tmp_dir` resolves relative to effective
     `runtime.mediapm_dir`,
-  - `runtime.use_user_tool_cache` defaults to enabled when omitted
-    and controls a shared user-level managed-tool download cache; when invoked
-    through `mediapm`, the cache root is `<os-cache-dir>/mediapm/cache/` with
-    fixed layout `cache/store/` (CAS payloads), default metadata index
-    `cache/tools.jsonc`, optional additional indexes `cache/*.jsonc`, and
-    fixed 30-day eviction; conductor standalone uses
-    `<os-cache-dir>/mediapm-conductor/cache/` with the same layout,
+  - managed-tool downloads use a shared user-level cache by default
+    (`<os-cache-dir>/mediapm/cache/`) with fixed layout
+    `cache/store/` (CAS payloads), default metadata index `cache/tools.jsonc`,
+    optional additional indexes `cache/*.jsonc`, and fixed 30-day eviction;
+    conductor standalone uses `<os-cache-dir>/mediapm-conductor/cache/` with
+    the same layout,
   - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
     `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
     bound generated ffmpeg indexed input/output slot fan-out,
@@ -537,29 +535,13 @@ or download-level progress that spans blocking awaits.
 
 Run targeted validation on affected crates:
 
-- `cargo fmt-check` (formatting check on all files)
-- `cargo clippy-pkg <crate>` (e.g., `cargo clippy-pkg mediapm`)
 - `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
-- If changes touch `src/mediapm/**`, run
-  `cargo run --package mediapm --example mediapm_demo_online` as the final runtime
-  gate after targeted test/lint checks.
-  After the run, inspect generated artifacts under
-  `src/mediapm/examples/.artifacts/demo-online/` and verify sidecar-family
-  payload correctness (not only path existence).
-  Confirm the interpolated media root under `music videos/` contains the
-  metadata-templated demo filenames
-  `${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}`
-  and
-  `${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}`,
-  both preserving video+audio streams while sidecar hierarchy stays under
-  `sidecars/` and selected sidecar families are additionally mirrored at
-  media root.
-  Run this gate with rate-limit discipline: at most one run per validation
-  pass, no rapid retry loops, and cool-down backoff before retrying transient
-  provider (`HTTP 429`) failures.
-  Treat this as a hard gate: do not replace failures with placeholder or
-  skip-success behavior; report transient external-provider failures as
-  blockers until run success or explicit reviewer acceptance.
+- `cargo build-pkg <crate>` (e.g., `cargo build-pkg mediapm`)
+- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during
+  normal development loops; rely on `prek.toml` commit hooks for those gates.
+- Run only selective tests for changed behavior during development; reserve
+  full suite/integration demo runs for push/pre-push workflows or explicit
+  reviewer requests.
 
 **Before submitting (pre-push):**
 
