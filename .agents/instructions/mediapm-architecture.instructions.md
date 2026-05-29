@@ -179,7 +179,9 @@ is a narrow, documented reason.
     `cache/store/` (CAS payloads), default metadata index `cache/tools.jsonc`,
     optional additional indexes `cache/*.jsonc`, and fixed 30-day eviction;
     conductor standalone uses `<os-cache-dir>/mediapm-conductor/cache/` with
-    the same layout,
+    the same layout; this cache domain is distinct from workspace tool-content
+    materialization under `<mediapm_dir>/tools/` (or `<conductor_dir>/tools/`
+    in standalone conductor), and those paths are never interchangeable,
   - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
     `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
     bound generated ffmpeg indexed input/output slot fan-out,

@@ -105,7 +105,9 @@ Keep these mediapm defaults and path rules intact:
   and participate in shared payload-retention decisions. Eviction stays fixed
   at 30 days of inactivity. Conductor standalone uses a separate base
   directory (`<os-cache-dir>/mediapm-conductor/cache/`) with the same flat
-  layout.
+  layout. This user-level download cache is distinct from the workspace
+  conductor tool-content cache under `<mediapm_dir>/tools/`; do not treat one
+  path as the other's source of truth.
 - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
   `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
   bound generated ffmpeg indexed input/output slot fan-out.

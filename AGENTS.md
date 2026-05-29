@@ -137,6 +137,11 @@
     `<mediapm_dir>/state.conductor.ncl` (not standalone
     `.conductor/state.ncl` defaults); `mediapm` machine-managed state persists
     at `<mediapm_dir>/state.ncl` and uses `runtime.media_state_config` for overrides.
+  - Keep cache domains strictly separated: managed-tool download reuse is the
+    user-level cache (`<os-cache-dir>/mediapm/cache/` for mediapm-driven runs),
+    while conductor tool-content materialization is workspace-scoped under
+    `<mediapm_dir>/tools/` (or `<conductor_dir>/tools/` in standalone conductor).
+    Never treat these as interchangeable locations.
   - Materialized outputs are marked read-only after sync commit; runtime may
     clear read-only bits only for managed replacement/removal operations.
   - Materializer enforces NFD-only filenames and rejects reserved characters

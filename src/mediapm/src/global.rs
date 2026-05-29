@@ -7,6 +7,11 @@
 //! - `<root>/cache/store/` — CAS payload objects
 //! - `<root>/cache/tools.jsonc` — default managed-tool metadata index
 //!
+//! This user-level managed-download cache is intentionally separate from the
+//! workspace conductor tool-content cache (`<mediapm_dir>/tools/` for
+//! mediapm-driven runs, `<conductor_dir>/tools/` for standalone conductor).
+//! These cache domains must never be treated as interchangeable paths.
+//!
 //! Root resolution is delegated to shared conductor cache-root policy so
 //! `mediapm` runtime provisioning and global cache CLI commands always inspect
 //! the same base directory.
