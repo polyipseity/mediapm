@@ -33,9 +33,9 @@ use crate::hierarchy::{
 use crate::lockfile::{MediaLockFile, load_lockfile, save_lockfile};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::{
-    LocalSourceMetadata, OnlineSourceMetadata, fetch_local_source_metadata,
-    fetch_mb_recording_metadata, fetch_online_source_metadata, remote_default_title,
-    resolve_conductor_cas_root, run_workflow_with_filesystem_cas,
+    LocalSourceMetadata, fetch_local_source_metadata, fetch_mb_recording_metadata,
+    fetch_online_source_metadata, resolve_conductor_cas_root,
+    resolve_online_source_metadata_for_add, run_workflow_with_filesystem_cas,
     should_prefer_filesystem_workflow_runner, should_retry_workflow_with_filesystem_cas,
 };
 use crate::{
@@ -195,18 +195,25 @@ where
 
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let media_id = media_id_from_uri(uri);
-        let OnlineSourceMetadata { title, artist, description } = fetch_online_source_metadata(uri);
-        let source_title = mb
-            .as_ref()
-            .map(|m| m.title.clone())
-            .or(title)
-            .unwrap_or_else(|| remote_default_title(uri));
+        let yt_dlp_configured = document.tools.contains_key("yt-dlp");
+        let yt_dlp_metadata =
+            if yt_dlp_configured { Some(fetch_online_source_metadata(uri)) } else { None };
+        let resolved_online_metadata =
+            resolve_online_source_metadata_for_add(uri, yt_dlp_configured, yt_dlp_metadata);
+        if let Some(warning) = resolved_online_metadata.warning.as_ref() {
+            eprintln!("warning: {warning}");
+        }
+        let source_title = if let Some(mb) = mb.as_ref() {
+            mb.title.clone()
+        } else {
+            resolved_online_metadata.title.clone()
+        };
         let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
-        let source_description = mb
-            .as_ref()
-            .map(|m| build_remote_default_description(&m.title, Some(&m.artist)))
-            .or(description)
-            .unwrap_or_else(|| build_remote_default_description(&source_title, artist.as_deref()));
+        let source_description = if let Some(mb) = mb.as_ref() {
+            build_remote_default_description(&mb.title, Some(&mb.artist))
+        } else {
+            resolved_online_metadata.description.clone()
+        };
 
         document.media.insert(
             media_id.clone(),
@@ -256,7 +263,9 @@ where
                                 transform: None,
                             }),
                             MediaMetadataValueCandidate::Literal(
-                                source_artist_literal.unwrap_or_else(|| "unknown".to_string()),
+                                source_artist_literal
+                                    .or(resolved_online_metadata.artist.clone())
+                                    .unwrap_or_else(|| "unknown".to_string()),
                             ),
                         ]),
                     ),

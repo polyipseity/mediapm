@@ -89,6 +89,23 @@ pub(crate) struct OnlineSourceMetadata {
     pub(crate) description: Option<String>,
 }
 
+/// Remote metadata resolved for the online add flow.
+///
+/// This structure keeps the add-path-specific title, description, artist, and
+/// warning text together so service code can stay small while tests can assert
+/// the resolution policy directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedOnlineSourceMetadata {
+    /// Resolved title used when adding one online media source.
+    pub(crate) title: String,
+    /// Resolved description used when adding one online media source.
+    pub(crate) description: String,
+    /// Resolved artist/uploader label used when adding one online media source.
+    pub(crate) artist: Option<String>,
+    /// Optional warning emitted when yt-dlp metadata cannot be fetched.
+    pub(crate) warning: Option<String>,
+}
+
 /// Metadata tuple fetched by local-file probes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LocalSourceMetadata {
@@ -101,6 +118,38 @@ pub(crate) struct LocalSourceMetadata {
 /// Resolves online metadata using downloader tools when available.
 pub(crate) fn fetch_online_source_metadata(uri: &Url) -> OnlineSourceMetadata {
     try_fetch_online_source_metadata_with_yt_dlp(uri).unwrap_or_default()
+}
+
+/// Resolves add-flow metadata for one remote source.
+///
+/// When `yt-dlp` is configured, the fetched metadata is preferred for the
+/// title, description, and artist fields. When it is not configured, the
+/// returned values fall back to the repository's generic remote-source
+/// defaults and `warning` explains why yt-dlp metadata could not be fetched.
+pub(crate) fn resolve_online_source_metadata_for_add(
+    uri: &Url,
+    yt_dlp_configured: bool,
+    yt_dlp_metadata: Option<OnlineSourceMetadata>,
+) -> ResolvedOnlineSourceMetadata {
+    if !yt_dlp_configured {
+        let title = remote_default_title(uri);
+        return ResolvedOnlineSourceMetadata {
+            title: title.clone(),
+            description: build_remote_default_description_for_remote_source(&title, None),
+            artist: None,
+            warning: Some(format!(
+                "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source '{uri}'"
+            )),
+        };
+    }
+
+    let metadata = yt_dlp_metadata.unwrap_or_default();
+    let title = metadata.title.unwrap_or_else(|| remote_default_title(uri));
+    let description = metadata.description.unwrap_or_else(|| {
+        build_remote_default_description_for_remote_source(&title, metadata.artist.as_deref())
+    });
+
+    ResolvedOnlineSourceMetadata { title, description, artist: metadata.artist, warning: None }
 }
 
 /// Resolves local metadata using media-probe tooling when available.
@@ -219,6 +268,12 @@ pub(crate) fn remote_default_title(uri: &Url) -> String {
         .map(ToString::to_string)
         .filter(|title| !title.trim().is_empty())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Builds the generic description text used for remote-source defaults.
+fn build_remote_default_description_for_remote_source(title: &str, artist: Option<&str>) -> String {
+    let artist = artist.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
+    format!("title: {title}\nartist: {artist}")
 }
 
 /// Resolves conductor CAS root from machine runtime storage with default fallback.

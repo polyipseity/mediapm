@@ -14,6 +14,7 @@ use super::{
     merge_runtime_storage, parse_local_source_metadata_from_ffprobe_json,
     parse_online_source_metadata, should_prefer_filesystem_workflow_runner, validate_source_uri,
 };
+use crate::source_metadata::resolve_online_source_metadata_for_add;
 use tempfile::tempdir;
 use url::Url;
 
@@ -617,6 +618,44 @@ fn parse_online_metadata_reads_title_artist_and_description() {
             description: Some("A short description".to_string()),
         }
     );
+}
+
+/// Ensures remote add-flow metadata falls back to built-in defaults and emits
+/// a warning when yt-dlp is not configured.
+#[test]
+fn resolve_online_metadata_for_add_warns_when_yt_dlp_is_missing() {
+    let url = Url::parse("https://example.com/demo-video").expect("url");
+
+    let resolved = resolve_online_source_metadata_for_add(&url, false, None);
+
+    assert_eq!(resolved.title, "demo-video");
+    assert_eq!(resolved.description, "title: demo-video\nartist: unknown");
+    assert_eq!(resolved.artist, None);
+    assert!(
+        resolved
+            .warning
+            .as_ref()
+            .is_some_and(|warning| warning.contains("yt-dlp managed tool is not configured"))
+    );
+}
+
+/// Ensures remote add-flow metadata prefers yt-dlp-fetched title, artist, and
+/// description values when the tool is configured.
+#[test]
+fn resolve_online_metadata_for_add_prefers_yt_dlp_values_when_configured() {
+    let url = Url::parse("https://example.com/demo-video").expect("url");
+    let fetched = OnlineSourceMetadata {
+        title: Some("Fetched Title".to_string()),
+        artist: Some("Fetched Artist".to_string()),
+        description: Some("Fetched Description".to_string()),
+    };
+
+    let resolved = resolve_online_source_metadata_for_add(&url, true, Some(fetched));
+
+    assert_eq!(resolved.title, "Fetched Title");
+    assert_eq!(resolved.description, "Fetched Description");
+    assert_eq!(resolved.artist, Some("Fetched Artist".to_string()));
+    assert!(resolved.warning.is_none());
 }
 
 /// Ensures local metadata parsing extracts title/description from ffprobe
