@@ -2404,6 +2404,12 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         }
     };
 
+    eprintln!(
+        "[demo_online] sync complete; rendering conductor timing profile (workflow scope only)..."
+    );
+    mediapm_conductor::print_profile_timing(&service.paths().runtime_root.join("profile.json"));
+
+    eprintln!("[demo_online] running post-sync verification and artifact summary...");
     let machine = load_machine(&service.paths().conductor_machine_ncl)?;
     let tool_binaries = resolve_tool_binaries(&machine, &logical_tool_ids)?;
     configure_demo_ffprobe_command(&machine, &tool_binaries)?;
@@ -2611,10 +2617,6 @@ async fn main() -> ExampleResult<()> {
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: {run_sync}");
-    // Profile is now written by conductor to <mediapm_dir>/profile.json when
-    // profiler_enabled is set in MediaRuntimeStorage (set above to Some(true)).
-    // The workspace_root/.mediapm/ directory is the service runtime root.
-    mediapm_conductor::print_profile_timing(&paths.workspace_root.join(".mediapm/profile.json"));
 
     Ok(())
 }

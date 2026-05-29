@@ -874,6 +874,7 @@ where
         // Load the mediapm document once and reuse it across both sync phases to
         // avoid a redundant Nickel evaluation between tool-sync and library-sync.
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        eprintln!("[mediapm::sync] reconciling managed tools and workflow configuration...");
         let (tool_summary, mut lock) =
             self.sync_tools_from_document(&document, check_tag_updates).await?;
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
@@ -884,6 +885,7 @@ where
         let workflow_options =
             conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
 
+        eprintln!("[mediapm::sync] running conductor workflows...");
         let conductor_summary = if should_prefer_filesystem_workflow_runner(&machine) {
             run_workflow_with_filesystem_cas(
                 &conductor_cas_root,
@@ -927,6 +929,7 @@ where
             }
         };
 
+        eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
@@ -940,6 +943,7 @@ where
 
         // Reconcile again after materialization so managed-file hashes written
         // during this sync are immediately rooted in machine external_data.
+        eprintln!("[mediapm::sync] finalizing machine-state reconciliation...");
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
         save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
 
