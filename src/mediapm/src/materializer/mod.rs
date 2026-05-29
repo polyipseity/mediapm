@@ -60,6 +60,9 @@ use self::zip::{compile_hierarchy_folder_rename_rules, extract_zip_folder_varian
 /// Upper bound for concurrent hierarchy staging workers.
 const HIERARCHY_STAGE_MAX_CONCURRENCY: usize = 8;
 
+/// Maximum number of Unicode scalar values shown in one progress filename.
+const HIERARCHY_PROGRESS_MAX_FILENAME_CHARS: usize = 48;
+
 /// One prepared hierarchy-entry staging result.
 #[derive(Debug)]
 struct PreparedHierarchyEntryResult {
@@ -207,6 +210,39 @@ fn hierarchy_entry_kind_label(kind: HierarchyEntryKind) -> &'static str {
     }
 }
 
+/// Returns the basename-oriented hierarchy label shown in worker progress.
+#[must_use]
+fn hierarchy_progress_filename_label(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let candidate = if trimmed.is_empty() { path } else { trimmed };
+    let file_name = Path::new(candidate)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(candidate);
+    truncate_progress_label(file_name, HIERARCHY_PROGRESS_MAX_FILENAME_CHARS)
+}
+
+/// Truncates one progress label to a bounded character length with ellipsis.
+#[must_use]
+fn truncate_progress_label(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let char_count = value.chars().count();
+    if char_count <= max_chars {
+        return value.to_string();
+    }
+
+    if max_chars <= 1 {
+        return "…".to_string();
+    }
+
+    let prefix = value.chars().take(max_chars - 1).collect::<String>();
+    format!("{prefix}…")
+}
+
 /// Prepares one hierarchy entry in the staging root without final commit.
 #[expect(
     clippy::too_many_lines,
@@ -233,11 +269,8 @@ async fn prepare_hierarchy_entry(
     let entry = &flattened_entry.entry;
 
     progress_bar.set_position(0);
-    progress_bar.set_message(&format!(
-        "{}: resolving {}",
-        hierarchy_entry_kind_label(entry.kind),
-        relative_path_template
-    ));
+    progress_bar
+        .set_message(&format!("{}: resolving filename", hierarchy_entry_kind_label(entry.kind)));
 
     let relative_path =
         if matches!(entry.kind, HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder) {
@@ -248,6 +281,11 @@ async fn prepare_hierarchy_entry(
         };
     let relative_path = normalize_resolved_hierarchy_path_to_nfd(&relative_path);
     validate_hierarchy_path(&relative_path)?;
+    progress_bar.set_message(&format!(
+        "{}: {}",
+        hierarchy_entry_kind_label(entry.kind),
+        hierarchy_progress_filename_label(&relative_path)
+    ));
     let fs_relative_path = relative_path.as_str();
 
     if fs_relative_path.is_empty() {
@@ -716,9 +754,8 @@ pub async fn sync_hierarchy(
 
                 worker_bar.set_position(0);
                 worker_bar.set_message(&format!(
-                    "worker#{worker_index}: {} '{}'",
-                    hierarchy_entry_kind_label(flattened_entry.entry.kind),
-                    flattened_entry.path
+                    "worker#{worker_index}: {}",
+                    hierarchy_entry_kind_label(flattened_entry.entry.kind)
                 ));
 
                 let prepared = prepare_hierarchy_entry(
@@ -739,9 +776,13 @@ pub async fn sync_hierarchy(
                 if prepared.is_err() {
                     worker_bar.set_position(100);
                     worker_bar.set_message(&format!(
-                        "worker#{worker_index}: failed {} '{}'",
-                        hierarchy_entry_kind_label(flattened_entry.entry.kind),
-                        flattened_entry.path
+                        "worker#{worker_index}: failed {}",
+                        hierarchy_entry_kind_label(flattened_entry.entry.kind)
+                    ));
+                } else if let Ok(ref prepared_entry) = prepared {
+                    worker_bar.set_message(&format!(
+                        "worker#{worker_index}: {}",
+                        hierarchy_progress_filename_label(&prepared_entry.relative_path)
                     ));
                 }
 
