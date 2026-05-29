@@ -88,20 +88,15 @@ pub(super) async fn materialize_download_plan(
         return Ok(());
     }
 
-    for action in plan.per_os_actions.values() {
-        let os_root = install_root.join(action.os.as_str());
-        let main_cache_key = cache_identity.as_str();
-
-        materialize_action_with_progress(
-            entry,
-            action,
-            &os_root,
-            download_cache.clone(),
-            main_cache_key,
-            &mut progress,
-        )
-        .await?;
-    }
+    materialize_primary_os_payloads_concurrently(
+        entry,
+        plan,
+        install_root,
+        download_cache.clone(),
+        cache_identity.as_str(),
+        &mut progress,
+    )
+    .await?;
 
     materialize_additional_download_sources(
         entry,
@@ -114,6 +109,231 @@ pub(super) async fn materialize_download_plan(
     .await?;
 
     Ok(())
+}
+
+/// Materializes non-shared per-OS primary payload actions concurrently.
+///
+/// Every target OS writes into a disjoint `<install_root>/<os>/...` directory,
+/// so these actions can execute in parallel without path collisions.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this orchestration keeps branch-local progress and error semantics explicit for all supported OS action counts"
+)]
+async fn materialize_primary_os_payloads_concurrently(
+    entry: &ToolCatalogEntry,
+    plan: &ResolvedDownloadPlan,
+    install_root: &Path,
+    download_cache: Option<Arc<ToolDownloadCache>>,
+    cache_key: &str,
+    progress: &mut ProgressAccumulator<'_>,
+) -> Result<(), MediaPmError> {
+    let actions = plan.per_os_actions.values().cloned().collect::<Vec<_>>();
+    if actions.is_empty() {
+        return Err(MediaPmError::Workflow(
+            "resolved downloader plan has no per-OS payload actions".to_string(),
+        ));
+    }
+
+    let base_downloaded_bytes = progress.cumulative_downloaded_bytes;
+    let planned_total_bytes = progress.planned_total_bytes;
+    let aggregate_callback = progress.callback.cloned();
+    let snapshots = Arc::new(Mutex::new(vec![
+        DownloadProgressSnapshot {
+            downloaded_bytes: 0,
+            total_bytes: Some(0)
+        };
+        actions.len()
+    ]));
+
+    match actions.as_slice() {
+        [action] => {
+            let destination = install_root.join(action.os.as_str());
+            let progress_callback = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    0,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+
+            materialize_one_os_payload(
+                entry,
+                action,
+                &destination,
+                progress_callback,
+                download_cache,
+                cache_key,
+            )
+            .await?;
+        }
+        [action_a, action_b] => {
+            let destination_a = install_root.join(action_a.os.as_str());
+            let destination_b = install_root.join(action_b.os.as_str());
+            let progress_callback_a = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    0,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+            let progress_callback_b = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    1,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+
+            let first = materialize_one_os_payload(
+                entry,
+                action_a,
+                &destination_a,
+                progress_callback_a,
+                download_cache.clone(),
+                cache_key,
+            );
+            let second = materialize_one_os_payload(
+                entry,
+                action_b,
+                &destination_b,
+                progress_callback_b,
+                download_cache,
+                cache_key,
+            );
+
+            tokio::try_join!(first, second)?;
+        }
+        [action_a, action_b, action_c] => {
+            let destination_a = install_root.join(action_a.os.as_str());
+            let destination_b = install_root.join(action_b.os.as_str());
+            let destination_c = install_root.join(action_c.os.as_str());
+            let progress_callback_a = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    0,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+            let progress_callback_b = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    1,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+            let progress_callback_c = aggregate_callback.as_ref().map(|callback| {
+                parallel_action_progress_callback(
+                    Arc::clone(callback),
+                    Arc::clone(&snapshots),
+                    2,
+                    base_downloaded_bytes,
+                    planned_total_bytes,
+                )
+            });
+
+            let first = materialize_one_os_payload(
+                entry,
+                action_a,
+                &destination_a,
+                progress_callback_a,
+                download_cache.clone(),
+                cache_key,
+            );
+            let second = materialize_one_os_payload(
+                entry,
+                action_b,
+                &destination_b,
+                progress_callback_b,
+                download_cache.clone(),
+                cache_key,
+            );
+            let third = materialize_one_os_payload(
+                entry,
+                action_c,
+                &destination_c,
+                progress_callback_c,
+                download_cache,
+                cache_key,
+            );
+
+            tokio::try_join!(first, second, third)?;
+        }
+        _ => {
+            return Err(MediaPmError::Workflow(format!(
+                "unsupported per-OS payload action count: {}",
+                actions.len()
+            )));
+        }
+    }
+
+    let snapshots = snapshots.lock().map_or_else(|_| Vec::new(), |state| state.clone());
+    let aggregate_snapshot =
+        aggregate_parallel_action_snapshot(base_downloaded_bytes, &snapshots, planned_total_bytes);
+    let downloaded_delta =
+        aggregate_snapshot.downloaded_bytes.saturating_sub(base_downloaded_bytes);
+    progress.cumulative_downloaded_bytes =
+        progress.cumulative_downloaded_bytes.saturating_add(downloaded_delta);
+
+    if let Some(callback) = progress.callback {
+        callback(DownloadProgressSnapshot {
+            downloaded_bytes: progress.cumulative_downloaded_bytes,
+            total_bytes: progress.planned_total_bytes,
+        });
+    }
+
+    Ok(())
+}
+
+/// Creates one callback that contributes to aggregate progress across parallel
+/// per-OS materialization actions.
+fn parallel_action_progress_callback(
+    callback: DownloadProgressCallback,
+    snapshots: Arc<Mutex<Vec<DownloadProgressSnapshot>>>,
+    action_index: usize,
+    base_downloaded_bytes: u64,
+    planned_total_bytes: Option<u64>,
+) -> DownloadProgressCallback {
+    Arc::new(move |snapshot| {
+        if let Ok(mut state) = snapshots.lock() {
+            if action_index < state.len() {
+                state[action_index] = snapshot;
+            }
+
+            let aggregate = aggregate_parallel_action_snapshot(
+                base_downloaded_bytes,
+                &state,
+                planned_total_bytes,
+            );
+            callback(aggregate);
+        }
+    }) as DownloadProgressCallback
+}
+
+/// Aggregates cumulative progress from multiple parallel action snapshots.
+fn aggregate_parallel_action_snapshot(
+    base_downloaded_bytes: u64,
+    snapshots: &[DownloadProgressSnapshot],
+    planned_total_bytes: Option<u64>,
+) -> DownloadProgressSnapshot {
+    let action_downloaded =
+        snapshots.iter().fold(0_u64, |sum, snapshot| sum.saturating_add(snapshot.downloaded_bytes));
+    let mut downloaded_bytes = base_downloaded_bytes.saturating_add(action_downloaded);
+
+    if let Some(total_bytes) = planned_total_bytes {
+        downloaded_bytes = downloaded_bytes.min(total_bytes);
+    }
+
+    DownloadProgressSnapshot { downloaded_bytes, total_bytes: planned_total_bytes }
 }
 
 /// Mutable aggregate progress state tracked across download actions.
@@ -931,9 +1151,9 @@ mod tests {
     use xz2::write::XzEncoder;
 
     use super::{
-        aggregate_progress_snapshot, collect_materialized_content_entries,
-        download_progress_actions, extract_tar_xz_payload, materialize_internal_launcher,
-        media_tagger_launcher_env_var,
+        aggregate_parallel_action_snapshot, aggregate_progress_snapshot,
+        collect_materialized_content_entries, download_progress_actions, extract_tar_xz_payload,
+        materialize_internal_launcher, media_tagger_launcher_env_var,
     };
     use crate::tools::catalog::{
         DownloadPayloadMode, PlatformValue, ToolAdditionalDownloadSource, ToolOs,
@@ -997,6 +1217,40 @@ mod tests {
 
         assert_eq!(snapshot.total_bytes, None);
         assert_eq!(snapshot.downloaded_bytes, 80);
+    }
+
+    /// Protects aggregate progress accounting for parallel per-OS payload
+    /// actions by summing action snapshots over the existing cumulative base.
+    #[test]
+    fn aggregate_parallel_action_snapshot_sums_action_bytes() {
+        let snapshot = aggregate_parallel_action_snapshot(
+            100,
+            &[
+                DownloadProgressSnapshot { downloaded_bytes: 40, total_bytes: Some(100) },
+                DownloadProgressSnapshot { downloaded_bytes: 60, total_bytes: Some(200) },
+            ],
+            Some(500),
+        );
+
+        assert_eq!(snapshot.total_bytes, Some(500));
+        assert_eq!(snapshot.downloaded_bytes, 200);
+    }
+
+    /// Protects aggregate progress clamp behavior when parallel action totals
+    /// exceed precomputed overall transfer size.
+    #[test]
+    fn aggregate_parallel_action_snapshot_clamps_to_planned_total() {
+        let snapshot = aggregate_parallel_action_snapshot(
+            80,
+            &[
+                DownloadProgressSnapshot { downloaded_bytes: 120, total_bytes: Some(120) },
+                DownloadProgressSnapshot { downloaded_bytes: 90, total_bytes: Some(90) },
+            ],
+            Some(250),
+        );
+
+        assert_eq!(snapshot.total_bytes, Some(250));
+        assert_eq!(snapshot.downloaded_bytes, 250);
     }
 
     /// Protects transfer-progress accounting for ffmpeg by ensuring additional
