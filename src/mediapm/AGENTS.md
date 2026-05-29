@@ -257,12 +257,16 @@ For `media.<id>` semantics and runtime reconciliation:
 - Managed `media-tagger` defaults should keep `strict_identification = "true"`
   unless callers explicitly override that input, and should default
   `write_all_tags = "true"` plus `write_all_images = "true"`.
-  Managed defaults should also keep
-  `embed_only_one_front_image = "true"` to mirror Picard tag-embedding
-  behavior (embed only the first front image when available; set to `"false"`
-  to enable all CAA image types: front, back, booklet, medium, tray, obi,
-  spine, track, liner, sticker, poster, watermark, raw/unedited, matrix/runout,
-  top, bottom, panel, other), and default `cover_art_slot_count = 16` while
+  Managed defaults should also keep `save_images_to_tags = "true"`,
+  `enable_tag_saving = "true"`, `clear_existing_tags = "false"`,
+  `preserve_images = "false"`, `release_ars = "true"`,
+  `caa_approved_only = "false"`,
+  `ca_providers = "caa_release,url_relationships,caa_release_group"`,
+  `caa_image_types = "all,-matrix/runout,-raw/unedited,-watermark"`, and
+  `caa_image_size = "full"`. Picard defaults
+  `embed_only_one_front_image = "true"`, but mediapm intentionally defaults
+  `embed_only_one_front_image = "false"` so selected non-front CAA kinds can
+  also be embedded. Keep default `cover_art_slot_count = 16` while
   workflow synthesis clamps effective slot fanout to available ffmpeg auxiliary
   input slots.
 - `media-tagger` metadata-fetch mode should allow explicit MBID-driven runs
@@ -355,7 +359,9 @@ For `media.<id>` semantics and runtime reconciliation:
     existing source metadata unless explicitly overridden. Cover-art behavior
     should select one highest-quality payload per distinct artwork entry
     (prefer CAA original image URL, fallback to best thumbnail), apply
-    Picard-like embedding selection (default: first front image only), emit
+    Picard-like provider/type metadata behavior with mediapm default embedding
+    fanout (`embed_only_one_front_image = "false"`; Picard defaults this to
+    first-front-only), emit
     deterministic slot artifacts for ffmpeg `attached_pic` mapping, and keep
     compatible kind metadata in `coverart_*` tags. The emitted
     `coverart_*` metadata key family must stay synchronized with Picard

@@ -249,8 +249,15 @@ is a narrow, documented reason.
     as disabled,
   - managed `media-tagger` defaults should keep
     `strict_identification = "true"` unless callers explicitly override it,
-    and should keep `cover_art_slot_count = tools.ffmpeg.max_input_slots - 1`
-    so metadata and apply stages stay slot-compatible,
+    should keep `write_all_tags = "true"`, `write_all_images = "true"`,
+    `save_images_to_tags = "true"`, `enable_tag_saving = "true"`,
+    `clear_existing_tags = "false"`, `preserve_images = "false"`,
+    `release_ars = "true"`, `caa_approved_only = "false"`,
+    `ca_providers = "caa_release,url_relationships,caa_release_group"`,
+    `caa_image_types = "all,-matrix/runout,-raw/unedited,-watermark"`,
+    `caa_image_size = "full"`, and should default
+    `cover_art_slot_count = 16` (then clamp to ffmpeg auxiliary-slot
+    availability during workflow synthesis),
   - when `media-tagger` runs on the AcoustID lookup path (no explicit
     recording MBID override), missing/empty AcoustID credentials must fail
     immediately; key sources remain CLI `--acoustid-api-key` or
@@ -305,7 +312,10 @@ is a narrow, documented reason.
     artifacts for ffmpeg `attached_pic` mapping, and keep emitted
     `coverart_*` metadata keys synchronized with Picard cover-art behavior
     documented
-    in `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`,
+    in `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`.
+    Picard defaults `embed_only_one_front_image = "true"`; mediapm
+    intentionally defaults `embed_only_one_front_image = "false"` so selected
+    non-front CAA image kinds can also be embedded,
   - output-variant values are object-driven across managed tools: `kind`
     defines default file-vs-folder capture behavior and optional
     `capture_kind` (`file`/`folder`) may override that default,

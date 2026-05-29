@@ -167,9 +167,15 @@
     `write_desktop_link`), and highest-quality single-thumbnail capture by
     default; `media-tagger` defaults to `strict_identification = "true"`,
     `write_all_tags = "true"`, `write_all_images = "true"`,
-    `embed_only_one_front_image = "true"` (Picard-aligned tag embedding,
-    embeds only the first front image when available; set to `"false"` to
-    embed all discovered CAA image types),
+    `save_images_to_tags = "true"`, `enable_tag_saving = "true"`,
+    `embed_only_one_front_image = "false"` (Picard defaults this to
+    `"true"`; mediapm intentionally defaults to `"false"` so selected
+    non-front CAA image kinds can also be embedded),
+    `ca_providers = "caa_release,url_relationships,caa_release_group"`,
+    `caa_image_types = "all,-matrix/runout,-raw/unedited,-watermark"`,
+    `caa_image_size = "full"` (Picard commonly defaults to thumbnail size),
+    `caa_approved_only = "false"`, `preserve_images = "false"`,
+    `clear_existing_tags = "false"`, `release_ars = "true"`,
     and `cover_art_slot_count = 16` (clamped by ffmpeg auxiliary-slot
     availability during workflow synthesis).
   - Managed `rsgain` defaults stay in single-track mode
