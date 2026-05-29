@@ -6,7 +6,7 @@ use super::acoustid::require_acoustid_api_key_for_lookup;
 use super::cover_art::{
     CacheExpiryPolicy, CoverArtArchiveImage, MediaTaggerHttpCache, SelectedCoverArt,
     insert_musicbrainz_image_tags, normalized_cover_art_types, persist_cover_art_slot_artifacts,
-    select_highest_quality_cover_url,
+    select_cover_art_for_tag_embedding, select_highest_quality_cover_url,
 };
 use super::ffmetadata::parse_ffmetadata_global_map;
 use super::musicbrainz::{insert_extended_picard_tags, musicbrainz_payload_cache_key};
@@ -33,6 +33,7 @@ async fn run_internal_media_tagger_fails_when_acoustid_key_is_missing_for_autode
         strict_identification: false,
         write_all_tags: true,
         write_all_images: true,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
         cover_art_slot_count: 8,
         recording_mbid: None,
         release_mbid: None,
@@ -90,6 +91,7 @@ async fn run_internal_media_tagger_with_key_attempts_lookup_path() {
         strict_identification: false,
         write_all_tags: true,
         write_all_images: true,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
         cover_art_slot_count: 8,
         recording_mbid: None,
         release_mbid: None,
@@ -173,6 +175,74 @@ fn normalized_cover_art_types_ignores_legacy_bool_aliases() {
     .expect("legacy bool payload should deserialize with unknown fields ignored");
 
     assert_eq!(normalized_cover_art_types(&image), vec!["other".to_string()]);
+}
+
+/// Protects Picard-compatible default embedding policy by selecting only the
+/// first front image when multiple cover-art entries are available.
+#[test]
+fn select_cover_art_for_tag_embedding_prefers_first_front_image() {
+    let entries = vec![
+        SelectedCoverArt {
+            url: "https://example.test/back.jpg".to_string(),
+            maintype: "back".to_string(),
+            types: vec!["back".to_string()],
+            comment: String::new(),
+        },
+        SelectedCoverArt {
+            url: "https://example.test/front-a.jpg".to_string(),
+            maintype: "front".to_string(),
+            types: vec!["front".to_string(), "booklet".to_string()],
+            comment: String::new(),
+        },
+        SelectedCoverArt {
+            url: "https://example.test/front-b.jpg".to_string(),
+            maintype: "front".to_string(),
+            types: vec!["front".to_string()],
+            comment: String::new(),
+        },
+    ];
+
+    let selected = select_cover_art_for_tag_embedding(&entries, true);
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].url, "https://example.test/front-a.jpg");
+}
+
+/// Protects Picard-compatible default embedding policy by ensuring non-front
+/// image-only payloads do not get embedded when front-only mode is enabled.
+#[test]
+fn select_cover_art_for_tag_embedding_returns_empty_without_front_images() {
+    let entries = vec![SelectedCoverArt {
+        url: "https://example.test/back.jpg".to_string(),
+        maintype: "back".to_string(),
+        types: vec!["back".to_string()],
+        comment: String::new(),
+    }];
+
+    let selected = select_cover_art_for_tag_embedding(&entries, true);
+    assert!(selected.is_empty());
+}
+
+/// Protects explicit override behavior by allowing all selected images when
+/// front-only embedding mode is disabled.
+#[test]
+fn select_cover_art_for_tag_embedding_keeps_all_images_when_disabled() {
+    let entries = vec![
+        SelectedCoverArt {
+            url: "https://example.test/back.jpg".to_string(),
+            maintype: "back".to_string(),
+            types: vec!["back".to_string()],
+            comment: String::new(),
+        },
+        SelectedCoverArt {
+            url: "https://example.test/front.jpg".to_string(),
+            maintype: "front".to_string(),
+            types: vec!["front".to_string()],
+            comment: String::new(),
+        },
+    ];
+
+    let selected = select_cover_art_for_tag_embedding(&entries, false);
+    assert_eq!(selected, entries);
 }
 
 /// Protects deterministic cover-art slot fanout by requiring empty

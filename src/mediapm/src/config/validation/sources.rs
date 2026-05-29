@@ -389,6 +389,8 @@ fn is_allowed_step_option(tool: MediaStepTool, key: &str) -> bool {
                 | "strict_identification"
                 | "write_all_tags"
                 | "write_all_images"
+                | "embed_only_one_front_image"
+                | "cover_art_slot_count"
                 | "recording_mbid"
                 | "release_mbid"
                 | "output_container"

@@ -503,6 +503,13 @@ fn build_tool_command_sets_media_tagger_flags() {
             .any(|token| token == "${*inputs.cover_art_slot_count ? --cover-art-slot-count | ''}"),
         "media-tagger command should expose cover_art_slot_count option key"
     );
+    assert!(
+        command.iter().any(|token| {
+            token
+                == "${*inputs.embed_only_one_front_image == \"true\" ? --embed-only-one-front-image | ''}"
+        }),
+        "media-tagger command should expose embed_only_one_front_image option key"
+    );
     assert!(command.iter().any(|token| token == "${*inputs.trailing_args}"));
 }
 
@@ -860,6 +867,10 @@ fn merge_tool_config_defaults_seeds_curated_media_tool_input_defaults() {
     );
     assert_eq!(
         media_tagger.input_defaults.get("write_all_images"),
+        Some(&mediapm_conductor::InputBinding::String("true".to_string()))
+    );
+    assert_eq!(
+        media_tagger.input_defaults.get("embed_only_one_front_image"),
         Some(&mediapm_conductor::InputBinding::String("true".to_string()))
     );
     assert_eq!(

@@ -173,6 +173,7 @@ pub(super) const MEDIA_TAGGER_OPTION_INPUTS: &[&str] = &[
     "strict_identification",
     "write_all_tags",
     "write_all_images",
+    "embed_only_one_front_image",
     "cover_art_slot_count",
     "recording_mbid",
     "release_mbid",

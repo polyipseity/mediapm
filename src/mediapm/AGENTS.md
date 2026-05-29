@@ -257,9 +257,11 @@ For `media.<id>` semantics and runtime reconciliation:
 - Managed `media-tagger` defaults should keep `strict_identification = "true"`
   unless callers explicitly override that input, and should default
   `write_all_tags = "true"` plus `write_all_images = "true"`.
-  Managed tool defaults should also set `cover_art_slot_count` to
-  `tools.ffmpeg.max_input_slots` so media-tagger and ffmpeg apply stages
-  agree on deterministic attachment-slot fanout.
+  Managed defaults should also keep
+  `embed_only_one_front_image = "true"` to mirror Picard tag-embedding
+  behavior (embed only the first front image when available), and default
+  `cover_art_slot_count = 16` while workflow synthesis clamps effective slot
+  fanout to available ffmpeg auxiliary input slots.
 - `media-tagger` metadata-fetch mode should allow explicit MBID-driven runs
   without `input_content`; fingerprint/AcoustID autodetection still requires
   input media.
@@ -349,9 +351,10 @@ For `media.<id>` semantics and runtime reconciliation:
     populating broad MusicBrainz/Picard-compatible tag aliases and preserving
     existing source metadata unless explicitly overridden. Cover-art behavior
     should select one highest-quality payload per distinct artwork entry
-    (prefer CAA original image URL, fallback to best thumbnail), emit
+    (prefer CAA original image URL, fallback to best thumbnail), apply
+    Picard-like embedding selection (default: first front image only), emit
     deterministic slot artifacts for ffmpeg `attached_pic` mapping, and keep
-    all compatible kind metadata in `coverart_*` tags. The emitted
+    compatible kind metadata in `coverart_*` tags. The emitted
     `coverart_*` metadata key family must stay synchronized with Picard
     cover-art metadata usage in
     `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`.

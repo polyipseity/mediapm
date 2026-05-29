@@ -135,6 +135,10 @@ fn media_tagger_defaults_include_workspace_cache_and_expiry() {
         defaults.get("strict_identification"),
         Some(&InputBinding::String("true".to_string()))
     );
+    assert_eq!(
+        defaults.get("embed_only_one_front_image"),
+        Some(&InputBinding::String("true".to_string()))
+    );
 
     assert_eq!(defaults.get("cache_dir"), Some(&InputBinding::String(String::new())));
     assert_eq!(

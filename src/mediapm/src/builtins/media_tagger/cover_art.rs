@@ -624,6 +624,10 @@ pub(super) fn cover_art_type_priority(kind: &str) -> usize {
 /// Keep the emitted `coverart_*` key family synchronized with Picard's
 /// cover-art metadata usage in
 /// `https://github.com/metabrainz/picard/blob/master/picard/coverart/image.py`.
+///
+/// The image subset passed to this function should already be filtered using
+/// [`select_cover_art_for_tag_embedding`] so default embedding behavior stays
+/// aligned with Picard's `embed_only_one_front_image` policy.
 pub(super) fn insert_musicbrainz_image_tags(
     tags: &mut BTreeMap<String, String>,
     images: &[SelectedCoverArt],
@@ -647,6 +651,31 @@ pub(super) fn insert_musicbrainz_image_tags(
     }
 
     tags.insert("coverart_comment".to_string(), primary.comment.clone());
+}
+
+/// Selects cover-art entries for tag embedding using Picard-compatible policy.
+///
+/// When `embed_only_one_front_image` is enabled, only the first image with
+/// normalized type `front` is kept. If no front image exists, no image is
+/// embedded. When disabled, all discovered images are retained.
+///
+/// This mirrors Picard's `ImageList.to_be_saved_to_tags` semantics from
+/// `picard/util/imagelist.py` without copying implementation text.
+#[must_use]
+pub(super) fn select_cover_art_for_tag_embedding(
+    images: &[SelectedCoverArt],
+    embed_only_one_front_image: bool,
+) -> Vec<SelectedCoverArt> {
+    if !embed_only_one_front_image {
+        return images.to_vec();
+    }
+
+    images
+        .iter()
+        .find(|image| image.types.iter().any(|kind| kind == "front"))
+        .cloned()
+        .into_iter()
+        .collect()
 }
 
 /// Writes deterministic cover-art slot members consumed by apply-stage ffmpeg.

@@ -286,6 +286,10 @@ enum BuiltinCommand {
 
 /// Arguments for one internal media-tagger invocation.
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "builtin media-tagger CLI intentionally exposes independent boolean toggles"
+)]
 struct InternalMediaTaggerArgs {
     /// Optional input media payload path.
     ///
@@ -328,6 +332,13 @@ struct InternalMediaTaggerArgs {
     /// `coverart_*` metadata enrichment.
     #[arg(long, default_value_t = true)]
     write_all_images: bool,
+    /// Mirrors Picard default embedding policy by keeping only one `front`
+    /// cover image when available.
+    #[arg(
+        long,
+        default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE
+    )]
+    embed_only_one_front_image: bool,
     /// Internal slot count used when emitting deterministic cover-art
     /// attachment members for downstream ffmpeg apply stages.
     #[arg(
@@ -661,6 +672,7 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
         strict_identification: args.strict_identification,
         write_all_tags: args.write_all_tags,
         write_all_images: args.write_all_images,
+        embed_only_one_front_image: args.embed_only_one_front_image,
         cover_art_slot_count: args.cover_art_slot_count,
         recording_mbid: args.recording_mbid,
         release_mbid: args.release_mbid,

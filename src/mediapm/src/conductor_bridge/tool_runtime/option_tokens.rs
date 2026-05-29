@@ -257,6 +257,9 @@ pub(super) fn option_tokens_for_input(tool_name: &str, input_name: &str) -> Vec<
             "strict_identification" => bool_flag_tokens(input_name, "--strict-identification"),
             "write_all_tags" => bool_flag_tokens(input_name, "--write-all-tags"),
             "write_all_images" => bool_flag_tokens(input_name, "--write-all-images"),
+            "embed_only_one_front_image" => {
+                bool_flag_tokens(input_name, "--embed-only-one-front-image")
+            }
             "cover_art_slot_count" => pair_option_tokens(input_name, "--cover-art-slot-count"),
             "recording_mbid" => pair_option_tokens(input_name, "--recording-mbid"),
             "release_mbid" => pair_option_tokens(input_name, "--release-mbid"),

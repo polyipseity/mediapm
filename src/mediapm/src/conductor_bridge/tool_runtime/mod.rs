@@ -938,6 +938,12 @@ fn default_input_defaults_for_tool(
         input_defaults
             .insert("write_all_images".to_string(), InputBinding::String("true".to_string()));
         input_defaults.insert(
+            "embed_only_one_front_image".to_string(),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE.to_string(),
+            ),
+        );
+        input_defaults.insert(
             "cover_art_slot_count".to_string(),
             InputBinding::String(
                 crate::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT.to_string(),

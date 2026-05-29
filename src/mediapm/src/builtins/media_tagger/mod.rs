@@ -41,6 +41,7 @@ use self::acoustid::{
 use self::cover_art::{
     CacheExpiryPolicy, MediaTaggerHttpCache, collect_musicbrainz_cover_art,
     insert_musicbrainz_image_tags, persist_cover_art_slot_artifacts,
+    select_cover_art_for_tag_embedding,
 };
 use self::ffmetadata::parse_ffmetadata_global_map;
 use self::musicbrainz::{build_ffmetadata_map, fetch_musicbrainz_payloads};
@@ -67,6 +68,8 @@ const MAX_FLATTENED_METADATA_ENTRIES: usize = 1_024;
 const MAX_FLATTENED_VALUE_LEN: usize = 4_096;
 /// Default number of cover-art attachment slots prepared per invocation.
 pub const DEFAULT_COVER_ART_SLOT_COUNT: usize = 16;
+/// Picard-compatible default: embed one front image when available.
+pub const DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE: bool = true;
 /// Default media-tagger HTTP cache expiry budget in seconds (one day).
 pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
 /// Cache-index format marker for media-tagger JSONC metadata rows.
@@ -92,6 +95,10 @@ pub(crate) fn cover_art_slot_flag_member_name(slot_index: usize) -> String {
 
 /// Runtime options for one internal media-tagger invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "media-tagger CLI/runtime contracts intentionally expose explicit independent toggles"
+)]
 pub struct InternalMediaTaggerOptions {
     /// Optional input media path to inspect and tag.
     ///
@@ -126,6 +133,11 @@ pub struct InternalMediaTaggerOptions {
     pub write_all_tags: bool,
     /// Whether to enrich metadata with `Picard`-compatible `coverart_*` tags.
     pub write_all_images: bool,
+    /// Whether embedding should keep only one front cover image.
+    ///
+    /// Mirrors Picard's default `embed_only_one_front_image = true` behavior:
+    /// embed exactly one `front` image when present, otherwise embed none.
+    pub embed_only_one_front_image: bool,
     /// Number of deterministic cover-art slots emitted for downstream apply.
     ///
     /// Managed workflow synthesis binds ffmpeg cover-image inputs to these
@@ -261,9 +273,14 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
 
     let mut selected_cover_art = Vec::new();
     if options.write_all_images {
-        selected_cover_art = collect_musicbrainz_cover_art(&metadata_payload, &media_tagger_cache)
-            .await
-            .context("collecting MusicBrainz cover-art entries")?;
+        let discovered_cover_art =
+            collect_musicbrainz_cover_art(&metadata_payload, &media_tagger_cache)
+                .await
+                .context("collecting MusicBrainz cover-art entries")?;
+        selected_cover_art = select_cover_art_for_tag_embedding(
+            &discovered_cover_art,
+            options.embed_only_one_front_image,
+        );
         insert_musicbrainz_image_tags(&mut ffmetadata_map, &selected_cover_art);
     }
 

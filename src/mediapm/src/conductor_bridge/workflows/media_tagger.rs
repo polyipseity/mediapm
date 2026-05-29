@@ -54,6 +54,8 @@ fn resolve_media_tagger_output_extension(
 /// managed media-tagger apply step.
 ///
 /// Explicit `write_all_images = "false"` disables slot wiring entirely.
+/// Explicit/default `embed_only_one_front_image = "true"` limits fanout to
+/// one slot because only one front image can be embedded in that mode.
 /// Otherwise, optional `cover_art_slot_count` is honored; when omitted, the
 /// media-tagger default is used. In either case the effective value is clamped
 /// to available ffmpeg auxiliary input slots.
@@ -71,6 +73,15 @@ fn resolve_cover_art_slot_count(
 
     if !write_all_images_enabled {
         return Ok(0);
+    }
+
+    let embed_only_one_front_image = step_option_scalar(step, "embed_only_one_front_image")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none_or(|value| value.eq_ignore_ascii_case("true"));
+
+    if embed_only_one_front_image {
+        return Ok(usize::from(max_cover_slots > 0));
     }
 
     let Some(raw_cover_art_slot_count) = step_option_scalar(step, "cover_art_slot_count")
