@@ -7,6 +7,8 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm::{MediaHierarchyPreset, MediaPmService, load_mediapm_document};
 use serde::{Deserialize, Serialize};
@@ -63,7 +65,20 @@ fn workspace_root() -> PathBuf {
 
 /// Returns deterministic artifact root for this example.
 fn artifact_root() -> PathBuf {
-    workspace_root().join("src/mediapm/examples/.artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
+    let base = workspace_root().join("src/mediapm/examples/.artifacts");
+
+    #[cfg(test)]
+    {
+        let pid = std::process::id();
+        let stamp =
+            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
+        return base.join(format!("{EXAMPLE_ARTIFACT_FOLDER}-test-{pid}-{stamp}"));
+    }
+
+    #[cfg(not(test))]
+    {
+        base.join(EXAMPLE_ARTIFACT_FOLDER)
+    }
 }
 
 /// Removes stale artifacts and recreates a clean output directory.
