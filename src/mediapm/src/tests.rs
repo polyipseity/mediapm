@@ -549,8 +549,8 @@ async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
     );
 }
 
-/// Ensures service-level runtime overrides take precedence for cache toggle
-/// when computing effective runtime-storage policy.
+/// Ensures runtime-storage merge preserves explicit legacy toggle values even
+/// though runtime always enables shared user cache.
 #[test]
 fn merge_runtime_storage_prefers_override_cache_toggle() {
     let config = MediaRuntimeStorage {
@@ -576,7 +576,7 @@ fn merge_runtime_storage_prefers_override_cache_toggle() {
 
     assert_eq!(merged.env_file.as_deref(), Some("override.env"));
     assert_eq!(merged.use_user_tool_cache, Some(false));
-    assert!(!merged.use_user_tool_cache_enabled());
+    assert!(merged.use_user_tool_cache_enabled());
     assert_eq!(
         merged.inherited_env_vars,
         Some(BTreeMap::from([

@@ -392,9 +392,11 @@ pub struct MediaRuntimeStorage {
     /// - explicit string (`Some(Some(path))`): export to that path.
     #[serde(default, skip_serializing_if = "runtime_mediapm_schema_export_is_omitted")]
     pub mediapm_schema_dir: Option<Option<String>>,
-    /// Optional toggle for shared global user-level managed-tool cache.
+    /// Deprecated toggle for shared global user-level managed-tool cache.
     ///
-    /// When omitted, the cache is enabled by default.
+    /// This field remains in the wire schema for compatibility with existing
+    /// documents, but runtime behavior now always enables the shared
+    /// user-level cache for managed-tool downloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub use_user_tool_cache: Option<bool>,
     /// Optional toggle for conductor workflow profiling during managed runs.
@@ -459,11 +461,13 @@ fn append_platform_inherited_env_var_names_for_host(
 impl MediaRuntimeStorage {
     /// Returns whether shared global user-level managed-tool cache should be used.
     ///
-    /// Absent configuration defaults to `true` so repeated tool downloads can
-    /// reuse payload bytes across all local `mediapm` workspaces for this user.
+    /// Runtime now always enables the shared user-level cache so repeated tool
+    /// downloads can reuse payload bytes across all local `mediapm`
+    /// workspaces for this user.
     #[must_use]
     pub const fn use_user_tool_cache_enabled(&self) -> bool {
-        use_user_download_cache_enabled(self.use_user_tool_cache)
+        let _ = self;
+        use_user_download_cache_enabled(None)
     }
 
     /// Returns ordered materialization policy with runtime defaults applied.

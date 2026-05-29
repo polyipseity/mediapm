@@ -890,7 +890,6 @@ where
             &resolved_inherited_env_vars,
             &mut lock,
             check_tag_updates,
-            effective_runtime_storage.use_user_tool_cache_enabled(),
         )
         .await?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, document, &mut lock)?;

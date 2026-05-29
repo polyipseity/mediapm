@@ -732,7 +732,7 @@ media = {
     assert!(err.to_string().contains("unknown field `format`"));
 }
 
-/// Protects runtime-storage decode for shared user-cache policy toggle.
+/// Protects runtime-storage decode for legacy shared user-cache policy field.
 #[test]
 fn runtime_storage_decodes_use_user_tool_cache_toggle() {
     let root = tempfile::tempdir().expect("tempdir");
@@ -750,7 +750,7 @@ runtime = {
     let document = load_mediapm_document(&path).expect("decode document");
 
     assert_eq!(document.runtime.use_user_tool_cache, Some(false));
-    assert!(!document.runtime.use_user_tool_cache_enabled());
+    assert!(document.runtime.use_user_tool_cache_enabled());
 }
 
 /// Protects runtime-storage decode for explicit dotenv file overrides.

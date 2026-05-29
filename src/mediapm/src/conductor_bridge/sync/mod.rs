@@ -56,7 +56,6 @@ pub(crate) async fn reconcile_desired_tools(
     inherited_env_vars: &[String],
     lock: &mut MediaLockFile,
     check_tag_updates: bool,
-    use_user_tool_cache: bool,
 ) -> Result<ToolSyncReport, MediaPmError> {
     ensure_conductor_documents(paths)?;
 
@@ -91,28 +90,19 @@ pub(crate) async fn reconcile_desired_tools(
         requirements_to_provision.insert(tool_name.clone(), requirement.clone());
     }
 
-    let shared_tool_cache = if use_user_tool_cache {
-        if let Some(cache_root) = default_global_tool_cache_root() {
-            match ToolDownloadCache::open(&cache_root).await {
-                Ok(cache) => {
-                    let _ = cache.prune_expired_entries().await;
-                    Some(Arc::new(cache))
-                }
-                Err(error) => {
-                    report.warnings.push(format!("shared global user cache disabled: {error}"));
-                    None
-                }
-            }
-        } else {
-            report.warnings.push(
-                "shared global user cache disabled: global user directory could not be resolved"
-                    .to_string(),
-            );
-            None
-        }
-    } else {
-        None
-    };
+    let cache_root = default_global_tool_cache_root().ok_or_else(|| {
+        MediaPmError::Workflow(
+            "resolving shared global user cache root for managed-tool downloads failed".to_string(),
+        )
+    })?;
+    let cache = ToolDownloadCache::open(&cache_root).await.map_err(|error| {
+        MediaPmError::Workflow(format!(
+            "opening shared global user cache at '{}' failed: {error}",
+            cache_root.display()
+        ))
+    })?;
+    let _ = cache.prune_expired_entries().await;
+    let shared_tool_cache = Some(Arc::new(cache));
 
     let mut provisioned_by_name =
         provision_desired_tools_concurrently(paths, &requirements_to_provision, shared_tool_cache)
