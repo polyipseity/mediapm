@@ -27,6 +27,8 @@ pub(super) struct MusicBrainzPayload {
 pub(super) async fn fetch_musicbrainz_payloads(
     recording_mbid: &str,
     release_mbid: Option<&str>,
+    write_all_tags: bool,
+    release_ars: bool,
     cache: &MediaTaggerHttpCache,
 ) -> anyhow::Result<MusicBrainzPayload> {
     let cached_payload = cache.read_musicbrainz_payload(recording_mbid, release_mbid).await;
@@ -39,15 +41,20 @@ pub(super) async fn fetch_musicbrainz_payloads(
     let stale_cached_payload = cached_payload.as_ref().map(|cached| cached.payload.clone());
 
     let fetched_payload = async {
-        let recording = Recording::fetch()
+        let mut recording_fetch_base = Recording::fetch();
+        let mut recording_fetch = recording_fetch_base
             .id(recording_mbid)
             .with_artists()
             .with_releases()
             .with_isrcs()
             .with_genres()
-            .with_tags()
-            .with_annotations()
-            .with_work_level_relations()
+            .with_tags();
+
+        if write_all_tags {
+            recording_fetch = recording_fetch.with_annotations().with_work_level_relations();
+        }
+
+        let recording = recording_fetch
             .execute_async()
             .await
             .with_context(|| format!("fetching MusicBrainz recording '{recording_mbid}'"))?;
@@ -61,20 +68,29 @@ pub(super) async fn fetch_musicbrainz_payloads(
         });
 
         let release = if let Some(release_id) = release_id {
-            Some(
-                Release::fetch()
-                    .id(&release_id)
-                    .with_artists()
-                    .with_recordings()
-                    .with_release_groups()
-                    .with_media()
-                    .with_labels()
-                    .with_isrcs()
-                    .with_genres()
-                    .with_tags()
-                    .with_annotations()
+            let mut release_fetch_base = Release::fetch();
+            let mut release_fetch = release_fetch_base
+                .id(&release_id)
+                .with_artists()
+                .with_recordings()
+                .with_release_groups()
+                .with_media()
+                .with_labels()
+                .with_isrcs()
+                .with_genres()
+                .with_tags();
+
+            if write_all_tags {
+                release_fetch = release_fetch.with_annotations();
+            }
+            if write_all_tags || release_ars {
+                release_fetch = release_fetch
                     .with_recording_level_relations()
-                    .with_release_group_level_relations()
+                    .with_release_group_level_relations();
+            }
+
+            Some(
+                release_fetch
                     .execute_async()
                     .await
                     .with_context(|| format!("fetching MusicBrainz release '{release_id}'"))?,

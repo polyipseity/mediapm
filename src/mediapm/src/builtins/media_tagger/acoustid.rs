@@ -208,7 +208,9 @@ pub(super) async fn lookup_acoustid_match(
         .get(endpoint)
         .query(&AcoustIdLookupQuery {
             client: api_key,
-            meta: "recordings releases releasegroups tracks compress usermeta sources",
+            // Keep payload lean: only recording/release MBIDs are needed for
+            // subsequent MusicBrainz fetches.
+            meta: "recordings releases",
             duration: duration_seconds,
             fingerprint,
             format: "json",

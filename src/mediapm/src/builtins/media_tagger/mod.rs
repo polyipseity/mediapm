@@ -333,6 +333,8 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
     let metadata_payload = fetch_musicbrainz_payloads(
         &recording_mbid,
         detected_release_mbid.as_deref(),
+        options.write_all_tags,
+        options.release_ars,
         &media_tagger_cache,
     )
     .await
