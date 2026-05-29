@@ -52,6 +52,13 @@ use crate::error::ConductorError;
 
 /// Seconds since last use after which a cache entry is eligible for pruning.
 const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 24 * 60 * 60;
+/// Minimum interval between best-effort prune scans.
+///
+/// Prune scans traverse the full `tools/` tree; running them on every step can
+/// add avoidable latency once the cache has many entries.
+const TOOL_CONTENT_CACHE_PRUNE_COOLDOWN_SECONDS: u64 = 5 * 60;
+/// Marker file used to remember when prune last ran.
+const TOOL_CONTENT_CACHE_PRUNE_MARKER_FILE_NAME: &str = ".prune-last-used-unix-seconds";
 /// File name of the per-entry JSON metadata document.
 const TOOL_CONTENT_CACHE_METADATA_FILE_NAME: &str = "metadata.json";
 /// Subdirectory name under the entry root that holds extracted tool content.
@@ -157,7 +164,7 @@ where
 
     // Best-effort expiry pruning: errors are intentionally swallowed so
     // cleanup never blocks workflow execution.
-    let _ = prune_expired_tool_content_cache_entries(tools_dir);
+    let _ = maybe_prune_expired_tool_content_cache_entries(tools_dir, now);
 
     // --- Cache hit ---
     if payload_dir.is_dir()
@@ -503,6 +510,28 @@ pub(super) fn link_payload_to_sandbox(
         }
     }
 
+    Ok(())
+}
+
+/// Runs TTL pruning when the cooldown interval has elapsed.
+///
+/// Any metadata-read/write error is intentionally ignored by callers so prune
+/// scheduling never blocks workflow execution.
+fn maybe_prune_expired_tool_content_cache_entries(
+    tools_dir: &Path,
+    now_unix_seconds: u64,
+) -> Result<(), ConductorError> {
+    let marker_path = tools_dir.join(TOOL_CONTENT_CACHE_PRUNE_MARKER_FILE_NAME);
+    if let Ok(raw) = fs::read_to_string(&marker_path)
+        && let Ok(last_prune) = raw.trim().parse::<u64>()
+        && now_unix_seconds.saturating_sub(last_prune) < TOOL_CONTENT_CACHE_PRUNE_COOLDOWN_SECONDS
+    {
+        return Ok(());
+    }
+
+    prune_expired_tool_content_cache_entries(tools_dir)?;
+    let _ = fs::create_dir_all(tools_dir);
+    let _ = fs::write(&marker_path, format!("{now_unix_seconds}\n"));
     Ok(())
 }
 
