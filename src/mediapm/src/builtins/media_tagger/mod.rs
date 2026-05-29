@@ -66,7 +66,7 @@ const MAX_FLATTENED_METADATA_ENTRIES: usize = 1_024;
 /// Maximum flattened metadata value length to avoid runaway tags.
 const MAX_FLATTENED_VALUE_LEN: usize = 4_096;
 /// Default number of cover-art attachment slots prepared per invocation.
-pub const DEFAULT_COVER_ART_SLOT_COUNT: usize = 64;
+pub const DEFAULT_COVER_ART_SLOT_COUNT: usize = 4;
 /// Default media-tagger HTTP cache expiry budget in seconds (one day).
 pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
 /// Cache-index format marker for media-tagger JSONC metadata rows.
