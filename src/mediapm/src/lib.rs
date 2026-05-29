@@ -457,9 +457,6 @@ pub(crate) fn merge_runtime_storage(
             .mediapm_schema_dir
             .clone()
             .or_else(|| config_value.mediapm_schema_dir.clone()),
-        use_user_tool_cache: override_value
-            .use_user_tool_cache
-            .or(config_value.use_user_tool_cache),
         profiler_enabled: override_value.profiler_enabled.or(config_value.profiler_enabled),
     }
 }

@@ -661,13 +661,6 @@ impl DocumentLoaderActor {
         {
             conflict_fields.push("conductor_schema_dir");
         }
-        if user.use_user_tool_cache.is_some()
-            && machine.use_user_tool_cache.is_some()
-            && user.use_user_tool_cache != machine.use_user_tool_cache
-        {
-            conflict_fields.push("use_user_tool_cache");
-        }
-
         if !conflict_fields.is_empty() {
             return Err(ConductorError::Workflow(format!(
                 "conflict while merging conductor.ncl and conductor.machine.ncl: runtime storage path fields differ ({})",
@@ -710,7 +703,6 @@ impl DocumentLoaderActor {
                 .clone()
                 .or_else(|| machine.conductor_schema_dir.clone()),
             inherited_env_vars,
-            use_user_tool_cache: user.use_user_tool_cache.or(machine.use_user_tool_cache),
         })
     }
 

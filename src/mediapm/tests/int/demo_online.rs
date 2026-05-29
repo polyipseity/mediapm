@@ -31,9 +31,8 @@ fn demo_online_writes_explicit_runtime_defaults() {
             && source.contains("env_file: Some(\".mediapm/.env\".to_string())")
             && source.contains(
                 "mediapm_schema_dir: Some(Some(\".mediapm/config/mediapm\".to_string()))"
-            )
-            && source.contains("use_user_tool_cache: Some(true)"),
-        "demo_online should write explicit runtime defaults for mediapm_dir/hierarchy/tmp/conductor paths/env/schema/inherited env vars and cache toggle"
+            ),
+        "demo_online should write explicit runtime defaults for mediapm_dir/hierarchy/tmp/conductor paths/env/schema and inherited env vars"
     );
 }
 

@@ -1016,7 +1016,6 @@ fn runtime_storage_normalization_keeps_explicit_legacy_values() {
         conductor_tmp_dir: Some(".conductor/tmp/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: Some(BTreeMap::new()),
-        use_user_tool_cache: Some(false),
     };
 
     assert!(!normalize_runtime_storage_defaults(&paths, &mut runtime_storage));
@@ -1029,7 +1028,6 @@ fn runtime_storage_normalization_keeps_explicit_legacy_values() {
         Some(".conductor/config/conductor")
     );
     assert_eq!(runtime_storage.inherited_env_vars, Some(BTreeMap::new()));
-    assert_eq!(runtime_storage.use_user_tool_cache, Some(false));
 }
 
 /// Protects runtime defaulting by materializing inherited env-name defaults
@@ -1045,7 +1043,6 @@ fn runtime_storage_normalization_backfills_inherited_env_var_defaults() {
         conductor_tmp_dir: Some(".conductor/tmp/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: None,
-        use_user_tool_cache: None,
     };
 
     let changed = normalize_runtime_storage_defaults(&paths, &mut runtime_storage);
@@ -1061,7 +1058,6 @@ fn runtime_storage_normalization_backfills_inherited_env_var_defaults() {
     } else {
         assert_eq!(runtime_storage.inherited_env_vars, Some(expected));
     }
-    assert_eq!(runtime_storage.use_user_tool_cache, Some(true));
 }
 
 /// Protects tool-row binary detection from regressing to content-map-only checks.

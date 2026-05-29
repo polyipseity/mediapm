@@ -42,17 +42,6 @@ const USER_TOOL_CACHE_PRUNE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
 /// cache keys.
 const USER_TOOL_CACHE_TOUCH_PERSIST_INTERVAL_SECONDS: u64 = 5 * 60;
 
-/// Returns whether shared user-level download cache should be used.
-///
-/// Absent configuration defaults to enabled.
-#[must_use]
-pub const fn use_user_download_cache_enabled(configured_value: Option<bool>) -> bool {
-    match configured_value {
-        Some(value) => value,
-        None => true,
-    }
-}
-
 /// Returns the default user-scoped tool download cache root for conductor
 /// standalone invocations.
 ///
@@ -474,16 +463,8 @@ mod tests {
         USER_TOOL_CACHE_ENTRY_TTL_SECONDS, USER_TOOL_CACHE_INDEX_VERSION, UserDownloadCache,
         UserDownloadCacheIndex, UserDownloadCacheIndexEntry,
         default_mediapm_user_download_cache_root, default_user_download_cache_root,
-        now_unix_seconds, use_user_download_cache_enabled,
+        now_unix_seconds,
     };
-
-    /// Protects default toggle behavior by keeping omitted configuration enabled.
-    #[test]
-    fn use_user_download_cache_enabled_defaults_to_true() {
-        assert!(use_user_download_cache_enabled(None));
-        assert!(use_user_download_cache_enabled(Some(true)));
-        assert!(!use_user_download_cache_enabled(Some(false)));
-    }
 
     /// Protects crate-level cache roots so conductor and mediapm resolve to
     /// distinct base directories with the same flat `cache/` layout.

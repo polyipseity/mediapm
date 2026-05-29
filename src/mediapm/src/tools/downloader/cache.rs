@@ -11,18 +11,7 @@ pub(crate) use mediapm_conductor::{
 
 #[cfg(test)]
 mod tests {
-    use mediapm_conductor::use_user_download_cache_enabled;
-
     use super::default_global_tool_cache_root;
-
-    /// Protects runtime cache-toggle behavior by preserving default-on
-    /// semantics for omitted configuration.
-    #[test]
-    fn runtime_cache_toggle_defaults_to_enabled() {
-        assert!(use_user_download_cache_enabled(None));
-        assert!(use_user_download_cache_enabled(Some(true)));
-        assert!(!use_user_download_cache_enabled(Some(false)));
-    }
 
     /// Protects mediapm cache root so it resolves to the flat
     /// `<os-cache-dir>/mediapm/cache` layout with no namespace subdirectory.

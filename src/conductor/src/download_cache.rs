@@ -62,17 +62,6 @@ impl UserToolCacheNamespace {
     }
 }
 
-/// Returns whether shared user-level download cache should be used.
-///
-/// Absent configuration defaults to enabled.
-#[must_use]
-pub const fn use_user_download_cache_enabled(configured_value: Option<bool>) -> bool {
-    match configured_value {
-        Some(value) => value,
-        None => true,
-    }
-}
-
 /// Returns default user-scoped global cache root for managed tool downloads.
 ///
 /// This is the conductor namespace default and resolves to:
@@ -500,16 +489,8 @@ mod tests {
         USER_TOOL_CACHE_ENTRY_TTL_SECONDS, USER_TOOL_CACHE_INDEX_VERSION, UserDownloadCache,
         UserDownloadCacheIndex, UserDownloadCacheIndexEntry, UserToolCacheNamespace,
         default_mediapm_user_download_cache_root, default_user_download_cache_root,
-        default_user_download_cache_root_for, now_unix_seconds, use_user_download_cache_enabled,
+        default_user_download_cache_root_for, now_unix_seconds,
     };
-
-    /// Protects default toggle behavior by keeping omitted configuration enabled.
-    #[test]
-    fn use_user_download_cache_enabled_defaults_to_true() {
-        assert!(use_user_download_cache_enabled(None));
-        assert!(use_user_download_cache_enabled(Some(true)));
-        assert!(!use_user_download_cache_enabled(Some(false)));
-    }
 
     /// Protects crate-level cache separation by ensuring namespace roots differ.
     #[test]

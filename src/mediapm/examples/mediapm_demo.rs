@@ -931,10 +931,6 @@ fn configure_document_for_local_tool_chain(
         // Embedded schema export directory policy.
         // `Some(Some(path))` keeps export enabled with an explicit default path.
         mediapm_schema_dir: Some(Some(".mediapm/config/mediapm".to_string())),
-        // Enable global user tool cache to reuse downloaded tool binaries
-        // across runs without re-downloading from the network.
-        // Default when omitted: true.
-        use_user_tool_cache: Some(true),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),

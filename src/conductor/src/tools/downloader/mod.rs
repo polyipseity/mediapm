@@ -8,5 +8,5 @@ mod cache;
 
 pub use cache::{
     UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
-    default_user_download_cache_root, use_user_download_cache_enabled,
+    default_user_download_cache_root,
 };

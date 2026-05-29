@@ -514,7 +514,6 @@ fn machine_document_is_not_backfilled_with_user_runtime_storage() {
             conductor_tmp_dir: Some(".runtime/tmp".to_string()),
             conductor_schema_dir: Some(".runtime/config/conductor".to_string()),
             inherited_env_vars: None,
-            use_user_tool_cache: Some(true),
         },
         tools: BTreeMap::from([(
             "echo@1.0.0".to_string(),

@@ -38,7 +38,6 @@ let RuntimeStorageV1 = {
   media_state_config | Dyn | optional,
   env_file | Dyn | optional,
   mediapm_schema_dir | Dyn | optional,
-  use_user_tool_cache | Dyn | optional,
 }
 in
 

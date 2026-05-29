@@ -732,9 +732,10 @@ media = {
     assert!(err.to_string().contains("unknown field `format`"));
 }
 
-/// Protects runtime-storage decode for legacy shared user-cache policy field.
+/// Protects no-backward-compat policy by rejecting removed runtime
+/// `use_user_tool_cache` key.
 #[test]
-fn runtime_storage_decodes_use_user_tool_cache_toggle() {
+fn runtime_storage_rejects_removed_use_user_tool_cache_key() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("mediapm.ncl");
     let source = r"
@@ -745,12 +746,10 @@ runtime = {
 },
 }
 ";
-
     std::fs::write(&path, source).expect("write source");
-    let document = load_mediapm_document(&path).expect("decode document");
-
-    assert_eq!(document.runtime.use_user_tool_cache, Some(false));
-    assert!(document.runtime.use_user_tool_cache_enabled());
+    let err =
+        load_mediapm_document(&path).expect_err("removed runtime key must fail decode strictly");
+    assert!(err.to_string().contains("use_user_tool_cache"));
 }
 
 /// Protects runtime-storage decode for explicit dotenv file overrides.
@@ -925,13 +924,6 @@ fn inherited_env_vars_with_defaults_reads_only_host_platform() {
     }
 }
 
-/// Protects default cache policy when runtime-storage toggle is omitted.
-#[test]
-fn runtime_storage_defaults_to_enabled_shared_download_cache() {
-    let runtime_storage = MediaRuntimeStorage::default();
-    assert!(runtime_storage.use_user_tool_cache_enabled());
-}
-
 /// Protects runtime materialization policy defaults when runtime value is omitted.
 #[test]
 fn runtime_storage_defaults_materialization_preference_order() {
@@ -1067,14 +1059,14 @@ tools = {
 fn runtime_storage_key_is_rejected_after_runtime_rename() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("mediapm.ncl");
-    let source = r"
+    let source = r#"
 {
 version = 1,
 runtime_storage = {
-    use_user_tool_cache = false,
+    mediapm_dir = ".mediapm",
 },
 }
-";
+"#;
 
     std::fs::write(&path, source).expect("write source");
     let err = load_mediapm_document(&path).expect_err("legacy runtime_storage key must fail");

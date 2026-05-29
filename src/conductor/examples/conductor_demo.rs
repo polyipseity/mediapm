@@ -444,7 +444,6 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
                 "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_SCHEMA_DIR}"
             )),
             inherited_env_vars: None,
-            use_user_tool_cache: Some(true),
         },
         external_data: BTreeMap::from([(
             inputs.banner_hash,

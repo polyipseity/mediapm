@@ -340,9 +340,6 @@ pub(crate) struct RuntimeStorageLatest {
     /// platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
-    /// Optional toggle for shared global user-level managed-tool cache.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) use_user_tool_cache: Option<bool>,
 }
 
 impl RuntimeStorageLatest {
@@ -355,7 +352,6 @@ impl RuntimeStorageLatest {
             && self.conductor_tmp_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
-            && self.use_user_tool_cache.is_none()
     }
 }
 

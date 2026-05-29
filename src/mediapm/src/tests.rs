@@ -549,17 +549,16 @@ async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
     );
 }
 
-/// Ensures runtime-storage merge preserves explicit legacy toggle values even
-/// though runtime always enables shared user cache.
+/// Ensures service-level runtime overrides keep precedence for retained
+/// runtime-storage fields.
 #[test]
-fn merge_runtime_storage_prefers_override_cache_toggle() {
+fn merge_runtime_storage_prefers_override_fields() {
     let config = MediaRuntimeStorage {
         env_file: Some("config.env".to_string()),
         inherited_env_vars: Some(BTreeMap::from([(
             "windows".to_string(),
             vec!["SYSTEMROOT".to_string(), "PATH".to_string()],
         )])),
-        use_user_tool_cache: Some(true),
         ..MediaRuntimeStorage::default()
     };
     let override_value = MediaRuntimeStorage {
@@ -568,15 +567,12 @@ fn merge_runtime_storage_prefers_override_cache_toggle() {
             ("WINDOWS".to_string(), vec!["path".to_string(), "TMPDIR".to_string()]),
             ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()]),
         ])),
-        use_user_tool_cache: Some(false),
         ..MediaRuntimeStorage::default()
     };
 
     let merged = merge_runtime_storage(&config, &override_value);
 
     assert_eq!(merged.env_file.as_deref(), Some("override.env"));
-    assert_eq!(merged.use_user_tool_cache, Some(false));
-    assert!(merged.use_user_tool_cache_enabled());
     assert_eq!(
         merged.inherited_env_vars,
         Some(BTreeMap::from([
@@ -587,16 +583,6 @@ fn merge_runtime_storage_prefers_override_cache_toggle() {
             ),
         ]))
     );
-}
-
-/// Ensures absent cache-toggle values keep the default shared-cache policy
-/// enabled after runtime-storage merging.
-#[test]
-fn merge_runtime_storage_defaults_cache_toggle_enabled_when_absent() {
-    let merged =
-        merge_runtime_storage(&MediaRuntimeStorage::default(), &MediaRuntimeStorage::default());
-
-    assert!(merged.use_user_tool_cache_enabled());
 }
 
 /// Ensures online metadata parsing extracts title/artist/description when

@@ -215,7 +215,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_tmp_dir: state.runtime.conductor_tmp_dir,
                 conductor_schema_dir: state.runtime.conductor_schema_dir,
                 inherited_env_vars: state.runtime.inherited_env_vars,
-                use_user_tool_cache: state.runtime.use_user_tool_cache,
             },
             external_data: state
                 .external_data
@@ -418,7 +417,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_tmp_dir: runtime.runtime.conductor_tmp_dir,
                 conductor_schema_dir: runtime.runtime.conductor_schema_dir,
                 inherited_env_vars: runtime.runtime.inherited_env_vars,
-                use_user_tool_cache: runtime.runtime.use_user_tool_cache,
             },
             external_data: runtime
                 .external_data

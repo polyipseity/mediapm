@@ -19,7 +19,6 @@ use serde_json::Value;
 
 use crate::error::ConductorError;
 use crate::model::state::{OutputSaveMode, PersistenceFlags};
-use crate::tools::downloader::use_user_download_cache_enabled;
 
 pub(crate) mod versions;
 
@@ -127,12 +126,6 @@ pub struct RuntimeStorageConfig {
     /// with case-insensitive deduplication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
-    /// Optional toggle for shared global user-level managed-tool download
-    /// cache.
-    ///
-    /// When omitted, the cache is enabled by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub use_user_tool_cache: Option<bool>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by
@@ -209,16 +202,6 @@ impl RuntimeStorageConfig {
             && self.conductor_tmp_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
-            && self.use_user_tool_cache.is_none()
-    }
-
-    /// Returns whether shared global user-level download cache should be used.
-    ///
-    /// Absent configuration defaults to `true` so repeated tool downloads can
-    /// reuse payload bytes across local workspaces for this user.
-    #[must_use]
-    pub const fn use_user_tool_cache_enabled(&self) -> bool {
-        use_user_download_cache_enabled(self.use_user_tool_cache)
     }
 
     /// Returns inherited runtime environment names merged with host defaults.

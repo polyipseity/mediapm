@@ -319,9 +319,6 @@ let RuntimeStorageV1 = {
   # host platform entry from this map and merges those names after defaults
   # with case-insensitive de-duplication.
   inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
-  # Optional toggle for shared global user-level managed-tool download cache.
-  # Omitted values default to enabled behavior.
-  use_user_tool_cache | Bool | optional,
 }
 in
 

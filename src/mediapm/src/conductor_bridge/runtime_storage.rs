@@ -50,7 +50,6 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         } else {
             Some(inherited_env_vars)
         },
-        use_user_tool_cache: Some(true),
     }
 }
 
@@ -100,11 +99,6 @@ fn apply_runtime_storage_defaults(
         runtime_storage.inherited_env_vars.clone_from(&defaults.inherited_env_vars);
         changed = true;
     }
-    if runtime_storage.use_user_tool_cache.is_none() {
-        runtime_storage.use_user_tool_cache = defaults.use_user_tool_cache;
-        changed = true;
-    }
-
     changed
 }
 
