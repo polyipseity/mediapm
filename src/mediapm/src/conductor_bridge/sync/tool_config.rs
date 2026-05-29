@@ -228,6 +228,12 @@ pub(super) struct MediaTaggerFfmpegSelection {
 /// Resolved companion ffmpeg linkage for tools that invoke ffmpeg subprocesses.
 #[derive(Debug, Clone, Default)]
 pub(super) struct CompanionFfmpegSelection {
+    /// Stable selector fragment folded into dependent-tool managed ids.
+    ///
+    /// This binds one same-step companion dependency selection directly into
+    /// dependent tool identity so conductor cache rows invalidate when the
+    /// companion selection changes.
+    pub(super) selector: String,
     /// Optional provisioned payload entries for selected ffmpeg content.
     pub(super) provisioned_content_entries: BTreeMap<String, ContentMapSource>,
     /// Existing machine content-map entries for selected ffmpeg payload.
@@ -514,6 +520,15 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
 /// then inherited active/provisioned ffmpeg payload when available. The returned
 /// payload bytes are bundled into the current tool's own content map instead of
 /// referencing another tool's content cache entry.
+///
+/// This is intentionally different from cross-step dependency wiring used by
+/// workflow synthesis (`resolve_selected_dependency_tool_id`): same-step
+/// companions must return one concrete selector so the dependent tool id can
+/// encode that selector and invalidate deterministically.
+#[expect(
+    clippy::too_many_lines,
+    reason = "this selection path keeps explicit branch-by-branch policy checks together so companion dependency behavior remains auditable"
+)]
 pub(super) fn resolve_companion_ffmpeg_selection(
     _paths: &MediaPmPaths,
     logical_tool_name: &str,
@@ -533,6 +548,10 @@ pub(super) fn resolve_companion_ffmpeg_selection(
             && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
         {
             return Ok(CompanionFfmpegSelection {
+                selector: ffmpeg_selector_from_identity(&payload.identity).unwrap_or_else(|| {
+                    normalize_selector_value(Some(&requested_selector))
+                        .unwrap_or_else(|| requested_selector.clone())
+                }),
                 provisioned_content_entries: payload.content_entries.clone(),
                 existing_content_map: BTreeMap::new(),
                 host_command_path: resolve_host_command_selector_path(&payload.command_selector),
@@ -563,7 +582,9 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
         let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg");
-        let (selected_tool_id, _) = if let Some(active_tool_id) = active_ffmpeg_tool_id {
+        let (selected_tool_id, selected_selector) = if let Some(active_tool_id) =
+            active_ffmpeg_tool_id
+        {
             candidates
                 .iter()
                 .find(|(tool_id, _)| tool_id == active_tool_id)
@@ -583,6 +604,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         };
 
         return Ok(CompanionFfmpegSelection {
+            selector: selected_selector,
             provisioned_content_entries: BTreeMap::new(),
             existing_content_map: machine
                 .tool_configs
@@ -597,7 +619,14 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     }
 
     if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
+        let selector = ffmpeg_selector_from_identity(&payload.identity).ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "tools.{logical_tool_name}.dependencies.ffmpeg_version could not resolve selector identity from provisioned ffmpeg payload"
+            ))
+        })?;
+
         return Ok(CompanionFfmpegSelection {
+            selector,
             provisioned_content_entries: payload.content_entries.clone(),
             existing_content_map: BTreeMap::new(),
             host_command_path: resolve_host_command_selector_path(&payload.command_selector),
@@ -607,7 +636,15 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     if let Some(active_ffmpeg_tool_id) = lock.active_tools.get("ffmpeg")
         && machine.tools.contains_key(active_ffmpeg_tool_id)
     {
+        let selector = ffmpeg_selector_from_registry_or_tool_id(active_ffmpeg_tool_id, lock)
+            .ok_or_else(|| {
+                MediaPmError::Workflow(format!(
+                    "tools.{logical_tool_name}.dependencies.ffmpeg_version could not derive selector identity from active ffmpeg tool '{active_ffmpeg_tool_id}'"
+                ))
+            })?;
+
         return Ok(CompanionFfmpegSelection {
+            selector,
             provisioned_content_entries: BTreeMap::new(),
             existing_content_map: machine
                 .tool_configs
@@ -621,7 +658,9 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         });
     }
 
-    Ok(CompanionFfmpegSelection::default())
+    Err(MediaPmError::Workflow(format!(
+        "tool '{logical_tool_name}' requires managed logical tool 'ffmpeg' for same-step companion linkage; add tools.ffmpeg or set tools.{logical_tool_name}.dependencies.ffmpeg_version to one managed ffmpeg selector"
+    )))
 }
 
 /// Resolves host ffmpeg directory path from one machine-managed tool spec.
@@ -771,6 +810,33 @@ pub(super) fn augment_media_tagger_tool_id_with_ffmpeg_selector(
     base_tool_id: &str,
     selector: &str,
 ) -> String {
+    augment_tool_id_with_dependency_selector(base_tool_id, "ffmpeg", selector)
+}
+
+/// Folds one dependency selector identity into one managed tool id.
+///
+/// This helper is reserved for same-step companion dependencies. Cross-step
+/// dependencies should select distinct conductor tool ids per workflow step
+/// instead of mutating the dependent tool id.
+#[must_use]
+pub(super) fn augment_tool_id_with_dependency_selector(
+    base_tool_id: &str,
+    dependency_name: &str,
+    selector: &str,
+) -> String {
+    let normalized_dependency_name =
+        dependency_name
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() { character.to_ascii_lowercase() } else { '-' }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string();
+    if normalized_dependency_name.is_empty() {
+        return base_tool_id.to_string();
+    }
+
     let normalized_fragment =
         selector
             .chars()
@@ -786,8 +852,8 @@ pub(super) fn augment_media_tagger_tool_id_with_ffmpeg_selector(
     }
 
     if let Some((prefix, suffix)) = base_tool_id.rsplit_once('@') {
-        format!("{prefix}+ffmpeg-{normalized_fragment}@{suffix}")
+        format!("{prefix}+{normalized_dependency_name}-{normalized_fragment}@{suffix}")
     } else {
-        format!("{base_tool_id}+ffmpeg-{normalized_fragment}")
+        format!("{base_tool_id}+{normalized_dependency_name}-{normalized_fragment}")
     }
 }

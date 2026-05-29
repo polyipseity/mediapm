@@ -31,11 +31,11 @@ use super::provision::{
     normalize_download_progress_snapshot, tool_progress_position,
 };
 use super::tool_config::{
-    augment_media_tagger_tool_id_with_ffmpeg_selector, ffmpeg_selector_from_registry_or_tool_id,
-    media_tagger_ffmpeg_content_key, remove_redundant_inherited_env_vars_from_tool_config,
-    resolve_companion_ffmpeg_selection, resolve_host_command_selector_path,
-    resolve_managed_tool_command_absolute_path, resolve_yt_dlp_js_runtime_path,
-    should_set_yt_dlp_ffmpeg_location,
+    augment_media_tagger_tool_id_with_ffmpeg_selector, augment_tool_id_with_dependency_selector,
+    ffmpeg_selector_from_registry_or_tool_id, media_tagger_ffmpeg_content_key,
+    remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_ffmpeg_selection,
+    resolve_host_command_selector_path, resolve_managed_tool_command_absolute_path,
+    resolve_yt_dlp_js_runtime_path, should_set_yt_dlp_ffmpeg_location,
 };
 
 fn catalog_entry_fixture(download: ToolDownloadDescriptor) -> ToolCatalogEntry {
@@ -473,6 +473,16 @@ fn media_tagger_tool_id_includes_ffmpeg_selector_fragment() {
     );
 }
 
+/// Verifies same-step companion dependencies fold selected selector identity
+/// into the dependent managed tool id.
+#[test]
+fn generic_dependency_selector_fragment_is_folded_into_tool_id() {
+    let base_tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest";
+    let augmented = augment_tool_id_with_dependency_selector(base_tool_id, "ffmpeg", "v7.1");
+
+    assert_eq!(augmented, "mediapm.tools.yt-dlp+github-releases-yt-dlp+ffmpeg-v7-1@latest");
+}
+
 /// Verifies ffmpeg selector derivation prefers lock registry versions and
 /// falls back to immutable tool-id suffixes when registry rows are absent.
 #[test]
@@ -729,6 +739,7 @@ fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
     )
     .expect("companion selection should succeed");
 
+    assert_eq!(selection.selector, "v7.1");
     assert!(selection.provisioned_content_entries.is_empty());
     assert!(selection.existing_content_map.contains_key("windows/ffmpeg/bin/ffmpeg.exe"));
     assert_eq!(selection.host_command_path.as_deref(), Some("windows/ffmpeg/bin/ffmpeg.exe"));
@@ -786,6 +797,7 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
     )
     .expect("companion selection should succeed");
 
+    assert_eq!(selection.selector, "v7.1");
     assert!(selection.existing_content_map.is_empty());
     assert_eq!(
         selection.host_command_path.as_deref(),

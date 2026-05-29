@@ -12,7 +12,7 @@ use self::lifecycle::{
 };
 use self::provision::provision_desired_tools_concurrently;
 use self::tool_config::{
-    augment_media_tagger_tool_id_with_ffmpeg_selector,
+    augment_media_tagger_tool_id_with_ffmpeg_selector, augment_tool_id_with_dependency_selector,
     ensure_machine_runtime_inherits_generated_env_vars,
     remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_ffmpeg_selection,
     resolve_conductor_runtime_dir, resolve_managed_tool_payload_directory_from_selector,
@@ -176,6 +176,11 @@ pub(crate) async fn reconcile_desired_tools(
                 lock,
                 &machine,
             )?;
+            desired_tool_id = augment_tool_id_with_dependency_selector(
+                &desired_tool_id,
+                "ffmpeg",
+                &companion_selection.selector,
+            );
             companion_ffmpeg_content_map = companion_selection.existing_content_map;
             companion_ffmpeg_host_command_path = companion_selection.host_command_path;
 
