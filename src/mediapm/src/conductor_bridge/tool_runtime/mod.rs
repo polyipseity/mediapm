@@ -939,7 +939,9 @@ fn default_input_defaults_for_tool(
             .insert("write_all_images".to_string(), InputBinding::String("true".to_string()));
         input_defaults.insert(
             "cover_art_slot_count".to_string(),
-            InputBinding::String(ffmpeg_slot_limits.max_input_slots.to_string()),
+            InputBinding::String(
+                crate::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT.to_string(),
+            ),
         );
         input_defaults.insert(
             "acoustid_endpoint".to_string(),

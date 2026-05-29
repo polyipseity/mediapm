@@ -54,8 +54,9 @@ fn resolve_media_tagger_output_extension(
 /// managed media-tagger apply step.
 ///
 /// Explicit `write_all_images = "false"` disables slot wiring entirely.
-/// Otherwise, optional `cover_art_slot_count` is honored and clamped to
-/// available ffmpeg auxiliary input slots.
+/// Otherwise, optional `cover_art_slot_count` is honored; when omitted, the
+/// media-tagger default is used. In either case the effective value is clamped
+/// to available ffmpeg auxiliary input slots.
 fn resolve_cover_art_slot_count(
     media_id: &str,
     step_index: usize,
@@ -76,7 +77,7 @@ fn resolve_cover_art_slot_count(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return Ok(max_cover_slots);
+        return Ok(crate::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT.min(max_cover_slots));
     };
 
     let parsed_cover_art_slot_count = raw_cover_art_slot_count.parse::<usize>().map_err(|error| {
