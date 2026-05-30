@@ -13,7 +13,7 @@ use xz2::read::XzDecoder;
 use zip::ZipArchive;
 
 use crate::error::MediaPmError;
-use crate::tools::catalog::{ToolAdditionalDownloadSource, ToolCatalogEntry, ToolOs};
+use crate::tools::catalog::{ToolCatalogEntry, ToolOs};
 
 use super::ToolDownloadCache;
 use super::http::fetch_bytes_from_candidates;
@@ -507,55 +507,6 @@ async fn materialize_additional_download_sources(
     }
 
     Ok(())
-}
-
-/// Returns `true` when all expected additional-source binaries are already present.
-///
-/// An entry with no additional sources always returns `true`. For entries with
-/// additional sources, each OS target with non-empty URLs is checked for the
-/// expected executable name via recursive directory scan.
-pub(super) fn additional_download_sources_present(
-    entry: &ToolCatalogEntry,
-    plan: &ResolvedDownloadPlan,
-    install_root: &Path,
-) -> bool {
-    for source in entry.additional_download_sources.iter().copied() {
-        if !additional_source_present_for_all_os(source, plan, install_root) {
-            return false;
-        }
-    }
-
-    true
-}
-
-/// Returns whether one additional source is materialized for every required OS.
-fn additional_source_present_for_all_os(
-    source: ToolAdditionalDownloadSource,
-    plan: &ResolvedDownloadPlan,
-    install_root: &Path,
-) -> bool {
-    for action in plan.per_os_actions.values() {
-        if source.urls.for_os(action.os).is_empty() {
-            continue;
-        }
-
-        let executable_name = source.expected_executable_name.for_os(action.os);
-        if executable_name.is_empty() {
-            continue;
-        }
-
-        let destination = if plan.shared_package {
-            install_root.to_path_buf()
-        } else {
-            install_root.join(action.os.as_str())
-        };
-
-        if find_file_named(&destination, executable_name).is_none() {
-            return false;
-        }
-    }
-
-    true
 }
 
 /// Materializes locally generated command-launcher shims for internal tools.

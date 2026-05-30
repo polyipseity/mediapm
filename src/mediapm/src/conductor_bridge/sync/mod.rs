@@ -21,7 +21,6 @@ use self::tool_config::{
     write_generated_runtime_env_file,
 };
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -325,22 +324,8 @@ pub(crate) async fn prune_tool_binary(
         .and_then(|config| config.content_map)
         .map(|map| map.into_values().collect::<Vec<_>>())
         .unwrap_or_default();
-    let tool_artifact_dir = paths.tools_dir.join(tool_id);
-    let removed_workspace_artifacts = if tool_artifact_dir.exists() {
-        fs::remove_dir_all(&tool_artifact_dir).map_err(|source| MediaPmError::Io {
-            operation: format!("removing workspace-local tool artifacts for '{tool_id}'"),
-            path: tool_artifact_dir.clone(),
-            source,
-        })?;
-        1
-    } else {
-        0
-    };
 
-    if removed_hashes.is_empty()
-        && !machine.tools.contains_key(tool_id)
-        && removed_workspace_artifacts == 0
-    {
+    if removed_hashes.is_empty() && !machine.tools.contains_key(tool_id) {
         return Err(MediaPmError::Workflow(format!("tool '{tool_id}' is not registered")));
     }
 
@@ -376,7 +361,7 @@ pub(crate) async fn prune_tool_binary(
         lock.active_tools.remove(&key);
     }
 
-    Ok(removed_hashes.len() + removed_workspace_artifacts)
+    Ok(removed_hashes.len())
 }
 
 #[cfg(test)]

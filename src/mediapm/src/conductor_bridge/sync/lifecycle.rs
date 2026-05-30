@@ -72,7 +72,7 @@ pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
 
 /// Removes stale managed tool artifacts that are not declared in `mediapm.ncl`.
 pub(super) async fn prune_unmanaged_tool_artifacts(
-    paths: &MediaPmPaths,
+    _paths: &MediaPmPaths,
     document: &MediaPmDocument,
     cas: &FileSystemCas,
     machine: &mut MachineNickelDocument,
@@ -106,17 +106,6 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
             }
         }
 
-        let artifact_dir = paths.tools_dir.join(stale_tool_id);
-        if artifact_dir.exists() {
-            fs::remove_dir_all(&artifact_dir).map_err(|source| MediaPmError::Io {
-                operation: format!(
-                    "removing unmanaged workspace-local tool artifacts for '{stale_tool_id}'"
-                ),
-                path: artifact_dir.clone(),
-                source,
-            })?;
-        }
-
         if let Some(entry) = lock.tool_registry.get_mut(stale_tool_id) {
             entry.status = ToolRegistryStatus::Pruned;
             entry.last_transition_unix_seconds = now_unix_seconds();
@@ -140,40 +129,6 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
         .collect::<Vec<_>>();
     for logical_name in stale_active_names {
         lock.active_tools.remove(&logical_name);
-    }
-
-    if paths.tools_dir.exists() {
-        for entry in fs::read_dir(&paths.tools_dir).map_err(|source| MediaPmError::Io {
-            operation: "enumerating managed tools directory for prune".to_string(),
-            path: paths.tools_dir.clone(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| MediaPmError::Io {
-                operation: "reading managed tools directory entry for prune".to_string(),
-                path: paths.tools_dir.clone(),
-                source,
-            })?;
-            if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
-                continue;
-            }
-
-            let directory_name = entry.file_name().to_string_lossy().to_string();
-            if !directory_name.contains('@') {
-                continue;
-            }
-            if desired_tool_ids.contains(&directory_name) {
-                continue;
-            }
-
-            let remove_path = entry.path();
-            fs::remove_dir_all(&remove_path).map_err(|source| MediaPmError::Io {
-                operation: format!("removing unmanaged tool install directory '{directory_name}'"),
-                path: remove_path.clone(),
-                source,
-            })?;
-
-            report.warnings.push(format!("removed unmanaged tool directory '{directory_name}'"));
-        }
     }
 
     Ok(())
