@@ -726,6 +726,30 @@ tools = {
     assert!(err.to_string().contains("requires tools.ffmpeg"), "unexpected error: {err}");
 }
 
+/// Protects dependency-inherit semantics by treating omitted dependency
+/// selectors as the implicit inherit default.
+#[test]
+fn yt_dlp_missing_dependency_selectors_require_configured_tools() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("mediapm.ncl");
+    let source = r#"
+{
+version = 1,
+tools = {
+    "yt-dlp" = {
+        tag = "latest",
+    },
+},
+}
+"#;
+
+    std::fs::write(&path, source).expect("write source");
+    let err = load_mediapm_document(&path)
+        .expect_err("yt-dlp omitted dependencies should still require tools.ffmpeg");
+
+    assert!(err.to_string().contains("requires tools.ffmpeg"), "unexpected error: {err}");
+}
+
 /// Protects dependency-inherit semantics by requiring configured `sd` rows
 /// when rsgain inherits `sd_version`.
 #[test]

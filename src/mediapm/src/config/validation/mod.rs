@@ -8,7 +8,8 @@ use crate::error::MediaPmError;
 use super::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, HierarchyEntryKind,
     MediaPmDocument, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool,
-    flatten_hierarchy_nodes_for_runtime, normalize_selector_compare_value, step_option_scalar,
+    flatten_hierarchy_nodes_for_runtime, normalize_selector_compare_value,
+    normalize_selector_value, step_option_scalar,
 };
 
 mod hierarchy;
@@ -264,9 +265,7 @@ fn ensure_inherit_dependency_target_is_configured(
     dependency_tool_name: &str,
     selector: Option<&str>,
 ) -> Result<(), MediaPmError> {
-    let Some(selector) = selector.map(str::trim) else {
-        return Ok(());
-    };
+    let selector = normalize_selector_value(selector).unwrap_or_else(|| "inherit".to_string());
 
     if !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global") {
         return Ok(());

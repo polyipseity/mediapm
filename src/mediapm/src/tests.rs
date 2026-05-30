@@ -15,6 +15,7 @@ use super::{
     parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
     save_mediapm_document, should_prefer_filesystem_workflow_runner, validate_source_uri,
 };
+use crate::config::load_mediapm_document_without_validation;
 use crate::source_metadata::resolve_online_source_metadata_for_add;
 use tempfile::tempdir;
 use url::Url;
@@ -154,7 +155,8 @@ fn add_tool_requirement_skips_cross_field_validation_during_bootstrap() {
 
     assert!(added, "ffmpeg should be added even when yt-dlp depends on inherit");
 
-    let loaded = load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm.ncl");
+    let loaded = load_mediapm_document_without_validation(&service.paths().mediapm_ncl)
+        .expect("load mediapm.ncl without validation");
     assert!(loaded.tools.contains_key("ffmpeg"));
     assert!(loaded.tools.contains_key("yt-dlp"));
 }
