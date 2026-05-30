@@ -243,10 +243,10 @@
   `.agents/instructions/rust-workflow.instructions.md` as source-of-truth
   inputs for validation commands and expectations.
 - Prefer targeted cargo validation by default for faster feedback:
-  - `cargo test-pkg <crate>` for specific crate testing
-  - `cargo build-pkg <crate>` for specific crate building
-  - Example: `cargo test-pkg mediapm` runs only mediapm tests
-  - See `.cargo/config.toml` for available aliases and convenience shortcuts
+  - run selective individual tests for touched behavior (`cargo test -p <crate> <test_name>`)
+  - use focused crate builds (`cargo build-pkg <crate>`) when compile coverage is needed
+  - avoid package-wide test churn during normal development loops
+  - see `.cargo/config.toml` for available aliases and convenience shortcuts
 - During normal development loops, run only selective tests/builds and avoid
   full-suite churn.
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during

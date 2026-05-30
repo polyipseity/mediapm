@@ -37,13 +37,13 @@ matching directories are explicitly introduced.
 When editing Rust source, validate changes with selective checks first:
 
 - **During development** (recommended for speed — these run in seconds):
-  - `cargo test-pkg <crate>` — test only the affected crate(s)
-  - `cargo build-pkg <crate>` — build only the affected crate(s)
+  - Prefer selective individual tests (`cargo test -p <crate> <test_name>`) for tight edit loops.
+  - Use focused package builds (`cargo build-pkg <crate>`) and avoid package-wide test churn unless a specific issue requires it.
   - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal development loops; `prek.toml` pre-commit hooks already run formatting + check + clippy on commit.
   - Examples:
-    - `cargo test-pkg mediapm` runs only mediapm tests
+    - `cargo test -p mediapm source_metadata_falls_back_to_uri_when_unavailable`
     - `cargo build-pkg mediapm-conductor` builds only mediapm-conductor
-    - `cargo test-pkg mediapm-cas` for CAS-specific validation
+    - `cargo test -p mediapm-cas locator_parser_expands_environment_variables`
   - See `.cargo/config.toml` for the alias definitions
 
 - **Before submitting (pre-push validation)** — validate full workspace:
@@ -61,7 +61,7 @@ When editing Rust source, validate changes with selective checks first:
   - `cargo clippy -p mediapm --all-targets --all-features` → same as `cargo clippy-pkg mediapm` when workspace lints are enabled
 
 - For edits under `src/mediapm/**`, avoid full online demo runs during normal development.
-  - Run targeted tests only while iterating.
+  - Run selective tests only while iterating.
   - Reserve full integration/demo runs for push/pre-push workflows handled by hooks/CI unless a reviewer explicitly asks for local runtime verification.
 
 - If source or configs are incomplete, report gaps explicitly instead of inventing commands.
@@ -136,7 +136,7 @@ SKIP=cargo-test git commit -m "message"
 - Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module
   purpose stays discoverable.
 - After a split, run targeted validation:
-  - `cargo test-pkg <crate>` (affected crate tests)
+  - `cargo test -p <crate> <focused_test_name>` (affected behavior)
   - `cargo build-pkg <crate>` (affected crate build)
 
 ## Example target naming convention
