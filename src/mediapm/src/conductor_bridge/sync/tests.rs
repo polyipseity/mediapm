@@ -32,13 +32,16 @@ use super::provision::{
 };
 use super::tool_config::{
     augment_tool_id_with_dependency_selector, ffmpeg_selector_from_registry_or_tool_id,
-    media_tagger_ffmpeg_content_key, remove_redundant_inherited_env_vars_from_tool_config,
-    resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
-    resolve_host_command_selector_path, resolve_managed_tool_command_absolute_path,
+    media_tagger_ffmpeg_content_key, prefix_same_step_companion_content_entries,
+    prefix_same_step_companion_content_key, prefix_same_step_companion_content_map,
+    remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_deno_selection,
+    resolve_companion_ffmpeg_selection, resolve_host_command_selector_path,
+    resolve_managed_tool_command_absolute_path,
     resolve_managed_tool_payload_command_path_from_selector,
     resolve_managed_tool_payload_directory_from_selector, resolve_yt_dlp_js_runtime_path,
     should_set_yt_dlp_ffmpeg_location,
 };
+use super::{yt_dlp_ffmpeg_location_default_binding, yt_dlp_js_runtimes_default_binding};
 
 fn catalog_entry_fixture(download: ToolDownloadDescriptor) -> ToolCatalogEntry {
     ToolCatalogEntry {
@@ -518,6 +521,78 @@ fn generic_dependency_selector_fragment_is_folded_into_tool_id() {
     assert_eq!(augmented, "mediapm.tools.yt-dlp+github-releases-yt-dlp+ffmpeg-v7-1@latest");
 }
 
+/// Verifies same-step companion content keys are always namespaced with the
+/// selected companion tool id.
+#[test]
+fn same_step_companion_content_keys_are_prefixed_with_tool_id() {
+    let key = prefix_same_step_companion_content_key(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0",
+        "linux/deno",
+    );
+    assert_eq!(key, "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0/linux/deno");
+}
+
+/// Verifies same-step companion content-map re-keying preserves hash values
+/// while namespacing every entry under the companion tool id.
+#[test]
+fn same_step_companion_content_map_is_namespaced() {
+    let content_map = BTreeMap::from([
+        ("./".to_string(), Hash::from_content(b"bundle")),
+        ("windows/deno.exe".to_string(), Hash::from_content(b"deno-exe")),
+    ]);
+
+    let prefixed = prefix_same_step_companion_content_map(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0",
+        &content_map,
+    );
+
+    assert!(prefixed.contains_key("mediapm.tools.deno+github-releases-denoland-deno@v2.5.0/"));
+    assert!(
+        prefixed.contains_key(
+            "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0/windows/deno.exe"
+        )
+    );
+}
+
+/// Verifies same-step companion provisioned content entries are namespaced
+/// identically to persisted content-map entries.
+#[test]
+fn same_step_companion_content_entries_are_namespaced() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let payload = temp.path().join("deno");
+    std::fs::write(&payload, b"deno").expect("write payload");
+
+    let entries = BTreeMap::from([("linux/deno".to_string(), ContentMapSource::FilePath(payload))]);
+    let prefixed = prefix_same_step_companion_content_entries(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0",
+        &entries,
+    );
+
+    assert!(
+        prefixed.contains_key("mediapm.tools.deno+github-releases-denoland-deno@v2.5.0/linux/deno")
+    );
+}
+
+/// Verifies managed yt-dlp ffmpeg defaults use env placeholders rather than
+/// embedding absolute host paths in machine config.
+#[test]
+fn yt_dlp_ffmpeg_default_uses_env_placeholder_binding() {
+    assert_eq!(
+        yt_dlp_ffmpeg_location_default_binding(),
+        InputBinding::String("${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string())
+    );
+}
+
+/// Verifies managed yt-dlp JS runtime defaults use env placeholders rather
+/// than embedding absolute host paths in machine config.
+#[test]
+fn yt_dlp_js_runtimes_default_uses_env_placeholder_binding() {
+    assert_eq!(
+        yt_dlp_js_runtimes_default_binding(),
+        InputBinding::String("deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string())
+    );
+}
+
 /// Verifies ffmpeg selector derivation prefers lock registry versions and
 /// falls back to immutable tool-id suffixes when registry rows are absent.
 #[test]
@@ -904,10 +979,10 @@ fn companion_deno_selection_matches_registered_deno_tool() {
     assert_eq!(selection.host_command_path.as_deref(), Some("windows/deno/deno.exe"));
 }
 
-/// Verifies same-step companion deno selection fails fast when the selected
-/// managed deno tool has no materialized content map to inline.
+/// Verifies same-step companion deno selection tolerates malformed legacy
+/// managed deno rows that have no materialized content map.
 #[test]
-fn companion_deno_selection_requires_non_empty_content_map() {
+fn companion_deno_selection_ignores_missing_content_map() {
     let requirement = ToolRequirement {
         version: None,
         tag: Some("latest".to_string()),
@@ -947,14 +1022,13 @@ fn companion_deno_selection_requires_non_empty_content_map() {
         },
     );
 
-    let error =
+    let selection =
         resolve_companion_deno_selection("yt-dlp", &requirement, &BTreeMap::new(), &lock, &machine)
-            .expect_err("missing deno content map should fail");
+            .expect("missing deno content map should be tolerated");
 
-    assert!(
-        error.to_string().contains("has no materialized content_map"),
-        "unexpected error: {error}"
-    );
+    assert_eq!(selection.selector, "v2.5.0");
+    assert!(selection.existing_content_map.is_empty());
+    assert!(selection.host_command_path.is_none());
 }
 
 /// Verifies explicit yt-dlp companion deno selectors fail fast when no

@@ -300,6 +300,8 @@ pub(super) struct MediaTaggerFfmpegSelection {
 /// Resolved companion ffmpeg linkage for tools that invoke ffmpeg subprocesses.
 #[derive(Debug, Clone, Default)]
 pub(super) struct CompanionFfmpegSelection {
+    /// Selected companion tool id whose payload bytes are being inlined.
+    pub(super) companion_tool_id: String,
     /// Stable selector fragment folded into dependent-tool managed ids.
     ///
     /// This binds one same-step companion dependency selection directly into
@@ -377,6 +379,75 @@ pub(super) fn resolve_managed_tool_payload_command_path_from_selector(
 
     let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
     absolutize_path_string(&tool_payload_root.join(selector_path).to_string_lossy())
+}
+
+/// Prefixes one same-step companion content-map key with its tool id.
+///
+/// This prevents collisions when multiple inlined companions each contain
+/// payload roots like `./` or shared platform-relative paths.
+#[must_use]
+pub(super) fn prefix_same_step_companion_content_key(
+    companion_tool_id: &str,
+    relative_path: &str,
+) -> String {
+    let normalized_companion = companion_tool_id.trim().trim_matches('/').to_string();
+    let normalized_relative =
+        relative_path.trim().trim_start_matches("./").trim_start_matches('/').to_string();
+
+    if normalized_relative.is_empty() {
+        format!("{normalized_companion}/")
+    } else {
+        format!("{normalized_companion}/{normalized_relative}")
+    }
+}
+
+/// Re-keys one same-step companion content map under `<tool_id>/...`.
+#[must_use]
+pub(super) fn prefix_same_step_companion_content_map(
+    companion_tool_id: &str,
+    content_map: &BTreeMap<String, Hash>,
+) -> BTreeMap<String, Hash> {
+    content_map
+        .iter()
+        .map(|(relative_path, hash)| {
+            (prefix_same_step_companion_content_key(companion_tool_id, relative_path), *hash)
+        })
+        .collect()
+}
+
+/// Re-keys one same-step companion provisioned content-entry map under
+/// `<tool_id>/...`.
+#[must_use]
+pub(super) fn prefix_same_step_companion_content_entries(
+    companion_tool_id: &str,
+    entries: &BTreeMap<String, ContentMapSource>,
+) -> BTreeMap<String, ContentMapSource> {
+    entries
+        .iter()
+        .map(|(relative_path, source)| {
+            (
+                prefix_same_step_companion_content_key(companion_tool_id, relative_path),
+                source.clone(),
+            )
+        })
+        .collect()
+}
+
+/// Prefixes one same-step companion host selector path when it is relative.
+#[must_use]
+pub(super) fn prefix_same_step_companion_selector_path(
+    companion_tool_id: &str,
+    selector_path: &str,
+) -> Option<String> {
+    let trimmed = selector_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let candidate = Path::new(trimmed);
+    if candidate.is_absolute() {
+        return Some(trimmed.to_string());
+    }
+    Some(prefix_same_step_companion_content_key(companion_tool_id, trimmed))
 }
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
@@ -670,6 +741,7 @@ fn resolve_companion_dependency_selection(
             && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
         {
             return Ok(CompanionFfmpegSelection {
+                companion_tool_id: payload.tool_id.clone(),
                 selector: ffmpeg_selector_from_identity(&payload.identity).unwrap_or_else(|| {
                     normalize_selector_value(Some(&requested_selector))
                         .unwrap_or_else(|| requested_selector.clone())
@@ -724,18 +796,18 @@ fn resolve_companion_dependency_selection(
         };
 
         return Ok(CompanionFfmpegSelection {
+            companion_tool_id: selected_tool_id.clone(),
             selector: selected_selector,
             provisioned_content_entries: BTreeMap::new(),
             existing_content_map: resolve_same_step_companion_content_map(
                 machine,
-                logical_tool_name,
-                dependency_name,
                 &selected_tool_id,
-            )?,
-            host_command_path: resolve_host_command_selector_path_from_machine_tool(
-                machine,
-                &selected_tool_id,
-            ),
+            )
+            .unwrap_or_default(),
+            host_command_path: resolve_same_step_companion_content_map(machine, &selected_tool_id)
+                .and_then(|_| {
+                    resolve_host_command_selector_path_from_machine_tool(machine, &selected_tool_id)
+                }),
         });
     }
 
@@ -747,6 +819,7 @@ fn resolve_companion_dependency_selection(
         })?;
 
         return Ok(CompanionFfmpegSelection {
+            companion_tool_id: payload.tool_id.clone(),
             selector,
             provisioned_content_entries: payload.content_entries.clone(),
             existing_content_map: BTreeMap::new(),
@@ -765,18 +838,24 @@ fn resolve_companion_dependency_selection(
             })?;
 
         return Ok(CompanionFfmpegSelection {
+            companion_tool_id: active_dependency_tool_id.clone(),
             selector,
             provisioned_content_entries: BTreeMap::new(),
             existing_content_map: resolve_same_step_companion_content_map(
                 machine,
-                logical_tool_name,
-                dependency_name,
                 active_dependency_tool_id,
-            )?,
-            host_command_path: resolve_host_command_selector_path_from_machine_tool(
+            )
+            .unwrap_or_default(),
+            host_command_path: resolve_same_step_companion_content_map(
                 machine,
                 active_dependency_tool_id,
-            ),
+            )
+            .and_then(|_| {
+                resolve_host_command_selector_path_from_machine_tool(
+                    machine,
+                    active_dependency_tool_id,
+                )
+            }),
         });
     }
 
@@ -787,32 +866,19 @@ fn resolve_companion_dependency_selection(
 
 /// Resolves content-map bytes for one same-step companion dependency tool.
 ///
-/// Same-step companion policy requires dependency payload bytes to be inlined
-/// into the requester tool content map. A selected dependency tool without
-/// materialized `content_map` bytes is therefore invalid.
+/// Legacy or malformed machine tool rows may omit this map; in that case
+/// selection falls back to `None` so sync can ignore the malformed companion
+/// record instead of failing the entire reconciliation pass.
 fn resolve_same_step_companion_content_map(
     machine: &MachineNickelDocument,
-    logical_tool_name: &str,
-    dependency_name: &str,
     dependency_tool_id: &str,
-) -> Result<BTreeMap<String, Hash>, MediaPmError> {
+) -> Option<BTreeMap<String, Hash>> {
     let content_map = machine
         .tool_configs
         .get(dependency_tool_id)
-        .and_then(|config| config.content_map.as_ref())
-        .ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "tools.{logical_tool_name}.dependencies.{dependency_name}_version selected managed {dependency_name} tool '{dependency_tool_id}', but that tool has no materialized content_map; run tool sync for {dependency_name} first"
-            ))
-        })?;
+        .and_then(|config| config.content_map.as_ref())?;
 
-    if content_map.is_empty() {
-        return Err(MediaPmError::Workflow(format!(
-            "tools.{logical_tool_name}.dependencies.{dependency_name}_version selected managed {dependency_name} tool '{dependency_tool_id}', but its content_map is empty; run tool sync for {dependency_name} first"
-        )));
-    }
-
-    Ok(content_map.clone())
+    if content_map.is_empty() { None } else { Some(content_map.clone()) }
 }
 
 /// Resolves host ffmpeg command selector path from one machine-managed tool spec.
