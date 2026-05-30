@@ -920,20 +920,26 @@ where
         check_tag_updates: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let (summary, _lock) = self.sync_tools_from_document(&document, check_tag_updates).await?;
+        let (summary, mut lock, effective_paths) =
+            self.sync_tools_from_document(&document, check_tag_updates).await?;
+        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(summary)
     }
 
     /// Internal helper: runs tool sync from an already-loaded mediapm document.
     ///
-    /// Returns the sync summary together with the saved lock state so that
-    /// callers performing a full library sync can skip a redundant lock reload
-    /// and a redundant mediapm-document parse.
+    /// Reconciles desired tool state (`reconcile_desired_tools`) but does NOT
+    /// call `reconcile_media_workflows` or persist the lock file.  Callers are
+    /// responsible for workflow reconciliation and lock persistence so they can
+    /// control *when* those operations happen relative to other sync steps (for
+    /// example, `sync_library_with_tag_update_checks` must reconcile workflows
+    /// only *after* materialization so managed-file hashes are included).
     async fn sync_tools_from_document(
         &self,
         document: &MediaPmDocument,
         check_tag_updates: bool,
-    ) -> Result<(ToolsSyncSummary, MediaLockFile), MediaPmError> {
+    ) -> Result<(ToolsSyncSummary, MediaLockFile, MediaPmPaths), MediaPmError> {
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
         let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
         load_runtime_dotenv(&effective_paths)?;
@@ -952,8 +958,6 @@ where
             check_tag_updates,
         )
         .await?;
-        conductor_bridge::reconcile_media_workflows(&effective_paths, document, &mut lock)?;
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
 
         Ok((
             ToolsSyncSummary {
@@ -963,6 +967,7 @@ where
                 warnings: report.warnings,
             },
             lock,
+            effective_paths,
         ))
     }
 
@@ -981,10 +986,9 @@ where
         // avoid a redundant Nickel evaluation between tool-sync and library-sync.
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         eprintln!("[mediapm::sync] reconciling managed tools and workflow configuration...");
-        let (tool_summary, mut lock) =
+        let (tool_summary, mut lock, effective_paths) =
             self.sync_tools_from_document(&document, check_tag_updates).await?;
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
-        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
