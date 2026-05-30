@@ -1297,6 +1297,28 @@ where
             self.resolve_tool_relative_path(executable_name, tool_cwd, "tool process executable")?
         };
 
+        // `command.current_dir(tool_cwd)` changes the child process's working directory
+        // before the OS resolves the executable. On Unix, `execve` looks up relative paths
+        // against the **child's** CWD (post-chdir), not the spawning process's CWD. An
+        // executable_path that is relative to the workspace root (e.g. from a relative
+        // tools_dir) would therefore be searched inside the sandbox temp-dir, which does
+        // not contain the tool payload — causing ENOENT. Resolve to an absolute path
+        // before spawning so the lookup is independent of chdir.
+        let executable_path = if executable_path.is_absolute() {
+            executable_path
+        } else {
+            std::env::current_dir()
+                .map_err(|source| ConductorError::Io {
+                    operation: format!(
+                        "determining working directory to resolve executable path for \
+                         process '{executable_name}'"
+                    ),
+                    path: executable_path.clone(),
+                    source,
+                })?
+                .join(executable_path)
+        };
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
