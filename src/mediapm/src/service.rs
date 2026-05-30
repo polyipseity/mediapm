@@ -24,7 +24,8 @@ use crate::conductor_bridge::ConductorToolRow;
 use crate::config::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
     MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_mediapm_document, save_mediapm_document,
+    TransformInputValue, load_mediapm_document, load_mediapm_document_without_validation,
+    save_mediapm_document,
 };
 use crate::error::MediaPmError;
 use crate::hierarchy::{
@@ -793,7 +794,7 @@ where
         // Validate against catalog before mutating config.
         tools::catalog::tool_catalog_entry(tool_name)?;
 
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let mut document = load_mediapm_document_without_validation(&self.paths.mediapm_ncl)?;
         if document.tools.contains_key(tool_name) {
             return Ok(false);
         }

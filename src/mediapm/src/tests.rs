@@ -10,9 +10,10 @@ use serde_json::json;
 
 use super::{
     AddInsertPosition, HierarchyNode, HierarchyNodeKind, LocalSourceMetadata, MediaHierarchyPreset,
-    MediaPmApi, MediaPmService, MediaRuntimeStorage, OnlineSourceMetadata, load_mediapm_document,
-    merge_runtime_storage, parse_local_source_metadata_from_ffprobe_json,
-    parse_online_source_metadata, should_prefer_filesystem_workflow_runner, validate_source_uri,
+    MediaPmApi, MediaPmDocument, MediaPmService, MediaRuntimeStorage, OnlineSourceMetadata,
+    ToolRequirement, ToolRequirementDependencies, load_mediapm_document, merge_runtime_storage,
+    parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
+    save_mediapm_document, should_prefer_filesystem_workflow_runner, validate_source_uri,
 };
 use crate::source_metadata::resolve_online_source_metadata_for_add;
 use tempfile::tempdir;
@@ -122,6 +123,40 @@ async fn sync_tools_bootstraps_default_state_files() {
     let conductor_schema_dir = service.paths().conductor_schema_dir.clone();
     assert!(conductor_schema_dir.join("mod.ncl").exists());
     assert!(conductor_schema_dir.join("v1.ncl").exists());
+}
+
+/// Ensures `tool add` can bootstrap a missing managed dependency target even
+/// when another tool currently uses `inherit` for that dependency selector.
+#[test]
+fn add_tool_requirement_skips_cross_field_validation_during_bootstrap() {
+    let root = tempdir().expect("tempdir");
+    let service = MediaPmService::new_in_memory_at(root.path());
+
+    let mut document = MediaPmDocument::default();
+    document.tools.insert(
+        "yt-dlp".to_string(),
+        ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: ToolRequirementDependencies {
+                ffmpeg_version: Some("inherit".to_string()),
+                deno_version: None,
+                sd_version: None,
+            },
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        },
+    );
+    save_mediapm_document(&service.paths().mediapm_ncl, &document).expect("seed mediapm.ncl");
+
+    let added = service.add_tool_requirement("ffmpeg").expect("add ffmpeg");
+
+    assert!(added, "ffmpeg should be added even when yt-dlp depends on inherit");
+
+    let loaded = load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm.ncl");
+    assert!(loaded.tools.contains_key("ffmpeg"));
+    assert!(loaded.tools.contains_key("yt-dlp"));
 }
 
 /// Ensures explicit `runtime.mediapm_schema_dir = null` disables schema

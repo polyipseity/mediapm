@@ -710,6 +710,28 @@ where
 /// Returns [`MediaPmError`] when file I/O, Nickel evaluation, schema decoding,
 /// or cross-field validation fails.
 pub fn load_mediapm_document(path: &Path) -> Result<MediaPmDocument, MediaPmError> {
+    load_mediapm_document_inner(path, true)
+}
+
+/// Loads `mediapm.ncl` from disk without cross-field validation.
+///
+/// This loader is intended for edit/bootstrap flows that need to read and
+/// mutate an existing document before the full dependency graph is complete.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when file I/O, Nickel evaluation, or schema
+/// decoding fails.
+pub(crate) fn load_mediapm_document_without_validation(
+    path: &Path,
+) -> Result<MediaPmDocument, MediaPmError> {
+    load_mediapm_document_inner(path, false)
+}
+
+fn load_mediapm_document_inner(
+    path: &Path,
+    validate: bool,
+) -> Result<MediaPmDocument, MediaPmError> {
     if !path.exists() {
         return Ok(MediaPmDocument::default());
     }
@@ -733,7 +755,9 @@ pub fn load_mediapm_document(path: &Path) -> Result<MediaPmDocument, MediaPmErro
 
     let document = versions::decode_mediapm_document_value(value)?;
 
-    validate_media_document(&document)?;
+    if validate {
+        validate_media_document(&document)?;
+    }
 
     Ok(document)
 }
