@@ -1008,7 +1008,8 @@ fn resolve_input_variant_producer<'a>(
 /// - cross-step dependency (this helper): resolve one standalone conductor tool
 ///   id per dependent step, do not inline dependency content-map bytes into the
 ///   requesting tool, and do not mutate the requesting tool id with dependency
-///   selector fragments;
+///   selector fragments; each dependent step should reference that resolved
+///   dependency tool id directly;
 /// - same-step companion dependency: handled in sync/tool-config synthesis where
 ///   dependency bytes are inlined and requesting tool ids encode dependency
 ///   selector identity.

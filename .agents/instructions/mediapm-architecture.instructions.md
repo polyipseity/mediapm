@@ -391,15 +391,16 @@ is a narrow, documented reason.
     legacy `<tools_dir>/<tool-id>/<os>/...` runtime path projection,
   - managed-tool dependencies are split into two explicit classes:
     - cross-step dependency (one mediapm step expands to multiple conductor
-      steps that use other logical tools): do **not** inline dependency payload
-      bytes into the requester `content_map`, and do **not** fold dependency
-      selector fragments into the requester tool id; each conductor step should
-      reference its own resolved dependency tool id directly,
+      steps that use other logical tools, including media-tagger ffmpeg runtime
+      selection): do **not** inline dependency payload bytes into the requester
+      `content_map`, and do **not** fold dependency selector fragments into the
+      requester tool id; each conductor step should reference its own resolved
+      dependency tool id directly,
     - same-step companion dependency (the requester tool needs companion tool
       payload bytes during the same conductor step, e.g. `yt-dlp` needing
-      `ffmpeg`): always inline companion payload bytes into the requester
-      `content_map`, and always fold companion selector identity into the
-      requester tool id,
+      `ffmpeg` + `deno`): always inline companion payload bytes into the
+      requester `content_map`, and always fold companion selector identity into
+      the requester tool id,
   - step execution order is the declared `steps` list order,
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under

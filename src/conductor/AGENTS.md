@@ -488,11 +488,15 @@ Design invariants (implemented in
   ZIP payloads. `./` (or `.\\`) means the ZIP is unpacked directly into
   `payload/`.
 
-- **Bundled tool content**: one managed tool record should carry the tool's
-  own payload bytes and any mediapm-required dependent payload bytes together
-  in the same `tool_content_map`. Do not model dependent binaries by pointing
-  one tool at another tool's cache entry or by reading runtime files from the
-  sibling `<entry>` directory; `payload/` is the only runtime source of truth.
+- **Bundled tool content**: bundle dependency payload bytes into one managed
+  tool record only for mediapm **same-step companion** dependencies (for
+  example `yt-dlp` companions such as `ffmpeg`/`deno`). For mediapm
+  **cross-step** dependencies (for example media-workflow steps selecting a
+  separate dependency tool id), keep payload bytes in the dependency tool's own
+  `tool_content_map`; do not inline those bytes into the requesting step tool.
+  In all cases, do not model runtime lookups by pointing one tool at another
+  tool's cache entry directory; each step reads only its own `payload/` tree as
+  runtime source of truth.
 
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is
   refreshed on every cache hit. `prune_expired_tool_content_cache_entries` is

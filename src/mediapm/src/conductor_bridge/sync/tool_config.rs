@@ -465,6 +465,11 @@ pub(super) fn media_tagger_ffmpeg_content_key(relative_path: &str) -> String {
 ///
 /// Selection priority honors `tools.media-tagger.dependencies.ffmpeg_version`: explicit
 /// selector first, otherwise inherited active/provisioned ffmpeg.
+///
+/// Policy note: media-tagger ffmpeg linkage is treated as a cross-step
+/// dependency. This resolver is only for runtime executable-path selection and
+/// must not mutate media-tagger tool id or inline ffmpeg payload bytes into the
+/// media-tagger `content_map`.
 #[allow(clippy::too_many_lines)]
 pub(super) fn resolve_media_tagger_ffmpeg_selection(
     paths: &MediaPmPaths,
@@ -842,7 +847,9 @@ fn selector_from_registry_or_tool_id(
 ///
 /// This helper is reserved for same-step companion dependencies. Cross-step
 /// dependencies should select distinct conductor tool ids per workflow step
-/// instead of mutating the dependent tool id.
+/// instead of mutating the dependent tool id. Callers that use this helper
+/// must also inline the companion payload bytes into the dependent tool
+/// `content_map` in the same reconciliation pass.
 #[must_use]
 pub(super) fn augment_tool_id_with_dependency_selector(
     base_tool_id: &str,

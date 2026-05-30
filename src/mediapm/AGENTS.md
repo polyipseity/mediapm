@@ -175,13 +175,15 @@ For `media.<id>` semantics and runtime reconciliation:
   `media-tagger` (defaulting to inherit/global behavior when omitted).
   Managed-tool dependency handling is split into two explicit classes:
   - cross-step dependency (one mediapm step expands to multiple conductor
-    steps that invoke other logical tools): do **not** inline dependency
-    payload bytes into the requesting tool `content_map`, and do **not** fold
-    dependency selector identity into the requesting tool id;
+    steps that invoke other logical tools, including media-tagger ffmpeg
+    runtime selection): do **not** inline dependency payload bytes into the
+    requesting tool `content_map`, and do **not** fold dependency selector
+    identity into the requesting tool id;
   - same-step companion dependency (the requesting tool needs companion bytes
-    in the same conductor step, e.g. `yt-dlp` needing `ffmpeg`): always inline
-    companion payload bytes into the requesting tool `content_map`, and always
-    fold companion selector identity into the requesting tool id.
+    in the same conductor step, e.g. `yt-dlp` needing `ffmpeg` + `deno`):
+    always inline companion payload bytes into the requesting tool
+    `content_map`, and always fold companion selector identity into the
+    requesting tool id.
 - Metadata entries must be strict per key:
   - literal form: `<key> = "value"`
   - variant-binding form:

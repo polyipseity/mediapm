@@ -193,6 +193,16 @@
     mediapm-driven conductor defaults to `<mediapm_dir>/config/conductor`.
   - Tool requirements may set `ffmpeg_version` for `yt-dlp`, `rsgain`, and
     `media-tagger` (inherit/global semantics when omitted).
+  - Managed-tool dependency classes are strict:
+    - same-step companion dependencies (for example `yt-dlp` companion
+      `ffmpeg` + `deno`) must inline companion payload bytes into the requester
+      `tool_configs.<tool>.content_map` and must fold companion selector
+      identity into the requester tool id;
+    - cross-step dependencies (for example workflow-expanded steps that invoke
+      other logical tools, including media-tagger ffmpeg runtime selection)
+      must keep payload bytes and ids separate: do not inline dependency bytes
+      into the requester content map and do not fold dependency selectors into
+      requester tool ids.
   - yt-dlp `output_variants` values must not embed `format`; any explicit
     format selector belongs in step `options.format`.
   - output-variant values are object-driven across managed tools: `kind`
