@@ -3,16 +3,13 @@
 # ||| This contract intentionally focuses on stable top-level layout and
 # ||| version-marker safety while allowing runtime-side Rust validation to own
 # ||| detailed semantic invariants not captured by schema-level contracts.
-
 let VersionOneV1 =
-  std.contract.from_predicate
-    (fun value => value == 1)
+  std.contract.from_predicate (fun value => value == 1)
 in
 
 # ||| Non-empty string contract used for required hierarchy ids and selectors.
 let NonEmptyStringV1 =
-  std.contract.from_predicate
-    (fun value => std.is_string value && std.string.length value > 0)
+  std.contract.from_predicate (fun value => std.is_string value && std.string.length value > 0)
 in
 
 # ||| Grouped runtime-storage shape for `mediapm.ncl` v1.
