@@ -49,13 +49,15 @@ use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
     MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage,
     MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat,
-    PlaylistItemRef, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
-    load_lockfile, load_mediapm_document, save_mediapm_document,
+    PlaylistItemRef, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
+    ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
+    save_lockfile, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    MachineNickelDocument, ToolKindSpec, decode_machine_document,
-    default_runtime_inherited_env_vars_for_host,
+    ExternalContentRef, MachineNickelDocument, SimpleConductor, ToolConfigSpec, ToolKindSpec,
+    ToolSpec, decode_machine_document, default_runtime_inherited_env_vars_for_host,
+    encode_machine_document,
 };
 use same_file::is_same_file;
 use serde::Serialize;
@@ -311,6 +313,14 @@ struct DemoManifest {
     workflow_id: String,
     /// Number of steps in the managed demo workflow.
     workflow_step_count: usize,
+    /// Whether tools-only stale-tool update precheck was executed.
+    tool_update_precheck_executed: bool,
+    /// Number of tools updated during tools-only stale-tool precheck.
+    tool_update_precheck_updated_tools: usize,
+    /// Number of tools added during tools-only stale-tool precheck.
+    tool_update_precheck_added_tools: usize,
+    /// Number of tools unchanged during tools-only stale-tool precheck.
+    tool_update_precheck_unchanged_tools: usize,
     /// Runtime materialization policy order written into `mediapm.ncl`.
     materialization_preference_order: Vec<String>,
     /// Materialized library path for the transcoded demo video variant.
@@ -1391,6 +1401,101 @@ fn load_machine(path: &Path) -> ExampleResult<MachineNickelDocument> {
     Ok(decode_machine_document(raw.as_bytes())?)
 }
 
+/// Seeds machine + lock state with stale active tool ids for update precheck.
+fn seed_old_synced_tools_state_for_update_precheck(
+    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    logical_tool_ids: &[String],
+) -> ExampleResult<()> {
+    service.refresh_runtime_configuration()?;
+
+    let mut machine: MachineNickelDocument =
+        decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+    let mut lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+
+    for logical_tool_name in logical_tool_ids {
+        let stale_tool_id =
+            format!("mediapm.tools.{}+demo@old", logical_tool_name.trim().to_ascii_lowercase());
+        let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
+        let stale_hash = Hash::from_content(stale_payload.as_bytes());
+        let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
+
+        machine.external_data.insert(
+            stale_hash,
+            ExternalContentRef {
+                description: Some(format!("stale payload for {logical_tool_name}")),
+                save: None,
+            },
+        );
+        machine.tools.insert(
+            stale_tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec![format!("./{stale_relative_path}")],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            stale_tool_id.clone(),
+            ToolConfigSpec {
+                description: Some(format!("stale managed tool config for {logical_tool_name}")),
+                content_map: Some(BTreeMap::from([(stale_relative_path, stale_hash)])),
+                ..ToolConfigSpec::default()
+            },
+        );
+
+        lock.active_tools.insert(logical_tool_name.clone(), stale_tool_id.clone());
+        lock.tool_registry.insert(
+            stale_tool_id,
+            ToolRegistryRecord {
+                name: logical_tool_name.clone(),
+                version: "old".to_string(),
+                source: "demo".to_string(),
+                registry_multihash: stale_hash.to_string(),
+                last_transition_unix_seconds: unix_timestamp_seconds(),
+                status: ToolRegistryStatus::Active,
+            },
+        );
+    }
+
+    fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
+    save_lockfile(&service.paths().mediapm_state_ncl, &lock)?;
+
+    Ok(())
+}
+
+/// Executes tools-only stale-tool update precheck with empty media/hierarchy.
+async fn run_tools_update_precheck(
+    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    workspace_root: &Path,
+) -> ExampleResult<(usize, usize, usize)> {
+    let logical_tool_ids = configure_document_for_online_demo(workspace_root)?;
+    let mut document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+    document.media.clear();
+    document.hierarchy.clear();
+    save_mediapm_document(&workspace_root.join("mediapm.ncl"), &document)?;
+    seed_old_synced_tools_state_for_update_precheck(service, &logical_tool_ids)?;
+
+    let tools_only_document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+    if !tools_only_document.media.is_empty() || !tools_only_document.hierarchy.is_empty() {
+        return Err("tools-update precheck must start with empty media/hierarchy".into());
+    }
+
+    let summary = service.sync_tools_with_tag_update_checks(false).await?;
+    if summary.updated_tools != logical_tool_ids.len() {
+        return Err(format!(
+            "tools-update precheck expected {} updated tools but observed {}",
+            logical_tool_ids.len(),
+            summary.updated_tools
+        )
+        .into());
+    }
+
+    Ok((summary.updated_tools, summary.added_tools, summary.unchanged_tools))
+}
+
 /// Resolves managed tool binary paths by logical tool names.
 ///
 /// The machine document stores immutable ids (for example
@@ -2377,6 +2482,8 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     // workflow execution to fall back to filesystem CAS when tool payload
     // hashes are only present in the runtime store.
     let service = MediaPmService::new_in_memory_at(&workspace_root);
+    let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) =
+        run_tools_update_precheck(&service, &workspace_root).await?;
     let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
 
     eprintln!(
@@ -2462,6 +2569,10 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
         workflow_id,
         workflow_step_count,
+        tool_update_precheck_executed: true,
+        tool_update_precheck_updated_tools: precheck_updated_tools,
+        tool_update_precheck_added_tools: precheck_added_tools,
+        tool_update_precheck_unchanged_tools: precheck_unchanged_tools,
         materialization_preference_order,
         materialized_demo_video_path: display_path(&output_video_path),
         materialized_demo_tagged_video_path: display_path(&output_tagged_video_path),
@@ -2519,6 +2630,10 @@ fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
         conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
         workflow_id: format!("mediapm.media.{DEMO_MEDIA_ID}"),
         workflow_step_count: 0,
+        tool_update_precheck_executed: false,
+        tool_update_precheck_updated_tools: 0,
+        tool_update_precheck_added_tools: 0,
+        tool_update_precheck_unchanged_tools: 0,
         materialization_preference_order,
         materialized_demo_video_path: String::new(),
         materialized_demo_tagged_video_path: String::new(),
@@ -2677,6 +2792,11 @@ mod tests {
             manifest_json.get("executed_instances").and_then(serde_json::Value::as_u64),
             Some(0),
             "config-only run must not execute workflow instances"
+        );
+        assert_eq!(
+            manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "config-only run should skip tools-update precheck"
         );
         assert_eq!(
             manifest_json

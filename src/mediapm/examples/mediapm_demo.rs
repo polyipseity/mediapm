@@ -32,11 +32,16 @@ use mediapm::{
     HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform,
     MediaMetadataValue, MediaMetadataVariantBinding, MediaPmApi, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_lockfile, load_mediapm_document, save_mediapm_document,
+    PlaylistFormat, PlaylistItemRef, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
+    ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
+    save_lockfile, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
-use mediapm_conductor::{SimpleConductor, default_runtime_inherited_env_vars_for_host};
+use mediapm_conductor::{
+    ExternalContentRef, MachineNickelDocument, SimpleConductor, ToolConfigSpec, ToolKindSpec,
+    ToolSpec, decode_machine_document, default_runtime_inherited_env_vars_for_host,
+    encode_machine_document,
+};
 use same_file::is_same_file;
 use serde::Serialize;
 use serde_json::json;
@@ -138,6 +143,14 @@ struct DemoManifest {
     configured_tool_count: usize,
     /// Configured step count in the managed source workflow.
     configured_step_count: usize,
+    /// Whether tools-only stale-tool update precheck was executed.
+    tool_update_precheck_executed: bool,
+    /// Number of tools updated during tools-only stale-tool precheck.
+    tool_update_precheck_updated_tools: usize,
+    /// Number of tools added during tools-only stale-tool precheck.
+    tool_update_precheck_added_tools: usize,
+    /// Number of tools unchanged during tools-only stale-tool precheck.
+    tool_update_precheck_unchanged_tools: usize,
     /// Runtime materialization policy order written into `mediapm.ncl`.
     materialization_preference_order: Vec<String>,
     /// Materialized output path #1.
@@ -942,6 +955,179 @@ fn configure_document_for_local_tool_chain(
     Ok((document.tools.len(), configured_step_count))
 }
 
+/// Returns managed demo tool requirements used for tools-only prechecks.
+fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
+    BTreeMap::from([
+        (
+            "import".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: None,
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+        (
+            "ffmpeg".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+        (
+            "rsgain".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies {
+                    ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
+                    sd_version: Some("inherit".to_string()),
+                },
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+        (
+            "sd".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+        (
+            "media-tagger".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies {
+                    ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
+                    sd_version: None,
+                },
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+    ])
+}
+
+/// Writes one tools-only document with empty media/hierarchy for update checks.
+fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleResult<usize> {
+    let mediapm_ncl = workspace_root.join("mediapm.ncl");
+    let mut document = load_mediapm_document(&mediapm_ncl)?;
+    document.tools = local_demo_tool_requirements();
+    document.media.clear();
+    document.hierarchy.clear();
+    save_mediapm_document(&mediapm_ncl, &document)?;
+    Ok(document.tools.keys().filter(|name| !name.eq_ignore_ascii_case("import")).count())
+}
+
+/// Seeds one machine/lock pair with stale active tool ids for update checks.
+fn seed_old_synced_tools_state_for_update_precheck(
+    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+) -> ExampleResult<()> {
+    service.refresh_runtime_configuration()?;
+
+    let mut machine: MachineNickelDocument =
+        decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+    let mut lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+
+    for logical_tool_name in local_demo_tool_requirements().into_keys() {
+        if logical_tool_name.eq_ignore_ascii_case("import") {
+            continue;
+        }
+
+        let stale_tool_id =
+            format!("mediapm.tools.{}+demo@old", logical_tool_name.trim().to_ascii_lowercase());
+        let stale_payload = format!("stale-tool-payload::{logical_tool_name}");
+        let stale_hash = Hash::from_content(stale_payload.as_bytes());
+        let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
+
+        machine.external_data.insert(
+            stale_hash,
+            ExternalContentRef {
+                description: Some(format!("stale payload for {logical_tool_name}")),
+                save: None,
+            },
+        );
+        machine.tools.insert(
+            stale_tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec![format!("./{stale_relative_path}")],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            stale_tool_id.clone(),
+            ToolConfigSpec {
+                description: Some(format!("stale managed tool config for {logical_tool_name}")),
+                content_map: Some(BTreeMap::from([(stale_relative_path, stale_hash)])),
+                ..ToolConfigSpec::default()
+            },
+        );
+
+        lock.active_tools.insert(logical_tool_name.clone(), stale_tool_id.clone());
+        lock.tool_registry.insert(
+            stale_tool_id,
+            ToolRegistryRecord {
+                name: logical_tool_name,
+                version: "old".to_string(),
+                source: "demo".to_string(),
+                registry_multihash: stale_hash.to_string(),
+                last_transition_unix_seconds: unix_timestamp_seconds(),
+                status: ToolRegistryStatus::Active,
+            },
+        );
+    }
+
+    fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
+    save_lockfile(&service.paths().mediapm_state_ncl, &lock)?;
+
+    Ok(())
+}
+
+/// Executes tools-only stale-tool update precheck with empty media/hierarchy.
+async fn run_tools_update_precheck(
+    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    workspace_root: &Path,
+) -> ExampleResult<(usize, usize, usize)> {
+    let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
+    seed_old_synced_tools_state_for_update_precheck(service)?;
+
+    let document = load_mediapm_document(&workspace_root.join("mediapm.ncl"))?;
+    if !document.media.is_empty() || !document.hierarchy.is_empty() {
+        return Err("tools-update precheck must start with empty media/hierarchy".into());
+    }
+
+    let summary = service.sync_tools_with_tag_update_checks(false).await?;
+    if summary.updated_tools != expected_updated_tools {
+        return Err(format!(
+            "tools-update precheck expected {expected_updated_tools} updated tools but observed {}",
+            summary.updated_tools
+        )
+        .into());
+    }
+
+    Ok((summary.updated_tools, summary.added_tools, summary.unchanged_tools))
+}
+
 /// Runs the persistent demo and returns generated paths.
 ///
 /// `run_sync = true` executes full tool reconciliation + workflow execution.
@@ -987,6 +1173,12 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         auto_added_source.description.clone().filter(|value| !value.trim().is_empty()).ok_or_else(
             || std::io::Error::other("demo preflight add_local_source produced empty description"),
         )?;
+
+    let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) = if run_sync {
+        run_tools_update_precheck(&ingest_service, &workspace_root).await?
+    } else {
+        (0, 0, 0)
+    };
 
     let (configured_tool_count, configured_step_count) = configure_document_for_local_tool_chain(
         &workspace_root,
@@ -1055,6 +1247,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         source_has_audio_track_marker,
         configured_tool_count,
         configured_step_count,
+        tool_update_precheck_executed: run_sync,
+        tool_update_precheck_updated_tools: precheck_updated_tools,
+        tool_update_precheck_added_tools: precheck_added_tools,
+        tool_update_precheck_unchanged_tools: precheck_unchanged_tools,
         materialization_preference_order,
         materialized_primary_path: display_path(&materialized_primary),
         materialized_secondary_path: display_path(&materialized_secondary),
@@ -1135,6 +1331,11 @@ mod tests {
             manifest_json.get("configured_step_count").and_then(serde_json::Value::as_u64),
             Some(4),
             "demo should configure four workflow steps including import"
+        );
+        assert_eq!(
+            manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "config-only demo run should not execute tools-update precheck"
         );
         let without_delta = manifest_json
             .get("store_size_without_delta_bytes")
