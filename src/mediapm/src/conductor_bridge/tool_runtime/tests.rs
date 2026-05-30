@@ -104,24 +104,17 @@ fn yt_dlp_defaults_prefer_single_best_thumbnail_with_unified_subtitles() {
     assert_eq!(defaults.get("cache_dir"), Some(&InputBinding::String(String::new())));
 }
 
-/// Verifies unified subtitle input wiring controls both manual and
-/// automatic yt-dlp subtitle switches through `write_subs`.
+/// Verifies simplified subtitle input wiring controls only manual subtitle
+/// switches through `write_subs`.
 #[test]
-fn yt_dlp_write_subs_tokens_cover_manual_and_automatic_switches() {
+fn yt_dlp_write_subs_tokens_cover_manual_switch_only() {
     assert!(!YT_DLP_OPTION_INPUTS.contains(&"write_auto_subs"));
 
     let tokens = option_tokens_for_input("yt-dlp", "write_subs");
     assert!(tokens.contains(&"${*inputs.write_subs == \"true\" ? --write-subs | ''}".to_string()));
     assert!(
-        tokens.contains(&"${*inputs.write_subs == \"false\" ? --no-write-subs | ''}".to_string())
-    );
-    assert!(
-        tokens.contains(&"${*inputs.write_subs == \"true\" ? --write-auto-subs | ''}".to_string())
-    );
-    assert!(
-        tokens.contains(
-            &"${*inputs.write_subs == \"false\" ? --no-write-auto-subs | ''}".to_string()
-        )
+        !tokens.iter().any(|token| token.contains("write-auto-subs")),
+        "write_subs should not emit automatic-subtitle flags"
     );
 }
 

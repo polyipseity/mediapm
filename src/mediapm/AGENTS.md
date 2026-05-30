@@ -322,9 +322,10 @@ For `media.<id>` semantics and runtime reconciliation:
   so user-visible materialized sidecars do not expose the internal marker.
 - Managed tool defaults should favor rich metadata capture and preservation:
   - `yt-dlp`: prefer `format = "bestvideo*+bestaudio/best"`, metadata/embed
-    toggles enabled, `sub_langs = "all"`, unified subtitle capture enabled
-    by default (`write_subs = "true"`, mapped to manual + automatic subtitle
-    toggles) while broad translated subtitle pressure should still be reduced
+    toggles enabled, `sub_langs = "all"`, manual subtitle capture enabled
+    by default (`write_subs = "true"`, mapped to manual subtitle toggles
+    only; automatic subtitles are not enabled by default) while broad
+    translated subtitle pressure should still be reduced
     with precise `options.sub_langs` selectors and optional
     `options.sleep_subtitles`.
     Keep this mitigation anchored to documented upstream incidents in

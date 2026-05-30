@@ -151,8 +151,9 @@
     duplicate-free); default order is hardlink → symlink → reflink → copy.
   - `yt-dlp` reconciliation defaults to one active concurrent call and one
     outer conductor retry, `sub_langs = "all"`, and unified subtitle capture
-    enabled (`write_subs = "true"`, mapped to manual + automatic subtitle
-    downloader toggles). Keep translated subtitle pressure low with precise
+    enabled (`write_subs = "true"`, mapped to manual subtitle downloader
+    toggles only; automatic subtitles are not enabled by default). Keep
+    translated subtitle pressure low with precise
     `options.sub_langs` selectors and optional `options.sleep_subtitles` when
     provider throttling appears. Keep this mitigation anchored to documented
     upstream incidents in
