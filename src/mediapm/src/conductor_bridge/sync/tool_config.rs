@@ -726,11 +726,12 @@ fn resolve_companion_dependency_selection(
         return Ok(CompanionFfmpegSelection {
             selector: selected_selector,
             provisioned_content_entries: BTreeMap::new(),
-            existing_content_map: machine
-                .tool_configs
-                .get(&selected_tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
+            existing_content_map: resolve_same_step_companion_content_map(
+                machine,
+                logical_tool_name,
+                dependency_name,
+                &selected_tool_id,
+            )?,
             host_command_path: resolve_host_command_selector_path_from_machine_tool(
                 machine,
                 &selected_tool_id,
@@ -766,11 +767,12 @@ fn resolve_companion_dependency_selection(
         return Ok(CompanionFfmpegSelection {
             selector,
             provisioned_content_entries: BTreeMap::new(),
-            existing_content_map: machine
-                .tool_configs
-                .get(active_dependency_tool_id)
-                .and_then(|config| config.content_map.clone())
-                .unwrap_or_default(),
+            existing_content_map: resolve_same_step_companion_content_map(
+                machine,
+                logical_tool_name,
+                dependency_name,
+                active_dependency_tool_id,
+            )?,
             host_command_path: resolve_host_command_selector_path_from_machine_tool(
                 machine,
                 active_dependency_tool_id,
@@ -781,6 +783,36 @@ fn resolve_companion_dependency_selection(
     Err(MediaPmError::Workflow(format!(
         "tool '{logical_tool_name}' requires managed logical tool '{dependency_name}' for same-step companion linkage; add tools.{dependency_name} or set tools.{logical_tool_name}.dependencies.{dependency_name}_version to one managed {dependency_name} selector"
     )))
+}
+
+/// Resolves content-map bytes for one same-step companion dependency tool.
+///
+/// Same-step companion policy requires dependency payload bytes to be inlined
+/// into the requester tool content map. A selected dependency tool without
+/// materialized `content_map` bytes is therefore invalid.
+fn resolve_same_step_companion_content_map(
+    machine: &MachineNickelDocument,
+    logical_tool_name: &str,
+    dependency_name: &str,
+    dependency_tool_id: &str,
+) -> Result<BTreeMap<String, Hash>, MediaPmError> {
+    let content_map = machine
+        .tool_configs
+        .get(dependency_tool_id)
+        .and_then(|config| config.content_map.as_ref())
+        .ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "tools.{logical_tool_name}.dependencies.{dependency_name}_version selected managed {dependency_name} tool '{dependency_tool_id}', but that tool has no materialized content_map; run tool sync for {dependency_name} first"
+            ))
+        })?;
+
+    if content_map.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "tools.{logical_tool_name}.dependencies.{dependency_name}_version selected managed {dependency_name} tool '{dependency_tool_id}', but its content_map is empty; run tool sync for {dependency_name} first"
+        )));
+    }
+
+    Ok(content_map.clone())
 }
 
 /// Resolves host ffmpeg command selector path from one machine-managed tool spec.

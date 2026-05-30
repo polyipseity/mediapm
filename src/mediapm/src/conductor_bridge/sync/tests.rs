@@ -884,13 +884,77 @@ fn companion_deno_selection_matches_registered_deno_tool() {
             ..ToolSpec::default()
         },
     );
+    machine.tool_configs.insert(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                "windows/deno/deno.exe".to_string(),
+                Hash::from_content(b"deno-v2.5.0"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
 
     let selection =
         resolve_companion_deno_selection("yt-dlp", &requirement, &BTreeMap::new(), &lock, &machine)
             .expect("companion deno selection should succeed");
 
     assert_eq!(selection.selector, "v2.5.0");
+    assert!(selection.existing_content_map.contains_key("windows/deno/deno.exe"));
     assert_eq!(selection.host_command_path.as_deref(), Some("windows/deno/deno.exe"));
+}
+
+/// Verifies same-step companion deno selection fails fast when the selected
+/// managed deno tool has no materialized content map to inline.
+#[test]
+fn companion_deno_selection_requires_non_empty_content_map() {
+    let requirement = ToolRequirement {
+        version: None,
+        tag: Some("latest".to_string()),
+        dependencies: crate::config::ToolRequirementDependencies {
+            ffmpeg_version: None,
+            deno_version: Some("v2.5.0".to_string()),
+            sd_version: None,
+        },
+        recheck_seconds: None,
+        max_input_slots: None,
+        max_output_slots: None,
+    };
+
+    let mut lock = MediaLockFile::default();
+    lock.tool_registry.insert(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
+        ToolRegistryRecord {
+            name: "deno".to_string(),
+            version: "v2.5.0".to_string(),
+            source: "GitHub denoland/deno".to_string(),
+            registry_multihash: "blake3:fixture".to_string(),
+            last_transition_unix_seconds: 0,
+            status: ToolRegistryStatus::Active,
+        },
+    );
+
+    let mut machine = MachineNickelDocument::default();
+    machine.tools.insert(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec!["windows/deno/deno.exe".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        },
+    );
+
+    let error =
+        resolve_companion_deno_selection("yt-dlp", &requirement, &BTreeMap::new(), &lock, &machine)
+            .expect_err("missing deno content map should fail");
+
+    assert!(
+        error.to_string().contains("has no materialized content_map"),
+        "unexpected error: {error}"
+    );
 }
 
 /// Verifies explicit yt-dlp companion deno selectors fail fast when no
