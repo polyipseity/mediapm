@@ -279,6 +279,12 @@ impl DocumentLoaderActor {
             &machine_document.impure_timestamps,
             &state_document.impure_timestamps,
         )?;
+        // Prune stale impure_timestamp entries for workflows that no longer
+        // exist in the merged configuration.  This prevents unbounded growth
+        // from removed or renamed media sources accumulating dead state.
+        state_document
+            .impure_timestamps
+            .retain(|workflow_id, _| unified.workflows.contains_key(workflow_id));
         let prior_state_pointer = Self::merge_three_state_pointers(
             user_document.state_pointer,
             machine_document.state_pointer,
