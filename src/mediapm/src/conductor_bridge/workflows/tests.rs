@@ -841,6 +841,7 @@ fn media_tagger_step_expands_to_metadata_and_apply_steps() {
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: None,
                 },
                 recheck_seconds: None,
@@ -1042,6 +1043,7 @@ fn media_tagger_inherit_ffmpeg_version_requires_active_ffmpeg_tool() {
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: None,
                 },
                 recheck_seconds: None,

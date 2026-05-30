@@ -729,7 +729,15 @@ where
             ToolRequirement {
                 version: None,
                 tag: Some("latest".to_string()),
-                dependencies: ToolRequirementDependencies::default(),
+                dependencies: if tool_name.eq_ignore_ascii_case("yt-dlp") {
+                    ToolRequirementDependencies {
+                        ffmpeg_version: Some("inherit".to_string()),
+                        deno_version: Some("inherit".to_string()),
+                        sd_version: None,
+                    }
+                } else {
+                    ToolRequirementDependencies::default()
+                },
                 recheck_seconds: None,
                 max_input_slots: None,
                 max_output_slots: None,

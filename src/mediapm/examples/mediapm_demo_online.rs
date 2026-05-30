@@ -917,6 +917,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: Some("inherit".to_string()),
                     sd_version: None,
                 },
                 recheck_seconds: None,
@@ -942,6 +943,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: Some("inherit".to_string()),
                 },
                 recheck_seconds: None,
@@ -967,6 +969,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: None,
                 },
                 recheck_seconds: None,

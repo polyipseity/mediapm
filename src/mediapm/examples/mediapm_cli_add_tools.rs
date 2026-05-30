@@ -93,10 +93,16 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     let dependencies = match logical_tool_name {
         "yt-dlp" | "media-tagger" => ToolRequirementDependencies {
             ffmpeg_version: Some("inherit".to_string()),
+            deno_version: if logical_tool_name == "yt-dlp" {
+                Some("inherit".to_string())
+            } else {
+                None
+            },
             sd_version: None,
         },
         "rsgain" => ToolRequirementDependencies {
             ffmpeg_version: Some("inherit".to_string()),
+            deno_version: None,
             sd_version: Some("inherit".to_string()),
         },
         _ => ToolRequirementDependencies::default(),

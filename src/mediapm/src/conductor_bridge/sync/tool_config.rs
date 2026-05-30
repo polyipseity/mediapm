@@ -163,6 +163,61 @@ pub(super) fn resolve_host_command_selector_path(command_selector: &str) -> Opti
     if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
 }
 
+/// Recursively finds the first file with `file_name` under `root`.
+#[must_use]
+fn find_file_named_in_tree(root: &Path, file_name: &str) -> Option<PathBuf> {
+    if file_name.trim().is_empty() || !root.exists() {
+        return None;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(directory) = stack.pop() {
+        let entries = fs::read_dir(&directory).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+
+            if path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == file_name)
+            {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Resolves host ffmpeg executable path from one machine-managed tool spec.
+#[must_use]
+fn resolve_host_ffmpeg_executable_path_from_machine_tool(
+    paths: &MediaPmPaths,
+    machine: &MachineNickelDocument,
+    tool_id: &str,
+) -> Option<String> {
+    let selector_path = resolve_host_command_selector_path_from_machine_tool(machine, tool_id)?;
+    let selector = PathBuf::from(selector_path);
+    if selector.is_absolute() {
+        return Some(selector.to_string_lossy().to_string());
+    }
+
+    Some(
+        paths
+            .tools_dir
+            .join(tool_id)
+            .join(CONDUCTOR_TOOL_PAYLOAD_DIR)
+            .join(selector)
+            .to_string_lossy()
+            .to_string(),
+    )
+}
+
 /// Resolves the concrete bundled `deno` executable path for managed yt-dlp.
 ///
 /// Resolution returns the managed `payload/` path layout only.
@@ -212,6 +267,9 @@ pub(super) fn should_set_yt_dlp_js_runtimes(
         Some(_) => false,
     }
 }
+
+/// Resolved companion deno linkage for tools that invoke JS runtimes.
+pub(super) type CompanionDenoSelection = CompanionFfmpegSelection;
 
 /// Resolved ffmpeg linkage used to stabilize managed media-tagger identity and
 /// content-map compatibility with the selected ffmpeg payload.
@@ -277,6 +335,34 @@ pub(super) fn resolve_managed_tool_payload_directory_from_selector(
         .parent()
         .map_or_else(|| tool_payload_root.join(&selector_path), Path::to_path_buf);
     Some(directory.to_string_lossy().to_string())
+}
+
+/// Resolves one dependent-tool payload command path from a selector path.
+///
+/// Relative selector paths are projected under
+/// `<tools_dir>/<tool_id>/payload/...`.
+#[must_use]
+pub(super) fn resolve_managed_tool_payload_command_path_from_selector(
+    paths: &MediaPmPaths,
+    tool_id: &str,
+    command_selector_path: &str,
+) -> Option<String> {
+    let trimmed_tool_id = tool_id.trim();
+    if trimmed_tool_id.is_empty() {
+        return None;
+    }
+
+    let selector_path = PathBuf::from(command_selector_path.trim());
+    if selector_path.as_os_str().is_empty() {
+        return None;
+    }
+
+    if selector_path.is_absolute() {
+        return Some(selector_path.to_string_lossy().to_string());
+    }
+
+    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    Some(tool_payload_root.join(selector_path).to_string_lossy().to_string())
 }
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
@@ -525,10 +611,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
 /// workflow synthesis (`resolve_selected_dependency_tool_id`): same-step
 /// companions must return one concrete selector so the dependent tool id can
 /// encode that selector and invalidate deterministically.
-#[expect(
-    clippy::too_many_lines,
-    reason = "this selection path keeps explicit branch-by-branch policy checks together so companion dependency behavior remains auditable"
-)]
 pub(super) fn resolve_companion_ffmpeg_selection(
     _paths: &MediaPmPaths,
     logical_tool_name: &str,
@@ -537,14 +619,54 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     lock: &MediaLockFile,
     machine: &MachineNickelDocument,
 ) -> Result<CompanionFfmpegSelection, MediaPmError> {
-    let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
+    resolve_companion_dependency_selection(
+        logical_tool_name,
+        "ffmpeg",
+        requirement.normalized_ffmpeg_selector(),
+        provisioned_snapshot,
+        lock,
+        machine,
+    )
+}
+
+/// Resolves optional deno linkage for companion tools like `yt-dlp`.
+pub(super) fn resolve_companion_deno_selection(
+    logical_tool_name: &str,
+    requirement: &ToolRequirement,
+    provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
+    lock: &MediaLockFile,
+    machine: &MachineNickelDocument,
+) -> Result<CompanionDenoSelection, MediaPmError> {
+    resolve_companion_dependency_selection(
+        logical_tool_name,
+        "deno",
+        requirement.normalized_deno_selector(),
+        provisioned_snapshot,
+        lock,
+        machine,
+    )
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "this selection path keeps explicit branch-by-branch policy checks together so companion dependency behavior remains auditable"
+)]
+fn resolve_companion_dependency_selection(
+    logical_tool_name: &str,
+    dependency_name: &str,
+    requested_selector: Option<String>,
+    provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
+    lock: &MediaLockFile,
+    machine: &MachineNickelDocument,
+) -> Result<CompanionFfmpegSelection, MediaPmError> {
+    let requested_selector = requested_selector.filter(|selector| {
         !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
     });
 
     if let Some(requested_selector) = requested_selector {
         let normalized_requested = normalize_selector_compare_value(&requested_selector);
 
-        if let Some(payload) = provisioned_snapshot.get("ffmpeg")
+        if let Some(payload) = provisioned_snapshot.get(dependency_name)
             && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
         {
             return Ok(CompanionFfmpegSelection {
@@ -561,7 +683,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         let mut candidates = lock
             .tool_registry
             .iter()
-            .filter(|(_, record)| record.name.eq_ignore_ascii_case("ffmpeg"))
+            .filter(|(_, record)| record.name.eq_ignore_ascii_case(dependency_name))
             .filter_map(|(tool_id, record)| {
                 let selector = normalize_selector_value(Some(&record.version))?;
                 if normalize_selector_compare_value(&selector) == normalized_requested
@@ -576,15 +698,13 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 
         if candidates.is_empty() {
             return Err(MediaPmError::Workflow(format!(
-                "tools.{logical_tool_name}.dependencies.ffmpeg_version '{requested_selector}' did not match any managed ffmpeg tool"
+                "tools.{logical_tool_name}.dependencies.{dependency_name}_version '{requested_selector}' did not match any managed {dependency_name} tool"
             )));
         }
 
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
-        let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg");
-        let (selected_tool_id, selected_selector) = if let Some(active_tool_id) =
-            active_ffmpeg_tool_id
-        {
+        let active_tool_id = lock.active_tools.get(dependency_name);
+        let (selected_tool_id, selected_selector) = if let Some(active_tool_id) = active_tool_id {
             candidates
                 .iter()
                 .find(|(tool_id, _)| tool_id == active_tool_id)
@@ -592,13 +712,13 @@ pub(super) fn resolve_companion_ffmpeg_selection(
                 .or_else(|| candidates.first().cloned())
                 .ok_or_else(|| {
                     MediaPmError::Workflow(format!(
-                        "tools.{logical_tool_name}.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                        "tools.{logical_tool_name}.dependencies.{dependency_name}_version matched no viable {dependency_name} candidates"
                     ))
                 })?
         } else {
             candidates.first().cloned().ok_or_else(|| {
                 MediaPmError::Workflow(format!(
-                    "tools.{logical_tool_name}.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                    "tools.{logical_tool_name}.dependencies.{dependency_name}_version matched no viable {dependency_name} candidates"
                 ))
             })?
         };
@@ -611,17 +731,17 @@ pub(super) fn resolve_companion_ffmpeg_selection(
                 .get(&selected_tool_id)
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
-            host_command_path: resolve_host_ffmpeg_command_selector_path_from_machine_tool(
+            host_command_path: resolve_host_command_selector_path_from_machine_tool(
                 machine,
                 &selected_tool_id,
             ),
         });
     }
 
-    if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
+    if let Some(payload) = provisioned_snapshot.get(dependency_name) {
         let selector = ffmpeg_selector_from_identity(&payload.identity).ok_or_else(|| {
             MediaPmError::Workflow(format!(
-                "tools.{logical_tool_name}.dependencies.ffmpeg_version could not resolve selector identity from provisioned ffmpeg payload"
+                "tools.{logical_tool_name}.dependencies.{dependency_name}_version could not resolve selector identity from provisioned {dependency_name} payload"
             ))
         })?;
 
@@ -633,13 +753,13 @@ pub(super) fn resolve_companion_ffmpeg_selection(
         });
     }
 
-    if let Some(active_ffmpeg_tool_id) = lock.active_tools.get("ffmpeg")
-        && machine.tools.contains_key(active_ffmpeg_tool_id)
+    if let Some(active_dependency_tool_id) = lock.active_tools.get(dependency_name)
+        && machine.tools.contains_key(active_dependency_tool_id)
     {
-        let selector = ffmpeg_selector_from_registry_or_tool_id(active_ffmpeg_tool_id, lock)
+        let selector = selector_from_registry_or_tool_id(active_dependency_tool_id, lock, dependency_name)
             .ok_or_else(|| {
                 MediaPmError::Workflow(format!(
-                    "tools.{logical_tool_name}.dependencies.ffmpeg_version could not derive selector identity from active ffmpeg tool '{active_ffmpeg_tool_id}'"
+                    "tools.{logical_tool_name}.dependencies.{dependency_name}_version could not derive selector identity from active {dependency_name} tool '{active_dependency_tool_id}'"
                 ))
             })?;
 
@@ -648,62 +768,24 @@ pub(super) fn resolve_companion_ffmpeg_selection(
             provisioned_content_entries: BTreeMap::new(),
             existing_content_map: machine
                 .tool_configs
-                .get(active_ffmpeg_tool_id)
+                .get(active_dependency_tool_id)
                 .and_then(|config| config.content_map.clone())
                 .unwrap_or_default(),
-            host_command_path: resolve_host_ffmpeg_command_selector_path_from_machine_tool(
+            host_command_path: resolve_host_command_selector_path_from_machine_tool(
                 machine,
-                active_ffmpeg_tool_id,
+                active_dependency_tool_id,
             ),
         });
     }
 
     Err(MediaPmError::Workflow(format!(
-        "tool '{logical_tool_name}' requires managed logical tool 'ffmpeg' for same-step companion linkage; add tools.ffmpeg or set tools.{logical_tool_name}.dependencies.ffmpeg_version to one managed ffmpeg selector"
+        "tool '{logical_tool_name}' requires managed logical tool '{dependency_name}' for same-step companion linkage; add tools.{dependency_name} or set tools.{logical_tool_name}.dependencies.{dependency_name}_version to one managed {dependency_name} selector"
     )))
-}
-
-/// Resolves host ffmpeg directory path from one machine-managed tool spec.
-///
-/// Resolution always projects the selector into the conductor `payload/`
-/// layout so generated defaults never point at the download-install root.
-#[must_use]
-fn resolve_host_ffmpeg_command_path_from_machine_tool(
-    paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
-    tool_id: &str,
-) -> Option<String> {
-    let tool_spec = machine.tools.get(tool_id)?;
-    let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
-        return None;
-    };
-
-    let selector = command.first()?.trim();
-    if selector.is_empty() {
-        return None;
-    }
-
-    let ffmpeg_selector_path = PathBuf::from(resolve_host_command_selector_path(selector)?);
-    let tool_root = paths.tools_dir.join(tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
-
-    if ffmpeg_selector_path.is_absolute() {
-        let candidate_dir = ffmpeg_selector_path
-            .parent()
-            .map_or_else(|| ffmpeg_selector_path.clone(), Path::to_path_buf);
-        return Some(candidate_dir.to_string_lossy().to_string());
-    }
-
-    let payload_candidate_dir = tool_root
-        .join(&ffmpeg_selector_path)
-        .parent()
-        .map_or_else(|| tool_root.join(&ffmpeg_selector_path), Path::to_path_buf);
-
-    Some(payload_candidate_dir.to_string_lossy().to_string())
 }
 
 /// Resolves host ffmpeg command selector path from one machine-managed tool spec.
 #[must_use]
-fn resolve_host_ffmpeg_command_selector_path_from_machine_tool(
+fn resolve_host_command_selector_path_from_machine_tool(
     machine: &MachineNickelDocument,
     tool_id: &str,
 ) -> Option<String> {
@@ -720,82 +802,39 @@ fn resolve_host_ffmpeg_command_selector_path_from_machine_tool(
     resolve_host_command_selector_path(selector)
 }
 
-/// Resolves the host ffmpeg executable path from one machine-managed tool spec.
-///
-/// Media-tagger needs the concrete `ffmpeg` executable, whereas yt-dlp consumes a directory.
-#[must_use]
-fn resolve_host_ffmpeg_executable_path_from_machine_tool(
-    paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
-    tool_id: &str,
-) -> Option<String> {
-    let directory = resolve_host_ffmpeg_command_path_from_machine_tool(paths, machine, tool_id)?;
-    let ffmpeg_file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-
-    Some(PathBuf::from(directory).join(ffmpeg_file_name).to_string_lossy().to_string())
+fn ffmpeg_selector_from_identity(identity: &ResolvedToolIdentity) -> Option<String> {
+    normalize_selector_value(identity.git_hash.as_deref())
+        .or_else(|| normalize_selector_value(identity.version.as_deref()))
+        .or_else(|| normalize_selector_value(identity.tag.as_deref()))
 }
 
-/// Finds the first regular file named `file_name` under `root` recursively.
-#[must_use]
-fn find_file_named_in_tree(root: &Path, file_name: &str) -> Option<PathBuf> {
-    if !root.exists() {
-        return None;
-    }
-
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(next) = stack.pop() {
-        let entries = fs::read_dir(&next).ok()?;
-        for entry in entries {
-            let entry = entry.ok()?;
-            let path = entry.path();
-            let ty = entry.file_type().ok()?;
-
-            if ty.is_dir() {
-                stack.push(path);
-                continue;
-            }
-
-            if ty.is_file() && path.file_name().is_some_and(|name| name == file_name) {
-                return Some(path);
-            }
-        }
-    }
-
-    None
-}
-
-/// Returns true when requested selector equals ffmpeg hash/version/tag.
-#[must_use]
 fn ffmpeg_identity_matches_selector(
     identity: &ResolvedToolIdentity,
-    normalized_requested: &str,
+    normalized_selector: &str,
 ) -> bool {
     [identity.git_hash.as_deref(), identity.version.as_deref(), identity.tag.as_deref()]
         .into_iter()
         .flatten()
-        .filter_map(|value| normalize_selector_value(Some(value)))
-        .any(|value| normalize_selector_compare_value(&value).as_str() == normalized_requested)
+        .any(|value| normalize_selector_compare_value(value) == normalized_selector)
 }
 
-/// Extracts selector identity from a resolved ffmpeg catalog identity.
-#[must_use]
-fn ffmpeg_selector_from_identity(identity: &ResolvedToolIdentity) -> Option<String> {
-    identity
-        .git_hash
-        .as_deref()
-        .or(identity.version.as_deref())
-        .or(identity.tag.as_deref())
-        .and_then(|value| normalize_selector_value(Some(value)))
-}
-
-/// Derives selector identity from lock registry first, then tool-id suffix.
+/// Derives one normalized ffmpeg selector from lock registry metadata or
+/// immutable tool id suffix.
 #[must_use]
 pub(super) fn ffmpeg_selector_from_registry_or_tool_id(
     tool_id: &str,
     lock: &MediaLockFile,
 ) -> Option<String> {
+    selector_from_registry_or_tool_id(tool_id, lock, "ffmpeg")
+}
+
+fn selector_from_registry_or_tool_id(
+    tool_id: &str,
+    lock: &MediaLockFile,
+    dependency_name: &str,
+) -> Option<String> {
     if let Some(registry_entry) = lock.tool_registry.get(tool_id)
-        && registry_entry.name.eq_ignore_ascii_case("ffmpeg")
+        && registry_entry.name.eq_ignore_ascii_case(dependency_name)
         && let Some(selector) = normalize_selector_value(Some(&registry_entry.version))
     {
         return Some(selector);

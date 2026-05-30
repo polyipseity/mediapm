@@ -687,6 +687,7 @@ fn companion_ffmpeg_selection_matches_registered_ffmpeg_tool() {
         tag: Some("latest".to_string()),
         dependencies: crate::config::ToolRequirementDependencies {
             ffmpeg_version: Some("v7.1".to_string()),
+            deno_version: None,
             sd_version: None,
         },
         recheck_seconds: None,
@@ -764,6 +765,7 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
         tag: Some("latest".to_string()),
         dependencies: crate::config::ToolRequirementDependencies {
             ffmpeg_version: Some("inherit".to_string()),
+            deno_version: None,
             sd_version: None,
         },
         recheck_seconds: None,
@@ -835,6 +837,7 @@ fn companion_ffmpeg_selection_rejects_unknown_selector() {
         tag: Some("latest".to_string()),
         dependencies: crate::config::ToolRequirementDependencies {
             ffmpeg_version: Some("v9.9".to_string()),
+            deno_version: None,
             sd_version: None,
         },
         recheck_seconds: None,

@@ -145,6 +145,17 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
 
         if requirement
             .dependencies
+            .deno_version
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(MediaPmError::Workflow(format!(
+                "tools.{tool_name}.dependencies.deno_version must be non-empty when provided"
+            )));
+        }
+
+        if requirement
+            .dependencies
             .sd_version
             .as_deref()
             .is_some_and(|value| value.trim().is_empty())
@@ -155,12 +166,19 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
         }
 
         let has_ffmpeg_dependency = requirement.dependencies.ffmpeg_version.is_some();
+        let has_deno_dependency = requirement.dependencies.deno_version.is_some();
         let has_sd_dependency = requirement.dependencies.sd_version.is_some();
         let is_media_tagger = tool_name.eq_ignore_ascii_case("media-tagger");
         let is_yt_dlp = tool_name.eq_ignore_ascii_case("yt-dlp");
         let is_rsgain = tool_name.eq_ignore_ascii_case("rsgain");
 
-        if is_media_tagger || is_yt_dlp {
+        if is_media_tagger {
+            if has_deno_dependency || has_sd_dependency {
+                return Err(MediaPmError::Workflow(format!(
+                    "tool '{tool_name}' must not define tools.{tool_name}.dependencies.deno_version or tools.{tool_name}.dependencies.sd_version; only tools.yt-dlp.dependencies.deno_version and tools.rsgain.dependencies.sd_version are supported"
+                )));
+            }
+        } else if is_yt_dlp {
             if has_sd_dependency {
                 return Err(MediaPmError::Workflow(format!(
                     "tool '{tool_name}' must not define tools.{tool_name}.dependencies.sd_version; only tools.rsgain.dependencies.sd_version is supported"
@@ -168,9 +186,14 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
             }
         } else if is_rsgain {
             // rsgain may define both ffmpeg and sd dependency selectors.
-        } else if has_ffmpeg_dependency || has_sd_dependency {
+            if has_deno_dependency {
+                return Err(MediaPmError::Workflow(format!(
+                    "tool '{tool_name}' must not define tools.{tool_name}.dependencies.deno_version; only tools.yt-dlp.dependencies.deno_version is supported"
+                )));
+            }
+        } else if has_ffmpeg_dependency || has_deno_dependency || has_sd_dependency {
             return Err(MediaPmError::Workflow(format!(
-                "tool '{tool_name}' must not define dependency selector overrides; only tools.yt-dlp.dependencies.ffmpeg_version, tools.media-tagger.dependencies.ffmpeg_version, tools.rsgain.dependencies.ffmpeg_version, and tools.rsgain.dependencies.sd_version are supported"
+                "tool '{tool_name}' must not define dependency selector overrides; only tools.yt-dlp.dependencies.ffmpeg_version, tools.yt-dlp.dependencies.deno_version, tools.media-tagger.dependencies.ffmpeg_version, tools.rsgain.dependencies.ffmpeg_version, and tools.rsgain.dependencies.sd_version are supported"
             )));
         }
 

@@ -554,6 +554,12 @@ pub struct ToolRequirementDependencies {
     ///   hash/version/tag (normalized compare).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ffmpeg_version: Option<String>,
+    /// Optional `deno` selector used by tools that require a JavaScript
+    /// runtime companion (for example `yt-dlp`).
+    ///
+    /// Selection semantics mirror `ffmpeg_version`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deno_version: Option<String>,
     /// Optional `sd` selector used by tools that require `sd` companion
     /// transforms (for example `ReplayGain` metadata rewrites).
     ///
@@ -566,7 +572,7 @@ impl ToolRequirementDependencies {
     /// Returns true when no dependency selector overrides are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.ffmpeg_version.is_none() && self.sd_version.is_none()
+        self.ffmpeg_version.is_none() && self.deno_version.is_none() && self.sd_version.is_none()
     }
 }
 
@@ -593,6 +599,12 @@ impl ToolRequirement {
     #[must_use]
     pub fn normalized_ffmpeg_selector(&self) -> Option<String> {
         normalize_selector_value(self.dependencies.ffmpeg_version.as_deref())
+    }
+
+    /// Returns normalized `deno` selector text.
+    #[must_use]
+    pub fn normalized_deno_selector(&self) -> Option<String> {
+        normalize_selector_value(self.dependencies.deno_version.as_deref())
     }
 
     /// Returns normalized `sd` selector text.

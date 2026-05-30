@@ -652,6 +652,7 @@ fn configure_document_for_local_tool_chain(
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: Some("inherit".to_string()),
                 },
                 recheck_seconds: None,
@@ -677,6 +678,7 @@ fn configure_document_for_local_tool_chain(
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
                     ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
                     sd_version: None,
                 },
                 recheck_seconds: None,
