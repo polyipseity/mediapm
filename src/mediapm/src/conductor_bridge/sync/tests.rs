@@ -335,6 +335,53 @@ fn should_not_skip_tag_updates_for_internal_launcher() {
     assert!(!should_skip_tag_update_check(&requirement, "media-tagger", &lock, &machine, false,));
 }
 
+/// Verifies yt-dlp never uses tag-only skip mode so same-step companion
+/// dependency wiring (ffmpeg + deno) always runs during reconciliation.
+#[test]
+fn should_not_skip_tag_updates_for_yt_dlp_same_step_companions() {
+    let requirement = ToolRequirement {
+        version: None,
+        tag: Some("latest".to_string()),
+        dependencies: crate::config::ToolRequirementDependencies::default(),
+        recheck_seconds: None,
+        max_input_slots: None,
+        max_output_slots: None,
+    };
+
+    let active_tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest".to_string();
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([("yt-dlp".to_string(), active_tool_id.clone())]),
+        ..MediaLockFile::default()
+    };
+
+    let machine = MachineNickelDocument {
+        tools: BTreeMap::from([(
+            active_tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec!["linux/yt-dlp".to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        )]),
+        tool_configs: BTreeMap::from([(
+            active_tool_id,
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(
+                    "linux/yt-dlp".to_string(),
+                    Hash::from_content(b"yt-dlp"),
+                )])),
+                ..ToolConfigSpec::default()
+            },
+        )]),
+        ..MachineNickelDocument::default()
+    };
+
+    assert!(!should_skip_tag_update_check(&requirement, "yt-dlp", &lock, &machine, false,));
+}
+
 /// Verifies tag-only skip mode is disabled when the active executable tool
 /// row is missing non-host platform payload keys.
 #[test]

@@ -26,6 +26,13 @@ pub(super) fn should_skip_tag_update_check(
     machine: &MachineNickelDocument,
     check_tag_updates: bool,
 ) -> bool {
+    // yt-dlp carries same-step companion dependencies (ffmpeg + deno) that
+    // must always flow through full reconciliation so selector identity and
+    // merged companion content stay consistent between `tool sync` and `sync`.
+    if tool_name.eq_ignore_ascii_case("yt-dlp") {
+        return false;
+    }
+
     if check_tag_updates || !is_tag_only_requirement(requirement) {
         return false;
     }
