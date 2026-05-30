@@ -7,11 +7,8 @@
 //!   (`import -> ffmpeg -> rsgain -> media-tagger`),
 //! - writes inspectable artifacts under `examples/.artifacts/demo`.
 //!
-//! Default runtime behavior executes full sync (`run_sync = true`) in manual
-//! runs. When this example is executed as a Cargo test binary, it
-//! auto-switches to configuration-only mode so automated runs avoid external
-//! tool downloads/execution. Operators can still override via
-//! `MEDIAPM_DEMO_RUN_SYNC`.
+//! Default runtime behavior executes full sync (`run_sync = true`) in all
+//! runs. Operators can override via `MEDIAPM_DEMO_RUN_SYNC`.
 //!
 //! Intentional deviations from `mediapm media add-local` presets kept here:
 //! - explicit untagged hierarchy output alongside tagged output,
@@ -97,7 +94,7 @@ const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
 
 /// Environment variable controlling whether this example runs full sync.
 ///
-/// - unset: full sync enabled in manual runs; disabled in test-binary runs,
+/// - unset: full sync enabled,
 /// - set to one of `0`, `false`, `no`, or `off` (case-insensitive): sync
 ///   disabled and only artifact/config generation runs.
 const DEMO_RUN_SYNC_ENV_VAR: &str = "MEDIAPM_DEMO_RUN_SYNC";
@@ -596,20 +593,9 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
-/// Returns whether this example binary was compiled as a Cargo test target.
-#[must_use]
-fn running_as_test_binary() -> bool {
-    cfg!(test)
-}
-
 /// Resolves sync execution mode from `MEDIAPM_DEMO_RUN_SYNC`.
 fn demo_run_sync_enabled() -> bool {
-    let override_value = std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok();
-    if override_value.is_some() {
-        return sync_enabled_from_env_value(override_value.as_deref());
-    }
-
-    !running_as_test_binary()
+    sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
 /// Imports one source payload into the runtime CAS store and returns its hash.
@@ -1472,10 +1458,9 @@ mod tests {
         assert!(!super::sync_enabled_from_env_value(Some("0")));
     }
 
-    /// Ensures unset sync mode defaults to config-only when compiled as a
-    /// test-target binary.
+    /// Ensures unset sync mode defaults to full sync enabled.
     #[test]
-    fn demo_run_sync_defaults_to_config_only_in_test_binary() {
+    fn demo_run_sync_defaults_to_enabled_when_env_unset() {
         let previous = std::env::var(super::DEMO_RUN_SYNC_ENV_VAR).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
@@ -1492,7 +1477,7 @@ mod tests {
             }
         }
 
-        assert!(!enabled, "test-target demo runs should default to config-only mode");
+        assert!(enabled, "demo runs should default to sync enabled when env override is unset");
     }
 
     /// Ensures cleanup retries can remove readonly-marked demo artifact trees

@@ -66,18 +66,19 @@ fn demo_declares_import_and_dollar_zero_metadata_transforms() {
     );
 }
 
-/// Verifies local `demo` defaults to config-only mode when compiled as a
-/// Cargo test-target binary.
+/// Verifies local `demo` defaults to sync-enabled mode and avoids
+/// test-target special-casing.
 #[test]
-fn demo_defaults_to_config_only_when_built_as_test_target() {
+fn demo_defaults_to_sync_enabled_without_test_target_special_casing() {
     let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
-        source.contains("fn running_as_test_binary() -> bool")
-            && source.contains("cfg!(test)")
-            && source.contains("!running_as_test_binary()")
+        !source.contains("fn running_as_test_binary() -> bool")
+            && source.contains(
+                "sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())"
+            )
             && source.contains("MEDIAPM_DEMO_RUN_SYNC"),
-        "demo should auto-disable full sync in test-target runs while keeping explicit env override support"
+        "demo should default to sync enabled and keep env override support without test-target branching"
     );
 }
 

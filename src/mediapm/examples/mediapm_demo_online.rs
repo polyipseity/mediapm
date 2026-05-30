@@ -1,8 +1,7 @@
 //! End-to-end online demo that exercises managed tool provisioning.
 //!
-//! Manual runs execute the full online workflow. When this example is executed
-//! as a Cargo test binary, it auto-switches to configuration-only mode so
-//! automated runs avoid network/provider calls and external-tool execution.
+//! By default this example executes the full online workflow in all runs.
+//! Use `MEDIAPM_DEMO_ONLINE_RUN_SYNC=false` to run configuration-only mode.
 //! The online demo keeps runtime bounded while still validating downloader
 //! sidecar capture behavior.
 //!
@@ -198,7 +197,7 @@ const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 
 /// Environment variable override for enabling/disabling full sync execution.
 ///
-/// - unset: full sync enabled in manual runs; disabled in test-binary runs,
+/// - unset: full sync enabled,
 /// - set to one of `0`, `false`, `no`, or `off`: force config-only mode,
 /// - any other non-empty value: force full sync mode.
 const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
@@ -460,19 +459,10 @@ fn sync_enabled_from_env_value(value: Option<&str>, default_enabled: bool) -> bo
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
-/// Returns whether this example binary was compiled as a Cargo test target.
-#[must_use]
-fn running_as_test_binary() -> bool {
-    cfg!(test)
-}
-
 /// Resolves online-demo sync mode from env override + build mode.
 #[must_use]
 fn demo_online_run_sync_enabled() -> bool {
-    sync_enabled_from_env_value(
-        std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(),
-        !running_as_test_binary(),
-    )
+    sync_enabled_from_env_value(std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(), true)
 }
 
 /// Configures a bounded default per-step executable timeout for this demo.
@@ -2748,10 +2738,9 @@ mod tests {
         assert!(!super::sync_enabled_from_env_value(Some("0"), true));
     }
 
-    /// Ensures test-target binaries default to config-only mode unless
-    /// explicitly overridden by environment.
+    /// Ensures demo-online defaults to sync enabled unless explicitly disabled.
     #[test]
-    fn demo_online_run_sync_defaults_to_config_only_in_test_binary() {
+    fn demo_online_run_sync_defaults_to_enabled_when_env_unset() {
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
@@ -2768,7 +2757,7 @@ mod tests {
             }
         }
 
-        assert!(!enabled, "test-target demo_online runs should default to config-only mode");
+        assert!(enabled, "demo_online should default to sync enabled when env override is unset");
     }
 
     /// Ensures config-only mode still generates workspace config artifacts and

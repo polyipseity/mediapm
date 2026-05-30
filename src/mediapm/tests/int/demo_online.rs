@@ -51,8 +51,10 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("fn demo_online_run_sync_enabled() -> bool")
             && source.contains("run_online_demo_config_only")
             && source.contains("let run_sync = demo_online_run_sync_enabled();")
-            && source.contains("println!(\"sync executed: {run_sync}\");"),
-        "demo_online should auto-switch to config-only mode in test-target runs while keeping explicit env overrides"
+            && source.contains("println!(\"sync executed: {run_sync}\");")
+            && source.contains("sync_enabled_from_env_value(std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(), true)")
+            && !source.contains("fn running_as_test_binary() -> bool"),
+        "demo_online should default to sync enabled while keeping explicit env overrides and no test-target branching"
     );
 
     assert!(
