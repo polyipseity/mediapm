@@ -291,10 +291,34 @@ fn resolve_managed_tool_id(
         [] => Err(MediaPmError::Workflow(format!(
             "tool selector '{selector}' did not match any managed tool id in conductor machine config"
         ))),
-        _ => Err(MediaPmError::Workflow(format!(
-            "tool selector '{selector}' matched multiple managed tool ids ({}) ; use an immutable --tool id",
-            matches.join(", ")
-        ))),
+        _ => {
+            if let Some((selected_tool_id, _)) = matches
+                .iter()
+                .filter_map(|tool_id| {
+                    lock.tool_registry.get(tool_id).map(|record| (tool_id, record))
+                })
+                .max_by(|left, right| {
+                    let left_key = (
+                        u8::from(left.1.status == ToolRegistryStatus::Active),
+                        left.1.last_transition_unix_seconds,
+                        left.0.as_str(),
+                    );
+                    let right_key = (
+                        u8::from(right.1.status == ToolRegistryStatus::Active),
+                        right.1.last_transition_unix_seconds,
+                        right.0.as_str(),
+                    );
+                    left_key.cmp(&right_key)
+                })
+            {
+                return Ok(selected_tool_id.clone());
+            }
+
+            Err(MediaPmError::Workflow(format!(
+                "tool selector '{selector}' matched multiple managed tool ids ({}) ; use an immutable --tool id",
+                matches.join(", ")
+            )))
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use mediapm_conductor::{
 use crate::config::{
     MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
 };
-use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
+use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
@@ -1114,10 +1114,68 @@ fn resolve_managed_tool_target_uses_active_logical_name_mapping() {
     assert_eq!(target.command_path, binary_path);
 }
 
-/// Protects ambiguity diagnostics so logical selectors fail fast when more
-/// than one installed immutable tool id matches.
+/// Protects ambiguity resolution by preferring the most recently transitioned
+/// lock-registered tool id when logical-name selectors match multiple tools.
 #[test]
-fn resolve_managed_tool_target_rejects_ambiguous_logical_name_selector() {
+fn resolve_managed_tool_target_prefers_latest_registered_match_when_ambiguous() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(temp.path());
+    let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
+    let tool_a = "mediapm.tools.ffmpeg+source-a@1.0.0";
+    let tool_b = "mediapm.tools.ffmpeg+source-b@2.0.0";
+
+    let mut machine = MachineNickelDocument::default();
+    for tool_id in [tool_a, tool_b] {
+        let binary_path = paths.tools_dir.join(tool_id).join("payload").join(relative_command);
+        fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
+        fs::write(&binary_path, b"stub binary").expect("write managed binary");
+        machine.tools.insert(
+            tool_id.to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec![relative_command.to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+    }
+    save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
+
+    let mut lock = MediaLockFile::default();
+    lock.tool_registry.insert(
+        tool_a.to_string(),
+        ToolRegistryRecord {
+            name: "ffmpeg".to_string(),
+            version: "1.0.0".to_string(),
+            source: "source-a".to_string(),
+            registry_multihash: "blake3:source-a".to_string(),
+            last_transition_unix_seconds: 10,
+            status: ToolRegistryStatus::Active,
+        },
+    );
+    lock.tool_registry.insert(
+        tool_b.to_string(),
+        ToolRegistryRecord {
+            name: "ffmpeg".to_string(),
+            version: "2.0.0".to_string(),
+            source: "source-b".to_string(),
+            registry_multihash: "blake3:source-b".to_string(),
+            last_transition_unix_seconds: 20,
+            status: ToolRegistryStatus::Active,
+        },
+    );
+
+    let target =
+        resolve_managed_tool_executable_target(&paths, &lock, "ffmpeg").expect("resolve target");
+    assert_eq!(target.tool_id, tool_b);
+}
+
+/// Protects ambiguity diagnostics so unresolved logical selectors still fail
+/// fast when no lock metadata can rank multiple installed matches.
+#[test]
+fn resolve_managed_tool_target_rejects_ambiguous_selector_without_registry_ranking() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
@@ -1143,7 +1201,7 @@ fn resolve_managed_tool_target_rejects_ambiguous_logical_name_selector() {
     save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
     let error = resolve_managed_tool_executable_target(&paths, &MediaLockFile::default(), "ffmpeg")
-        .expect_err("ambiguous logical selector should fail");
+        .expect_err("ambiguous logical selector should fail without lock ranking");
     let message = error.to_string();
     assert!(message.contains("matched multiple managed tool ids"));
     assert!(message.contains("source-a"));
