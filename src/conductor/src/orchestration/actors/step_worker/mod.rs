@@ -728,7 +728,13 @@ where
                     }
                 }
                 ParsedInputBindingSegment::Env { name } => {
-                    plain_content.extend_from_slice(format!("${{env.{name}}}").as_bytes());
+                    let value = std::env::var(name).map_err(|error| {
+                        ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' references environment variable '{name}' in input binding '{binding}', but it is not available at execution time: {error}",
+                            step.id
+                        ))
+                    })?;
+                    plain_content.extend_from_slice(value.as_bytes());
                 }
             }
         }

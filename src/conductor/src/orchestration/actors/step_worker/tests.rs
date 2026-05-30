@@ -260,10 +260,10 @@ async fn resolve_input_binding_rejects_context_config_dir() {
     }
 }
 
-/// Protects `${env.<VAR_NAME>}` input-binding handling by preserving the
-/// placeholder text through input resolution.
+/// Protects `${env.<VAR_NAME>}` input-binding handling by expanding the
+/// environment value during input resolution.
 #[tokio::test]
-async fn resolve_input_binding_preserves_env_placeholder_segments() {
+async fn resolve_input_binding_expands_env_placeholder_segments() {
     let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
     let workflow_step = WorkflowStepSpec {
         id: "step".to_string(),
@@ -278,19 +278,20 @@ async fn resolve_input_binding_preserves_env_placeholder_segments() {
         workflows: BTreeMap::new(),
         tool_content_hashes: BTreeSet::new(),
     };
+    let path = std::env::var("PATH").expect("PATH available in test environment");
 
     let resolved = executor
         .resolve_input_binding(
             &unified,
             "wf",
             &workflow_step,
-            "prefix-${env.RUNTIME_TOOL_DIR}/bin",
+            "prefix-${env.PATH}/bin",
             &BTreeMap::new(),
         )
         .await
         .expect("env placeholder binding should resolve");
 
-    assert_eq!(resolved.plain_content, b"prefix-${env.RUNTIME_TOOL_DIR}/bin".to_vec());
+    assert_eq!(resolved.plain_content, format!("prefix-{path}/bin").into_bytes());
 }
 
 /// Protects explicit failure on unsupported expression syntax.

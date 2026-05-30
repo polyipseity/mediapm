@@ -76,9 +76,9 @@ pub(crate) enum ParsedInputBindingSegment<'a> {
     },
     /// Interpolated environment-variable placeholder.
     ///
-    /// Runtime keeps this as a literal `${env.<VAR_NAME>}` placeholder at
-    /// input-binding resolution time so resolved-input persistence does not
-    /// materialize host-secret values.
+    /// Runtime expands this token from the current execution environment
+    /// during input resolution, while persisted orchestration state stores only
+    /// the resulting input hash and never the raw resolved bytes.
     Env {
         /// Environment-variable name token after the `env.` prefix.
         name: &'a str,
