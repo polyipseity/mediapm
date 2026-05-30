@@ -35,7 +35,9 @@ use super::tool_config::{
     ffmpeg_selector_from_registry_or_tool_id, media_tagger_ffmpeg_content_key,
     remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_ffmpeg_selection,
     resolve_host_command_selector_path, resolve_managed_tool_command_absolute_path,
-    resolve_yt_dlp_js_runtime_path, should_set_yt_dlp_ffmpeg_location,
+    resolve_managed_tool_payload_command_path_from_selector,
+    resolve_managed_tool_payload_directory_from_selector, resolve_yt_dlp_js_runtime_path,
+    should_set_yt_dlp_ffmpeg_location,
 };
 
 fn catalog_entry_fixture(download: ToolDownloadDescriptor) -> ToolCatalogEntry {
@@ -824,6 +826,37 @@ fn resolve_yt_dlp_js_runtime_path_uses_payload_layout() {
     let resolved = resolve_yt_dlp_js_runtime_path(&paths, tool_id).expect("resolved path");
 
     assert_eq!(resolved, runtime_path.to_string_lossy());
+}
+
+/// Verifies companion-derived ffmpeg directory defaults are emitted as absolute
+/// paths even when workspace roots are relative.
+#[test]
+fn resolve_managed_tool_payload_directory_from_selector_is_absolute_for_relative_workspace_root() {
+    let paths = MediaPmPaths::from_root(std::path::Path::new("."));
+    let resolved = resolve_managed_tool_payload_directory_from_selector(
+        &paths,
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest",
+        "windows/ffmpeg/bin/ffmpeg.exe",
+    )
+    .expect("resolved path");
+
+    assert!(std::path::Path::new(&resolved).is_absolute());
+}
+
+/// Verifies companion-derived js runtime defaults are emitted as absolute
+/// paths even when workspace roots are relative.
+#[test]
+fn resolve_managed_tool_payload_command_path_from_selector_is_absolute_for_relative_workspace_root()
+{
+    let paths = MediaPmPaths::from_root(std::path::Path::new("."));
+    let resolved = resolve_managed_tool_payload_command_path_from_selector(
+        &paths,
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest",
+        "windows/deno/deno.exe",
+    )
+    .expect("resolved path");
+
+    assert!(std::path::Path::new(&resolved).is_absolute());
 }
 
 /// Verifies explicit yt-dlp companion ffmpeg selectors fail fast when no

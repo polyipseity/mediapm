@@ -194,6 +194,23 @@ fn find_file_named_in_tree(root: &Path, file_name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Converts one path string to an absolute path string when needed.
+#[must_use]
+fn absolutize_path_string(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let candidate = PathBuf::from(trimmed);
+    if candidate.is_absolute() {
+        return Some(candidate.to_string_lossy().to_string());
+    }
+
+    let cwd = std::env::current_dir().ok()?;
+    Some(cwd.join(candidate).to_string_lossy().to_string())
+}
+
 /// Resolves host ffmpeg executable path from one machine-managed tool spec.
 #[must_use]
 fn resolve_host_ffmpeg_executable_path_from_machine_tool(
@@ -204,17 +221,16 @@ fn resolve_host_ffmpeg_executable_path_from_machine_tool(
     let selector_path = resolve_host_command_selector_path_from_machine_tool(machine, tool_id)?;
     let selector = PathBuf::from(selector_path);
     if selector.is_absolute() {
-        return Some(selector.to_string_lossy().to_string());
+        return absolutize_path_string(&selector.to_string_lossy());
     }
 
-    Some(
-        paths
+    absolutize_path_string(
+        &paths
             .tools_dir
             .join(tool_id)
             .join(CONDUCTOR_TOOL_PAYLOAD_DIR)
             .join(selector)
-            .to_string_lossy()
-            .to_string(),
+            .to_string_lossy(),
     )
 }
 
@@ -238,7 +254,7 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
     if let Some(found) = find_file_named_in_tree(&payload_os_root, runtime_file_name)
         .or_else(|| find_file_named_in_tree(&payload_root, runtime_file_name))
     {
-        return Some(found.to_string_lossy().to_string());
+        return absolutize_path_string(&found.to_string_lossy());
     }
 
     let download_os_root = tool_root.join(current_tool_os().as_str());
@@ -246,12 +262,8 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
         .or_else(|| find_file_named_in_tree(&tool_root, runtime_file_name))
         .and_then(|found| {
             let relative = found.strip_prefix(&tool_root).ok()?;
-            Some(
-                tool_root
-                    .join(CONDUCTOR_TOOL_PAYLOAD_DIR)
-                    .join(relative)
-                    .to_string_lossy()
-                    .to_string(),
+            absolutize_path_string(
+                &tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR).join(relative).to_string_lossy(),
             )
         })
 }
@@ -326,7 +338,7 @@ pub(super) fn resolve_managed_tool_payload_directory_from_selector(
     if selector_path.is_absolute() {
         let directory =
             selector_path.parent().map_or_else(|| selector_path.clone(), Path::to_path_buf);
-        return Some(directory.to_string_lossy().to_string());
+        return absolutize_path_string(&directory.to_string_lossy());
     }
 
     let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
@@ -334,7 +346,7 @@ pub(super) fn resolve_managed_tool_payload_directory_from_selector(
         .join(&selector_path)
         .parent()
         .map_or_else(|| tool_payload_root.join(&selector_path), Path::to_path_buf);
-    Some(directory.to_string_lossy().to_string())
+    absolutize_path_string(&directory.to_string_lossy())
 }
 
 /// Resolves one dependent-tool payload command path from a selector path.
@@ -358,11 +370,11 @@ pub(super) fn resolve_managed_tool_payload_command_path_from_selector(
     }
 
     if selector_path.is_absolute() {
-        return Some(selector_path.to_string_lossy().to_string());
+        return absolutize_path_string(&selector_path.to_string_lossy());
     }
 
     let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
-    Some(tool_payload_root.join(selector_path).to_string_lossy().to_string())
+    absolutize_path_string(&tool_payload_root.join(selector_path).to_string_lossy())
 }
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
