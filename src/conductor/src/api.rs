@@ -1,13 +1,16 @@
 //! Public API contracts for the conductor crate.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use mediapm_cas::Hash;
+use mediapm_cas::{FileSystemCas, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
+use crate::model::config::{MachineNickelDocument, ToolKindSpec};
 use crate::model::state::{
     OrchestrationState, decode_state, encode_state, persisted_state_json_pretty,
 };
@@ -170,6 +173,336 @@ pub struct ResolvedRuntimeStoragePaths {
     pub conductor_schema_dir: PathBuf,
     /// Resolved tool-content cache root path.
     pub conductor_tools_dir: PathBuf,
+}
+
+/// Resolved managed executable path prepared by conductor tool-cache logic.
+///
+/// The returned executable is always rooted under the conductor-owned
+/// tool-content cache and is ready for host execution on the active platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedToolExecutableResolution {
+    /// Immutable tool id selected from machine configuration.
+    pub tool_id: String,
+    /// Absolute host path to the prepared executable payload.
+    pub executable_path: PathBuf,
+}
+
+/// Resolves one managed executable from machine config using conductor-owned
+/// tool-cache preparation and filesystem CAS.
+///
+/// This helper is the cache-authoritative path for launching managed tools:
+/// it validates selector/config state, prepares the persistent payload cache
+/// from `tool_configs.<tool>.content_map`, resolves the host command selector,
+/// and returns the final executable path under `<conductor_tools_dir>`.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when selector resolution fails, machine config is
+/// invalid, tool content mapping is missing, CAS access fails, cache
+/// preparation fails, or the resolved executable path is absent.
+pub async fn resolve_managed_tool_executable_with_filesystem_cas(
+    machine_ncl: &Path,
+    cas_store_dir: &Path,
+    conductor_tools_dir: &Path,
+    selector: &str,
+) -> Result<ManagedToolExecutableResolution, ConductorError> {
+    let machine = load_machine_document_for_managed_tool_resolution(machine_ncl)?;
+    let tool_id = resolve_managed_tool_id_for_execution(&machine, selector)?;
+    let tool_spec = machine.tools.get(&tool_id).ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "managed tool '{tool_id}' is missing from conductor machine config"
+        ))
+    })?;
+    let command_selector = match &tool_spec.kind {
+        ToolKindSpec::Executable { command, .. } => {
+            command.first().map(String::as_str).ok_or_else(|| {
+                ConductorError::Workflow(format!(
+                    "managed tool '{tool_id}' has no executable command configured"
+                ))
+            })?
+        }
+        ToolKindSpec::Builtin { .. } => {
+            return Err(ConductorError::Workflow(format!(
+                "tool selector '{selector}' resolved to builtin tool '{tool_id}', which has no managed executable binary"
+            )));
+        }
+    };
+    let content_map = machine
+        .tool_configs
+        .get(&tool_id)
+        .and_then(|config| config.content_map.as_ref())
+        .filter(|map| !map.is_empty())
+        .ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "managed tool '{tool_id}' has no tool_configs content_map; run sync/import first"
+            ))
+        })?;
+
+    let cas = Arc::new(FileSystemCas::open(cas_store_dir).await.map_err(|source| {
+        ConductorError::Workflow(format!(
+            "opening conductor CAS store '{}' for managed tool resolution failed: {source}",
+            cas_store_dir.display()
+        ))
+    })?);
+    let payload_dir =
+        crate::orchestration::actors::step_worker::tool_content_cache::prepare_tool_content_cache(
+            conductor_tools_dir,
+            &tool_id,
+            content_map,
+            &cas,
+        )
+        .await?;
+
+    let host_relative = resolve_host_command_selector_path_for_execution(command_selector)?
+        .ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "managed tool '{tool_id}' command selector '{command_selector}' does not resolve to a host executable path for os '{}'",
+                std::env::consts::OS
+            ))
+        })?;
+    let relative_path =
+        normalize_managed_tool_relative_command_path_for_execution(&host_relative).ok_or_else(
+            || {
+                ConductorError::Workflow(format!(
+                    "managed tool '{tool_id}' command selector '{command_selector}' resolved to an invalid relative path"
+                ))
+            },
+        )?;
+    let executable_path = payload_dir.join(relative_path);
+    if !executable_path.is_file() {
+        return Err(ConductorError::Workflow(format!(
+            "managed tool '{tool_id}' executable is missing at '{}' after cache preparation",
+            executable_path.display()
+        )));
+    }
+
+    Ok(ManagedToolExecutableResolution { tool_id, executable_path })
+}
+
+/// Loads one machine document for managed executable resolution.
+fn load_machine_document_for_managed_tool_resolution(
+    machine_ncl: &Path,
+) -> Result<MachineNickelDocument, ConductorError> {
+    if !machine_ncl.exists() {
+        return Ok(MachineNickelDocument::default());
+    }
+
+    let bytes = fs::read(machine_ncl).map_err(|source| ConductorError::Io {
+        operation: "reading conductor machine configuration for managed tool resolution"
+            .to_string(),
+        path: machine_ncl.to_path_buf(),
+        source,
+    })?;
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(MachineNickelDocument::default());
+    }
+
+    crate::model::config::decode_machine_document(&bytes)
+}
+
+/// Resolves one immutable managed tool id from selector text.
+fn resolve_managed_tool_id_for_execution(
+    machine: &MachineNickelDocument,
+    selector: &str,
+) -> Result<String, ConductorError> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(ConductorError::Workflow(
+            "managed tool selector must be non-empty".to_string(),
+        ));
+    }
+
+    if let Some(exact) = machine.tools.keys().find(|tool_id| tool_id.eq_ignore_ascii_case(selector))
+    {
+        return Ok(exact.clone());
+    }
+
+    let mut matches = machine
+        .tools
+        .keys()
+        .filter(|tool_id| logical_name_matches_tool_id_for_execution(tool_id, selector))
+        .cloned()
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+
+    match matches.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => Err(ConductorError::Workflow(format!(
+            "tool selector '{selector}' did not match any managed tool id in conductor machine config"
+        ))),
+        _ => Err(ConductorError::Workflow(format!(
+            "tool selector '{selector}' matched multiple managed tool ids ({}) ; pass --tool <immutable-id>",
+            matches.join(", ")
+        ))),
+    }
+}
+
+/// Returns true when immutable tool id belongs to one logical tool name.
+fn logical_name_matches_tool_id_for_execution(tool_id: &str, logical_name: &str) -> bool {
+    if tool_id.eq_ignore_ascii_case(logical_name) {
+        return true;
+    }
+
+    let Some((prefix, _)) = tool_id.split_once('@') else {
+        return false;
+    };
+
+    let marker = "mediapm.tools.";
+    let canonical_prefix =
+        if prefix.len() >= marker.len() && prefix[..marker.len()].eq_ignore_ascii_case(marker) {
+            &prefix[marker.len()..]
+        } else {
+            prefix
+        };
+    let canonical_name =
+        canonical_prefix.split_once('+').map_or(canonical_prefix, |(name, _)| name);
+
+    canonical_name.trim().eq_ignore_ascii_case(logical_name)
+}
+
+/// Resolves one host command selector path for the active platform.
+fn resolve_host_command_selector_path_for_execution(
+    command_selector: &str,
+) -> Result<Option<String>, ConductorError> {
+    if command_selector.contains("context.os") {
+        let selectors = extract_platform_conditional_paths_for_execution(command_selector)?;
+        return Ok(selectors.get(std::env::consts::OS).cloned());
+    }
+
+    let trimmed = command_selector.trim();
+    if trimmed.is_empty() { Ok(None) } else { Ok(Some(trimmed.to_string())) }
+}
+
+/// Parses `${context.os == "<target>" ? <path> | <fallback>}` selectors.
+fn extract_platform_conditional_paths_for_execution(
+    template: &str,
+) -> Result<BTreeMap<String, String>, ConductorError> {
+    let mut result = BTreeMap::new();
+    let mut cursor = 0usize;
+
+    while let Some(start_rel) = template[cursor..].find("${") {
+        let start = cursor + start_rel;
+        let remainder = &template[start + 2..];
+        let Some(end_rel) = remainder.find('}') else {
+            return Err(ConductorError::Workflow(format!(
+                "invalid command selector '{template}': missing closing '}}'"
+            )));
+        };
+        let token = &remainder[..end_rel];
+
+        if let Some((target, value)) = parse_platform_conditional_path_token_for_execution(token)? {
+            result.insert(target, value);
+        }
+
+        cursor = start + 2 + end_rel + 1;
+    }
+
+    if result.is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "tool command '{template}' did not contain any context.os selectors"
+        )));
+    }
+
+    Ok(result)
+}
+
+/// Parses one `${...}` token into a platform target/path selector.
+fn parse_platform_conditional_path_token_for_execution(
+    token: &str,
+) -> Result<Option<(String, String)>, ConductorError> {
+    if !token.contains("context.os") {
+        return Ok(None);
+    }
+
+    let Some((condition, branches)) = token.split_once('?') else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; expected '?<true>|<false>'"
+        )));
+    };
+    let Some((true_branch, _false_branch)) = branches.split_once('|') else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; expected '<true>|<false>'"
+        )));
+    };
+
+    let condition = condition.trim();
+    let Some(remainder) = condition.strip_prefix("context.os") else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; condition must start with 'context.os'"
+        )));
+    };
+    let remainder = remainder.trim_start();
+    let Some(remainder) = remainder.strip_prefix("==") else {
+        return Err(ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; condition must use '=='"
+        )));
+    };
+    let target = parse_quoted_selector_value_for_execution(remainder.trim()).ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; target must be quoted"
+        ))
+    })?;
+
+    let true_branch = true_branch.trim();
+    let path = if let Some(decoded) = parse_quoted_selector_value_for_execution(true_branch) {
+        decoded
+    } else {
+        true_branch.to_string()
+    };
+    if path.is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "invalid platform selector '${{{token}}}' for tool command; true branch path is empty"
+        )));
+    }
+
+    Ok(Some((target, path)))
+}
+
+/// Parses one single- or double-quoted selector value.
+fn parse_quoted_selector_value_for_execution(value: &str) -> Option<String> {
+    if value.len() < 2 {
+        return None;
+    }
+    let first = value.chars().next()?;
+    let last = value.chars().last()?;
+    if !((first == '"' && last == '"') || (first == '\'' && last == '\'')) {
+        return None;
+    }
+
+    Some(value[first.len_utf8()..value.len() - last.len_utf8()].to_string())
+}
+
+/// Normalizes one managed-tool relative command path for payload lookup.
+fn normalize_managed_tool_relative_command_path_for_execution(
+    relative_command_path: &str,
+) -> Option<String> {
+    let normalized = relative_command_path
+        .trim()
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let path = Path::new(&normalized);
+    if path.components().any(|component| matches!(component, std::path::Component::ParentDir)) {
+        return None;
+    }
+    if path.is_absolute() {
+        return None;
+    }
+
+    Some(
+        Path::new(&normalized)
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
 }
 
 /// Summary of one workflow run.

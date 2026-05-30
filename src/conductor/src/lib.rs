@@ -24,7 +24,8 @@ pub use api::{
     ConductorApi, ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
     RuntimeStoragePaths, SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind,
     StateMutationOptions, ToolRuntimeEstimate, WorkerQueueDiagnostics, default_state_paths,
-    export_nickel_config_schemas, resolve_runtime_storage_paths, schema_export_dir,
+    export_nickel_config_schemas, resolve_managed_tool_executable_with_filesystem_cas,
+    resolve_runtime_storage_paths, schema_export_dir,
 };
 pub use error::ConductorError;
 pub use model::config::{

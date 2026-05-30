@@ -199,22 +199,27 @@ where
         let effective_paths = self.resolve_effective_paths(&document.runtime);
         let yt_dlp_configured = document.tools.contains_key("yt-dlp");
         let (yt_dlp_metadata, warning) = if yt_dlp_configured {
-            let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
-            match conductor_bridge::resolve_managed_tool_executable_target(
-                &effective_paths,
-                &lock,
+            let machine =
+                conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
+            let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
+            match mediapm_conductor::resolve_managed_tool_executable_with_filesystem_cas(
+                &effective_paths.conductor_machine_ncl,
+                &conductor_cas_root,
+                &effective_paths.tools_dir,
                 "yt-dlp",
-            ) {
+            )
+            .await
+            {
                 Ok(target) => {
                     let metadata =
-                        fetch_online_source_metadata(&normalized_uri, &target.command_path);
+                        fetch_online_source_metadata(&normalized_uri, &target.executable_path);
                     let warning = if metadata.title.is_none()
                         && metadata.artist.is_none()
                         && metadata.description.is_none()
                     {
                         Some(format!(
                             "managed yt-dlp binary at '{}' returned no usable metadata for remote source '{normalized_uri}'",
-                            target.command_path.display()
+                            target.executable_path.display()
                         ))
                     } else {
                         None
