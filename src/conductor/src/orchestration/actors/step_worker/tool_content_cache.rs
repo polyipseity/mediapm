@@ -20,7 +20,7 @@
 //! - **Miss** — CAS bytes for every entry are fetched concurrently; any
 //!   previous entry directory is removed; all content is extracted into a
 //!   fresh `payload/` tree; `metadata.json` is written atomically.
-//! - **Expiry** — entries not used within 24 hours are pruned by
+//! - **Expiry** — entries not used within 30 days are pruned by
 //!   [`prune_expired_tool_content_cache_entries`] on a best-effort basis that
 //!   never blocks workflow execution.
 //!
@@ -51,7 +51,10 @@ use tokio::task;
 use crate::error::ConductorError;
 
 /// Seconds since last use after which a cache entry is eligible for pruning.
-const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 24 * 60 * 60;
+///
+/// 30 days: extracted tool payloads are large and expensive to re-extract from
+/// CAS; keeping them for 30 days avoids unnecessary re-extraction across runs.
+const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// Minimum interval between best-effort prune scans.
 ///
 /// Prune scans traverse the full `tools/` tree; running them on every step can
@@ -535,7 +538,7 @@ fn maybe_prune_expired_tool_content_cache_entries(
     Ok(())
 }
 
-/// Removes tool-content cache entries that have not been used within 24 hours.
+/// Removes tool-content cache entries that have not been used within 30 days.
 ///
 /// Skips missing entries, unreadable metadata, or version-mismatched entries
 /// silently so cleanup never blocks workflow execution.

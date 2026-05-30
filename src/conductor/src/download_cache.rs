@@ -30,10 +30,15 @@ const USER_TOOL_CACHE_INDEX_VERSION: u32 = 1;
 const USER_TOOL_CACHE_DEFAULT_INDEX_FILE_NAME: &str = "tools.jsonc";
 
 /// Fixed entry TTL for automatic cache eviction.
-pub const USER_TOOL_CACHE_ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+///
+/// 1 day: the user-scope download cache stores raw tool archives and release
+/// metadata fetched from remote APIs.  Entries are short-lived so disk usage
+/// stays bounded; the workspace-level tool-content cache provides the durable
+/// 30-day extracted payload.
+pub const USER_TOOL_CACHE_ENTRY_TTL_SECONDS: u64 = 24 * 60 * 60;
 
 /// Minimum interval between full prune scans.
-const USER_TOOL_CACHE_PRUNE_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
+const USER_TOOL_CACHE_PRUNE_INTERVAL_SECONDS: u64 = 6 * 60 * 60;
 
 /// Minimum interval between persisted access-timestamp updates for unchanged
 /// cache keys.
