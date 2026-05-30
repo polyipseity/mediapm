@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-tools";
 
 /// Managed tool names demonstrated by this example.
-const TOOL_NAMES: [&str; 5] = ["yt-dlp", "ffmpeg", "rsgain", "sd", "media-tagger"];
+const TOOL_NAMES: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "media-tagger"];
 
 /// Shared result alias for this example.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;

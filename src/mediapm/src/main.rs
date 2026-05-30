@@ -108,7 +108,7 @@ enum ToolCommand {
     /// requirement for this name already exists, the command is a no-op.
     /// After adding, run `tool sync` to download and register the tool.
     Add {
-        /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `rsgain`, `media-tagger`, `sd`).
+        /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`).
         name: String,
     },
     /// Reconciles desired tool requirements only (no workflow/materialization run).

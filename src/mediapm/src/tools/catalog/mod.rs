@@ -3,6 +3,7 @@
 //! Catalog entries are split into one Rust file per logical tool so source
 //! details remain isolated and easy to review.
 
+mod deno;
 mod ffmpeg;
 mod media_tagger;
 mod rsgain;
@@ -186,8 +187,8 @@ impl ToolCatalogEntry {
 }
 
 /// In-memory catalog used for requirement reconciliation and downloads.
-const TOOL_CATALOG: [ToolCatalogEntry; 5] =
-    [ffmpeg::ENTRY, yt_dlp::ENTRY, rsgain::ENTRY, media_tagger::ENTRY, sd::ENTRY];
+const TOOL_CATALOG: [ToolCatalogEntry; 6] =
+    [ffmpeg::ENTRY, yt_dlp::ENTRY, deno::ENTRY, rsgain::ENTRY, media_tagger::ENTRY, sd::ENTRY];
 
 /// Resolves one catalog entry for a logical tool name.
 pub(crate) fn tool_catalog_entry(tool_name: &str) -> Result<ToolCatalogEntry, MediaPmError> {
@@ -217,12 +218,14 @@ mod tests {
     fn catalog_resolves_all_current_tool_names() {
         let ffmpeg = tool_catalog_entry("ffmpeg").expect("ffmpeg entry");
         let yt_dlp = tool_catalog_entry("yt-dlp").expect("yt-dlp entry");
+        let deno = tool_catalog_entry("deno").expect("deno entry");
         let rsgain = tool_catalog_entry("rsgain").expect("rsgain entry");
         let media_tagger = tool_catalog_entry("media-tagger").expect("media-tagger entry");
         let sd = tool_catalog_entry("sd").expect("sd entry");
 
         assert_eq!(ffmpeg.registry_track, "latest");
         assert_eq!(yt_dlp.registry_track, "latest");
+        assert_eq!(deno.registry_track, "latest");
         assert_eq!(rsgain.registry_track, "latest");
         assert_eq!(media_tagger.registry_track, "latest");
         assert_eq!(sd.registry_track, "latest");
@@ -270,7 +273,7 @@ mod tests {
     /// and content-map entries.
     #[test]
     fn managed_executable_catalog_entries_define_all_platform_metadata() {
-        for tool_name in ["ffmpeg", "yt-dlp", "rsgain", "sd"] {
+        for tool_name in ["ffmpeg", "yt-dlp", "deno", "rsgain", "sd"] {
             let entry = tool_catalog_entry(tool_name).unwrap_or_else(|error| {
                 panic!("missing tool catalog entry '{tool_name}': {error}")
             });
