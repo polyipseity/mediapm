@@ -260,6 +260,39 @@ async fn resolve_input_binding_rejects_context_config_dir() {
     }
 }
 
+/// Protects `${env.<VAR_NAME>}` input-binding handling by preserving the
+/// placeholder text through input resolution.
+#[tokio::test]
+async fn resolve_input_binding_preserves_env_placeholder_segments() {
+    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let workflow_step = WorkflowStepSpec {
+        id: "step".to_string(),
+        tool: "echo@1.0.0".to_string(),
+        inputs: BTreeMap::new(),
+        depends_on: Vec::new(),
+        outputs: BTreeMap::new(),
+    };
+    let unified = UnifiedNickelDocument {
+        external_data: BTreeMap::new(),
+        tools: BTreeMap::new(),
+        workflows: BTreeMap::new(),
+        tool_content_hashes: BTreeSet::new(),
+    };
+
+    let resolved = executor
+        .resolve_input_binding(
+            &unified,
+            "wf",
+            &workflow_step,
+            "prefix-${env.RUNTIME_TOOL_DIR}/bin",
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("env placeholder binding should resolve");
+
+    assert_eq!(resolved.plain_content, b"prefix-${env.RUNTIME_TOOL_DIR}/bin".to_vec());
+}
+
 /// Protects explicit failure on unsupported expression syntax.
 #[test]
 fn template_interpolation_rejects_unsupported_expression() {

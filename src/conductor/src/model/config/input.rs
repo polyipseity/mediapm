@@ -48,6 +48,9 @@ const INPUT_BINDING_EXTERNAL_DATA_PREFIX: &str = "external_data.";
 /// Prefix for `${step_output.<step_id>.<output_name>}` expression bodies.
 const INPUT_BINDING_STEP_OUTPUT_PREFIX: &str = "step_output.";
 
+/// Prefix for `${env.<VAR_NAME>}` expression bodies.
+const INPUT_BINDING_ENV_PREFIX: &str = "env.";
+
 /// Token-start marker for interpolation spans in workflow-step input bindings.
 const INPUT_BINDING_TOKEN_START: &str = "${";
 
@@ -70,6 +73,15 @@ pub(crate) enum ParsedInputBindingSegment<'a> {
         output: &'a str,
         /// Optional ZIP member selector extracted from output bytes.
         zip_member: Option<&'a str>,
+    },
+    /// Interpolated environment-variable placeholder.
+    ///
+    /// Runtime keeps this as a literal `${env.<VAR_NAME>}` placeholder at
+    /// input-binding resolution time so resolved-input persistence does not
+    /// materialize host-secret values.
+    Env {
+        /// Environment-variable name token after the `env.` prefix.
+        name: &'a str,
     },
 }
 
@@ -119,7 +131,7 @@ fn parse_input_binding_expression<'a>(
 ) -> Result<ParsedInputBindingSegment<'a>, ConductorError> {
     if expression.contains(":file(") || expression.contains(":folder(") {
         return Err(ConductorError::Workflow(format!(
-            "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}' and '${{step_output.<step_id>.<output_name>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
+            "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}', '${{step_output.<step_id>.<output_name>}}', and '${{env.<VAR_NAME>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
         )));
     }
 
@@ -161,8 +173,23 @@ fn parse_input_binding_expression<'a>(
         return Ok(ParsedInputBindingSegment::StepOutput { step_id, output, zip_member });
     }
 
+    if let Some(name) = selector_expression.strip_prefix(INPUT_BINDING_ENV_PREFIX) {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ConductorError::Workflow(
+                "input binding '${env.<VAR_NAME>}' requires a non-empty <VAR_NAME>".to_string(),
+            ));
+        }
+        if zip_member.is_some() {
+            return Err(ConductorError::Workflow(format!(
+                "unsupported input binding expression '${{{expression}}}' in '{binding}'; :zip(...) is currently supported only for step_output references"
+            )));
+        }
+        return Ok(ParsedInputBindingSegment::Env { name });
+    }
+
     Err(ConductorError::Workflow(format!(
-        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}', '${{step_output.<step_id>.<output_name>}}', and '${{step_output.<step_id>.<output_name>:zip(<member>)}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
+        "unsupported input binding expression '${{{expression}}}' in '{binding}'; supported interpolation forms are '${{external_data.<hash>}}', '${{step_output.<step_id>.<output_name>}}', '${{step_output.<step_id>.<output_name>:zip(<member>)}}', and '${{env.<VAR_NAME>}}'. Input bindings do not support materialization directives like ':file(...)' or ':folder(...)'"
     )))
 }
 
@@ -171,7 +198,7 @@ fn parse_input_binding_expression<'a>(
 /// Rules:
 /// - plain text outside `${...}` tokens is preserved as literal content,
 /// - supported interpolation expressions are `${external_data.<hash>}`,
-///   and `${step_output.<step_id>.<output_name>}`,
+///   `${step_output.<step_id>.<output_name>}`, and `${env.<VAR_NAME>}`,
 /// - `${step_output.<step_id>.<output_name>:zip(<member>)}` additionally
 ///   selects one ZIP member from the referenced output bytes,
 /// - unsupported `${...}` expressions fail fast with explicit errors,
@@ -209,4 +236,40 @@ pub(crate) fn parse_input_binding(
     }
 
     Ok(segments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ParsedInputBindingSegment, parse_input_binding};
+
+    /// Verifies `${env.<VAR_NAME>}` parses as one dedicated env segment.
+    #[test]
+    fn parse_input_binding_supports_env_segment() {
+        let parsed = parse_input_binding("${env.RUNTIME_TOOL_DIR}").expect("env binding parses");
+        assert_eq!(parsed, vec![ParsedInputBindingSegment::Env { name: "RUNTIME_TOOL_DIR" }]);
+    }
+
+    /// Verifies env interpolation can be mixed with surrounding literal text.
+    #[test]
+    fn parse_input_binding_supports_mixed_env_and_literals() {
+        let parsed = parse_input_binding("prefix-${env.RUNTIME_TOOL_DIR}/bin")
+            .expect("mixed env binding parses");
+        assert_eq!(
+            parsed,
+            vec![
+                ParsedInputBindingSegment::Literal("prefix-"),
+                ParsedInputBindingSegment::Env { name: "RUNTIME_TOOL_DIR" },
+                ParsedInputBindingSegment::Literal("/bin"),
+            ]
+        );
+    }
+
+    /// Verifies empty env names fail fast with actionable diagnostics.
+    #[test]
+    fn parse_input_binding_rejects_empty_env_name() {
+        let error = parse_input_binding("${env.}").expect_err("empty env name should fail");
+        let message = error.to_string();
+        assert!(message.contains("${env.<VAR_NAME>}"));
+        assert!(message.contains("non-empty"));
+    }
 }

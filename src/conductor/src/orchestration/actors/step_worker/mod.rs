@@ -611,6 +611,7 @@ where
     /// - `${external_data.<hash>}`,
     /// - `${step_output.<step_id>.<output_name>}`,
     /// - `${step_output.<step_id>.<output_name>:zip(<member>)}`,
+    /// - `${env.<VAR_NAME>}`,
     ///
     /// Every resolved input payload is persisted to CAS and represented by the
     /// resulting hash identity in persisted orchestration state.
@@ -725,6 +726,9 @@ where
                     } else {
                         plain_content.extend_from_slice(bytes.as_ref());
                     }
+                }
+                ParsedInputBindingSegment::Env { name } => {
+                    plain_content.extend_from_slice(format!("${{env.{name}}}").as_bytes());
                 }
             }
         }
