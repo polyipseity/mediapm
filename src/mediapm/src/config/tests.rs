@@ -698,6 +698,63 @@ rsgain = { tag = "latest", dependencies = { ffmpeg_version = "inherit", sd_versi
     assert_eq!(document.tools["rsgain"].dependencies.sd_version.as_deref(), Some("inherit"));
 }
 
+/// Protects dependency-inherit semantics by requiring configured dependency
+/// tool rows when yt-dlp asks to inherit ffmpeg/deno selectors.
+#[test]
+fn yt_dlp_inherit_dependencies_require_configured_tools() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("mediapm.ncl");
+    let source = r#"
+{
+version = 1,
+tools = {
+    "yt-dlp" = {
+        tag = "latest",
+        dependencies = {
+            ffmpeg_version = "inherit",
+            deno_version = "inherit",
+        },
+    },
+},
+}
+"#;
+
+    std::fs::write(&path, source).expect("write source");
+    let err = load_mediapm_document(&path)
+        .expect_err("yt-dlp inherit dependencies should require tools.ffmpeg/tools.deno");
+
+    assert!(err.to_string().contains("requires tools.ffmpeg"), "unexpected error: {err}");
+}
+
+/// Protects dependency-inherit semantics by requiring configured `sd` rows
+/// when rsgain inherits `sd_version`.
+#[test]
+fn rsgain_inherit_sd_dependency_requires_configured_sd_tool() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("mediapm.ncl");
+    let source = r#"
+{
+version = 1,
+tools = {
+    ffmpeg = { tag = "latest" },
+    rsgain = {
+        tag = "latest",
+        dependencies = {
+            ffmpeg_version = "inherit",
+            sd_version = "inherit",
+        },
+    },
+},
+}
+"#;
+
+    std::fs::write(&path, source).expect("write source");
+    let err = load_mediapm_document(&path)
+        .expect_err("rsgain inherit sd dependency should require tools.sd");
+
+    assert!(err.to_string().contains("requires tools.sd"), "unexpected error: {err}");
+}
+
 /// Protects yt-dlp output-variant schema by requiring `format` to be set
 /// in step `options`, not inside output-variant config objects.
 #[test]

@@ -108,6 +108,10 @@ fn collect_playlist_media_index(
 }
 
 /// Validates desired tool requirement selector invariants.
+#[expect(
+    clippy::too_many_lines,
+    reason = "validation keeps cross-tool dependency and selector invariants in one auditable flow"
+)]
 fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmError> {
     for (tool_name, requirement) in &document.tools {
         let version = requirement.normalized_version();
@@ -178,12 +182,32 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
                     "tool '{tool_name}' must not define tools.{tool_name}.dependencies.deno_version or tools.{tool_name}.dependencies.sd_version; only tools.yt-dlp.dependencies.deno_version and tools.rsgain.dependencies.sd_version are supported"
                 )));
             }
+
+            ensure_inherit_dependency_target_is_configured(
+                document,
+                tool_name,
+                "ffmpeg",
+                requirement.dependencies.ffmpeg_version.as_deref(),
+            )?;
         } else if is_yt_dlp {
             if has_sd_dependency {
                 return Err(MediaPmError::Workflow(format!(
                     "tool '{tool_name}' must not define tools.{tool_name}.dependencies.sd_version; only tools.rsgain.dependencies.sd_version is supported"
                 )));
             }
+
+            ensure_inherit_dependency_target_is_configured(
+                document,
+                tool_name,
+                "ffmpeg",
+                requirement.dependencies.ffmpeg_version.as_deref(),
+            )?;
+            ensure_inherit_dependency_target_is_configured(
+                document,
+                tool_name,
+                "deno",
+                requirement.dependencies.deno_version.as_deref(),
+            )?;
         } else if is_rsgain {
             // rsgain may define both ffmpeg and sd dependency selectors.
             if has_deno_dependency {
@@ -191,6 +215,19 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
                     "tool '{tool_name}' must not define tools.{tool_name}.dependencies.deno_version; only tools.yt-dlp.dependencies.deno_version is supported"
                 )));
             }
+
+            ensure_inherit_dependency_target_is_configured(
+                document,
+                tool_name,
+                "ffmpeg",
+                requirement.dependencies.ffmpeg_version.as_deref(),
+            )?;
+            ensure_inherit_dependency_target_is_configured(
+                document,
+                tool_name,
+                "sd",
+                requirement.dependencies.sd_version.as_deref(),
+            )?;
         } else if has_ffmpeg_dependency || has_deno_dependency || has_sd_dependency {
             return Err(MediaPmError::Workflow(format!(
                 "tool '{tool_name}' must not define dependency selector overrides; only tools.yt-dlp.dependencies.ffmpeg_version, tools.yt-dlp.dependencies.deno_version, tools.media-tagger.dependencies.ffmpeg_version, tools.rsgain.dependencies.ffmpeg_version, and tools.rsgain.dependencies.sd_version are supported"
@@ -217,6 +254,31 @@ fn validate_tool_requirements(document: &MediaPmDocument) -> Result<(), MediaPmE
     }
 
     Ok(())
+}
+
+/// Enforces that inherit/global dependency selectors have a configured source
+/// tool entry to inherit from.
+fn ensure_inherit_dependency_target_is_configured(
+    document: &MediaPmDocument,
+    logical_tool_name: &str,
+    dependency_tool_name: &str,
+    selector: Option<&str>,
+) -> Result<(), MediaPmError> {
+    let Some(selector) = selector.map(str::trim) else {
+        return Ok(());
+    };
+
+    if !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global") {
+        return Ok(());
+    }
+
+    if document.tools.contains_key(dependency_tool_name) {
+        return Ok(());
+    }
+
+    Err(MediaPmError::Workflow(format!(
+        "tools.{logical_tool_name}.dependencies.{dependency_tool_name}_version='{selector}' requires tools.{dependency_tool_name} to be configured so there is a managed dependency to inherit"
+    )))
 }
 
 /// Parses supported hierarchy placeholders from one hierarchy key.
