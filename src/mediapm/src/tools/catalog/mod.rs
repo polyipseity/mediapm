@@ -10,6 +10,7 @@ mod rsgain;
 mod sd;
 mod yt_dlp;
 
+pub(crate) use crate::config::ToolRequirementDependencies;
 use crate::error::MediaPmError;
 
 /// Supported operating-system targets for tool payload selection.
@@ -143,7 +144,7 @@ pub(crate) struct ToolAdditionalDownloadSource {
 }
 
 /// Catalog entry for one logical tool declared in `mediapm.ncl`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolCatalogEntry {
     /// Logical tool name as used by users and workflow synthesis.
     pub name: &'static str,
@@ -169,19 +170,19 @@ pub(crate) struct ToolCatalogEntry {
 impl ToolCatalogEntry {
     /// Returns executable file name expected for one host OS.
     #[must_use]
-    pub fn executable_name_for_os(self, os: ToolOs) -> String {
+    pub fn executable_name_for_os(&self, os: ToolOs) -> String {
         self.executable_name.for_os(os).to_string()
     }
 
     /// Returns source label selected for one host OS.
     #[must_use]
-    pub fn source_label_for_os(self, os: ToolOs) -> &'static str {
+    pub fn source_label_for_os(&self, os: ToolOs) -> &'static str {
         self.source_label.for_os(os)
     }
 
     /// Returns source identifier selected for one host OS.
     #[must_use]
-    pub fn source_identifier_for_os(self, os: ToolOs) -> &'static str {
+    pub fn source_identifier_for_os(&self, os: ToolOs) -> &'static str {
         self.source_identifier.for_os(os)
     }
 }
@@ -195,7 +196,7 @@ pub(crate) fn tool_catalog_entry(tool_name: &str) -> Result<ToolCatalogEntry, Me
     let normalized = tool_name.trim();
     TOOL_CATALOG
         .iter()
-        .copied()
+        .cloned()
         .find(|entry| entry.name.eq_ignore_ascii_case(normalized))
         .ok_or_else(|| {
             let names = TOOL_CATALOG
@@ -207,6 +208,32 @@ pub(crate) fn tool_catalog_entry(tool_name: &str) -> Result<ToolCatalogEntry, Me
                 "tool '{tool_name}' is not supported by mediapm downloader catalog; supported tools: {names}"
             ))
         })
+}
+
+/// Returns the default dependency selectors seeded by `mediapm tool add` for
+/// one managed logical tool.
+#[must_use]
+pub(crate) fn default_tool_requirement_dependencies(
+    tool_name: &str,
+) -> ToolRequirementDependencies {
+    match tool_name.trim().to_ascii_lowercase().as_str() {
+        "yt-dlp" => ToolRequirementDependencies {
+            ffmpeg_version: Some("inherit".to_string()),
+            deno_version: Some("inherit".to_string()),
+            sd_version: None,
+        },
+        "media-tagger" => ToolRequirementDependencies {
+            ffmpeg_version: Some("inherit".to_string()),
+            deno_version: None,
+            sd_version: None,
+        },
+        "rsgain" => ToolRequirementDependencies {
+            ffmpeg_version: Some("inherit".to_string()),
+            deno_version: None,
+            sd_version: Some("inherit".to_string()),
+        },
+        _ => ToolRequirementDependencies::default(),
+    }
 }
 
 #[cfg(test)]

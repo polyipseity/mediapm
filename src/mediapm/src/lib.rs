@@ -25,6 +25,9 @@ mod service;
 mod source_metadata;
 mod tools;
 
+#[cfg(test)]
+mod tool_add_defaults_tests;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

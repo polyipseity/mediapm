@@ -23,9 +23,8 @@ use url::Url;
 use crate::conductor_bridge::ConductorToolRow;
 use crate::config::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
-    MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_mediapm_document, load_mediapm_document_without_validation,
-    save_mediapm_document,
+    MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
+    load_mediapm_document, load_mediapm_document_without_validation, save_mediapm_document,
 };
 use crate::error::MediaPmError;
 use crate::hierarchy::{
@@ -803,15 +802,7 @@ where
             ToolRequirement {
                 version: None,
                 tag: Some("latest".to_string()),
-                dependencies: if tool_name.eq_ignore_ascii_case("yt-dlp") {
-                    ToolRequirementDependencies {
-                        ffmpeg_version: Some("inherit".to_string()),
-                        deno_version: Some("inherit".to_string()),
-                        sd_version: None,
-                    }
-                } else {
-                    ToolRequirementDependencies::default()
-                },
+                dependencies: tools::catalog::default_tool_requirement_dependencies(tool_name),
                 recheck_seconds: None,
                 max_input_slots: None,
                 max_output_slots: None,
