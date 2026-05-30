@@ -93,6 +93,13 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
         .collect::<BTreeSet<_>>();
 
     for stale_tool_id in &stale_registry_ids {
+        // Remove the tool spec so conductor logical-name resolution no longer
+        // matches this stale id.  Without this, a companion-change (e.g. adding
+        // a deno requirement to yt-dlp) leaves the old id in `machine.tools`,
+        // causing conductor to find both the old and new ids and fail with an
+        // "matched multiple managed tool ids" ambiguity error.
+        machine.tools.remove(stale_tool_id);
+
         let removed_hashes = machine
             .tool_configs
             .remove(stale_tool_id)
