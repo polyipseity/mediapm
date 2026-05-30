@@ -468,30 +468,21 @@ mod tests {
 
     #[test]
     fn locator_parser_expands_environment_variables() {
-        let (name, value) = ["HOME", "TMPDIR"]
-            .into_iter()
-            .find_map(|name| {
-                let value = std::env::var(name).ok()?;
-                if value.trim().is_empty() {
-                    return None;
-                }
+        let base = tempdir().expect("tempdir");
+        let base_path = base.path().to_string_lossy().into_owned();
+        let env_name = "MEDIAPM_CAS_TEST_BASE_DIR";
+        unsafe {
+            std::env::set_var(env_name, &base_path);
+        }
 
-                let path = std::path::Path::new(value.as_str());
-                if path.is_dir() { Some((name.to_string(), value)) } else { None }
-            })
-            .unwrap_or_else(|| {
-                let cwd = std::env::current_dir().expect("current_dir");
-                ("PWD".to_string(), cwd.to_string_lossy().into_owned())
-            });
-
-        let locator = format!("cas://${{{name}}}/mediapm-cas-repo");
+        let locator = format!("cas://${{{env_name}}}/mediapm-cas-repo");
         let cfg = CasBackendConfig::from_locator(&locator).expect("env-expanded cas locator");
         let CasBackendConfig::FileSystem { root, .. } = cfg else {
             panic!("expected filesystem backend");
         };
 
         assert!(
-            root.to_string_lossy().contains(&value),
+            root.to_string_lossy().contains(&base_path),
             "expanded locator root should include source environment value"
         );
         assert!(root.to_string_lossy().contains("mediapm-cas-repo"));
