@@ -717,6 +717,15 @@ fn preserve_existing_generated_step_tools(
     for generated in workflow.steps.iter_mut().skip(generated_start) {
         if let Some(previous) = existing.steps.iter().find(|candidate| candidate.id == generated.id)
         {
+            // yt-dlp tool identities encode same-step companion selector
+            // fragments (for example `+ffmpeg-...+deno-...`). Keep refreshed
+            // generated identities when they differ so workflow steps do not
+            // pin stale companion mappings.
+            if generated.id.ends_with("-yt-dlp") && generated.tool != previous.tool {
+                all_matched = false;
+                continue;
+            }
+
             generated.tool = previous.tool.clone();
         } else {
             all_matched = false;

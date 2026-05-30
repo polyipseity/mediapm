@@ -182,10 +182,26 @@ fn plan_builds_exactly_one_workflow_per_media() {
 /// mediapm step impure timestamp is present.
 #[test]
 fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
-    let old_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@old".to_string();
-    let new_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@new".to_string();
+    let old_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@old".to_string();
+    let new_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@new".to_string();
     let media_id = "archive-a".to_string();
-    let source = single_step_yt_dlp_source("subtitles");
+    let source = MediaSourceSpec {
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::from([(
+            "source".to_string(),
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]),
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([("default".to_string(), ffmpeg_output_variant(0))]),
+            options: BTreeMap::new(),
+        }],
+    };
     let explicit_snapshot =
         serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
     let preserved_timestamp = MediaPmImpureTimestamp { epoch_seconds: 10, subsec_nanos: 20 };
@@ -196,7 +212,7 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
     };
 
     let mut lock = MediaLockFile {
-        active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
+        active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
         workflow_states: BTreeMap::from([(
             media_id.clone(),
             vec![ManagedWorkflowStepState {
@@ -208,19 +224,16 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
     };
 
     let mut machine = machine_with_active_tool_specs(&lock);
-    machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
+    machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
     machine.workflows.insert(
         format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
         WorkflowSpec {
             steps: vec![WorkflowStepSpec {
-                id: "0-0-yt-dlp".to_string(),
+                id: "0-0-ffmpeg".to_string(),
                 tool: old_tool.clone(),
                 inputs: BTreeMap::new(),
                 depends_on: Vec::new(),
-                outputs: BTreeMap::from([(
-                    "yt_dlp_subtitle_artifacts".to_string(),
-                    OutputPolicy { save: None },
-                )]),
+                outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
             }],
             ..WorkflowSpec::default()
         },
@@ -241,6 +254,68 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, explicit_snapshot);
     assert_eq!(stored.impure_timestamp, Some(preserved_timestamp));
+}
+
+/// Protects same-step companion refresh semantics by forcing yt-dlp workflow
+/// steps to adopt refreshed immutable tool ids when companion selector
+/// fragments change.
+#[test]
+fn unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_changes() {
+    let old_tool =
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp+ffmpeg-old+deno-old@old".to_string();
+    let new_tool =
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp+ffmpeg-new+deno-new@new".to_string();
+    let media_id = "archive-companion-refresh".to_string();
+    let source = single_step_yt_dlp_source("subtitles");
+    let explicit_snapshot =
+        serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(media_id.clone(), source)]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile {
+        active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 10,
+                    subsec_nanos: 20,
+                }),
+            }],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-yt-dlp".to_string(),
+                tool: old_tool,
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_subtitle_artifacts".to_string(),
+                    OutputPolicy { save: None },
+                )]),
+            }],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
+        .expect("plan should succeed");
+    let workflow =
+        plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
+
+    assert_eq!(workflow.steps.len(), 1);
+    assert_eq!(workflow.steps[0].tool, new_tool);
 }
 
 /// Protects refresh gating by forcing refresh when explicit user-facing step
