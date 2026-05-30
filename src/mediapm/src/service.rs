@@ -1202,9 +1202,14 @@ pub fn registered_builtin_ids() -> [&'static str; 5] {
 /// inject its resolved runtime defaults into child CLI argv without creating
 /// configuration files as a side effect.
 ///
+/// Only the `runtime` field of `mediapm.ncl` is used here. Cross-field
+/// validation is intentionally skipped so that bootstrapping workflows (for
+/// example adding tools one at a time before all companions are present) can
+/// resolve paths without triggering premature dependency-graph errors.
+///
 /// # Errors
 ///
-/// Returns [`MediaPmError`] when an existing `mediapm.ncl` cannot be loaded or
+/// Returns [`MediaPmError`] when an existing `mediapm.ncl` cannot be parsed or
 /// when effective runtime paths cannot be derived from config plus overrides.
 pub fn resolve_effective_paths_for_root(
     root_dir: &Path,
@@ -1212,7 +1217,7 @@ pub fn resolve_effective_paths_for_root(
 ) -> Result<MediaPmPaths, MediaPmError> {
     let base_paths = MediaPmPaths::from_root(root_dir);
     let document = if base_paths.mediapm_ncl.exists() {
-        load_mediapm_document(&base_paths.mediapm_ncl)?
+        load_mediapm_document_without_validation(&base_paths.mediapm_ncl)?
     } else {
         MediaPmDocument::default()
     };
