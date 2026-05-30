@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use mediapm_cas::{CasApi, FileSystemCas};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
 
 use crate::config::{MediaPmDocument, ToolRequirement};
@@ -115,6 +115,10 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
             .unwrap_or_default();
 
         for hash in removed_hashes {
+            if is_hash_still_referenced_by_tool_configs(machine, hash) {
+                continue;
+            }
+
             if cas.exists(hash).await.unwrap_or(false) {
                 let _ = cas.delete(hash).await;
             }
@@ -146,6 +150,20 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
     }
 
     Ok(())
+}
+
+/// Returns whether any current machine tool config still references `hash`.
+#[must_use]
+pub(super) fn is_hash_still_referenced_by_tool_configs(
+    machine: &MachineNickelDocument,
+    hash: Hash,
+) -> bool {
+    machine.tool_configs.values().any(|config| {
+        config
+            .content_map
+            .as_ref()
+            .is_some_and(|content_map| content_map.values().any(|candidate| *candidate == hash))
+    })
 }
 
 /// Resolves lockfile version label from provisioned identity metadata.

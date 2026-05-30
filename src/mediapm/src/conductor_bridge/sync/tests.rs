@@ -23,7 +23,7 @@ use super::super::tool_runtime::{
 use super::content_import::{ContentMapSourceCacheKey, import_tool_content_source_into_cas};
 use super::lifecycle::{
     ensure_internal_launcher_content_entries_exist, is_builtin_source_ingest_requirement,
-    lock_registry_version, should_skip_tag_update_check,
+    is_hash_still_referenced_by_tool_configs, lock_registry_version, should_skip_tag_update_check,
 };
 use super::provision::{
     TOOL_PROGRESS_BAR_SCALE, ToolDownloadProgressState, format_overall_tool_download_message,
@@ -1085,4 +1085,42 @@ fn builtin_source_ingest_tool_requirements_are_skipped_from_provisioning() {
     assert!(is_builtin_source_ingest_requirement("import"));
     assert!(!is_builtin_source_ingest_requirement("ffmpeg"));
     assert!(!is_builtin_source_ingest_requirement("yt-dlp"));
+}
+
+/// Verifies shared CAS hashes are preserved when any remaining machine tool
+/// config still references them.
+#[test]
+fn hash_reference_guard_detects_shared_tool_content_hashes() {
+    let shared_hash = Hash::from_content(b"shared-companion-bytes");
+    let unique_hash = Hash::from_content(b"unique-bytes");
+
+    let machine = MachineNickelDocument {
+        tool_configs: BTreeMap::from([
+            (
+                "mediapm.tools.yt-dlp@new".to_string(),
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([(
+                        "linux/deno/deno".to_string(),
+                        shared_hash,
+                    )])),
+                    ..ToolConfigSpec::default()
+                },
+            ),
+            (
+                "mediapm.tools.ffmpeg@new".to_string(),
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([("linux/ffmpeg".to_string(), unique_hash)])),
+                    ..ToolConfigSpec::default()
+                },
+            ),
+        ]),
+        ..MachineNickelDocument::default()
+    };
+
+    assert!(is_hash_still_referenced_by_tool_configs(&machine, shared_hash));
+    assert!(is_hash_still_referenced_by_tool_configs(&machine, unique_hash));
+    assert!(!is_hash_still_referenced_by_tool_configs(
+        &machine,
+        Hash::from_content(b"missing-hash")
+    ));
 }

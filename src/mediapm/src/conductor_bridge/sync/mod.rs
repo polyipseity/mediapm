@@ -8,7 +8,8 @@ mod tool_config;
 use self::content_import::import_tool_content_files_into_cas;
 use self::lifecycle::{
     ensure_internal_launcher_content_entries_exist, is_builtin_source_ingest_requirement,
-    lock_registry_version, prune_unmanaged_tool_artifacts, should_skip_tag_update_check,
+    is_hash_still_referenced_by_tool_configs, lock_registry_version,
+    prune_unmanaged_tool_artifacts, should_skip_tag_update_check,
 };
 use self::provision::provision_desired_tools_concurrently;
 use self::tool_config::{
@@ -378,6 +379,10 @@ pub(crate) async fn prune_tool_binary(
         })?;
 
         for hash in &removed_hashes {
+            if is_hash_still_referenced_by_tool_configs(&machine, *hash) {
+                continue;
+            }
+
             if cas.exists(*hash).await.unwrap_or(false) {
                 let _ = cas.delete(*hash).await;
             }
