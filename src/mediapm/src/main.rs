@@ -53,8 +53,8 @@ struct Cli {
 enum Command {
     /// Reconciles desired state and materializes the media library.
     ///
-    /// Default policy skips remote update checks for tag-only selectors unless
-    /// `--check-tag-updates` is provided.
+    /// Default policy checks remote updates for tag-only selectors unless
+    /// `--no-check-tag-updates` is provided.
     Sync(SyncArgs),
     /// Tool lifecycle commands.
     #[command(name = "tool", visible_alias = "tools")]
@@ -499,7 +499,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Sync(args) => {
-            let check_tag_updates = args.tag_update_policy.resolve(false);
+            let check_tag_updates = args.tag_update_policy.resolve(true);
             let summary = service.sync_library_with_tag_update_checks(check_tag_updates).await?;
             println!(
                 "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}, tools_added={}, tools_updated={}",
