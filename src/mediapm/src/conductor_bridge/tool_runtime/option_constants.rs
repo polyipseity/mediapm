@@ -22,6 +22,7 @@ pub(super) const YT_DLP_OPTION_INPUTS: &[&str] = &[
     "embed_chapters",
     "embed_info_json",
     "write_subs",
+    "write_auto_subs",
     "sub_langs",
     "sub_format",
     "convert_subs",

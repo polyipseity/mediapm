@@ -534,10 +534,9 @@ fn build_tool_command_sets_media_tagger_flags() {
 }
 
 /// Protects boolean-template rendering by ensuring generated templates use
-/// exact string checks and only emit explicit `"false"` branches for unified
-/// subtitle disable toggles.
+/// exact string checks and never emit explicit `"false"` boolean branches.
 #[test]
-fn build_tool_command_bool_templates_keep_explicit_false_only_for_unified_subtitles() {
+fn build_tool_command_bool_templates_omit_explicit_false_branches() {
     let yt_payload = ProvisionedToolPayload {
         tool_id: "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
         command_selector: "yt-dlp".to_string(),
@@ -573,19 +572,7 @@ fn build_tool_command_bool_templates_keep_explicit_false_only_for_unified_subtit
     assert!(combined.iter().all(|token| !token.contains("== \"yes\"")));
     assert!(combined.iter().all(|token| !token.contains("== \"on\"")));
 
-    let false_branch_tokens =
-        combined.iter().filter(|token| token.contains("== \"false\"")).copied().collect::<Vec<_>>();
-    assert_eq!(false_branch_tokens.len(), 2);
-    assert!(
-        false_branch_tokens
-            .iter()
-            .any(|token| token == &"${*inputs.write_subs == \"false\" ? --no-write-subs | ''}"),
-    );
-    assert!(
-        false_branch_tokens.iter().any(
-            |token| token == &"${*inputs.write_subs == \"false\" ? --no-write-auto-subs | ''}"
-        ),
-    );
+    assert!(combined.iter().all(|token| !token.contains("== \"false\"")));
 
     assert!(combined.iter().all(|token| !token.contains("== \"0\"")));
     assert!(combined.iter().all(|token| !token.contains("== \"no\"")));

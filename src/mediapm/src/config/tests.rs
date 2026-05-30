@@ -1321,10 +1321,10 @@ media = {
     assert!(err.to_string().contains("unsupported option 'unsupported'"));
 }
 
-/// Protects unified subtitle option semantics by rejecting legacy
+/// Protects split subtitle option semantics by accepting explicit
 /// `write_auto_subs` step options.
 #[test]
-fn step_options_reject_legacy_write_auto_subs_key() {
+fn step_options_accept_write_auto_subs_key() {
     let root = tempfile::tempdir().expect("tempdir");
     let path = root.path().join("mediapm.ncl");
     let source = r#"
@@ -1348,8 +1348,8 @@ media = {
 "#;
 
     std::fs::write(&path, source).expect("write source");
-    let err = load_mediapm_document(&path).expect_err("legacy write_auto_subs option must fail");
-    assert!(err.to_string().contains("unsupported option 'write_auto_subs'"));
+    let document = load_mediapm_document(&path).expect("write_auto_subs option should decode");
+    assert_eq!(document.media["remote_demo"].steps.len(), 1);
 }
 
 /// Protects expanded step-option allowlists so audited CLI keys are

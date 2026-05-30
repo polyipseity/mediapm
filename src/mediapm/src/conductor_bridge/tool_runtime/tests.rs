@@ -58,12 +58,13 @@ fn rsgain_defaults_match_expected_loudness_profile() {
 }
 
 /// Verifies yt-dlp defaults prioritize one best thumbnail while keeping
-/// unified subtitle capture enabled.
+/// manual subtitles enabled and automatic subtitles disabled by default.
 #[test]
-fn yt_dlp_defaults_prefer_single_best_thumbnail_with_unified_subtitles() {
+fn yt_dlp_defaults_prefer_single_best_thumbnail_with_split_subtitle_defaults() {
     let defaults = default_input_defaults_for_tool("yt-dlp", FfmpegSlotLimits::default());
 
     assert_eq!(defaults.get("write_subs"), Some(&InputBinding::String("true".to_string())));
+    assert_eq!(defaults.get("write_auto_subs"), Some(&InputBinding::String("false".to_string())));
     assert_eq!(defaults.get("sub_langs"), Some(&InputBinding::String("all".to_string())));
     assert!(
         YT_DLP_DEFAULT_EXTRACTOR_ARGS.contains("skip=translated_subs"),
@@ -108,13 +109,29 @@ fn yt_dlp_defaults_prefer_single_best_thumbnail_with_unified_subtitles() {
 /// switches through `write_subs`.
 #[test]
 fn yt_dlp_write_subs_tokens_cover_manual_switch_only() {
-    assert!(!YT_DLP_OPTION_INPUTS.contains(&"write_auto_subs"));
+    assert!(YT_DLP_OPTION_INPUTS.contains(&"write_auto_subs"));
 
     let tokens = option_tokens_for_input("yt-dlp", "write_subs");
     assert!(tokens.contains(&"${*inputs.write_subs == \"true\" ? --write-subs | ''}".to_string()));
     assert!(
         !tokens.iter().any(|token| token.contains("write-auto-subs")),
         "write_subs should not emit automatic-subtitle flags"
+    );
+}
+
+/// Verifies `write_auto_subs` is independently mapped to automatic subtitle
+/// CLI switches.
+#[test]
+fn yt_dlp_write_auto_subs_tokens_cover_auto_subtitle_switch_only() {
+    let tokens = option_tokens_for_input("yt-dlp", "write_auto_subs");
+    assert!(
+        tokens.contains(
+            &"${*inputs.write_auto_subs == \"true\" ? --write-auto-subs | ''}".to_string()
+        )
+    );
+    assert!(
+        !tokens.iter().any(|token| token.contains("--write-subs")),
+        "write_auto_subs should not emit manual-subtitle flags"
     );
 }
 

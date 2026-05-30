@@ -77,6 +77,9 @@ pub(super) fn option_tokens_for_input(tool_name: &str, input_name: &str) -> Vec<
                 bool_switch_tokens(input_name, "--embed-info-json", "--no-embed-info-json")
             }
             "write_subs" => bool_switch_tokens(input_name, "--write-subs", "--no-write-subs"),
+            "write_auto_subs" => {
+                bool_switch_tokens(input_name, "--write-auto-subs", "--no-write-auto-subs")
+            }
             "sub_langs" => pair_option_tokens(input_name, "--sub-langs"),
             "sub_format" => pair_option_tokens(input_name, "--sub-format"),
             "convert_subs" => pair_option_tokens(input_name, "--convert-subs"),

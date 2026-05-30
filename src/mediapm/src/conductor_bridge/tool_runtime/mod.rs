@@ -841,6 +841,8 @@ fn default_input_defaults_for_tool(
             .insert("embed_info_json".to_string(), InputBinding::String("true".to_string()));
         input_defaults.insert("write_subs".to_string(), InputBinding::String("true".to_string()));
         input_defaults
+            .insert("write_auto_subs".to_string(), InputBinding::String("false".to_string()));
+        input_defaults
             .insert("write_thumbnail".to_string(), InputBinding::String("true".to_string()));
         input_defaults
             .insert("write_all_thumbnails".to_string(), InputBinding::String("false".to_string()));

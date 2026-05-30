@@ -81,6 +81,7 @@ let MediaStepOptionsYtDlpV1 = {
   embed_chapters | ToolOptionValueV1 | optional,
   embed_info_json | ToolOptionValueV1 | optional,
   write_subs | ToolOptionValueV1 | optional,
+  write_auto_subs | ToolOptionValueV1 | optional,
   sub_langs | ToolOptionValueV1 | optional,
   sub_format | ToolOptionValueV1 | optional,
   write_thumbnail | ToolOptionValueV1 | optional,
