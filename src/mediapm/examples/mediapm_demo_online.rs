@@ -926,6 +926,17 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             },
         ),
         (
+            "deno".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        ),
+        (
             "ffmpeg".to_string(),
             ToolRequirement {
                 version: None,
