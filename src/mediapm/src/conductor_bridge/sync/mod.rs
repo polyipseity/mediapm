@@ -45,33 +45,6 @@ use super::tool_runtime::{
 };
 use super::util::now_unix_seconds;
 
-/// Generated runtime env key used by yt-dlp `ffmpeg_location` default.
-const YT_DLP_FFMPEG_LOCATION_ENV: &str = "MEDIAPM_YT_DLP_FFMPEG_LOCATION";
-
-/// Generated runtime env key used by yt-dlp `js_runtimes` default.
-const YT_DLP_JS_RUNTIMES_ENV: &str = "MEDIAPM_YT_DLP_JS_RUNTIMES";
-
-/// Builds one `${env.<NAME>}` scalar input-binding value.
-#[must_use]
-pub(super) fn env_placeholder_input_binding(env_name: &str) -> InputBinding {
-    InputBinding::String(format!("${{env.{env_name}}}"))
-}
-
-/// Returns the managed yt-dlp default binding for `ffmpeg_location`.
-#[must_use]
-pub(super) fn yt_dlp_ffmpeg_location_default_binding() -> InputBinding {
-    env_placeholder_input_binding(YT_DLP_FFMPEG_LOCATION_ENV)
-}
-
-/// Returns the managed yt-dlp default binding for `js_runtimes`.
-#[must_use]
-pub(super) fn yt_dlp_js_runtimes_default_binding() -> InputBinding {
-    match env_placeholder_input_binding(YT_DLP_JS_RUNTIMES_ENV) {
-        InputBinding::String(value) => InputBinding::String(format!("deno:{value}")),
-        value @ InputBinding::StringList(_) => value,
-    }
-}
-
 /// Reconciles desired tools from `mediapm.ncl` into conductor machine config.
 #[expect(
     clippy::too_many_lines,
@@ -300,12 +273,9 @@ pub(crate) async fn reconcile_desired_tools(
                     companion_selector_path,
                 )
             {
-                generated_runtime_env_vars
-                    .insert(YT_DLP_FFMPEG_LOCATION_ENV.to_string(), ffmpeg_path);
-                desired_config.input_defaults.insert(
-                    "ffmpeg_location".to_string(),
-                    yt_dlp_ffmpeg_location_default_binding(),
-                );
+                desired_config
+                    .input_defaults
+                    .insert("ffmpeg_location".to_string(), InputBinding::String(ffmpeg_path));
             }
 
             if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults)
@@ -318,11 +288,10 @@ pub(crate) async fn reconcile_desired_tools(
                         )
                     })
             {
-                generated_runtime_env_vars
-                    .insert(YT_DLP_JS_RUNTIMES_ENV.to_string(), js_runtimes_path);
-                desired_config
-                    .input_defaults
-                    .insert("js_runtimes".to_string(), yt_dlp_js_runtimes_default_binding());
+                desired_config.input_defaults.insert(
+                    "js_runtimes".to_string(),
+                    InputBinding::String(format!("deno:{js_runtimes_path}")),
+                );
             }
         }
         remove_redundant_inherited_env_vars_from_tool_config(

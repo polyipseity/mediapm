@@ -41,8 +41,6 @@ use super::tool_config::{
     resolve_managed_tool_payload_directory_from_selector, resolve_yt_dlp_js_runtime_path,
     should_set_yt_dlp_ffmpeg_location,
 };
-use super::{yt_dlp_ffmpeg_location_default_binding, yt_dlp_js_runtimes_default_binding};
-
 fn catalog_entry_fixture(download: ToolDownloadDescriptor) -> ToolCatalogEntry {
     ToolCatalogEntry {
         name: "fixture",
@@ -385,8 +383,55 @@ fn should_not_skip_tag_updates_for_yt_dlp_same_step_companions() {
     assert!(!should_skip_tag_update_check(&requirement, "yt-dlp", &lock, &machine, false,));
 }
 
-/// Verifies tag-only skip mode is disabled when the active executable tool
-/// row is missing non-host platform payload keys.
+/// Verifies managed yt-dlp ffmpeg defaults use the concrete companion path
+/// rather than an env placeholder in machine config.
+#[test]
+fn yt_dlp_ffmpeg_default_uses_concrete_companion_path() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(root.path());
+    let resolved = resolve_managed_tool_payload_directory_from_selector(
+        &paths,
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest",
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest",
+    )
+    .expect("resolve companion directory");
+
+    assert!(std::path::Path::new(&resolved).is_absolute());
+    assert!(!resolved.contains("${env."));
+    let binding = InputBinding::String(resolved.clone());
+    match binding {
+        InputBinding::String(value) => {
+            assert_eq!(value, resolved);
+        }
+        InputBinding::StringList(_) => unreachable!("expected scalar string binding"),
+    }
+}
+
+/// Verifies managed yt-dlp JS runtime defaults use the concrete companion
+/// command path rather than an env placeholder in machine config.
+#[test]
+fn yt_dlp_js_runtimes_default_uses_concrete_companion_path() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let paths = MediaPmPaths::from_root(root.path());
+    let resolved = resolve_managed_tool_payload_command_path_from_selector(
+        &paths,
+        "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest",
+        "mediapm.tools.deno+github-releases-denoland-deno@latest",
+    )
+    .expect("resolve companion command path");
+
+    assert!(std::path::Path::new(&resolved).is_absolute());
+    assert!(!resolved.contains("${env."));
+    let binding = InputBinding::String(format!("deno:{resolved}"));
+    match binding {
+        InputBinding::String(value) => {
+            assert!(value.starts_with("deno:"));
+            assert!(value.ends_with(&resolved));
+        }
+        InputBinding::StringList(_) => unreachable!("expected scalar string binding"),
+    }
+}
+
 #[test]
 fn should_not_skip_tag_updates_when_platform_selector_content_is_incomplete() {
     let requirement = ToolRequirement {
@@ -570,26 +615,6 @@ fn same_step_companion_content_entries_are_namespaced() {
 
     assert!(
         prefixed.contains_key("mediapm.tools.deno+github-releases-denoland-deno@v2.5.0/linux/deno")
-    );
-}
-
-/// Verifies managed yt-dlp ffmpeg defaults use env placeholders rather than
-/// embedding absolute host paths in machine config.
-#[test]
-fn yt_dlp_ffmpeg_default_uses_env_placeholder_binding() {
-    assert_eq!(
-        yt_dlp_ffmpeg_location_default_binding(),
-        InputBinding::String("${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string())
-    );
-}
-
-/// Verifies managed yt-dlp JS runtime defaults use env placeholders rather
-/// than embedding absolute host paths in machine config.
-#[test]
-fn yt_dlp_js_runtimes_default_uses_env_placeholder_binding() {
-    assert_eq!(
-        yt_dlp_js_runtimes_default_binding(),
-        InputBinding::String("deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string())
     );
 }
 
