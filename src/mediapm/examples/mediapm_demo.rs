@@ -53,13 +53,13 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
 /// Canonical demo media id.
-const DEMO_MEDIA_ID: &str = "local.dQw4w9WgXcQ";
+const DEMO_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
 
 /// Hierarchy id used by playlist entries to reference the tagged media file.
-const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "local.dQw4w9WgXcQ.tagged";
+const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.tagged";
 
 /// Hierarchy id assigned to the media-containing folder node.
-const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "local.dQw4w9WgXcQ.media_folder";
+const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.media_folder";
 
 /// Demo metadata title value used in hierarchy interpolation.
 const DEMO_METADATA_TITLE: &str = "Never Gonna Give You Up";
@@ -1128,6 +1128,15 @@ async fn run_tools_update_precheck(
     Ok((summary.updated_tools, summary.added_tools, summary.unchanged_tools))
 }
 
+/// Clears machine workflows so final demo sync regenerates only desired media workflows.
+fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
+    let mut machine: MachineNickelDocument =
+        decode_machine_document(fs::read(machine_path)?.as_slice())?;
+    machine.workflows.clear();
+    fs::write(machine_path, encode_machine_document(machine)?)?;
+    Ok(())
+}
+
 /// Runs the persistent demo and returns generated paths.
 ///
 /// `run_sync = true` executes full tool reconciliation + workflow execution.
@@ -1151,12 +1160,19 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let ingest_service = MediaPmService::new_in_memory_at(&workspace_root);
     let paths = ingest_service.paths().clone();
-    let cas = FileSystemCas::open(paths.runtime_root.join("store")).await?;
 
-    let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
-    let source_hash_text = source_hash.to_string();
-    let metadata_hash = import_source_fixture_into_cas(&cas, &metadata_bytes).await?;
-    let metadata_hash_text = metadata_hash.to_string();
+    let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) = if run_sync {
+        run_tools_update_precheck(&ingest_service, &workspace_root).await?
+    } else {
+        (0, 0, 0)
+    };
+
+    let (source_hash_text, metadata_hash_text) = {
+        let cas = FileSystemCas::open(paths.runtime_root.join("store")).await?;
+        let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
+        let metadata_hash = import_source_fixture_into_cas(&cas, &metadata_bytes).await?;
+        (source_hash.to_string(), metadata_hash.to_string())
+    };
 
     let auto_added_media_id = ingest_service.add_local_source(&source_path, None).await?;
     let auto_added_document = load_mediapm_document(&paths.mediapm_ncl)?;
@@ -1174,19 +1190,16 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
             || std::io::Error::other("demo preflight add_local_source produced empty description"),
         )?;
 
-    let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) = if run_sync {
-        run_tools_update_precheck(&ingest_service, &workspace_root).await?
-    } else {
-        (0, 0, 0)
-    };
-
     let (configured_tool_count, configured_step_count) = configure_document_for_local_tool_chain(
         &workspace_root,
         &source_hash_text,
         &metadata_hash_text,
     )?;
 
-    let service = MediaPmService::new(SimpleConductor::new(cas), paths);
+    let service = MediaPmService::new_in_memory_at(&workspace_root);
+    if run_sync {
+        clear_machine_workflows(&service.paths().conductor_machine_ncl)?;
+    }
 
     let maybe_summary = if run_sync { Some(service.sync_library().await?) } else { None };
     let cas_root = service.paths().runtime_root.join("store");
