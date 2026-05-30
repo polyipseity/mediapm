@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::path::PathBuf;
 
 use crate::config::{ToolRequirement, ToolRequirementDependencies};
 use crate::tools::catalog::ToolOs;
@@ -14,6 +15,8 @@ use super::materialize::build_command_selector;
 use super::resolve::{
     logical_name_matches_tool_id, resolve_download_plan, tool_id_suffix_from_identity,
 };
+use super::resolve_provision_install_root;
+use crate::paths::MediaPmPaths;
 
 /// Runs one async downloader helper future on a single-thread runtime.
 fn run_async<T>(future: impl Future<Output = T>) -> T {
@@ -192,4 +195,39 @@ fn resolve_download_plan_marks_shared_package_when_urls_match() {
 
     assert!(plan.shared_package);
     assert!(!plan.internal_launcher);
+}
+
+/// Verifies provisioning staging prefers a user-scoped cache root when one is
+/// available so workspace-local tmp is not required for tool sync staging.
+#[test]
+fn resolve_provision_install_root_prefers_user_scoped_root() {
+    let paths = MediaPmPaths::from_root("/workspace/project");
+    let user_scoped_root =
+        PathBuf::from("/Users/demo/Library/Caches/mediapm/cache/tmp/tool-sync-provision");
+
+    let resolved = resolve_provision_install_root(
+        &paths,
+        "mediapm.tools.yt-dlp+fixture@v1",
+        Some(user_scoped_root.clone()),
+    );
+
+    assert_eq!(resolved, user_scoped_root.join("mediapm.tools.yt-dlp+fixture@v1"));
+}
+
+/// Verifies provisioning staging falls back to workspace runtime tmp when no
+/// user-scoped cache root can be resolved on the current host.
+#[test]
+fn resolve_provision_install_root_falls_back_to_workspace_tmp() {
+    let paths = MediaPmPaths::from_root("/workspace/project");
+
+    let resolved =
+        resolve_provision_install_root(&paths, "mediapm.tools.ffmpeg+fixture@latest", None);
+
+    assert_eq!(
+        resolved,
+        paths
+            .mediapm_tmp_dir
+            .join("tool-sync-provision")
+            .join("mediapm.tools.ffmpeg+fixture@latest")
+    );
 }

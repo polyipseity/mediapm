@@ -15,6 +15,7 @@ mod resolve;
 mod tests;
 
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::config::ToolRequirement;
@@ -53,8 +54,20 @@ pub(crate) type DownloadProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) 
 /// Stable prefix for `mediapm`-managed immutable tool ids.
 const MANAGED_TOOL_ID_PREFIX: &str = "mediapm.tools.";
 
-/// Ensures one managed tool payload is provisioned into workspace-local
+/// Relative user-cache staging directory used while preparing one tool payload.
+const USER_SCOPED_PROVISION_STAGING_DIR: &str = "tmp/tool-sync-provision";
+
+/// Ensures one managed tool payload is provisioned into user-scoped staging
 /// storage and converted into conductor-ready command/content-map metadata.
+///
+/// Staging remains necessary because downloader materialization may need to:
+/// - expand archives,
+/// - discover executable paths,
+/// - collect deterministic content-map entries before CAS import.
+///
+/// When available, staging is rooted under user cache (`<os-cache>/mediapm`) so
+/// repeated workspace runs do not churn one workspace-local tmp tree.
+/// Workspace tmp remains the fallback when no user cache root is available.
 pub(crate) async fn provision_tool_payload(
     paths: &MediaPmPaths,
     tool_name: &str,
@@ -74,7 +87,7 @@ pub(crate) async fn provision_tool_payload(
         source_id,
         resolve::sanitize_tool_id_fragment(&suffix)
     );
-    let install_root = paths.mediapm_tmp_dir.join("tool-sync-provision").join(&tool_id);
+    let install_root = provision_install_root(paths, &tool_id);
     if install_root.exists() {
         fs::remove_dir_all(&install_root).map_err(|source| MediaPmError::Io {
             operation: format!("resetting staged tool install directory for '{tool_id}'"),
@@ -117,4 +130,24 @@ pub(crate) async fn provision_tool_payload(
         catalog: entry,
         warnings: resolved.warnings,
     })
+}
+
+/// Resolves the staging install root for one tool payload provisioning run.
+#[must_use]
+fn provision_install_root(paths: &MediaPmPaths, tool_id: &str) -> PathBuf {
+    let user_scoped_root = default_global_tool_cache_root()
+        .map(|cache_root| cache_root.join(USER_SCOPED_PROVISION_STAGING_DIR));
+    resolve_provision_install_root(paths, tool_id, user_scoped_root)
+}
+
+/// Resolves staging install root from one optional user-scoped base directory.
+#[must_use]
+pub(super) fn resolve_provision_install_root(
+    paths: &MediaPmPaths,
+    tool_id: &str,
+    user_scoped_root: Option<PathBuf>,
+) -> PathBuf {
+    user_scoped_root
+        .unwrap_or_else(|| paths.mediapm_tmp_dir.join("tool-sync-provision"))
+        .join(tool_id)
 }
