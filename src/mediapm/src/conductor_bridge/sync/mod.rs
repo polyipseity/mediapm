@@ -180,23 +180,26 @@ pub(crate) async fn reconcile_desired_tools(
                 effective_content_entries.entry(entry_key).or_insert(entry_source);
             }
 
-            let companion_deno_selection = resolve_companion_deno_selection(
+            if let Some(companion_deno_selection) = resolve_companion_deno_selection(
                 name,
                 requirement,
                 &provisioned_snapshot,
                 lock,
                 &machine,
-            )?;
-            desired_tool_id = augment_tool_id_with_dependency_selector(
-                &desired_tool_id,
-                "deno",
-                &companion_deno_selection.selector,
-            );
-            companion_deno_content_map = companion_deno_selection.existing_content_map;
-            companion_deno_host_command_path = companion_deno_selection.host_command_path;
+            )? {
+                desired_tool_id = augment_tool_id_with_dependency_selector(
+                    &desired_tool_id,
+                    "deno",
+                    &companion_deno_selection.selector,
+                );
+                companion_deno_content_map = companion_deno_selection.existing_content_map;
+                companion_deno_host_command_path = companion_deno_selection.host_command_path;
 
-            for (entry_key, entry_source) in companion_deno_selection.provisioned_content_entries {
-                effective_content_entries.entry(entry_key).or_insert(entry_source);
+                for (entry_key, entry_source) in
+                    companion_deno_selection.provisioned_content_entries
+                {
+                    effective_content_entries.entry(entry_key).or_insert(entry_source);
+                }
             }
         }
 

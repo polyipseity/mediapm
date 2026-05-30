@@ -642,21 +642,39 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 }
 
 /// Resolves optional deno linkage for companion tools like `yt-dlp`.
+///
+/// Returns `Ok(None)` when deno is not explicitly requested via
+/// `deno_version` and no managed deno tool is available, allowing sync
+/// to proceed without deno. Returns `Err` only when deno was explicitly
+/// requested but cannot be resolved.
 pub(super) fn resolve_companion_deno_selection(
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaLockFile,
     machine: &MachineNickelDocument,
-) -> Result<CompanionDenoSelection, MediaPmError> {
-    resolve_companion_dependency_selection(
+) -> Result<Option<CompanionDenoSelection>, MediaPmError> {
+    let requested_selector = requirement.normalized_deno_selector();
+    let is_explicit = requested_selector.is_some();
+    match resolve_companion_dependency_selection(
         logical_tool_name,
         "deno",
-        requirement.normalized_deno_selector(),
+        requested_selector,
         provisioned_snapshot,
         lock,
         machine,
-    )
+    ) {
+        Ok(selection) => Ok(Some(selection)),
+        Err(err) if !is_explicit => {
+            tracing::debug!(
+                tool = %logical_tool_name,
+                error = %err,
+                "deno companion unavailable and not explicitly requested; skipping"
+            );
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 #[expect(
