@@ -44,7 +44,7 @@ use crate::orchestration::protocol::{
     UnifiedNickelDocument, UnifiedToolSpec,
 };
 mod template;
-mod tool_content_cache;
+pub(crate) mod tool_content_cache;
 
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";

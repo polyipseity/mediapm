@@ -1,6 +1,6 @@
 //! Actor-backed orchestration runtime.
 
-mod actors;
+pub(crate) mod actors;
 pub mod config;
 mod coordinator;
 mod node;

@@ -3,8 +3,9 @@
 use super::CommonExecutableTool;
 use super::tools::resolve_import_process_name;
 use super::{
-    Cli, CliCommand, ImportArgs, ImportCommand, StateArgs, StateCommand,
-    inject_cas_root_arg_if_missing, parse_editor_command, passthrough_cas,
+    Cli, CliCommand, ImportArgs, ImportCommand, StateArgs, StateCommand, ToolArgs, ToolCommand,
+    extract_platform_conditional_paths, inject_cas_root_arg_if_missing,
+    normalize_managed_tool_relative_command_path, parse_editor_command, passthrough_cas,
     persisted_state_json_pretty, register_or_merge_imported_tool,
 };
 use crate::model::config::{
@@ -111,6 +112,37 @@ fn parse_run_with_allow_tool_redefinition_flag() {
         }
         other => panic!("expected run command, got {other:?}"),
     }
+}
+
+#[test]
+fn parse_tool_run_passthrough_args() {
+    let cli = Cli::parse_from(["conductor", "tool", "run", "--tool", "yt-dlp", "--", "--version"]);
+
+    match cli.command {
+        CliCommand::Tool(ToolArgs { command: ToolCommand::Run { tool, args } }) => {
+            assert_eq!(tool, "yt-dlp");
+            assert_eq!(args, vec!["--version".to_string()]);
+        }
+        other => panic!("expected tool run command, got {other:?}"),
+    }
+}
+
+#[test]
+fn extract_platform_conditional_paths_reads_context_os_selector() {
+    let selector = "${context.os == \"macos\" ? macos/yt-dlp | linux/yt-dlp}";
+    let parsed =
+        extract_platform_conditional_paths(selector).expect("context.os selector should parse");
+
+    assert_eq!(parsed.get("macos").map(String::as_str), Some("macos/yt-dlp"));
+}
+
+#[test]
+fn normalize_managed_tool_relative_command_path_rejects_parent_escape() {
+    assert!(normalize_managed_tool_relative_command_path("../bin/tool").is_none());
+    assert_eq!(
+        normalize_managed_tool_relative_command_path("./macos/yt-dlp").as_deref(),
+        Some("macos/yt-dlp")
+    );
 }
 
 #[test]

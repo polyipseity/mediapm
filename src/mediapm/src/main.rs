@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use mediapm::{
-    AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaRuntimeStorage,
+    AddInsertPosition, MediaHierarchyPreset, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
     ToolRegistryStatus, builtins::media_tagger::InternalMediaTaggerOptions,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
     global_tool_cache_status, load_runtime_dotenv_for_root, resolve_default_global_paths,
@@ -558,10 +558,13 @@ async fn main() -> anyhow::Result<()> {
                 println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
             }
             ToolCommand::Run { tool, args } => {
-                let exit_code = service.run_managed_tool(&tool, &args)?;
-                if exit_code != 0 {
-                    std::process::exit(exit_code);
-                }
+                let effective_paths = MediaPmPaths::from_root(&cli.root)
+                    .with_runtime_storage(&passthrough_runtime_storage_overrides);
+                let mut conductor_args = vec!["tool".to_string(), "run".to_string()];
+                conductor_args.push("--tool".to_string());
+                conductor_args.push(tool);
+                conductor_args.extend(args);
+                passthrough_conductor(&conductor_args, &effective_paths).await?;
             }
             ToolCommand::RefreshRuntime => {
                 service.refresh_runtime_configuration()?;

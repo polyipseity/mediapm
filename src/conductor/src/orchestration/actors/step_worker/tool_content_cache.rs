@@ -148,7 +148,7 @@ enum ContentMapKeyKind {
     clippy::too_many_lines,
     reason = "preflight classification, concurrent CAS fetch, blocking extraction, and metadata persistence each need full context; splitting them across helpers would obscure the sequential invariants the function encodes"
 )]
-pub(super) async fn prepare_tool_content_cache<C>(
+pub(crate) async fn prepare_tool_content_cache<C>(
     tools_dir: &Path,
     tool_id: &str,
     content_map: &BTreeMap<String, Hash>,

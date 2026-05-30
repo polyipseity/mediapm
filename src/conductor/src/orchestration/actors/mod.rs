@@ -8,4 +8,4 @@ pub(super) mod documents;
 pub(super) mod execution_hub;
 pub(super) mod scheduler;
 pub(super) mod state_store;
-pub(super) mod step_worker;
+pub(crate) mod step_worker;
