@@ -16,12 +16,7 @@ mod workflows;
 #[cfg(test)]
 mod tests;
 
-use std::path::PathBuf;
-
-pub(crate) use documents::{
-    ensure_conductor_documents, list_tools, load_machine_document,
-    resolve_managed_tool_executable_target,
-};
+pub(crate) use documents::{ensure_conductor_documents, list_tools, load_machine_document};
 pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
 pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 pub(crate) use workflows::{
@@ -54,13 +49,4 @@ pub struct ConductorToolRow {
     pub has_binary: bool,
     /// Current lifecycle status tracked by lock state.
     pub status: crate::lockfile::ToolRegistryStatus,
-}
-
-/// Resolved managed-tool executable target for direct host invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ManagedToolExecutableTarget {
-    /// Immutable tool id resolved from user selector input.
-    pub tool_id: String,
-    /// Absolute host executable path under managed tool installation root.
-    pub command_path: PathBuf,
 }

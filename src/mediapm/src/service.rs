@@ -806,26 +806,50 @@ where
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
-        let target = conductor_bridge::resolve_managed_tool_executable_target(
-            &effective_paths,
-            &lock,
-            tool_selector,
-        )?;
+        let machine =
+            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
+        let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
+        let resolved_tool = if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| {
+                runtime_handle.block_on(resolve_managed_tool_executable_with_filesystem_cas(
+                    &effective_paths.conductor_machine_ncl,
+                    &conductor_cas_root,
+                    &effective_paths.tools_dir,
+                    tool_selector,
+                ))
+            })
+        } else {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|source| {
+                    MediaPmError::Workflow(format!(
+                        "creating temporary runtime for managed tool execution failed: {source}"
+                    ))
+                })?;
 
-        let status =
-            ProcessCommand::new(&target.command_path).args(args).status().map_err(|source| {
-                MediaPmError::Io {
-                    operation: format!("running managed tool '{}' executable", target.tool_id),
-                    path: target.command_path.clone(),
-                    source,
-                }
+            runtime.block_on(resolve_managed_tool_executable_with_filesystem_cas(
+                &effective_paths.conductor_machine_ncl,
+                &conductor_cas_root,
+                &effective_paths.tools_dir,
+                tool_selector,
+            ))
+        }
+        .map_err(MediaPmError::from)?;
+
+        let status = ProcessCommand::new(&resolved_tool.executable_path)
+            .args(args)
+            .status()
+            .map_err(|source| MediaPmError::Io {
+                operation: format!("running managed tool '{}' executable", resolved_tool.tool_id),
+                path: resolved_tool.executable_path.clone(),
+                source,
             })?;
 
         status.code().ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "managed tool '{}' terminated without a numeric exit code",
-                target.tool_id
+                resolved_tool.tool_id
             ))
         })
     }

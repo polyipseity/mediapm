@@ -3,23 +3,23 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use mediapm_cas::Hash;
+use mediapm_cas::{CasApi, Hash};
 use mediapm_conductor::{
     InputBinding, MachineNickelDocument, OutputCaptureSpec, RuntimeStorageConfig, ToolConfigSpec,
     ToolKindSpec, ToolSpec, default_runtime_inherited_env_vars_for_host,
+    resolve_managed_tool_executable_with_filesystem_cas,
 };
 
 use crate::config::{
     MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
 };
-use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
+use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
 use super::documents::{
-    ensure_conductor_documents, list_tools, load_machine_document,
-    resolve_managed_tool_executable_target, save_machine_document,
+    ensure_conductor_documents, list_tools, load_machine_document, save_machine_document,
 };
 use super::runtime_storage::normalize_runtime_storage_defaults;
 use super::tool_runtime::{
@@ -40,6 +40,26 @@ fn default_ffmpeg_slot_limits() -> FfmpegSlotLimits {
 #[must_use]
 fn fixture_paths() -> MediaPmPaths {
     MediaPmPaths::from_root(std::path::Path::new("."))
+}
+
+/// Runs one async test operation on a single-thread Tokio runtime.
+fn run_async_test<F, T>(future: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("create test tokio runtime");
+    runtime.block_on(future)
+}
+
+/// Stores one byte payload in filesystem CAS and returns its hash.
+fn put_test_cas_bytes(cas_root: &std::path::Path, bytes: Vec<u8>) -> Hash {
+    run_async_test(async {
+        let cas = mediapm_cas::FileSystemCas::open(cas_root).await.expect("open test CAS");
+        cas.put(bytes).await.expect("store test CAS payload")
+    })
 }
 
 /// Protects bootstrap invariant that conductor builtins are always available.
@@ -1076,19 +1096,19 @@ fn tool_spec_has_binary_reads_executable_path() {
     assert!(tool_spec_has_binary(&spec));
 }
 
-/// Protects direct-run selector resolution by honoring active logical-name
-/// mappings and resolving the executable under the managed tool payload root.
+/// Protects managed executable resolution by preparing payload content from
+/// tool-config content-map entries and returning the resolved executable path.
 #[test]
-fn resolve_managed_tool_target_uses_active_logical_name_mapping() {
+fn resolve_managed_tool_target_uses_immutable_selector() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
+    ensure_conductor_documents(&paths).expect("bootstrap conductor documents");
     let tool_id = "mediapm.tools.ffmpeg+example-source@1.2.3".to_string();
     let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
-    let binary_path = paths.tools_dir.join(&tool_id).join("payload").join(relative_command);
-    fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
-    fs::write(&binary_path, b"stub binary").expect("write managed binary");
 
     let mut machine = MachineNickelDocument::default();
+    let cas_root = crate::source_metadata::resolve_conductor_cas_root(&paths, &machine);
+    let binary_hash = put_test_cas_bytes(&cas_root, b"stub binary".to_vec());
     machine.tools.insert(
         tool_id.clone(),
         ToolSpec {
@@ -1100,35 +1120,54 @@ fn resolve_managed_tool_target_uses_active_logical_name_mapping() {
             ..ToolSpec::default()
         },
     );
+    machine.tool_configs.insert(
+        tool_id.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(relative_command.to_string(), binary_hash)])),
+            ..ToolConfigSpec::default()
+        },
+    );
+    machine.external_data.insert(
+        binary_hash,
+        mediapm_conductor::ExternalContentRef {
+            description: Some("test managed ffmpeg payload".to_string()),
+            save: None,
+        },
+    );
     save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-    let lock = MediaLockFile {
-        active_tools: BTreeMap::from([("ffmpeg".to_string(), tool_id.clone())]),
-        ..MediaLockFile::default()
-    };
+    let resolved = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
+        &paths.conductor_machine_ncl,
+        &cas_root,
+        &paths.tools_dir,
+        &tool_id,
+    ))
+    .expect("resolve target");
 
-    let target =
-        resolve_managed_tool_executable_target(&paths, &lock, "ffmpeg").expect("resolve target");
-
-    assert_eq!(target.tool_id, tool_id);
-    assert_eq!(target.command_path, binary_path);
+    assert_eq!(resolved.tool_id, tool_id);
+    assert!(resolved.executable_path.is_file());
+    assert!(
+        resolved.executable_path.to_string_lossy().contains("/payload/"),
+        "resolved executable should come from prepared payload cache"
+    );
 }
 
-/// Protects ambiguity resolution by preferring the most recently transitioned
-/// lock-registered tool id when logical-name selectors match multiple tools.
+/// Protects ambiguity diagnostics so logical selectors with multiple managed
+/// matches fail fast and require one immutable tool id selector.
 #[test]
-fn resolve_managed_tool_target_prefers_latest_registered_match_when_ambiguous() {
+fn resolve_managed_tool_target_rejects_ambiguous_selector_without_exact_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
+    ensure_conductor_documents(&paths).expect("bootstrap conductor documents");
     let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
     let tool_a = "mediapm.tools.ffmpeg+source-a@1.0.0";
     let tool_b = "mediapm.tools.ffmpeg+source-b@2.0.0";
 
     let mut machine = MachineNickelDocument::default();
-    for tool_id in [tool_a, tool_b] {
-        let binary_path = paths.tools_dir.join(tool_id).join("payload").join(relative_command);
-        fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
-        fs::write(&binary_path, b"stub binary").expect("write managed binary");
+    let cas_root = crate::source_metadata::resolve_conductor_cas_root(&paths, &machine);
+    let hash_a = put_test_cas_bytes(&cas_root, b"stub binary a".to_vec());
+    let hash_b = put_test_cas_bytes(&cas_root, b"stub binary b".to_vec());
+    for (tool_id, hash) in [(tool_a, hash_a), (tool_b, hash_b)] {
         machine.tools.insert(
             tool_id.to_string(),
             ToolSpec {
@@ -1140,70 +1179,32 @@ fn resolve_managed_tool_target_prefers_latest_registered_match_when_ambiguous() 
                 ..ToolSpec::default()
             },
         );
-    }
-    save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
-
-    let mut lock = MediaLockFile::default();
-    lock.tool_registry.insert(
-        tool_a.to_string(),
-        ToolRegistryRecord {
-            name: "ffmpeg".to_string(),
-            version: "1.0.0".to_string(),
-            source: "source-a".to_string(),
-            registry_multihash: "blake3:source-a".to_string(),
-            last_transition_unix_seconds: 10,
-            status: ToolRegistryStatus::Active,
-        },
-    );
-    lock.tool_registry.insert(
-        tool_b.to_string(),
-        ToolRegistryRecord {
-            name: "ffmpeg".to_string(),
-            version: "2.0.0".to_string(),
-            source: "source-b".to_string(),
-            registry_multihash: "blake3:source-b".to_string(),
-            last_transition_unix_seconds: 20,
-            status: ToolRegistryStatus::Active,
-        },
-    );
-
-    let target =
-        resolve_managed_tool_executable_target(&paths, &lock, "ffmpeg").expect("resolve target");
-    assert_eq!(target.tool_id, tool_b);
-}
-
-/// Protects ambiguity diagnostics so unresolved logical selectors still fail
-/// fast when no lock metadata can rank multiple installed matches.
-#[test]
-fn resolve_managed_tool_target_rejects_ambiguous_selector_without_registry_ranking() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let paths = MediaPmPaths::from_root(temp.path());
-    let relative_command = if cfg!(windows) { "bin/ffmpeg.exe" } else { "bin/ffmpeg" };
-    let tool_ids = ["mediapm.tools.ffmpeg+source-a@1.0.0", "mediapm.tools.ffmpeg+source-b@2.0.0"];
-
-    let mut machine = MachineNickelDocument::default();
-    for tool_id in tool_ids {
-        let binary_path = paths.tools_dir.join(tool_id).join("payload").join(relative_command);
-        fs::create_dir_all(binary_path.parent().expect("binary parent")).expect("create tool dir");
-        fs::write(&binary_path, b"stub binary").expect("write managed binary");
-        machine.tools.insert(
+        machine.tool_configs.insert(
             tool_id.to_string(),
-            ToolSpec {
-                kind: ToolKindSpec::Executable {
-                    command: vec![relative_command.to_string()],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                ..ToolSpec::default()
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(relative_command.to_string(), hash)])),
+                ..ToolConfigSpec::default()
+            },
+        );
+        machine.external_data.insert(
+            hash,
+            mediapm_conductor::ExternalContentRef {
+                description: Some(format!("test managed ffmpeg payload for '{tool_id}'")),
+                save: None,
             },
         );
     }
     save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-    let error = resolve_managed_tool_executable_target(&paths, &MediaLockFile::default(), "ffmpeg")
-        .expect_err("ambiguous logical selector should fail without lock ranking");
+    let error = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
+        &paths.conductor_machine_ncl,
+        &cas_root,
+        &paths.tools_dir,
+        "ffmpeg",
+    ))
+    .expect_err("ambiguous logical selector should fail without exact selector");
     let message = error.to_string();
-    assert!(message.contains("matched multiple managed tool ids"));
+    assert!(message.contains("matched multiple managed tool ids") || message.contains("ambiguous"));
     assert!(message.contains("source-a"));
     assert!(message.contains("source-b"));
 }
