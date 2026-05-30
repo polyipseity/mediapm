@@ -257,6 +257,7 @@ pub(super) fn synthesize_media_steps(
                 workflow,
                 generated_start,
                 existing_workflow,
+                machine,
             );
             if !preserved_all_tools {
                 requires_refresh = true;

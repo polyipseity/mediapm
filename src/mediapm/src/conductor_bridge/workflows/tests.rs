@@ -70,6 +70,16 @@ fn machine_with_active_tool_specs(lock: &MediaLockFile) -> MachineNickelDocument
         };
 
         machine.tools.insert(tool_id.clone(), executable_tool_spec(command));
+        machine.tool_configs.insert(
+            tool_id.clone(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(
+                    format!("linux/{command}"),
+                    Hash::from_content(format!("{tool_id}:{command}").as_bytes()),
+                )])),
+                ..ToolConfigSpec::default()
+            },
+        );
     }
 
     machine
@@ -225,6 +235,16 @@ fn unchanged_step_config_with_timestamp_keeps_previous_tool_identity() {
 
     let mut machine = machine_with_active_tool_specs(&lock);
     machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
+    machine.tool_configs.insert(
+        old_tool.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                "linux/ffmpeg".to_string(),
+                Hash::from_content(b"ffmpeg-old"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
     machine.workflows.insert(
         format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
         WorkflowSpec {
@@ -292,6 +312,16 @@ fn unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_ch
 
     let mut machine = machine_with_active_tool_specs(&lock);
     machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
+    machine.tool_configs.insert(
+        old_tool.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                "linux/yt-dlp".to_string(),
+                Hash::from_content(b"yt-dlp-old"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
     machine.workflows.insert(
         format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
         WorkflowSpec {
@@ -356,6 +386,16 @@ fn changed_step_config_forces_refresh_to_active_tool() {
 
     let mut machine = machine_with_active_tool_specs(&lock);
     machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
+    machine.tool_configs.insert(
+        old_tool.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                "linux/yt-dlp".to_string(),
+                Hash::from_content(b"yt-dlp-old-forward-scan"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
     machine.workflows.insert(
         format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
         WorkflowSpec {
@@ -455,14 +495,88 @@ fn missing_step_timestamp_forces_refresh_to_active_tool() {
     assert!(stored.impure_timestamp.is_some());
 }
 
-/// Protects forward-scan state matching so later steps can still reuse an
-/// exact prior snapshot even when earlier steps no longer match.
+/// Protects unchanged-step reconciliation by refreshing to the current active
+/// tool id when the previously pinned immutable tool no longer has executable
+/// content-map bytes in machine config.
+#[test]
+fn unchanged_step_with_missing_previous_tool_content_refreshes_to_active_tool() {
+    let old_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@old".to_string();
+    let new_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@new".to_string();
+    let media_id = "refresh-on-missing-previous-tool-content".to_string();
+    let source = MediaSourceSpec {
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::from([(
+            "source".to_string(),
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]),
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([("default".to_string(), ffmpeg_output_variant(0))]),
+            options: BTreeMap::new(),
+        }],
+    };
+    let explicit_snapshot =
+        serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(media_id.clone(), source)]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile {
+        active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot,
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 11,
+                    subsec_nanos: 22,
+                }),
+            }],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool,
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+            }],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
+        .expect("plan should succeed");
+    let workflow =
+        plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
+
+    assert_eq!(workflow.steps.len(), 1);
+    assert_eq!(workflow.steps[0].tool, new_tool);
+}
+
+/// Protects forward-scan state matching by ensuring synthesis stays stable
+/// when earlier steps diverge: later steps still match explicit config, but
+/// may refresh tool identity to the current active immutable id.
 #[test]
 #[expect(
     clippy::too_many_lines,
     reason = "this regression test keeps full setup inline to make matching behavior auditable"
 )]
-fn forward_scan_matching_preserves_later_matching_step_timestamp() {
+fn forward_scan_matching_refreshes_later_step_tool_identity_when_needed() {
     let old_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@old".to_string();
     let new_tool = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@new".to_string();
     let media_id = "forward-scan".to_string();
@@ -565,12 +679,13 @@ fn forward_scan_matching_preserves_later_matching_step_timestamp() {
         plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
     assert_eq!(workflow.steps.len(), 2);
     assert_eq!(workflow.steps[0].tool, new_tool);
-    assert_eq!(workflow.steps[1].tool, old_tool);
+    assert_eq!(workflow.steps[1].tool, new_tool);
 
     let stored_states = lock.workflow_states.get(&media_id).expect("stored workflow states");
     assert_eq!(stored_states.len(), 2);
     assert_eq!(stored_states[1].explicit_config, step1_snapshot);
-    assert_eq!(stored_states[1].impure_timestamp, Some(step1_timestamp));
+    assert!(stored_states[1].impure_timestamp.is_some());
+    assert_ne!(stored_states[1].impure_timestamp, Some(step1_timestamp));
 }
 
 /// Protects managed external-data dedupe by merging overlapping hash policies

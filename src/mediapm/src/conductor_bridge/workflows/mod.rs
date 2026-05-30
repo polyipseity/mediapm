@@ -703,11 +703,13 @@ fn fresh_impure_timestamp() -> MediaPmImpureTimestamp {
 /// Rewrites generated step tool ids using an existing workflow snapshot.
 ///
 /// Returns `true` when every generated step id was found in `existing` and
-/// therefore successfully pinned to its prior immutable tool id.
+/// pinned to a still-valid prior immutable tool id present in current machine
+/// configuration.
 fn preserve_existing_generated_step_tools(
     workflow: &mut WorkflowSpec,
     generated_start: usize,
     existing: Option<&WorkflowSpec>,
+    machine: &MachineNickelDocument,
 ) -> bool {
     let Some(existing) = existing else {
         return false;
@@ -717,11 +719,7 @@ fn preserve_existing_generated_step_tools(
     for generated in workflow.steps.iter_mut().skip(generated_start) {
         if let Some(previous) = existing.steps.iter().find(|candidate| candidate.id == generated.id)
         {
-            // yt-dlp tool identities encode same-step companion selector
-            // fragments (for example `+ffmpeg-...+deno-...`). Keep refreshed
-            // generated identities when they differ so workflow steps do not
-            // pin stale companion mappings.
-            if generated.id.ends_with("-yt-dlp") && generated.tool != previous.tool {
+            if !preserved_step_tool_is_valid(machine, &previous.tool) {
                 all_matched = false;
                 continue;
             }
@@ -733,6 +731,24 @@ fn preserve_existing_generated_step_tools(
     }
 
     all_matched
+}
+
+/// Returns whether one preserved step tool id is still executable from current
+/// machine configuration.
+#[must_use]
+fn preserved_step_tool_is_valid(machine: &MachineNickelDocument, tool_id: &str) -> bool {
+    let Some(tool_spec) = machine.tools.get(tool_id) else {
+        return false;
+    };
+
+    match &tool_spec.kind {
+        ToolKindSpec::Builtin { .. } => true,
+        ToolKindSpec::Executable { .. } => machine
+            .tool_configs
+            .get(tool_id)
+            .and_then(|config| config.content_map.as_ref())
+            .is_some_and(|content_map| !content_map.is_empty()),
+    }
 }
 
 /// Resolves one variant to the managed workflow step-output producer binding.
@@ -1183,7 +1199,26 @@ fn resolve_active_logical_tool_id(
         )));
     }
 
+    if !is_unresolved_placeholder_tool_id(&tool_id)
+        && let Some(tool_spec) = machine.tools.get(&tool_id)
+        && matches!(tool_spec.kind, ToolKindSpec::Executable { .. })
+        && machine
+            .tool_configs
+            .get(&tool_id)
+            .and_then(|config| config.content_map.as_ref())
+            .is_none_or(BTreeMap::is_empty)
+    {
+        return Err(MediaPmError::Workflow(format!(
+            "logical tool '{logical_tool_name}' resolves to active tool '{tool_id}', but that executable tool has no materialized content_map; run mediapm tool sync for '{logical_tool_name}'"
+        )));
+    }
+
     Ok(tool_id)
+}
+
+#[must_use]
+fn is_unresolved_placeholder_tool_id(tool_id: &str) -> bool {
+    tool_id.contains("+mediapm-unresolved@")
 }
 
 /// Resolves one registered builtin tool id by builtin identity tuple.
