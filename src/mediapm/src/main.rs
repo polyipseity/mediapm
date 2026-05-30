@@ -127,9 +127,20 @@ enum ToolCommand {
         name: String,
     },
     /// Removes one installed tool binary while keeping metadata.
+    ///
+    /// Pass `--metadata` to also remove tool metadata from the machine document
+    /// and the tool registry entirely.  This is useful when a tool is fully
+    /// retired and you no longer want to track its historical state.
     Prune {
         /// Immutable tool id.
         id: String,
+        /// Also remove tool metadata from the machine document and registry.
+        ///
+        /// When set the tool id is completely erased from conductor state.  This
+        /// is not recommended for tools that may be re-provisioned because it
+        /// forces a full re-fetch on the next sync.
+        #[arg(long)]
+        metadata: bool,
     },
     /// Runs one managed tool binary directly.
     Run {
@@ -553,8 +564,8 @@ async fn main() -> anyhow::Result<()> {
                     println!("tool requirement '{name}' was not present");
                 }
             }
-            ToolCommand::Prune { id } => {
-                let removed_hashes = service.prune_tool(&id).await?;
+            ToolCommand::Prune { id, metadata } => {
+                let removed_hashes = service.prune_tool(&id, metadata).await?;
                 println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
             }
             ToolCommand::Run { tool, args } => {

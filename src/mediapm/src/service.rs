@@ -772,18 +772,36 @@ where
         Ok(removed)
     }
 
-    /// Prunes one tool binary while preserving metadata.
+    /// Prunes one tool binary and optionally removes all associated metadata.
+    ///
+    /// When `remove_metadata` is `false` the operation only removes
+    /// `tool_configs.<tool_id>` (binary payload) and marks the registry entry
+    /// as `Pruned`, preserving historical records.
+    ///
+    /// When `remove_metadata` is `true` the tool spec, registry entry, and all
+    /// binary content are fully erased.  This is useful for retiring a tool
+    /// that will never be re-provisioned, but forces a full re-fetch if the
+    /// same tool is re-added later.
     ///
     /// # Errors
     ///
     /// Returns [`MediaPmError`] when config/state documents cannot be loaded,
     /// prune operations fail, or state cannot be persisted.
-    pub async fn prune_tool(&self, tool_id: &str) -> Result<usize, MediaPmError> {
+    pub async fn prune_tool(
+        &self,
+        tool_id: &str,
+        remove_metadata: bool,
+    ) -> Result<usize, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
         let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
-        let removed_hashes =
-            conductor_bridge::prune_tool_binary(&effective_paths, &mut lock, tool_id).await?;
+        let removed_hashes = conductor_bridge::prune_tool_binary(
+            &effective_paths,
+            &mut lock,
+            tool_id,
+            remove_metadata,
+        )
+        .await?;
         save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(removed_hashes)
     }

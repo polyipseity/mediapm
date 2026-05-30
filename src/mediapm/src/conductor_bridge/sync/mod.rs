@@ -344,14 +344,19 @@ pub(crate) async fn reconcile_desired_tools(
     Ok(report)
 }
 
-/// Prunes one tool binary while preserving tool metadata.
+/// Prunes one tool binary and optionally removes all associated metadata.
 ///
-/// This operation removes only `tool_configs.<tool_id>` so conductor metadata
-/// for historical versions is retained.
+/// When `remove_metadata` is `false` only `tool_configs.<tool_id>` is removed
+/// and the lock registry entry is marked `Pruned`, preserving historical state.
+///
+/// When `remove_metadata` is `true` the tool spec entry in `machine.tools`,
+/// all `tool_configs` entries, and the lock registry entry are fully erased so
+/// no trace of the tool remains in conductor machine state.
 pub(crate) async fn prune_tool_binary(
     paths: &MediaPmPaths,
     lock: &mut MediaLockFile,
     tool_id: &str,
+    remove_metadata: bool,
 ) -> Result<usize, MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
     let removed_hashes = machine
@@ -363,6 +368,10 @@ pub(crate) async fn prune_tool_binary(
 
     if removed_hashes.is_empty() && !machine.tools.contains_key(tool_id) {
         return Err(MediaPmError::Workflow(format!("tool '{tool_id}' is not registered")));
+    }
+
+    if remove_metadata {
+        machine.tools.remove(tool_id);
     }
 
     save_machine_document(&paths.conductor_machine_ncl, &machine)?;
@@ -383,7 +392,9 @@ pub(crate) async fn prune_tool_binary(
         }
     }
 
-    if let Some(entry) = lock.tool_registry.get_mut(tool_id) {
+    if remove_metadata {
+        lock.tool_registry.remove(tool_id);
+    } else if let Some(entry) = lock.tool_registry.get_mut(tool_id) {
         entry.status = ToolRegistryStatus::Pruned;
         entry.last_transition_unix_seconds = now_unix_seconds();
     }
