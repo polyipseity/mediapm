@@ -31,11 +31,10 @@ use super::provision::{
     normalize_download_progress_snapshot, tool_progress_position,
 };
 use super::tool_config::{
-    augment_media_tagger_tool_id_with_ffmpeg_selector, augment_tool_id_with_dependency_selector,
-    ffmpeg_selector_from_registry_or_tool_id, media_tagger_ffmpeg_content_key,
-    remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_deno_selection,
-    resolve_companion_ffmpeg_selection, resolve_host_command_selector_path,
-    resolve_managed_tool_command_absolute_path,
+    augment_tool_id_with_dependency_selector, ffmpeg_selector_from_registry_or_tool_id,
+    media_tagger_ffmpeg_content_key, remove_redundant_inherited_env_vars_from_tool_config,
+    resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
+    resolve_host_command_selector_path, resolve_managed_tool_command_absolute_path,
     resolve_managed_tool_payload_command_path_from_selector,
     resolve_managed_tool_payload_directory_from_selector, resolve_yt_dlp_js_runtime_path,
     should_set_yt_dlp_ffmpeg_location,
@@ -460,20 +459,6 @@ fn resolve_host_command_selector_path_accepts_direct_path() {
         .expect("direct path");
 
     assert_eq!(resolved, "windows/ffmpeg-master/bin/ffmpeg.exe");
-}
-
-/// Verifies media-tagger managed ids include selected ffmpeg selector
-/// identity to invalidate stale launcher rows when ffmpeg changes.
-#[test]
-fn media_tagger_tool_id_includes_ffmpeg_selector_fragment() {
-    let base_tool_id = "mediapm.tools.media-tagger+mediapm-internal@latest";
-    let augmented =
-        augment_media_tagger_tool_id_with_ffmpeg_selector(base_tool_id, "blake3:ABC_def");
-
-    assert_eq!(
-        augmented,
-        "mediapm.tools.media-tagger+mediapm-internal+ffmpeg-blake3-abc-def@latest"
-    );
 }
 
 /// Verifies same-step companion dependencies fold selected selector identity

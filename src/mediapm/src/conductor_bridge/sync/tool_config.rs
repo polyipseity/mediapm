@@ -290,13 +290,9 @@ pub(super) fn should_set_yt_dlp_js_runtimes(
 pub(super) type CompanionDenoSelection = CompanionFfmpegSelection;
 
 /// Resolved ffmpeg linkage used to stabilize managed media-tagger identity and
-/// content-map compatibility with the selected ffmpeg payload.
+/// runtime subprocess compatibility with the selected ffmpeg payload.
 #[derive(Debug, Clone)]
 pub(super) struct MediaTaggerFfmpegSelection {
-    /// Stable selector fragment (hash, version, or tag) folded into tool id.
-    pub(super) selector: String,
-    /// Optional provisioned payload entries for selected ffmpeg content.
-    pub(super) provisioned_content_entries: BTreeMap<String, ContentMapSource>,
     /// Host-resolved ffmpeg executable path for media-tagger subprocess env.
     pub(super) host_command_path: Option<String>,
 }
@@ -384,6 +380,7 @@ pub(super) fn resolve_managed_tool_payload_command_path_from_selector(
 }
 
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
+#[cfg(test)]
 const MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX: &str = "ffmpeg/";
 
 /// Subdirectory name within a tool entry directory where the conductor
@@ -447,6 +444,7 @@ pub(super) fn resolve_managed_tool_command_absolute_path(
 
 /// Prefixes one ffmpeg content-map key for media-tagger sandbox mounting.
 #[must_use]
+#[cfg(test)]
 pub(super) fn media_tagger_ffmpeg_content_key(relative_path: &str) -> String {
     let normalized = relative_path
         .replace('\\', "/")
@@ -461,17 +459,6 @@ pub(super) fn media_tagger_ffmpeg_content_key(relative_path: &str) -> String {
     } else {
         format!("{MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX}{normalized}")
     }
-}
-
-/// Prefixes ffmpeg provisioned content-map entries for media-tagger tool rows.
-#[must_use]
-fn prefix_media_tagger_ffmpeg_content_entries(
-    entries: &BTreeMap<String, ContentMapSource>,
-) -> BTreeMap<String, ContentMapSource> {
-    entries
-        .iter()
-        .map(|(path, source)| (media_tagger_ffmpeg_content_key(path), source.clone()))
-        .collect()
 }
 
 /// Resolves the ffmpeg payload that media-tagger should bind to.
@@ -497,13 +484,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
             && ffmpeg_identity_matches_selector(&payload.identity, &normalized_requested)
         {
             return Ok(MediaTaggerFfmpegSelection {
-                selector: ffmpeg_selector_from_identity(&payload.identity).unwrap_or_else(|| {
-                    normalize_selector_value(Some(&requested_selector))
-                        .unwrap_or_else(|| requested_selector.clone())
-                }),
-                provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
-                    &payload.content_entries,
-                ),
                 host_command_path: resolve_host_command_selector_path(&payload.command_selector),
             });
         }
@@ -532,32 +512,33 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
 
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
         let active_ffmpeg_tool_id = lock.active_tools.get("ffmpeg");
-        let (selected_tool_id, selected_selector) = if let Some(active_tool_id) =
-            active_ffmpeg_tool_id
-        {
+        let selected_tool_id = if let Some(active_tool_id) = active_ffmpeg_tool_id {
             candidates
-                    .iter()
-                    .find(|(tool_id, _)| tool_id == active_tool_id)
-                    .cloned()
-                    .or_else(|| candidates.first().cloned())
-                    .ok_or_else(|| {
-                        MediaPmError::Workflow(
-                            "tools.media-tagger.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
-                                .to_string(),
-                        )
-                    })?
-        } else {
-            candidates.first().cloned().ok_or_else(|| {
+                .iter()
+                .find(|(tool_id, _)| tool_id == active_tool_id)
+                .cloned()
+                .or_else(|| candidates.first().cloned())
+                .ok_or_else(|| {
                     MediaPmError::Workflow(
                         "tools.media-tagger.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
                             .to_string(),
                     )
                 })?
+                .0
+        } else {
+            candidates
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "tools.media-tagger.dependencies.ffmpeg_version matched no viable ffmpeg candidates"
+                            .to_string(),
+                    )
+                })?
+                .0
         };
 
         return Ok(MediaTaggerFfmpegSelection {
-            selector: selected_selector,
-            provisioned_content_entries: BTreeMap::new(),
             host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
                 paths,
                 machine,
@@ -567,7 +548,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
     }
 
     if let Some(payload) = provisioned_snapshot.get("ffmpeg") {
-        let selector = ffmpeg_selector_from_identity(&payload.identity).ok_or_else(|| {
+        ffmpeg_selector_from_identity(&payload.identity).ok_or_else(|| {
             MediaPmError::Workflow(
                 "managed ffmpeg payload did not expose hash/version/tag identity for media-tagger linkage"
                     .to_string(),
@@ -575,10 +556,6 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
         })?;
 
         return Ok(MediaTaggerFfmpegSelection {
-            selector,
-            provisioned_content_entries: prefix_media_tagger_ffmpeg_content_entries(
-                &payload.content_entries,
-            ),
             host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
                 paths,
                 machine,
@@ -600,16 +577,13 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
         )));
     }
 
-    let selector = ffmpeg_selector_from_registry_or_tool_id(active_ffmpeg_tool_id, lock)
-        .ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "could not derive ffmpeg selector identity from active tool '{active_ffmpeg_tool_id}'"
-            ))
-        })?;
+    ffmpeg_selector_from_registry_or_tool_id(active_ffmpeg_tool_id, lock).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "could not derive ffmpeg selector identity from active tool '{active_ffmpeg_tool_id}'"
+        ))
+    })?;
 
     Ok(MediaTaggerFfmpegSelection {
-        selector,
-        provisioned_content_entries: BTreeMap::new(),
         host_command_path: resolve_host_ffmpeg_executable_path_from_machine_tool(
             paths,
             machine,
@@ -862,15 +836,6 @@ fn selector_from_registry_or_tool_id(
     }
 
     tool_id.rsplit_once('@').and_then(|(_, suffix)| normalize_selector_value(Some(suffix)))
-}
-
-/// Folds ffmpeg selector identity into media-tagger managed tool id.
-#[must_use]
-pub(super) fn augment_media_tagger_tool_id_with_ffmpeg_selector(
-    base_tool_id: &str,
-    selector: &str,
-) -> String {
-    augment_tool_id_with_dependency_selector(base_tool_id, "ffmpeg", selector)
 }
 
 /// Folds one dependency selector identity into one managed tool id.

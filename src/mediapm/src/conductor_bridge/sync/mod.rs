@@ -12,8 +12,7 @@ use self::lifecycle::{
 };
 use self::provision::provision_desired_tools_concurrently;
 use self::tool_config::{
-    augment_media_tagger_tool_id_with_ffmpeg_selector, augment_tool_id_with_dependency_selector,
-    ensure_machine_runtime_inherits_generated_env_vars,
+    augment_tool_id_with_dependency_selector, ensure_machine_runtime_inherits_generated_env_vars,
     remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_deno_selection,
     resolve_companion_ffmpeg_selection, resolve_conductor_runtime_dir,
     resolve_managed_tool_payload_command_path_from_selector,
@@ -149,14 +148,7 @@ pub(crate) async fn reconcile_desired_tools(
                 &machine,
             )?;
 
-            desired_tool_id = augment_media_tagger_tool_id_with_ffmpeg_selector(
-                &desired_tool_id,
-                &ffmpeg_selection.selector,
-            );
             media_tagger_ffmpeg_host_command_path = ffmpeg_selection.host_command_path;
-            for (entry_key, entry_source) in ffmpeg_selection.provisioned_content_entries {
-                effective_content_entries.entry(entry_key).or_insert(entry_source);
-            }
         }
 
         if name.eq_ignore_ascii_case("yt-dlp") {
