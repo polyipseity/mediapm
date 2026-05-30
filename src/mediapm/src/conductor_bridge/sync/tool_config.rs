@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use mediapm_cas::Hash;
 use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
@@ -9,8 +11,10 @@ use crate::config::{ToolRequirement, normalize_selector_compare_value, normalize
 use crate::error::MediaPmError;
 use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
-use crate::tools::catalog::current_tool_os;
 use crate::tools::downloader::{ContentMapSource, ProvisionedToolPayload, ResolvedToolIdentity};
+
+#[cfg(test)]
+use crate::tools::catalog::current_tool_os;
 
 use super::super::tool_runtime::extract_platform_conditional_paths;
 use super::super::util::write_bytes_if_changed;
@@ -165,6 +169,7 @@ pub(super) fn resolve_host_command_selector_path(command_selector: &str) -> Opti
 
 /// Recursively finds the first file with `file_name` under `root`.
 #[must_use]
+#[cfg(test)]
 fn find_file_named_in_tree(root: &Path, file_name: &str) -> Option<PathBuf> {
     if file_name.trim().is_empty() || !root.exists() {
         return None;
@@ -242,6 +247,7 @@ fn resolve_host_ffmpeg_executable_path_from_machine_tool(
 /// but any returned path is rewritten into the conductor cache tree before it
 /// leaves this helper.
 #[must_use]
+#[cfg(test)]
 pub(super) fn resolve_yt_dlp_js_runtime_path(
     paths: &MediaPmPaths,
     tool_id: &str,
@@ -643,38 +649,23 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 
 /// Resolves optional deno linkage for companion tools like `yt-dlp`.
 ///
-/// Returns `Ok(None)` when deno is not explicitly requested via
-/// `deno_version` and no managed deno tool is available, allowing sync
-/// to proceed without deno. Returns `Err` only when deno was explicitly
-/// requested but cannot be resolved.
+/// Selection priority mirrors ffmpeg companion resolution exactly:
+/// explicit selector first, then inherited active/provisioned companion.
 pub(super) fn resolve_companion_deno_selection(
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaLockFile,
     machine: &MachineNickelDocument,
-) -> Result<Option<CompanionDenoSelection>, MediaPmError> {
-    let requested_selector = requirement.normalized_deno_selector();
-    let is_explicit = requested_selector.is_some();
-    match resolve_companion_dependency_selection(
+) -> Result<CompanionDenoSelection, MediaPmError> {
+    resolve_companion_dependency_selection(
         logical_tool_name,
         "deno",
-        requested_selector,
+        requirement.normalized_deno_selector(),
         provisioned_snapshot,
         lock,
         machine,
-    ) {
-        Ok(selection) => Ok(Some(selection)),
-        Err(err) if !is_explicit => {
-            tracing::debug!(
-                tool = %logical_tool_name,
-                error = %err,
-                "deno companion unavailable and not explicitly requested; skipping"
-            );
-            Ok(None)
-        }
-        Err(err) => Err(err),
-    }
+    )
 }
 
 #[expect(

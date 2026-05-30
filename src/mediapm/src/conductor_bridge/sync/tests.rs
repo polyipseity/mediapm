@@ -33,8 +33,9 @@ use super::provision::{
 use super::tool_config::{
     augment_media_tagger_tool_id_with_ffmpeg_selector, augment_tool_id_with_dependency_selector,
     ffmpeg_selector_from_registry_or_tool_id, media_tagger_ffmpeg_content_key,
-    remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_ffmpeg_selection,
-    resolve_host_command_selector_path, resolve_managed_tool_command_absolute_path,
+    remove_redundant_inherited_env_vars_from_tool_config, resolve_companion_deno_selection,
+    resolve_companion_ffmpeg_selection, resolve_host_command_selector_path,
+    resolve_managed_tool_command_absolute_path,
     resolve_managed_tool_payload_command_path_from_selector,
     resolve_managed_tool_payload_directory_from_selector, resolve_yt_dlp_js_runtime_path,
     should_set_yt_dlp_ffmpeg_location,
@@ -806,6 +807,91 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
     assert_eq!(
         selection.host_command_path.as_deref(),
         Some(format!("{host_os}/{ffmpeg_file_name}").as_str())
+    );
+}
+
+/// Verifies companion deno selector resolution for yt-dlp can pin to an
+/// already-registered managed deno tool without requiring reprovision.
+#[test]
+fn companion_deno_selection_matches_registered_deno_tool() {
+    let requirement = ToolRequirement {
+        version: None,
+        tag: Some("latest".to_string()),
+        dependencies: crate::config::ToolRequirementDependencies {
+            ffmpeg_version: None,
+            deno_version: Some("v2.5.0".to_string()),
+            sd_version: None,
+        },
+        recheck_seconds: None,
+        max_input_slots: None,
+        max_output_slots: None,
+    };
+
+    let mut lock = MediaLockFile::default();
+    lock.tool_registry.insert(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
+        ToolRegistryRecord {
+            name: "deno".to_string(),
+            version: "v2.5.0".to_string(),
+            source: "GitHub denoland/deno".to_string(),
+            registry_multihash: "blake3:fixture".to_string(),
+            last_transition_unix_seconds: 0,
+            status: ToolRegistryStatus::Active,
+        },
+    );
+
+    let mut machine = MachineNickelDocument::default();
+    machine.tools.insert(
+        "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec!["windows/deno/deno.exe".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        },
+    );
+
+    let selection =
+        resolve_companion_deno_selection("yt-dlp", &requirement, &BTreeMap::new(), &lock, &machine)
+            .expect("companion deno selection should succeed");
+
+    assert_eq!(selection.selector, "v2.5.0");
+    assert_eq!(selection.host_command_path.as_deref(), Some("windows/deno/deno.exe"));
+}
+
+/// Verifies explicit yt-dlp companion deno selectors fail fast when no
+/// managed deno identity matches the requested selector.
+#[test]
+fn companion_deno_selection_rejects_unknown_selector() {
+    let requirement = ToolRequirement {
+        version: None,
+        tag: Some("latest".to_string()),
+        dependencies: crate::config::ToolRequirementDependencies {
+            ffmpeg_version: None,
+            deno_version: Some("v9.9.9".to_string()),
+            sd_version: None,
+        },
+        recheck_seconds: None,
+        max_input_slots: None,
+        max_output_slots: None,
+    };
+
+    let error = resolve_companion_deno_selection(
+        "yt-dlp",
+        &requirement,
+        &BTreeMap::new(),
+        &MediaLockFile::default(),
+        &MachineNickelDocument::default(),
+    )
+    .expect_err("unknown deno selector should fail");
+
+    assert!(
+        error.to_string().contains(
+            "tools.yt-dlp.dependencies.deno_version 'v9.9.9' did not match any managed deno tool"
+        ),
+        "unexpected error: {error}"
     );
 }
 

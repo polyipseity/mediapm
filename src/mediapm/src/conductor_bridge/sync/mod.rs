@@ -18,8 +18,8 @@ use self::tool_config::{
     resolve_companion_ffmpeg_selection, resolve_conductor_runtime_dir,
     resolve_managed_tool_payload_command_path_from_selector,
     resolve_managed_tool_payload_directory_from_selector, resolve_media_tagger_ffmpeg_selection,
-    resolve_yt_dlp_js_runtime_path, should_set_yt_dlp_ffmpeg_location,
-    should_set_yt_dlp_js_runtimes, write_generated_runtime_env_file,
+    should_set_yt_dlp_ffmpeg_location, should_set_yt_dlp_js_runtimes,
+    write_generated_runtime_env_file,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -180,26 +180,23 @@ pub(crate) async fn reconcile_desired_tools(
                 effective_content_entries.entry(entry_key).or_insert(entry_source);
             }
 
-            if let Some(companion_deno_selection) = resolve_companion_deno_selection(
+            let companion_deno_selection = resolve_companion_deno_selection(
                 name,
                 requirement,
                 &provisioned_snapshot,
                 lock,
                 &machine,
-            )? {
-                desired_tool_id = augment_tool_id_with_dependency_selector(
-                    &desired_tool_id,
-                    "deno",
-                    &companion_deno_selection.selector,
-                );
-                companion_deno_content_map = companion_deno_selection.existing_content_map;
-                companion_deno_host_command_path = companion_deno_selection.host_command_path;
+            )?;
+            desired_tool_id = augment_tool_id_with_dependency_selector(
+                &desired_tool_id,
+                "deno",
+                &companion_deno_selection.selector,
+            );
+            companion_deno_content_map = companion_deno_selection.existing_content_map;
+            companion_deno_host_command_path = companion_deno_selection.host_command_path;
 
-                for (entry_key, entry_source) in
-                    companion_deno_selection.provisioned_content_entries
-                {
-                    effective_content_entries.entry(entry_key).or_insert(entry_source);
-                }
+            for (entry_key, entry_source) in companion_deno_selection.provisioned_content_entries {
+                effective_content_entries.entry(entry_key).or_insert(entry_source);
             }
         }
 
@@ -264,16 +261,14 @@ pub(crate) async fn reconcile_desired_tools(
             }
 
             if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults)
-                && let Some(js_runtimes_path) = companion_deno_host_command_path
-                    .as_deref()
-                    .and_then(|selector_path| {
+                && let Some(js_runtimes_path) =
+                    companion_deno_host_command_path.as_deref().and_then(|selector_path| {
                         resolve_managed_tool_payload_command_path_from_selector(
                             paths,
                             &desired_tool_id,
                             selector_path,
                         )
                     })
-                    .or_else(|| resolve_yt_dlp_js_runtime_path(paths, &desired_tool_id))
             {
                 desired_config.input_defaults.insert(
                     "js_runtimes".to_string(),
