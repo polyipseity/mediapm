@@ -542,9 +542,10 @@ Run targeted validation on affected crates:
 - `cargo build-pkg <crate>` (e.g., `cargo build-pkg mediapm`)
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during
   normal development loops; rely on `prek.toml` commit hooks for those gates.
-- Run only selective tests for changed behavior during development; reserve
-  full suite/integration demo runs for push/pre-push workflows or explicit
-  reviewer requests.
+- Run selective tests for changed behavior during development, and before
+  completion always run both mediapm demos:
+  - `cargo run --package mediapm --example mediapm_demo`
+  - `cargo run --package mediapm --example mediapm_demo_online`
 
 **Before submitting (pre-push):**
 

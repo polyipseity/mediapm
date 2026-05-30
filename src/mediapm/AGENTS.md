@@ -501,8 +501,10 @@ During development, prefer targeted cargo aliases from `.cargo/config.toml`:
 
 - `cargo test-pkg mediapm`
 - `cargo build-pkg mediapm`
-- Run selective tests for changed behavior only; avoid full-suite churn during
-  normal development loops.
+- Run selective tests for changed behavior only during iteration, then run both
+  demo examples before finishing any change set:
+  - `cargo run --package mediapm --example mediapm_demo`
+  - `cargo run --package mediapm --example mediapm_demo_online`
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
   development loops; `prek.toml` commit hooks enforce those gates on commit.
 
@@ -512,8 +514,8 @@ Pre-push/full-workspace validation:
 - `cargo clippy-all`
 - `cargo test-all`
 
-Reserve full demo/integration runs for push/pre-push workflows or explicit
-reviewer requests.
+Both demo examples are mandatory post-change validation for mediapm work, not
+optional push-time checks.
 
 Example policy:
 
