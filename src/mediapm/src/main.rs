@@ -502,14 +502,12 @@ async fn main() -> anyhow::Result<()> {
             let check_tag_updates = args.tag_update_policy.resolve(true);
             let summary = service.sync_library_with_tag_update_checks(check_tag_updates).await?;
             println!(
-                "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}, tools_added={}, tools_updated={}",
+                "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}",
                 summary.executed_instances,
                 summary.cached_instances,
                 summary.rematerialized_instances,
                 summary.materialized_paths,
                 summary.removed_paths,
-                summary.added_tools,
-                summary.updated_tools,
             );
             for warning in summary.warnings {
                 eprintln!("warning: {warning}");
@@ -609,12 +607,16 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 println!("registered media source id={media_id}");
+                eprintln!(
+                    "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
+                );
             }
             MediaCommand::Remove { media_id } => {
                 let removed_hierarchy_nodes = service.remove_media_source(&media_id)?;
                 println!(
                     "removed media source id={media_id} (removed_hierarchy_nodes={removed_hierarchy_nodes})"
                 );
+                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
             }
         },
         Command::Hierarchy { command } => match command {
@@ -636,6 +638,7 @@ async fn main() -> anyhow::Result<()> {
                     args.media_id,
                     effective_root
                 );
+                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
             }
             HierarchyCommand::Remove(args) => {
                 let preset = map_hierarchy_preset(args.preset);
@@ -654,6 +657,7 @@ async fn main() -> anyhow::Result<()> {
                     args.media_id,
                     effective_root
                 );
+                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
             }
         },
         Command::Global { command } => match command {

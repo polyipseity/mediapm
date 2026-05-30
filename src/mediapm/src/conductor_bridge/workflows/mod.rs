@@ -224,6 +224,7 @@ pub(crate) fn reconcile_media_workflows(
 /// `mediapm.ncl` without running tool provisioning. It keeps generated
 /// conductor machine workflows populated for inspection by synthesizing
 /// placeholder active tools only when required logical tools are missing.
+#[allow(dead_code)]
 pub(crate) fn reconcile_media_workflows_for_config_edits(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,

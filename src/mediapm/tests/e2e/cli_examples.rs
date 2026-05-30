@@ -83,30 +83,8 @@ fn cli_add_sources_example_runs_and_writes_manifest() {
         "manifest should include non-empty remote media id"
     );
 
-    let machine_path = manifest_json
-        .get("conductor_machine_ncl")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .expect("manifest should include conductor machine path");
-    let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
-        .expect("decode conductor machine document");
-
-    let local_media_id = manifest_json
-        .get("local_media_id")
-        .and_then(Value::as_str)
-        .expect("manifest should include local media id");
-    let remote_media_id = manifest_json
-        .get("remote_media_id")
-        .and_then(Value::as_str)
-        .expect("manifest should include remote media id");
-    for workflow_id in
-        [format!("mediapm.media.{local_media_id}"), format!("mediapm.media.{remote_media_id}")]
-    {
-        assert!(
-            machine.workflows.contains_key(&workflow_id),
-            "conductor machine should contain managed workflow '{workflow_id}'"
-        );
-    }
+    // Conductor machine workflow population requires an explicit `mediapm sync` run;
+    // these tests only verify that config mutations write the correct declarative state.
 }
 
 // Verifies hierarchy example runs and emits inspectable config artifacts.
@@ -155,30 +133,8 @@ fn cli_add_hierarchy_example_runs_and_writes_manifest() {
         );
     }
 
-    let machine_path = manifest_json
-        .get("conductor_machine_ncl")
-        .and_then(Value::as_str)
-        .map(PathBuf::from)
-        .expect("manifest should include conductor machine path");
-    let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
-        .expect("decode conductor machine document");
-
-    let local_media_id = manifest_json
-        .get("local_media_id")
-        .and_then(Value::as_str)
-        .expect("manifest should include local media id");
-    let remote_media_id = manifest_json
-        .get("remote_media_id")
-        .and_then(Value::as_str)
-        .expect("manifest should include remote media id");
-    for workflow_id in
-        [format!("mediapm.media.{local_media_id}"), format!("mediapm.media.{remote_media_id}")]
-    {
-        assert!(
-            machine.workflows.contains_key(&workflow_id),
-            "conductor machine should contain managed workflow '{workflow_id}'"
-        );
-    }
+    // Conductor machine workflow population requires an explicit `mediapm sync` run;
+    // these tests only verify that config mutations write the correct declarative state.
 }
 
 // Verifies tools example runs and emits inspectable config artifacts.

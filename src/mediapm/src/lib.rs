@@ -84,8 +84,14 @@ pub struct SyncSummary {
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
     /// Number of tools newly registered in conductor machine config.
+    ///
+    /// `mediapm sync` no longer reconciles tool requirements automatically,
+    /// so this remains `0` unless policy changes in a future release.
     pub added_tools: usize,
     /// Number of tools updated/promoted in conductor machine config.
+    ///
+    /// `mediapm sync` no longer reconciles tool requirements automatically,
+    /// so this remains `0` unless policy changes in a future release.
     pub updated_tools: usize,
     /// Non-fatal warnings surfaced during sync.
     pub warnings: Vec<String>,

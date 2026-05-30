@@ -15,7 +15,8 @@ use std::process::Command as ProcessCommand;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
-    ConductorApi, SimpleConductor, resolve_managed_tool_executable_with_filesystem_cas,
+    ConductorApi, SimpleConductor, ToolKindSpec,
+    resolve_managed_tool_executable_with_filesystem_cas,
 };
 use url::Url;
 
@@ -124,28 +125,100 @@ where
         merge_runtime_storage(config_runtime_storage, &self.runtime_storage_overrides)
     }
 
-    /// Reconciles managed workflows for config-only edit commands.
+    /// Returns true when one logical tool requirement likely needs explicit
+    /// `mediapm tool sync` reconciliation.
     ///
-    /// This helper keeps conductor machine workflow rows synchronized after
-    /// source/hierarchy mutations even when explicit tool sync is deferred.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when conductor documents cannot be prepared,
-    /// workflow reconciliation fails, or lock state cannot be persisted.
-    fn reconcile_workflows_after_config_edit(
-        &self,
+    /// This check is intentionally local-only: it validates desired-vs-active
+    /// selector alignment and required machine rows, but does not perform
+    /// remote release lookups.
+    fn logical_tool_requires_sync(
+        tool_name: &str,
+        requirement: &ToolRequirement,
+        lock: &MediaLockFile,
+        machine: &mediapm_conductor::MachineNickelDocument,
+    ) -> bool {
+        if tool_name.eq_ignore_ascii_case("import") {
+            return false;
+        }
+
+        let Some(active_tool_id) = lock.active_tools.get(tool_name) else {
+            return true;
+        };
+
+        let Some(registry_entry) = lock.tool_registry.get(active_tool_id) else {
+            return true;
+        };
+
+        if !registry_entry.name.eq_ignore_ascii_case(tool_name)
+            || !matches!(registry_entry.status, crate::lockfile::ToolRegistryStatus::Active)
+        {
+            return true;
+        }
+
+        let Some(tool_spec) = machine.tools.get(active_tool_id) else {
+            return true;
+        };
+
+        if let Some(required_version) = requirement.normalized_version()
+            && config::normalize_selector_compare_value(registry_entry.version.as_str())
+                != config::normalize_selector_compare_value(required_version.as_str())
+        {
+            return true;
+        }
+
+        if let Some(required_tag) = requirement.normalized_tag()
+            && config::normalize_selector_compare_value(registry_entry.version.as_str())
+                != config::normalize_selector_compare_value(required_tag.as_str())
+        {
+            return true;
+        }
+
+        if matches!(&tool_spec.kind, ToolKindSpec::Executable { .. }) {
+            let has_content_map = machine
+                .tool_configs
+                .get(active_tool_id)
+                .and_then(|tool_config| tool_config.content_map.as_ref())
+                .is_some_and(|content_map| !content_map.is_empty());
+            if !has_content_map {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Returns sorted logical tool names that likely need explicit
+    /// `mediapm tool sync` reconciliation.
+    fn collect_tools_requiring_sync(
         document: &MediaPmDocument,
-    ) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
-        conductor_bridge::reconcile_media_workflows_for_config_edits(
-            &effective_paths,
-            document,
-            &mut lock,
-        )?;
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)
+        lock: &MediaLockFile,
+        machine: &mediapm_conductor::MachineNickelDocument,
+    ) -> Vec<String> {
+        let mut names = document
+            .tools
+            .iter()
+            .filter(|(tool_name, requirement)| {
+                Self::logical_tool_requires_sync(tool_name, requirement, lock, machine)
+            })
+            .map(|(tool_name, _requirement)| tool_name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// Adds one warning that hints explicit tool-sync usage when required.
+    ///
+    /// This warning preserves explicit-policy boundaries: `mediapm sync` does
+    /// not auto-run tool reconciliation.
+    fn append_tool_sync_hint_warning(warnings: &mut Vec<String>, tools_requiring_sync: &[String]) {
+        if tools_requiring_sync.is_empty() {
+            return;
+        }
+
+        warnings.push(format!(
+            "tool state appears outdated for [{}]; run 'mediapm tool sync' to reconcile managed tool binaries/config before rerunning 'mediapm sync'",
+            tools_requiring_sync.join(", ")
+        ));
     }
 
     /// Adds one online media source to `mediapm.ncl`.
@@ -430,7 +503,6 @@ where
         );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
@@ -575,7 +647,6 @@ where
             },
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(media_id)
     }
 
@@ -642,7 +713,6 @@ where
         insert_hierarchy_preset_node(&mut document.hierarchy, node, &normalized_folder, position);
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(())
     }
 
@@ -667,7 +737,6 @@ where
         let removed_hierarchy_nodes =
             remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        self.reconcile_workflows_after_config_edit(&document)?;
         Ok(removed_hierarchy_nodes)
     }
 
@@ -692,7 +761,6 @@ where
         let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
         if removed_nodes > 0 {
             save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-            self.reconcile_workflows_after_config_edit(&document)?;
         }
         Ok(removed_nodes)
     }
@@ -975,22 +1043,30 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when tool sync fails, conductor execution
-    /// fails (including filesystem-CAS fallback), hierarchy materialization
-    /// fails, or state cannot be persisted.
+    /// Returns [`MediaPmError`] when config/runtime preparation fails,
+    /// workflow reconciliation/execution fails (including filesystem-CAS
+    /// fallback), hierarchy materialization fails, or state cannot be
+    /// persisted.
     pub async fn sync_library_with_tag_update_checks(
         &self,
-        check_tag_updates: bool,
+        _check_tag_updates: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        // Load the mediapm document once and reuse it across both sync phases to
-        // avoid a redundant Nickel evaluation between tool-sync and library-sync.
+        // Load the mediapm document once and keep tool reconciliation explicit:
+        // this path intentionally does not invoke desired-tool sync.
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        eprintln!("[mediapm::sync] reconciling managed tools and workflow configuration...");
-        let (tool_summary, mut lock, effective_paths) =
-            self.sync_tools_from_document(&document, check_tag_updates).await?;
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
+        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
+        load_runtime_dotenv(&effective_paths)?;
+        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        export_mediapm_nickel_config_schemas(&effective_paths)?;
+        mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
+
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
+        let tools_requiring_sync = Self::collect_tools_requiring_sync(&document, &lock, &machine);
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
         let workflow_options =
             conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
@@ -1048,8 +1124,9 @@ where
             &mut lock,
         )
         .await?;
-        let mut warnings = tool_summary.warnings.clone();
+        let mut warnings = Vec::new();
         warnings.extend(materialize_report.notices.clone());
+        Self::append_tool_sync_hint_warning(&mut warnings, &tools_requiring_sync);
 
         // Reconcile again after materialization so managed-file hashes written
         // during this sync are immediately rooted in machine external_data.
@@ -1063,8 +1140,8 @@ where
             rematerialized_instances: conductor_summary.rematerialized_instances,
             materialized_paths: materialize_report.materialized_paths,
             removed_paths: materialize_report.removed_paths,
-            added_tools: tool_summary.added_tools,
-            updated_tools: tool_summary.updated_tools,
+            added_tools: 0,
+            updated_tools: 0,
             warnings,
         })
     }
