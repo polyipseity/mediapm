@@ -514,7 +514,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
- "terminal_size",
+ "terminal_size 0.4.4",
 ]
 
 [[package]]
@@ -2175,6 +2175,7 @@ dependencies = [
  "serde_json",
  "tar",
  "tempfile",
+ "terminal_size 0.1.17",
  "thiserror",
  "tokio",
  "zip",
@@ -2262,7 +2263,7 @@ dependencies = [
  "supports-color",
  "supports-hyperlinks",
  "supports-unicode",
- "terminal_size",
+ "terminal_size 0.4.4",
  "textwrap",
  "unicode-width 0.1.14",
 ]
@@ -3880,6 +3881,16 @@ dependencies = [
  "serde",
  "thiserror",
  "unicode-width 0.1.14",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.1.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633c1a546cee861a1a6d0dc69ebeca693bf4296661ba7852b9d21d159e0506df"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]

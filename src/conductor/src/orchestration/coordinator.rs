@@ -23,6 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, CasError, Hash};
 use pulsebar::MultiProgress;
+use terminal_size::{Width, terminal_size};
 
 use crate::api::{
     RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics, StateMutationOptions,
@@ -798,24 +799,99 @@ where
     /// Conductor progress bars now advance when a level is dispatched. This
     /// message keeps each row informative by showing the currently running
     /// level's step id preview while execution is in-flight.
+    ///
+    /// Always fits within terminal width; truncates step preview when needed.
     fn workflow_level_progress_message(
         workflow_display_name: &str,
         _dispatched_steps: usize,
         _total_steps: usize,
         level: &[&WorkflowStepSpec],
     ) -> String {
-        let step_preview = Self::workflow_level_step_preview(level);
-        format!("{workflow_display_name}  {step_preview}")
+        let terminal_width = terminal_size().map(|(_, Width(w))| w as usize).unwrap_or(80);
+        let preview_width =
+            terminal_width.saturating_sub(workflow_display_name.chars().count() + 2);
+        let step_preview = Self::workflow_level_step_preview(level, preview_width);
+
+        if step_preview.is_empty() {
+            workflow_display_name.to_string()
+        } else {
+            format!("{workflow_display_name}  {step_preview}")
+        }
     }
 
     /// Renders a compact preview of step ids in one execution level.
-    fn workflow_level_step_preview(level: &[&WorkflowStepSpec]) -> String {
+    fn workflow_level_step_preview(level: &[&WorkflowStepSpec], max_len: usize) -> String {
+        fn char_len(value: &str) -> usize {
+            value.chars().count()
+        }
+
+        fn truncate_to_len(value: &str, max_len: usize) -> String {
+            if char_len(value) <= max_len {
+                return value.to_string();
+            }
+
+            if max_len <= 3 {
+                return value.chars().take(max_len).collect();
+            }
+
+            let truncated: String = value.chars().take(max_len - 3).collect();
+            format!("{truncated}...")
+        }
+
+        if max_len == 0 {
+            return String::new();
+        }
+
         match level {
-            [] => "...".to_string(),
-            [single] => single.id.clone(),
-            [first, second] => format!("{}, {}", first.id, second.id),
+            [] => truncate_to_len("...", max_len),
+            [single] => truncate_to_len(&single.id, max_len),
+            [first, second] => {
+                let full = format!("{}, {}", first.id, second.id);
+                if char_len(&full) <= max_len {
+                    return full;
+                }
+
+                let separator_len = 2;
+                let first_len = char_len(&first.id);
+                let available_for_second = max_len.saturating_sub(first_len + separator_len);
+                if available_for_second > 0 {
+                    return format!(
+                        "{}, {}",
+                        first.id,
+                        truncate_to_len(&second.id, available_for_second)
+                    );
+                }
+
+                truncate_to_len(&first.id, max_len)
+            }
             [first, second, rest @ ..] => {
-                format!("{}, {}, +{} more", first.id, second.id, rest.len())
+                let separator_len = 2;
+                let mut more_count = rest.len();
+
+                while more_count > 0 {
+                    let candidate = format!("{}, {}, +{} more", first.id, second.id, more_count);
+                    if char_len(&candidate) <= max_len {
+                        return candidate;
+                    }
+                    more_count = more_count.saturating_sub(1);
+                }
+
+                let partial = format!("{}, {}", first.id, second.id);
+                if char_len(&partial) <= max_len {
+                    return partial;
+                }
+
+                let first_len = char_len(&first.id);
+                let available_for_second = max_len.saturating_sub(first_len + separator_len);
+                if available_for_second > 0 {
+                    return format!(
+                        "{}, {}",
+                        first.id,
+                        truncate_to_len(&second.id, available_for_second)
+                    );
+                }
+
+                truncate_to_len(&first.id, max_len)
             }
         }
     }
