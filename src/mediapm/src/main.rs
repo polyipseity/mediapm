@@ -805,6 +805,10 @@ async fn passthrough_conductor(
 
 /// Injects default `cas` root when the caller did not provide one explicitly.
 fn inject_cas_passthrough_defaults(args: &[String], default_root: &std::path::Path) -> Vec<String> {
+    if passthrough_requests_help_or_version(args) {
+        return args.to_vec();
+    }
+
     let mut injected = Vec::new();
     if !passthrough_option_present(args, &["--root"]) {
         injected.push("--root".to_string());
@@ -897,6 +901,14 @@ fn passthrough_option_present(args: &[String], option_names: &[&str]) -> bool {
     })
 }
 
+/// Returns true when passthrough argv explicitly requests help/version text.
+fn passthrough_requests_help_or_version(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version")
+            || arg.split_once('=').is_some_and(|(flag, _)| matches!(flag, "--help" | "--version"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
@@ -904,6 +916,7 @@ mod tests {
     use std::path::PathBuf;
 
     use mediapm::MediaPmPaths;
+    use tempfile::tempdir;
 
     use super::{Cli, inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults};
 
@@ -1047,6 +1060,18 @@ mod tests {
         );
     }
 
+    /// Protects direct help passthrough by avoiding default-root injection
+    /// when CAS help/version output is requested.
+    #[test]
+    fn inject_cas_passthrough_defaults_skips_root_for_help_routes() {
+        let injected = inject_cas_passthrough_defaults(
+            &["--help".to_string()],
+            PathBuf::from("store").as_path(),
+        );
+
+        assert_eq!(injected, vec!["--help".to_string()]);
+    }
+
     /// Protects parent-owned mediapm defaults for `mediapm conductor ...`
     /// passthrough invocations.
     #[test]
@@ -1067,5 +1092,34 @@ mod tests {
         assert!(injected.contains(&"--conductor-tools-dir".to_string()));
         assert!(injected.contains(&"/tmp/demo-root/.mediapm/tools".to_string()));
         assert_eq!(injected.last().map(String::as_str), Some("state"));
+    }
+
+    /// Protects `mediapm cas ...` passthrough by requiring that help rendering
+    /// succeeds without external setup.
+    #[tokio::test]
+    async fn passthrough_cas_help_is_routable() {
+        let temp = tempdir().expect("tempdir");
+        let default_root = temp.path().join("store");
+
+        let result = super::passthrough_cas(&["--help".to_string()], &default_root).await;
+
+        assert!(result.is_ok(), "cas passthrough help should succeed: {result:?}");
+    }
+
+    /// Protects `mediapm tool run <tool> ...` passthrough routing by requiring
+    /// that conductor subcommand help is reachable through the injected
+    /// runtime-path wrapper.
+    #[tokio::test]
+    async fn passthrough_conductor_tool_run_help_is_routable() {
+        let temp = tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+
+        let result = super::passthrough_conductor(
+            &["tool".to_string(), "run".to_string(), "--help".to_string()],
+            &paths,
+        )
+        .await;
+
+        assert!(result.is_ok(), "conductor passthrough help should succeed: {result:?}");
     }
 }
