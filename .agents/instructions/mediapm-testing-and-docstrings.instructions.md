@@ -206,3 +206,10 @@ Before finishing, run targeted validation on affected crates:
 - `cargo test-all` (full workspace)
 
 See `.cargo/config.toml` for complete alias definitions.
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

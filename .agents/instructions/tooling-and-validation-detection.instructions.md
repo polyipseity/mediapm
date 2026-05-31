@@ -59,3 +59,10 @@ applyTo: "AGENTS.md, .agents/instructions/**/*.md, opencode.json, .vscode/settin
   files, source locations, testing expectations, and common failure modes.
 - Keep `applyTo` globs narrow so the detailed instruction only loads for the
   files it truly governs.
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

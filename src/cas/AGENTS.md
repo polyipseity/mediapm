@@ -140,3 +140,12 @@ alone.
   - Hard threshold: reject writes with `CasError::OutOfSpace` and trigger prune.
 - In-flight deduplication (`DashMap<Hash, Arc<Notify>>`) ensures a hash is
   persisted once even when many concurrent puts race.
+
+## Detailed specification cross-reference
+
+- Cross-crate and integration specification:
+  `.agents/instructions/crate-specifications.md`.
+- Second-pass edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- This crate remains the source of truth for CAS-specific invariants;
+  the cross-crate spec is additive and should stay consistent with this file.

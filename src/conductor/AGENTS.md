@@ -601,3 +601,13 @@ For touched Rust code in this crate:
 - Prefer explicit errors over silent coercion.
 - When conflicts are possible, fail with actionable messages including field or
   tool names.
+
+## Detailed specification cross-reference
+
+- Cross-crate and integration specification:
+  `.agents/instructions/crate-specifications.md`.
+- Second-pass edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- Keep this conductor-local guide as the authoritative source for
+  orchestration/config/tool invariants; treat the cross-crate spec as
+  integration-level consolidation.

@@ -94,3 +94,10 @@ applyTo: "AGENTS.md, README.md, .agents/**/*.md, .opencode/**/*.md, .github/**/*
   a different path.
 - When mentioning future manifests, task files, or tool configs, distinguish
   between "present now" and "expected after initialization."
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

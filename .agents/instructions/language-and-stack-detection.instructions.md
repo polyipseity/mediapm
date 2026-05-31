@@ -77,3 +77,10 @@ applyTo: "AGENTS.md, .agents/instructions/**/*.md"
   reoriented.
 - Do not leave broad placeholders such as "follow standard best practices" when
   concrete repository evidence can support sharper guidance.
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

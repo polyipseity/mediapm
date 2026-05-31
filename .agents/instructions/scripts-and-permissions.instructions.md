@@ -59,3 +59,10 @@ applyTo: "scripts/**"
 - When script location or behavior changes, re-check `.github/workflows/ci.yml`,
   `.vscode/settings.json`, and any prompt or instruction files that reference
   it.
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

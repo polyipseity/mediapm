@@ -550,3 +550,12 @@ Internal module-boundary policy for this crate:
 - `.agents/instructions/mediapm-architecture.instructions.md`
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md`
 - `.agents/instructions/rust-workflow.instructions.md`
+
+## Detailed specification cross-reference
+
+- Cross-crate and integration specification:
+  `.agents/instructions/crate-specifications.md`.
+- Second-pass edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- Treat this crate-local guide as authoritative for mediapm runtime and
+  schema behavior; the cross-crate docs are additive integration references.

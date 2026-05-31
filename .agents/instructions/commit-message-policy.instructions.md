@@ -28,3 +28,10 @@ applyTo: "AGENTS.md, .agents/prompts/commit-staged.prompt.md, .commitlintrc.mjs"
 - ✅ `fix(conductor): reject invalid content_map traversal keys`
 - ❌ `mediapm: align demo-online sidecar hierarchy`
 - ❌ `conductor: reject invalid content_map traversal keys`
+
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.

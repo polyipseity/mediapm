@@ -523,6 +523,13 @@ or download-level progress that spans blocking awaits.
   `workflow_progress.finish_error("retrying")` so the previous retry status is
   rendered before the replacement retry bar is allocated.
 
+## Specification references
+
+- Consolidated technical specification:
+  `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis:
+  `.agents/instructions/elaboration-pass-edge-cases.md`.
+
 **Progress message format:**
 
 - Conductor workflow bars use the format: `<name> · <N/total> · <step-id>` for
