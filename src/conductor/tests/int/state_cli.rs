@@ -511,3 +511,75 @@ async fn state_export_creates_nested_parent_directories() {
     .expect("state export should create nested parent directories");
     assert!(export_path.exists(), "expected exported state file to exist");
 }
+
+/// Protects state invalidation wiring by removing exactly one existing
+/// deterministic instance entry from persisted orchestration state.
+#[tokio::test]
+async fn state_invalidate_tool_call_removes_existing_instance() {
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+    let runtime_root = dir.path().join("runtime");
+    let cas_store_dir = runtime_root.join("store");
+    let export_before_path = dir.path().join("state-before.json");
+    let export_after_path = dir.path().join("state-after.json");
+    write_minimal_configs(&user_path, &machine_path).expect("write minimal conductor documents");
+
+    run_from_argv(cli_argv_with_paths(
+        &user_path,
+        &machine_path,
+        &runtime_root,
+        &cas_store_dir,
+        &["run"],
+    ))
+    .await
+    .expect("run should produce one state snapshot");
+
+    run_from_argv(cli_argv_with_paths(
+        &user_path,
+        &machine_path,
+        &runtime_root,
+        &cas_store_dir,
+        &["state", "export", export_before_path.to_string_lossy().as_ref()],
+    ))
+    .await
+    .expect("state export before invalidation should succeed");
+
+    let exported_before =
+        decode_state(&std::fs::read(&export_before_path).expect("read pre-invalidation export"))
+            .expect("decode pre-invalidation export");
+    let instance_id = exported_before
+        .instances
+        .keys()
+        .next()
+        .cloned()
+        .expect("workflow run should produce one instance");
+
+    run_from_argv(cli_argv_with_paths(
+        &user_path,
+        &machine_path,
+        &runtime_root,
+        &cas_store_dir,
+        &["state", "invalidate-tool-call", &instance_id],
+    ))
+    .await
+    .expect("state invalidate-tool-call should succeed for existing id");
+
+    run_from_argv(cli_argv_with_paths(
+        &user_path,
+        &machine_path,
+        &runtime_root,
+        &cas_store_dir,
+        &["state", "export", export_after_path.to_string_lossy().as_ref()],
+    ))
+    .await
+    .expect("state export after invalidation should succeed");
+
+    let exported_after =
+        decode_state(&std::fs::read(&export_after_path).expect("read post-invalidation export"))
+            .expect("decode post-invalidation export");
+    assert!(
+        !exported_after.instances.contains_key(&instance_id),
+        "invalidated instance id should no longer exist in state"
+    );
+}

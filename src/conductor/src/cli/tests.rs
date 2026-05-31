@@ -199,6 +199,19 @@ fn parse_state_edit_with_editor_override() {
 }
 
 #[test]
+fn parse_state_invalidate_tool_call_command() {
+    let cli = Cli::parse_from(["conductor", "state", "invalidate-tool-call", "instance-key-123"]);
+    match cli.command {
+        CliCommand::State(StateArgs {
+            command: Some(StateCommand::InvalidateToolCall { instance_id }),
+        }) => {
+            assert_eq!(instance_id, "instance-key-123");
+        }
+        other => panic!("expected state invalidate-tool-call command, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_editor_command_supports_quoted_program_and_args() {
     let (program, args) = parse_editor_command("\"C:\\Program Files\\Editor\\editor.exe\" --wait")
         .expect("quoted editor command should parse");

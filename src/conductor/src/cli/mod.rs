@@ -222,6 +222,11 @@ pub enum StateCommand {
         #[arg(long)]
         editor: Option<String>,
     },
+    /// Invalidates one completed tool call instance so it is re-run.
+    InvalidateToolCall {
+        /// Deterministic instance id (state `instances` map key).
+        instance_id: String,
+    },
 }
 
 /// Import command group.
@@ -841,7 +846,49 @@ async fn handle_state(
             edit_state_via_editor(&conductor, user_ncl, machine_ncl, options, editor.as_deref())
                 .await
         }
+        StateCommand::InvalidateToolCall { instance_id } => {
+            invalidate_tool_call_by_instance_id(
+                &conductor,
+                user_ncl,
+                machine_ncl,
+                options,
+                &instance_id,
+            )
+            .await
+        }
     }
+}
+
+/// Invalidates one completed tool-call instance by deterministic instance id.
+///
+/// This helper removes the matching instance entry from orchestration state
+/// and persists the updated state pointer through the regular state-replace
+/// API so subsequent workflow runs recompute that call when needed.
+async fn invalidate_tool_call_by_instance_id(
+    conductor: &SimpleConductor<ConfiguredCas>,
+    user_ncl: &Path,
+    machine_ncl: &Path,
+    options: StateMutationOptions,
+    instance_id: &str,
+) -> Result<(), ConductorError> {
+    let normalized_instance_id = instance_id.trim();
+    if normalized_instance_id.is_empty() {
+        return Err(ConductorError::Workflow(
+            "state invalidate-tool-call requires a non-empty instance id".to_string(),
+        ));
+    }
+
+    let mut state = conductor.load_resolved_state(user_ncl, machine_ncl, options.clone()).await?;
+    if state.instances.remove(normalized_instance_id).is_none() {
+        return Err(ConductorError::Workflow(format!(
+            "cannot invalidate tool call: instance id '{normalized_instance_id}' does not exist in orchestration state"
+        )));
+    }
+
+    let pointer = conductor.replace_resolved_state(user_ncl, machine_ncl, state, options).await?;
+    println!("invalidated_instance_id={normalized_instance_id}");
+    println!("invalidated_state_hash={pointer}");
+    Ok(())
 }
 
 /// Opens configured CAS backend from locator string.
