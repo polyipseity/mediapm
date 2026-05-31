@@ -4,6 +4,7 @@
 //! `total_store_size` and mmap-safe delete/replace behavior synchronized.
 
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -239,6 +240,49 @@ impl FileObjectActorState {
         Ok(())
     }
 
+    /// Prunes now-empty fanout directories for one object hash.
+    ///
+    /// Traversal starts at the hash leaf directory and walks upward until the
+    /// algorithm root (`<root>/<version>/<algo>`), stopping early when a
+    /// directory is non-empty. This intentionally never touches the shared
+    /// staging directory `<root>/<version>/tmp`.
+    async fn prune_empty_fanout_directories(&self, hash: Hash) -> Result<(), CasError> {
+        let algorithm_root = self.root.join(STORAGE_VERSION).join(hash.algorithm_name());
+        let mut current = self
+            .object_path_for_hash(hash)
+            .parent()
+            .map(Path::to_path_buf)
+            .filter(|path| path.starts_with(&algorithm_root));
+
+        while let Some(directory) = current {
+            if directory == algorithm_root {
+                break;
+            }
+
+            let parent = directory.parent().map(Path::to_path_buf);
+            match fs::remove_dir(&directory).await {
+                Ok(()) => {
+                    current = parent.filter(|path| path.starts_with(&algorithm_root));
+                }
+                Err(source) if source.kind() == ErrorKind::NotFound => {
+                    current = parent.filter(|path| path.starts_with(&algorithm_root));
+                }
+                Err(source) if source.kind() == ErrorKind::DirectoryNotEmpty => {
+                    break;
+                }
+                Err(source) => {
+                    return Err(CasError::io(
+                        "pruning empty object fanout directories",
+                        directory,
+                        source,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Clears read-only attribute on one object file before actor-owned deletion.
     fn clear_file_readonly_if_set(path: &Path) -> Result<(), CasError> {
         let metadata = std::fs::metadata(path).map_err(|source| {
@@ -382,6 +426,8 @@ impl FileObjectActorState {
 
         self.total_store_size = self.total_store_size.saturating_sub(existing_full_len);
         self.total_store_size = self.total_store_size.saturating_sub(existing_diff_len);
+
+        self.prune_empty_fanout_directories(hash).await?;
 
         Ok(())
     }

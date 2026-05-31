@@ -131,6 +131,33 @@ async fn filesystem_put_get_delete_lifecycle() {
     assert!(missing.is_err(), "deleted payload should not be retrievable");
 }
 
+/// Protects CAS filesystem hygiene by pruning empty fanout directories after
+/// object deletion while keeping shared `v1/tmp` staging intact.
+#[tokio::test]
+async fn filesystem_delete_prunes_empty_fanout_directories_but_keeps_tmp() {
+    let (dir, cas) = open_temp_filesystem_cas().await;
+
+    let hash = cas.put(Bytes::from_static(b"fanout-prune-target")).await.expect("put payload");
+    let object_path = cas.object_path_for_hash(hash);
+    let leaf_dir = object_path.parent().expect("leaf dir").to_path_buf();
+    let branch_dir = leaf_dir.parent().expect("branch dir").to_path_buf();
+    let storage_root = dir.path().join(super::STORAGE_VERSION);
+    let shared_tmp = storage_root.join("tmp");
+
+    assert!(leaf_dir.exists(), "put should materialize object fanout leaf directory");
+    assert!(shared_tmp.exists(), "put should materialize shared staging tmp directory");
+
+    cas.delete(hash).await.expect("delete payload");
+
+    assert!(cas.get(hash).await.is_err(), "deleted payload should not be retrievable");
+    assert!(!leaf_dir.exists(), "deleting last object in fanout leaf should prune leaf directory");
+    assert!(
+        !branch_dir.exists(),
+        "deleting last object in fanout branch should prune branch directory"
+    );
+    assert!(shared_tmp.exists(), "shared staging tmp directory must remain for atomic CAS writes");
+}
+
 #[tokio::test]
 async fn filesystem_uses_single_shared_staging_tmp_directory() {
     let (dir, cas) = open_temp_filesystem_cas().await;
