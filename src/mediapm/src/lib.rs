@@ -113,6 +113,21 @@ pub struct ToolsSyncSummary {
     pub warnings: Vec<String>,
 }
 
+/// Summary of one `mediapm media invalidate` operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaStepInvalidationSummary {
+    /// Managed conductor workflow id targeted by this invalidation.
+    pub workflow_id: String,
+    /// Deterministic conductor step ids mapped from the requested media step.
+    pub targeted_step_ids: Vec<String>,
+    /// Number of volatile conductor impure-timestamp rows removed.
+    pub removed_impure_timestamps: usize,
+    /// Number of cached orchestration instances removed from state.
+    pub removed_instances: usize,
+    /// Whether mediapm step refresh state was invalidated before reconciliation.
+    pub regenerated_step: bool,
+}
+
 /// Preset families supported by `mediapm hierarchy add/remove`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaHierarchyPreset {

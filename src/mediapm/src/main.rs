@@ -164,6 +164,30 @@ enum MediaCommand {
         /// Existing media id in `mediapm.ncl`.
         media_id: String,
     },
+    /// Invalidates completed tool calls for one media step.
+    Invalidate(MediaInvalidateArgs),
+}
+
+/// Arguments for `mediapm media invalidate`.
+#[derive(Debug, Args)]
+struct MediaInvalidateArgs {
+    /// Existing media id in `mediapm.ncl`.
+    media_id: String,
+    /// Zero-based media step index under `media.<id>.steps`.
+    step_index: usize,
+    /// Invalidation mode.
+    #[arg(long, value_enum, default_value_t = MediaInvalidateMode::ToolCallsOnly)]
+    mode: MediaInvalidateMode,
+}
+
+/// Supported media-step invalidation modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum MediaInvalidateMode {
+    /// Invalidate completed tool calls only.
+    #[default]
+    ToolCallsOnly,
+    /// Invalidate completed tool calls and regenerate this media step.
+    ToolCallsAndRegenerate,
 }
 
 /// Hierarchy commands.
@@ -627,6 +651,37 @@ async fn main() -> anyhow::Result<()> {
                 );
                 eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
             }
+            MediaCommand::Invalidate(args) => {
+                let summary = match args.mode {
+                    MediaInvalidateMode::ToolCallsOnly => {
+                        service
+                            .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                            .await?
+                    }
+                    MediaInvalidateMode::ToolCallsAndRegenerate => {
+                        service
+                            .invalidate_media_step_tool_calls_and_regenerate(
+                                &args.media_id,
+                                args.step_index,
+                            )
+                            .await?
+                    }
+                };
+
+                println!(
+                    "invalidated media id={} step_index={} mode={} workflow_id={} targeted_steps={} removed_impure_timestamps={} removed_instances={}",
+                    args.media_id,
+                    args.step_index,
+                    args.mode.to_possible_value().expect("value enum").get_name(),
+                    summary.workflow_id,
+                    summary.targeted_step_ids.join(","),
+                    summary.removed_impure_timestamps,
+                    summary.removed_instances,
+                );
+                eprintln!(
+                    "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
+                );
+            }
         },
         Command::Hierarchy { command } => match command {
             HierarchyCommand::Add(args) => {
@@ -961,6 +1016,28 @@ mod tests {
     fn media_remove_route_is_parsed() {
         let parsed = Cli::try_parse_from(["mediapm", "media", "remove", "media-123"]);
         assert!(parsed.is_ok(), "media remove route must parse");
+    }
+
+    /// Protects media-step invalidation CLI route with default mode.
+    #[test]
+    fn media_invalidate_route_with_default_mode_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "media", "invalidate", "media-123", "2"]);
+        assert!(parsed.is_ok(), "media invalidate route with default mode must parse");
+    }
+
+    /// Protects media-step invalidation CLI route with regeneration mode.
+    #[test]
+    fn media_invalidate_route_with_regenerate_mode_is_parsed() {
+        let parsed = Cli::try_parse_from([
+            "mediapm",
+            "media",
+            "invalidate",
+            "media-123",
+            "2",
+            "--mode",
+            "tool-calls-and-regenerate",
+        ]);
+        assert!(parsed.is_ok(), "media invalidate regenerate mode must parse");
     }
 
     /// Protects hierarchy-add local preset route with explicit root folder.

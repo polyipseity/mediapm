@@ -7,16 +7,19 @@
 //! methods take `&self` or `&mut self`. Splitting `impl` methods across files
 //! requires non-idiomatic `include!()`, so the module is kept whole.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::future::Future;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
+use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
-    ConductorApi, SimpleConductor, ToolKindSpec,
-    resolve_managed_tool_executable_with_filesystem_cas,
+    ConductorApi, MachineNickelDocument, SimpleConductor, StateMutationOptions,
+    StateNickelDocument, ToolCallInstance, ToolKindSpec, decode_state_document,
+    encode_state_document, resolve_managed_tool_executable_with_filesystem_cas,
 };
 use url::Url;
 
@@ -42,8 +45,8 @@ use crate::source_metadata::{
     should_prefer_filesystem_workflow_runner, should_retry_workflow_with_filesystem_cas,
 };
 use crate::{
-    AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaRuntimeStorage, SyncSummary,
-    ToolsSyncSummary,
+    AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaRuntimeStorage,
+    MediaStepInvalidationSummary, SyncSummary, ToolsSyncSummary,
 };
 use crate::{
     build_local_default_description, build_remote_default_description,
@@ -733,6 +736,156 @@ where
         Ok(removed_hierarchy_nodes)
     }
 
+    /// Invalidates cached completed tool calls for one media step.
+    ///
+    /// This operation keeps media-step synthesis state unchanged and only
+    /// targets conductor runtime cache rows that correspond to the selected
+    /// media-step index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the media id/step index is invalid,
+    /// conductor documents or state cannot be loaded, or cache-state mutation
+    /// fails.
+    pub async fn invalidate_media_step_tool_calls(
+        &self,
+        media_id: &str,
+        step_index: usize,
+    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
+        self.invalidate_media_step_tool_calls_internal(media_id, step_index, false).await
+    }
+
+    /// Invalidates cached completed tool calls and forces one media step to
+    /// regenerate managed workflow invocations.
+    ///
+    /// In addition to conductor cache invalidation, this mode clears the
+    /// selected `workflow_states` refresh timestamp before workflow
+    /// reconciliation so managed workflow synthesis treats the step as stale.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the media id/step index is invalid,
+    /// lock/runtime documents cannot be loaded, or conductor state mutation
+    /// fails.
+    pub async fn invalidate_media_step_tool_calls_and_regenerate(
+        &self,
+        media_id: &str,
+        step_index: usize,
+    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
+        self.invalidate_media_step_tool_calls_internal(media_id, step_index, true).await
+    }
+
+    /// Shared implementation for media-step invalidation modes.
+    async fn invalidate_media_step_tool_calls_internal(
+        &self,
+        media_id: &str,
+        step_index: usize,
+        regenerate_step: bool,
+    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
+        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
+        let Some(source) = document.media.get(media_id) else {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot invalidate media step: media id '{media_id}' does not exist"
+            )));
+        };
+        if step_index >= source.steps.len() {
+            return Err(MediaPmError::Workflow(format!(
+                "cannot invalidate media step: media '{media_id}' has {} step(s), but step index {step_index} was requested",
+                source.steps.len()
+            )));
+        }
+
+        let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
+        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
+        load_runtime_dotenv(&effective_paths)?;
+        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
+        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+
+        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+
+        if regenerate_step {
+            mark_media_step_for_regeneration(&mut lock, media_id, step_index)?;
+            conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        }
+
+        let workflow_id = conductor_bridge::managed_workflow_id_for_media(media_id, source);
+        let machine =
+            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
+        let step_targets = collect_workflow_step_targets_for_media_step(
+            &machine,
+            workflow_id.as_str(),
+            step_index,
+        )?;
+
+        let mut state_document =
+            load_or_default_conductor_state_document(&effective_paths.conductor_state_config)?;
+        let (removed_impure_timestamps, impure_timestamps_by_tool, tools_without_timestamp) =
+            remove_target_step_impure_timestamps(
+                &mut state_document,
+                workflow_id.as_str(),
+                &step_targets,
+            );
+        save_conductor_state_document(&effective_paths.conductor_state_config, &state_document)?;
+
+        let invalidation_rules = build_tool_invalidation_rules(
+            &step_targets,
+            &impure_timestamps_by_tool,
+            &tools_without_timestamp,
+        );
+
+        let workflow_options =
+            conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
+        let state_options = StateMutationOptions {
+            runtime_storage_paths: workflow_options.runtime_storage_paths.clone(),
+            runtime_inherited_env_vars: workflow_options.runtime_inherited_env_vars.clone(),
+        };
+        let mut state = self
+            .conductor
+            .load_resolved_state(
+                &effective_paths.conductor_user_ncl,
+                &effective_paths.conductor_machine_ncl,
+                state_options.clone(),
+            )
+            .await?;
+
+        let mut removed_instances = 0usize;
+        state.instances.retain(|_instance_key, instance| {
+            let remove_instance = should_invalidate_instance(instance, &invalidation_rules);
+            if remove_instance {
+                removed_instances = removed_instances.saturating_add(1);
+                false
+            } else {
+                true
+            }
+        });
+
+        if removed_instances > 0 {
+            self.conductor
+                .replace_resolved_state(
+                    &effective_paths.conductor_user_ncl,
+                    &effective_paths.conductor_machine_ncl,
+                    state,
+                    state_options,
+                )
+                .await?;
+        }
+
+        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
+
+        let mut targeted_step_ids =
+            step_targets.into_iter().map(|target| target.step_id).collect::<Vec<_>>();
+        targeted_step_ids.sort();
+
+        Ok(MediaStepInvalidationSummary {
+            workflow_id,
+            targeted_step_ids,
+            removed_impure_timestamps,
+            removed_instances,
+            regenerated_step: regenerate_step,
+        })
+    }
+
     /// Removes one hierarchy preset node tree for one media id + folder root.
     ///
     /// This operation is idempotent. If the preset node does not exist,
@@ -1252,4 +1405,299 @@ fn ensure_and_load_mediapm_document(path: &Path) -> Result<MediaPmDocument, Medi
     }
 
     load_mediapm_document(path)
+}
+
+/// One managed workflow step target resolved from media-step index mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedWorkflowStepTarget {
+    /// Deterministic conductor step id.
+    step_id: String,
+    /// Immutable managed tool id referenced by this step.
+    tool_id: String,
+}
+
+/// Cache-invalidation rule for one immutable managed tool id.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ToolInvalidationRule {
+    /// When true, remove all instances for this tool id.
+    remove_all: bool,
+    /// Otherwise remove only instances with one matching impure timestamp.
+    impure_timestamps: Vec<ImpureTimestamp>,
+}
+
+/// Resolves conductor workflow steps mapped from one media-step index.
+fn collect_workflow_step_targets_for_media_step(
+    machine: &MachineNickelDocument,
+    workflow_id: &str,
+    step_index: usize,
+) -> Result<Vec<ManagedWorkflowStepTarget>, MediaPmError> {
+    let workflow = machine.workflows.get(workflow_id).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "managed workflow '{workflow_id}' does not exist in conductor machine config"
+        ))
+    })?;
+    let step_prefix = format!("{step_index}-");
+
+    let mut targets = workflow
+        .steps
+        .iter()
+        .filter(|step| step.id.starts_with(step_prefix.as_str()))
+        .map(|step| ManagedWorkflowStepTarget {
+            step_id: step.id.clone(),
+            tool_id: step.tool.clone(),
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| left.step_id.cmp(&right.step_id));
+
+    if targets.is_empty() {
+        return Err(MediaPmError::Workflow(format!(
+            "managed workflow '{workflow_id}' has no conductor steps for media step index {step_index}; run 'mediapm sync' and retry"
+        )));
+    }
+
+    Ok(targets)
+}
+
+/// Clears one mediapm step refresh timestamp to force regeneration.
+fn mark_media_step_for_regeneration(
+    lock: &mut MediaLockFile,
+    media_id: &str,
+    step_index: usize,
+) -> Result<(), MediaPmError> {
+    let Some(step_states) = lock.workflow_states.get_mut(media_id) else {
+        return Err(MediaPmError::Workflow(format!(
+            "cannot regenerate media step: no workflow state exists for media id '{media_id}'"
+        )));
+    };
+    let Some(step_state) = step_states.get_mut(step_index) else {
+        return Err(MediaPmError::Workflow(format!(
+            "cannot regenerate media step: media '{media_id}' has {} persisted workflow step state(s), but step index {step_index} was requested",
+            step_states.len()
+        )));
+    };
+
+    step_state.impure_timestamp = None;
+    Ok(())
+}
+
+/// Loads conductor volatile state document or defaults when missing.
+fn load_or_default_conductor_state_document(
+    path: &Path,
+) -> Result<StateNickelDocument, MediaPmError> {
+    if !path.exists() {
+        return Ok(StateNickelDocument::default());
+    }
+
+    let bytes = fs::read(path).map_err(|source| MediaPmError::Io {
+        operation: "reading conductor volatile state document".to_string(),
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(StateNickelDocument::default());
+    }
+
+    decode_state_document(&bytes).map_err(MediaPmError::from)
+}
+
+/// Persists conductor volatile state document using canonical encoder.
+fn save_conductor_state_document(
+    path: &Path,
+    document: &StateNickelDocument,
+) -> Result<(), MediaPmError> {
+    let encoded = encode_state_document(document.clone())?;
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
+            operation: format!(
+                "creating parent directory for conductor state document '{}'",
+                path.display()
+            ),
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    }
+
+    fs::write(path, &encoded).map_err(|source| MediaPmError::Io {
+        operation: "writing conductor volatile state document".to_string(),
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Removes impure timestamp rows for targeted workflow steps.
+fn remove_target_step_impure_timestamps(
+    state_document: &mut StateNickelDocument,
+    workflow_id: &str,
+    step_targets: &[ManagedWorkflowStepTarget],
+) -> (usize, BTreeMap<String, Vec<ImpureTimestamp>>, BTreeSet<String>) {
+    let mut removed = 0usize;
+    let mut timestamps_by_tool = BTreeMap::<String, Vec<ImpureTimestamp>>::new();
+    let mut tools_without_timestamp = BTreeSet::<String>::new();
+
+    if let Some(workflow_timestamps) = state_document.impure_timestamps.get_mut(workflow_id) {
+        for target in step_targets {
+            if let Some(timestamp) = workflow_timestamps.remove(target.step_id.as_str()) {
+                timestamps_by_tool.entry(target.tool_id.clone()).or_default().push(timestamp);
+                removed = removed.saturating_add(1);
+            } else {
+                tools_without_timestamp.insert(target.tool_id.clone());
+            }
+        }
+
+        if workflow_timestamps.is_empty() {
+            state_document.impure_timestamps.remove(workflow_id);
+        }
+    } else {
+        tools_without_timestamp.extend(step_targets.iter().map(|target| target.tool_id.clone()));
+    }
+
+    (removed, timestamps_by_tool, tools_without_timestamp)
+}
+
+/// Builds per-tool invalidation rules from targeted step ids and timestamps.
+fn build_tool_invalidation_rules(
+    step_targets: &[ManagedWorkflowStepTarget],
+    impure_timestamps_by_tool: &BTreeMap<String, Vec<ImpureTimestamp>>,
+    tools_without_timestamp: &BTreeSet<String>,
+) -> BTreeMap<String, ToolInvalidationRule> {
+    let mut target_counts = BTreeMap::<String, usize>::new();
+    for target in step_targets {
+        *target_counts.entry(target.tool_id.clone()).or_insert(0) += 1;
+    }
+
+    let mut rules = BTreeMap::<String, ToolInvalidationRule>::new();
+    for (tool_id, count) in target_counts {
+        let timestamps =
+            impure_timestamps_by_tool.get(tool_id.as_str()).cloned().unwrap_or_default();
+        let has_unmapped_target =
+            timestamps.len() < count || tools_without_timestamp.contains(&tool_id);
+
+        rules.insert(
+            tool_id,
+            ToolInvalidationRule { remove_all: has_unmapped_target, impure_timestamps: timestamps },
+        );
+    }
+
+    rules
+}
+
+/// Returns true when one cached orchestration instance should be invalidated.
+fn should_invalidate_instance(
+    instance: &ToolCallInstance,
+    invalidation_rules: &BTreeMap<String, ToolInvalidationRule>,
+) -> bool {
+    let Some(rule) = invalidation_rules.get(instance.tool_name.as_str()) else {
+        return false;
+    };
+
+    if rule.remove_all {
+        return true;
+    }
+
+    instance.impure_timestamp.is_some_and(|timestamp| rule.impure_timestamps.contains(&timestamp))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use mediapm_cas::Hash;
+    use mediapm_conductor::{OutputRef, PersistenceFlags, ToolSpec};
+
+    use super::{
+        ManagedWorkflowStepTarget, ToolInvalidationRule, remove_target_step_impure_timestamps,
+        should_invalidate_instance,
+    };
+
+    /// Ensures helper removes targeted impure timestamps and tracks tool mapping.
+    #[test]
+    fn remove_target_step_impure_timestamps_tracks_removed_entries() {
+        let timestamp = super::ImpureTimestamp { epoch_seconds: 123, subsec_nanos: 456 };
+        let mut state_document = mediapm_conductor::StateNickelDocument {
+            impure_timestamps: BTreeMap::from([(
+                "workflow.media.demo".to_string(),
+                BTreeMap::from([("1-0-yt_dlp".to_string(), timestamp)]),
+            )]),
+            state_pointer: None,
+        };
+        let targets = vec![ManagedWorkflowStepTarget {
+            step_id: "1-0-yt_dlp".to_string(),
+            tool_id: "mediapm.tools.yt-dlp@latest".to_string(),
+        }];
+
+        let (removed, by_tool, without_timestamp) = remove_target_step_impure_timestamps(
+            &mut state_document,
+            "workflow.media.demo",
+            &targets,
+        );
+
+        assert_eq!(removed, 1);
+        assert_eq!(by_tool.get("mediapm.tools.yt-dlp@latest"), Some(&vec![timestamp]));
+        assert!(without_timestamp.is_empty());
+        assert!(state_document.impure_timestamps.is_empty());
+    }
+
+    /// Ensures targeted tool invalidation can match specific impure timestamps.
+    #[test]
+    fn should_invalidate_instance_matches_timestamp_rule() {
+        let timestamp = super::ImpureTimestamp { epoch_seconds: 10, subsec_nanos: 20 };
+        let instance = mediapm_conductor::ToolCallInstance {
+            tool_name: "tool-a".to_string(),
+            metadata: ToolSpec::default(),
+            impure_timestamp: Some(timestamp),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([(
+                "result".to_string(),
+                OutputRef {
+                    hash: Hash::from_content(b"result"),
+                    persistence: PersistenceFlags::default(),
+                    allow_empty_capture: false,
+                },
+            )]),
+        };
+        let rules = BTreeMap::from([(
+            "tool-a".to_string(),
+            ToolInvalidationRule { remove_all: false, impure_timestamps: vec![timestamp] },
+        )]);
+
+        assert!(should_invalidate_instance(&instance, &rules));
+    }
+
+    /// Ensures remove-all rules invalidate tool instances regardless of timestamp.
+    #[test]
+    fn should_invalidate_instance_respects_remove_all_rule() {
+        let instance = mediapm_conductor::ToolCallInstance {
+            tool_name: "tool-a".to_string(),
+            metadata: ToolSpec::default(),
+            impure_timestamp: None,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        };
+        let rules = BTreeMap::from([(
+            "tool-a".to_string(),
+            ToolInvalidationRule { remove_all: true, impure_timestamps: Vec::new() },
+        )]);
+
+        assert!(should_invalidate_instance(&instance, &rules));
+    }
+
+    /// Ensures non-targeted tools are not invalidated.
+    #[test]
+    fn should_invalidate_instance_ignores_non_targeted_tool() {
+        let instance = mediapm_conductor::ToolCallInstance {
+            tool_name: "tool-b".to_string(),
+            metadata: ToolSpec::default(),
+            impure_timestamp: None,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        };
+        let rules = BTreeMap::from([(
+            "tool-a".to_string(),
+            ToolInvalidationRule { remove_all: true, impure_timestamps: Vec::new() },
+        )]);
+
+        assert!(!should_invalidate_instance(&instance, &rules));
+    }
 }
