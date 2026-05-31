@@ -598,6 +598,35 @@ fn demo_run_sync_enabled() -> bool {
     sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
+/// Returns one OS-backed runtime temp directory path for this demo workspace.
+fn demo_runtime_tmp_dir(workspace_root: &Path) -> String {
+    std::env::temp_dir()
+        .join("mediapm")
+        .join("workspaces")
+        .join(demo_path_scope_id(workspace_root))
+        .join("tmp")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Builds one stable path scope id for workspace-local demo defaults.
+fn demo_path_scope_id(path: &Path) -> String {
+    let normalized = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    };
+    let text = normalized.to_string_lossy();
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
+    }
+
+    format!("{hash:016x}")
+}
+
 /// Imports one source payload into the runtime CAS store and returns its hash.
 async fn import_source_fixture_into_cas(
     cas: &FileSystemCas,
@@ -620,6 +649,7 @@ fn configure_document_for_local_tool_chain(
 ) -> ExampleResult<(usize, usize)> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
+    let runtime_tmp_dir = demo_runtime_tmp_dir(workspace_root);
 
     document.tools = BTreeMap::from([
         (
@@ -899,9 +929,9 @@ fn configure_document_for_local_tool_chain(
         // Materialized hierarchy root directory.
         // Default: workspace root containing `mediapm.ncl`.
         hierarchy_root_dir: Some(".".to_string()),
-        // Staging directory relative to `runtime.mediapm_dir`.
-        // Default: `<mediapm_dir>/tmp/`.
-        mediapm_tmp_dir: Some("tmp".to_string()),
+        // Staging directory under an OS-provided temp root.
+        // Default: OS temp path scoped by workspace root.
+        mediapm_tmp_dir: Some(runtime_tmp_dir.clone()),
         // Ordered file-materialization method preference.
         // Default when omitted: hardlink -> symlink -> reflink -> copy.
         materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec()),
@@ -914,9 +944,9 @@ fn configure_document_for_local_tool_chain(
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
-        // Conductor execution tmp path relative to `runtime.mediapm_dir`.
+        // Conductor execution tmp path under an OS-provided temp root.
         // Default: `runtime.mediapm_tmp_dir`.
-        conductor_tmp_dir: Some("tmp".to_string()),
+        conductor_tmp_dir: Some(runtime_tmp_dir),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),

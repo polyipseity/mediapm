@@ -59,13 +59,15 @@ async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
     let user_bytes =
         std::fs::read(&service.paths().conductor_user_ncl).expect("read conductor user document");
     let user = decode_user_document(&user_bytes).expect("decode user document");
+    let expected_conductor_tmp =
+        service.paths().conductor_tmp_dir.to_string_lossy().replace('\\', "/");
     assert_eq!(user.runtime.conductor_dir.as_deref(), Some(".mediapm"));
     assert_eq!(
         user.runtime.conductor_state_config.as_deref(),
         Some(".mediapm/state.conductor.ncl")
     );
     assert_eq!(user.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(user.runtime.conductor_tmp_dir.as_deref(), Some(".mediapm/tmp"));
+    assert_eq!(user.runtime.conductor_tmp_dir.as_deref(), Some(expected_conductor_tmp.as_str()));
     assert_eq!(user.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
     assert!(
         user.runtime.inherited_env_vars.is_none(),
@@ -84,7 +86,7 @@ async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
         Some(".mediapm/state.conductor.ncl")
     );
     assert_eq!(machine.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(machine.runtime.conductor_tmp_dir.as_deref(), Some(".mediapm/tmp"));
+    assert_eq!(machine.runtime.conductor_tmp_dir.as_deref(), Some(expected_conductor_tmp.as_str()));
     assert_eq!(machine.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
     if expected_inherited.is_empty() {
         assert!(machine.runtime.inherited_env_vars.is_none());

@@ -54,14 +54,8 @@ const RUNTIME_DOTENV_GENERATED_TEMPLATE: &str = concat!(
 );
 
 /// Canonical colocated `.gitignore` content for conductor runtime dotenv files.
-const RUNTIME_DOTENV_GITIGNORE: &str = concat!(
-    "/.env\n",
-    "/.env.generated\n",
-    "/cache/\n",
-    "/store/index-backups/\n",
-    "/tools/\n",
-    "tmp/\n"
-);
+const RUNTIME_DOTENV_GITIGNORE: &str =
+    concat!("/.env\n", "/.env.generated\n", "/cache/\n", "/store/index-backups/\n", "/tools/\n");
 
 /// Returns the canonical `.env` path for one conductor runtime root.
 #[must_use]
@@ -251,9 +245,9 @@ mod tests {
     use super::{ensure_runtime_env_files, merge_runtime_gitignore};
 
     /// Protects generated runtime `.gitignore` defaults so runtime cache and
-    /// temporary directories stay out of version control by default.
+    /// generated env files stay out of version control by default.
     #[test]
-    fn merge_runtime_gitignore_adds_runtime_cache_and_tmp_entries() {
+    fn merge_runtime_gitignore_adds_runtime_cache_entries() {
         let merged = merge_runtime_gitignore("/.env\n");
 
         assert!(merged.contains("/.env\n"));
@@ -261,11 +255,7 @@ mod tests {
         assert!(merged.contains("/cache/\n"));
         assert!(merged.contains("/store/index-backups/\n"));
         assert!(merged.contains("/tools/\n"));
-        assert!(merged.contains("tmp/\n"));
-        assert_eq!(
-            merged,
-            "/.env\n/.env.generated\n/cache/\n/store/index-backups/\n/tools/\ntmp/\n"
-        );
+        assert_eq!(merged, "/.env\n/.env.generated\n/cache/\n/store/index-backups/\n/tools/\n");
     }
 
     /// Protects no-overwrite behavior by preserving existing custom ignore
@@ -287,6 +277,5 @@ mod tests {
         assert!(rendered.contains("/cache/\n"));
         assert!(rendered.contains("/store/index-backups/\n"));
         assert!(rendered.contains("/tools/\n"));
-        assert!(rendered.contains("tmp/\n"));
     }
 }

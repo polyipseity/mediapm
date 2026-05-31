@@ -28,7 +28,8 @@ fn demo_writes_explicit_runtime_defaults() {
     assert!(
         source.contains("mediapm_dir: Some(\".mediapm\".to_string())")
             && source.contains("hierarchy_root_dir: Some(\".\".to_string())")
-            && source.contains("mediapm_tmp_dir: Some(\"tmp\".to_string())")
+            && source.contains("let runtime_tmp_dir = demo_runtime_tmp_dir(workspace_root);")
+            && source.contains("mediapm_tmp_dir: Some(runtime_tmp_dir.clone())")
             && source.contains("conductor_config: Some(\"mediapm.conductor.ncl\".to_string())")
             && source.contains(
                 "conductor_machine_config: Some(\"mediapm.conductor.machine.ncl\".to_string())"
@@ -36,7 +37,7 @@ fn demo_writes_explicit_runtime_defaults() {
             && source.contains(
                 "conductor_state_config: Some(\".mediapm/state.conductor.ncl\".to_string())"
             )
-            && source.contains("conductor_tmp_dir: Some(\"tmp\".to_string())")
+            && source.contains("conductor_tmp_dir: Some(runtime_tmp_dir)")
             && source
                 .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
             && source.contains(
@@ -47,7 +48,7 @@ fn demo_writes_explicit_runtime_defaults() {
             && source.contains(
                 "mediapm_schema_dir: Some(Some(\".mediapm/config/mediapm\".to_string()))"
             ),
-        "demo should write explicit runtime defaults for mediapm_dir/hierarchy/tmp/conductor paths/env/schema and inherited env vars"
+        "demo should write explicit runtime defaults for mediapm_dir/hierarchy/os-temp/conductor paths/env/schema and inherited env vars"
     );
 }
 

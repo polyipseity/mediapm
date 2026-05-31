@@ -651,7 +651,7 @@ pub async fn sync_hierarchy(
     let materialization_methods = document.runtime.materialization_preference_order_with_defaults();
 
     fs::create_dir_all(&paths.mediapm_tmp_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating .mediapm/tmp".to_string(),
+        operation: "creating mediapm runtime temporary directory".to_string(),
         path: paths.mediapm_tmp_dir.clone(),
         source,
     })?;

@@ -50,18 +50,19 @@ impl MediaPmPaths {
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
+        let default_tmp_dir = default_runtime_tmp_dir_for_root(&root_dir);
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
             conductor_user_ncl: root_dir.join("mediapm.conductor.ncl"),
             conductor_machine_ncl: root_dir.join("mediapm.conductor.machine.ncl"),
             conductor_state_config: runtime_root.join("state.conductor.ncl"),
-            conductor_tmp_dir: runtime_root.join("tmp"),
+            conductor_tmp_dir: default_tmp_dir.clone(),
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
             mediapm_state_ncl: runtime_root.join("state.ncl"),
             env_file: runtime_root.join(".env"),
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
-            mediapm_tmp_dir: runtime_root.join("tmp"),
+            mediapm_tmp_dir: default_tmp_dir,
             hierarchy_root_dir: root_dir.clone(),
             tools_dir: runtime_root.join("tools"),
             runtime_root,
@@ -132,7 +133,7 @@ impl MediaPmPaths {
     /// - `runtime.env_file` resolves relative to the outermost
     ///   `mediapm.ncl` directory when provided as a relative path,
     /// - omitted fields keep defaults of config root for library output and
-    ///   `tmp/` under `.mediapm/`.
+    ///   an OS-provided temp directory for runtime staging.
     #[must_use]
     pub fn with_runtime_storage(&self, runtime_storage: &MediaRuntimeStorage) -> Self {
         let config_dir = self.mediapm_ncl.parent().unwrap_or(&self.root_dir);
@@ -147,10 +148,10 @@ impl MediaPmPaths {
             .as_deref()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = runtime_storage
-            .mediapm_tmp_dir
-            .as_deref()
-            .map_or_else(|| runtime_root.join("tmp"), |raw| resolve_path(&runtime_root, raw));
+        let tmp_dir = runtime_storage.mediapm_tmp_dir.as_deref().map_or_else(
+            || default_runtime_tmp_dir_for_root(&self.root_dir),
+            |raw| resolve_path(&runtime_root, raw),
+        );
 
         let conductor_user_ncl = runtime_storage
             .conductor_config
@@ -220,27 +221,58 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     if candidate.is_absolute() { candidate } else { base_dir.join(candidate) }
 }
 
+/// Returns the default OS-backed runtime temp directory for one workspace root.
+#[must_use]
+fn default_runtime_tmp_dir_for_root(root_dir: &Path) -> PathBuf {
+    std::env::temp_dir()
+        .join("mediapm")
+        .join("workspaces")
+        .join(stable_path_scope_id(root_dir))
+        .join("tmp")
+}
+
+/// Builds a stable, filesystem-safe scope id for one root path.
+#[must_use]
+fn stable_path_scope_id(root_dir: &Path) -> String {
+    let normalized = if root_dir.is_absolute() {
+        root_dir.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| root_dir.to_path_buf(), |cwd| cwd.join(root_dir))
+    };
+    let text = normalized.to_string_lossy();
+
+    // FNV-1a 64-bit for lightweight deterministic path-scoping.
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
+    }
+
+    format!("{hash:016x}")
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::MediaRuntimeStorage;
 
-    use super::MediaPmPaths;
+    use super::{MediaPmPaths, default_runtime_tmp_dir_for_root};
 
-    /// Ensures default runtime paths keep state/tmp under `.mediapm` while
-    /// library is rooted beside the top-level `mediapm.ncl`.
+    /// Ensures default runtime paths keep state under `.mediapm` while tmp
+    /// uses OS-backed temp storage and library remains config-rooted.
     #[test]
     fn default_paths_use_dot_mediapm_root() {
         let root = tempfile::tempdir().expect("tempdir");
         let paths = MediaPmPaths::from_root(root.path());
+        let expected_tmp_dir = default_runtime_tmp_dir_for_root(root.path());
 
         assert_eq!(paths.runtime_root, root.path().join(".mediapm"));
         assert_eq!(paths.hierarchy_root_dir, root.path());
-        assert_eq!(paths.mediapm_tmp_dir, root.path().join(".mediapm").join("tmp"));
+        assert_eq!(paths.mediapm_tmp_dir, expected_tmp_dir.clone());
         assert_eq!(
             paths.conductor_state_config,
             root.path().join(".mediapm").join("state.conductor.ncl")
         );
-        assert_eq!(paths.conductor_tmp_dir, root.path().join(".mediapm").join("tmp"));
+        assert_eq!(paths.conductor_tmp_dir, expected_tmp_dir);
         assert_eq!(
             paths.conductor_schema_dir,
             root.path().join(".mediapm").join("config").join("conductor")
