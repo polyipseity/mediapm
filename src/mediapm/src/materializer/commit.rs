@@ -1,5 +1,6 @@
 //! Staged-output commit, path removal, readonly enforcement, and timestamp helpers.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -242,6 +243,15 @@ fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
     }
 
     Ok(())
+}
+
+/// Applies one reserved-character replacement map to a relative hierarchy path.
+#[must_use]
+pub(super) fn sanitize_hierarchy_path(
+    relative_path: &str,
+    replacements: &BTreeMap<char, char>,
+) -> String {
+    relative_path.chars().map(|ch| replacements.get(&ch).copied().unwrap_or(ch)).collect()
 }
 
 /// Validates one relative hierarchy path against mediapm invariants.

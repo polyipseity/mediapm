@@ -390,6 +390,12 @@ pub struct MediaRuntimeStorage {
     /// - explicit string (`Some(Some(path))`): export to that path.
     #[serde(default, skip_serializing_if = "runtime_mediapm_schema_export_is_omitted")]
     pub mediapm_schema_dir: Option<Option<String>>,
+    /// Optional custom reserved-character replacement mapping used by
+    /// `hierarchy[*].sanitize_names` when set to `true` or a custom mapping.
+    ///
+    /// When omitted, each reserved char defaults to `_`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_sanitization: Option<BTreeMap<String, String>>,
     /// Optional toggle for conductor workflow profiling during managed runs.
     ///
     /// When `Some(true)`, conductor writes a per-step timing profile to
@@ -412,6 +418,18 @@ pub struct MediaRuntimeStorage {
 )]
 fn runtime_mediapm_schema_export_is_omitted(value: &Option<Option<String>>) -> bool {
     value.is_none()
+}
+
+fn default_path_sanitization_mapping() -> BTreeMap<char, char> {
+    BTreeMap::from([
+        ('<', '_'),
+        ('>', '_'),
+        (':', '_'),
+        ('"', '_'),
+        ('|', '_'),
+        ('?', '_'),
+        ('*', '_'),
+    ])
 }
 
 fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
@@ -481,6 +499,49 @@ impl MediaRuntimeStorage {
             );
         }
         merged
+    }
+
+    /// Returns one effective reserved-character replacement mapping.
+    ///
+    /// If the config is omitted, this uses the runtime defaults for all
+    /// rejected reserved filename characters.
+    #[must_use]
+    pub fn path_sanitization_mapping_with_defaults(
+        &self,
+    ) -> Result<BTreeMap<char, char>, MediaPmError> {
+        let mut replacements = default_path_sanitization_mapping();
+
+        if let Some(custom) = &self.path_sanitization {
+            for (key, value) in custom {
+                let key_char = key.chars().next().ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "runtime.path_sanitization keys must be single characters".to_string(),
+                    )
+                })?;
+                if key.chars().count() != 1 {
+                    return Err(MediaPmError::Workflow(
+                        "runtime.path_sanitization keys must be single characters".to_string(),
+                    ));
+                }
+
+                let replacement_char = value.chars().next().ok_or_else(|| {
+                    MediaPmError::Workflow(
+                        "runtime.path_sanitization values must be single-character strings"
+                            .to_string(),
+                    )
+                })?;
+                if value.chars().count() != 1 {
+                    return Err(MediaPmError::Workflow(
+                        "runtime.path_sanitization values must be single-character strings"
+                            .to_string(),
+                    ));
+                }
+
+                replacements.insert(key_char, replacement_char);
+            }
+        }
+
+        Ok(replacements)
     }
 }
 

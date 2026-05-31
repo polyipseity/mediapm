@@ -34,7 +34,8 @@ mod tests;
 mod zip;
 
 use self::commit::{
-    commit_staged_output, now_unix_seconds, remove_path, unix_epoch_millis, validate_hierarchy_path,
+    commit_staged_output, now_unix_seconds, remove_path, sanitize_hierarchy_path,
+    unix_epoch_millis, validate_hierarchy_path,
 };
 use self::file_ops::materialize_file_from_cas_with_order;
 use self::metadata::{
@@ -279,7 +280,13 @@ async fn prepare_hierarchy_entry(
         } else {
             relative_path_template.to_string()
         };
-    let relative_path = normalize_resolved_hierarchy_path_to_nfd(&relative_path);
+    let mut relative_path = normalize_resolved_hierarchy_path_to_nfd(&relative_path);
+    if entry.sanitize_names.is_enabled() {
+        let runtime_replacements = document.runtime.path_sanitization_mapping_with_defaults()?;
+        let effective_replacements =
+            entry.sanitize_names.replacement_map_with_defaults(&runtime_replacements);
+        relative_path = sanitize_hierarchy_path(&relative_path, &effective_replacements);
+    }
     validate_hierarchy_path(&relative_path)?;
     progress_bar.set_message(&format!(
         "{}: {}",

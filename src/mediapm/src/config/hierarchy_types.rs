@@ -10,6 +10,125 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::error::MediaPmError;
 
+/// Runtime-local hierarchy sanitization policy.
+///
+/// This field accepts the same user-facing wire forms as the config field:
+/// - `false` (default) disables sanitization,
+/// - `true` enables replacement using runtime defaults,
+/// - `{ "<": "_", ... }` applies a custom per-character mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SanitizeNamesConfig {
+    /// Explicitly disable reserved-character replacement.
+    Disabled,
+    /// Enable reserved-character replacement using runtime defaults.
+    Enabled,
+    /// Override runtime defaults with a custom replacement map.
+    Custom(BTreeMap<char, char>),
+}
+
+impl Default for SanitizeNamesConfig {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+impl SanitizeNamesConfig {
+    /// Returns whether sanitization is disabled for this node.
+    #[must_use]
+    pub fn is_disabled(&self) -> bool {
+        matches!(self, Self::Disabled)
+    }
+
+    /// Returns whether sanitization is enabled for this node.
+    #[must_use]
+    pub fn is_enabled(&self) -> bool {
+        !self.is_disabled()
+    }
+
+    /// Returns the effective replacement map for this node by merging the
+    /// node's custom mapping over the runtime defaults.
+    #[must_use]
+    pub fn replacement_map_with_defaults(
+        &self,
+        defaults: &BTreeMap<char, char>,
+    ) -> BTreeMap<char, char> {
+        let mut map = defaults.clone();
+        if let Self::Custom(custom) = self {
+            map.extend(custom.clone());
+        }
+        map
+    }
+}
+
+impl Serialize for SanitizeNamesConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Disabled => serializer.serialize_bool(false),
+            Self::Enabled => serializer.serialize_bool(true),
+            Self::Custom(map) => {
+                let encoded: BTreeMap<String, String> =
+                    map.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
+                encoded.serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SanitizeNamesConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::Bool(false) => Ok(Self::Disabled),
+            Value::Bool(true) => Ok(Self::Enabled),
+            Value::Object(map) => {
+                let mut decoded = BTreeMap::new();
+                for (key, value) in map {
+                    let key_char = key.chars().next().ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "sanitize_names mapping keys must be a single character",
+                        )
+                    })?;
+                    if key.chars().count() != 1 {
+                        return Err(serde::de::Error::custom(
+                            "sanitize_names mapping keys must be a single character",
+                        ));
+                    }
+
+                    let replacement = value
+                        .as_str()
+                        .ok_or_else(|| {
+                            serde::de::Error::custom(
+                                "sanitize_names mapping values must be single-character strings",
+                            )
+                        })?
+                        .to_string();
+                    let replacement_char = replacement.chars().next().ok_or_else(|| {
+                        serde::de::Error::custom(
+                            "sanitize_names mapping values must be single-character strings",
+                        )
+                    })?;
+                    if replacement.chars().count() != 1 {
+                        return Err(serde::de::Error::custom(
+                            "sanitize_names mapping values must be single-character strings",
+                        ));
+                    }
+                    decoded.insert(key_char, replacement_char);
+                }
+                Ok(Self::Custom(decoded))
+            }
+            _ => Err(serde::de::Error::custom(
+                "sanitize_names must be a boolean or a mapping of single-character replacements",
+            )),
+        }
+    }
+}
+
 /// Internal prefix used for regex-based variant selectors.
 ///
 /// `mediapm.ncl` represents regex selectors as object values
@@ -126,6 +245,7 @@ fn flatten_hierarchy_nodes_inner(
     nodes: &[HierarchyNode],
     parent_path: &str,
     inherited_media_id: Option<&str>,
+    inherited_sanitize_names: &SanitizeNamesConfig,
     flattened: &mut Vec<FlattenedHierarchyEntry>,
 ) -> Result<(), String> {
     for (node_index, node) in nodes.iter().enumerate() {
@@ -142,6 +262,12 @@ fn flatten_hierarchy_nodes_inner(
 
         let hierarchy_id =
             normalize_optional_non_empty_field("id", node.id.as_deref(), node_path_label)?;
+
+        let sanitize_names = if node.sanitize_names.is_disabled() {
+            inherited_sanitize_names.clone()
+        } else {
+            node.sanitize_names.clone()
+        };
 
         match node.kind {
             HierarchyNodeKind::Folder => {
@@ -181,6 +307,7 @@ fn flatten_hierarchy_nodes_inner(
                     &node.children,
                     resolved_node_path.as_str(),
                     folder_media_id.as_deref(),
+                    &sanitize_names,
                     flattened,
                 )?;
             }
@@ -245,6 +372,7 @@ fn flatten_hierarchy_nodes_inner(
                         rename_files: Vec::new(),
                         format: PlaylistFormat::M3u8,
                         ids: Vec::new(),
+                        sanitize_names: sanitize_names.clone(),
                     },
                     hierarchy_id,
                 });
@@ -304,6 +432,7 @@ fn flatten_hierarchy_nodes_inner(
                         rename_files: node.rename_files.clone(),
                         format: PlaylistFormat::M3u8,
                         ids: Vec::new(),
+                        sanitize_names: sanitize_names.clone(),
                     },
                     hierarchy_id,
                 });
@@ -357,6 +486,7 @@ fn flatten_hierarchy_nodes_inner(
                         rename_files: Vec::new(),
                         format: node.format,
                         ids: node.ids.clone(),
+                        sanitize_names: sanitize_names.clone(),
                     },
                     hierarchy_id,
                 });
@@ -378,8 +508,14 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     hierarchy: &[HierarchyNode],
 ) -> Result<Vec<FlattenedHierarchyEntry>, MediaPmError> {
     let mut flattened = Vec::new();
-    flatten_hierarchy_nodes_inner(hierarchy, "", None, &mut flattened)
-        .map_err(MediaPmError::Workflow)?;
+    flatten_hierarchy_nodes_inner(
+        hierarchy,
+        "",
+        None,
+        &SanitizeNamesConfig::Disabled,
+        &mut flattened,
+    )
+    .map_err(MediaPmError::Workflow)?;
 
     let mut seen_paths = BTreeMap::<String, Vec<usize>>::new();
     let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
@@ -485,6 +621,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
                     rename_files: Vec::new(),
                     format: PlaylistFormat::M3u8,
                     ids: Vec::new(),
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 });
             }
@@ -500,6 +637,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
                     rename_files: entry.rename_files.clone(),
                     format: PlaylistFormat::M3u8,
                     ids: Vec::new(),
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 });
             }
@@ -514,6 +652,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
                     rename_files: Vec::new(),
                     format: entry.format,
                     ids: entry.ids.clone(),
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 });
             }
@@ -810,6 +949,9 @@ pub struct HierarchyNode {
     /// Ordered playlist item references for `kind = "playlist"` nodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
+    /// Optional sanitizer policy for this node and its descendants.
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_disabled")]
+    pub sanitize_names: SanitizeNamesConfig,
     /// Ordered child nodes (folder recursion).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<HierarchyNode>,
@@ -890,6 +1032,9 @@ pub struct HierarchyEntry {
     /// once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
+    /// Optional sanitizer policy inherited from the source hierarchy node.
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_disabled")]
+    pub sanitize_names: SanitizeNamesConfig,
 }
 
 /// Hierarchy entry behavior kind.

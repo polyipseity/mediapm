@@ -17,7 +17,8 @@ use crate::config::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
     HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
     MediaMetadataVariantBinding, MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool,
-    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, TransformInputValue,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    TransformInputValue,
 };
 use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
@@ -278,6 +279,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<crate::conf
                     rename_files: Vec::new(),
                     format: PlaylistFormat::M3u8,
                     ids: Vec::new(),
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 },
                 HierarchyEntryKind::MediaFolder => crate::config::HierarchyNode {
@@ -290,6 +292,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<crate::conf
                     rename_files: entry.rename_files,
                     format: PlaylistFormat::M3u8,
                     ids: Vec::new(),
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 },
                 HierarchyEntryKind::Playlist => crate::config::HierarchyNode {
@@ -302,6 +305,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<crate::conf
                     rename_files: Vec::new(),
                     format: entry.format,
                     ids: entry.ids,
+                    sanitize_names: entry.sanitize_names.clone(),
                     children: Vec::new(),
                 },
             }
@@ -321,6 +325,16 @@ fn hierarchy_path_rejects_forbidden_characters() {
 fn hierarchy_path_rejects_non_nfd_segments() {
     let err = validate_hierarchy_path("movies/épisode.mkv").expect_err("NFD should fail");
     assert!(err.to_string().contains("NFD"));
+}
+
+#[test]
+fn sanitize_hierarchy_path_replaces_reserved_characters() {
+    let replacements = BTreeMap::from([(':', '_'), ('<', '_'), ('?', '_')]);
+
+    assert_eq!(
+        sanitize_hierarchy_path("movies/Star:Wars?.mkv", &replacements),
+        "movies/Star_Wars_.mkv"
+    );
 }
 
 /// Ensures media metadata placeholder expansion is normalized to NFD
@@ -360,6 +374,7 @@ async fn sync_hierarchy_normalizes_expanded_metadata_placeholder_paths_to_nfd() 
                 media_id: "media-a".to_string(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -409,6 +424,7 @@ async fn sync_hierarchy_normalizes_expanded_media_id_placeholder_paths_to_nfd() 
                 media_id: media_id.clone(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -743,6 +759,7 @@ async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commit
                 variant: None,
                 variants: vec!["sidecars".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -755,6 +772,7 @@ async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commit
                 variant: None,
                 variants: vec!["root".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -829,6 +847,7 @@ async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() 
                 variant: None,
                 variants: vec!["sidecars".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -841,6 +860,7 @@ async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() 
                 variant: None,
                 variants: vec!["root".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -969,6 +989,7 @@ async fn sync_hierarchy_materializes_local_source_from_cas_variant_pointer() {
                 media_id: "media-a".to_string(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1053,6 +1074,7 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
                     media_id: "alpha-source".to_string(),
                     variants: vec!["default".to_string()],
                     rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                 },
             ),
             (
@@ -1064,6 +1086,7 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
                     media_id: "beta-source".to_string(),
                     variants: vec!["default".to_string()],
                     rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                 },
             ),
             (
@@ -1088,6 +1111,7 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
                     media_id: String::new(),
                     variants: Vec::new(),
                     rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                 },
             ),
         ])),
@@ -1177,6 +1201,7 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
                 variant: Some("default".to_string()),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -1189,6 +1214,7 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
                 variant: Some("default".to_string()),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -1201,6 +1227,7 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
                 variant: None,
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: vec![
                     PlaylistItemRef {
@@ -1267,6 +1294,7 @@ async fn sync_hierarchy_playlist_rejects_non_media_hierarchy_id() {
                 variant: None,
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: vec![PlaylistItemRef {
                     id: "folder-only".to_string(),
@@ -1282,6 +1310,7 @@ async fn sync_hierarchy_playlist_rejects_non_media_hierarchy_id() {
                 variant: None,
                 variants: vec!["sidecars".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -1378,6 +1407,7 @@ async fn sync_hierarchy_generates_pls_playlist_and_records_format_label() {
                     media_id: "alpha-source".to_string(),
                     variants: vec!["default".to_string()],
                     rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                 },
             ),
             (
@@ -1398,6 +1428,7 @@ async fn sync_hierarchy_generates_pls_playlist_and_records_format_label() {
                     media_id: String::new(),
                     variants: Vec::new(),
                     rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                 },
             ),
         ])),
@@ -1465,6 +1496,7 @@ async fn sync_hierarchy_interpolates_literal_media_metadata_placeholders() {
                 media_id: "media-a".to_string(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1524,6 +1556,7 @@ async fn sync_hierarchy_interpolates_variant_backed_media_metadata_placeholders(
                 media_id: "media-a".to_string(),
                 variants: vec!["audio".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1575,6 +1608,7 @@ async fn sync_hierarchy_interpolates_media_id_placeholder() {
                 media_id: "media-a".to_string(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1636,6 +1670,7 @@ async fn sync_hierarchy_interpolates_variant_metadata_with_dot_prefix() {
                 media_id: "media-a".to_string(),
                 variants: vec!["audio".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1697,6 +1732,7 @@ async fn sync_hierarchy_interpolates_empty_variant_metadata_without_dot_prefix()
                 media_id: "media-a".to_string(),
                 variants: vec!["audio".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1918,6 +1954,7 @@ async fn sync_hierarchy_materializes_online_variant_from_workflow_state() {
                 media_id: media_id.to_string(),
                 variants: vec!["normalized".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -1967,6 +2004,7 @@ async fn sync_hierarchy_fails_when_local_variant_hash_is_missing_from_cas() {
                 media_id: "local-missing".to_string(),
                 variants: vec!["default".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -2026,6 +2064,7 @@ async fn sync_hierarchy_fails_when_online_variant_hash_is_unresolved() {
                 media_id: "remote-unresolved".to_string(),
                 variants: vec!["normalized".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()

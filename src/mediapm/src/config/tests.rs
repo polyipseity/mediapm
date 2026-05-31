@@ -4,10 +4,10 @@ use super::{
     HierarchyEntry, HierarchyEntryKind, MEDIAPM_DOCUMENT_VERSION, MaterializationMethod,
     MediaMetadataValue, MediaMetadataValueCandidate, MediaPmDocument, MediaPmImpureTimestamp,
     MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputSaveConfig,
-    PlaylistEntryPathMode, PlaylistFormat, ToolRequirement, TransformInputValue, Value,
-    flatten_hierarchy_nodes_for_runtime, load_mediapm_document, load_mediapm_state_document,
-    media_source_uri, resolve_step_variant_flow, save_mediapm_document,
-    save_mediapm_state_document,
+    PlaylistEntryPathMode, PlaylistFormat, SanitizeNamesConfig, ToolRequirement,
+    TransformInputValue, Value, flatten_hierarchy_nodes_for_runtime, load_mediapm_document,
+    load_mediapm_state_document, media_source_uri, resolve_step_variant_flow,
+    save_mediapm_document, save_mediapm_state_document,
 };
 
 fn hierarchy_flat_map(document: &MediaPmDocument) -> BTreeMap<String, HierarchyEntry> {
@@ -44,6 +44,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<super::Hier
                 variant: entry.variants.first().cloned(),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
                 children: Vec::new(),
@@ -68,6 +69,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<super::Hier
                 variant: None,
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: entry.format,
                 ids: entry.ids,
                 children: Vec::new(),
@@ -90,6 +92,7 @@ fn hierarchy_nodes_from_flat_entries_converts_all_supported_kinds() {
                 media_id: "demo".to_string(),
                 variants: vec!["video".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
             },
@@ -101,6 +104,7 @@ fn hierarchy_nodes_from_flat_entries_converts_all_supported_kinds() {
                 media_id: "demo".to_string(),
                 variants: vec!["subtitles".to_string()],
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
             },
@@ -112,6 +116,7 @@ fn hierarchy_nodes_from_flat_entries_converts_all_supported_kinds() {
                 media_id: String::new(),
                 variants: Vec::new(),
                 rename_files: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 format: PlaylistFormat::M3u8,
                 ids: vec![super::PlaylistItemRef {
                     id: "demo".to_string(),
@@ -602,6 +607,7 @@ fn save_mediapm_document_emits_nested_hierarchy_kind_field() {
             media_id: "demo".to_string(),
             variants: vec!["video".to_string()],
             rename_files: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
         },
@@ -1018,6 +1024,76 @@ fn runtime_storage_defaults_materialization_preference_order() {
             MaterializationMethod::Copy,
         ]
     );
+}
+
+/// Protects runtime path sanitization defaults for reserved characters.
+#[test]
+fn runtime_storage_path_sanitization_defaults_reserved_char_replacements() {
+    let mapping = MediaRuntimeStorage::default()
+        .path_sanitization_mapping_with_defaults()
+        .expect("default runtime path sanitization map");
+
+    assert_eq!(mapping.get(&'<'), Some(&'_'));
+    assert_eq!(mapping.get(&'>'), Some(&'_'));
+    assert_eq!(mapping.get(&':'), Some(&'_'));
+    assert_eq!(mapping.get(&'"'), Some(&'_'));
+    assert_eq!(mapping.get(&'|'), Some(&'_'));
+    assert_eq!(mapping.get(&'?'), Some(&'_'));
+    assert_eq!(mapping.get(&'*'), Some(&'_'));
+}
+
+/// Protects runtime path sanitization custom mapping merge semantics.
+#[test]
+fn runtime_storage_path_sanitization_merges_custom_mapping() {
+    let runtime = MediaRuntimeStorage {
+        path_sanitization: Some(BTreeMap::from([
+            ("<".to_string(), "x".to_string()),
+            ("*".to_string(), "+".to_string()),
+        ])),
+        ..MediaRuntimeStorage::default()
+    };
+
+    let mapping = runtime
+        .path_sanitization_mapping_with_defaults()
+        .expect("custom runtime path sanitization map");
+
+    assert_eq!(mapping.get(&'<'), Some(&'x'));
+    assert_eq!(mapping.get(&'*'), Some(&'+'));
+    assert_eq!(mapping.get(&'>'), Some(&'_'));
+}
+
+/// Protects hierarchy node sanitize_names inheritance from parent nodes.
+#[test]
+fn hierarchy_nodes_inherit_sanitize_names_from_parent() {
+    let nodes = vec![super::HierarchyNode {
+        path: "root".to_string(),
+        kind: super::HierarchyNodeKind::Folder,
+        id: None,
+        media_id: None,
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Enabled,
+        children: vec![super::HierarchyNode {
+            path: "child.mp4".to_string(),
+            kind: super::HierarchyNodeKind::Media,
+            id: None,
+            media_id: Some("demo".to_string()),
+            variant: Some("video".to_string()),
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::M3u8,
+            ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
+            children: Vec::new(),
+        }],
+    }];
+
+    let flattened = flatten_hierarchy_nodes_for_runtime(&nodes).expect("flatten hierarchy");
+    assert_eq!(flattened.len(), 1);
+    assert_eq!(flattened[0].entry.sanitize_names, SanitizeNamesConfig::Enabled);
 }
 
 /// Protects ffmpeg slot-limit validation by rejecting zero input slots.
