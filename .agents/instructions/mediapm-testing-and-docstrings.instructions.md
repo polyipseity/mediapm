@@ -56,6 +56,62 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
 - Follow evidence-first loop: profile -> hypothesize -> optimize -> benchmark,
   and revert optimizations that do not produce measured wins.
 
+## Demo Example Execution Context
+
+### When to run demos
+
+Run both example demos **only when validating changes at the END of work** to
+confirm the full pipeline works end-to-end:
+
+- `cargo run --package mediapm --example mediapm_demo`
+- `cargo run --package mediapm --example mediapm_demo_online`
+
+Run them in **normal sequence (not concurrently)** as part of pre-push
+validation.
+
+### When NOT to run demos
+
+**Do not run demos during routine development or incremental changes.** Demos
+are intentionally time-consuming and require external tool setup:
+
+- `mediapm_demo`: Requires ffmpeg, rsgain, media-tagger with full media
+  transcoding.
+- `mediapm_demo_online`: Requires yt-dlp, ffmpeg, media-tagger, and active
+  network access for downloading.
+
+During active development, use selective unit and integration tests instead
+(`cargo test-pkg <crate>`). This keeps iteration cycles fast while validating
+behavior changes.
+
+### CI mode (config-only) is auto-detected
+
+Both demos auto-detect when to run in config-only mode (no external tools
+required):
+
+- **`mediapm_demo`**: Runs full sync by default. Detect CI environment using
+  standard CI env vars (`CI=true`, `GITHUB_ACTIONS`, etc.) and skip external
+  tool execution.
+- **`mediapm_demo_online`**: Detects CI environment and runs config-only mode
+  (validates config without network/tool access).
+
+In config-only mode, artifacts and workflow validation complete without
+spawning external processes or requiring network access.
+
+### What to look for in output
+
+When running full-sync demos, verify:
+
+- **Success indicators**:
+  - All managed tool downloads complete (check output logs).
+  - Workflow execution shows `sync executed: true` or equivalent success marker.
+  - Artifact root contains expected materialized output hierarchy.
+  - `manifest.json` is written with populated artifact paths and timing profile.
+
+- **Timing expectations**:
+  - `mediapm_demo` (local transcode): ~5–15 seconds.
+  - `mediapm_demo_online` (yt-dlp + transcode): ~15–45 seconds (network
+    dependent).
+
 ## Required test qualities
 
 - Use explicit arrange/act/assert structure.
