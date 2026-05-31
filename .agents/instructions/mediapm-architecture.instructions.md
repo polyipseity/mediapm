@@ -541,27 +541,35 @@ or download-level progress that spans blocking awaits.
 
 ## Validation checklist after Rust edits
 
-**During development:**
+This repository relies on `prek.toml` for local git-hook validation.
 
-Run targeted validation on affected crates:
+- `pre-commit` stage on `git commit` runs:
+  - `check-case-conflict`
+  - `check-executables-have-shebangs`
+  - `check-illegal-windows-names`
+  - `check-merge-conflict`
+  - `check-shebang-scripts-are-executable`
+  - `check-symlinks`
+  - `destroyed-symlinks`
+  - `detect-private-key`
+  - `end-of-file-fixer`
+  - `fix-byte-order-marker`
+  - `name-tests-test`
+  - `trailing-whitespace`
+  - `rumdl-fmt`
+  - `fmt` (runs `cargo fmt` on changed `.rs` files)
+- `commit-msg` stage runs `commitlint`
+- `pre-push` stage runs workspace `cargo-check`, `clippy`, and `test`
+
+All format/check/clippy/test validation is automatic via `prek.toml` hooks.
+During development, use targeted crate validation when needed:
 
 - `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
 - `cargo build-pkg <crate>` (e.g., `cargo build-pkg mediapm`)
-- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` during
-  normal development loops; rely on `prek.toml` commit hooks for those gates.
-- Run selective tests for changed behavior during development, and before
-  completion always run both mediapm demos:
-  - `cargo run --package mediapm --example mediapm_demo`
-  - `cargo run --package mediapm --example mediapm_demo_online`
 
-**Before submitting (pre-push):**
+The only required manual runtime verification before completion is running both mediapm demos:
 
-Run full workspace validation:
-
-- `cargo fmt-check`
-- `cargo clippy-all`
-- `cargo test-all`
-
-See `.cargo/config.toml` for all targeted aliases.
+- `cargo run --package mediapm --example mediapm_demo`
+- `cargo run --package mediapm --example mediapm_demo_online`
 
 If you intentionally change behavior, update tests and docs in the same change.

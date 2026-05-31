@@ -39,18 +39,19 @@ When editing Rust source, validate changes with selective checks first:
 - **During development** (recommended for speed — these run in seconds):
   - Prefer selective individual tests (`cargo test -p <crate> <test_name>`) for tight edit loops.
   - Use focused package builds (`cargo build-pkg <crate>`) and avoid package-wide test churn unless a specific issue requires it.
-  - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal development loops; `prek.toml` pre-commit hooks already run formatting + check + clippy on commit.
+  - Rely on `prek.toml` pre-commit hooks for formatting, type checking, and clippy on commit rather than running those commands manually.
   - Examples:
     - `cargo test -p mediapm source_metadata_falls_back_to_uri_when_unavailable`
     - `cargo build-pkg mediapm-conductor` builds only mediapm-conductor
     - `cargo test -p mediapm-cas locator_parser_expands_environment_variables`
-  - See `.cargo/config.toml` for the alias definitions
+  - See `.cargo/config.toml` for alias definitions
 
-- **Before submitting (pre-push validation)** — validate full workspace:
-  - `cargo fmt-check` (checks all Rust file formatting)
-  - `cargo clippy-all` (full workspace lint with strict warnings)
-  - `cargo test-all` (full workspace tests)
-  - These are intentionally slow and designed for CI/pre-push gates
+- **Before submitting**:
+  - `prek.toml` handles full workspace validation on `git push` via pre-push hooks.
+  - Local manual runs of `cargo fmt-check`, `cargo clippy-all`, or `cargo test-all` are not required for normal submission because the hooks already enforce those gates.
+  - The only required manual runtime verification before completion is:
+    - `cargo run --package mediapm --example mediapm_demo`
+    - `cargo run --package mediapm --example mediapm_demo_online`
 
 - **CI parity reference** (`.github/workflows/ci.yml`):
   - CI runs: `cargo test-all`, `cargo clippy-all`, `cargo fmt-check`, `cargo build-all`
@@ -71,17 +72,29 @@ When editing Rust source, validate changes with selective checks first:
 When refactoring touches multiple crates or splits large modules:
 
 1. Run targeted checks on each affected crate first
-2. Then run full-workspace validation before pushing:
-   - `cargo fmt-check`
-   - `cargo clippy-all`
-   - `cargo test-all`
+2. Then rely on `prek.toml` pre-push hooks for full-workspace validation before pushing, rather than running manual full workspace commands.
 
 ## Git hooks and pre-commit
 
 This repository uses the pre-commit framework (configured via `prek.toml`) to manage local git hooks. The hooks run automatically on `git commit` and `git push` to catch issues early and auto-fix formatting:
 
-- **pre-commit stage** (on `git commit`): runs `cargo fmt` (formats code), `cargo check`, `cargo clippy`, and `rumdl fmt` (formats markdown)
-- **pre-push stage** (on `git push`): runs full test validation
+- **pre-commit stage** (on `git commit`):
+  - `check-case-conflict`
+  - `check-executables-have-shebangs`
+  - `check-illegal-windows-names`
+  - `check-merge-conflict`
+  - `check-shebang-scripts-are-executable`
+  - `check-symlinks`
+  - `destroyed-symlinks`
+  - `detect-private-key`
+  - `end-of-file-fixer`
+  - `fix-byte-order-marker`
+  - `name-tests-test`
+  - `trailing-whitespace`
+  - `rumdl-fmt`
+  - `fmt` (`cargo fmt` on changed `.rs` files)
+- **commit-msg stage**: runs `commitlint`
+- **pre-push stage** (on `git push`): runs workspace `cargo-check`, `clippy`, and `test`
 
 Treat these hooks as the canonical lint/format/check gate. During normal coding, prefer selective test/build runs and rely on commit/push hooks for full lint/format/check execution.
 
