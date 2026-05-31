@@ -6,7 +6,7 @@ sources, and materialize a content-addressed hierarchy on disk.
 ## Workspace
 
 | Crate | Role |
-|---|---|
+| --- | --- |
 | `src/cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
 | `src/conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
 | `src/conductor-builtins/echo/` | Echo builtin |
@@ -90,16 +90,8 @@ MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example demo_online
 
 Inspect generated artifacts under `src/mediapm/examples/.artifacts/demo-online/`.
 
-The `demo` and `demo_online` examples auto-detect Cargo test targets and switch
-to config-only mode, skipping network calls:
-
-```mermaid
-flowchart LR
-  A[example entrypoint] --> B{compiled as test target?}
-  B -->|yes| C[config-only: write config + manifest]
-  B -->|no| D[full sync: tools + workflows + artifacts]
-  E[env override MEDIAPM_DEMO*_RUN_SYNC] --> B
-```
+`demo_online` is a full-sync integration example for normal validation runs.
+When setting `MEDIAPM_DEMO_ONLINE_RUN_SYNC` explicitly, use `true`.
 
 Integration tests across workspace crates share one harness shape:
 

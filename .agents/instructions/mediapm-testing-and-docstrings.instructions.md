@@ -18,20 +18,16 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - top-level `tests/tests.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
     `tests/prop/`.
-- For examples that depend on external tools/network/media providers, require
-  test-target-aware runtime gating: when compiled as Cargo test targets they
-  should default to configuration-only execution and avoid external
-  network/provider/tool side effects.
 - Keep `src/mediapm/examples/demo.rs` and
   `src/mediapm/examples/demo_online.rs` full-sync for explicit manual runs
-  (`cargo run --example ...`) while supporting env overrides for forced-mode
-  diagnostics in test-target executions.
+  (`cargo run --example ...`). For `demo_online`, prefer
+  `MEDIAPM_DEMO_ONLINE_RUN_SYNC=true` whenever this env var is set.
 - Keep `src/mediapm/examples/demo.rs` ffmpeg behavior fast for local fixture
   execution: prefer stream-copy (`codec_copy = "true"`) over re-encode-heavy
   demo transforms.
 - For development loops under `src/mediapm/**`, prefer selective tests while
-  iterating, but before completion always run both demos end-to-end **at the
-  same time** (parallel processes):
+  iterating, but before completion always run both demos end-to-end in normal
+  sequence (not parallel):
   - `cargo run --package mediapm --example mediapm_demo`
   - `cargo run --package mediapm --example mediapm_demo_online`
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
@@ -138,7 +134,7 @@ Before finishing, run targeted validation on affected crates:
 
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
 - `cargo build-pkg <crate>` (affected crate build; e.g., `cargo build-pkg mediapm`)
-- Run both demo commands concurrently (not sequentially):
+- Run both demo commands in normal sequence (not concurrently):
   - `cargo run --package mediapm --example mediapm_demo`
   - `cargo run --package mediapm --example mediapm_demo_online`
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal

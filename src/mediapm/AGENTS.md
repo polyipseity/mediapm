@@ -503,8 +503,8 @@ During development, prefer targeted cargo aliases from `.cargo/config.toml`:
 - `cargo test-pkg mediapm`
 - `cargo build-pkg mediapm`
 - Run selective tests for changed behavior only during iteration, then run both
-  demo examples before finishing any change set, and run them simultaneously
-  (parallel processes):
+  demo examples before finishing any change set, running them normally in
+  sequence (not in parallel):
   - `cargo run --package mediapm --example mediapm_demo`
   - `cargo run --package mediapm --example mediapm_demo_online`
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
@@ -521,12 +521,11 @@ optional push-time checks.
 
 Example policy:
 
-- Examples that depend on external tooling/network must detect test-target
-  execution (`cfg!(test)`) and default to config-only mode so automated test
-  runs avoid provider/network/tool side effects.
-- Keep full-sync behavior for explicit manual runs (`cargo run --example ...`),
-  with environment overrides (`MEDIAPM_DEMO_RUN_SYNC`,
-  `MEDIAPM_DEMO_ONLINE_RUN_SYNC`) available for forced-mode diagnostics.
+- Keep `mediapm_demo_online` as a full-sync example in normal validation and
+  manual runs (`cargo run --example ...`). Prefer
+  `MEDIAPM_DEMO_ONLINE_RUN_SYNC=true` when explicitly setting the variable.
+- Do not rely on config-only fallback paths for normal `mediapm_demo_online`
+  validation.
 - Keep the demo fixture transcode fast: prefer ffmpeg stream-copy
   (`codec_copy = "true"`) into an audio-focused container/extension
   (`.m4a`) rather than demo-time audio re-encoding.
