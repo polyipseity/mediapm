@@ -30,7 +30,8 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   execution: prefer stream-copy (`codec_copy = "true"`) over re-encode-heavy
   demo transforms.
 - For development loops under `src/mediapm/**`, prefer selective tests while
-  iterating, but before completion always run both demos end-to-end:
+  iterating, but before completion always run both demos end-to-end **at the
+  same time** (parallel processes):
   - `cargo run --package mediapm --example mediapm_demo`
   - `cargo run --package mediapm --example mediapm_demo_online`
 - Prefer behavior-focused integration tests in `tests/` for workflow guarantees.
@@ -137,8 +138,9 @@ Before finishing, run targeted validation on affected crates:
 
 - `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
 - `cargo build-pkg <crate>` (affected crate build; e.g., `cargo build-pkg mediapm`)
-- `cargo run --package mediapm --example mediapm_demo`
-- `cargo run --package mediapm --example mediapm_demo_online`
+- Run both demo commands concurrently (not sequentially):
+  - `cargo run --package mediapm --example mediapm_demo`
+  - `cargo run --package mediapm --example mediapm_demo_online`
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
   development loops; `prek.toml` commit hooks already enforce formatting and
   lint/check gates.

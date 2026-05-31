@@ -503,7 +503,8 @@ During development, prefer targeted cargo aliases from `.cargo/config.toml`:
 - `cargo test-pkg mediapm`
 - `cargo build-pkg mediapm`
 - Run selective tests for changed behavior only during iteration, then run both
-  demo examples before finishing any change set:
+  demo examples before finishing any change set, and run them simultaneously
+  (parallel processes):
   - `cargo run --package mediapm --example mediapm_demo`
   - `cargo run --package mediapm --example mediapm_demo_online`
 - Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal
