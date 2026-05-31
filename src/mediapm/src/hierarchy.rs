@@ -284,7 +284,7 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
         media_id,
         vec!["subtitles".to_string()],
         vec![HierarchyFolderRenameRule {
-            pattern: "^([^.]+)\\.([^.]*)$".to_string(),
+            pattern: "^(?:.*/)?(?:.*\\.)?([^.\\/]+)\\.([^.\\/]+)$".to_string(),
             replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].$1.$2"
                 .to_string(),
         }],

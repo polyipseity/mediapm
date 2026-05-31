@@ -526,6 +526,86 @@ fn folder_rename_rules_reject_invalid_paths_after_rewrite() {
     assert!(error.to_string().contains("invalid path"));
 }
 
+/// Protects yt-dlp subtitle rename behavior by ensuring preset-style rules
+/// handle nested ZIP member paths and optional filename prefixes.
+#[test]
+fn folder_rename_rules_support_nested_yt_dlp_subtitle_paths() {
+    let rules = super::compile_hierarchy_folder_rename_rules(
+        &[HierarchyFolderRenameRule {
+            pattern: "^(?:.*/)?(?:.*\\.)?([^.\\/]+)\\.([^.\\/]+)$".to_string(),
+            replacement: "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].$1.$2"
+                .to_string(),
+        }],
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+    )
+    .expect("compile rename rules");
+
+    let renamed = super::apply_hierarchy_folder_rename_rules(
+        "subtitles/Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt",
+        &rules,
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+        "subtitles",
+    )
+    .expect("apply rename rules");
+
+    assert_eq!(renamed, "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].en.vtt");
+}
+
+/// Protects yt-dlp root sidecar naming by forcing flattened, media-prefixed
+/// file names even when ZIP members include nested directories.
+#[test]
+fn folder_rename_rules_flatten_nested_yt_dlp_root_sidecars() {
+    let thumbnail_rules = super::compile_hierarchy_folder_rename_rules(
+        &[HierarchyFolderRenameRule {
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement: "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.$1"
+                .to_string(),
+        }],
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+    )
+    .expect("compile thumbnail rules");
+
+    let link_rules = super::compile_hierarchy_folder_rename_rules(
+        &[HierarchyFolderRenameRule {
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement: "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.$1"
+                .to_string(),
+        }],
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+    )
+    .expect("compile link rules");
+
+    let thumbnail_renamed = super::apply_hierarchy_folder_rename_rules(
+        "thumbnails/maxresdefault.jpg",
+        &thumbnail_rules,
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+        "thumbnails",
+    )
+    .expect("apply thumbnail rules");
+    let link_renamed = super::apply_hierarchy_folder_rename_rules(
+        "links/watch.url",
+        &link_rules,
+        "library/rickroll",
+        "youtube.dQw4w9WgXcQ",
+        "links",
+    )
+    .expect("apply link rules");
+
+    assert_eq!(
+        thumbnail_renamed,
+        "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].thumbnail.jpg"
+    );
+    assert_eq!(
+        link_renamed,
+        "Rick Astley - Never Gonna Give You Up [youtube.dQw4w9WgXcQ].link.url"
+    );
+}
+
 /// Protects sync wiring by ensuring folder rename rules rewrite extracted
 /// ZIP member file names before final materialization.
 #[tokio::test]

@@ -1250,8 +1250,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variant: None,
         variants: vec!["thumbnails".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
-            pattern: "^(.*)\\.(.+)$".to_string(),
-            replacement: "$1.thumbnail.$2".to_string(),
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement:
+                "${media.metadata.artist} - ${media.metadata.title} [${media.id}].thumbnail.$1"
+                    .to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
@@ -1266,8 +1268,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         variant: None,
         variants: vec!["links".to_string()],
         rename_files: vec![HierarchyFolderRenameRule {
-            pattern: "^(.*)\\.(.+)$".to_string(),
-            replacement: "$1.link.$2".to_string(),
+            pattern: "^.*\\.([^.]+)$".to_string(),
+            replacement: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].link.$1"
+                .to_string(),
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
