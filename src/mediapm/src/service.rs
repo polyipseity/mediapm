@@ -140,7 +140,7 @@ where
         lock: &MediaLockFile,
         machine: &mediapm_conductor::MachineNickelDocument,
     ) -> bool {
-        if tool_name.eq_ignore_ascii_case("import") {
+        if tools::catalog::tool_catalog_entry(tool_name).is_err() {
             return false;
         }
 
