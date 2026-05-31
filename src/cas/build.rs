@@ -12,6 +12,11 @@ fn main() {
         return;
     }
 
+    // Only generate completions in release profile
+    if env::var("PROFILE") != Ok("release".to_string()) {
+        return;
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
     let completion_dir = out_dir.join("completions");
