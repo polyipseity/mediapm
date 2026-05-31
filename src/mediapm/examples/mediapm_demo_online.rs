@@ -2655,9 +2655,59 @@ fn resolve_managed_tool_id(
     Ok(first)
 }
 
+/// Detects if running in a CI environment based on standard CI env vars.
+fn ci_mode_detected() -> bool {
+    std::env::var("CI")
+        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("GITLAB_CI").is_ok()
+        || std::env::var("CIRCLECI").is_ok()
+        || std::env::var("TRAVIS").is_ok()
+        || std::env::var("BUILDKITE").is_ok()
+        || std::env::var("DRONE").is_ok()
+}
+
+/// Runs the online demo in config-only mode (no sync, no external tools).
+///
+/// Used when CI environment is detected to validate config generation without
+/// requiring internet access or external tool availability.
+async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
+    let root = reset_artifact_root()?;
+    let workspace_root = root.clone();
+
+    eprintln!(
+        "[demo_online] CI environment detected; running in configuration-only mode (no sync, no internet)"
+    );
+
+    configure_document_for_online_demo(&workspace_root)?;
+
+    // Write minimal manifest indicating config-only run
+    let manifest = json!({
+        "run_mode": "config-only",
+        "ci_detected": true,
+        "artifact_root": display_path(&root),
+        "workspace_root": display_path(&workspace_root),
+    });
+
+    let manifest_path = root.join("manifest.json");
+    write_json_file(&manifest_path, &manifest)?;
+
+    Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
+}
+
 #[tokio::main]
 /// Runs the online sync demo and prints generated artifact paths.
 async fn main() -> ExampleResult<()> {
+    // Check for CI mode first, before other validation
+    if ci_mode_detected() {
+        let paths = run_online_demo_config_only().await?;
+        println!("generated artifacts root: {}", paths.artifact_root.display());
+        println!("generated workspace root: {}", paths.workspace_root.display());
+        println!("manifest: {}", paths.manifest_path.display());
+        println!("sync executed: false");
+        return Ok(());
+    }
+
     validate_demo_online_run_sync_override()?;
     let sync_timeout = online_demo_timeout()?;
     configure_demo_conductor_executable_timeout(sync_timeout);
