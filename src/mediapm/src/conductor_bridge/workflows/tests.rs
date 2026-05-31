@@ -1344,6 +1344,77 @@ fn media_tagger_metadata_step_keeps_input_when_recording_mbid_is_set() {
     );
 }
 
+/// Protects MBID sentinel passthrough so `none` reaches internal media-tagger
+/// runtime unchanged and can disable autodetection.
+#[test]
+fn media_tagger_metadata_step_preserves_none_mbid_sentinel() {
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(
+            "tag-none-sentinel".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::from([(
+                    "default".to_string(),
+                    "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
+                )]),
+                steps: vec![MediaStep {
+                    tool: MediaStepTool::MediaTagger,
+                    input_variants: vec!["default".to_string()],
+                    output_variants: BTreeMap::from([(
+                        "tagged".to_string(),
+                        generic_output_variant("primary"),
+                    )]),
+                    options: BTreeMap::from([
+                        (
+                            "recording_mbid".to_string(),
+                            TransformInputValue::String("none".to_string()),
+                        ),
+                        (
+                            "release_mbid".to_string(),
+                            TransformInputValue::String("none".to_string()),
+                        ),
+                    ]),
+                }],
+            },
+        )]),
+        ..MediaPmDocument::default()
+    };
+
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([
+            (
+                "media-tagger".to_string(),
+                "mediapm.tools.media-tagger+mediapm-internal@latest".to_string(),
+            ),
+            (
+                "ffmpeg".to_string(),
+                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+            ),
+        ]),
+        ..MediaLockFile::default()
+    };
+    let machine = machine_with_active_tool_specs(&lock);
+
+    let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
+    let workflow = plan.workflows.get("mediapm.media.tag-none-sentinel").expect("managed workflow");
+    let metadata_step =
+        workflow.steps.iter().find(|step| step.id.ends_with("-metadata")).expect("metadata step");
+
+    assert_eq!(
+        metadata_step.inputs.get("recording_mbid"),
+        Some(&InputBinding::String("none".to_string()))
+    );
+    assert_eq!(
+        metadata_step.inputs.get("release_mbid"),
+        Some(&InputBinding::String("none".to_string()))
+    );
+}
+
 /// Protects local import-step synthesis using builtin import output wiring.
 #[test]
 fn import_step_synthesizes_builtin_import_binding() {

@@ -16,6 +16,9 @@
 //! supplied. Missing/empty lookup credentials are a hard error on that
 //! autodetection path; when credentials are provided, lookup/authentication
 //! failures are surfaced as hard errors.
+//! MBID override sentinel behavior:
+//! - empty/omitted or `auto` => allow AcoustID autodetection path,
+//! - `none` => disable AcoustID autodetection path entirely.
 
 #![allow(clippy::doc_markdown)]
 
@@ -214,9 +217,63 @@ pub struct InternalMediaTaggerOptions {
     /// that depends on relationship metadata.
     pub release_ars: bool,
     /// Optional direct recording MBID override.
+    ///
+    /// Sentinel values:
+    /// - `auto`/empty => allow AcoustID autodetection,
+    /// - `none` => disable AcoustID autodetection entirely.
     pub recording_mbid: Option<String>,
     /// Optional direct release MBID override.
+    ///
+    /// Sentinel values:
+    /// - `auto`/empty => treat as unspecified release MBID,
+    /// - `none` => treat as unspecified release MBID and disable AcoustID
+    ///   autodetection entirely.
     pub release_mbid: Option<String>,
+}
+
+/// Normalized MBID override mode from runtime input text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MbidOverride {
+    /// Caller requested autodetection by omitting MBID or setting `auto`.
+    Auto,
+    /// Caller explicitly disabled autodetection with `none`.
+    NoneSentinel,
+    /// Caller provided one concrete MBID value.
+    Explicit(String),
+}
+
+impl MbidOverride {
+    /// Parses one optional MBID override text value.
+    #[must_use]
+    fn parse(raw: Option<&str>) -> Self {
+        let Some(value) = normalize_optional_text(raw) else {
+            return Self::Auto;
+        };
+
+        if value.eq_ignore_ascii_case("auto") {
+            return Self::Auto;
+        }
+        if value.eq_ignore_ascii_case("none") {
+            return Self::NoneSentinel;
+        }
+
+        Self::Explicit(value)
+    }
+
+    /// Returns true when this override disables AcoustID autodetection.
+    #[must_use]
+    const fn disables_autodetect(&self) -> bool {
+        matches!(self, Self::NoneSentinel)
+    }
+
+    /// Returns one explicit MBID value when present.
+    #[must_use]
+    fn explicit_value(&self) -> Option<String> {
+        match self {
+            Self::Explicit(value) => Some(value.clone()),
+            Self::Auto | Self::NoneSentinel => None,
+        }
+    }
 }
 
 /// Executes one full internal tagging pipeline.
@@ -284,10 +341,15 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         return Ok(());
     }
 
-    let mut detected_recording_mbid = normalize_optional_text(options.recording_mbid.as_deref());
-    let mut detected_release_mbid = normalize_optional_text(options.release_mbid.as_deref());
+    let recording_override = MbidOverride::parse(options.recording_mbid.as_deref());
+    let release_override = MbidOverride::parse(options.release_mbid.as_deref());
+    let disable_autodetect =
+        recording_override.disables_autodetect() || release_override.disables_autodetect();
 
-    if detected_recording_mbid.is_none() {
+    let mut detected_recording_mbid = recording_override.explicit_value();
+    let mut detected_release_mbid = release_override.explicit_value();
+
+    if !disable_autodetect && detected_recording_mbid.is_none() {
         let Some(resolved_input) = resolved_input.as_ref() else {
             bail!(
                 "input media is required when --recording-mbid is not provided (fingerprint autodetection path)"

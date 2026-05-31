@@ -127,6 +127,108 @@ async fn run_internal_media_tagger_with_key_attempts_lookup_path() {
     );
 }
 
+/// Protects sentinel behavior where `recording_mbid=none` disables AcoustID
+/// autodetection entirely.
+#[tokio::test]
+async fn run_internal_media_tagger_recording_none_skips_autodetect_path() {
+    let workspace = tempdir().expect("tempdir");
+    let input_path = workspace.path().join("input.mp3");
+    let output_path = workspace.path().join("output.ffmetadata");
+    std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
+
+    let result = run_internal_media_tagger(InternalMediaTaggerOptions {
+        input_path: Some(input_path),
+        output_path: output_path.clone(),
+        acoustid_api_key: None,
+        acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+        musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+        cache_dir: None,
+        cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+        strict_identification: true,
+        write_all_tags: true,
+        write_all_images: true,
+        save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+        ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+        caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+        caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+        caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+        preserve_images: DEFAULT_PRESERVE_IMAGES,
+        clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+        enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+        release_ars: DEFAULT_RELEASE_ARS,
+        cover_art_slot_count: 8,
+        recording_mbid: Some("none".to_string()),
+        release_mbid: None,
+    })
+    .await;
+
+    let error = result.expect_err("strict path should fail without recording MBID");
+    assert!(
+        error.to_string().contains("could not resolve recording MBID"),
+        "expected unresolved-recording diagnostic but got: {error:#}"
+    );
+    assert!(
+        !error.to_string().contains("AcoustID lookup requires a non-empty API key"),
+        "none sentinel should skip key requirement on autodetect path"
+    );
+    assert!(
+        !error.to_string().contains("decoding media for fingerprinting"),
+        "none sentinel should skip fingerprint decode path"
+    );
+    assert!(
+        output_path.exists(),
+        "wrapper should still write fallback ffmetadata output after strict failure"
+    );
+}
+
+/// Protects sentinel behavior where `recording_mbid=auto` is equivalent to an
+/// omitted recording MBID and keeps autodetection active.
+#[tokio::test]
+async fn run_internal_media_tagger_recording_auto_keeps_autodetect_path() {
+    let workspace = tempdir().expect("tempdir");
+    let input_path = workspace.path().join("input.mp3");
+    let output_path = workspace.path().join("output.ffmetadata");
+    std::fs::write(&input_path, b"dummy-bytes").expect("write input media stub");
+
+    let result = run_internal_media_tagger(InternalMediaTaggerOptions {
+        input_path: Some(input_path),
+        output_path: output_path.clone(),
+        acoustid_api_key: Some("demo-key".to_string()),
+        acoustid_endpoint: DEFAULT_ACOUSTID_ENDPOINT.to_string(),
+        musicbrainz_endpoint: DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
+        cache_dir: None,
+        cache_expiry_seconds: DEFAULT_CACHE_EXPIRY_SECONDS,
+        strict_identification: false,
+        write_all_tags: true,
+        write_all_images: true,
+        save_images_to_tags: DEFAULT_SAVE_IMAGES_TO_TAGS,
+        embed_only_one_front_image: DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE,
+        ca_providers: DEFAULT_CA_PROVIDERS.to_string(),
+        caa_image_types: DEFAULT_CAA_IMAGE_TYPES.to_string(),
+        caa_image_size: DEFAULT_CAA_IMAGE_SIZE.to_string(),
+        caa_approved_only: DEFAULT_CAA_APPROVED_ONLY,
+        preserve_images: DEFAULT_PRESERVE_IMAGES,
+        clear_existing_tags: DEFAULT_CLEAR_EXISTING_TAGS,
+        enable_tag_saving: DEFAULT_ENABLE_TAG_SAVING,
+        release_ars: DEFAULT_RELEASE_ARS,
+        cover_art_slot_count: 8,
+        recording_mbid: Some("auto".to_string()),
+        release_mbid: Some("auto".to_string()),
+    })
+    .await;
+
+    let error = result.expect_err("auto sentinel should keep lookup/decode path active");
+    assert!(
+        error.to_string().contains("decoding media for fingerprinting"),
+        "expected decode path failure when autodetection is active"
+    );
+    assert!(
+        output_path.exists(),
+        "ffmetadata output should still exist for workflow output-capture consistency"
+    );
+}
+
 /// Protects ffmetadata parsing for metadata-preserving merge behavior.
 #[test]
 fn parse_ffmetadata_global_map_decodes_escaped_pairs() {
