@@ -67,6 +67,16 @@ fn resolve_cover_art_slot_count(
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<usize, MediaPmError> {
     let max_cover_slots = ffmpeg_slot_limits.max_input_slots.saturating_sub(1);
+
+    // When both MusicBrainz identifiers are explicitly disabled ("none"),
+    // no cover art metadata will be fetched, so force slot count to 0
+    // to prevent allow_empty=true failures in downstream :zip() member selection.
+    let recording_mbid = step_option_scalar(step, "recording_mbid").map(str::trim);
+    let release_mbid = step_option_scalar(step, "release_mbid").map(str::trim);
+    if recording_mbid.is_some_and(|v| v == "none") && release_mbid.is_some_and(|v| v == "none") {
+        return Ok(0);
+    }
+
     let write_all_images_enabled = step_option_scalar(step, "write_all_images")
         .map(str::trim)
         .filter(|value| !value.is_empty())
