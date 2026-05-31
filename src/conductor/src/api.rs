@@ -28,9 +28,6 @@ const DEFAULT_STATE_FILE_NAME: &str = "state.ncl";
 /// Default filesystem CAS store directory name under the resolved conductor directory.
 const DEFAULT_CAS_STORE_DIR_NAME: &str = "store";
 
-/// Default temporary execution sandbox directory leaf name under OS temp.
-const DEFAULT_TMP_DIR_NAME: &str = "tmp";
-
 /// Default tool-content cache directory name under the resolved conductor directory.
 const DEFAULT_TOOLS_DIR_NAME: &str = "tools";
 
@@ -121,10 +118,10 @@ impl RuntimeStoragePaths {
             || conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
             |path| Self::resolve_path(anchor, path),
         );
-        let conductor_tmp_dir = self.conductor_tmp_dir.as_ref().map_or_else(
-            || default_runtime_tmp_dir(&conductor_dir),
-            |path| Self::resolve_path(anchor, path),
-        );
+        let conductor_tmp_dir = self
+            .conductor_tmp_dir
+            .as_ref()
+            .map_or_else(default_runtime_tmp_dir, |path| Self::resolve_path(anchor, path));
         let conductor_schema_dir = self.conductor_schema_dir.as_ref().map_or_else(
             || schema_export_dir(&conductor_dir),
             |path| Self::resolve_path(anchor, path),
@@ -159,31 +156,8 @@ impl Default for RuntimeStoragePaths {
 
 /// Returns the default OS-backed temp directory for conductor sandboxes.
 #[must_use]
-fn default_runtime_tmp_dir(conductor_dir: &Path) -> PathBuf {
+fn default_runtime_tmp_dir() -> PathBuf {
     std::env::temp_dir()
-        .join("mediapm")
-        .join("conductor")
-        .join(stable_path_scope_id(conductor_dir))
-        .join(DEFAULT_TMP_DIR_NAME)
-}
-
-/// Builds a stable path scope id for temp-directory names.
-#[must_use]
-fn stable_path_scope_id(path: &Path) -> String {
-    let normalized = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
-    };
-    let text = normalized.to_string_lossy();
-
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
-    }
-
-    format!("{hash:016x}")
 }
 
 /// Concrete runtime storage paths after resolving relative values.
@@ -1008,7 +982,7 @@ mod tests {
         let machine_ncl = PathBuf::from("workspace").join("conductor.machine.ncl");
         let resolved =
             resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &RuntimeStoragePaths::default());
-        let expected_tmp_dir = default_runtime_tmp_dir(&resolved.conductor_dir);
+        let expected_tmp_dir = default_runtime_tmp_dir();
 
         assert_eq!(resolved.conductor_dir, PathBuf::from("workspace").join(".conductor"));
         assert_eq!(
@@ -1090,7 +1064,7 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("config").join(".conductor").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, default_runtime_tmp_dir(&resolved.conductor_dir));
+        assert_eq!(resolved.conductor_tmp_dir, default_runtime_tmp_dir());
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace")

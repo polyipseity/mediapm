@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -410,25 +411,35 @@ impl MediaTaggerHttpCache {
             return Ok(());
         };
 
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).with_context(|| {
-                format!("creating media-tagger cache directory '{}'", parent.display())
-            })?;
-        }
+        let parent = path.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "resolving media-tagger cache index parent directory for '{}' failed",
+                path.display()
+            )
+        })?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!("creating media-tagger cache directory '{}'", parent.display())
+        })?;
 
         let rendered =
             serde_json::to_string_pretty(index).context("encoding media-tagger cache index")?;
-        let temp_path = path.with_extension("jsonc.tmp");
-        fs::write(&temp_path, format!("{rendered}\n")).with_context(|| {
-            format!("writing temporary media-tagger cache index '{}'", temp_path.display())
+        let mut temp_file = tempfile::NamedTempFile::new_in(parent).with_context(|| {
+            format!("creating temporary media-tagger cache index file in '{}'", parent.display())
+        })?;
+        temp_file.write_all(format!("{rendered}\n").as_bytes()).with_context(|| {
+            format!("writing temporary media-tagger cache index '{}'", temp_file.path().display())
         })?;
 
         if path.exists() {
             let _ = fs::remove_file(path);
         }
 
-        fs::rename(&temp_path, path)
-            .with_context(|| format!("replacing media-tagger cache index '{}'", path.display()))
+        temp_file
+            .persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("replacing media-tagger cache index '{}'", path.display()))?;
+
+        Ok(())
     }
 }
 

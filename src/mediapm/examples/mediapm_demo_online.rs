@@ -465,33 +465,9 @@ fn demo_online_run_sync_enabled() -> bool {
     sync_enabled_from_env_value(std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(), true)
 }
 
-/// Returns one OS-backed runtime temp directory path for this demo workspace.
-fn demo_runtime_tmp_dir(workspace_root: &Path) -> String {
-    std::env::temp_dir()
-        .join("mediapm")
-        .join("workspaces")
-        .join(demo_path_scope_id(workspace_root))
-        .join("tmp")
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-/// Builds one stable path scope id for workspace-local demo defaults.
-fn demo_path_scope_id(path: &Path) -> String {
-    let normalized = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
-    };
-    let text = normalized.to_string_lossy();
-
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0001_0000_01b3);
-    }
-
-    format!("{hash:016x}")
+/// Returns one OS-backed runtime temp directory path for this demo.
+fn demo_runtime_tmp_dir() -> String {
+    std::env::temp_dir().to_string_lossy().replace('\\', "/")
 }
 
 /// Configures a bounded default per-step executable timeout for this demo.
@@ -938,7 +914,7 @@ fn assert_materialized_output_hardlinked_to_cas(
 fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Vec<String>> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
-    let runtime_tmp_dir = demo_runtime_tmp_dir(workspace_root);
+    let runtime_tmp_dir = demo_runtime_tmp_dir();
     document.tools = BTreeMap::from([
         (
             "yt-dlp".to_string(),

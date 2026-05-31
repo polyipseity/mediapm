@@ -18,6 +18,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -417,30 +418,41 @@ fn write_index_file(
     index_path: &Path,
     index: &UserDownloadCacheIndex,
 ) -> Result<(), ConductorError> {
-    if let Some(parent) = index_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
-            operation: "creating user download cache index parent directory".to_string(),
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
+    let parent = index_path.parent().ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "resolving user download cache index parent directory for '{}' failed",
+            index_path.display()
+        ))
+    })?;
+    fs::create_dir_all(parent).map_err(|source| ConductorError::Io {
+        operation: "creating user download cache index parent directory".to_string(),
+        path: parent.to_path_buf(),
+        source,
+    })?;
 
     let rendered = serde_json::to_string_pretty(index).map_err(|error| {
         ConductorError::Serialization(format!("encoding user download cache index: {error}"))
     })?;
-    let temp_path = index_path.with_extension("jsonc.tmp");
-    fs::write(&temp_path, format!("{rendered}\n")).map_err(|source| ConductorError::Io {
-        operation: "writing temporary user download cache index".to_string(),
-        path: temp_path.clone(),
-        source,
+    let mut temp_file =
+        tempfile::NamedTempFile::new_in(parent).map_err(|source| ConductorError::Io {
+            operation: "creating temporary user download cache index file".to_string(),
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    temp_file.write_all(format!("{rendered}\n").as_bytes()).map_err(|source| {
+        ConductorError::Io {
+            operation: "writing temporary user download cache index".to_string(),
+            path: temp_file.path().to_path_buf(),
+            source,
+        }
     })?;
     if index_path.exists() {
         let _ = fs::remove_file(index_path);
     }
-    fs::rename(&temp_path, index_path).map_err(|source| ConductorError::Io {
+    temp_file.persist(index_path).map_err(|error| ConductorError::Io {
         operation: "replacing user download cache index".to_string(),
         path: index_path.to_path_buf(),
-        source,
+        source: error.error,
     })?;
 
     Ok(())
