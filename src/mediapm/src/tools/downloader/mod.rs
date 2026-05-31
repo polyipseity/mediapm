@@ -84,8 +84,7 @@ pub(crate) async fn provision_tool_payload(
         source_id,
         resolve::sanitize_tool_id_fragment(&suffix)
     );
-    let staging_dir = create_provision_staging_dir(paths, &tool_id)?;
-    let install_root = staging_dir.path().to_path_buf();
+    let install_root = create_provision_staging_dir(paths, &tool_id)?;
 
     materialize::materialize_download_plan(
         &entry,
@@ -126,7 +125,7 @@ pub(crate) async fn provision_tool_payload(
 fn create_provision_staging_dir(
     paths: &MediaPmPaths,
     tool_id: &str,
-) -> Result<tempfile::TempDir, MediaPmError> {
+) -> Result<PathBuf, MediaPmError> {
     let user_scoped_root =
         default_global_tool_cache_root().map(|cache_root| cache_root.join("tmp"));
     let staging_base_dir = resolve_provision_staging_base_dir(paths, user_scoped_root);
@@ -136,13 +135,16 @@ fn create_provision_staging_dir(
         source,
     })?;
 
-    tempfile::Builder::new().prefix("tool-sync-provision-").tempdir_in(&staging_base_dir).map_err(
-        |source| MediaPmError::Io {
+    let staging_dir = tempfile::Builder::new()
+        .prefix("tool-sync-provision-")
+        .tempdir_in(&staging_base_dir)
+        .map_err(|source| MediaPmError::Io {
             operation: format!("creating staged tool install directory for '{tool_id}'"),
             path: staging_base_dir,
             source,
-        },
-    )
+        })?;
+
+    Ok(staging_dir.keep())
 }
 
 /// Resolves the staging base directory for one tool payload provisioning run.
