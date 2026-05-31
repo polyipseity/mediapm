@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use mediapm_cas::Hash;
-use mediapm_conductor::{MachineNickelDocument, ToolConfigSpec};
+use mediapm_conductor::{
+    ExternalContentRef, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec,
+    encode_machine_document,
+};
 use serde_json::json;
 
 use super::{
@@ -16,6 +19,7 @@ use super::{
     save_mediapm_document, should_prefer_filesystem_workflow_runner, validate_source_uri,
 };
 use crate::config::load_mediapm_document_without_validation;
+use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus, save_lockfile};
 use crate::source_metadata::resolve_online_source_metadata_for_add;
 use tempfile::tempdir;
 use url::Url;
@@ -159,6 +163,91 @@ fn add_tool_requirement_skips_cross_field_validation_during_bootstrap() {
         .expect("load mediapm.ncl without validation");
     assert!(loaded.tools.contains_key("ffmpeg"));
     assert!(loaded.tools.contains_key("yt-dlp"));
+}
+
+/// Ensures `sync` does not emit stale tool-sync warnings when a tag-based
+/// tool requirement (`tag = "latest"`) already has an active, materialized
+/// runtime registration from a previous tool-sync pass.
+#[tokio::test]
+async fn sync_library_does_not_warn_for_latest_tag_with_current_runtime_state() {
+    let root = tempdir().expect("tempdir");
+    let service = MediaPmService::new_in_memory_at(root.path());
+
+    let mut document = MediaPmDocument::default();
+    document.tools.insert(
+        "ffmpeg".to_string(),
+        ToolRequirement {
+            version: None,
+            tag: Some("latest".to_string()),
+            dependencies: ToolRequirementDependencies::default(),
+            recheck_seconds: None,
+            max_input_slots: None,
+            max_output_slots: None,
+        },
+    );
+    save_mediapm_document(&service.paths().mediapm_ncl, &document).expect("seed mediapm.ncl");
+
+    let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
+    let registry_hash = Hash::from_content(b"registry-row");
+
+    let mut machine = MachineNickelDocument::default();
+    machine.external_data.insert(
+        registry_hash,
+        ExternalContentRef {
+            description: Some("test content-map payload".to_string()),
+            save: None,
+        },
+    );
+    machine.tools.insert(
+        tool_id.clone(),
+        ToolSpec {
+            kind: ToolKindSpec::Executable {
+                command: vec!["./ffmpeg".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        },
+    );
+    machine.tool_configs.insert(
+        tool_id.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([("./".to_string(), registry_hash)])),
+            ..ToolConfigSpec::default()
+        },
+    );
+    fs::create_dir_all(
+        service.paths().conductor_machine_ncl.parent().expect("machine parent directory"),
+    )
+    .expect("create machine parent directory");
+    fs::write(
+        &service.paths().conductor_machine_ncl,
+        encode_machine_document(machine).expect("encode machine"),
+    )
+    .expect("write machine doc");
+
+    let mut lock = MediaLockFile::default();
+    lock.active_tools.insert("ffmpeg".to_string(), tool_id.clone());
+    lock.tool_registry.insert(
+        tool_id,
+        ToolRegistryRecord {
+            name: "ffmpeg".to_string(),
+            version: "2026.05.31".to_string(),
+            source: "github-releases:btbn/ffmpeg-builds".to_string(),
+            registry_multihash: registry_hash.to_string(),
+            last_transition_unix_seconds: 1,
+            status: ToolRegistryStatus::Active,
+        },
+    );
+    save_lockfile(&service.paths().mediapm_state_ncl, &lock).expect("write lockfile");
+
+    let summary = service.sync_library().await.expect("sync library");
+    let warning = "tool state appears outdated for [";
+    assert!(
+        summary.warnings.iter().all(|entry| !entry.contains(warning)),
+        "sync should not emit outdated-tool warning when active lock+machine state is current: {:?}",
+        summary.warnings
+    );
 }
 
 /// Ensures explicit `runtime.mediapm_schema_dir = null` disables schema

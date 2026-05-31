@@ -166,13 +166,6 @@ where
             return true;
         }
 
-        if let Some(required_tag) = requirement.normalized_tag()
-            && config::normalize_selector_compare_value(registry_entry.version.as_str())
-                != config::normalize_selector_compare_value(required_tag.as_str())
-        {
-            return true;
-        }
-
         if matches!(&tool_spec.kind, ToolKindSpec::Executable { .. }) {
             let has_content_map = machine
                 .tool_configs
