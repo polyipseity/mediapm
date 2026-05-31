@@ -54,9 +54,6 @@ pub(crate) type DownloadProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) 
 /// Stable prefix for `mediapm`-managed immutable tool ids.
 const MANAGED_TOOL_ID_PREFIX: &str = "mediapm.tools.";
 
-/// Relative user-cache staging directory used while preparing one tool payload.
-const USER_SCOPED_PROVISION_STAGING_DIR: &str = "tmp/tool-sync-provision";
-
 /// Ensures one managed tool payload is provisioned into user-scoped staging
 /// storage and converted into conductor-ready command/content-map metadata.
 ///
@@ -87,19 +84,8 @@ pub(crate) async fn provision_tool_payload(
         source_id,
         resolve::sanitize_tool_id_fragment(&suffix)
     );
-    let install_root = provision_install_root(paths, &tool_id);
-    if install_root.exists() {
-        fs::remove_dir_all(&install_root).map_err(|source| MediaPmError::Io {
-            operation: format!("resetting staged tool install directory for '{tool_id}'"),
-            path: install_root.clone(),
-            source,
-        })?;
-    }
-    fs::create_dir_all(&install_root).map_err(|source| MediaPmError::Io {
-        operation: format!("creating staged tool install directory for '{tool_id}'"),
-        path: install_root.clone(),
-        source,
-    })?;
+    let staging_dir = create_provision_staging_dir(paths, &tool_id)?;
+    let install_root = staging_dir.path().to_path_buf();
 
     materialize::materialize_download_plan(
         &entry,
@@ -132,22 +118,38 @@ pub(crate) async fn provision_tool_payload(
     })
 }
 
-/// Resolves the staging install root for one tool payload provisioning run.
-#[must_use]
-fn provision_install_root(paths: &MediaPmPaths, tool_id: &str) -> PathBuf {
-    let user_scoped_root = default_global_tool_cache_root()
-        .map(|cache_root| cache_root.join(USER_SCOPED_PROVISION_STAGING_DIR));
-    resolve_provision_install_root(paths, tool_id, user_scoped_root)
-}
-
-/// Resolves staging install root from one optional user-scoped base directory.
-#[must_use]
-pub(super) fn resolve_provision_install_root(
+/// Creates one unique staging directory for a single provisioning run.
+///
+/// A per-run temp directory avoids cross-process races where concurrent
+/// provisioning attempts for the same immutable tool id could otherwise delete
+/// each other's in-flight staged payloads.
+fn create_provision_staging_dir(
     paths: &MediaPmPaths,
     tool_id: &str,
+) -> Result<tempfile::TempDir, MediaPmError> {
+    let user_scoped_root =
+        default_global_tool_cache_root().map(|cache_root| cache_root.join("tmp"));
+    let staging_base_dir = resolve_provision_staging_base_dir(paths, user_scoped_root);
+    fs::create_dir_all(&staging_base_dir).map_err(|source| MediaPmError::Io {
+        operation: format!("creating provisioning staging base directory for '{tool_id}'"),
+        path: staging_base_dir.clone(),
+        source,
+    })?;
+
+    tempfile::Builder::new().prefix("tool-sync-provision-").tempdir_in(&staging_base_dir).map_err(
+        |source| MediaPmError::Io {
+            operation: format!("creating staged tool install directory for '{tool_id}'"),
+            path: staging_base_dir,
+            source,
+        },
+    )
+}
+
+/// Resolves the staging base directory for one tool payload provisioning run.
+#[must_use]
+pub(super) fn resolve_provision_staging_base_dir(
+    paths: &MediaPmPaths,
     user_scoped_root: Option<PathBuf>,
 ) -> PathBuf {
-    user_scoped_root
-        .unwrap_or_else(|| paths.mediapm_tmp_dir.join("tool-sync-provision"))
-        .join(tool_id)
+    user_scoped_root.unwrap_or_else(|| paths.mediapm_tmp_dir.clone())
 }
