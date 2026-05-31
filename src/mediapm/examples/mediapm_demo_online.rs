@@ -1,7 +1,8 @@
 //! End-to-end online demo that exercises managed tool provisioning.
 //!
 //! By default this example executes the full online workflow in all runs.
-//! Use `MEDIAPM_DEMO_ONLINE_RUN_SYNC=false` to run configuration-only mode.
+//! `MEDIAPM_DEMO_ONLINE_RUN_SYNC` is accepted only when enabled
+//! (`true`/`1`/`yes`/`on`). Disabled values are rejected.
 //! The online demo keeps runtime bounded while still validating downloader
 //! sidecar capture behavior.
 //!
@@ -198,8 +199,8 @@ const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 /// Environment variable override for enabling/disabling full sync execution.
 ///
 /// - unset: full sync enabled,
-/// - set to one of `0`, `false`, `no`, or `off`: force config-only mode,
-/// - any other non-empty value: force full sync mode.
+/// - set to one of `true`, `1`, `yes`, or `on`: full sync enabled,
+/// - any other non-empty value: rejected to avoid accidental config-only runs.
 const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
 
 /// Default timeout for the online demo sync phase.
@@ -448,21 +449,25 @@ fn online_demo_timeout() -> ExampleResult<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
-/// Parses one optional sync-mode override string into a boolean flag.
-#[must_use]
-fn sync_enabled_from_env_value(value: Option<&str>, default_enabled: bool) -> bool {
-    let Some(raw) = value else {
-        return default_enabled;
+/// Validates optional sync override and rejects disable tokens.
+fn validate_demo_online_run_sync_override() -> ExampleResult<()> {
+    let Some(raw_value) = std::env::var_os(DEMO_ONLINE_RUN_SYNC_ENV) else {
+        return Ok(());
     };
 
-    let normalized = raw.trim().to_ascii_lowercase();
-    !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
-}
+    let normalized = raw_value.to_string_lossy().trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Ok(());
+    }
 
-/// Resolves online-demo sync mode from env override + build mode.
-#[must_use]
-fn demo_online_run_sync_enabled() -> bool {
-    sync_enabled_from_env_value(std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(), true)
+    if matches!(normalized.as_str(), "true" | "1" | "yes" | "on") {
+        return Ok(());
+    }
+
+    Err(format!(
+        "{DEMO_ONLINE_RUN_SYNC_ENV} only accepts enabled values (true/1/yes/on); got '{normalized}'"
+    )
+    .into())
 }
 
 /// Returns one OS-backed runtime temp directory path for this demo.
@@ -2612,64 +2617,6 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
 }
 
-/// Generates demo-online configuration artifacts without running sync.
-///
-/// This mode exists for automated test-binary execution where network/provider
-/// availability and external tool provisioning are intentionally avoided.
-fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
-    let root = reset_artifact_root()?;
-    let workspace_root = root.clone();
-
-    let service = MediaPmService::new_in_memory_at(&workspace_root);
-    let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
-
-    let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
-        .iter()
-        .map(|method| method.as_label().to_string())
-        .collect::<Vec<_>>();
-
-    let manifest = DemoManifest {
-        generated_unix_epoch_seconds: unix_timestamp_seconds(),
-        artifact_root: display_path(&root),
-        workspace_root: display_path(&workspace_root),
-        tool_ids: logical_tool_ids,
-        tool_binaries: BTreeMap::new(),
-        yt_dlp_max_concurrent_calls: 0,
-        yt_dlp_max_retries: 0,
-        mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
-        conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
-        workflow_id: format!("mediapm.media.{DEMO_MEDIA_ID}"),
-        workflow_step_count: 0,
-        tool_update_precheck_executed: false,
-        tool_update_precheck_updated_tools: 0,
-        tool_update_precheck_added_tools: 0,
-        tool_update_precheck_unchanged_tools: 0,
-        materialization_preference_order,
-        materialized_demo_video_path: String::new(),
-        materialized_demo_tagged_video_path: String::new(),
-        materialized_demo_video_hardlinked_to_cas: false,
-        materialized_demo_tagged_video_hardlinked_to_cas: false,
-        materialized_demo_sidecar_paths: BTreeMap::new(),
-        executed_instances: 0,
-        cached_instances: 0,
-        rematerialized_instances: 0,
-        materialized_paths: 0,
-        removed_paths: 0,
-        added_tools: 0,
-        updated_tools: 0,
-        warning_count: 0,
-        profile_path: String::new(),
-        store_size_without_delta_bytes: 0,
-        store_size_with_delta_bytes: 0,
-        store_size_ratio_with_delta_over_without: 1.0,
-    };
-
-    let manifest_path = root.join("manifest.json");
-    write_json_file(&manifest_path, &manifest)?;
-
-    Ok(DemoRunPaths { artifact_root: root, workspace_root, manifest_path })
-}
-
 /// Extracts logical tool name from one immutable managed tool id.
 fn logical_name_from_managed_tool_id(tool_id: &str) -> Option<&str> {
     let (selector, _) = tool_id.split_once('@')?;
@@ -2711,56 +2658,65 @@ fn resolve_managed_tool_id(
 #[tokio::main]
 /// Runs the online sync demo and prints generated artifact paths.
 async fn main() -> ExampleResult<()> {
-    let run_sync = demo_online_run_sync_enabled();
-    let paths = if run_sync {
-        let sync_timeout = online_demo_timeout()?;
-        configure_demo_conductor_executable_timeout(sync_timeout);
-        let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
+    validate_demo_online_run_sync_override()?;
+    let sync_timeout = online_demo_timeout()?;
+    configure_demo_conductor_executable_timeout(sync_timeout);
+    let hard_timeout_guard = spawn_hard_timeout_guard(sync_timeout);
 
-        match run_online_demo(sync_timeout).await {
-            Ok(paths) => {
-                hard_timeout_guard.store(true, Ordering::SeqCst);
-                paths
-            }
-            Err(error) => {
-                hard_timeout_guard.store(true, Ordering::SeqCst);
-                match error.downcast::<DemoOnlineTimeoutError>() {
-                    Ok(timeout_error) => {
-                        emit_watchdog_notice(&timeout_error.to_string());
-                        process::exit(124);
-                    }
-                    Err(other) => return Err(other),
+    let paths = match run_online_demo(sync_timeout).await {
+        Ok(paths) => {
+            hard_timeout_guard.store(true, Ordering::SeqCst);
+            paths
+        }
+        Err(error) => {
+            hard_timeout_guard.store(true, Ordering::SeqCst);
+            match error.downcast::<DemoOnlineTimeoutError>() {
+                Ok(timeout_error) => {
+                    emit_watchdog_notice(&timeout_error.to_string());
+                    process::exit(124);
                 }
+                Err(other) => return Err(other),
             }
         }
-    } else {
-        run_online_demo_config_only()?
     };
 
     println!("generated artifacts root: {}", paths.artifact_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
     println!("manifest: {}", paths.manifest_path.display());
-    println!("sync executed: {run_sync}");
+    println!("sync executed: true");
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    /// Ensures env parser honors explicit false tokens and caller defaults.
+    /// Ensures sync-mode override parser accepts enabled values only.
     #[test]
-    fn sync_enabled_env_parser_handles_false_tokens() {
-        assert!(super::sync_enabled_from_env_value(None, true));
-        assert!(!super::sync_enabled_from_env_value(None, false));
-        assert!(super::sync_enabled_from_env_value(Some("true"), false));
-        assert!(!super::sync_enabled_from_env_value(Some("false"), true));
-        assert!(!super::sync_enabled_from_env_value(Some("OFF"), true));
-        assert!(!super::sync_enabled_from_env_value(Some("0"), true));
+    fn run_sync_override_validator_rejects_disabled_tokens() {
+        let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
+
+        // SAFETY: test mutates one process env key in a controlled scope and
+        // restores the previous value before exit.
+        unsafe {
+            std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, "false");
+        }
+        let result = super::validate_demo_online_run_sync_override();
+
+        // SAFETY: restore previous env var value for test isolation.
+        unsafe {
+            if let Some(value) = previous {
+                std::env::set_var(super::DEMO_ONLINE_RUN_SYNC_ENV, value);
+            } else {
+                std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
+            }
+        }
+
+        assert!(result.is_err(), "disabled run-sync tokens must be rejected");
     }
 
-    /// Ensures demo-online defaults to sync enabled unless explicitly disabled.
+    /// Ensures demo-online override validator allows unset environment.
     #[test]
-    fn demo_online_run_sync_defaults_to_enabled_when_env_unset() {
+    fn run_sync_override_validator_allows_unset_env() {
         let previous = std::env::var(super::DEMO_ONLINE_RUN_SYNC_ENV).ok();
         // SAFETY: test mutates one process env key in a controlled scope and
         // restores the previous value before exit.
@@ -2768,7 +2724,7 @@ mod tests {
             std::env::remove_var(super::DEMO_ONLINE_RUN_SYNC_ENV);
         }
 
-        let enabled = super::demo_online_run_sync_enabled();
+        let result = super::validate_demo_online_run_sync_override();
 
         // SAFETY: restore previous env var value for test isolation.
         unsafe {
@@ -2777,43 +2733,7 @@ mod tests {
             }
         }
 
-        assert!(enabled, "demo_online should default to sync enabled when env override is unset");
-    }
-
-    /// Ensures config-only mode still generates workspace config artifacts and
-    /// a manifest without running network/tool sync.
-    #[test]
-    fn run_online_demo_config_only_writes_manifest_and_config() {
-        let run = super::run_online_demo_config_only()
-            .expect("config-only demo_online run should succeed");
-
-        assert!(run.manifest_path.exists(), "manifest should be written");
-        assert!(
-            run.workspace_root.join("mediapm.ncl").exists(),
-            "config-only run should still write mediapm.ncl"
-        );
-
-        let manifest_text = std::fs::read_to_string(&run.manifest_path).expect("read manifest");
-        let manifest_json: serde_json::Value =
-            serde_json::from_str(&manifest_text).expect("parse manifest");
-
-        assert_eq!(
-            manifest_json.get("executed_instances").and_then(serde_json::Value::as_u64),
-            Some(0),
-            "config-only run must not execute workflow instances"
-        );
-        assert_eq!(
-            manifest_json.get("tool_update_precheck_executed").and_then(serde_json::Value::as_bool),
-            Some(false),
-            "config-only run should skip tools-update precheck"
-        );
-        assert_eq!(
-            manifest_json
-                .get("materialized_demo_video_hardlinked_to_cas")
-                .and_then(serde_json::Value::as_bool),
-            Some(false),
-            "config-only run should not report materialized outputs"
-        );
+        assert!(result.is_ok(), "unset run-sync override should be accepted");
     }
 
     /// Ensures artifact root remains stable for docs/scripts that reference it.

@@ -49,13 +49,15 @@ fn demo_online_uses_in_memory_service_wiring() {
 
     assert!(
         source.contains("DEMO_ONLINE_RUN_SYNC_ENV")
-            && source.contains("fn demo_online_run_sync_enabled() -> bool")
-            && source.contains("run_online_demo_config_only")
-            && source.contains("let run_sync = demo_online_run_sync_enabled();")
-            && source.contains("println!(\"sync executed: {run_sync}\");")
-            && source.contains("sync_enabled_from_env_value(std::env::var(DEMO_ONLINE_RUN_SYNC_ENV).ok().as_deref(), true)")
+            && source.contains("fn validate_demo_online_run_sync_override() -> ExampleResult<()>")
+            && source.contains("validate_demo_online_run_sync_override()?;")
+            && source.contains("println!(\"sync executed: true\");")
+            && source.contains("only accepts enabled values (true/1/yes/on)")
+            && !source.contains("run_online_demo_config_only")
+            && !source.contains("fn demo_online_run_sync_enabled() -> bool")
+            && !source.contains("fn sync_enabled_from_env_value")
             && !source.contains("fn running_as_test_binary() -> bool"),
-        "demo_online should default to sync enabled while keeping explicit env overrides and no test-target branching"
+        "demo_online should enforce sync-only execution while rejecting disabled run-sync overrides and avoiding test-target branching"
     );
 
     assert!(
