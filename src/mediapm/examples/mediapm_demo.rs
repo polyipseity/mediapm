@@ -593,8 +593,24 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
+/// Detects if running in a CI environment based on standard CI env vars.
+fn ci_mode_detected() -> bool {
+    std::env::var("CI")
+        .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
+        || std::env::var("GITHUB_ACTIONS").is_ok()
+        || std::env::var("GITLAB_CI").is_ok()
+        || std::env::var("CIRCLECI").is_ok()
+        || std::env::var("TRAVIS").is_ok()
+        || std::env::var("BUILDKITE").is_ok()
+        || std::env::var("DRONE").is_ok()
+}
+
 /// Resolves sync execution mode from `MEDIAPM_DEMO_RUN_SYNC`.
 fn demo_run_sync_enabled() -> bool {
+    // CI mode always disables sync (config-only)
+    if ci_mode_detected() {
+        return false;
+    }
     sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
@@ -1324,6 +1340,13 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 /// Runs the persistent demo and prints generated artifact paths.
 async fn main() -> ExampleResult<()> {
     let run_sync = demo_run_sync_enabled();
+
+    if ci_mode_detected() {
+        eprintln!(
+            "[mediapm_demo] CI environment detected; running in configuration-only mode (no sync)"
+        );
+    }
+
     let paths = generate_demo_artifacts(run_sync).await?;
     println!("generated artifacts root: {}", paths.artifact_root.display());
     println!("generated workspace root: {}", paths.workspace_root.display());
