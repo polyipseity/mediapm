@@ -380,6 +380,12 @@ async fn run_internal_media_tagger_impl(options: InternalMediaTaggerOptions) -> 
         detected_release_mbid = detected_release_mbid.or(match_result.release_mbid);
     }
 
+    if disable_autodetect && detected_recording_mbid.is_none() {
+        let fallback_map = fallback_ffmetadata_map(resolved_input.as_deref()).await;
+        write_ffmetadata_document(&options.output_path, &fallback_map)?;
+        return Ok(());
+    }
+
     let Some(recording_mbid) = detected_recording_mbid else {
         if options.strict_identification {
             bail!(

@@ -163,23 +163,8 @@ async fn run_internal_media_tagger_recording_none_skips_autodetect_path() {
     })
     .await;
 
-    let error = result.expect_err("strict path should fail without recording MBID");
-    assert!(
-        error.to_string().contains("could not resolve recording MBID"),
-        "expected unresolved-recording diagnostic but got: {error:#}"
-    );
-    assert!(
-        !error.to_string().contains("AcoustID lookup requires a non-empty API key"),
-        "none sentinel should skip key requirement on autodetect path"
-    );
-    assert!(
-        !error.to_string().contains("decoding media for fingerprinting"),
-        "none sentinel should skip fingerprint decode path"
-    );
-    assert!(
-        output_path.exists(),
-        "wrapper should still write fallback ffmetadata output after strict failure"
-    );
+    result.expect("none sentinel should bypass autodetect and succeed with fallback metadata");
+    assert!(output_path.exists(), "none sentinel path should emit fallback ffmetadata output");
 }
 
 /// Protects sentinel behavior where `recording_mbid=auto` is equivalent to an
