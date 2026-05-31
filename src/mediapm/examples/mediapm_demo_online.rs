@@ -203,7 +203,7 @@ const DEMO_ONLINE_TIMEOUT_SECS_ENV: &str = "MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS";
 const DEMO_ONLINE_RUN_SYNC_ENV: &str = "MEDIAPM_DEMO_ONLINE_RUN_SYNC";
 
 /// Default timeout for the online demo sync phase.
-const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 = 10 * 60;
+const DEMO_ONLINE_TIMEOUT_SECS_DEFAULT: u64 = 5 * 60;
 
 /// Environment variable override for per-step conductor executable timeout.
 const DEMO_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS_ENV: &str =
