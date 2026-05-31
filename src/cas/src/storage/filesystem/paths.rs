@@ -16,9 +16,8 @@ pub(super) fn object_path(root: &Path, hash: Hash) -> PathBuf {
     let hex = hash.to_hex();
     let algorithm = hash.algorithm_name();
     let first = &hex[0..2];
-    let second = &hex[2..4];
-    let rest = &hex[4..];
-    root.join(STORAGE_VERSION).join(algorithm).join(first).join(second).join(rest)
+    let rest = &hex[2..];
+    root.join(STORAGE_VERSION).join(algorithm).join(first).join(first).join(rest)
 }
 
 /// Returns canonical `.diff` object path for a hash.
