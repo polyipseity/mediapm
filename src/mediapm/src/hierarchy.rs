@@ -1,6 +1,9 @@
 //! Hierarchy preset builder helpers for media library management.
 
-use crate::config::{HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, PlaylistFormat};
+use crate::config::{
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, PlaylistFormat,
+    SanitizeNamesConfig,
+};
 use crate::error::MediaPmError;
 use crate::{AddInsertPosition, MediaHierarchyPreset};
 
@@ -276,9 +279,11 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
 
     // Separate media folder nodes for each output variant family, all materialized
     // directly to media root with path="" (empty). Validation allows these separate
-    // nodes to coexist at the same path because each has non-overlapping variants.
-    // Only the sidecars/ folder should use nested directory organization.
-    // All other output variants materialize directly to prevent unnecessary intermediate nesting.
+    // nodes to coexist at the same path as long as they have non-overlapping
+    // variants or different rename_files rules (rename_files produce distinct
+    // output filenames at materialization time). Only the sidecars/ folder should
+    // use nested directory organization. All other output variants materialize
+    // directly to prevent unnecessary intermediate nesting.
 
     // Subtitles materialized directly to media root with path="" (empty)
     let mut subtitles = hierarchy_media_folder_node(
@@ -307,6 +312,19 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
     );
     thumbnails.id = Some(format!("{media_id}.thumbnails"));
 
+    // Extra thumbnails folder projection with folder-level rename so thumbnails
+    // have both a `thumbnail.<ext>` named file (above) and a `folder.<ext>` file.
+    let mut thumbnails_folder = hierarchy_media_folder_node(
+        "",
+        media_id,
+        vec!["thumbnails".to_string()],
+        vec![HierarchyFolderRenameRule {
+            pattern: r"^.*\.([^.]*)$".to_string(),
+            replacement: "folder.$1".to_string(),
+        }],
+    );
+    thumbnails_folder.id = Some(format!("{media_id}.thumbnails.folder"));
+
     // Links materialized directly to media root with path="" (empty)
     let mut links = hierarchy_media_folder_node(
         "",
@@ -320,7 +338,7 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
     );
     links.id = Some(format!("{media_id}.links"));
 
-    vec![video, archive, description, infojson, subtitles, thumbnails, links]
+    vec![video, archive, description, infojson, subtitles, thumbnails, thumbnails_folder, links]
 }
 
 /// Builds one hierarchy node tree for the selected preset.

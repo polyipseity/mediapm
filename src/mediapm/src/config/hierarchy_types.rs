@@ -534,7 +534,7 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
                 .iter()
                 .collect::<std::collections::BTreeSet<_>>();
 
-            // Only error if both have empty variants (true duplicate) or if they have overlapping variants
+            // Only error if both have empty variants (true duplicate) or if they have overlapping variants with identical rename_files
             if current_variants.is_empty() && previous_variants.is_empty() {
                 return Err(MediaPmError::Workflow(format!(
                     "hierarchy flattening produced duplicate path '{}' with no differentiating variants (entries #{previous_index} and #{index})",
@@ -542,13 +542,21 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
                 )));
             }
 
-            // Check for overlapping variants which would conflict
+            // Check for overlapping variants which would conflict.
+            // Allow same path with overlapping variants when rename_files rules differ,
+            // since rename_files produce different output file names at materialization time.
+            // The materializer handles multi-entry deduplication through isolated staging
+            // directories per entry (see materializer/mod.rs MediaFolder staging logic).
             let overlap: Vec<_> = current_variants.intersection(&previous_variants).collect();
             if !overlap.is_empty() {
-                return Err(MediaPmError::Workflow(format!(
-                    "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} (entries #{previous_index} and #{index})",
-                    entry.path, overlap
-                )));
+                let current_rename = &entry.entry.rename_files;
+                let previous_rename = &flattened[previous_index].entry.rename_files;
+                if current_rename == previous_rename {
+                    return Err(MediaPmError::Workflow(format!(
+                        "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} and identical rename_files (entries #{previous_index} and #{index})",
+                        entry.path, overlap
+                    )));
+                }
             }
         }
 

@@ -49,7 +49,7 @@ use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
     MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage,
     MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat,
-    PlaylistItemRef, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
+    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
     ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
     save_lockfile, save_mediapm_document,
 };
@@ -468,11 +468,6 @@ fn validate_demo_online_run_sync_override() -> ExampleResult<()> {
         "{DEMO_ONLINE_RUN_SYNC_ENV} only accepts enabled values (true/1/yes/on); got '{normalized}'"
     )
     .into())
-}
-
-/// Returns one OS-backed runtime temp directory path for this demo.
-fn demo_runtime_tmp_dir() -> String {
-    std::env::temp_dir().to_string_lossy().replace('\\', "/")
 }
 
 /// Configures a bounded default per-step executable timeout for this demo.
@@ -919,7 +914,6 @@ fn assert_materialized_output_hardlinked_to_cas(
 fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Vec<String>> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
-    let runtime_tmp_dir = demo_runtime_tmp_dir();
     document.tools = BTreeMap::from([
         (
             "yt-dlp".to_string(),
@@ -1173,6 +1167,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: Vec::new(),
         },
         HierarchyNode {
@@ -1185,6 +1180,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: Vec::new(),
         },
     ];
@@ -1212,6 +1208,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             });
         } else {
@@ -1225,6 +1222,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             });
         }
@@ -1243,6 +1241,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: sidecar_folder_children,
             },
         );
@@ -1268,6 +1267,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Disabled,
         children: Vec::new(),
     });
 
@@ -1285,15 +1285,35 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Disabled,
+        children: Vec::new(),
+    });
+
+    // Now instantiate the extra thumbnails folder projection with folder-level
+    // rename (same as the yt-dlp preset's `folder.$1` naming).
+    media_root_children.push(HierarchyNode {
+        path: String::new(),
+        kind: HierarchyNodeKind::MediaFolder,
+        id: Some(format!("{DEMO_MEDIA_ID}.thumbnails.folder")),
+        media_id: Some(DEMO_MEDIA_ID.to_string()),
+        variant: None,
+        variants: vec!["thumbnails".to_string()],
+        rename_files: vec![HierarchyFolderRenameRule {
+            pattern: r"^.*\.([^.]*)$".to_string(),
+            replacement: "folder.$1".to_string(),
+        }],
+        format: PlaylistFormat::M3u8,
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Disabled,
         children: Vec::new(),
     });
 
     // NOTE: The yt-dlp preset's extra root thumbnail projection uses
-    // `folder.$1` naming (`<media-id>.thumbnails.folder`). This demo
-    // intentionally does not instantiate that `folder.<thumbnail_ext>` path.
-    // Instead, it keeps preset-style thumbnail/link filenames inside explicit
-    // root folders (`thumbnails/` and `links/`) using two separate
-    // `media_folder(path="")` projections.
+    // `folder.$1` naming (`<media-id>.thumbnails.folder`). This demo now
+    // instantiates that `folder.<thumbnail_ext>` path above, alongside the
+    // preset-style thumbnail/link filenames inside explicit root folders
+    // (`thumbnails/` and `links/`) using separate `media_folder(path="")`
+    // projections.
 
     document.hierarchy = vec![
         HierarchyNode {
@@ -1306,6 +1326,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: vec![HierarchyNode {
                 path: DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(),
                 kind: HierarchyNodeKind::Folder,
@@ -1316,6 +1337,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: media_root_children,
             }],
         },
@@ -1329,6 +1351,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: vec![HierarchyNode {
                 path: "rickroll.m3u8".to_string(),
                 kind: HierarchyNodeKind::Playlist,
@@ -1348,6 +1371,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                         path: PlaylistEntryPathMode::Absolute,
                     },
                 ],
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             }],
         },
@@ -1362,9 +1386,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Materialized hierarchy root directory.
         // Default: workspace root containing `mediapm.ncl`.
         hierarchy_root_dir: Some(".".to_string()),
-        // Staging directory under an OS-provided temp root.
-        // Default: OS temp path scoped by workspace root.
-        mediapm_tmp_dir: Some(runtime_tmp_dir.clone()),
+        path_sanitization: None,
         // Ordered file-materialization method preference.
         // Default when omitted: hardlink -> symlink -> reflink -> copy.
         materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec()),
@@ -1377,9 +1399,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
-        // Conductor execution tmp path under an OS-provided temp root.
-        // Default: `runtime.mediapm_tmp_dir`.
-        conductor_tmp_dir: Some(runtime_tmp_dir),
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
