@@ -1078,6 +1078,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     "sub_langs".to_string(),
                     TransformInputValue::String(DEMO_SAFE_SUB_LANGS.to_string()),
                 ),
+                ("write_auto_subs".to_string(), TransformInputValue::String("true".to_string())),
             ]),
         },
         MediaStep {
