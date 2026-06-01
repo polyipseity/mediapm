@@ -11,8 +11,8 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
 > the codebase. Any behavioral change, new invariant, or ambiguity resolution
 > should be reflected here as part of the same change set.
 
-**Date**: 2026-05-31  
-**Scope**: CAS, Conductor, Conductor-Builtins, MediaPM  
+**Date**: 2026-05-31
+**Scope**: CAS, Conductor, Conductor-Builtins, MediaPM
 **Status**: Issues identified for resolution in specification v2 or implementation
 
 ---
