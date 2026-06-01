@@ -251,10 +251,7 @@ mod tests {
         );
         assert_eq!(paths.mediapm_state_ncl, root.path().join(".mediapm").join("state.ncl"));
         assert_eq!(paths.env_file, root.path().join(".mediapm").join(".env"));
-        assert_eq!(
-            paths.env_generated_file,
-            root.path().join(".mediapm").join(".env.generated")
-        );
+        assert_eq!(paths.env_generated_file, root.path().join(".mediapm").join(".env.generated"));
         assert_eq!(
             paths.schema_export_dir,
             Some(root.path().join(".mediapm").join("config").join("mediapm"))

@@ -134,7 +134,8 @@ is a narrow, documented reason.
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
     `conductor_state_config`, `inherited_env_vars`, `media_state_config`,
-    `hierarchy_root_dir`, `conductor_schema_dir`, `env_file`, and
+    `hierarchy_root_dir`, `conductor_schema_dir`, `env_file`,
+    `env_generated_file`, and
     `mediapm_schema_dir`,
   - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
     `macos`, ...) and each platform key maps to an ordered list of
@@ -184,10 +185,11 @@ is a narrow, documented reason.
     `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
     bound generated ffmpeg indexed input/output slot fan-out,
   - runtime dotenv loading uses effective `runtime.env_file`
-    (default `<mediapm_dir>/.env`), keeps a colocated `.gitignore` containing
-    only `/.env`, and generated default dotenv environment-variable lines stay
-    commented (`# ...`) so ambient shell/user environment variables are not
-    shadowed by placeholder file values,
+    (default `<mediapm_dir>/.env`) and `runtime.env_generated_file`
+    (default `<mediapm_dir>/.env.generated`), keeps a colocated
+    `.gitignore` containing only `/.env`, and generated default dotenv
+    environment-variable lines stay commented (`# ...`) so ambient shell/user
+    environment variables are not shadowed by placeholder file values,
   - relative `runtime.conductor_config`,
     `runtime.conductor_machine_config`,
     `runtime.conductor_state_config`, and `runtime.media_state_config` resolve
