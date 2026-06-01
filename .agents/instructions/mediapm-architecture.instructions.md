@@ -134,8 +134,8 @@ is a narrow, documented reason.
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
     `conductor_state_config`, `inherited_env_vars`, `media_state_config`,
-    `hierarchy_root_dir`, `mediapm_tmp_dir`, `conductor_tmp_dir`,
-    `conductor_schema_dir`, `env_file`, and `mediapm_schema_dir`,
+    `hierarchy_root_dir`, `conductor_schema_dir`, `env_file`, and
+    `mediapm_schema_dir`,
   - `runtime.inherited_env_vars` is platform-keyed (`windows`, `linux`,
     `macos`, ...) and each platform key maps to an ordered list of
     inherited environment-variable names,
@@ -172,8 +172,6 @@ is a narrow, documented reason.
     not regress to standalone `.conductor/state.ncl` defaults,
   - relative `runtime.hierarchy_root_dir` resolves relative to the topmost
     `mediapm.ncl` directory,
-  - relative `runtime.mediapm_tmp_dir` resolves relative to effective
-    `runtime.mediapm_dir`,
   - managed-tool downloads use a shared user-level cache by default
     (`<os-cache-dir>/mediapm/cache/`) with fixed layout
     `cache/store/` (CAS payloads), default metadata index `cache/tools.jsonc`,
@@ -283,6 +281,10 @@ is a narrow, documented reason.
     `rename_files = [{ pattern, replacement }, ...]` regex rewrites that
     apply to extracted folder file members; file hierarchy targets must keep
     `rename_files` empty,
+  - hierarchy flattening validation allows same-path entries when they have
+    different `rename_files` rules, since `rename_files` produce distinct
+    final output filenames at materialization time; the materializer uses
+    isolated staging directories per entry for multi-entry deduplication,
   - managed media tool defaults should stay quality- and metadata-preserving:
     `yt-dlp` defaults to `bestvideo*+bestaudio/best` plus enabled metadata,
     `sub_langs = "all"`, unified subtitle writes enabled by default

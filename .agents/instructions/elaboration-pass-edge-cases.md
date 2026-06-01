@@ -933,6 +933,63 @@ encoding.
 
 ---
 
+### 4.11 Hierarchy Flattening with rename_files Coexistence
+
+**Issue**: Flattening validation rejects same-path entries that declare the same
+variants, but `rename_files` on `media_folder` nodes can produce distinct final
+filenames even with identical variant sets, making the rejection overly broad.
+
+**Scenario**:
+
+```text
+hierarchy = [
+  {
+    id: "thumbnails",
+    path: "",
+    kind: "media_folder",
+    variants: ["thumbnails"],
+    rename_files: [{ pattern: r"^.*\.([^.]*)$", replacement: "folder.$1" }],
+  },
+  {
+    id: "thumbnails-alt",
+    path: "",
+    kind: "media_folder",
+    variants: ["thumbnails"],
+    rename_files: [{ pattern: r"^.*\.([^.]*)$", replacement: "cover.$1" }],
+  },
+]
+```
+
+Both entries target `thumbnails` variant at the same path, but one produces
+`folder.jpg` and the other `cover.jpg` — no actual collision.
+
+**Current Spec**: "Same path + overlapping variants → rejected"
+
+**Gap**: No exception for `rename_files`-differentiated entries.
+
+**Risk**: Configuration flexibility limited; thumbnails folder coexistence with
+custom per-entry rename rules impossible without workaround paths.
+
+**Resolution**:
+
+- **Allow same-path entries with overlapping variants when `rename_files` differ**
+- Validation: compare `rename_files` arrays on same-path + overlapping-variant
+  entries; allow iff they differ, reject (duplicate) iff identical
+- The materializer uses isolated staging directories per `media_folder` entry
+  (keyed by job index), so each entry's `rename_files` rules operate in their
+  own staging namespace, with final output filenames resolved independently
+- Cross-entry deduplication uses the materialized filename (after `rename_files`
+  rewrite) so same-path + same-variant entries with different `rename_files`
+  produce unique final files
+
+**Questions for Clarification**:
+
+1. Should this exception apply to all hierarchy node kinds or only `media_folder`?
+2. What happens if `rename_files`-differentiated entries produce the same final
+   filename? (Materializer would overwrite; last-write-wins per staging order.)
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination

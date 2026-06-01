@@ -329,6 +329,16 @@ For comprehensive details, refer to the following specifications collected from 
   - NFD normalization is always enforced regardless of sanitize_names setting,
   - the replacement occurs after NFD normalization but before reserved-char
     validation so replaced paths always pass strict validation.
+- **Hierarchy flattening with rename_files**:
+  - hierarchy nodes at the same path may declare the same output variants as
+    long as their `rename_files` rules differ (different `rename_files` produce
+    distinct final filenames at materialization time),
+  - overlapping variants with identical `rename_files` at the same path are
+    rejected as duplicates,
+  - `rename_files` coexistence is supported by materializer isolation: each
+    `media_folder` entry gets an independent staging directory so that
+    per-entry `rename_files` rules can produce files without cross-entry
+    overwrite conflicts.
 
 ---
 
