@@ -26,12 +26,12 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform,
-    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmApi, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus,
-    ToolRequirement, ToolRequirementDependencies, TransformInputValue, load_lockfile,
-    load_mediapm_document, save_lockfile, save_mediapm_document,
+    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue, MediaPmApi,
+    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
+    TransformInputValue, load_lockfile, load_mediapm_document, save_lockfile,
+    save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -53,7 +53,16 @@ const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 const DEMO_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
 
 /// Hierarchy id used by playlist entries to reference the tagged media file.
-const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.tagged";
+///
+/// Following the `.untagged` suffix convention, tagged hierarchy nodes omit a
+/// dedicated suffix so they naturally sort before untagged variants.
+const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ";
+
+/// Hierarchy id used by the untagged media node for id symmetry.
+///
+/// Untagged hierarchy nodes carry the `.untagged` suffix to distinguish them
+/// from tagged variants.
+const DEMO_UNTAGGED_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.untagged";
 
 /// Hierarchy id assigned to the media-containing folder node.
 const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.media_folder";
@@ -67,7 +76,7 @@ const DEMO_METADATA_ARTIST: &str = "Rick Astley";
 /// Demo metadata video-id value used in flattened hierarchy interpolation.
 const DEMO_METADATA_VIDEO_ID: &str = "dQw4w9WgXcQ";
 
-/// Demo metadata literal source value showing mixed literal + variant metadata.
+/// Demo metadata literal source value.
 const DEMO_METADATA_SOURCE_LITERAL: &str = "local-fixture";
 
 /// Top-level library folder used by demo hierarchy entries.
@@ -76,18 +85,6 @@ const DEMO_LIBRARY_ROOT: &str = "music videos";
 /// Metadata-interpolated media-folder path under `DEMO_LIBRARY_ROOT`.
 const DEMO_MEDIA_FOLDER_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
-
-/// Variant name used for metadata lookup bindings.
-const DEMO_METADATA_VARIANT: &str = "infojson";
-
-/// Metadata object key used for title lookup from metadata variant file.
-const DEMO_METADATA_TITLE_KEY: &str = "title";
-
-/// Metadata object key used for video-id lookup from metadata variant file.
-const DEMO_METADATA_VIDEO_ID_KEY: &str = "id";
-
-/// Metadata object key used for artist lookup from metadata variant file.
-const DEMO_METADATA_ARTIST_KEY: &str = "artist";
 
 /// Import source kind expected by runtime for CAS-hash ingest.
 const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
@@ -557,24 +554,6 @@ fn write_local_av_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
     Ok(SAMPLE_AV_MP4_BYTES.to_vec())
 }
 
-/// Writes one local metadata JSON fixture used by metadata variant bindings.
-fn write_local_metadata_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let payload = serde_json::to_vec_pretty(&json!({
-        "title": DEMO_METADATA_TITLE,
-        "artist": DEMO_METADATA_ARTIST,
-        "id": DEMO_METADATA_VIDEO_ID,
-        "source": DEMO_METADATA_SOURCE_LITERAL,
-        "video_ext": "mp4",
-        "tagged_ext": "m4a",
-    }))?;
-    fs::write(path, &payload)?;
-    Ok(payload)
-}
-
 /// Returns true when one byte payload contains one ASCII marker sequence.
 fn bytes_contain_ascii(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
@@ -632,7 +611,6 @@ async fn import_source_fixture_into_cas(
 fn configure_document_for_local_tool_chain(
     workspace_root: &Path,
     source_hash: &str,
-    metadata_hash: &str,
 ) -> ExampleResult<(usize, usize)> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
@@ -762,61 +740,23 @@ fn configure_document_for_local_tool_chain(
             title: Some(DEMO_METADATA_TITLE.to_string()),
             workflow_id: None,
             metadata: Some(BTreeMap::from([
-                (
-                    "title".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: DEMO_METADATA_VARIANT.to_string(),
-                        metadata_key: DEMO_METADATA_TITLE_KEY.to_string(),
-                        transform: None,
-                    }),
-                ),
+                ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
                 (
                     "artist".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: DEMO_METADATA_VARIANT.to_string(),
-                        metadata_key: DEMO_METADATA_ARTIST_KEY.to_string(),
-                        transform: None,
-                    }),
+                    MediaMetadataValue::Literal(DEMO_METADATA_ARTIST.to_string()),
                 ),
                 (
                     "video_id".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: DEMO_METADATA_VARIANT.to_string(),
-                        metadata_key: DEMO_METADATA_VIDEO_ID_KEY.to_string(),
-                        transform: None,
-                    }),
+                    MediaMetadataValue::Literal(DEMO_METADATA_VIDEO_ID.to_string()),
                 ),
                 (
                     "source".to_string(),
                     MediaMetadataValue::Literal(DEMO_METADATA_SOURCE_LITERAL.to_string()),
                 ),
-                (
-                    "video_ext".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: DEMO_METADATA_VARIANT.to_string(),
-                        metadata_key: "video_ext".to_string(),
-                        transform: Some(MediaMetadataRegexTransform {
-                            pattern: "(.+)".to_string(),
-                            replacement: ".$0".to_string(),
-                        }),
-                    }),
-                ),
-                (
-                    "tagged_ext".to_string(),
-                    MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                        variant: DEMO_METADATA_VARIANT.to_string(),
-                        metadata_key: "tagged_ext".to_string(),
-                        transform: Some(MediaMetadataRegexTransform {
-                            pattern: "(.+)".to_string(),
-                            replacement: ".$0".to_string(),
-                        }),
-                    }),
-                ),
+                ("video_ext".to_string(), MediaMetadataValue::Literal(".m4a".to_string())),
+                ("video_ext_untagged".to_string(), MediaMetadataValue::Literal(".mp4".to_string())),
             ])),
-            variant_hashes: BTreeMap::from([(
-                DEMO_METADATA_VARIANT.to_string(),
-                metadata_hash.to_string(),
-            )]),
+            variant_hashes: BTreeMap::new(),
             steps,
         },
     )]);
@@ -834,9 +774,9 @@ fn configure_document_for_local_tool_chain(
         sanitize_names: SanitizeNamesConfig::Disabled,
         children: vec![
             HierarchyNode {
-                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext}".to_string(),
+                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}".to_string(),
                 kind: HierarchyNodeKind::Media,
-                id: None,
+                id: Some(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
                 variant: Some("video_untagged".to_string()),
                 variants: Vec::new(),
@@ -847,7 +787,7 @@ fn configure_document_for_local_tool_chain(
                 children: Vec::new(),
             },
             HierarchyNode {
-                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.tagged_ext}".to_string(),
+                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}".to_string(),
                 kind: HierarchyNodeKind::Media,
                 id: Some(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1158,8 +1098,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 
     let source_path = workspace_root.join("input").join("sample-av.mp4");
     let source_bytes = write_local_av_fixture(&source_path)?;
-    let metadata_path = workspace_root.join("input").join("sample-av.info.json");
-    let metadata_bytes = write_local_metadata_fixture(&metadata_path)?;
     let source_has_video_track_marker = bytes_contain_ascii(&source_bytes, b"vide");
     let source_has_audio_track_marker = bytes_contain_ascii(&source_bytes, b"soun");
 
@@ -1172,11 +1110,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         (0, 0, 0)
     };
 
-    let (source_hash_text, metadata_hash_text) = {
+    let source_hash_text = {
         let cas = FileSystemCas::open(paths.runtime_root.join("store")).await?;
         let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
-        let metadata_hash = import_source_fixture_into_cas(&cas, &metadata_bytes).await?;
-        (source_hash.to_string(), metadata_hash.to_string())
+        source_hash.to_string()
     };
 
     let auto_added_media_id = ingest_service.add_local_source(&source_path, None).await?;
@@ -1195,11 +1132,8 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
             || std::io::Error::other("demo preflight add_local_source produced empty description"),
         )?;
 
-    let (configured_tool_count, configured_step_count) = configure_document_for_local_tool_chain(
-        &workspace_root,
-        &source_hash_text,
-        &metadata_hash_text,
-    )?;
+    let (configured_tool_count, configured_step_count) =
+        configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
 
     let service = MediaPmService::new_in_memory_at(&workspace_root);
     if run_sync {
@@ -1461,7 +1395,7 @@ mod tests {
                     .contains("${media.metadata.artist} - ${media.metadata.title} [${media.id}]")
                 && demo_config.contains("${media.id}")
                 && demo_config.contains("${media.metadata.video_ext}")
-                && demo_config.contains("${media.metadata.tagged_ext}"),
+                && demo_config.contains("${media.metadata.video_ext_untagged}"),
             "demo hierarchy output should use Jellyfin-style media-id layout with metadata-driven extensions"
         );
     }

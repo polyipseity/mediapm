@@ -69,7 +69,7 @@ const DEMO_MEDIA_ID: &str = "youtube.dQw4w9WgXcQ";
 ///
 /// Only nodes that appear in playlist `ids` entries require a hierarchy id.
 /// The untagged media node and sidecar nodes intentionally omit ids.
-const DEMO_TAGGED_HIERARCHY_ID: &str = "youtube.dQw4w9WgXcQ.tagged";
+const DEMO_TAGGED_HIERARCHY_ID: &str = "youtube.dQw4w9WgXcQ";
 /// Hierarchy id assigned to the media-containing folder node.
 const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "youtube.dQw4w9WgXcQ.media_folder";
 /// Online source URI processed by the demo workflow.
