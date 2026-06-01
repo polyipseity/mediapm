@@ -419,6 +419,18 @@ WorkflowSpec {
 
 ---
 
+### 2.7 Conductor Pulsebar Terminal-Width Contract
+
+| Scenario | Current Spec | Gap |
+|---|---|---|
+| Terminal resize mid-render | Width detected per message | Not cached; width may change mid-run |
+| Terminal unavailable (no TTY) | Width defaults to 80 | Acceptable fallback |
+| Very narrow terminal (< 20 cols) | Step preview truncated aggressively | May show only "..." |
+| Unicode characters in step IDs | Character-count based truncation | Works correctly |
+| Zero-width terminal | Returns empty message | Accepted |
+
+---
+
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
 
 ### 3.1 Path Traversal & Symlink Loops

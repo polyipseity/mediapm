@@ -530,6 +530,21 @@ or download-level progress that spans blocking awaits.
   `workflow_progress.finish_error("retrying")` so the previous retry status is
   rendered before the replacement retry bar is allocated.
 
+**Terminal-width contract:**
+
+- All progress-bar messages must always fit within the terminal width.
+- `workflow_level_progress_message()` detects terminal width via
+  `terminal_size()` (default 80 cols when unavailable) and allocates space for
+  the workflow display name before computing available room for the step
+  preview.
+- The step preview string degrades gracefully when it cannot fit:
+  - single step: truncate with `...` suffix,
+  - two steps: fit both or truncate the second,
+  - 3+ steps: try `"first, second, +N more"` with decreasing N, then degrade
+    to two-step display, then finally truncate the single first step.
+- All truncation is character-count-based (not byte-based) for correct Unicode
+  handling.
+
 ## Specification references
 
 - Consolidated technical specification:

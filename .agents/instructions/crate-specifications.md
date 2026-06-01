@@ -485,6 +485,12 @@ tests/
 | Optimizer concurrency | 8 | `FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY` |
 | Materialization workers | CPU cores | Derived from hardware |
 
+**pulsebar rendering:**
+- terminal-width contract: all progress messages must fit within the terminal
+  width; detected via `terminal_size` crate; defaults to 80 cols,
+- step preview degrades gracefully (truncation with `...` suffix,
+  `+N more` counter, ...) to respect the available width.
+
 ---
 
 ## Future Extension Points
