@@ -860,7 +860,7 @@ fn configure_document_for_local_tool_chain(
         mediapm_dir: Some(".mediapm".to_string()),
         // Materialized hierarchy root directory.
         // Default: workspace root containing `mediapm.ncl`.
-        hierarchy_root_dir: Some(".".to_string()),
+        hierarchy_root_dir: Some("media".to_string()),
         path_sanitization: None,
         // Ordered file-materialization method preference.
         // Default when omitted: hardlink -> symlink -> reflink -> copy.
@@ -888,6 +888,9 @@ fn configure_document_for_local_tool_chain(
         // Dotenv credential source path relative to workspace root.
         // Default: `.mediapm/.env`.
         env_file: Some(".mediapm/.env".to_string()),
+        // Machine-generated runtime dotenv file (written by tooling, not users).
+        // Default: `.mediapm/.env.generated`.
+        env_generated_file: Some(".mediapm/.env.generated".to_string()),
         // Embedded schema export directory policy.
         // `Some(Some(path))` keeps export enabled with an explicit default path.
         mediapm_schema_dir: Some(Some(".mediapm/config/mediapm".to_string())),
