@@ -595,3 +595,7 @@ The only required manual runtime verification before completion is running both 
 - `cargo run --package mediapm --example mediapm_demo_online`
 
 If you intentionally change behavior, update tests and docs in the same change.
+
+- Update `.agents/instructions/crate-specifications.md` and
+  `.agents/instructions/elaboration-pass-edge-cases.md` when the change
+  affects any contract, invariant, or edge case documented there.

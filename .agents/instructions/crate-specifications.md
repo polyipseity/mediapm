@@ -8,6 +8,12 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
 
 # Mediapm Crate Specifications & Architecture Reference
 
+> **❖ Maintenance rule**: This specification document and
+> `.agents/instructions/elaboration-pass-edge-cases.md` must be updated
+> alongside any code change that affects the described contracts, invariants,
+> or behavior. Keeping specs in sync with code is a definition-of-done
+> requirement.
+
 This document consolidates authoritative technical specifications for all 4 main crates in the mediapm workspace, with cross-crate integration boundaries and shared invariants.
 
 ## Quick Reference: Crate Responsibilities
