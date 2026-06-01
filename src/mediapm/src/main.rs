@@ -43,6 +43,9 @@ struct Cli {
     /// Overrides `runtime.env_file` for this command invocation.
     #[arg(long)]
     env_file: Option<PathBuf>,
+    /// Overrides `runtime.env_generated_file` for this command invocation.
+    #[arg(long)]
+    env_generated_file: Option<PathBuf>,
     /// Top-level command selector.
     #[command(subcommand)]
     command: Command,
@@ -509,6 +512,7 @@ async fn main() -> anyhow::Result<()> {
         inherited_env_vars: None,
         media_state_config: option_path_to_string(cli.media_state_config),
         env_file: option_path_to_string(cli.env_file),
+        env_generated_file: option_path_to_string(cli.env_generated_file),
         mediapm_schema_dir: None,
         profiler_enabled: None,
         path_sanitization: None,

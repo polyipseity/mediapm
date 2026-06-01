@@ -689,6 +689,7 @@ async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
 fn merge_runtime_storage_prefers_override_fields() {
     let config = MediaRuntimeStorage {
         env_file: Some("config.env".to_string()),
+        env_generated_file: None,
         inherited_env_vars: Some(BTreeMap::from([(
             "windows".to_string(),
             vec!["SYSTEMROOT".to_string(), "PATH".to_string()],
@@ -697,6 +698,7 @@ fn merge_runtime_storage_prefers_override_fields() {
     };
     let override_value = MediaRuntimeStorage {
         env_file: Some("override.env".to_string()),
+        env_generated_file: None,
         inherited_env_vars: Some(BTreeMap::from([
             ("WINDOWS".to_string(), vec!["path".to_string(), "TMPDIR".to_string()]),
             ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()]),

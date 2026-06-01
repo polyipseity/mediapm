@@ -469,6 +469,10 @@ pub(crate) fn merge_runtime_storage(
             .clone()
             .or_else(|| config_value.media_state_config.clone()),
         env_file: override_value.env_file.clone().or_else(|| config_value.env_file.clone()),
+        env_generated_file: override_value
+            .env_generated_file
+            .clone()
+            .or_else(|| config_value.env_generated_file.clone()),
         mediapm_schema_dir: override_value
             .mediapm_schema_dir
             .clone()

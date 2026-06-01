@@ -373,6 +373,13 @@ pub struct MediaRuntimeStorage {
     /// When omitted, the effective default path is `<runtime.mediapm_dir>/.env`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<String>,
+    /// Optional override for the machine-generated runtime dotenv file.
+    ///
+    /// This file is written by tooling (not by users) with computed runtime
+    /// variables such as internal `ffmpeg` binary paths. When omitted, the
+    /// effective default path is `<runtime.mediapm_dir>/.env.generated`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_generated_file: Option<String>,
     /// Optional schema export directory policy for embedded `mediapm.ncl`
     /// Nickel contracts.
     ///

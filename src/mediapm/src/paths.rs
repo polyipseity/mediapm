@@ -30,6 +30,8 @@ pub struct MediaPmPaths {
     pub mediapm_state_ncl: PathBuf,
     /// Runtime dotenv file used to load local credential overrides.
     pub env_file: PathBuf,
+    /// Machine-generated runtime dotenv file (written by tooling, not users).
+    pub env_generated_file: PathBuf,
     /// Runtime root for `mediapm`-owned state under the workspace root.
     pub runtime_root: PathBuf,
     /// Embedded Nickel schema export directory for `mediapm.ncl` contracts.
@@ -61,6 +63,7 @@ impl MediaPmPaths {
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
             mediapm_state_ncl: runtime_root.join("state.ncl"),
             env_file: runtime_root.join(".env"),
+            env_generated_file: runtime_root.join(".env.generated"),
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
             mediapm_tmp_dir: default_tmp_dir,
             hierarchy_root_dir: root_dir.clone(),
@@ -176,6 +179,11 @@ impl MediaPmPaths {
             .as_deref()
             .map_or_else(|| runtime_root.join(".env"), |raw| resolve_path(config_dir, raw));
 
+        let env_generated_file = runtime_storage.env_generated_file.as_deref().map_or_else(
+            || runtime_root.join(".env.generated"),
+            |raw| resolve_path(config_dir, raw),
+        );
+
         let schema_export_dir = match &runtime_storage.mediapm_schema_dir {
             None => Some(runtime_root.join("config").join("mediapm")),
             Some(None) => None,
@@ -192,6 +200,7 @@ impl MediaPmPaths {
             conductor_schema_dir,
             mediapm_state_ncl,
             env_file,
+            env_generated_file,
             schema_export_dir,
             runtime_root: runtime_root.clone(),
             mediapm_tmp_dir: tmp_dir,
@@ -243,6 +252,10 @@ mod tests {
         assert_eq!(paths.mediapm_state_ncl, root.path().join(".mediapm").join("state.ncl"));
         assert_eq!(paths.env_file, root.path().join(".mediapm").join(".env"));
         assert_eq!(
+            paths.env_generated_file,
+            root.path().join(".mediapm").join(".env.generated")
+        );
+        assert_eq!(
             paths.schema_export_dir,
             Some(root.path().join(".mediapm").join("config").join("mediapm"))
         );
@@ -280,6 +293,7 @@ mod tests {
             inherited_env_vars: None,
             media_state_config: Some("state/custom.state.mediapm.ncl".to_string()),
             env_file: Some("state/custom.env".to_string()),
+            env_generated_file: None,
             mediapm_schema_dir: Some(Some("schemas/mediapm".to_string())),
             profiler_enabled: None,
             path_sanitization: None,
