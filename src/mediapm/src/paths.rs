@@ -115,16 +115,11 @@ impl MediaPmPaths {
     ///   `mediapm.ncl` directory when provided as a relative path,
     /// - `runtime.hierarchy_root_dir` is resolved relative to the outermost
     ///   `mediapm.ncl` directory when provided as a relative path,
-    /// - `runtime.mediapm_tmp_dir` is resolved relative to the effective
-    ///   runtime root when provided as a relative path,
     /// - `runtime.conductor_config` and
     ///   `runtime.conductor_machine_config` resolve relative to the
     ///   outermost `mediapm.ncl` directory when provided as relative paths,
     /// - `runtime.conductor_state_config` resolves relative to the outermost
     ///   `mediapm.ncl` directory when provided as a relative path,
-    /// - `runtime.conductor_tmp_dir` resolves relative to the effective
-    ///   runtime root when provided as a relative path and defaults to
-    ///   `runtime.mediapm_tmp_dir`,
     /// - `runtime.conductor_schema_dir` resolves relative to the effective
     ///   workspace directory when provided as a relative path and defaults to
     ///   `<runtime.mediapm_dir>/config/conductor`,
@@ -148,10 +143,7 @@ impl MediaPmPaths {
             .as_deref()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = runtime_storage
-            .mediapm_tmp_dir
-            .as_deref()
-            .map_or_else(default_runtime_tmp_dir, |raw| resolve_path(&runtime_root, raw));
+        let tmp_dir = default_runtime_tmp_dir();
 
         let conductor_user_ncl = runtime_storage
             .conductor_config
@@ -168,11 +160,6 @@ impl MediaPmPaths {
             || runtime_root.join("state.conductor.ncl"),
             |raw| resolve_path(config_dir, raw),
         );
-
-        let conductor_tmp_dir = runtime_storage
-            .conductor_tmp_dir
-            .as_deref()
-            .map_or_else(|| tmp_dir.clone(), |raw| resolve_path(&runtime_root, raw));
 
         let conductor_schema_dir = runtime_storage.conductor_schema_dir.as_deref().map_or_else(
             || runtime_root.join("config").join("conductor"),
@@ -201,7 +188,7 @@ impl MediaPmPaths {
             conductor_user_ncl,
             conductor_machine_ncl,
             conductor_state_config,
-            conductor_tmp_dir,
+            conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir,
             mediapm_state_ncl,
             env_file,
@@ -285,32 +272,25 @@ mod tests {
         let runtime_storage = MediaRuntimeStorage {
             mediapm_dir: Some(".mediapm-runtime".to_string()),
             hierarchy_root_dir: Some("library-custom".to_string()),
-            mediapm_tmp_dir: Some("tmp-custom".to_string()),
             materialization_preference_order: None,
             conductor_config: Some("configs/custom.conductor.ncl".to_string()),
             conductor_machine_config: Some("configs/custom.conductor.machine.ncl".to_string()),
             conductor_state_config: Some("state/custom.state.ncl".to_string()),
-            conductor_tmp_dir: Some("tmp/conductor-custom".to_string()),
             conductor_schema_dir: Some("schemas/conductor".to_string()),
             inherited_env_vars: None,
             media_state_config: Some("state/custom.state.mediapm.ncl".to_string()),
             env_file: Some("state/custom.env".to_string()),
             mediapm_schema_dir: Some(Some("schemas/mediapm".to_string())),
             profiler_enabled: None,
+            path_sanitization: None,
         };
 
         let resolved = base.with_runtime_storage(&runtime_storage);
 
         assert_eq!(resolved.runtime_root, root.path().join(".mediapm-runtime"));
         assert_eq!(resolved.hierarchy_root_dir, root.path().join("library-custom"));
-        assert_eq!(
-            resolved.mediapm_tmp_dir,
-            root.path().join(".mediapm-runtime").join("tmp-custom")
-        );
-        assert_eq!(
-            resolved.conductor_tmp_dir,
-            root.path().join(".mediapm-runtime").join("tmp/conductor-custom")
-        );
+        assert_eq!(resolved.mediapm_tmp_dir, default_runtime_tmp_dir());
+        assert_eq!(resolved.conductor_tmp_dir, default_runtime_tmp_dir());
         assert_eq!(resolved.conductor_schema_dir, root.path().join("schemas/conductor"));
         assert_eq!(
             resolved.conductor_user_ncl,

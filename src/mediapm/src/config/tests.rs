@@ -33,6 +33,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<super::Hier
                     rename_files: entry.rename_files,
                     format: PlaylistFormat::M3u8,
                     ids: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Disabled,
                     children: Vec::new(),
                 }
             }
@@ -59,6 +60,7 @@ fn hierarchy_nodes(entries: BTreeMap<String, HierarchyEntry>) -> Vec<super::Hier
                 rename_files: entry.rename_files,
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             },
             HierarchyEntryKind::Playlist => super::HierarchyNode {

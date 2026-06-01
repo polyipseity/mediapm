@@ -337,7 +337,7 @@ where
 
         if needs_execution {
             let materialization_started_at = Instant::now();
-            let execution_cwd_temp = self.create_execution_temp_cwd(&request.runtime_tmp_dir)?;
+            let execution_cwd_temp = self.create_execution_temp_cwd()?;
             let execution_cwd = execution_cwd_temp.path();
             // payload_dir is Some for all managed executable tools (non-empty
             // content_map). Passed to the subprocess spawner so the binary is
@@ -943,21 +943,14 @@ where
         }
     }
 
-    /// Creates one ad hoc sandbox directory only when a step actually needs to
-    /// execute.
-    ///
-    /// Sandboxes are always nested under `runtime_tmp_dir`, which is resolved
-    /// from `RunWorkflowOptions.runtime_storage_paths.conductor_tmp_dir`
-    /// (default `<conductor_dir>/tmp`).
+    /// Creates one ad hoc sandbox directory inside `std::env::temp_dir()` only
+    /// when a step actually needs to execute.
     #[expect(
         clippy::unused_self,
         reason = "helper keeps method shape for readability and symmetry with other executor helpers"
     )]
-    fn create_execution_temp_cwd(
-        &self,
-        runtime_tmp_dir: &Path,
-    ) -> Result<tempfile::TempDir, ConductorError> {
-        let scratch_root = runtime_tmp_dir.to_path_buf();
+    fn create_execution_temp_cwd(&self) -> Result<tempfile::TempDir, ConductorError> {
+        let scratch_root = std::env::temp_dir();
         std::fs::create_dir_all(&scratch_root).map_err(|source| ConductorError::Io {
             operation: "creating tool sandbox root directory".to_string(),
             path: scratch_root.clone(),

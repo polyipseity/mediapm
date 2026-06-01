@@ -69,7 +69,7 @@ pub(crate) use self::hierarchy_types::{
 };
 pub use self::hierarchy_types::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+    HierarchyNodeKind, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     flatten_hierarchy_value, nest_hierarchy_value, regex_variant_selector,
 };
 
@@ -337,9 +337,6 @@ pub struct MediaRuntimeStorage {
     /// Optional override for materialized hierarchy root directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hierarchy_root_dir: Option<String>,
-    /// Optional override for mediapm staging tmp directory.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mediapm_tmp_dir: Option<String>,
     /// Optional ordered policy for hierarchy file materialization.
     ///
     /// When omitted, runtime defaults to:
@@ -355,11 +352,6 @@ pub struct MediaRuntimeStorage {
     /// Optional override for `mediapm`-managed conductor runtime state path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conductor_state_config: Option<String>,
-    /// Optional override for conductor execution sandbox tmp directory.
-    ///
-    /// Defaults to `runtime.mediapm_tmp_dir`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_tmp_dir: Option<String>,
     /// Optional override for conductor schema export directory.
     ///
     /// Defaults to `<runtime.mediapm_dir>/config/conductor`.

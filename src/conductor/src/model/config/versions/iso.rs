@@ -212,7 +212,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_dir: state.runtime.conductor_dir,
                 conductor_state_config: state.runtime.conductor_state_config,
                 cas_store_dir: state.runtime.cas_store_dir,
-                conductor_tmp_dir: state.runtime.conductor_tmp_dir,
                 conductor_schema_dir: state.runtime.conductor_schema_dir,
                 inherited_env_vars: state.runtime.inherited_env_vars,
             },
@@ -414,7 +413,6 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_dir: runtime.runtime.conductor_dir,
                 conductor_state_config: runtime.runtime.conductor_state_config,
                 cas_store_dir: runtime.runtime.cas_store_dir,
-                conductor_tmp_dir: runtime.runtime.conductor_tmp_dir,
                 conductor_schema_dir: runtime.runtime.conductor_schema_dir,
                 inherited_env_vars: runtime.runtime.inherited_env_vars,
             },
@@ -822,13 +820,6 @@ fn vet_latest_envelope(
     {
         return Err(ConductorError::Workflow(format!(
             "{document_kind} cas_store_dir must be non-empty when provided"
-        )));
-    }
-    if let Some(conductor_tmp_dir) = &envelope.runtime.conductor_tmp_dir
-        && conductor_tmp_dir.trim().is_empty()
-    {
-        return Err(ConductorError::Workflow(format!(
-            "{document_kind} conductor_tmp_dir must be non-empty when provided"
         )));
     }
     if let Some(conductor_schema_dir) = &envelope.runtime.conductor_schema_dir

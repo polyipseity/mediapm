@@ -330,9 +330,6 @@ pub(crate) struct RuntimeStorageLatest {
     /// Optional filesystem CAS store directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) cas_store_dir: Option<String>,
-    /// Optional temporary execution sandbox directory override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_tmp_dir: Option<String>,
     /// Optional schema export directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) conductor_schema_dir: Option<String>,
@@ -349,7 +346,6 @@ impl RuntimeStorageLatest {
         self.conductor_dir.is_none()
             && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
-            && self.conductor_tmp_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
     }

@@ -42,9 +42,6 @@ const DEMO_DEFAULT_STATE_CONFIG_FILE: &str = "state.ncl";
 /// Default CAS store folder name under `DEMO_DEFAULT_CONDUCTOR_DIR`.
 const DEMO_DEFAULT_CAS_STORE_DIR: &str = "store";
 
-/// Default temporary sandbox folder name under `DEMO_DEFAULT_CONDUCTOR_DIR`.
-const DEMO_DEFAULT_TMP_DIR: &str = "tmp";
-
 /// Default schema export subdirectory under `DEMO_DEFAULT_CONDUCTOR_DIR/config`.
 const DEMO_DEFAULT_SCHEMA_DIR: &str = "config/conductor";
 
@@ -439,7 +436,6 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             cas_store_dir: Some(format!(
                 "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_CAS_STORE_DIR}"
             )),
-            conductor_tmp_dir: Some(format!("{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_TMP_DIR}")),
             conductor_schema_dir: Some(format!(
                 "{DEMO_DEFAULT_CONDUCTOR_DIR}/{DEMO_DEFAULT_SCHEMA_DIR}"
             )),

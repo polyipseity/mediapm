@@ -33,8 +33,6 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_state_config);
     let cas_store_dir =
         path_to_runtime_storage_value(&paths.root_dir, &paths.runtime_root.join("store"));
-    let conductor_tmp_dir =
-        path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_tmp_dir);
     let conductor_schema_dir =
         path_to_runtime_storage_value(&paths.root_dir, &paths.conductor_schema_dir);
     let inherited_env_vars = default_runtime_inherited_env_vars_for_host();
@@ -43,7 +41,6 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         conductor_dir: Some(conductor_dir),
         conductor_state_config: Some(conductor_state_config),
         cas_store_dir: Some(cas_store_dir),
-        conductor_tmp_dir: Some(conductor_tmp_dir),
         conductor_schema_dir: Some(conductor_schema_dir),
         inherited_env_vars: if inherited_env_vars.is_empty() {
             None
@@ -85,10 +82,6 @@ fn apply_runtime_storage_defaults(
     }
     if runtime_storage.cas_store_dir.is_none() {
         runtime_storage.cas_store_dir.clone_from(&defaults.cas_store_dir);
-        changed = true;
-    }
-    if runtime_storage.conductor_tmp_dir.is_none() {
-        runtime_storage.conductor_tmp_dir.clone_from(&defaults.conductor_tmp_dir);
         changed = true;
     }
     if runtime_storage.conductor_schema_dir.is_none() {

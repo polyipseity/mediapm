@@ -116,12 +116,6 @@ pub(super) struct StepExecutionRequest {
     pub workflow_name: String,
     /// State snapshot used for cache-key and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved runtime temporary sandbox root used for ad hoc execution cwd
-    /// allocation.
-    ///
-    /// This is derived from `RunWorkflowOptions.runtime_storage_paths`
-    /// (`conductor_tmp_dir`), defaulting to `<conductor_dir>/tmp`.
-    pub runtime_tmp_dir: PathBuf,
     /// Resolved root for the tool-content cache.
     ///
     /// Each tool id occupies one subdirectory here; entries are keyed on the
@@ -208,9 +202,6 @@ pub(super) struct LevelExecutionRequest {
     pub unified: Arc<UnifiedNickelDocument>,
     /// State snapshot used for cache and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved runtime temporary sandbox root used for scratch sandbox
-    /// creation.
-    pub runtime_tmp_dir: PathBuf,
     /// Resolved root for the tool-content cache.
     ///
     /// Each tool id occupies one subdirectory here; entries are keyed on the

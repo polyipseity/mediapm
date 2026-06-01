@@ -24,8 +24,8 @@ use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
 
 use super::{
-    instance_matches_expected_inputs, resolve_managed_ffprobe_path, sync_hierarchy,
-    validate_hierarchy_path,
+    instance_matches_expected_inputs, resolve_managed_ffprobe_path, sanitize_hierarchy_path,
+    sync_hierarchy, validate_hierarchy_path,
 };
 
 /// Protects managed ffprobe metadata lookup by resolving relative command
@@ -663,6 +663,7 @@ async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
                         .to_string(),
                     replacement: "Rick Astley - Never Gonna Give You Up [rickroll]$1".to_string(),
                 }],
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()
@@ -942,6 +943,7 @@ async fn sync_hierarchy_applies_folder_rename_replacement_media_placeholders() {
                     pattern: "^thumb \\[.+\\](\\.[^/\\\\]+)$".to_string(),
                     replacement: "${media.metadata.title} [${media.id}]$1".to_string(),
                 }],
+                sanitize_names: SanitizeNamesConfig::Disabled,
             },
         )])),
         ..MediaPmDocument::default()

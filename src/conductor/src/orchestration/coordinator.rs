@@ -238,7 +238,6 @@ where
                 &unified,
                 &mut state_document,
                 &mut state,
-                &resolved_runtime_paths.conductor_tmp_dir,
                 &resolved_runtime_paths.conductor_tools_dir,
                 &outermost_config_dir,
             )
@@ -482,7 +481,6 @@ where
         unified: &UnifiedNickelDocument,
         state_document: &mut crate::model::config::StateNickelDocument,
         state: &mut OrchestrationState,
-        runtime_tmp_dir: &Path,
         tools_dir: &Path,
         outermost_config_dir: &Path,
     ) -> Result<ExecutionOutcome, ConductorError> {
@@ -566,7 +564,6 @@ where
                             level: level.into_iter().cloned().collect(),
                             unified: unified_shared.clone(),
                             state_snapshot,
-                            runtime_tmp_dir: runtime_tmp_dir.to_path_buf(),
                             runtime_tools_dir: tools_dir.to_path_buf(),
                             outermost_config_dir: outermost_config_dir.to_path_buf(),
                             step_outputs: step_outputs_snapshot,
@@ -807,7 +804,7 @@ where
         _total_steps: usize,
         level: &[&WorkflowStepSpec],
     ) -> String {
-        let terminal_width = terminal_size().map(|(_, Width(w))| w as usize).unwrap_or(80);
+        let terminal_width = terminal_size().map(|(Width(w), _)| w as usize).unwrap_or(80);
         let preview_width =
             terminal_width.saturating_sub(workflow_display_name.chars().count() + 2);
         let step_preview = Self::workflow_level_step_preview(level, preview_width);

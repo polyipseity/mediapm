@@ -248,7 +248,6 @@ fn parse_grouped_runtime_storage_path_options() {
         Some(PathBuf::from("runtime/state.custom.ncl"))
     );
     assert_eq!(cli.runtime_paths.cas_store_dir, Some("runtime/cas-root".to_string()));
-    assert_eq!(cli.runtime_paths.conductor_tmp_dir, Some(PathBuf::from("runtime/tmp-root")));
     assert_eq!(
         cli.runtime_paths.conductor_schema_dir,
         Some(PathBuf::from("runtime/config/custom-conductor-schemas"))

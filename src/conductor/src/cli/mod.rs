@@ -75,12 +75,6 @@ struct RuntimePathArgs {
     #[arg(long, global = true)]
     cas_store_dir: Option<String>,
 
-    /// Optional override path for per-step execution sandbox roots.
-    ///
-    /// Defaults to `<conductor_dir>/tmp`.
-    #[arg(long, global = true)]
-    conductor_tmp_dir: Option<PathBuf>,
-
     /// Optional override directory for exported conductor Nickel schemas.
     ///
     /// Defaults to `<conductor_dir>/config/conductor`.
@@ -397,7 +391,6 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
         conductor_dir: cli.runtime_paths.conductor_dir,
         conductor_state_config: cli.runtime_paths.conductor_state_config,
         cas_store_dir: None,
-        conductor_tmp_dir: cli.runtime_paths.conductor_tmp_dir,
         conductor_schema_dir: cli.runtime_paths.conductor_schema_dir,
         conductor_tools_dir: cli.runtime_paths.conductor_tools_dir,
     };

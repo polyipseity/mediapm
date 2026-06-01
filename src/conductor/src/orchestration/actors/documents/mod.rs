@@ -655,12 +655,6 @@ impl DocumentLoaderActor {
         {
             conflict_fields.push("cas_store_dir");
         }
-        if user.conductor_tmp_dir.is_some()
-            && machine.conductor_tmp_dir.is_some()
-            && user.conductor_tmp_dir != machine.conductor_tmp_dir
-        {
-            conflict_fields.push("conductor_tmp_dir");
-        }
         if user.conductor_schema_dir.is_some()
             && machine.conductor_schema_dir.is_some()
             && user.conductor_schema_dir != machine.conductor_schema_dir
@@ -700,10 +694,6 @@ impl DocumentLoaderActor {
                 .clone()
                 .or_else(|| machine.conductor_state_config.clone()),
             cas_store_dir: user.cas_store_dir.clone().or_else(|| machine.cas_store_dir.clone()),
-            conductor_tmp_dir: user
-                .conductor_tmp_dir
-                .clone()
-                .or_else(|| machine.conductor_tmp_dir.clone()),
             conductor_schema_dir: user
                 .conductor_schema_dir
                 .clone()

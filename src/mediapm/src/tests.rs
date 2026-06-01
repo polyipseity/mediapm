@@ -14,9 +14,10 @@ use serde_json::json;
 use super::{
     AddInsertPosition, HierarchyNode, HierarchyNodeKind, LocalSourceMetadata, MediaHierarchyPreset,
     MediaPmApi, MediaPmDocument, MediaPmService, MediaRuntimeStorage, OnlineSourceMetadata,
-    ToolRequirement, ToolRequirementDependencies, load_mediapm_document, merge_runtime_storage,
-    parse_local_source_metadata_from_ffprobe_json, parse_online_source_metadata,
-    save_mediapm_document, should_prefer_filesystem_workflow_runner, validate_source_uri,
+    SanitizeNamesConfig, ToolRequirement, ToolRequirementDependencies, load_mediapm_document,
+    merge_runtime_storage, parse_local_source_metadata_from_ffprobe_json,
+    parse_online_source_metadata, save_mediapm_document, should_prefer_filesystem_workflow_runner,
+    validate_source_uri,
 };
 use crate::config::load_mediapm_document_without_validation;
 use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus, save_lockfile};
@@ -415,6 +416,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
             rename_files: Vec::new(),
             format: super::PlaylistFormat::default(),
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: vec![HierarchyNode {
                 path: "missing-id".to_string(),
                 kind: HierarchyNodeKind::Folder,
@@ -425,6 +427,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
                 rename_files: Vec::new(),
                 format: super::PlaylistFormat::default(),
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             }],
         },
@@ -438,6 +441,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
             rename_files: Vec::new(),
             format: super::PlaylistFormat::default(),
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: vec![HierarchyNode {
                 path: "empty-id".to_string(),
                 kind: HierarchyNodeKind::Folder,
@@ -448,6 +452,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
                 rename_files: Vec::new(),
                 format: super::PlaylistFormat::default(),
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             }],
         },
@@ -461,6 +466,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
             rename_files: Vec::new(),
             format: super::PlaylistFormat::default(),
             ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
             children: vec![HierarchyNode {
                 path: "zzz-id".to_string(),
                 kind: HierarchyNodeKind::Folder,
@@ -471,6 +477,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
                 rename_files: Vec::new(),
                 format: super::PlaylistFormat::default(),
                 ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Disabled,
                 children: Vec::new(),
             }],
         },

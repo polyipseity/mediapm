@@ -501,18 +501,17 @@ async fn main() -> anyhow::Result<()> {
     let runtime_storage_overrides = MediaRuntimeStorage {
         mediapm_dir: option_path_to_string(cli.mediapm_dir),
         hierarchy_root_dir: None,
-        mediapm_tmp_dir: None,
         materialization_preference_order: None,
         conductor_config: option_path_to_string(cli.conductor_config),
         conductor_machine_config: option_path_to_string(cli.conductor_machine_config),
         conductor_state_config: option_path_to_string(cli.conductor_state_config),
-        conductor_tmp_dir: None,
         conductor_schema_dir: None,
         inherited_env_vars: None,
         media_state_config: option_path_to_string(cli.media_state_config),
         env_file: option_path_to_string(cli.env_file),
         mediapm_schema_dir: None,
         profiler_enabled: None,
+        path_sanitization: None,
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
     if matches!(
@@ -917,12 +916,6 @@ fn inject_conductor_passthrough_defaults(
         args,
         "--cas-store-dir",
         effective_paths.runtime_root.join("store").to_string_lossy().to_string(),
-    );
-    append_passthrough_option_if_missing(
-        &mut injected,
-        args,
-        "--conductor-tmp-dir",
-        effective_paths.conductor_tmp_dir.to_string_lossy().to_string(),
     );
     append_passthrough_option_if_missing(
         &mut injected,

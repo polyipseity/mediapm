@@ -1083,7 +1083,6 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
     let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let payload_dir = executor
         .materialize_tool_content_map(
@@ -1091,7 +1090,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
             &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
             &test_executable_process("bin/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect("file-form content_map entry should materialize bytes")
@@ -1151,7 +1150,6 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let payload_dir = executor
         .materialize_tool_content_map(
@@ -1159,7 +1157,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
             &BTreeMap::from([("tool/".to_string(), hash)]),
             &test_executable_process("tool/bin/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect("directory-form content_map entry should unpack ZIP")
@@ -1184,7 +1182,6 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let payload_dir = executor
         .materialize_tool_content_map(
@@ -1192,7 +1189,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
             &BTreeMap::from([("./".to_string(), hash)]),
             &test_executable_process("bin/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect("'./' directory-form content_map entry should unpack ZIP at payload root")
@@ -1212,7 +1209,6 @@ async fn content_map_directory_entry_rejects_non_zip_payload() {
     let hash = cas.put(b"not-a-zip".to_vec()).await.expect("store plain payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let error = executor
         .materialize_tool_content_map(
@@ -1220,7 +1216,7 @@ async fn content_map_directory_entry_rejects_non_zip_payload() {
             &BTreeMap::from([("tool/".to_string(), hash)]),
             &test_executable_process("tool/bin/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect_err("directory-form content_map entry should require ZIP payload");
@@ -1243,7 +1239,6 @@ async fn content_map_directory_entry_requires_non_empty_prefix() {
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let error = executor
         .materialize_tool_content_map(
@@ -1251,7 +1246,7 @@ async fn content_map_directory_entry_requires_non_empty_prefix() {
             &BTreeMap::from([("/".to_string(), hash)]),
             &test_executable_process("bin/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect_err("root-only directory key should fail");
@@ -1274,7 +1269,6 @@ async fn content_map_rejects_file_overwrite_between_entries() {
         cas.put(b"#!/usr/bin/env sh\necho from file\n".to_vec()).await.expect("store file payload");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let error = executor
         .materialize_tool_content_map(
@@ -1285,7 +1279,7 @@ async fn content_map_rejects_file_overwrite_between_entries() {
             ]),
             &test_executable_process("tool/run.sh"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect_err("conflicting content_map entries should fail before writes");
@@ -1313,7 +1307,6 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
     let second_hash = cas.put(second_zip).await.expect("store second zip payload");
     let executor = StepWorkerExecutor { cas };
     let temp = tempfile::tempdir().expect("tempdir");
-    let runtime_tmp_dir = temp.path().join("tmp");
 
     let payload_dir = executor
         .materialize_tool_content_map(
@@ -1324,7 +1317,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
             ]),
             &test_executable_process("tool/a.txt"),
             temp.path(),
-            runtime_tmp_dir.as_path(),
+            temp.path(),
         )
         .await
         .expect("non-overlapping directory entries should merge successfully")

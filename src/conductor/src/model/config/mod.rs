@@ -109,9 +109,6 @@ pub struct RuntimeStorageConfig {
     /// Optional override path for filesystem CAS storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cas_store_dir: Option<String>,
-    /// Optional override path for temporary execution sandboxes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conductor_tmp_dir: Option<String>,
     /// Optional override path for exported conductor schemas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conductor_schema_dir: Option<String>,
@@ -199,7 +196,6 @@ impl RuntimeStorageConfig {
         self.conductor_dir.is_none()
             && self.conductor_state_config.is_none()
             && self.cas_store_dir.is_none()
-            && self.conductor_tmp_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
     }

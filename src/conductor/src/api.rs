@@ -43,7 +43,6 @@ const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 /// - `conductor_dir` anchors runtime-owned artifacts,
 /// - `conductor_state_config` optionally overrides the volatile state document path,
 /// - `cas_store_dir` optionally overrides the default CAS filesystem root,
-/// - `conductor_tmp_dir` optionally overrides the execution sandbox root,
 /// - `conductor_schema_dir` optionally overrides the schema export directory,
 /// - `conductor_tools_dir` optionally overrides the tool-content cache root.
 ///
@@ -51,7 +50,7 @@ const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 /// `conductor_dir`:
 /// - `<conductor_dir>/state.ncl` for state,
 /// - `<conductor_dir>/store` for CAS,
-/// - an OS-provided temp directory for temporary execution sandboxes,
+/// - `std::env::temp_dir()` for temporary execution sandboxes,
 /// - `<conductor_dir>/config/conductor` for schema export,
 /// - `<conductor_dir>/tools` for the tool-content cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,10 +68,6 @@ pub struct RuntimeStoragePaths {
     ///
     /// Default: `<conductor_dir>/store`.
     pub cas_store_dir: Option<PathBuf>,
-    /// Optional override path for temporary execution sandboxes.
-    ///
-    /// Default: an OS-provided temp directory.
-    pub conductor_tmp_dir: Option<PathBuf>,
     /// Optional override path for exported schema files.
     ///
     /// Default: `<conductor_dir>/config/conductor`.
@@ -95,7 +90,6 @@ impl RuntimeStoragePaths {
             conductor_dir: PathBuf::from(DEFAULT_CONDUCTOR_DIR_NAME),
             conductor_state_config: None,
             cas_store_dir: None,
-            conductor_tmp_dir: None,
             conductor_schema_dir: None,
             conductor_tools_dir: None,
         }
@@ -118,10 +112,7 @@ impl RuntimeStoragePaths {
             || conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
             |path| Self::resolve_path(anchor, path),
         );
-        let conductor_tmp_dir = self
-            .conductor_tmp_dir
-            .as_ref()
-            .map_or_else(default_runtime_tmp_dir, |path| Self::resolve_path(anchor, path));
+        let conductor_tmp_dir = std::env::temp_dir();
         let conductor_schema_dir = self.conductor_schema_dir.as_ref().map_or_else(
             || schema_export_dir(&conductor_dir),
             |path| Self::resolve_path(anchor, path),
@@ -154,12 +145,6 @@ impl Default for RuntimeStoragePaths {
     }
 }
 
-/// Returns the default OS-backed temp directory for conductor sandboxes.
-#[must_use]
-fn default_runtime_tmp_dir() -> PathBuf {
-    std::env::temp_dir()
-}
-
 /// Concrete runtime storage paths after resolving relative values.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRuntimeStoragePaths {
@@ -169,7 +154,7 @@ pub struct ResolvedRuntimeStoragePaths {
     pub conductor_state_config: PathBuf,
     /// Resolved filesystem CAS store root path.
     pub cas_store_dir: PathBuf,
-    /// Resolved temporary execution sandbox root path.
+    /// Temporary execution sandbox root path (always `std::env::temp_dir()`).
     pub conductor_tmp_dir: PathBuf,
     /// Resolved schema export directory path.
     pub conductor_schema_dir: PathBuf,

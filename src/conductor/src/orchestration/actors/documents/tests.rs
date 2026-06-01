@@ -511,7 +511,6 @@ fn machine_document_is_not_backfilled_with_user_runtime_storage() {
             conductor_dir: Some(".runtime".to_string()),
             conductor_state_config: Some(".runtime/state.ncl".to_string()),
             cas_store_dir: Some(".runtime/store".to_string()),
-            conductor_tmp_dir: Some(".runtime/tmp".to_string()),
             conductor_schema_dir: Some(".runtime/config/conductor".to_string()),
             inherited_env_vars: None,
         },
@@ -553,7 +552,6 @@ fn machine_document_is_not_backfilled_with_user_runtime_storage() {
     assert!(loaded.machine_document.runtime.conductor_dir.is_none());
     assert!(loaded.machine_document.runtime.conductor_state_config.is_none());
     assert!(loaded.machine_document.runtime.cas_store_dir.is_none());
-    assert!(loaded.machine_document.runtime.conductor_tmp_dir.is_none());
     assert!(loaded.machine_document.runtime.conductor_schema_dir.is_none());
 
     let expected_defaults = default_runtime_inherited_env_vars_for_host();

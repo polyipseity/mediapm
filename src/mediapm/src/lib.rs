@@ -43,7 +43,7 @@ pub use config::{
     HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars,
-    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, ToolRequirement,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
     ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
     load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
     nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
@@ -443,10 +443,6 @@ pub(crate) fn merge_runtime_storage(
             .hierarchy_root_dir
             .clone()
             .or_else(|| config_value.hierarchy_root_dir.clone()),
-        mediapm_tmp_dir: override_value
-            .mediapm_tmp_dir
-            .clone()
-            .or_else(|| config_value.mediapm_tmp_dir.clone()),
         materialization_preference_order: override_value
             .materialization_preference_order
             .clone()
@@ -463,10 +459,6 @@ pub(crate) fn merge_runtime_storage(
             .conductor_state_config
             .clone()
             .or_else(|| config_value.conductor_state_config.clone()),
-        conductor_tmp_dir: override_value
-            .conductor_tmp_dir
-            .clone()
-            .or_else(|| config_value.conductor_tmp_dir.clone()),
         conductor_schema_dir: override_value
             .conductor_schema_dir
             .clone()
@@ -482,6 +474,10 @@ pub(crate) fn merge_runtime_storage(
             .clone()
             .or_else(|| config_value.mediapm_schema_dir.clone()),
         profiler_enabled: override_value.profiler_enabled.or(config_value.profiler_enabled),
+        path_sanitization: override_value
+            .path_sanitization
+            .clone()
+            .or_else(|| config_value.path_sanitization.clone()),
     }
 }
 
@@ -542,7 +538,6 @@ pub(crate) fn conductor_run_workflow_options(
             conductor_dir: paths.runtime_root.clone(),
             conductor_state_config: Some(paths.conductor_state_config.clone()),
             cas_store_dir: Some(paths.runtime_root.join("store")),
-            conductor_tmp_dir: Some(paths.conductor_tmp_dir.clone()),
             conductor_schema_dir: Some(paths.conductor_schema_dir.clone()),
             conductor_tools_dir: Some(paths.tools_dir.clone()),
         },

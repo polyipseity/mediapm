@@ -235,7 +235,6 @@ where
                 let unified = request.unified.clone();
                 let workflow_name = request.workflow_name.clone();
                 let state_snapshot = request.state_snapshot.clone();
-                let runtime_tmp_dir = request.runtime_tmp_dir.clone();
                 let runtime_tools_dir = request.runtime_tools_dir.clone();
                 let outermost_config_dir = request.outermost_config_dir.clone();
                 let step_outputs = request.step_outputs.clone();
@@ -258,7 +257,6 @@ where
                             impure_timestamp,
                             workflow_name: workflow_name.clone(),
                             state_snapshot: state_snapshot.clone(),
-                            runtime_tmp_dir: runtime_tmp_dir.clone(),
                             runtime_tools_dir: runtime_tools_dir.clone(),
                             outermost_config_dir: outermost_config_dir.clone(),
                             step_outputs: step_outputs.clone(),

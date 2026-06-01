@@ -1020,7 +1020,6 @@ fn runtime_storage_normalization_keeps_explicit_legacy_values() {
         conductor_dir: Some(".conductor".to_string()),
         conductor_state_config: Some(".conductor/state.ncl".to_string()),
         cas_store_dir: Some(".conductor/store/".to_string()),
-        conductor_tmp_dir: Some(".conductor/tmp/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: Some(BTreeMap::new()),
     };
@@ -1029,7 +1028,6 @@ fn runtime_storage_normalization_keeps_explicit_legacy_values() {
     assert_eq!(runtime_storage.conductor_dir.as_deref(), Some(".conductor"));
     assert_eq!(runtime_storage.conductor_state_config.as_deref(), Some(".conductor/state.ncl"));
     assert_eq!(runtime_storage.cas_store_dir.as_deref(), Some(".conductor/store/"));
-    assert_eq!(runtime_storage.conductor_tmp_dir.as_deref(), Some(".conductor/tmp/"));
     assert_eq!(
         runtime_storage.conductor_schema_dir.as_deref(),
         Some(".conductor/config/conductor")
@@ -1047,7 +1045,6 @@ fn runtime_storage_normalization_backfills_inherited_env_var_defaults() {
         conductor_dir: Some(".conductor".to_string()),
         conductor_state_config: Some(".conductor/state.ncl".to_string()),
         cas_store_dir: Some(".conductor/store/".to_string()),
-        conductor_tmp_dir: Some(".conductor/tmp/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: None,
     };

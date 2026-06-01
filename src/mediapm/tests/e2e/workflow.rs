@@ -59,15 +59,12 @@ async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
     let user_bytes =
         std::fs::read(&service.paths().conductor_user_ncl).expect("read conductor user document");
     let user = decode_user_document(&user_bytes).expect("decode user document");
-    let expected_conductor_tmp =
-        service.paths().conductor_tmp_dir.to_string_lossy().replace('\\', "/");
     assert_eq!(user.runtime.conductor_dir.as_deref(), Some(".mediapm"));
     assert_eq!(
         user.runtime.conductor_state_config.as_deref(),
         Some(".mediapm/state.conductor.ncl")
     );
     assert_eq!(user.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(user.runtime.conductor_tmp_dir.as_deref(), Some(expected_conductor_tmp.as_str()));
     assert_eq!(user.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
     assert!(
         user.runtime.inherited_env_vars.is_none(),
@@ -86,7 +83,6 @@ async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
         Some(".mediapm/state.conductor.ncl")
     );
     assert_eq!(machine.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(machine.runtime.conductor_tmp_dir.as_deref(), Some(expected_conductor_tmp.as_str()));
     assert_eq!(machine.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
     if expected_inherited.is_empty() {
         assert!(machine.runtime.inherited_env_vars.is_none());
@@ -107,18 +103,17 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
         runtime: MediaRuntimeStorage {
             mediapm_dir: Some(".mediapm-custom".to_string()),
             hierarchy_root_dir: Some("library-custom".to_string()),
-            mediapm_tmp_dir: Some("tmp-custom".to_string()),
             materialization_preference_order: None,
             conductor_config: None,
             conductor_machine_config: None,
             conductor_state_config: None,
-            conductor_tmp_dir: None,
             conductor_schema_dir: None,
             inherited_env_vars: None,
             media_state_config: None,
             env_file: None,
             mediapm_schema_dir: None,
             profiler_enabled: None,
+            path_sanitization: None,
         },
         ..MediaPmDocument::default()
     };
@@ -130,7 +125,6 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
     assert!(root.path().join(".mediapm-custom").join("state.ncl").exists());
     assert!(root.path().join(".mediapm-custom").join("state.conductor.ncl").exists());
     assert!(root.path().join("library-custom").exists());
-    assert!(root.path().join(".mediapm-custom").join("tmp-custom").exists());
     assert!(!root.path().join(".mediapm").join("state.ncl").exists());
     assert!(!root.path().join(".conductor").join("state.ncl").exists());
 }
@@ -146,18 +140,17 @@ async fn sync_honors_explicit_conductor_state_override() {
         runtime: MediaRuntimeStorage {
             mediapm_dir: None,
             hierarchy_root_dir: None,
-            mediapm_tmp_dir: None,
             materialization_preference_order: None,
             conductor_config: None,
             conductor_machine_config: None,
             conductor_state_config: Some("state/custom.state.ncl".to_string()),
-            conductor_tmp_dir: None,
             conductor_schema_dir: None,
             inherited_env_vars: None,
             media_state_config: None,
             env_file: None,
             mediapm_schema_dir: None,
             profiler_enabled: None,
+            path_sanitization: None,
         },
         ..MediaPmDocument::default()
     };
