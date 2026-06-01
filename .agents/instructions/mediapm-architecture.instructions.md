@@ -217,6 +217,12 @@ is a narrow, documented reason.
   - hierarchy entries with `kind = "playlist"` emit playlist files, may define
     ordered `ids` with optional per-item path-mode overrides, and must remain
     file-leaf nodes,
+  - hierarchy node `id` suffix convention: tagged media nodes omit a dedicated
+    suffix (bare media id), while untagged media variants carry the `.untagged`
+    suffix to distinguish them from tagged peers. This ensures tagged nodes
+    sort before untagged variants in natural ordering and makes the variant
+    role explicit in the id string. Sidecar and container nodes use their own
+    descriptive suffixes (`.media_folder`, etc.).
   - demo/example hierarchy layouts should remain Jellyfin-compatible for media
     files:
     `music videos/<artist> - <title> [<media.id>]/<artist> - <title> [<media.id>](<ext>)`,

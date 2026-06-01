@@ -339,6 +339,11 @@ For comprehensive details, refer to the following specifications collected from 
     `media_folder` entry gets an independent staging directory so that
     per-entry `rename_files` rules can produce files without cross-entry
     overwrite conflicts.
+- **Hierarchy node ID suffix convention**: tagged media nodes carry no
+  dedicated suffix (bare media id), while untagged media variants carry the
+  `.untagged` suffix. This ensures tagged nodes sort before untagged variants
+  and makes the variant role explicit. Sidecar and container nodes use their
+  own descriptive suffixes (`.media_folder`, etc.).
 
 ---
 

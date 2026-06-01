@@ -658,7 +658,33 @@ WorkflowSpec {
 
 ---
 
-### 4.2 Media.ncl References Non-Existent Media in Hierarchy
+### 4.2 Hierarchy Node ID Suffix Convention
+
+**Issue**: The convention for hierarchy node `id` suffix assignment was implicit,
+with examples using `.tagged` for tagged nodes and `None` for untagged. This
+made the naming strategy unpredictable and the variant role unclear from the
+id alone.
+
+**Resolution**: Flip the suffix convention so tagged nodes carry no suffix
+(bare media id) while untagged variants carry `.untagged`. This gives tagged
+nodes natural sort priority and makes the variant role explicit.
+
+**Convention**:
+
+- Tagged media node id: `<media-id>` (no suffix)
+- Untagged media node id: `<media-id>.untagged`
+- Media folder node id: `<media-id>.media_folder`
+- Sidecar/other container nodes: descriptive suffix as appropriate
+
+**Demo examples updated**:
+
+- `mediapm_demo.rs`: `DEMO_PLAYLIST_TARGET_HIERARCHY_ID` from
+  `"demo.local.dQw4w9WgXcQ.tagged"` → `"demo.local.dQw4w9WgXcQ"`;
+  added `DEMO_UNTAGGED_HIERARCHY_ID` = `"demo.local.dQw4w9WgXcQ.untagged"`
+- `mediapm_demo_online.rs`: `DEMO_TAGGED_HIERARCHY_ID` from
+  `"youtube.dQw4w9WgXcQ.tagged"` → `"youtube.dQw4w9WgXcQ"`
+
+### 4.3 Media.ncl References Non-Existent Media in Hierarchy
 
 **Issue**: Specification defines hierarchy with `media_id` but does not validate **all hierarchy `media_id` values exist in media sources**.
 
@@ -692,7 +718,7 @@ mediapm.ncl:
 
 ---
 
-### 4.3 Tool Provisioning Failure Mid-Download
+### 4.4 Tool Provisioning Failure Mid-Download
 
 **Issue**: Specification mentions "Tool provisioning catalog" but does not handle **partial tool download failure**.
 
@@ -723,7 +749,7 @@ mediapm.ncl:
 
 ---
 
-### 4.4 Lock File Partial Write / Corruption
+### 4.5 Lock File Partial Write / Corruption
 
 **Issue**: Specification mentions "lock records for cache hits" but does not address **partial lock file writes**.
 
@@ -753,7 +779,7 @@ mediapm.ncl:
 
 ---
 
-### 4.5 Platform-Independent Path Resolution Conflicts
+### 4.6 Platform-Independent Path Resolution Conflicts
 
 **Issue**: Specification states "Platform-independent path resolution (normalized, slash-separated)" but does not address **case sensitivity differences**.
 
@@ -782,7 +808,7 @@ mediapm.ncl:
 
 ---
 
-### 4.6 Read-Only File Replacement (Windows)
+### 4.7 Read-Only File Replacement (Windows)
 
 **Issue**: Specification states "Materialized outputs are marked read-only after commit" but does not address **re-materialization of read-only files**.
 
@@ -811,7 +837,7 @@ mediapm.ncl:
 
 ---
 
-### 4.7 Media ID Stability vs Content Change
+### 4.8 Media ID Stability vs Content Change
 
 **Issue**: Specification defines lock as "path → media_id, variant, hash" but does not address **media_id reuse after content change**.
 
@@ -841,7 +867,7 @@ mediapm.ncl:
 
 ---
 
-### 4.8 Concurrent Sync Operations
+### 4.9 Concurrent Sync Operations
 
 **Issue**: Specification does not address **two sync operations running simultaneously**.
 
@@ -872,7 +898,7 @@ mediapm.ncl:
 
 ---
 
-### 4.9 Managed Tool Configuration Change
+### 4.10 Managed Tool Configuration Change
 
 **Issue**: Specification states tool provisioning cache defaults, but does not address **cache invalidation when tool config changes**.
 
@@ -901,7 +927,7 @@ mediapm.ncl:
 
 ---
 
-### 4.10 Hierarchy Path Sanitization Edge Cases
+### 4.11 Hierarchy Path Sanitization Edge Cases
 
 **Issue**: `sanitize_names` on hierarchy nodes introduces several edge cases around
 replacement character safety, NFD interaction, and inheritance.
@@ -933,7 +959,7 @@ encoding.
 
 ---
 
-### 4.11 Hierarchy Flattening with rename_files Coexistence
+### 4.12 Hierarchy Flattening with rename_files Coexistence
 
 **Issue**: Flattening validation rejects same-path entries that declare the same
 variants, but `rename_files` on `media_folder` nodes can produce distinct final
