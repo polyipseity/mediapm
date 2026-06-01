@@ -475,7 +475,7 @@ Effective grouped defaults:
 
 - Canonical identity key is URI (`canonical_uri`), not display path strings.
 - Content identity is BLAKE3 with object fan-out under
-  `.mediapm/objects/blake3/<2-char>/<rest>`.
+  `.mediapm/objects/blake3/<0..2>/<2..4>/<4..>`.
 - Sidecars are derived from canonical URI digest under
   `.mediapm/media/<media-id>/media.json`.
 - Object files are immutable once imported.

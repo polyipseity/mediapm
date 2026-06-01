@@ -448,7 +448,7 @@ is a narrow, documented reason.
 ## Identity and storage invariants
 
 - Canonical identity key is URI (`canonical_uri`), not path display strings.
-- Content identity is BLAKE3 hash and object fan-out path under `.mediapm/objects/blake3/<2-char>/<rest>`.
+- Content identity is BLAKE3 hash and object fan-out path under `.mediapm/objects/blake3/<0..2>/<2..4>/<4..>`.
 - Sidecar paths are derived from canonical URI digest under `.mediapm/media/<media-id>/media.json`.
 - CAS object files are immutable once imported and persisted as read-only by default.
 
