@@ -314,6 +314,15 @@ For comprehensive details, refer to the following specifications collected from 
 - **State Management**: Staged → commit atomicity; lock records for cache hits
 - **Tool Provisioning**: User-level cache (downloads) vs. workspace cache (extracted binaries)
 - **Materialization**: Link order preference (hardlink → symlink → reflink → copy)
+- **Hierarchy path sanitization**:
+  - `hierarchy[*].sanitize_names` controls reserved-character replacement in
+    materialized hierarchy paths,
+  - `false` (default): reject reserved characters strictly,
+  - `true`: replace using `runtime.path_sanitization` defaults (all `_`),
+  - object: override per-character mapping merged over runtime defaults,
+  - NFD normalization is always enforced regardless of sanitize_names setting,
+  - the replacement occurs after NFD normalization but before reserved-char
+    validation so replaced paths always pass strict validation.
 
 ---
 

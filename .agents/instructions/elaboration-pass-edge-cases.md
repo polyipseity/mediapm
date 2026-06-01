@@ -884,6 +884,38 @@ mediapm.ncl:
 
 ---
 
+### 4.10 Hierarchy Path Sanitization Edge Cases
+
+**Issue**: `sanitize_names` on hierarchy nodes introduces several edge cases around
+replacement character safety, NFD interaction, and inheritance.
+
+**Scenarios**:
+
+| Scenario | Current Spec | Gap |
+|---|---|---|
+| Custom replacement maps a char to another reserved char | Not tested | Should fail validation after replacement |
+| NFD normalization + replacement interaction | NFD always enforced first | Should verify NFD normalization before replacement |
+| Replacement char is multi-byte Unicode | Only single char allowed | Rejected at deserialization |
+| `sanitize_names` on media node | Inherited by children | Verify propagation |
+| Custom map with overlapping runtime default keys | Custom wins | Verify merge order |
+
+**Risk**: Replacement that produces another reserved character would bypass
+reserved-char validation; multi-byte replacement chars create inconsistent path
+encoding.
+
+**Recommendations**:
+
+- Add test: "replace with another reserved character → fails final validation"
+- Add test: "NFD normalization runs before replacement replacement"
+- Add test: "inheritance propagates `sanitize_names` to child nodes"
+- Add test: "custom map overrides runtime defaults per key"
+
+**Questions for Clarification**:
+
+1. Should replacement chars be validated separately from reserved-char rejection?
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination

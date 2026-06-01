@@ -405,8 +405,15 @@ is a narrow, documented reason.
   - step `options` are tool-specific and unknown keys are rejected,
   - materialization uses stage -> verify -> commit semantics with staging under
     effective `.mediapm/tmp` and atomic commit into library roots,
-  - materializer path validation enforces NFD-only filenames and rejects
-    reserved characters (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`),
+  - materializer path validation always enforces NFD-only filenames,
+  - hierarchy nodes may additionally specify `sanitize_names` (bool or object)
+    for optional reserved-character replacement:
+    - `false` (default): current strict-rejection behavior,
+    - `true`: replace reserved characters (`<`, `>`, `:`, `"`, `|`, `?`, `*`)
+      with runtime-default mapping (underscore `_`),
+    - object (`{ "<": "_", "|": "-", ... }`): apply per-character custom
+      mapping merged over runtime defaults,
+    - NFD normalization is always enforced regardless of this setting,
   - materializer link/write order follows
     `runtime.materialization_preference_order` (must be non-empty and
     duplicate-free); default order remains hardlink -> symlink -> reflink ->
