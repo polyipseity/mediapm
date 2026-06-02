@@ -771,7 +771,7 @@ fn configure_document_for_local_tool_chain(
         rename_files: Vec::new(),
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: vec![
             HierarchyNode {
                 path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}".to_string(),
@@ -783,7 +783,7 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             },
             HierarchyNode {
@@ -796,7 +796,7 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             },
         ],
@@ -813,7 +813,7 @@ fn configure_document_for_local_tool_chain(
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: media_hierarchy_children,
         },
         HierarchyNode {
@@ -826,7 +826,7 @@ fn configure_document_for_local_tool_chain(
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
                 path: "local-demo.m3u8".to_string(),
                 kind: HierarchyNodeKind::Playlist,
@@ -846,7 +846,7 @@ fn configure_document_for_local_tool_chain(
                         path: PlaylistEntryPathMode::Absolute,
                     },
                 ],
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             }],
         },

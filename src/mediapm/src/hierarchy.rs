@@ -261,7 +261,7 @@ pub(crate) fn hierarchy_media_file_node(
         rename_files: Vec::new(),
         format: PlaylistFormat::default(),
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: Vec::new(),
     }
 }
@@ -284,7 +284,7 @@ pub(crate) fn hierarchy_media_folder_node(
         rename_files,
         format: PlaylistFormat::default(),
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: Vec::new(),
     }
 }
@@ -415,7 +415,7 @@ pub(crate) fn build_hierarchy_preset_node(
         rename_files: Vec::new(),
         format: PlaylistFormat::default(),
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: vec![HierarchyNode {
             path: media_root_template,
             kind: HierarchyNodeKind::Folder,
@@ -426,7 +426,7 @@ pub(crate) fn build_hierarchy_preset_node(
             rename_files: Vec::new(),
             format: PlaylistFormat::default(),
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: media_children,
         }],
     }

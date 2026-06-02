@@ -1168,7 +1168,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: Vec::new(),
         },
         HierarchyNode {
@@ -1181,7 +1181,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: Vec::new(),
         },
     ];
@@ -1209,7 +1209,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             });
         } else {
@@ -1223,7 +1223,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             });
         }
@@ -1242,7 +1242,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: sidecar_folder_children,
             },
         );
@@ -1268,7 +1268,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: Vec::new(),
     });
 
@@ -1286,7 +1286,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: Vec::new(),
     });
 
@@ -1305,7 +1305,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         }],
         format: PlaylistFormat::M3u8,
         ids: Vec::new(),
-        sanitize_names: SanitizeNamesConfig::Disabled,
+        sanitize_names: SanitizeNamesConfig::Inherit,
         children: Vec::new(),
     });
 
@@ -1325,7 +1325,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
                 path: DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(),
                 kind: HierarchyNodeKind::Folder,
@@ -1336,7 +1336,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: Vec::new(),
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: media_root_children,
             }],
         },
@@ -1350,7 +1350,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             rename_files: Vec::new(),
             format: PlaylistFormat::M3u8,
             ids: Vec::new(),
-            sanitize_names: SanitizeNamesConfig::Disabled,
+            sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
                 path: "rickroll.m3u8".to_string(),
                 kind: HierarchyNodeKind::Playlist,
@@ -1370,7 +1370,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                         path: PlaylistEntryPathMode::Absolute,
                     },
                 ],
-                sanitize_names: SanitizeNamesConfig::Disabled,
+                sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
             }],
         },

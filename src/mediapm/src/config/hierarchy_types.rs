@@ -20,6 +20,10 @@ use crate::error::MediaPmError;
 pub enum SanitizeNamesConfig {
     /// Explicitly disable reserved-character replacement.
     Disabled,
+    /// Inherit the effective setting from the parent hierarchy node.
+    ///
+    /// The root seed always resolves to [`Enabled`](Self::Enabled).
+    Inherit,
     /// Enable reserved-character replacement using runtime defaults.
     Enabled,
     /// Override runtime defaults with a custom replacement map.
@@ -28,7 +32,7 @@ pub enum SanitizeNamesConfig {
 
 impl Default for SanitizeNamesConfig {
     fn default() -> Self {
-        Self::Enabled
+        Self::Inherit
     }
 }
 
@@ -39,10 +43,19 @@ impl SanitizeNamesConfig {
         matches!(self, Self::Disabled)
     }
 
+    /// Returns whether this node should inherit from its parent.
+    #[must_use]
+    pub fn is_inherit(&self) -> bool {
+        matches!(self, Self::Inherit)
+    }
+
     /// Returns whether sanitization is enabled for this node.
+    ///
+    /// Returns `false` for [`Inherit`](Self::Inherit) because inheritance must
+    /// be resolved before this check is meaningful.
     #[must_use]
     pub fn is_enabled(&self) -> bool {
-        !self.is_disabled()
+        matches!(self, Self::Enabled | Self::Custom(..))
     }
 
     /// Returns the effective replacement map for this node by merging the
@@ -67,6 +80,7 @@ impl Serialize for SanitizeNamesConfig {
     {
         match self {
             Self::Disabled => serializer.serialize_bool(false),
+            Self::Inherit => serializer.serialize_str("inherit"),
             Self::Enabled => serializer.serialize_bool(true),
             Self::Custom(map) => {
                 let encoded: BTreeMap<String, String> =
@@ -86,6 +100,7 @@ impl<'de> Deserialize<'de> for SanitizeNamesConfig {
         match value {
             Value::Bool(false) => Ok(Self::Disabled),
             Value::Bool(true) => Ok(Self::Enabled),
+            Value::String(s) if s == "inherit" => Ok(Self::Inherit),
             Value::Object(map) => {
                 let mut decoded = BTreeMap::new();
                 for (key, value) in map {
@@ -123,7 +138,7 @@ impl<'de> Deserialize<'de> for SanitizeNamesConfig {
                 Ok(Self::Custom(decoded))
             }
             _ => Err(serde::de::Error::custom(
-                "sanitize_names must be a boolean or a mapping of single-character replacements",
+                "sanitize_names must be a boolean, string \"inherit\", or a mapping of single-character replacements",
             )),
         }
     }
@@ -263,7 +278,7 @@ fn flatten_hierarchy_nodes_inner(
         let hierarchy_id =
             normalize_optional_non_empty_field("id", node.id.as_deref(), node_path_label)?;
 
-        let sanitize_names = if node.sanitize_names.is_disabled() {
+        let sanitize_names = if node.sanitize_names.is_inherit() {
             inherited_sanitize_names.clone()
         } else {
             node.sanitize_names.clone()
@@ -962,7 +977,7 @@ pub struct HierarchyNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
     /// Optional sanitizer policy for this node and its descendants.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_enabled")]
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_inherit")]
     pub sanitize_names: SanitizeNamesConfig,
     /// Ordered child nodes (folder recursion).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1045,7 +1060,7 @@ pub struct HierarchyEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
     /// Optional sanitizer policy inherited from the source hierarchy node.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_enabled")]
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_inherit")]
     pub sanitize_names: SanitizeNamesConfig,
 }
 
