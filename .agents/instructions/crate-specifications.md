@@ -292,6 +292,29 @@ For comprehensive details, refer to the following specifications collected from 
   only emitted by the legacy `plan_level` / `execute_level` sequential path.
   The step-stream path emits only `StepCompleted` for completed step outcomes.
 
+### §16 Workflow Progress Display
+
+Conductor uses `pulsebar` (via `MultiProgress`) to display workflow execution
+progress. Each workflow step gets a progress bar. On completion, bars are not
+marked as finished through `finish_success`/`finish_error`; instead, the pattern
+from `provision.rs` is used: `set_message("ready")` or `set_message("failed")`
+(to display the final state) without an explicit finish call. This avoids
+pulsebar's behavior of appending a render-time-clock-based elapsed duration to
+finished rows.
+
+- Format strings intentionally omit `{elapsed}` so finished bars show no
+  ticking duration.
+- `bar.finish_error("failed")` → `bar.set_message("failed")` (bars stay in
+  Running state; no finished-line render).
+- `bar.finish_success("ready")` → `bar.set_message("ready")` (similarly avoids
+  the finished-line render).
+- The constant `WORKFLOW_PROGRESS_SETTLE_MS` (75 ms) ensures the background
+  render thread has time to flush final bar states before `MultiProgress` is
+  dropped.
+- Zero-step workflows still create bars (no format string set, handled by
+  pulsebar defaults).
+
+
 ### Conductor-Builtins Specification (src/conductor-builtins/)
 
 **9 Detailed Sections**:
@@ -440,6 +463,27 @@ For comprehensive details, refer to the following specifications collected from 
   dependency selectors; other tools that attempt selector definitions are
   rejected. The validation runs for all configured tool dependencies during
   document load.
+
+---
+
+### §18 Hierarchy Sync Progress Display
+
+MediaPM uses `pulsebar` (via `MultiProgress`) during hierarchy sync to display
+per-worker materialization progress and overall hierarchy completion. The same
+pattern from `provision.rs` is used: format strings omit `{elapsed}`, and
+completion is signaled via `set_message` + `set_position` rather than
+`finish_success`/`finish_error`.
+
+- Hierarchy progress bar format: `"{msg}  {bar}  {pos}/{total}"` (no elapsed).
+- Worker progress bar format: `"{msg}  [{bar:18}]  {pct}"` (no elapsed).
+- `worker_bar.finish_success(...)` → `worker_bar.set_position(100)` +
+  `worker_bar.set_message(...)` (fills the progress bar and updates the
+  message without triggering a finished-line render).
+- `hierarchy_progress.finish_success("done")` →
+  `hierarchy_progress.set_message("done")` (the bar position is already at
+  its total through `hierarchy_progress.advance(1)` per entry).
+- A 75 ms settle delay (matching the conductor pattern) allows the render
+  thread to flush final state before `MultiProgress` is dropped.
 
 ---
 
