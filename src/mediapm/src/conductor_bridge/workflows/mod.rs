@@ -724,19 +724,10 @@ fn preserve_existing_generated_step_tools(
                 if !preserved_step_tool_is_valid(machine, &previous.tool) {
                     all_matched = false;
                 }
-            } else if generated.id.ends_with("-yt-dlp") {
-                // yt-dlp tool identities encode same-step companion
-                // selector fragments (e.g. `+ffmpeg-...+deno-...`).
-                // Keep generated identities when they differ so workflow
-                // steps do not pin stale companion mappings, and flag
-                // mismatch to cascade the identity change.
-                all_matched = false;
-            } else if preserved_step_tool_is_valid(machine, &previous.tool) {
-                // Non-yt-dlp steps: preserve previous tool identity so
-                // unchanged steps with impure timestamps do not switch
-                // to a freshly provisioned tool id.
-                generated.tool = previous.tool.clone();
             } else {
+                // Tool identity changed — the generated identity is the
+                // correct one for the current configuration regardless of
+                // tool name. No tool-specific special-casing needed.
                 all_matched = false;
             }
         } else {
