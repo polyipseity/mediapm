@@ -753,9 +753,11 @@ fn tool_requirements_decode_with_version_or_tag_selectors() {
   version = 1,
   tools = {
         ffmpeg = { version = "8.2" },
-                    rsgain = { version = "3.7.0", tag = "v3.7.0", dependencies = { ffmpeg_version = "inherit", sd_version = "inherit" } },
-                                            "media-tagger" = { tag = "latest", dependencies = { ffmpeg_version = "inherit" } },
-                                            "yt-dlp" = { tag = "v2026.04.01", dependencies = { ffmpeg_version = "inherit" }, recheck_seconds = 3600 },
+        deno = { version = "1.0" },
+        sd = { version = "1.0" },
+        rsgain = { version = "3.7.0", tag = "v3.7.0", dependencies = { ffmpeg_version = "inherit", sd_version = "inherit" } },
+        "media-tagger" = { tag = "latest", dependencies = { ffmpeg_version = "inherit" } },
+        "yt-dlp" = { tag = "v2026.04.01", dependencies = { ffmpeg_version = "inherit" }, recheck_seconds = 3600 },
   },
 }
 "#;
@@ -812,6 +814,8 @@ fn rsgain_accepts_grouped_dependency_selectors() {
 {
   version = 1,
   tools = {
+        ffmpeg = { tag = "latest" },
+        sd = { version = "1.0" },
 rsgain = { tag = "latest", dependencies = { ffmpeg_version = "inherit", sd_version = "inherit" } },
   },
 }
@@ -1270,6 +1274,8 @@ fn non_ffmpeg_tools_reject_ffmpeg_slot_settings() {
 {
 version = 1,
 tools = {
+    ffmpeg = { version = "latest" },
+    deno = { version = "latest" },
     "yt-dlp" = {
         version = "latest",
         max_input_slots = 72,
