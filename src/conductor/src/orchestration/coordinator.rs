@@ -50,8 +50,7 @@ use super::protocol::{
 };
 
 /// Settle delay that allows the `MultiProgress` background render thread to flush
-/// bar states after `finish_success` / `finish_error` before the `MultiProgress`
-/// is dropped.
+/// final bar states before the `MultiProgress` is dropped.
 ///
 /// The render interval is 50 ms; 75 ms gives the thread at least one full cycle
 /// to render the terminal row before the render loop is stopped.
@@ -567,7 +566,7 @@ where
             let bar = multi
                 .add_bar(total_steps as u64)
                 .with_message(&display_name)
-                .with_format("{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}  {elapsed}");
+                .with_format("{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}");
             bar.set_position(0);
             workflow_bars.insert(workflow_name.clone(), bar);
 
@@ -702,7 +701,7 @@ where
                         if !is_pure || already_attempted {
                             // Finish bars and bail.
                             for (_wn, bar) in &workflow_bars {
-                                bar.finish_error("failed");
+                                bar.set_message("failed");
                             }
                             tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS))
                                 .await;
@@ -736,9 +735,7 @@ where
                         let new_bar = multi
                             .add_bar(total_steps as u64)
                             .with_message(&display_name)
-                            .with_format(
-                                "{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}  {elapsed}",
-                            );
+                            .with_format("{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}");
                         new_bar.set_position(0);
                         workflow_bars.insert(wf_name.clone(), new_bar);
                         // Remove the old finished-error bar for this workflow and replace.
@@ -765,7 +762,7 @@ where
 
                     // Unrecoverable: finish all bars and fail.
                     for (_wn, bar) in &workflow_bars {
-                        bar.finish_error("failed");
+                        bar.set_message("failed");
                     }
                     tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS)).await;
                     return Err(error);
@@ -863,11 +860,11 @@ where
 
         // Mark all workflow bars as finished.
         for (_, bar) in &workflow_bars {
-            bar.finish_success("ready");
+            bar.set_message("ready");
         }
 
-        // Allow the background render thread one final cycle to flush finished
-        // bar states before `MultiProgress` is dropped.
+        // Allow the background render thread one final cycle to flush the
+        // last bar states before `MultiProgress` is dropped.
         tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS)).await;
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions })
     }

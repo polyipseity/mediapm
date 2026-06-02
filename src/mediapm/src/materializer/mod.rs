@@ -717,14 +717,14 @@ pub async fn sync_hierarchy(
     let hierarchy_progress = multi
         .add_bar(total_entries.max(1) as u64)
         .with_message(&format!("syncing hierarchy ({worker_count} concurrent workers)"))
-        .with_format("{msg}  {bar}  {pos}/{total}  {elapsed}");
+        .with_format("{msg}  {bar}  {pos}/{total}");
     hierarchy_progress.set_position(0);
     let operation_bars = (0..worker_count)
         .map(|worker_index| {
             multi
                 .add_bar(100)
                 .with_message(&format!("worker#{worker_index}: queued"))
-                .with_format("{msg}  [{bar:18}]  {pct}  {elapsed}")
+                .with_format("{msg}  [{bar:18}]  {pct}")
         })
         .collect::<Vec<_>>();
 
@@ -807,7 +807,8 @@ pub async fn sync_hierarchy(
                 let _ = sender.send((job_index, prepared));
             }
 
-            worker_bar.finish_success(&format!("worker#{worker_index}: done"));
+            worker_bar.set_position(100);
+            worker_bar.set_message(&format!("worker#{worker_index}: done"));
         }));
     }
     drop(result_sender);
@@ -983,8 +984,7 @@ pub async fn sync_hierarchy(
             }
         }
     }
-
-    hierarchy_progress.finish_success("done");
+    hierarchy_progress.set_message("done");
     tokio::time::sleep(Duration::from_millis(75)).await;
 
     let _ = fs::remove_dir_all(&staging_root);
