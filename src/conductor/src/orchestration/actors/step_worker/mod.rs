@@ -26,7 +26,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mediapm_cas::{CasApi, CasError, Constraint, ConstraintPatch, Hash, empty_content_hash};
+use mediapm_cas::{
+    CasApi, CasError, CasExistenceBitmap, Constraint, ConstraintPatch, Hash, empty_content_hash,
+};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
 
@@ -304,14 +306,22 @@ where
         let mut rematerialized = false;
         let mut needs_execution = existing_instance.is_none();
         if let Some(instance) = &existing_instance {
-            for output_name in &request.required_output_names {
-                let Some(output_ref) = instance.outputs.get(output_name) else {
-                    needs_execution = true;
-                    break;
-                };
-                if !self.cas.exists(output_ref.hash).await? {
-                    needs_execution = true;
-                    rematerialized = true;
+            let check_hashes: Vec<Hash> = request
+                .required_output_names
+                .iter()
+                .filter_map(|n| instance.outputs.get(n).map(|r| r.hash))
+                .collect();
+            if check_hashes.len() != request.required_output_names.len() {
+                needs_execution = true;
+            } else {
+                let bitmap: CasExistenceBitmap = self.cas.exists_many(check_hashes).await?;
+                let _span = tracing::span!(tracing::Level::DEBUG, "cache_probe", output_count = %request.required_output_names.len(), batched = true).entered();
+                for i in 0..bitmap.len() {
+                    if !bitmap[i] {
+                        needs_execution = true;
+                        rematerialized = true;
+                        break;
+                    }
                 }
             }
         }

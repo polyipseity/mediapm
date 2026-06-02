@@ -2178,6 +2178,7 @@ dependencies = [
  "terminal_size 0.1.17",
  "thiserror",
  "tokio",
+ "tracing",
  "zip",
 ]
 
