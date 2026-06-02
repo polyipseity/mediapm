@@ -381,6 +381,14 @@ impl SchedulerService {
             record.rpc_failed,
             record.fallback_used,
         );
+
+        // Step-stream dispatch assigns steps implicitly (the execution hub
+        // round-robins without calling plan_level), so record assignment-side
+        // counters here for diagnostics completeness.
+        if let Some(metric) = self.instrumentation.worker_metrics.get_mut(record.worker_index) {
+            metric.assigned_steps_total = metric.assigned_steps_total.saturating_add(1);
+        }
+
         self.push_trace(SchedulerTraceKind::StepCompleted {
             step_id: record.step_id,
             tool_name: record.tool_name,
@@ -423,8 +431,13 @@ impl SchedulerService {
             })
             .collect();
 
+        // Fall back to worker_metrics.len() when step-stream dispatch never
+        // called begin_level_metrics (which is the only path that sets
+        // worker_pool_size).
+        let worker_pool_size =
+            std::cmp::max(self.worker_pool_size, self.instrumentation.worker_metrics.len());
         RuntimeDiagnostics {
-            worker_pool_size: self.worker_pool_size,
+            worker_pool_size,
             scheduler: SchedulerDiagnostics {
                 ewma_alpha: self.scheduler.ewma_alpha,
                 unknown_cost_ms: self.scheduler.unknown_cost_ms,
