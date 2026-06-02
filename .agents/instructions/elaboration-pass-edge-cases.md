@@ -970,6 +970,7 @@ initial implementation).
 | Replacement char is multi-byte Unicode | Only single char allowed | Rejected at deserialization |
 | `sanitize_names` on media node | Inherited by children | Verify propagation |
 | Custom map with overlapping runtime default keys | Custom wins | Verify merge order |
+| `Inherit` is default, serialized as `"inherit"` | `skip_serializing_if = "is_inherit"` omits it from hierarchy output | Verify round-trip `Inherit` → omitted → deserialize → same behavior |
 
 **Risk**: Replacement that produces another reserved character would bypass
 reserved-char validation; multi-byte replacement chars create inconsistent path
@@ -1383,6 +1384,111 @@ directories serve no purpose and clutter the output.
 1. Should the cleanup also handle hidden files (`.DS_Store`, `Thumbs.db`) as
    non-empty, or should it treat them as empty? (Currently any entry = non-empty.)
 2. Should there be a configurable depth limit for the upward walk?
+
+---
+
+### 4.22 Tool Identity Preservation During Workflow Re-Synthesis
+
+**Issue**: `preserve_existing_generated_step_tools()` rewrites generated step
+tool ids from the existing workflow snapshot to maintain stable tool identities
+across sync cycles. Without the right carving rules, unchanged steps with
+impure timestamps (which always differ between runs) or yt-dlp steps with
+companion selector changes could flip to freshly-generated tool ids on every
+sync, churning machine config and regenerate downstream materialization.
+
+**Key scenarios**:
+
+1. **Unchanged step with impure timestamp** (non-yt-dlp, e.g. ffmpeg): the
+   step config (input hashes, options) is unchanged, but the generated tool id
+   has a fresh timestamp hash. Without preservation, every sync would generate
+   a new tool id, bloating `machine.tools` with dead entries. Resolution:
+   when `previous.tool == generated.tool`, the id is kept after validity check;
+   when `previous.tool != generated.tool` and the previous tool is still valid
+   in `machine.tools` with non-empty `content_map`, the previous tool id is
+   assigned to the generated step, preserving identity.
+
+2. **yt-dlp step with companion selector change**: yt-dlp tool identities
+   encode same-step companion selector fragments (e.g.
+   `mediapm.tools.yt-dlp+ffmpeg-7.1+deno-2.1`). When companion versions or
+   selectors change, the generated tool identity *must* change too — pinning
+   the old identity would hide the update. Resolution: when
+   `generated.id.ends_with("-yt-dlp")` and `previous.tool != generated.tool`,
+   the step is unconditionally marked as unmatched (`all_matched = false`),
+   triggering a refresh cascade that installs the new tool id.
+
+3. **Stale previous tool**: if the previous tool id no longer exists in
+   `machine.tools`, or is an `Executable` kind whose `machine.tool_configs`
+   entry lacks a `content_map` (meaning the binary payload has been cleaned
+   up), the step is unmatched regardless of kind. This prevents reference to
+   dangling tool definitions.
+
+**Edge case — tool validity for builtins**: `preserved_step_tool_is_valid()`
+always considers builtin tools valid without checking `content_map`, since
+builtins have no materialized payload to clean up.
+
+**Edge case — same companion selector different tool id**: when
+`previous.tool != generated.tool` but the companion selector hashes match
+(rare — clock tick on non-companion fields), non-yt-dlp steps still get the
+previous identity via the validity-check path; yt-dlp steps still get
+unmatched because the outer id string differs. This is correct: yt-dlp step
+tool ids encode fields beyond companion selectors that can legitimately change.
+
+**Test coverage**:
+
+- `unchanged_step_config_with_timestamp_keeps_previous_tool_identity` — ffmpeg
+  step, expects old_tool preserved despite impure timestamp
+- `unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_changes`
+  — yt-dlp step, expects new_tool when companion selectors change
+- `forward_scan_matching_refreshes_later_step_tool_identity_when_needed` — both
+  steps expect new_tool, step 1 expects refreshed timestamp
+- `missing_step_timestamp_forces_refresh_to_active_tool` — ffmpeg step without
+  timestamp, expects new_tool
+
+---
+
+### 4.23 Dependency Selector Inheritance Validation
+
+**Issue**: `ensure_inherit_dependency_target_is_configured()` enforces that
+`inherit` or `global` selectors on tool dependencies require the target tool
+to be defined in the machine/user config. Without this check, a step expecting
+ffmpeg from `tools.yt-dlp.dependencies.ffmpeg_version = "inherit"` silently
+gets no companion binary if `tools.ffmpeg` is absent.
+
+**Scenario**:
+
+- User configures `tools.yt-dlp = { dependencies = { ffmpeg_version = "inherit" } }`
+- User does NOT configure `tools.ffmpeg`
+- `dependencies.ffmpeg_version` resolves to `"inherit"`, meaning "use whatever
+  the global/default ffmpeg tool specifies"
+- Without the guard, `resolve_companion_dependency_selection()` gets no ffmpeg
+  definition and silently produces an empty resolution
+- With the guard, validation fails early with a diagnostic pointing at the
+  missing `tools.ffmpeg` key
+
+**Resolution**:
+
+- During document load, after tool config parsing, the validator iterates all
+  configured tools' dependency selectors
+- For each `inherit`/`global` selector, it checks: does
+  `machine.tools.<dependency_name>` exist? (The dependency tool's name is
+  inferred from the selector key: `ffmpeg_version` → `ffmpeg`,
+  `deno_version` → `deno`, `sd_version` → `sd`)
+- If the target tool is missing, a `ValidationError` is emitted with the
+  missing tool name
+- Only `rsgain`, `yt-dlp`, and `media-tagger` may define dependency selectors;
+  other tools with `dependencies.*_version` selectors are rejected
+
+**Edge case — no validation when selector is a concrete version/tag**: when the
+dependency selector is `{ version = "7.1" }` or `{ tag = "latest" }`, no
+validation is needed because the resolution uses built-in defaults, not a
+cross-tool reference. The guard only triggers for `"inherit"` or `"global"`
+string values.
+
+**Edge case — tool with dependency selectors but missing `tools.ffmpeg`**:
+`ffmpeg_version = "inherit"` requires `tools.ffmpeg` to exist in the
+machine/user config. If only `tool_configs.yt-dlp` exists but `tools.ffmpeg`
+does not, validation fails. This is correct: `tools.ffmpeg` must be explicitly
+declared (even as a minimal stub) to participate in dependency resolution.
 
 ---
 

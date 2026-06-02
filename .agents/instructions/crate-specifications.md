@@ -354,6 +354,8 @@ For comprehensive details, refer to the following specifications collected from 
     materialized hierarchy paths,
   - `SanitizeNamesConfig` has four variants: `Disabled`, `Inherit`, `Enabled`, and
     `Custom(…)` for per-character mapping overrides,
+  - Serialization: `Disabled` → `false`, `Inherit` → `"inherit"`, `Enabled` → `true`,
+    `Custom(…)` → `{ "<": "_", ... }` (single-character key-value map),
   - `Inherit` (default): inherit from parent hierarchy node; the root seed is
     `Enabled`,
   - `Enabled`: replace reserved characters using the effective mapping (runtime
@@ -414,6 +416,36 @@ For comprehensive details, refer to the following specifications collected from 
   augmented with the generated variable names so conductor inherits them at
   execution time. Absolute paths may only leak via generated env files; they
   must never appear in any other persisted configuration or cached state.
+- **Tool identity preservation during workflow re-synthesis**: when sync runs
+  against a previously-synthesized workflow, `preserve_existing_generated_step_tools()`
+  rewrites each generated step's tool id from the existing workflow snapshot to
+  preserve stable tool identities across sync cycles. The function implements a
+  3-way decision per step:
+  - If `previous.tool == generated.tool`: the tool id is kept as-is; validity
+    is checked via `preserved_step_tool_is_valid()` (ensures the tool still
+    exists in `machine.tools` and `Executable` kinds have non-empty `content_map`
+    in `machine.tool_configs`).
+  - If `generated.id.ends_with("-yt-dlp")`: yt-dlp tool identities encode
+    same-step companion selector fragments (e.g. `+ffmpeg-...+deno-...`), so
+    differing tool identities are NOT pinned; mismatch is flagged
+    (`all_matched = false`) to trigger a refresh cascade that replaces the
+    stale identity with the newly-generated one. Non-yt-dlp steps instead
+    assign `previous.tool` (preserving identity) when the previous tool is
+    still valid, so unchanged steps with impure timestamps do not switch to a
+    freshly-provisioned tool id on every sync.
+  - If the previous tool is invalid (missing from machine config or missing
+    content_map), mismatch is flagged for all tools regardless of kind.
+  - Returns `true` when every generated step id was found in `existing` and
+    pinned to a still-valid prior tool id.
+- **Dependency selector inheritance validation**: `ensure_inherit_dependency_target_is_configured()`
+  enforces that `inherit`/`global` selectors on tool dependencies
+  (e.g. `tools.yt-dlp.dependencies.ffmpeg_version = "inherit"`) require the
+  target tool to be defined in `tools.<dependency_tool_name>`. If the target
+  tool is missing, validation fails with an explicit error pointing to the
+  missing configuration. Only `rsgain`, `yt-dlp`, and `media-tagger` may define
+  dependency selectors; other tools that attempt selector definitions are
+  rejected. The validation runs for all configured tool dependencies during
+  document load.
 
 ---
 
