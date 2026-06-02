@@ -1036,8 +1036,8 @@ re-provision.
 
 **Resolution**:
 
-- Input defaults use env template refs: `"${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}"` for
-  `ffmpeg_location` and `"deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}"` for `js_runtimes`
+- Input defaults use env template refs: `"${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}"` for
+  `ffmpeg_location` and `"deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}"` for `js_runtimes`
 - Resolved absolute paths are stored in `generated_runtime_env_vars` (a
   `BTreeMap<String, String>`) and written to `<conductor_dir>/.env.generated`
   as dotenv key-value pairs — never to any `.ncl` config document

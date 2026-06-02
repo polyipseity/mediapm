@@ -361,8 +361,8 @@ For comprehensive details, refer to the following specifications collected from 
   reported via `MaterializeReport.removed_empty_dirs` →
   `SyncSummary.removed_empty_dirs`, which is logged at CLI level.
 - **yt-dlp companion path env template refs**: managed yt-dlp companion paths
-  (ffmpeg, deno) are injected as `${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}` and
-  `deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}` in `input_defaults`. The resolved absolute
+  (ffmpeg, deno) are injected as `${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}` and
+  `deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}` in `input_defaults`. The resolved absolute
   paths are stored in `generated_runtime_env_vars` and written to
   `<conductor_dir>/.env.generated` (never to persisted config documents). The
   machine document's `runtime.inherited_env_vars` for the active platform is

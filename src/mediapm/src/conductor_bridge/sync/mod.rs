@@ -279,7 +279,7 @@ pub(crate) async fn reconcile_desired_tools(
                 yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
                 desired_config.input_defaults.insert(
                     "ffmpeg_location".to_string(),
-                    InputBinding::String("${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string()),
+                    InputBinding::String("${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string()),
                 );
             }
 
@@ -296,7 +296,7 @@ pub(crate) async fn reconcile_desired_tools(
                 yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
                 desired_config.input_defaults.insert(
                     "js_runtimes".to_string(),
-                    InputBinding::String("deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string()),
+                    InputBinding::String("deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string()),
                 );
             }
         }
