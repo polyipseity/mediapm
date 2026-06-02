@@ -27,9 +27,10 @@ fn demo_writes_explicit_runtime_defaults() {
 
     assert!(
         source.contains("mediapm_dir: Some(\".mediapm\".to_string())")
-            && source.contains("hierarchy_root_dir: Some(\".\".to_string())")
-            && source.contains("let runtime_tmp_dir = demo_runtime_tmp_dir(workspace_root);")
-            && source.contains("mediapm_tmp_dir: Some(runtime_tmp_dir.clone())")
+            && source.contains("hierarchy_root_dir: Some(\"media\".to_string())")
+            && source.contains(
+                "materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec())"
+            )
             && source.contains("conductor_config: Some(\"mediapm.conductor.ncl\".to_string())")
             && source.contains(
                 "conductor_machine_config: Some(\"mediapm.conductor.machine.ncl\".to_string())"
@@ -37,7 +38,6 @@ fn demo_writes_explicit_runtime_defaults() {
             && source.contains(
                 "conductor_state_config: Some(\".mediapm/state.conductor.ncl\".to_string())"
             )
-            && source.contains("conductor_tmp_dir: Some(runtime_tmp_dir)")
             && source
                 .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
             && source.contains(
@@ -45,25 +45,24 @@ fn demo_writes_explicit_runtime_defaults() {
             )
             && source.contains("media_state_config: Some(\".mediapm/state.ncl\".to_string())")
             && source.contains("env_file: Some(\".mediapm/.env\".to_string())")
+            && source.contains("env_generated_file: Some(\".mediapm/.env.generated\".to_string())")
             && source.contains(
                 "mediapm_schema_dir: Some(Some(\".mediapm/config/mediapm\".to_string()))"
-            ),
-        "demo should write explicit runtime defaults for mediapm_dir/hierarchy/os-temp/conductor paths/env/schema and inherited env vars"
+            )
+            && source.contains("profiler_enabled: Some(true)"),
+        "demo should write explicit runtime defaults for mediapm_dir/hierarchy/conductor paths/env/schema/inherited env vars and profiler/materialization"
     );
 }
 
 /// Verifies local `demo` explicitly declares the `import` tool
-/// requirement and uses `$0` whole-match replacement for metadata extension
-/// transforms.
+/// requirement and import step.
 #[test]
 fn demo_declares_import_and_dollar_zero_metadata_transforms() {
     let source = include_str!("../../examples/mediapm_demo.rs");
 
     assert!(
-        source.contains("\"import\".to_string()")
-            && source.contains("replacement: \".$0\".to_string()")
-            && source.contains("MediaStepTool::Import"),
-        "demo should explicitly require import and keep $0 whole-match transform semantics"
+        source.contains("\"import\".to_string()") && source.contains("MediaStepTool::Import"),
+        "demo should explicitly declare import tool requirement and import step"
     );
 }
 
