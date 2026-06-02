@@ -1489,6 +1489,34 @@ declared (even as a minimal stub) to participate in dependency resolution.
 
 ---
 
+#### §4.24 Workflow progress display
+
+| Property | Value |
+|---|---|
+| **Crates** | `mediapm-conductor` |
+| **Files** | `src/conductor/src/orchestration/coordinator.rs` |
+| **Risk** | Finished-bar duration display is deceiving (render-time clock, not per-bar). |
+| **Pre-fix** | Pulsebar `finish_success("ready")` and `finish_error("failed")` rendered finished lines like `✔ ready (Xs)` where `X` was the *render-thread-clock elapsed* since the bar's `start_time`, not the time spent since start of that workflow. Because `MultiProgress` ticks all bars (including finished) at ~20 fps, all finished bars showed nearly the same elapsed value (the render instant), and it kept ticking indefinitely. |
+| **Post-fix** | `{elapsed}` removed from all format strings. `finish_success`/`finish_error` replaced with `set_message` + `set_position` (bars stay in Running state). No duration display on any bar. Follows the pattern set by `provision.rs`. |
+| **Interaction risk** | Removing `{elapsed}` from progress bars means users lose the ability to see how long a workflow has been running. This was an intentional trade-off: the duration display was not reliable enough (render-time clock) to keep, and fixing it would require vendoring/patching pulsebar to add a `finish_time` field to `BarState`. |
+| **Mitigation** | A 75 ms settle delay (`WORKFLOW_PROGRESS_SETTLE_MS`) ensures the final bar states are flushed before `MultiProgress` drop. The settle-constant comment avoids mentioning `finish_success`/`finish_error`. |
+
+---
+
+#### §4.25 Hierarchy sync progress display
+
+| Property | Value |
+|---|---|
+| **Crates** | `mediapm` |
+| **Files** | `src/mediapm/src/materializer/mod.rs` |
+| **Risk** | Same as §4.24 — worker bars used `finish_success` which triggered pulsebar's render-time-clock elapsed display. |
+| **Pre-fix** | Worker bars called `worker_bar.finish_success(format!("worker#{n}: done"))`, hierarchy bar called `hierarchy_progress.finish_success("done")`. Both produced finished rows with ticking elapsed from the render clock. |
+| **Post-fix** | Worker bars: `worker_bar.set_position(100)` + `worker_bar.set_message(...)`. Hierarchy bar: `hierarchy_progress.set_message("done")` (position already at total via `advance(1)` per entry). `{elapsed}` removed from both format strings. |
+| **Interaction risk** | Workers show no duration during or after execution. For long-running workers this loses feedback about how long they've been running. Same trade-off rationale as §4.24. |
+| **Mitigation** | A 75 ms settle delay mirrors the conductor pattern. |
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination
