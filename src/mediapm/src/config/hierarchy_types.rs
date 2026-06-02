@@ -13,8 +13,8 @@ use crate::error::MediaPmError;
 /// Runtime-local hierarchy sanitization policy.
 ///
 /// This field accepts the same user-facing wire forms as the config field:
-/// - `false` (default) disables sanitization,
-/// - `true` enables replacement using runtime defaults,
+/// - `false` disables sanitization,
+/// - `true` (default) enables replacement using runtime defaults,
 /// - `{ "<": "_", ... }` applies a custom per-character mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SanitizeNamesConfig {
@@ -28,7 +28,7 @@ pub enum SanitizeNamesConfig {
 
 impl Default for SanitizeNamesConfig {
     fn default() -> Self {
-        Self::Disabled
+        Self::Enabled
     }
 }
 
@@ -512,7 +512,7 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
         hierarchy,
         "",
         None,
-        &SanitizeNamesConfig::Disabled,
+        &SanitizeNamesConfig::Enabled,
         &mut flattened,
     )
     .map_err(MediaPmError::Workflow)?;
@@ -962,7 +962,7 @@ pub struct HierarchyNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
     /// Optional sanitizer policy for this node and its descendants.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_disabled")]
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_enabled")]
     pub sanitize_names: SanitizeNamesConfig,
     /// Ordered child nodes (folder recursion).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1045,7 +1045,7 @@ pub struct HierarchyEntry {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<PlaylistItemRef>,
     /// Optional sanitizer policy inherited from the source hierarchy node.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_disabled")]
+    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_enabled")]
     pub sanitize_names: SanitizeNamesConfig,
 }
 
