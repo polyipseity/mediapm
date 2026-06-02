@@ -50,8 +50,7 @@
   - actor-first concurrency with explicit supervision behavior;
   - type-system-enforced invariants where practical;
   - pragmatic macro usage (reduce boilerplate, do not hide critical flow);
-  - documentation is part of the API contract.
-- Technology baseline:
+  - documentation is part of the API contract.- Git safety: NEVER run `git reset` (especially `--hard` or `--keep`). It destroys uncommitted work irreversibly. Use `git revert` to undo published changes, or `git restore` to discard working-tree changes.- Technology baseline:
   - actor/orchestration: `ractor`,
   - hashing: `blake3`,
   - async contracts: `futures` (+ `async-trait` where useful),
