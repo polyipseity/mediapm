@@ -23,6 +23,7 @@ use crate::paths::MediaPmPaths;
 
 use super::MaterializationLookupContext;
 use super::resolve::resolve_variant_source_bytes;
+use super::sanitize_hierarchy_path;
 
 /// Resolves `${media.id}` and `${media.metadata.*}` placeholders for one
 /// hierarchy key template.
@@ -113,13 +114,16 @@ async fn resolve_media_placeholder_template(
     Ok(resolved_path)
 }
 
-/// Resolves placeholder templates used by folder rename-rule replacements.
+/// Resolves placeholder templates used by folder rename-rule replacements and
+/// applies the effective reserved-character replacement map to each resolved
+/// replacement.
 pub(super) async fn resolve_hierarchy_folder_rename_rule_replacements(
     rules: &[HierarchyFolderRenameRule],
     hierarchy_path: &str,
     entry: &HierarchyEntry,
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
+    replacements: &BTreeMap<char, char>,
 ) -> Result<Vec<HierarchyFolderRenameRule>, MediaPmError> {
     let mut resolved_rules = Vec::with_capacity(rules.len());
 
@@ -135,9 +139,10 @@ pub(super) async fn resolve_hierarchy_folder_rename_rule_replacements(
         )
         .await?;
 
+        let sanitized_replacement = sanitize_hierarchy_path(&resolved_replacement, replacements);
         resolved_rules.push(HierarchyFolderRenameRule {
             pattern: rule.pattern.clone(),
-            replacement: resolved_replacement,
+            replacement: sanitized_replacement,
         });
     }
 

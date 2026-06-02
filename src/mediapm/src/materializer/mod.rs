@@ -452,12 +452,21 @@ async fn prepare_hierarchy_entry(
                 }
             })?;
 
+            let rename_replacements = if entry.sanitize_names.is_enabled() {
+                let runtime_replacements =
+                    document.runtime.path_sanitization_mapping_with_defaults()?;
+                entry.sanitize_names.replacement_map_with_defaults(&runtime_replacements)
+            } else {
+                BTreeMap::new()
+            };
+
             let resolved_rename_rules = resolve_hierarchy_folder_rename_rule_replacements(
                 &entry.rename_files,
                 &relative_path,
                 entry,
                 source,
                 lookup,
+                &rename_replacements,
             )
             .await?;
             let compiled_rename_rules = compile_hierarchy_folder_rename_rules(
