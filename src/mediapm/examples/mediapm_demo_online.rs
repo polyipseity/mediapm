@@ -1310,8 +1310,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     });
 
     // NOTE: The yt-dlp preset's extra root thumbnail projection uses
-    // `folder.$1` naming (`<media-id>.thumbnails.folder`). This demo now
-    // instantiates that `folder.<thumbnail_ext>` path above, alongside the
+    // `folder.$1` naming (`<media-id>.thumbnails.folder`). This demo now instantiates
+    // that `folder.<thumbnail_ext>` path above, alongside the
     // preset-style thumbnail/link filenames inside explicit root folders
     // (`thumbnails/` and `links/`) using separate `media_folder(path="")`
     // projections.
