@@ -329,7 +329,12 @@ For comprehensive details, refer to the following specifications collected from 
   - NFD normalization is always enforced regardless of sanitize_names setting,
   - the replacement occurs after NFD normalization but before reserved-char
     validation so replaced paths always pass strict validation.
-- **Hierarchy flattening with rename_files**:
+- **Hierarchy flattening dedup**:
+  - the dedup key during flattening is `(template_path, media_id)`, not
+    `template_path` alone,
+  - hierarchy entries at the same template path with different `media_id`
+    values are NOT duplicates — `${media.id}` placeholders resolve to
+    different paths during materialization,
   - hierarchy nodes at the same path may declare the same output variants as
     long as their `rename_files` rules differ (different `rename_files` produce
     distinct final filenames at materialization time),

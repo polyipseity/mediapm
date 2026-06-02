@@ -1792,3 +1792,36 @@ Does "fail-fast" mean:
 3. **Add test suite** with ~80 new test cases (split across crates)
 4. **Architecture review** for blockers (hash migration, concurrency model, consistency)
 5. **Re-run elaboration** after Phase 1 to close critical gaps
+
+---
+
+### 4.16 Same Template Path with Different Media IDs in Hierarchy
+
+**Issue**: The flattening dedup key was initially only the template path string
+(e.g., `music/\${media.id}.mkv`), causing false duplicate errors when two
+hierarchy entries shared the same template path but referenced different
+`media_id` values. The `\${media.id}` placeholder resolves to distinct paths
+during materialization, so the dedup check at flattening time was premature.
+
+**Scenario**:
+
+hierarchy = [
+    { path = "music/\${media.id}.mkv", kind = "media", id = "entry-a", media_id = "song_a", variant = "audio" },
+    { path = "music/\${media.id}.mkv", kind = "media", id = "entry-b", media_id = "song_b", variant = "audio" },
+]
+
+**Resolution**: The dedup key changed from `String` (template path only) to
+`(String, String)` (template path + `media_id`). Entries with the same
+template path but different `media_id` are now allowed. Same path + same
+`media_id` is still correctly rejected as a duplicate.
+
+**Cross-reference**: see `flatten_hierarchy_nodes_for_runtime()` in
+`src/mediapm/src/config/hierarchy_types.rs` and the guard in
+`collect_media_file_hierarchy_templates()` in
+`src/mediapm/src/materializer/playlist.rs`.
+
+**Rationale**: Template paths are resolved per-media_id during materialization
+(via `resolve_hierarchy_relative_path()`), so the flattening dedup check
+operates on unresolved template strings and must only compare entries that
+would actually produce the same materialized path — which requires accounting
+for `media_id`.
