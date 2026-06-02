@@ -284,8 +284,7 @@ fn demo_online_uses_in_memory_service_wiring() {
             && source.contains("DEMO_HIERARCHY_ROOT_TEMPLATE")
             && source.contains("DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE")
             && source.contains("DEMO_LIBRARY_ROOT")
-            && source
-                .contains("intentionally does not instantiate that `folder.<thumbnail_ext>` path")
+            && source.contains("now instantiates that `folder.<thumbnail_ext>` path")
             && source.contains("media_folder(path=\"\")")
             && source
                 .contains("Only the sidecars/ folder should use nested directory organization")
