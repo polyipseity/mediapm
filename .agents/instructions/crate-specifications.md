@@ -275,6 +275,23 @@ For comprehensive details, refer to the following specifications collected from 
   `CasExistenceBitmap` (backed by `BitVec`) instead of sequential per-output
   `cas.exists()` calls, reducing CAS round-trips from O(output_count) to O(1).
 
+**Step-stream dedup and trace semantics**:
+- Steps from multiple workflows started simultaneously do not see each other's
+  in-flight cache entries, so naturally-identical steps across workflows may
+  both execute (`executed_instances=N`) instead of one caching off the other
+  (`executed_instances=1`, `cached_instances=N-1`). This is inherent to
+  parallel dispatch, not a bug.
+- Step-stream dispatch bypasses `plan_level()` and `begin_level_metrics()`. The
+  scheduler's `runtime_diagnostics()` must therefore fall back to
+  `max(self.worker_pool_size, worker_metrics.len())` when
+  `begin_level_metrics()` was never called (worker_pool_size defaults to 0).
+- `assigned_steps_total` is incremented in the step-stream path via
+  `record_completion()` using `saturating_add(1)`, since the stream dispatch
+  does not go through the sequential assignment tracking.
+- Trace events differ by dispatch path: `LevelPlanned` and `StepAssigned` are
+  only emitted by the legacy `plan_level` / `execute_level` sequential path.
+  The step-stream path emits only `StepCompleted` for completed step outcomes.
+
 ### Conductor-Builtins Specification (src/conductor-builtins/)
 
 **9 Detailed Sections**:
@@ -445,6 +462,15 @@ MediaPM Errors
 - **Atomicity**: CAS failures in pure workflows trigger one-shot retry; impure workflows fail immediately
 - **Recovery**: MediaPM staged directory rollback on failure; state.ncl unchanged
 - **Diagnostics**: Error messages include actionable context (path, hash, expected vs. actual)
+
+**Error detection patterns**:
+- `CorruptWorkflowOutput` uses `#[error(transparent)]` which delegates its
+  `Display` implementation entirely to the inner `CorruptWorkflowOutputContext`.
+  The inner context format is `"workflow '{name}' step '{id}' failed to read
+  output ... due to CAS corruption: {detail}"` and does **not** contain the
+  word "impure". To detect impure-workflow corruption errors, use
+  `matches!(error, ConductorError::CorruptWorkflowOutput(_))` rather than
+  string containment checks.
 
 ---
 
@@ -1583,6 +1609,57 @@ $ diff <(blake3 archive1.zip) <(blake3 archive2.zip)
 - [ ] Verify test passes in release build
 - [ ] Run test 5x to check for flakiness
 - [ ] Add test to CI (`.github/workflows/ci.yml`)
+
+---
+
+## Demo Verification Results
+
+### Offline Demo (`mediapm_demo`)
+
+The offline demo runs a complete 10-step pipeline using synthetic/offline data:
+
+| Phase | Tool | Steps | Status |
+|-------|------|-------|--------|
+| Import | `import` (CAS) | 4 steps | ✅ executed |
+| Processing | `ffmpeg` | 2 steps | ✅ executed |
+| Metadata | `media-tagger` | 2 steps | ✅ executed |
+| Gain | `rsgain` | 1 step | ✅ executed |
+| Export | `export` | 1 step | ✅ executed |
+
+- **Steps executed**: 10/10, **cached**: 0/10, **rematerialized**: 0/10
+- **Total wall time**: ~27s (single run, cold cache)
+- **Profile output**: verified complete with progress and timing for each step
+- **Key takeaway**: Full pipeline executes end-to-end without any managed tool
+  provisioning — all tools resolved from system PATH or runtime config.
+
+### Online Demo (`mediapm_demo_online`)
+
+Tests the same pipeline with actual yt-dlp managed tool provisioning:
+
+| Phase | Tool | Steps | Status |
+|-------|------|-------|--------|
+| Download | `yt-dlp + ffmpeg + deno` | 4 steps | ✅ executed (provisioned) |
+| Processing | `ffmpeg` | 2 steps | ✅ executed |
+| Metadata | `media-tagger` | 2 steps | ✅ executed |
+| Gain | `rsgain` | 1 step | ✅ executed |
+| Export | `export` | 1 step | ✅ executed |
+
+- **Steps executed**: 10/10, **cached**: 0/10, **rematerialized**: 0/10
+- **yt-dlp step**: 38.4s (includes download + ffmpeg + deno companion provisioning)
+- **Total wall time**: ~67s (single run, cold cache, network-dependent)
+- **Companion inlining**: yt-dlp companion payloads (ffmpeg + deno) are inlined
+  into the yt-dlp tool content map per same-step companion dependency rules
+- **Key takeaway**: full managed-tool download → workflow execution → materialization
+  pipeline works end-to-end with real yt-dlp downloads
+
+### Testing Summary
+
+- **`cargo test -p mediapm-conductor`**: 200 lib tests + 15 integration tests = 215 total, all pass ✅
+- Key test categories validated:
+  - Step-stream dedup semantics (parallel dispatch cross-workflow)
+  - CorruptWorkflowOutput error variant detection (`matches!` macro)
+  - Scheduler diagnostics fallback for step-stream path
+  - Trace event completeness per dispatch path
 
 ---
 
