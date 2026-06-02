@@ -254,7 +254,6 @@ where
 
         let mut phase_timings = StepExecutionPhaseTimings::default();
 
-        let mut template_file_writes = Vec::new();
         let resolve_inputs_started_at = Instant::now();
         let resolved_inputs = self
             .resolve_inputs(
@@ -268,9 +267,7 @@ where
         phase_timings.resolve_inputs_ms =
             resolve_inputs_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        let resolve_specs_started_at = Instant::now();
-        let resolved_process =
-            self.resolve_process_execution(tool, &resolved_inputs, &mut template_file_writes)?;
+        // Cheap metadata and key derivation — no template rendering.
         let metadata = Self::tool_spec_from_unified(tool);
         let instance_key = Self::derive_instance_key(
             &request.step.tool,
@@ -278,21 +275,17 @@ where
             request.impure_timestamp,
             &resolved_inputs,
         )?;
-        let output_specs = self.resolve_output_specs(
-            tool,
-            &request.step,
-            &resolved_inputs,
-            &mut template_file_writes,
-        )?;
-        phase_timings.resolve_specs_ms = resolve_specs_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        // Derive the effective output name set from the tool schema.
+        // Template-heavy output resolution is deferred until after the cache
+        // probe so cache-hit steps skip it entirely.
         let mut effective_output_names = request.required_output_names.clone();
         effective_output_names.extend(request.step.outputs.keys().cloned());
         if effective_output_names.is_empty() {
-            effective_output_names.extend(output_specs.keys().cloned());
+            effective_output_names.extend(tool.outputs.keys().cloned());
         }
         for required_output_name in &effective_output_names {
-            if !output_specs.contains_key(required_output_name) {
+            if !tool.outputs.contains_key(required_output_name) {
                 return Err(ConductorError::Workflow(format!(
                     "workflow '{}' step '{}' requires unknown output '{}'",
                     request.workflow_name, request.step.id, required_output_name
@@ -327,13 +320,22 @@ where
         }
         phase_timings.cache_probe_ms = cache_probe_started_at.elapsed().as_secs_f64() * 1000.0;
 
+        // Construct the instance, pulling cached outputs on hit.
+        // Step-level persistence overrides are applied upfront so the
+        // cache-hit path can skip template-heavy output spec resolution.
         let mut instance = if let Some(existing) = existing_instance {
+            let mut outputs = existing.outputs;
+            for (name, policy) in &request.step.outputs {
+                if let Some(output_ref) = outputs.get_mut(name) {
+                    output_ref.persistence = policy.resolve(output_ref.persistence);
+                }
+            }
             ToolCallInstance {
                 tool_name: request.step.tool.clone(),
                 metadata,
                 impure_timestamp: request.impure_timestamp,
                 inputs: resolved_inputs.clone(),
-                outputs: existing.outputs,
+                outputs,
             }
         } else {
             ToolCallInstance {
@@ -345,7 +347,22 @@ where
             }
         };
 
-        if needs_execution {
+        // Template-heavy resolution (process execution + output specs) runs
+        // only when a miss or partial miss forces actual execution.
+        let output_specs: BTreeMap<String, ResolvedOutputSpec> = if needs_execution {
+            let resolve_specs_started_at = Instant::now();
+            let mut template_file_writes = Vec::new();
+            let resolved_process =
+                self.resolve_process_execution(tool, &resolved_inputs, &mut template_file_writes)?;
+            let output_specs = self.resolve_output_specs(
+                tool,
+                &request.step,
+                &resolved_inputs,
+                &mut template_file_writes,
+            )?;
+            phase_timings.resolve_specs_ms =
+                resolve_specs_started_at.elapsed().as_secs_f64() * 1000.0;
+
             let materialization_started_at = Instant::now();
             let execution_cwd_temp = self.create_execution_temp_cwd()?;
             let execution_cwd = execution_cwd_temp.path();
@@ -416,7 +433,27 @@ where
             }
             phase_timings.capture_outputs_ms =
                 capture_outputs_started_at.elapsed().as_secs_f64() * 1000.0;
-        }
+
+            output_specs
+        } else {
+            // Cache hit: build output-spec entries from the already-overridden
+            // instance outputs so the persistence merge below is idempotent.
+            effective_output_names
+                .iter()
+                .map(|name| {
+                    let persistence =
+                        instance.outputs.get(name).map(|r| r.persistence).unwrap_or_default();
+                    (
+                        name.clone(),
+                        ResolvedOutputSpec {
+                            capture: ResolvedOutputCapture::Stdout,
+                            persistence,
+                            allow_empty: false,
+                        },
+                    )
+                })
+                .collect()
+        };
 
         let persistence_merge_started_at = Instant::now();
         let mut pending_unsaved_hashes = BTreeSet::new();
