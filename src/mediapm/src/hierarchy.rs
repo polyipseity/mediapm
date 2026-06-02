@@ -179,6 +179,43 @@ pub(crate) fn insert_hierarchy_preset_node(
         return;
     }
 
+    // Merge scenario: incoming node has no identity (id + media_id both None)
+    // and matches exactly one existing nameless container. Merge children into
+    // the existing node to avoid duplicating the parent folder.
+    if matching_indices.len() == 1
+        && node.id.is_none()
+        && node.media_id.is_none()
+        && hierarchy[matching_indices[0]].id.is_none()
+        && hierarchy[matching_indices[0]].media_id.is_none()
+    {
+        let target = &mut hierarchy[matching_indices[0]];
+        match position {
+            AddInsertPosition::Beginning => {
+                let mut new_children = node.children;
+                new_children.extend(std::mem::take(&mut target.children));
+                target.children = new_children;
+            }
+            AddInsertPosition::End => {
+                target.children.extend(node.children);
+            }
+            AddInsertPosition::Sorted => {
+                for child in node.children {
+                    let sort_key = hierarchy_preset_sort_id(&child);
+                    let insert_at = target
+                        .children
+                        .iter()
+                        .position(|existing| {
+                            let existing_key = hierarchy_preset_sort_id(existing);
+                            compare_hierarchy_ids(sort_key, existing_key).is_lt()
+                        })
+                        .unwrap_or(target.children.len());
+                    target.children.insert(insert_at, child);
+                }
+            }
+        }
+        return;
+    }
+
     match position {
         AddInsertPosition::Beginning => {
             hierarchy.insert(matching_indices[0], node);

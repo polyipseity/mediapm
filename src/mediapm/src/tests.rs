@@ -400,6 +400,64 @@ async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
     );
 }
 
+/// Ensures adding a hierarchy preset merges into an existing nameless
+/// container folder at the same path instead of creating a duplicate
+/// sibling.
+#[test]
+fn add_hierarchy_preset_merges_into_existing_nameless_container() {
+    let folder = "music videos";
+    let mut hierarchy = vec![HierarchyNode {
+        path: folder.to_string(),
+        kind: HierarchyNodeKind::Folder,
+        id: None,
+        media_id: None,
+        variant: None,
+        variants: Vec::new(),
+        rename_files: Vec::new(),
+        format: super::PlaylistFormat::default(),
+        ids: Vec::new(),
+        sanitize_names: SanitizeNamesConfig::Disabled,
+        children: vec![HierarchyNode {
+            path: "existing-media-root".to_string(),
+            kind: HierarchyNodeKind::Folder,
+            id: Some("existing-id".to_string()),
+            media_id: Some("existing-media".to_string()),
+            variant: None,
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: super::PlaylistFormat::default(),
+            ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Disabled,
+            children: Vec::new(),
+        }],
+    }];
+
+    let inserted = super::build_hierarchy_preset_node(
+        MediaHierarchyPreset::Local,
+        "new-media",
+        folder,
+        "new-media".to_string(),
+    );
+    super::insert_hierarchy_preset_node(&mut hierarchy, inserted, folder, AddInsertPosition::End);
+
+    // Verify no duplicate folder: exactly one node at the target path.
+    let matching: Vec<_> = hierarchy
+        .iter()
+        .filter(|node| node.kind == HierarchyNodeKind::Folder && node.path == folder)
+        .collect();
+    assert_eq!(matching.len(), 1, "should not create a duplicate container folder");
+
+    // Verify both media roots are present as children of the same folder.
+    let container = &matching[0];
+    let child_ids: Vec<Option<&str>> =
+        container.children.iter().map(|child| child.id.as_deref()).collect();
+    assert!(
+        child_ids.contains(&Some("existing-id")),
+        "existing media root should still be present"
+    );
+    assert!(child_ids.contains(&Some("new-media")), "new media root should be present");
+}
+
 /// Ensures sorted hierarchy insertion places missing ids first, then empty
 /// ids, then lexicographically ordered non-empty ids within one root
 /// folder.
