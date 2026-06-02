@@ -86,6 +86,8 @@ pub struct SyncSummary {
     pub materialized_paths: usize,
     /// Number of stale hierarchy paths removed.
     pub removed_paths: usize,
+    /// Number of empty parent directories removed after stale path cleanup.
+    pub removed_empty_dirs: usize,
     /// Number of tools newly registered in conductor machine config.
     ///
     /// `mediapm sync` no longer reconciles tool requirements automatically,

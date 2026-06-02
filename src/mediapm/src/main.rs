@@ -538,12 +538,13 @@ async fn main() -> anyhow::Result<()> {
             let check_tag_updates = args.tag_update_policy.resolve(true);
             let summary = service.sync_library_with_tag_update_checks(check_tag_updates).await?;
             println!(
-                "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}",
+                "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}, removed_empty_dirs={}",
                 summary.executed_instances,
                 summary.cached_instances,
                 summary.rematerialized_instances,
                 summary.materialized_paths,
                 summary.removed_paths,
+                summary.removed_empty_dirs,
             );
             for warning in summary.warnings {
                 eprintln!("warning: {warning}");

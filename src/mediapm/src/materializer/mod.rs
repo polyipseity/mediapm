@@ -101,6 +101,8 @@ pub struct MaterializeReport {
     pub skipped_paths: usize,
     /// Number of previously managed outputs removed as stale.
     pub removed_paths: usize,
+    /// Number of empty parent directories removed after stale path cleanup.
+    pub removed_empty_dirs: usize,
     /// Link/copy fallback notices captured during materialization.
     pub notices: Vec<String>,
 }
@@ -917,15 +919,15 @@ pub async fn sync_hierarchy(
         .cloned()
         .collect::<Vec<_>>();
 
-    for stale in stale_paths {
+    for stale in &stale_paths {
         if stale.ends_with('/') || stale.ends_with('\\') {
             // Legacy lock rows from historical directory-level tracking should
             // not remove whole directories once file-level tracking is active.
-            lock.managed_files.remove(&stale);
+            lock.managed_files.remove(stale);
             continue;
         }
 
-        let final_path = paths.hierarchy_root_dir.join(&stale);
+        let final_path = paths.hierarchy_root_dir.join(stale);
         if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
             let owned = final_path.clone();
             tokio::task::spawn_blocking(move || remove_path(&owned)).await.map_err(|e| {
@@ -933,7 +935,44 @@ pub async fn sync_hierarchy(
             })??;
             report.removed_paths += 1;
         }
-        lock.managed_files.remove(&stale);
+        lock.managed_files.remove(stale);
+    }
+
+    // Remove empty parent directories after stale path cleanup.
+    // Walk up from each removed path's parent, removing directories that
+    // contain no files (recursively), stopping at the hierarchy root.
+    let mut checked_parents = BTreeSet::new();
+    for stale in &stale_paths {
+        if stale.ends_with('/') || stale.ends_with('\\') {
+            continue;
+        }
+        let mut parent = paths.hierarchy_root_dir.join(stale);
+        if !parent.pop() {
+            continue;
+        }
+        loop {
+            if !checked_parents.insert(parent.clone()) {
+                break;
+            }
+            if parent == paths.hierarchy_root_dir {
+                break;
+            }
+            let is_empty = match tokio::fs::read_dir(&parent).await {
+                Ok(mut entries) => entries.next_entry().await.unwrap_or(None).is_none(),
+                Err(_) => false,
+            };
+            if !is_empty {
+                break;
+            }
+            let owned = parent.clone();
+            tokio::task::spawn_blocking(move || remove_path(&owned)).await.map_err(|e| {
+                MediaPmError::Workflow(format!("remove empty parent dir task panicked: {e}"))
+            })??;
+            report.removed_empty_dirs += 1;
+            if !parent.pop() {
+                break;
+            }
+        }
     }
 
     hierarchy_progress.finish_success("done");

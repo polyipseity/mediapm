@@ -1278,6 +1278,7 @@ where
             rematerialized_instances: conductor_summary.rematerialized_instances,
             materialized_paths: materialize_report.materialized_paths,
             removed_paths: materialize_report.removed_paths,
+            removed_empty_dirs: materialize_report.removed_empty_dirs,
             added_tools: 0,
             updated_tools: 0,
             warnings,
