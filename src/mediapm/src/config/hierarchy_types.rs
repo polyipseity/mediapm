@@ -517,17 +517,21 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     )
     .map_err(MediaPmError::Workflow)?;
 
-    let mut seen_paths = BTreeMap::<String, Vec<usize>>::new();
+    let mut seen_paths = BTreeMap::<(String, String), Vec<usize>>::new();
     let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
     for (index, entry) in flattened.iter().enumerate() {
-        seen_paths.entry(entry.path.clone()).or_default().push(index);
+        let path_key = (entry.path.clone(), entry.entry.media_id.clone());
+        seen_paths.entry(path_key.clone()).or_default().push(index);
 
         // Check for true duplicate paths: same path AND same variants (or both lack variants).
         // Allow same path with different variants since rename_files rules differentiate outputs.
-        if seen_paths[&entry.path].len() > 1 {
+        // Template paths with different media_ids resolve to different paths during
+        // materialization (via resolve_hierarchy_relative_path), so they are not
+        // considered duplicates at flattening time.
+        if seen_paths[&path_key].len() > 1 {
             let current_variants =
                 entry.entry.variants.iter().collect::<std::collections::BTreeSet<_>>();
-            let previous_index = seen_paths[&entry.path][seen_paths[&entry.path].len() - 2];
+            let previous_index = seen_paths[&path_key][seen_paths[&path_key].len() - 2];
             let previous_variants = flattened[previous_index]
                 .entry
                 .variants

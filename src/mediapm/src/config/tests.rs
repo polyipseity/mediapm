@@ -398,6 +398,124 @@ hierarchy = [
     assert!(hierarchy.contains_key("library/artist/subtitles"));
 }
 
+/// Same template path with different media_ids is allowed — `${media.id}`
+/// placeholders resolve to different paths during materialization.
+#[test]
+fn hierarchy_same_path_different_media_id_allowed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("mediapm.ncl");
+    let source = r#"
+{
+version = 1,
+media = {
+    song_a = {
+        steps = [
+            {
+                tool = "yt-dlp",
+                output_variants = {
+                    audio = { kind = "primary", save = "full" },
+                },
+                options = {
+                    uri = "https://example.com/song_a",
+                },
+            },
+        ],
+    },
+    song_b = {
+        steps = [
+            {
+                tool = "yt-dlp",
+                output_variants = {
+                    audio = { kind = "primary", save = "full" },
+                },
+                options = {
+                    uri = "https://example.com/song_b",
+                },
+            },
+        ],
+    },
+},
+hierarchy = [
+    {
+        path = "music/${media.id}.mkv",
+        kind = "media",
+        id = "entry-a",
+        media_id = "song_a",
+        variant = "audio",
+    },
+    {
+        path = "music/${media.id}.mkv",
+        kind = "media",
+        id = "entry-b",
+        media_id = "song_b",
+        variant = "audio",
+    },
+],
+}
+"#;
+
+    std::fs::write(&path, source).expect("write source");
+    let document = load_mediapm_document(&path).expect("decode hierarchy document");
+
+    // Different media_ids with same template path must not produce duplicate errors.
+    let hierarchy = hierarchy_flat_map(&document);
+    assert!(hierarchy.contains_key("music/${media.id}.mkv"));
+}
+
+/// Same template path and same media_id must still be rejected as duplicate.
+#[test]
+fn hierarchy_same_path_same_media_id_rejected() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let path = root.path().join("mediapm.ncl");
+    let source = r#"
+{
+version = 1,
+media = {
+    song = {
+        steps = [
+            {
+                tool = "yt-dlp",
+                output_variants = {
+                    audio = { kind = "primary", save = "full" },
+                },
+                options = {
+                    uri = "https://example.com/song",
+                },
+            },
+        ],
+    },
+},
+hierarchy = [
+    {
+        path = "music/${media.id}.mkv",
+        kind = "media",
+        id = "entry-1",
+        media_id = "song",
+        variant = "audio",
+    },
+    {
+        path = "music/${media.id}.mkv",
+        kind = "media",
+        id = "entry-2",
+        media_id = "song",
+        variant = "audio",
+    },
+],
+}
+"#;
+
+    std::fs::write(&path, source).expect("write source");
+    let result = load_mediapm_document(&path);
+
+    assert!(result.is_err(), "same path + same media_id should be rejected at load");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("duplicate") || err_str.contains("conflicting"),
+        "error should mention duplicate or conflicting, got: {err_str}"
+    );
+}
+
 /// Protects hierarchy defaults by treating omitted `kind` as structural
 /// folder nodes.
 #[test]

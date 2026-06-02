@@ -61,6 +61,7 @@ pub(super) fn collect_media_file_hierarchy_templates(
 
         if let Some(previous_entry) = templates.insert(flattened_entry.path.clone(), entry.clone())
             && previous_entry != *entry
+            && previous_entry.media_id == entry.media_id
         {
             return Err(MediaPmError::Workflow(format!(
                 "hierarchy path '{}' resolves to conflicting media entries",
