@@ -418,25 +418,19 @@ For comprehensive details, refer to the following specifications collected from 
   must never appear in any other persisted configuration or cached state.
 - **Tool identity preservation during workflow re-synthesis**: when sync runs
   against a previously-synthesized workflow, `preserve_existing_generated_step_tools()`
-  rewrites each generated step's tool id from the existing workflow snapshot to
-  preserve stable tool identities across sync cycles. The function implements a
-  3-way decision per step:
+  rewrites each generated step's tool id from the existing workflow snapshot.
+  The function implements a 2-way decision per step:
   - If `previous.tool == generated.tool`: the tool id is kept as-is; validity
     is checked via `preserved_step_tool_is_valid()` (ensures the tool still
     exists in `machine.tools` and `Executable` kinds have non-empty `content_map`
     in `machine.tool_configs`).
-  - If `generated.id.ends_with("-yt-dlp")`: yt-dlp tool identities encode
-    same-step companion selector fragments (e.g. `+ffmpeg-...+deno-...`), so
-    differing tool identities are NOT pinned; mismatch is flagged
-    (`all_matched = false`) to trigger a refresh cascade that replaces the
-    stale identity with the newly-generated one. Non-yt-dlp steps instead
-    assign `previous.tool` (preserving identity) when the previous tool is
-    still valid, so unchanged steps with impure timestamps do not switch to a
-    freshly-provisioned tool id on every sync.
-  - If the previous tool is invalid (missing from machine config or missing
-    content_map), mismatch is flagged for all tools regardless of kind.
+  - If the tool identity differs from the previously-synthesized one, mismatch
+    is flagged (`all_matched = false`) to trigger a refresh cascade that
+    installs the newly-generated identity. This applies uniformly to all tools
+    regardless of name — any tool's identity can encode volatile fields such as
+    same-step companion selectors, dependency versions, or provision timestamps.
   - Returns `true` when every generated step id was found in `existing` and
-    pinned to a still-valid prior tool id.
+    the tool id is unchanged and still valid.
 - **Dependency selector inheritance validation**: `ensure_inherit_dependency_target_is_configured()`
   enforces that `inherit`/`global` selectors on tool dependencies
   (e.g. `tools.yt-dlp.dependencies.ffmpeg_version = "inherit"`) require the
