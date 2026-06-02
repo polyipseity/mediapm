@@ -1093,6 +1093,39 @@ configuration.
   having the same normalized path, so preset children still populate the
   target folder when the folder itself already exists
 
+**Edge Case - Nameless Folder Duplication**:
+
+**Issue**: When the user has manually created a container folder (no `id`, no
+`media_id`) at path `"music videos"` and a preset targets that same path, the
+original `insert_hierarchy_preset_node()` logic would find the matching
+existing folder (same path, same `Folder` kind) and insert the preset node as
+a **sibling** — creating two identical-looking container folders at the same
+path.
+
+**Scenario**:
+
+- User creates a hierarchy with a folder at path `"music videos"`, `id: None`,
+  `media_id: None`, containing one media root
+- User adds a hierarchy preset targeting `"music videos"` for a new media id
+- `build_hierarchy_preset_node()` generates an outer container with
+  `id: None`, `media_id: None`, and the same target path
+- `matching_indices` finds the existing folder (1 match)
+- Without the merge guard, the new node is inserted as a sibling → duplicate
+
+**Resolution**:
+
+- `insert_hierarchy_preset_node()` detects: `matching_indices.len() == 1` AND
+  `node.id.is_none()` AND `node.media_id.is_none()` AND
+  `existing.id.is_none()` AND `existing.media_id.is_none()`
+- In this case, instead of inserting the new node as a sibling, the preset's
+  children are merged into the existing folder's children
+- The merge respects the insertion position: `Beginning` prepends;
+  `End` appends; `Sorted` inserts each child at its sort-determined position
+  within the existing children list
+- The guard uses `matching_indices.len() == 1` to avoid interfering with the
+  sorted-order test (which uses 3 matching nameless folders and needs sibling
+  insertion to maintain the sibling-group sort invariant)
+
 **Questions for Clarification**:
 
 1. Should the do-not-overwrite guard be case-sensitive for node ids?

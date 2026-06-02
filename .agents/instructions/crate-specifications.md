@@ -344,11 +344,16 @@ For comprehensive details, refer to the following specifications collected from 
   `.untagged` suffix. This ensures tagged nodes sort before untagged variants
   and makes the variant role explicit. Sidecar and container nodes use their
   own descriptive suffixes (`.media_folder`, etc.).
-- **Hierarchy preset do-not-overwrite**: `insert_hierarchy_preset_node()`
+- **Hierarchy preset do-not-overwrite by id**: `insert_hierarchy_preset_node()`
   skips insertion when the incoming node (or any of its children) has an `id`
   that already exists anywhere in the hierarchy tree. This prevents accidental
-  overwrite of user-defined nodes by preset entries. Children from the incoming
-  node are merged into the matching existing node rather than dropped.
+  overwrite of user-defined nodes by preset entries.
+- **Hierarchy preset nameless-folder merge**: when the incoming preset node
+  has both `id: None` and `media_id: None` (a pure container) and exactly one
+  existing matching folder at the same path also has both fields `None`, the
+  preset children are merged into the existing folder instead of being inserted
+  as a duplicate sibling. This prevents parent-folder duplication when a user
+  manually created a container folder at the same path that a preset targets.
 - **Empty directory cleanup after stale hierarchy removal**: after removing
   stale materialized paths, the materializer walks up from each removed path's
   parent directory, removing directories that contain no files (recursively),
