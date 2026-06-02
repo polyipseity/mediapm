@@ -11,10 +11,15 @@ use std::sync::Arc;
 use mediapm_cas::Hash;
 
 use crate::model::config::{
-    ExternalContentRef, ImpureTimestamp, InputBinding, MachineNickelDocument, ProcessSpec,
-    StateNickelDocument, ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
+    ExternalContentRef, InputBinding, MachineNickelDocument, ProcessSpec, StateNickelDocument,
+    ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
 };
-use crate::model::state::{OrchestrationState, ToolCallInstance};
+use crate::model::state::ToolCallInstance;
+
+/// Re-exported types from model config/state that are part of the protocol
+/// surface for orchestration-internal consumers (e.g. execution hub).
+pub(super) use crate::model::config::ImpureTimestamp;
+pub(super) use crate::model::state::OrchestrationState;
 
 /// Collected output hash slots keyed by producing step id and declared output name.
 ///
@@ -265,4 +270,34 @@ pub(super) struct CommitStateRequest {
     pub unified: UnifiedNickelDocument,
     /// State pointer that was active before the current run started, if any.
     pub prior_state_pointer: Option<Hash>,
+}
+
+/// One step-reference in a cross-workflow stream dispatch batch.
+///
+/// Carries the originating workflow name so the execution hub can tag the
+/// outcome correctly without the coordinator resolving workflow→step mappings
+/// after the fact.
+#[derive(Debug, Clone)]
+pub(super) struct StreamStep {
+    /// Originating workflow name used for outcome routing and diagnostics.
+    pub workflow_name: String,
+    /// Step definition to execute.
+    pub step_spec: WorkflowStepSpec,
+    /// Output hashes already produced by earlier steps in the same workflow.
+    pub step_outputs: Arc<StepOutputs>,
+}
+
+/// One step outcome produced by the step-stream dispatch path.
+///
+/// Mirrors `StepDispatchOutcome` but adds the originating workflow name so the
+/// coordinator can route outcomes back to the correct workflow stream without
+/// maintaining a separate lookup table.
+#[derive(Debug)]
+pub(super) struct StepOutcome {
+    /// Originating workflow name.
+    pub workflow_name: String,
+    /// Completed step id inside the originating workflow.
+    pub step_id: String,
+    /// Full dispatch outcome including execution bundle and RPC metadata.
+    pub result: StepDispatchOutcome,
 }

@@ -45,7 +45,7 @@ use super::profiler::{
     StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, write_profile_json,
 };
 use super::protocol::{
-    CommitStateRequest, LevelExecutionRequest, LoadedDocuments, StepExecutionBundle, StepOutputs,
+    CommitStateRequest, LoadedDocuments, StepExecutionBundle, StepOutputs, StreamStep,
     UnifiedNickelDocument, UnifiedToolSpec,
 };
 
@@ -461,8 +461,34 @@ where
             target.push(trimmed.to_string());
         }
     }
+}
 
-    /// Executes all unified workflows level by level using the execution-hub actor.
+/// Per-workflow mutable state maintained across the step-stream dispatch loop.
+#[derive(Debug)]
+struct WorkflowStreamState {
+    /// Current topological level index for this workflow.
+    level_cursor: usize,
+    /// Output hashes produced by completed steps in this workflow.
+    step_outputs: StepOutputs,
+    /// Remaining step counts per topological level for progress tracking.
+    pending_counts: Vec<usize>,
+    /// Per-workflow summary accumulated across all levels.
+    summary: RunSummary,
+    /// Unsaved hashes accumulated within this workflow run.
+    pending_unsaved_hashes: BTreeSet<Hash>,
+}
+
+impl<C> WorkflowCoordinator<C>
+where
+    C: CasApi + Send + Sync + 'static,
+{
+    /// Executes all unified workflows using step-stream parallel dispatch.
+    ///
+    /// Instead of running workflows sequentially level by level, this method
+    /// collects ready steps from ALL workflows (those whose current topological
+    /// level dependencies are satisfied) and dispatches them together through
+    /// the execution hub. Outcomes are routed back per-workflow to update
+    /// step-outputs and advance level cursors.
     ///
     /// Progress-row messages intentionally avoid duplicate numeric counters so
     /// pulsebar can own count rendering while message text focuses on active
@@ -489,15 +515,23 @@ where
         let mut pending_unsaved_hashes = BTreeSet::new();
         let mut step_executions = Vec::new();
 
-        // One MultiProgress drives all workflow bars for this run.
-        // The background render thread fires every 50 ms so bars update
-        // continuously even when execute_level is blocking in a long-running
-        // tool subprocess — without requiring mutations on the hot path.
+        // ── Phase 1: Precompute topological levels and per-workflow state ──
+
+        let mut workflow_levels: BTreeMap<String, Vec<Vec<&WorkflowStepSpec>>> = BTreeMap::new();
+        let mut stream_states: BTreeMap<String, WorkflowStreamState> = BTreeMap::new();
+        let mut required_outputs_by_workflow: BTreeMap<String, BTreeMap<String, BTreeSet<String>>> =
+            BTreeMap::new();
+        let mut workflow_is_pure_map: BTreeMap<String, bool> = BTreeMap::new();
+        let mut workflow_display_names: BTreeMap<String, String> = BTreeMap::new();
+
         let multi = MultiProgress::new();
+        let mut workflow_bars: BTreeMap<String, pulsebar::ProgressBar> = BTreeMap::new();
 
         for (workflow_name, workflow) in &unified.workflows {
-            let workflow_display_name = Self::workflow_display_name(workflow_name, workflow);
-            let workflow_is_pure = Self::workflow_is_pure(workflow_name, workflow, &unified.tools)?;
+            let display_name = Self::workflow_display_name(workflow_name, workflow).to_string();
+            workflow_display_names.insert(workflow_name.clone(), display_name.clone());
+            let is_pure = Self::workflow_is_pure(workflow_name, workflow, &unified.tools)?;
+            workflow_is_pure_map.insert(workflow_name.clone(), is_pure);
 
             for warning in Self::collect_unnecessary_depends_on_warnings(
                 workflow_name,
@@ -507,201 +541,333 @@ where
                 eprintln!("warning: {warning}");
             }
 
+            let levels = Self::topological_levels(workflow_name, workflow)?;
             let total_steps = workflow.steps.len();
+            let required = Self::collect_required_outputs_by_step(workflow_name, workflow)?;
+
+            workflow_levels.insert(workflow_name.clone(), levels);
+            required_outputs_by_workflow.insert(workflow_name.clone(), required);
+
             if total_steps == 0 {
-                multi.add_bar(1).with_message(workflow_display_name).finish_success("ready");
+                let bar = multi.add_bar(1).with_message(&display_name);
+                bar.set_position(0);
+                workflow_bars.insert(workflow_name.clone(), bar);
+                stream_states.insert(
+                    workflow_name.clone(),
+                    WorkflowStreamState {
+                        level_cursor: 0,
+                        step_outputs: BTreeMap::new(),
+                        pending_counts: Vec::new(),
+                        summary: RunSummary::new(),
+                        pending_unsaved_hashes: BTreeSet::new(),
+                    },
+                );
                 continue;
             }
+            let bar = multi
+                .add_bar(total_steps as u64)
+                .with_message(&display_name)
+                .with_format("{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}  {elapsed}");
+            bar.set_position(0);
+            workflow_bars.insert(workflow_name.clone(), bar);
 
-            let required_outputs_by_step =
-                Self::collect_required_outputs_by_step(workflow_name, workflow)?;
-            let mut recovery_attempted = false;
-            let mut workflow_attempt = 0usize;
+            stream_states.insert(
+                workflow_name.clone(),
+                WorkflowStreamState {
+                    level_cursor: 0,
+                    step_outputs: BTreeMap::new(),
+                    pending_counts: Vec::new(),
+                    summary: RunSummary::new(),
+                    pending_unsaved_hashes: BTreeSet::new(),
+                },
+            );
+        }
 
-            'workflow_retry: loop {
-                let levels = Self::topological_levels(workflow_name, workflow)?;
-                let workflow_start_message = workflow_display_name.to_string();
-                let workflow_progress = multi
-                    .add_bar(total_steps.max(1) as u64)
-                    .with_message(&workflow_start_message)
-                    .with_format("{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}  {elapsed}");
-                // Force the initial bar state into the MultiProgress snapshot so the
-                // background render thread emits at least one row before the first
-                // level is dispatched.
-                workflow_progress.set_position(0);
-                let mut dispatched_steps = 0usize;
-                let mut step_outputs: StepOutputs = BTreeMap::new();
-                let mut workflow_summary = RunSummary::new();
-                let mut workflow_pending_unsaved_hashes = BTreeSet::new();
+        if workflow_levels.is_empty() {
+            tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS)).await;
+            return Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions });
+        }
 
-                for (level_index, level) in levels.into_iter().enumerate() {
-                    let level_step_count = level.len();
-                    workflow_progress.set_message(&Self::workflow_level_progress_message(
-                        workflow_display_name,
-                        dispatched_steps,
-                        total_steps,
-                        &level,
-                    ));
-                    // Advance on dispatch: the MultiProgress background thread
-                    // renders this state every 50 ms, so the bar visually moves
-                    // while the long-running execute_level await is in progress.
-                    workflow_progress.set_position(dispatched_steps as u64);
-                    workflow_progress.advance(level_step_count as u64);
-                    dispatched_steps = dispatched_steps.saturating_add(level_step_count);
-                    let state_snapshot = Arc::new(state.clone());
-                    let step_outputs_snapshot = Arc::new(step_outputs.clone());
-                    let impure_timestamps = Self::plan_impure_timestamps(
-                        unified,
-                        state_document,
-                        workflow_name,
-                        &level,
-                    )?;
-
-                    let dispatch_outcomes = match execution_hub
-                        .execute_level(LevelExecutionRequest {
-                            workflow_name: workflow_name.clone(),
-                            level_index,
-                            level: level.into_iter().cloned().collect(),
-                            unified: unified_shared.clone(),
-                            state_snapshot,
-                            runtime_tools_dir: tools_dir.to_path_buf(),
-                            outermost_config_dir: outermost_config_dir.to_path_buf(),
-                            step_outputs: step_outputs_snapshot,
-                            required_outputs_by_step: required_outputs_by_step.clone(),
-                            impure_timestamps,
-                        })
-                        .await
-                    {
-                        Ok(outcomes) => outcomes,
-                        Err(error) => {
-                            let recoverable =
-                                Self::recoverable_corrupt_output_context(workflow_name, &error);
-                            let Some((
-                                consumer_step_id,
-                                producer_step_id,
-                                output_name,
-                                output_hash,
-                            )) = recoverable
-                            else {
-                                workflow_progress.finish_error("failed");
-                                tokio::time::sleep(Duration::from_millis(
-                                    WORKFLOW_PROGRESS_SETTLE_MS,
-                                ))
-                                .await;
-                                return Err(error);
-                            };
-
-                            if !workflow_is_pure {
-                                workflow_progress.finish_error("failed");
-                                tokio::time::sleep(Duration::from_millis(
-                                    WORKFLOW_PROGRESS_SETTLE_MS,
-                                ))
-                                .await;
-                                return Err(ConductorError::Workflow(format!(
-                                    "{error}; workflow '{workflow_name}' is impure, so automatic corruption recovery is disabled"
-                                )));
-                            }
-
-                            if recovery_attempted {
-                                workflow_progress.finish_error("failed");
-                                tokio::time::sleep(Duration::from_millis(
-                                    WORKFLOW_PROGRESS_SETTLE_MS,
-                                ))
-                                .await;
-                                return Err(error);
-                            }
-
-                            recovery_attempted = true;
-                            let removed_instances = self
-                                .recover_from_corrupt_output_hash(
-                                    state,
-                                    output_hash,
-                                    &mut workflow_pending_unsaved_hashes,
-                                )
-                                .await?;
-
-                            eprintln!(
-                                "warning: workflow '{workflow_name}' detected corrupted cached output '{producer_step_id}.{output_name}' (hash '{output_hash}') while resolving step '{consumer_step_id}'; dropped {removed_instances} cached instance(s), removed corrupt CAS object, and retrying pure workflow once"
-                            );
-
-                            workflow_attempt = workflow_attempt.saturating_add(1);
-                            workflow_progress.finish_error("retrying");
-                            // Give the managed render thread one cycle to paint
-                            // the retry status before allocating the replacement
-                            // workflow bar for the next retry attempt.
-                            tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS))
-                                .await;
-                            continue 'workflow_retry;
-                        }
-                    };
-
-                    for outcome in dispatch_outcomes {
-                        let result = outcome.result;
-                        step_executions.push(StepExecutionProfile {
-                            workflow_name: workflow_name.clone(),
-                            workflow_display_name: workflow_display_name.to_string(),
-                            workflow_attempt,
-                            level_index,
-                            step_id: result.step_id.clone(),
-                            tool_name: result.tool_name.clone(),
-                            worker_index: result.worker_index,
-                            executed: result.executed,
-                            rematerialized: result.rematerialized,
-                            fallback_used: result.fallback_used,
-                            elapsed_ms: result.elapsed_ms,
-                            requested_output_count: result.requested_output_names.len(),
-                            pending_unsaved_hashes_count: result.pending_unsaved_hashes.len(),
-                            phase_timings: StepPhaseTimingProfile {
-                                resolve_inputs_ms: result.phase_timings.resolve_inputs_ms,
-                                resolve_specs_ms: result.phase_timings.resolve_specs_ms,
-                                cache_probe_ms: result.phase_timings.cache_probe_ms,
-                                materialization_ms: result.phase_timings.materialization_ms,
-                                execution_ms: result.phase_timings.execution_ms,
-                                capture_outputs_ms: result.phase_timings.capture_outputs_ms,
-                                persistence_merge_ms: result.phase_timings.persistence_merge_ms,
-                            },
-                        });
-
-                        if result.executed {
-                            workflow_summary.executed_instances =
-                                workflow_summary.executed_instances.saturating_add(1);
-                            if result.rematerialized {
-                                workflow_summary.rematerialized_instances =
-                                    workflow_summary.rematerialized_instances.saturating_add(1);
-                            }
-                        } else {
-                            workflow_summary.cached_instances =
-                                workflow_summary.cached_instances.saturating_add(1);
-                        }
-
-                        workflow_pending_unsaved_hashes
-                            .extend(result.pending_unsaved_hashes.iter().copied());
-                        let step_id = result.step_id.clone();
-                        let step_hashes = Self::merge_step_result_into_state(
-                            state,
-                            result,
-                            &mut workflow_pending_unsaved_hashes,
-                        )?;
-                        step_outputs.insert(step_id, step_hashes);
-                    }
-                }
-
-                summary.executed_instances =
-                    summary.executed_instances.saturating_add(workflow_summary.executed_instances);
-                summary.cached_instances =
-                    summary.cached_instances.saturating_add(workflow_summary.cached_instances);
-                summary.rematerialized_instances = summary
-                    .rematerialized_instances
-                    .saturating_add(workflow_summary.rematerialized_instances);
-                pending_unsaved_hashes.extend(workflow_pending_unsaved_hashes);
-
-                workflow_progress.finish_success("ready");
-                break;
+        // Build pending_counts for each workflow from its levels.
+        for (wf_name, levels) in &workflow_levels {
+            if let Some(state) = stream_states.get_mut(wf_name) {
+                state.pending_counts = levels.iter().map(|lvl| lvl.len()).collect();
             }
         }
 
+        // ── Phase 2: Step-stream dispatch loop ──
+
+        let mut recovery_attempted_map: BTreeMap<String, bool> = BTreeMap::new();
+        let mut workflow_attempts: BTreeMap<String, usize> = BTreeMap::new();
+
+        loop {
+            // Collect ready steps (current level) from all workflows that still have
+            // remaining levels.
+            let mut ready_steps: Vec<StreamStep> = Vec::new();
+            // Track which (workflow, level_index) each ready step belongs to.
+            let mut ready_batch_positions: Vec<(String, usize)> = Vec::new();
+            // Accumulate all impure-timestamp plans for the batch.
+            let mut batch_impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>> =
+                BTreeMap::new();
+            // Accumulate all required-output maps for the batch.
+            let mut batch_required_outputs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+            for wf_name in stream_states.keys().cloned().collect::<Vec<_>>() {
+                let Some(levels) = workflow_levels.get(&wf_name) else {
+                    continue;
+                };
+                let cursor = stream_states.get(&wf_name).map_or(0, |s| s.level_cursor);
+                if cursor >= levels.len() {
+                    continue;
+                }
+
+                let level = &levels[cursor];
+                if level.is_empty() {
+                    // Advance past empty levels immediately.
+                    if let Some(state) = stream_states.get_mut(&wf_name) {
+                        state.level_cursor = cursor + 1;
+                    }
+                    continue;
+                }
+
+                let wf_state = stream_states.get(&wf_name).expect("just checked");
+                for step_spec in level.iter().copied() {
+                    ready_steps.push(StreamStep {
+                        workflow_name: wf_name.clone(),
+                        step_spec: step_spec.clone(),
+                        step_outputs: Arc::new(wf_state.step_outputs.clone()),
+                    });
+                }
+                ready_batch_positions.push((wf_name.clone(), cursor));
+
+                let level_timestamps =
+                    Self::plan_impure_timestamps(unified, state_document, &wf_name, level)?;
+                batch_impure_timestamps.extend(level_timestamps);
+
+                if let Some(req) = required_outputs_by_workflow.get(&wf_name) {
+                    batch_required_outputs.extend(req.clone());
+                }
+            }
+
+            if ready_steps.is_empty() {
+                break;
+            }
+
+            // Update progress messages with current batch info.
+            for (wf_name, _) in &ready_batch_positions {
+                let Some(levels) = workflow_levels.get(wf_name) else {
+                    continue;
+                };
+                let cursor = stream_states.get(wf_name).map(|s| s.level_cursor).unwrap_or(0);
+                if cursor < levels.len() {
+                    let display_name =
+                        workflow_display_names.get(wf_name).map(String::as_str).unwrap_or(wf_name);
+                    let progress_msg =
+                        Self::workflow_level_progress_message(display_name, 0, 0, &levels[cursor]);
+                    if let Some(bar) = workflow_bars.get(wf_name) {
+                        bar.set_message(&progress_msg);
+                    }
+                }
+            }
+
+            // Dispatch the full batch.
+            let state_snapshot = Arc::new(state.clone());
+            let outcomes = match execution_hub
+                .execute_stream(
+                    ready_steps,
+                    unified_shared.clone(),
+                    batch_required_outputs,
+                    state_snapshot,
+                    tools_dir.to_path_buf(),
+                    outermost_config_dir.to_path_buf(),
+                    batch_impure_timestamps,
+                )
+                .await
+            {
+                Ok(outcomes) => outcomes,
+                Err(error) => {
+                    // Check per-workflow corruption recovery.
+                    // Try to find the first workflow with a recoverable error.
+                    let mut recovered_any = false;
+                    for (wf_name, _) in &ready_batch_positions {
+                        let recoverable = Self::recoverable_corrupt_output_context(wf_name, &error);
+                        let Some((_consumer, producer, _output, output_hash)) = recoverable else {
+                            continue;
+                        };
+
+                        let is_pure = workflow_is_pure_map.get(wf_name).copied().unwrap_or(false);
+                        let already_attempted =
+                            recovery_attempted_map.get(wf_name).copied().unwrap_or(false);
+
+                        if !is_pure || already_attempted {
+                            // Finish bars and bail.
+                            for (_wn, bar) in &workflow_bars {
+                                bar.finish_error("failed");
+                            }
+                            tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS))
+                                .await;
+                            return Err(error);
+                        }
+
+                        recovery_attempted_map.insert(wf_name.clone(), true);
+                        let removed = self
+                            .recover_from_corrupt_output_hash(
+                                state,
+                                output_hash,
+                                &mut pending_unsaved_hashes,
+                            )
+                            .await?;
+
+                        eprintln!(
+                            "warning: workflow '{wf_name}' detected corrupted cached output '{producer}.<output>' (hash '{output_hash}') while resolving step '{_consumer}'; dropped {removed} cached instance(s), removed corrupt CAS object, and retrying pure workflow once"
+                        );
+
+                        // Reset this workflow's stream state for retry.
+                        let display_name =
+                            workflow_display_names.get(wf_name).cloned().unwrap_or_default();
+                        let workflow = unified.workflows.get(wf_name).ok_or_else(|| {
+                            ConductorError::Internal(format!(
+                                "workflow '{wf_name}' disappeared during recovery"
+                            ))
+                        })?;
+                        let levels = Self::topological_levels(wf_name, workflow)?;
+                        workflow_levels.insert(wf_name.clone(), levels);
+                        let total_steps = workflow.steps.len();
+                        let new_bar = multi
+                            .add_bar(total_steps as u64)
+                            .with_message(&display_name)
+                            .with_format(
+                                "{msg}  {bar}  {pos}/{total}  {rate}/s  ETA {eta}  {elapsed}",
+                            );
+                        new_bar.set_position(0);
+                        workflow_bars.insert(wf_name.clone(), new_bar);
+                        // Remove the old finished-error bar for this workflow and replace.
+                        stream_states.insert(
+                            wf_name.clone(),
+                            WorkflowStreamState {
+                                level_cursor: 0,
+                                step_outputs: BTreeMap::new(),
+                                pending_counts: Vec::new(),
+                                summary: RunSummary::new(),
+                                pending_unsaved_hashes: BTreeSet::new(),
+                            },
+                        );
+                        let attempt =
+                            workflow_attempts.get(wf_name).copied().unwrap_or(0).saturating_add(1);
+                        workflow_attempts.insert(wf_name.clone(), attempt);
+                        recovered_any = true;
+                        break;
+                    }
+
+                    if recovered_any {
+                        continue;
+                    }
+
+                    // Unrecoverable: finish all bars and fail.
+                    for (_wn, bar) in &workflow_bars {
+                        bar.finish_error("failed");
+                    }
+                    tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS)).await;
+                    return Err(error);
+                }
+            };
+
+            // Process outcomes and route per-workflow state updates.
+            for outcome in outcomes {
+                let wf_name = outcome.workflow_name;
+                let dispatch = outcome.result;
+                let result = dispatch.result;
+                let attempt = workflow_attempts.get(&wf_name).copied().unwrap_or(0);
+
+                let cursor = stream_states.get(&wf_name).map(|s| s.level_cursor).unwrap_or(0);
+
+                step_executions.push(StepExecutionProfile {
+                    workflow_name: wf_name.clone(),
+                    workflow_display_name: workflow_display_names
+                        .get(&wf_name)
+                        .cloned()
+                        .unwrap_or_else(|| wf_name.clone()),
+                    workflow_attempt: attempt,
+                    level_index: cursor,
+                    step_id: result.step_id.clone(),
+                    tool_name: result.tool_name.clone(),
+                    worker_index: result.worker_index,
+                    executed: result.executed,
+                    rematerialized: result.rematerialized,
+                    fallback_used: result.fallback_used,
+                    elapsed_ms: result.elapsed_ms,
+                    requested_output_count: result.requested_output_names.len(),
+                    pending_unsaved_hashes_count: result.pending_unsaved_hashes.len(),
+                    phase_timings: StepPhaseTimingProfile {
+                        resolve_inputs_ms: result.phase_timings.resolve_inputs_ms,
+                        resolve_specs_ms: result.phase_timings.resolve_specs_ms,
+                        cache_probe_ms: result.phase_timings.cache_probe_ms,
+                        materialization_ms: result.phase_timings.materialization_ms,
+                        execution_ms: result.phase_timings.execution_ms,
+                        capture_outputs_ms: result.phase_timings.capture_outputs_ms,
+                        persistence_merge_ms: result.phase_timings.persistence_merge_ms,
+                    },
+                });
+
+                if let Some(wf_state) = stream_states.get_mut(&wf_name) {
+                    if result.executed {
+                        wf_state.summary.executed_instances =
+                            wf_state.summary.executed_instances.saturating_add(1);
+                        if result.rematerialized {
+                            wf_state.summary.rematerialized_instances =
+                                wf_state.summary.rematerialized_instances.saturating_add(1);
+                        }
+                    } else {
+                        wf_state.summary.cached_instances =
+                            wf_state.summary.cached_instances.saturating_add(1);
+                    }
+
+                    wf_state
+                        .pending_unsaved_hashes
+                        .extend(result.pending_unsaved_hashes.iter().copied());
+
+                    let step_hashes = Self::merge_step_result_into_state(
+                        state,
+                        result,
+                        &mut wf_state.pending_unsaved_hashes,
+                    )?;
+                    wf_state.step_outputs.insert(outcome.step_id, step_hashes);
+                }
+            }
+
+            // Advance level cursors for all workflows that had steps dispatched.
+            for (wf_name, dispatched_level) in &ready_batch_positions {
+                if let Some(wf_state) = stream_states.get_mut(wf_name) {
+                    wf_state.level_cursor = dispatched_level.saturating_add(1);
+                    // Update progress bar position to completed steps.
+                    let total_completed = wf_state.step_outputs.len();
+                    if let Some(bar) = workflow_bars.get(wf_name) {
+                        bar.set_position(total_completed as u64);
+                    }
+                }
+            }
+        }
+
+        // ── Phase 3: Aggregate per-workflow summaries into the run summary ──
+
+        for wf_state in stream_states.values() {
+            summary.executed_instances =
+                summary.executed_instances.saturating_add(wf_state.summary.executed_instances);
+            summary.cached_instances =
+                summary.cached_instances.saturating_add(wf_state.summary.cached_instances);
+            summary.rematerialized_instances = summary
+                .rematerialized_instances
+                .saturating_add(wf_state.summary.rematerialized_instances);
+            pending_unsaved_hashes.extend(wf_state.pending_unsaved_hashes.iter().copied());
+        }
+
+        // Mark all workflow bars as finished.
+        for (_, bar) in &workflow_bars {
+            bar.finish_success("ready");
+        }
+
         // Allow the background render thread one final cycle to flush finished
-        // bar states before `MultiProgress` is dropped and the thread is stopped.
+        // bar states before `MultiProgress` is dropped.
         tokio::time::sleep(Duration::from_millis(WORKFLOW_PROGRESS_SETTLE_MS)).await;
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions })
     }

@@ -5,7 +5,8 @@
 //! and the execution hub handles assignment, worker RPC fan-out, fallback
 //! execution, and diagnostics updates.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures_util::future::join_all;
@@ -14,12 +15,14 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
 use crate::api::{RuntimeDiagnostics, SchedulerDiagnostics};
 use crate::error::ConductorError;
+use crate::model::config::ImpureTimestamp;
+use crate::model::state::OrchestrationState;
 use crate::orchestration::config::{
     DEFAULT_RPC_TIMEOUT_MS, default_worker_pool_size, scheduler_ewma_alpha, unknown_step_cost_ms,
 };
 use crate::orchestration::protocol::{
     LevelExecutionRequest, StepCompletionRecord, StepDispatchOutcome, StepExecutionRequest,
-    StepWorkerAssignment, UnifiedNickelDocument,
+    StepOutcome, StepWorkerAssignment, StreamStep, UnifiedNickelDocument,
 };
 
 use super::scheduler::{SchedulerClient, spawn_scheduler_actor};
@@ -40,6 +43,10 @@ impl ExecutionHubClient {
     }
 
     /// Executes one workflow level and returns the worker-dispatch outcomes in completion order.
+    #[expect(
+        dead_code,
+        reason = "kept for API completeness; step-stream dispatch is the active path"
+    )]
     pub(in crate::orchestration) async fn execute_level(
         &self,
         request: LevelExecutionRequest,
@@ -66,6 +73,35 @@ impl ExecutionHubClient {
                 ))
             })?
     }
+
+    /// Executes a batch of steps from multiple workflows (step-stream dispatch)
+    /// and returns per-step outcomes keyed by their originating workflow.
+    pub(in crate::orchestration) async fn execute_stream(
+        &self,
+        steps: Vec<StreamStep>,
+        unified: Arc<UnifiedNickelDocument>,
+        required_outputs_by_step: BTreeMap<String, BTreeSet<String>>,
+        state_snapshot: Arc<OrchestrationState>,
+        runtime_tools_dir: PathBuf,
+        outermost_config_dir: PathBuf,
+        impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>>,
+    ) -> Result<Vec<StepOutcome>, ConductorError> {
+        call_t!(
+            self.actor,
+            ExecutionHubMessage::ExecuteStream,
+            DEFAULT_RPC_TIMEOUT_MS,
+            steps,
+            unified,
+            required_outputs_by_step,
+            state_snapshot,
+            runtime_tools_dir,
+            outermost_config_dir,
+            impure_timestamps
+        )
+        .map_err(|err| {
+            ConductorError::Internal(format!("execution hub execute_stream RPC failed: {err}"))
+        })?
+    }
 }
 
 /// Requests supported by the execution hub actor.
@@ -75,6 +111,17 @@ enum ExecutionHubMessage {
     ExecuteLevel(
         Box<LevelExecutionRequest>,
         RpcReplyPort<Result<Vec<StepDispatchOutcome>, ConductorError>>,
+    ),
+    /// Executes a batch of steps from multiple workflows (step-stream dispatch).
+    ExecuteStream(
+        Vec<StreamStep>,
+        Arc<UnifiedNickelDocument>,
+        BTreeMap<String, BTreeSet<String>>,
+        Arc<OrchestrationState>,
+        PathBuf,
+        PathBuf,
+        BTreeMap<String, Option<ImpureTimestamp>>,
+        RpcReplyPort<Result<Vec<StepOutcome>, ConductorError>>,
     ),
     /// Returns runtime diagnostics derived from the owned scheduler actor.
     GetRuntimeDiagnostics(RpcReplyPort<Result<RuntimeDiagnostics, ConductorError>>),
@@ -364,6 +411,202 @@ where
             })
         })
     }
+
+    /// Executes a batch of stream steps from any workflows using round-robin worker
+    /// assignment and concurrency-limited batch dispatch.
+    ///
+    /// This is the core dispatch path for the step-stream model. It assigns each
+    /// incoming step to a worker via round-robin, then runs the same
+    /// retry-with-fallback loop as `execute_level`, returning outcomes keyed by
+    /// workflow name.
+    async fn execute_stream(
+        &self,
+        steps: Vec<StreamStep>,
+        unified: Arc<UnifiedNickelDocument>,
+        required_outputs_by_step: BTreeMap<String, BTreeSet<String>>,
+        state_snapshot: Arc<OrchestrationState>,
+        runtime_tools_dir: PathBuf,
+        outermost_config_dir: PathBuf,
+        impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>>,
+    ) -> Result<Vec<StepOutcome>, ConductorError> {
+        let total = steps.len();
+        if total == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Round-robin worker assignment tracking (position → worker_index).
+        let mut pending: VecDeque<(usize, usize, StreamStep)> = steps
+            .into_iter()
+            .enumerate()
+            .map(|(pos, step)| (pos % self.workers.len(), pos, step))
+            .collect();
+
+        let mut outcomes_by_pos: Vec<Option<StepOutcome>> = (0..total).map(|_| None).collect();
+
+        while !pending.is_empty() {
+            // Build temporary StepWorkerAssignment view for concurrency-limit selection.
+            let mut temp_pending: VecDeque<(usize, StepWorkerAssignment)> = pending
+                .iter()
+                .map(|&(worker_idx, pos, ref ss)| {
+                    (
+                        pos,
+                        StepWorkerAssignment {
+                            worker_index: worker_idx,
+                            step: ss.step_spec.clone(),
+                        },
+                    )
+                })
+                .collect();
+
+            let selected =
+                Self::select_concurrency_limited_batch(&mut temp_pending, unified.as_ref())?;
+            let selected_positions: BTreeSet<usize> =
+                selected.iter().map(|(pos, _)| *pos).collect();
+            let _remaining_positions: BTreeSet<usize> =
+                temp_pending.iter().map(|(pos, _)| *pos).collect();
+
+            // Split pending into selected and retained.
+            let mut retained: VecDeque<(usize, usize, StreamStep)> = VecDeque::new();
+            let mut batch: Vec<(usize, usize, StreamStep)> = Vec::new();
+            while let Some(entry) = pending.pop_front() {
+                let (_, pos, _) = &entry;
+                if selected_positions.contains(pos) {
+                    batch.push(entry);
+                } else {
+                    retained.push_back(entry);
+                }
+            }
+            pending = retained;
+
+            let batch_futures = batch.into_iter().map(
+                |(worker_index, batch_pos, stream_step)| {
+                    let step = stream_step.step_spec;
+                    let workflow_name = stream_step.workflow_name;
+                    let step_outputs = stream_step.step_outputs;
+                    let actor = self.workers[worker_index].clone();
+                    let cas = self.cas.clone();
+                    let step_id = step.id.clone();
+                    let tool_name = step.tool.clone();
+                    let unified = unified.clone();
+                    let wf_name = workflow_name.clone();
+                    let state_snapshot = state_snapshot.clone();
+                    let runtime_tools_dir = runtime_tools_dir.clone();
+                    let outermost_config_dir = outermost_config_dir.clone();
+                    let required_output_names = required_outputs_by_step
+                        .get(&step.id)
+                        .cloned()
+                        .unwrap_or_default();
+                    let impure_timestamp = impure_timestamps.get(&step.id).copied().flatten();
+
+                    async move {
+                        let max_retries = Self::tool_call_max_retries(
+                            unified.as_ref(),
+                            tool_name.as_str(),
+                        )?;
+                        let mut retries_remaining = max_retries;
+
+                        loop {
+                            let step_request = StepExecutionRequest {
+                                unified: unified.clone(),
+                                step: step.clone(),
+                                impure_timestamp,
+                                workflow_name: wf_name.clone(),
+                                state_snapshot: state_snapshot.clone(),
+                                runtime_tools_dir: runtime_tools_dir.clone(),
+                                outermost_config_dir: outermost_config_dir.clone(),
+                                step_outputs: step_outputs.clone(),
+                                required_output_names: required_output_names.clone(),
+                            };
+                            let fallback_request = step_request.clone();
+
+                            let attempt = match call_t!(
+                                actor.clone(),
+                                StepWorkerMessage::ExecuteStep,
+                                DEFAULT_RPC_TIMEOUT_MS,
+                                Box::new(step_request)
+                            ) {
+                                Ok(worker_reply) => {
+                                    let mut result = worker_reply?;
+                                    result.worker_index = worker_index;
+                                    result.fallback_used = false;
+                                    Ok(StepDispatchOutcome {
+                                        result,
+                                        rpc_failed: false,
+                                        rpc_failure_reason: None,
+                                    })
+                                }
+                                Err(err) => {
+                                    let rpc_error_text = err.to_string();
+                                    execute_step_direct(cas.clone(), fallback_request)
+                                        .await
+                                        .map(|mut result| {
+                                            result.worker_index = worker_index;
+                                            result.fallback_used = true;
+                                            StepDispatchOutcome {
+                                                result,
+                                                rpc_failed: true,
+                                                rpc_failure_reason: Some(rpc_error_text),
+                                            }
+                                        })
+                                        .map_err(|fallback_err| {
+                                            ConductorError::Internal(format!(
+                                                "step worker RPC failed for '{step_id}'; fallback execution failed: {fallback_err}"
+                                            ))
+                                        })
+                                }
+                            };
+
+                            match attempt {
+                                Ok(outcome) => {
+                                    break Ok::<(usize, StepOutcome), ConductorError>((
+                                        batch_pos,
+                                        StepOutcome {
+                                            workflow_name: wf_name,
+                                            step_id: outcome.result.step_id.clone(),
+                                            result: outcome,
+                                        },
+                                    ));
+                                }
+                                Err(_) if retries_remaining > 0 => {
+                                    retries_remaining -= 1;
+                                }
+                                Err(err) => break Err(err),
+                            }
+                        }
+                    }
+                },
+            );
+
+            for batch_result in join_all(batch_futures).await {
+                let (batch_pos, outcome) = batch_result?;
+                self.scheduler
+                    .record_completion(StepCompletionRecord {
+                        step_id: outcome.step_id.clone(),
+                        tool_name: outcome.result.result.tool_name.clone(),
+                        worker_index: outcome.result.result.worker_index,
+                        executed: outcome.result.result.executed,
+                        fallback_used: outcome.result.result.fallback_used,
+                        observed_ms: outcome.result.result.elapsed_ms,
+                        rpc_failed: outcome.result.rpc_failed,
+                        rpc_failure_reason: outcome.result.rpc_failure_reason.clone(),
+                    })
+                    .await?;
+                outcomes_by_pos[batch_pos] = Some(outcome);
+            }
+        }
+
+        outcomes_by_pos
+            .into_iter()
+            .enumerate()
+            .map(|(pos, maybe)| {
+                maybe.ok_or_else(|| {
+                    ConductorError::Internal(format!(
+                        "missing stream step outcome for position {pos}"
+                    ))
+                })
+            })
+            .collect()
+    }
 }
 
 impl<C> Actor for ExecutionHubActor<C>
@@ -401,6 +644,30 @@ where
         match message {
             ExecutionHubMessage::ExecuteLevel(request, reply) => {
                 let _ = reply.send(state.execute_level(*request).await);
+            }
+            ExecutionHubMessage::ExecuteStream(
+                steps,
+                unified,
+                required_outputs_by_step,
+                state_snapshot,
+                runtime_tools_dir,
+                outermost_config_dir,
+                impure_timestamps,
+                reply,
+            ) => {
+                let _ = reply.send(
+                    state
+                        .execute_stream(
+                            steps,
+                            unified,
+                            required_outputs_by_step,
+                            state_snapshot,
+                            runtime_tools_dir,
+                            outermost_config_dir,
+                            impure_timestamps,
+                        )
+                        .await,
+                );
             }
             ExecutionHubMessage::GetRuntimeDiagnostics(reply) => {
                 let _ = reply.send(state.runtime_diagnostics().await);
