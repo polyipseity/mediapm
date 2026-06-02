@@ -108,6 +108,15 @@ Keep these mediapm defaults and path rules intact:
   layout. This user-level download cache is distinct from the workspace
   conductor tool-content cache under `<mediapm_dir>/tools/`; do not treat one
   path as the other's source of truth.
+- Generated yt-dlp companion paths use env template refs
+  (`${ENV.MEDIAPM_FFMPEG_LOCATION}`, `deno:${ENV.MEDIAPM_JS_RUNTIMES}`) in
+  `input_defaults` instead of embedding absolute paths. Resolved absolute paths
+  live only in `<conductor_dir>/.env.generated` (a `@generated` dotenv file,
+  excluded from VCS). The machine document's `runtime.inherited_env_vars` is
+  augmented with the generated variable names so conductor inherits them at
+  execution time. **Absolute paths must never leak into any persisted
+  `.ncl` config document, lock file, or cached state** — generated env files
+  are the only allowed escape hatch.
 - `tools.ffmpeg.max_input_slots` defaults to `16` when omitted and
   `tools.ffmpeg.max_output_slots` defaults to `4` when omitted; both
   bound generated ffmpeg indexed input/output slot fan-out.

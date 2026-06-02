@@ -344,6 +344,26 @@ For comprehensive details, refer to the following specifications collected from 
   `.untagged` suffix. This ensures tagged nodes sort before untagged variants
   and makes the variant role explicit. Sidecar and container nodes use their
   own descriptive suffixes (`.media_folder`, etc.).
+- **Hierarchy preset do-not-overwrite**: `insert_hierarchy_preset_node()`
+  skips insertion when the incoming node (or any of its children) has an `id`
+  that already exists anywhere in the hierarchy tree. This prevents accidental
+  overwrite of user-defined nodes by preset entries. Children from the incoming
+  node are merged into the matching existing node rather than dropped.
+- **Empty directory cleanup after stale hierarchy removal**: after removing
+  stale materialized paths, the materializer walks up from each removed path's
+  parent directory, removing directories that contain no files (recursively),
+  stopping at `hierarchy_root_dir`. The count of removed empty directories is
+  reported via `MaterializeReport.removed_empty_dirs` →
+  `SyncSummary.removed_empty_dirs`, which is logged at CLI level.
+- **yt-dlp companion path env template refs**: managed yt-dlp companion paths
+  (ffmpeg, deno) are injected as `${ENV.MEDIAPM_FFMPEG_LOCATION}` and
+  `deno:${ENV.MEDIAPM_JS_RUNTIMES}` in `input_defaults`. The resolved absolute
+  paths are stored in `generated_runtime_env_vars` and written to
+  `<conductor_dir>/.env.generated` (never to persisted config documents). The
+  machine document's `runtime.inherited_env_vars` for the active platform is
+  augmented with the generated variable names so conductor inherits them at
+  execution time. Absolute paths may only leak via generated env files; they
+  must never appear in any other persisted configuration or cached state.
 
 ---
 

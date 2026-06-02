@@ -1016,6 +1016,127 @@ custom per-entry rename rules impossible without workaround paths.
 
 ---
 
+### 4.13 Env Template Refs for yt-dlp Companion Paths
+
+**Issue**: Managed yt-dlp companion tool paths (ffmpeg, deno) contain resolved
+absolute paths that differ per machine and per provision. Embedding these
+absolute paths directly into `tool_configs.yt-dlp.input_defaults` would leak
+machine-specific paths into persisted config and invalidate cache on every
+re-provision.
+
+**Scenario**:
+
+- Sync provisions ffmpeg companion for yt-dlp, resolves to
+  `/home/user/.mediapm/tools/yt-dlp-abc123/payload/linux/ffmpeg`
+- If this path were embedded directly as `ffmpeg_location`, the config document
+  becomes machine-dependent: committing `state.ncl` across machines would
+  reference nonexistent paths
+- A config diff on every sync (even with identical tool selection) would also
+  cause unnecessary lock churn
+
+**Resolution**:
+
+- Input defaults use env template refs: `"${ENV.MEDIAPM_FFMPEG_LOCATION}"` for
+  `ffmpeg_location` and `"deno:${ENV.MEDIAPM_JS_RUNTIMES}"` for `js_runtimes`
+- Resolved absolute paths are stored in `generated_runtime_env_vars` (a
+  `BTreeMap<String, String>`) and written to `<conductor_dir>/.env.generated`
+  as dotenv key-value pairs — never to any `.ncl` config document
+- `ensure_machine_runtime_inherits_generated_env_vars()` adds the generated
+  variable names to `machine.runtime.inherited_env_vars` for the active
+  platform so conductor inherits them at execution time
+- The `.env.generated` file is marked `@generated` and excluded from version
+  control (co-located `.gitignore` pattern)
+- Generated env vars are also populated from `build_tool_env()` (tool-scoped
+  non-sensitive vars) and media-tagger ffmpeg path selection
+- **Invariant**: absolute paths may only leak via generated env files (`*.env`,
+  `*.env.generated`). They must never appear in any other persisted
+  configuration document or cached state
+
+**Questions for Clarification**:
+
+1. Should the `.env.generated` file support machine-scoped overrides (e.g.,
+   user-specified env file that takes precedence)?
+2. What happens when a companion tool is re-provisioned to a different path?
+   (Generated env file is rewritten on next sync; stale path becomes inert.)
+
+---
+
+### 4.14 Hierarchy Preset Do-Not-Overwrite by Node ID
+
+**Issue**: `insert_hierarchy_preset_node()` runs during hierarchy build to
+insert preset media nodes. Without an id-based guard, a preset node could
+overwrite a user-defined node at the same path, silently discarding the user's
+configuration.
+
+**Scenario**:
+
+- User defines a custom hierarchy folder node with `id: "my-videos"` at path
+  `"videos/concerts"`
+- A preset media root also targets `"videos/concerts"` with `id: "root42"`
+- Without the guard, the user's `"my-videos"` node might be displaced by the
+  preset (depending on insertion order and position)
+- With the guard: if the preset's id (`"root42"`) or any child id doesn't
+  already exist, insertion proceeds normally; if any id already exists, the
+  entire node is skipped (children are still merged into the matching existing
+  node via separate merge logic)
+
+**Resolution**:
+
+- `insert_hierarchy_preset_node()` checks `hierarchy_contains_node_id()`
+  before inserting
+- The check covers both the incoming node's `id` and all child `id` values
+  recursively (via the node tree)
+- If any id already exists, the entire node is skipped (return early without
+  insertion) — no partial insertion
+- Children from the incoming node are **not** lost: a separate merge pass
+  (from Task 3, commit 73f0c49) merges children into existing folder nodes
+  having the same normalized path, so preset children still populate the
+  target folder when the folder itself already exists
+
+**Questions for Clarification**:
+
+1. Should the do-not-overwrite guard be case-sensitive for node ids?
+2. Should there be a warning when a preset node is skipped due to id collision?
+
+---
+
+### 4.15 Empty Directory Cleanup After Stale Hierarchy Removal
+
+**Issue**: After removing stale materialized paths during hierarchy sync,
+orphaned empty parent directories accumulate in the hierarchy tree. These
+directories serve no purpose and clutter the output.
+
+**Scenario**:
+
+- Stale path `concerts/2024/video.mp4` is removed
+- Parent `concerts/2024/` now contains no files
+- Grandparent `concerts/` contains only `concerts/2024/` (empty)
+- Without cleanup, `concerts/2024/` and `concerts/` remain as empty stubs
+
+**Resolution**:
+
+- After stale path removal, the materializer walks up from each removed path's
+  parent directory toward `hierarchy_root_dir`
+- At each level, `read_dir` checks for emptiness: if the directory contains no
+  entries, it is removed and the walk continues upward
+- If the directory contains any entry (file or subdirectory), the walk stops
+  at that level (no upward removal beyond non-empty ancestors)
+- The walk stops unconditionally at `hierarchy_root_dir` (never removes the
+  root itself)
+- Already-checked parents are tracked in a `BTreeSet` to avoid redundant
+  filesystem checks when multiple stale paths share ancestors
+- The count of removed empty directories is reported in
+  `MaterializeReport.removed_empty_dirs` → `SyncSummary.removed_empty_dirs`
+  and logged at CLI level.
+
+**Questions for Clarification**:
+
+1. Should the cleanup also handle hidden files (`.DS_Store`, `Thumbs.db`) as
+   non-empty, or should it treat them as empty? (Currently any entry = non-empty.)
+2. Should there be a configurable depth limit for the upward walk?
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination
