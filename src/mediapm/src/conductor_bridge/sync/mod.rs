@@ -40,8 +40,9 @@ use super::ToolSyncReport;
 use super::documents::{ensure_conductor_documents, load_machine_document, save_machine_document};
 use super::runtime_storage::resolve_cas_store_path;
 use super::tool_runtime::{
-    build_tool_env, build_tool_spec, default_tool_config_description, merge_tool_config_defaults,
-    resolve_ffmpeg_slot_limits, validate_tool_command,
+    YT_DLP_FFMPEG_LOCATION_ENV, YT_DLP_JS_RUNTIMES_ENV, build_tool_env, build_tool_spec,
+    default_tool_config_description, merge_tool_config_defaults, resolve_ffmpeg_slot_limits,
+    validate_tool_command,
 };
 use super::util::now_unix_seconds;
 
@@ -278,7 +279,7 @@ pub(crate) async fn reconcile_desired_tools(
                 yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
                 desired_config.input_defaults.insert(
                     "ffmpeg_location".to_string(),
-                    InputBinding::String("${ENV.MEDIAPM_FFMPEG_LOCATION}".to_string()),
+                    InputBinding::String("${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string()),
                 );
             }
 
@@ -295,7 +296,7 @@ pub(crate) async fn reconcile_desired_tools(
                 yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
                 desired_config.input_defaults.insert(
                     "js_runtimes".to_string(),
-                    InputBinding::String("deno:${ENV.MEDIAPM_JS_RUNTIMES}".to_string()),
+                    InputBinding::String("deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string()),
                 );
             }
         }
@@ -305,11 +306,11 @@ pub(crate) async fn reconcile_desired_tools(
         );
         if let Some(ref ffmpeg_abs_path) = yt_dlp_resolved_ffmpeg_path {
             generated_runtime_env_vars
-                .insert("MEDIAPM_FFMPEG_LOCATION".to_string(), ffmpeg_abs_path.clone());
+                .insert(YT_DLP_FFMPEG_LOCATION_ENV.to_string(), ffmpeg_abs_path.clone());
         }
         if let Some(ref js_runtimes_abs_path) = yt_dlp_resolved_js_runtimes_path {
             generated_runtime_env_vars
-                .insert("MEDIAPM_JS_RUNTIMES".to_string(), js_runtimes_abs_path.clone());
+                .insert(YT_DLP_JS_RUNTIMES_ENV.to_string(), js_runtimes_abs_path.clone());
         }
         let generated_env_vars = build_tool_env(paths, name)?;
         for (env_key, env_value) in generated_env_vars {

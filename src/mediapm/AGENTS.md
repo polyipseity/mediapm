@@ -109,7 +109,7 @@ Keep these mediapm defaults and path rules intact:
   conductor tool-content cache under `<mediapm_dir>/tools/`; do not treat one
   path as the other's source of truth.
 - Generated yt-dlp companion paths use env template refs
-  (`${ENV.MEDIAPM_FFMPEG_LOCATION}`, `deno:${ENV.MEDIAPM_JS_RUNTIMES}`) in
+  (`${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}`, `deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}`) in
   `input_defaults` instead of embedding absolute paths. Resolved absolute paths
   live only in `<conductor_dir>/.env.generated` (a `@generated` dotenv file,
   excluded from VCS). The machine document's `runtime.inherited_env_vars` is
