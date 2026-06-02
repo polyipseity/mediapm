@@ -136,6 +136,8 @@ pub(crate) async fn reconcile_desired_tools(
         let mut desired_tool_id = provisioned.tool_id.clone();
         #[allow(unused_assignments)]
         let mut media_tagger_ffmpeg_host_command_path: Option<String> = None;
+        let mut yt_dlp_resolved_ffmpeg_path: Option<String> = None;
+        let mut yt_dlp_resolved_js_runtimes_path: Option<String> = None;
         let mut companion_ffmpeg_content_map = BTreeMap::new();
         let mut companion_ffmpeg_host_command_path: Option<String> = None;
         let mut companion_deno_content_map = BTreeMap::new();
@@ -273,9 +275,11 @@ pub(crate) async fn reconcile_desired_tools(
                     companion_selector_path,
                 )
             {
-                desired_config
-                    .input_defaults
-                    .insert("ffmpeg_location".to_string(), InputBinding::String(ffmpeg_path));
+                yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
+                desired_config.input_defaults.insert(
+                    "ffmpeg_location".to_string(),
+                    InputBinding::String("${ENV.MEDIAPM_FFMPEG_LOCATION}".to_string()),
+                );
             }
 
             if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults)
@@ -288,9 +292,10 @@ pub(crate) async fn reconcile_desired_tools(
                         )
                     })
             {
+                yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
                 desired_config.input_defaults.insert(
                     "js_runtimes".to_string(),
-                    InputBinding::String(format!("deno:{js_runtimes_path}")),
+                    InputBinding::String("deno:${ENV.MEDIAPM_JS_RUNTIMES}".to_string()),
                 );
             }
         }
@@ -298,6 +303,14 @@ pub(crate) async fn reconcile_desired_tools(
             &mut desired_config,
             inherited_env_vars,
         );
+        if let Some(ref ffmpeg_abs_path) = yt_dlp_resolved_ffmpeg_path {
+            generated_runtime_env_vars
+                .insert("MEDIAPM_FFMPEG_LOCATION".to_string(), ffmpeg_abs_path.clone());
+        }
+        if let Some(ref js_runtimes_abs_path) = yt_dlp_resolved_js_runtimes_path {
+            generated_runtime_env_vars
+                .insert("MEDIAPM_JS_RUNTIMES".to_string(), js_runtimes_abs_path.clone());
+        }
         let generated_env_vars = build_tool_env(paths, name)?;
         for (env_key, env_value) in generated_env_vars {
             generated_runtime_env_vars.insert(env_key, env_value);
