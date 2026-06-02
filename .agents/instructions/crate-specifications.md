@@ -352,14 +352,23 @@ For comprehensive details, refer to the following specifications collected from 
 - **Hierarchy path sanitization**:
   - `hierarchy[*].sanitize_names` controls reserved-character replacement in
     materialized hierarchy paths,
-  - `SanitizeNamesConfig` has three variants: `Disabled`, `Enabled` (default), and
+  - `SanitizeNamesConfig` has four variants: `Disabled`, `Inherit`, `Enabled`, and
     `Custom(…)` for per-character mapping overrides,
-  - `Enabled` (default): replace using `runtime.path_sanitization` defaults (all `_`),
-  - `Disabled`: reject reserved characters strictly,
-  - after initial implementation, the default changed from `Disabled` to `Enabled`,
+  - `Inherit` (default): inherit from parent hierarchy node; the root seed is
+    `Enabled`,
+  - `Enabled`: replace reserved characters using the effective mapping (runtime
+    defaults merged with per-entry `Custom` overrides),
+  - `Disabled`: skip reserved-character replacement entirely (reserved chars are
+    still rejected by the subsequent validation step),
+  - `Custom(…)`: merge per-character custom mapping over `runtime.path_sanitization`
+    defaults,
+  - the default changed from `Disabled` to `Inherit` during the Inherit variant
+    introduction,
   - NFD normalization is always enforced regardless of sanitize_names setting,
   - the replacement occurs after NFD normalization but before reserved-char
-    validation so replaced paths always pass strict validation.
+    validation so replaced paths always pass strict validation,
+  - resolved `rename_files` replacement strings are also sanitized using the
+    same effective replacement map before materialization,
 - **Hierarchy flattening dedup**:
   - the dedup key during flattening is `(template_path, media_id)`, not
     `template_path` alone,

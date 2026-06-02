@@ -958,7 +958,8 @@ mediapm.ncl:
 
 **Issue**: `sanitize_names` on hierarchy nodes introduces several edge cases around
 replacement character safety, NFD interaction, and inheritance. The default value
-is now `Enabled` (was `Disabled` during initial implementation).
+is now `Inherit`, inheriting `Enabled` from the root seed (was `Disabled` during
+initial implementation).
 
 **Scenarios**:
 
