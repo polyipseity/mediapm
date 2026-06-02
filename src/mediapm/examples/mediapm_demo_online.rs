@@ -2260,8 +2260,8 @@ fn assert_sidecar_file_content_shape(variant: &str, path: &Path) -> ExampleResul
 }
 
 /// Resolves the single interpolated Jellyfin media root for this demo run.
-fn resolve_interpolated_demo_root(workspace_root: &Path) -> ExampleResult<PathBuf> {
-    let parent = workspace_root.join(DEMO_LIBRARY_ROOT);
+fn resolve_interpolated_demo_root(hierarchy_root: &Path) -> ExampleResult<PathBuf> {
+    let parent = hierarchy_root.join(DEMO_LIBRARY_ROOT);
     if !parent.is_dir() {
         return Err(
             format!("expected Jellyfin root '{}' to exist after sync", parent.display()).into()
@@ -2301,9 +2301,9 @@ fn resolve_interpolated_demo_root(workspace_root: &Path) -> ExampleResult<PathBu
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
 fn resolve_demo_output_paths(
-    workspace_root: &Path,
+    hierarchy_root: &Path,
 ) -> ExampleResult<(PathBuf, PathBuf, BTreeMap<String, PathBuf>)> {
-    let interpolated_root = resolve_interpolated_demo_root(workspace_root)?;
+    let interpolated_root = resolve_interpolated_demo_root(hierarchy_root)?;
     if !interpolated_root.exists() {
         return Err(format!(
             "expected interpolated hierarchy root '{}' to exist after sync",
@@ -2562,22 +2562,25 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let yt_dlp_max_concurrent_calls = assert_yt_dlp_concurrency_policy(&machine, &yt_dlp_tool_id)?;
     let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
     let (workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
+    let hierarchy_root = {
+        let document = load_mediapm_document(&service.paths().mediapm_ncl)?;
+        service.paths().with_runtime_storage(&document.runtime).hierarchy_root_dir
+    };
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
-        resolve_demo_output_paths(&workspace_root)?;
+        resolve_demo_output_paths(&hierarchy_root)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = service.paths().runtime_root.join("store");
     let lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
-    let hierarchy_root = &service.paths().hierarchy_root_dir;
     let materialized_demo_video_hardlinked_to_cas = assert_materialized_output_hardlinked_to_cas(
         &cas_root,
-        hierarchy_root,
+        &hierarchy_root,
         &lock,
         &output_video_path,
     )?;
     let materialized_demo_tagged_video_hardlinked_to_cas =
         assert_materialized_output_hardlinked_to_cas(
             &cas_root,
-            hierarchy_root,
+            &hierarchy_root,
             &lock,
             &output_tagged_video_path,
         )?;

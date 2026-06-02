@@ -1144,6 +1144,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     }
 
     let maybe_summary = if run_sync { Some(service.sync_library().await?) } else { None };
+    let effective_paths = {
+        let document = load_mediapm_document(&service.paths().mediapm_ncl)?;
+        service.paths().with_runtime_storage(&document.runtime)
+    };
     let cas_root = service.paths().runtime_root.join("store");
     let store_size_stats = summarize_store_sizes(&cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
@@ -1151,14 +1155,12 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         .map(|method| method.as_label().to_string())
         .collect::<Vec<_>>();
 
-    let materialized_primary = service
-        .paths()
+    let materialized_primary = effective_paths
         .hierarchy_root_dir
         .join("music videos")
         .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]"))
         .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}].m4a"));
-    let materialized_secondary = service
-        .paths()
+    let materialized_secondary = effective_paths
         .hierarchy_root_dir
         .join("music videos")
         .join(format!("{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}]"))
@@ -1169,7 +1171,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
     let (materialized_primary_hardlinked_to_cas, materialized_secondary_hardlinked_to_cas) =
         if maybe_summary.is_some() {
-            let hierarchy_root = &service.paths().hierarchy_root_dir;
+            let hierarchy_root = &effective_paths.hierarchy_root_dir;
             (
                 assert_materialized_output_hardlinked_to_cas(
                     &cas_root,
@@ -1229,7 +1231,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         conductor_user_ncl_path: display_path(&service.paths().conductor_user_ncl),
         conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
         mediapm_state_ncl_path: display_path(&service.paths().mediapm_state_ncl),
-        library_root_path: display_path(&service.paths().hierarchy_root_dir),
+        library_root_path: display_path(&effective_paths.hierarchy_root_dir),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
         store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
