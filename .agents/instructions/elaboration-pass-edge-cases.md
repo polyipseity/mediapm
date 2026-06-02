@@ -238,6 +238,33 @@ set_constraint(A, base=C) where C depends on A (direct or transitive)
 
 ---
 
+### 1.8 Index State: Invalidation & Consistency
+
+**Issue**: Index-backed existence checks introduce state that can diverge from
+the storage backend if invalidation is incomplete.
+
+**Scenarios**:
+
+| Scenario | Risk | Mitigation |
+|----------|------|------------|
+| Process crash between put() and index update | False negative (acceptable) | Index rebuild on startup |
+| Concurrent GC removes object while index retains entry | False positive (UNACCEPTABLE) | Synchronous index removal during GC |
+| Index entry for delta object after base is pruned | True positive, partial data | Depends on delta chain — recommend only full-object entries in index |
+| Manual filesystem modification (outside CAS) | Index silently wrong | Not supported — CAS owns storage |
+| Index rebuild misses some entries | False negatives (acceptable) | Periodically verify index against storage (background scrub) |
+
+**Risk**: False positives break the "correctness" guarantee and could cause
+conductor to skip necessary re-materialization.
+
+**Recommendations**:
+
+- Enforce synchronous index update within the same CAS write transaction.
+- Add a background scrub process that periodically validates index entries
+against actual storage objects.
+- Document that manual filesystem modification is unsupported.
+
+---
+
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
 ### 2.1 External Data Retrieval Failure (put_from_uri)
@@ -930,7 +957,8 @@ mediapm.ncl:
 ### 4.11 Hierarchy Path Sanitization Edge Cases
 
 **Issue**: `sanitize_names` on hierarchy nodes introduces several edge cases around
-replacement character safety, NFD interaction, and inheritance.
+replacement character safety, NFD interaction, and inheritance. The default value
+is now `Enabled` (was `Disabled` during initial implementation).
 
 **Scenarios**:
 
@@ -1545,6 +1573,17 @@ Does "fail-fast" mean:
 
 **Issue**: Specification states "parallel workflows; bounded worker pool" but details unspecified.
 
+**Current implementation**: The step-stream model now dispatches steps from multiple
+workflows in parallel within the execution hub, not just per-workflow sequential
+execution. The parallelization strategy operates at two levels:
+
+1. **Cross-workflow step-stream dispatch**: The coordinator collects ready steps
+   across all active workflows into a `StreamBatch`, and the execution hub's
+   `execute_batch` dispatches them concurrently (bounded by a semaphore).
+2. **Per-workflow cache probe and execution**: Within each step, the step worker
+   probes the CAS using `exists_many` (`CasExistenceBitmap`) in O(1) round-trips
+   and executes the tool when cache misses occur.
+
 **Missing Details**:
 
 - Are hashes computed in parallel (per-file) or sequentially?
@@ -1555,7 +1594,12 @@ Does "fail-fast" mean:
 
 **Recommendation**:
 
-- Document parallelization: "Per-file hashing parallelized across available workers. Per-file materialization also parallelized. No hash tree; flat per-file comparison."
+- Document parallelization: "Two-level dispatch: cross-workflow step-stream
+  dispatch in the execution hub (`StreamBatch`/`StreamStep`/`StepOutcome`),
+  plus per-workflow step execution with batch cache probe
+  (`exists_many`/`CasExistenceBitmap`). Per-file hashing parallelized across
+  available workers. Per-file materialization also parallelized. No hash tree;
+  flat per-file comparison."
 - Add performance benchmark: "sync time for 1000 files of various sizes"
 
 ---

@@ -258,10 +258,22 @@ For comprehensive details, refer to the following specifications collected from 
 **Key Takeaways**:
 - **3-Document Pattern**: user (intent), machine (setup), state (volatile)
 - **Public Trait**: `ConductorApi` with workflow execution, state inspection, diagnostics
-- **Orchestration**: Actor-based (ractor); level-based dispatch; adaptive cost model
+- **Orchestration**: Actor-based (ractor); step-stream batch dispatch (`StreamBatch`/`StreamStep`/`StepOutcome`); adaptive cost model
 - **State Model**: `OrchestrationState` with tool call instances; persisted in CAS
 - **Versioning**: Explicit version markers; optics-based migration
 - **Performance**: < 10ms planning; adaptive scheduler for load balancing
+
+**Step dispatch and cache probe**:
+- Coordinator collects ready steps across active workflows into a `StreamBatch`
+  (`Vec<StreamStep>`), where each `StreamStep` carries `workflow_name`, `step_id`,
+  `step`, and `outputs`.
+- The execution hub dispatches these steps concurrently via `execute_batch`,
+  bounded by a semaphore, enabling cross-workflow parallelism within a batch.
+- `StepOutcome { step_id, result }` outcomes are routed back to individual
+  workflow states.
+- The step-worker cache probe uses `cas.exists_many(check_hashes)` →
+  `CasExistenceBitmap` (backed by `BitVec`) instead of sequential per-output
+  `cas.exists()` calls, reducing CAS round-trips from O(output_count) to O(1).
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)
 
@@ -323,9 +335,11 @@ For comprehensive details, refer to the following specifications collected from 
 - **Hierarchy path sanitization**:
   - `hierarchy[*].sanitize_names` controls reserved-character replacement in
     materialized hierarchy paths,
-  - `false` (default): reject reserved characters strictly,
-  - `true`: replace using `runtime.path_sanitization` defaults (all `_`),
-  - object: override per-character mapping merged over runtime defaults,
+  - `SanitizeNamesConfig` has three variants: `Disabled`, `Enabled` (default), and
+    `Custom(…)` for per-character mapping overrides,
+  - `Enabled` (default): replace using `runtime.path_sanitization` defaults (all `_`),
+  - `Disabled`: reject reserved characters strictly,
+  - after initial implementation, the default changed from `Disabled` to `Enabled`,
   - NFD normalization is always enforced regardless of sanitize_names setting,
   - the replacement occurs after NFD normalization but before reserved-char
     validation so replaced paths always pass strict validation.
@@ -523,8 +537,8 @@ tests/
 | **CAS read** (full object) | O(file_size) | mmap for ≥64KB; buffer pool for small |
 | **CAS delta read** | O(depth × patch_size) | Concurrent candidate scoring (8 tasks) |
 | **Conductor planning** | < 10ms | Level-based topological sort (no DAG simulation) |
-| **Conductor scheduling** | EWMA cost model | Adaptive worker assignment based on history |
-| **MediaPM sync** | Parallel workflows | Bounded worker pool (default CPU cores) |
+| **Conductor scheduling** | EWMA cost model + O(1) batch cache probe | Step-stream batch dispatch; `exists_many` via `CasExistenceBitmap` |
+| **MediaPM sync** | Parallel workflows + step-stream dispatch | Bounded worker pool; cross-workflow step-stream dispatch in execution hub |
 
 ### Resource Bounds
 
@@ -571,6 +585,59 @@ tests/
 - Update hierarchy materialization
 - Extend CLI/API output handling
 
+### 6. Index-Backed Existence Checks
+
+**Status**: Design proposal — not yet implemented.
+
+**Motivation**: Current `exists()` and `exists_many()` delegate to the storage
+backend, which for `FileSystemCas` means a stat(2) syscall per hash. For batch
+probes (for example, conductor cache probe with many outputs), this creates an
+O(output_count) syscall storm. An index-backed design would serve existence
+checks entirely from memory.
+
+**Proposed `IndexState` API**:
+
+```rust
+impl IndexState {
+    /// Returns true when `hash` is known to exist in storage.
+    ///
+    /// Guarantees:
+    /// - `true` means the object is retrievable (no false positives),
+    /// - `false` means the object may still exist (conservative — caller
+    ///   must fall through to storage for a definitive answer).
+    pub fn contains(&self, hash: &Hash) -> bool { ... }
+
+    /// Batch variant — checks up to `hashes.len()` entries in one call.
+    pub fn contains_many(&self, hashes: &[Hash]) -> CasExistenceBitmap { ... }
+}
+```
+
+**Index invalidation strategy**:
+- The index is populated lazily on first existence check, then incrementally
+  updated as new objects are stored.
+- Object removal (prune, GC) removes entries from the index synchronously.
+- Index rebuild is triggered on startup if the stored index version differs
+  from the code version.
+
+**Accepted guarantee trade-off**: False negatives are acceptable (index misses
+fall back to storage). False positives are NOT acceptable — `contains(hash) == true`
+must always be correct. This is enforced by:
+- Index entries are only added after successful `put()` or confirmed
+  storage-layer `exists()`,
+- Index entries are removed synchronously during delete operations,
+- On-disk index persistence uses the same atomic-commit pattern as the
+  object store.
+
+**Integration with Conductor**: The `exists_many` method on `CasApi` would
+first query the index, then batch-check any remaining unknowns against storage.
+This split ensures the index remains a pure optimization: correctness does not
+depend on it.
+
+**Performance target**:
+- Hot index (fits in RAM): O(1) per check, zero syscalls,
+- Cold index (first run, partial load): O(misses) stat(2) calls plus batch fill,
+- Expected throughput: 10,000+ checks per millisecond on modern hardware.
+
 ---
 
 ## Key References & Documentation
@@ -585,7 +652,7 @@ tests/
 - **Public Trait**: `ConductorApi`
 - **Implementation**: `SimpleConductor`
 - **Schemas**: 3-document (user, machine, state)
-- **Execution**: Actor-based, level-dispatch, adaptive scheduling
+- **Execution**: Actor-based, step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe
 
 ### Builtins Reference
 - **Framework**: CLI contract (`--arg`), API contract (`BTreeMap`)
