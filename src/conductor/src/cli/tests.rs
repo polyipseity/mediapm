@@ -235,8 +235,6 @@ fn parse_grouped_runtime_storage_path_options() {
         "runtime/state.custom.ncl",
         "--cas-store-dir",
         "runtime/cas-root",
-        "--conductor-tmp-dir",
-        "runtime/tmp-root",
         "--conductor-schema-dir",
         "runtime/config/custom-conductor-schemas",
         "run",

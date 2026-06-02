@@ -956,8 +956,8 @@ mod tests {
     #[cfg(feature = "tool-presets")]
     use super::CommonExecutableTool;
     use super::{
-        RuntimeStoragePaths, default_runtime_tmp_dir, export_nickel_config_schemas,
-        resolve_runtime_storage_paths, schema_export_dir,
+        RuntimeStoragePaths, export_nickel_config_schemas, resolve_runtime_storage_paths,
+        schema_export_dir,
     };
 
     /// Protects grouped-runtime default resolution rooted at `.conductor`.
@@ -967,7 +967,6 @@ mod tests {
         let machine_ncl = PathBuf::from("workspace").join("conductor.machine.ncl");
         let resolved =
             resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &RuntimeStoragePaths::default());
-        let expected_tmp_dir = default_runtime_tmp_dir();
 
         assert_eq!(resolved.conductor_dir, PathBuf::from("workspace").join(".conductor"));
         assert_eq!(
@@ -978,7 +977,7 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join(".conductor").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, expected_tmp_dir);
+        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join(".conductor").join("config").join("conductor")
@@ -1002,7 +1001,6 @@ mod tests {
                 conductor_dir: PathBuf::from("runtime-root"),
                 conductor_state_config: Some(PathBuf::from("runtime/custom-state.ncl")),
                 cas_store_dir: None,
-                conductor_tmp_dir: Some(PathBuf::from("runtime/custom-tmp")),
                 conductor_schema_dir: Some(PathBuf::from("runtime/custom-schemas")),
                 conductor_tools_dir: None,
             },
@@ -1017,10 +1015,7 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("runtime-root").join("store")
         );
-        assert_eq!(
-            resolved.conductor_tmp_dir,
-            PathBuf::from("workspace").join("runtime/custom-tmp")
-        );
+        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join("runtime/custom-schemas")
@@ -1049,7 +1044,7 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("config").join(".conductor").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, default_runtime_tmp_dir());
+        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace")
