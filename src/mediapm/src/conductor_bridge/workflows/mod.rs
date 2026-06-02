@@ -720,12 +720,25 @@ fn preserve_existing_generated_step_tools(
     for generated in workflow.steps.iter_mut().skip(generated_start) {
         if let Some(previous) = existing.steps.iter().find(|candidate| candidate.id == generated.id)
         {
-            if !preserved_step_tool_is_valid(machine, &previous.tool) {
+            if previous.tool == generated.tool {
+                if !preserved_step_tool_is_valid(machine, &previous.tool) {
+                    all_matched = false;
+                }
+            } else if generated.id.ends_with("-yt-dlp") {
+                // yt-dlp tool identities encode same-step companion
+                // selector fragments (e.g. `+ffmpeg-...+deno-...`).
+                // Keep generated identities when they differ so workflow
+                // steps do not pin stale companion mappings, and flag
+                // mismatch to cascade the identity change.
                 all_matched = false;
-                continue;
+            } else if preserved_step_tool_is_valid(machine, &previous.tool) {
+                // Non-yt-dlp steps: preserve previous tool identity so
+                // unchanged steps with impure timestamps do not switch
+                // to a freshly provisioned tool id.
+                generated.tool = previous.tool.clone();
+            } else {
+                all_matched = false;
             }
-
-            generated.tool = previous.tool.clone();
         } else {
             all_matched = false;
         }
