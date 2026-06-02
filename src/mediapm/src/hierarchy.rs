@@ -156,6 +156,15 @@ pub(crate) fn insert_hierarchy_preset_node(
     normalized_folder: &str,
     position: AddInsertPosition,
 ) {
+    // Do-not-overwrite: skip if any node id in the tree already exists.
+    if node.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
+        || node.children.iter().any(|child| {
+            child.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
+        })
+    {
+        return;
+    }
+
     let matching_indices = hierarchy
         .iter()
         .enumerate()
