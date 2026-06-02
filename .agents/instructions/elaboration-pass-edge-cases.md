@@ -1391,30 +1391,27 @@ directories serve no purpose and clutter the output.
 
 **Issue**: `preserve_existing_generated_step_tools()` rewrites generated step
 tool ids from the existing workflow snapshot to maintain stable tool identities
-across sync cycles. Without the right carving rules, unchanged steps with
-impure timestamps (which always differ between runs) or yt-dlp steps with
-companion selector changes could flip to freshly-generated tool ids on every
-sync, churning machine config and regenerate downstream materialization.
+across sync cycles. Without the right logic, unchanged steps with impure
+timestamps (which always differ between runs) or steps with companion selector
+changes could flip to freshly-generated tool ids on every sync, churning
+machine config and regenerate downstream materialization.
 
 **Key scenarios**:
 
-1. **Unchanged step with impure timestamp** (non-yt-dlp, e.g. ffmpeg): the
-   step config (input hashes, options) is unchanged, but the generated tool id
-   has a fresh timestamp hash. Without preservation, every sync would generate
-   a new tool id, bloating `machine.tools` with dead entries. Resolution:
-   when `previous.tool == generated.tool`, the id is kept after validity check;
-   when `previous.tool != generated.tool` and the previous tool is still valid
-   in `machine.tools` with non-empty `content_map`, the previous tool id is
-   assigned to the generated step, preserving identity.
+1. **Unchanged step with stable tool identity** (e.g. ffmpeg): the step config
+   (input hashes, options) is unchanged and the generated tool id is identical
+   to the previous one (tool identity fields like companion selectors and
+   versions are unchanged). Resolution: when `previous.tool == generated.tool`,
+   the id is kept after validity check; the impure timestamp is preserved from
+   the previous cycle, preventing unnecessary machine config churn.
 
-2. **yt-dlp step with companion selector change**: yt-dlp tool identities
-   encode same-step companion selector fragments (e.g.
-   `mediapm.tools.yt-dlp+ffmpeg-7.1+deno-2.1`). When companion versions or
-   selectors change, the generated tool identity *must* change too — pinning
-   the old identity would hide the update. Resolution: when
-   `generated.id.ends_with("-yt-dlp")` and `previous.tool != generated.tool`,
-   the step is unconditionally marked as unmatched (`all_matched = false`),
-   triggering a refresh cascade that installs the new tool id.
+2. **Step with changed tool identity** (any tool): the generated tool identity
+   differs from the previous one — companion selectors, dependency versions,
+   or provisioning metadata changed. Resolution: when `previous.tool !=
+   generated.tool`, the step is unconditionally marked as unmatched
+   (`all_matched = false`), triggering a refresh cascade that installs the
+   newly-generated identity. This applies uniformly to all tools regardless
+   of name; no tool-specific special-casing is needed.
 
 3. **Stale previous tool**: if the previous tool id no longer exists in
    `machine.tools`, or is an `Executable` kind whose `machine.tool_configs`
@@ -1426,19 +1423,19 @@ sync, churning machine config and regenerate downstream materialization.
 always considers builtin tools valid without checking `content_map`, since
 builtins have no materialized payload to clean up.
 
-**Edge case — same companion selector different tool id**: when
-`previous.tool != generated.tool` but the companion selector hashes match
-(rare — clock tick on non-companion fields), non-yt-dlp steps still get the
-previous identity via the validity-check path; yt-dlp steps still get
-unmatched because the outer id string differs. This is correct: yt-dlp step
-tool ids encode fields beyond companion selectors that can legitimately change.
+**Edge case — same step id, different generated tool id**: when the step
+itself is unchanged (same `generated.id`) but the generated `tool` identity
+string differs, the mismatch path always fires. This is correct: any tool
+identity can encode volatile fields (companion selectors, dependency versions)
+that legitimately change across sync cycles, and the generated identity is
+always authoritative for the current configuration.
 
 **Test coverage**:
 
-- `unchanged_step_config_with_timestamp_keeps_previous_tool_identity` — ffmpeg
-  step, expects old_tool preserved despite impure timestamp
+- `unchanged_step_config_uses_generated_tool_identity_when_changed` — ffmpeg
+  step, expects new_tool when generated identity differs from previous
 - `unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_changes`
-  — yt-dlp step, expects new_tool when companion selectors change
+  — step with companion selectors, expects new_tool when identities differ
 - `forward_scan_matching_refreshes_later_step_tool_identity_when_needed` — both
   steps expect new_tool, step 1 expects refreshed timestamp
 - `missing_step_timestamp_forces_refresh_to_active_tool` — ffmpeg step without
