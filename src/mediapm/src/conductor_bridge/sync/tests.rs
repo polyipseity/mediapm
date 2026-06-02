@@ -923,6 +923,16 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
             ..ToolSpec::default()
         },
     );
+    machine.tool_configs.insert(
+        tool_id.to_string(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                format!("{host_os}/{ffmpeg_file_name}"),
+                Hash::from_content(b"ffmpeg"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
 
     let selection = resolve_companion_ffmpeg_selection(
         &paths,
@@ -935,7 +945,11 @@ fn companion_ffmpeg_selection_uses_payload_layout() {
     .expect("companion selection should succeed");
 
     assert_eq!(selection.selector, "v7.1");
-    assert!(selection.existing_content_map.is_empty());
+    assert_eq!(selection.existing_content_map.len(), 1);
+    assert_eq!(
+        selection.existing_content_map.get(&format!("{host_os}/{ffmpeg_file_name}")),
+        Some(&Hash::from_content(b"ffmpeg")),
+    );
     assert_eq!(
         selection.host_command_path.as_deref(),
         Some(format!("{host_os}/{ffmpeg_file_name}").as_str())
