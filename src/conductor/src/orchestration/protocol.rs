@@ -135,6 +135,12 @@ pub(super) struct StepExecutionRequest {
     /// Builtin `import`, `export`, and `fs` resolve relative path values
     /// against this directory.
     pub outermost_config_dir: PathBuf,
+    /// Root path for per-step temporary directories (sandboxes, ZIP
+    /// extraction, regex capture staging).
+    ///
+    /// Derived from `RuntimeStoragePaths.conductor_tmp_dir`, defaulting to
+    /// `<os-temp>/mediapm-conductor-<conductor-dir-hash>`.
+    pub conductor_tmp_dir: PathBuf,
     /// Output hashes already produced by earlier steps in the workflow.
     pub step_outputs: Arc<StepOutputs>,
     /// Declared output names from this step that are actually referenced by
@@ -218,6 +224,12 @@ pub(super) struct LevelExecutionRequest {
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     pub outermost_config_dir: PathBuf,
+    /// Root path for per-step temporary directories (sandboxes, ZIP
+    /// extraction, regex capture staging).
+    ///
+    /// Derived from `RuntimeStoragePaths.conductor_tmp_dir`, defaulting to
+    /// `<os-temp>/mediapm-conductor-<conductor-dir-hash>`.
+    pub conductor_tmp_dir: PathBuf,
     /// Output hashes produced by previous workflow levels.
     pub step_outputs: Arc<StepOutputs>,
     /// Per-step output names that are actually referenced by downstream

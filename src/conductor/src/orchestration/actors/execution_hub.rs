@@ -84,6 +84,7 @@ impl ExecutionHubClient {
         required_outputs_by_step: BTreeMap<String, BTreeSet<String>>,
         state_snapshot: Arc<OrchestrationState>,
         runtime_tools_dir: PathBuf,
+        conductor_tmp_dir: PathBuf,
         outermost_config_dir: PathBuf,
         impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>>,
     ) -> Result<Vec<StepOutcome>, ConductorError> {
@@ -96,6 +97,7 @@ impl ExecutionHubClient {
             required_outputs_by_step,
             state_snapshot,
             runtime_tools_dir,
+            conductor_tmp_dir,
             outermost_config_dir,
             impure_timestamps
         )
@@ -119,6 +121,7 @@ enum ExecutionHubMessage {
         Arc<UnifiedNickelDocument>,
         BTreeMap<String, BTreeSet<String>>,
         Arc<OrchestrationState>,
+        PathBuf,
         PathBuf,
         PathBuf,
         BTreeMap<String, Option<ImpureTimestamp>>,
@@ -285,6 +288,7 @@ where
                 let state_snapshot = request.state_snapshot.clone();
                 let runtime_tools_dir = request.runtime_tools_dir.clone();
                 let outermost_config_dir = request.outermost_config_dir.clone();
+                let conductor_tmp_dir = request.conductor_tmp_dir.clone();
                 let step_outputs = request.step_outputs.clone();
                 let required_output_names = request
                     .required_outputs_by_step
@@ -307,6 +311,7 @@ where
                             state_snapshot: state_snapshot.clone(),
                             runtime_tools_dir: runtime_tools_dir.clone(),
                             outermost_config_dir: outermost_config_dir.clone(),
+                            conductor_tmp_dir: conductor_tmp_dir.clone(),
                             step_outputs: step_outputs.clone(),
                             required_output_names: required_output_names.clone(),
                         };
@@ -428,6 +433,7 @@ where
         required_outputs_by_step: BTreeMap<String, BTreeSet<String>>,
         state_snapshot: Arc<OrchestrationState>,
         runtime_tools_dir: PathBuf,
+        conductor_tmp_dir: PathBuf,
         outermost_config_dir: PathBuf,
         impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>>,
     ) -> Result<Vec<StepOutcome>, ConductorError> {
@@ -494,6 +500,7 @@ where
                     let state_snapshot = state_snapshot.clone();
                     let runtime_tools_dir = runtime_tools_dir.clone();
                     let outermost_config_dir = outermost_config_dir.clone();
+                    let conductor_tmp_dir = conductor_tmp_dir.clone();
                     let required_output_names = required_outputs_by_step
                         .get(&step.id)
                         .cloned()
@@ -516,6 +523,7 @@ where
                                 state_snapshot: state_snapshot.clone(),
                                 runtime_tools_dir: runtime_tools_dir.clone(),
                                 outermost_config_dir: outermost_config_dir.clone(),
+                                conductor_tmp_dir: conductor_tmp_dir.clone(),
                                 step_outputs: step_outputs.clone(),
                                 required_output_names: required_output_names.clone(),
                             };
@@ -653,6 +661,7 @@ where
                 required_outputs_by_step,
                 state_snapshot,
                 runtime_tools_dir,
+                conductor_tmp_dir,
                 outermost_config_dir,
                 impure_timestamps,
                 reply,
@@ -665,6 +674,7 @@ where
                             required_outputs_by_step,
                             state_snapshot,
                             runtime_tools_dir,
+                            conductor_tmp_dir,
                             outermost_config_dir,
                             impure_timestamps,
                         )

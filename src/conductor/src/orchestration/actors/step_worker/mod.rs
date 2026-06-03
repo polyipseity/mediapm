@@ -195,6 +195,9 @@ where
 {
     /// Shared CAS handle used for all input, output, and state-addressing I/O.
     cas: Arc<C>,
+    /// OS-backed per-conductor-dir temporary root for sandboxes, ZIP
+    /// extraction, and regex capture staging.
+    conductor_tmp_dir: PathBuf,
 }
 
 impl<C> Actor for StepWorkerActor<C>
@@ -223,7 +226,10 @@ where
     ) -> Result<(), ActorProcessingErr> {
         match message {
             StepWorkerMessage::ExecuteStep(request, reply) => {
-                let executor = StepWorkerExecutor { cas: state.clone() };
+                let executor = StepWorkerExecutor {
+                    cas: state.clone(),
+                    conductor_tmp_dir: request.conductor_tmp_dir.clone(),
+                };
                 let _ = reply.send(executor.execute_step(*request).await);
             }
         }
@@ -806,11 +812,11 @@ where
 
         let extraction_workspace = tempfile::Builder::new()
             .prefix("step-output-zip-")
-            .tempdir()
+            .tempdir_in(&self.conductor_tmp_dir)
             .map_err(|source| ConductorError::Io {
                 operation: "creating temporary ZIP extraction workspace for step_output binding"
                     .to_string(),
-                path: std::env::temp_dir(),
+                path: self.conductor_tmp_dir.clone(),
                 source,
             })?;
 
@@ -994,12 +1000,8 @@ where
 
     /// Creates one ad hoc sandbox directory inside `std::env::temp_dir()` only
     /// when a step actually needs to execute.
-    #[expect(
-        clippy::unused_self,
-        reason = "helper keeps method shape for readability and symmetry with other executor helpers"
-    )]
     fn create_execution_temp_cwd(&self) -> Result<tempfile::TempDir, ConductorError> {
-        let scratch_root = std::env::temp_dir();
+        let scratch_root = self.conductor_tmp_dir.clone();
         std::fs::create_dir_all(&scratch_root).map_err(|source| ConductorError::Io {
             operation: "creating tool sandbox root directory".to_string(),
             path: scratch_root.clone(),
@@ -1847,7 +1849,7 @@ where
             .collect();
 
         if matched_files.is_empty() && matched_dirs.is_empty() {
-            return Self::capture_empty_regex_folder_output_as_zip(pattern);
+            return self.capture_empty_regex_folder_output_as_zip(pattern);
         }
 
         let mut selected_files = matched_files;
@@ -1861,14 +1863,15 @@ where
         }
 
         if selected_files.is_empty() {
-            return Self::capture_empty_regex_folder_output_as_zip(pattern);
+            return self.capture_empty_regex_folder_output_as_zip(pattern);
         }
 
-        let staging = tempfile::tempdir().map_err(|source| ConductorError::Io {
-            operation: "creating temporary regex folder-capture staging directory".to_string(),
-            path: std::env::temp_dir(),
-            source,
-        })?;
+        let staging =
+            tempfile::tempdir_in(&self.conductor_tmp_dir).map_err(|source| ConductorError::Io {
+                operation: "creating temporary regex folder-capture staging directory".to_string(),
+                path: self.conductor_tmp_dir.clone(),
+                source,
+            })?;
 
         let mut staged_target_sources = BTreeMap::<PathBuf, PathBuf>::new();
 
@@ -1927,13 +1930,17 @@ where
     /// sidecar generation that may legally emit no files). Returning a stable
     /// empty archive keeps output contracts deterministic without forcing
     /// caller-specific failure handling for "missing optional family" cases.
-    fn capture_empty_regex_folder_output_as_zip(pattern: &str) -> Result<Vec<u8>, ConductorError> {
-        let staging = tempfile::tempdir().map_err(|source| ConductorError::Io {
-            operation: "creating temporary empty regex folder-capture staging directory"
-                .to_string(),
-            path: std::env::temp_dir(),
-            source,
-        })?;
+    fn capture_empty_regex_folder_output_as_zip(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<u8>, ConductorError> {
+        let staging =
+            tempfile::tempdir_in(&self.conductor_tmp_dir).map_err(|source| ConductorError::Io {
+                operation: "creating temporary empty regex folder-capture staging directory"
+                    .to_string(),
+                path: self.conductor_tmp_dir.clone(),
+                source,
+            })?;
 
         mediapm_conductor_builtin_archive::pack_directory_to_uncompressed_zip_bytes(
             staging.path(),
@@ -2238,7 +2245,9 @@ pub(super) async fn execute_step_direct<C>(
 where
     C: CasApi + Send + Sync + 'static,
 {
-    StepWorkerExecutor { cas }.execute_step(request).await
+    StepWorkerExecutor { cas, conductor_tmp_dir: request.conductor_tmp_dir.clone() }
+        .execute_step(request)
+        .await
 }
 
 #[cfg(test)]

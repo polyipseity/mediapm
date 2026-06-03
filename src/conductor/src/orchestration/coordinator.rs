@@ -252,6 +252,7 @@ where
                 &mut state_document,
                 &mut state,
                 &resolved_runtime_paths.conductor_tools_dir,
+                &resolved_runtime_paths.conductor_tmp_dir,
                 &outermost_config_dir,
             )
             .await;
@@ -522,6 +523,7 @@ where
         state_document: &mut crate::model::config::StateNickelDocument,
         state: &mut OrchestrationState,
         tools_dir: &Path,
+        conductor_tmp_dir: &Path,
         outermost_config_dir: &Path,
     ) -> Result<ExecutionOutcome, ConductorError> {
         let unified_shared = Arc::new(unified.clone());
@@ -693,6 +695,7 @@ where
                     batch_required_outputs,
                     state_snapshot,
                     tools_dir.to_path_buf(),
+                    conductor_tmp_dir.to_path_buf(),
                     outermost_config_dir.to_path_buf(),
                     batch_impure_timestamps,
                 )

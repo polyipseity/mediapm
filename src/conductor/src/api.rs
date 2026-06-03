@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::hash::{Hash as _, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -50,7 +51,7 @@ const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 /// `conductor_dir`:
 /// - `<conductor_dir>/state.ncl` for state,
 /// - `<conductor_dir>/store` for CAS,
-/// - `std::env::temp_dir()` for temporary execution sandboxes,
+/// - `<os-temp>/mediapm-conductor-<conductor-dir-hash>` for temporary execution sandboxes,
 /// - `<conductor_dir>/config/conductor` for schema export,
 /// - `<conductor_dir>/tools` for the tool-content cache.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +113,12 @@ impl RuntimeStoragePaths {
             || conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
             |path| Self::resolve_path(anchor, path),
         );
-        let conductor_tmp_dir = std::env::temp_dir();
+        let key = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            conductor_dir.hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
+        let conductor_tmp_dir = std::env::temp_dir().join(format!("mediapm-conductor-{key}"));
         let conductor_schema_dir = self.conductor_schema_dir.as_ref().map_or_else(
             || schema_export_dir(&conductor_dir),
             |path| Self::resolve_path(anchor, path),
@@ -154,7 +160,8 @@ pub struct ResolvedRuntimeStoragePaths {
     pub conductor_state_config: PathBuf,
     /// Resolved filesystem CAS store root path.
     pub cas_store_dir: PathBuf,
-    /// Temporary execution sandbox root path (always `std::env::temp_dir()`).
+    /// Temporary execution sandbox root path (OS-backed with per-conductor-dir
+    /// hash path: `<os-temp>/mediapm-conductor-<conductor-dir-hash>`).
     pub conductor_tmp_dir: PathBuf,
     /// Resolved schema export directory path.
     pub conductor_schema_dir: PathBuf,
@@ -531,7 +538,7 @@ pub struct RunWorkflowOptions {
     /// - `conductor_dir = .conductor`
     /// - `conductor_state_config = <conductor_dir>/state.ncl`
     /// - `cas_store_dir = <conductor_dir>/store`
-    /// - `conductor_tmp_dir = <os-temp>/mediapm/conductor/<scope>/tmp`
+    /// - `conductor_tmp_dir = <os-temp>/mediapm-conductor-<conductor-dir-hash>`
     /// - `conductor_schema_dir = <conductor_dir>/config/conductor`
     pub runtime_storage_paths: RuntimeStoragePaths,
     /// Additional host environment variable names inherited into executable
@@ -591,7 +598,7 @@ pub struct StateMutationOptions {
     /// - `conductor_dir = .conductor`
     /// - `conductor_state_config = <conductor_dir>/state.ncl`
     /// - `cas_store_dir = <conductor_dir>/store`
-    /// - `conductor_tmp_dir = <os-temp>/mediapm/conductor/<scope>/tmp`
+    /// - `conductor_tmp_dir = <os-temp>/mediapm-conductor-<conductor-dir-hash>`
     /// - `conductor_schema_dir = <conductor_dir>/config/conductor`
     pub runtime_storage_paths: RuntimeStoragePaths,
     /// Additional host environment variable names inherited while evaluating
@@ -977,7 +984,8 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join(".conductor").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
+        assert!(resolved.conductor_tmp_dir.starts_with(std::env::temp_dir()));
+        assert!(resolved.conductor_tmp_dir.to_string_lossy().contains("mediapm-conductor-"));
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join(".conductor").join("config").join("conductor")
@@ -1015,7 +1023,8 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("runtime-root").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
+        assert!(resolved.conductor_tmp_dir.starts_with(std::env::temp_dir()));
+        assert!(resolved.conductor_tmp_dir.to_string_lossy().contains("mediapm-conductor-"));
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join("runtime/custom-schemas")
@@ -1044,7 +1053,8 @@ mod tests {
             resolved.cas_store_dir,
             PathBuf::from("workspace").join("config").join(".conductor").join("store")
         );
-        assert_eq!(resolved.conductor_tmp_dir, std::env::temp_dir());
+        assert!(resolved.conductor_tmp_dir.starts_with(std::env::temp_dir()));
+        assert!(resolved.conductor_tmp_dir.to_string_lossy().contains("mediapm-conductor-"));
         assert_eq!(
             resolved.conductor_schema_dir,
             PathBuf::from("workspace")

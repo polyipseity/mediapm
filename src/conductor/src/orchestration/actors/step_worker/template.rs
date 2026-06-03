@@ -1054,13 +1054,13 @@ where
         let normalized_entry =
             self.normalized_relative_tool_path(entry_path, "template zip entry selector")?;
 
-        let zip_workspace =
-            tempfile::Builder::new().prefix("zip-entry-").tempdir().map_err(|source| {
-                ConductorError::Io {
-                    operation: "creating temporary ZIP extraction workspace".to_string(),
-                    path: std::env::temp_dir(),
-                    source,
-                }
+        let zip_workspace = tempfile::Builder::new()
+            .prefix("zip-entry-")
+            .tempdir_in(&self.conductor_tmp_dir)
+            .map_err(|source| ConductorError::Io {
+                operation: "creating temporary ZIP extraction workspace".to_string(),
+                path: self.conductor_tmp_dir.clone(),
+                source,
             })?;
 
         let extraction_root = zip_workspace.path().join("extracted");

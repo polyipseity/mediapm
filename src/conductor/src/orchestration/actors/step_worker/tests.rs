@@ -167,7 +167,10 @@ fn derived_keys_for_builtin_ignore_non_identity_metadata_fields() {
 /// Protects support for bare-identifier template interpolation.
 #[test]
 fn template_interpolation_supports_bare_identifier() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -185,7 +188,10 @@ fn template_interpolation_supports_bare_identifier() {
 /// Protects support for JavaScript-style bracket selector interpolation.
 #[test]
 fn template_interpolation_supports_inputs_bracket_notation() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -203,7 +209,10 @@ fn template_interpolation_supports_inputs_bracket_notation() {
 /// Protects policy that unsupported context selectors are rejected.
 #[test]
 fn template_interpolation_rejects_context_selector() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -226,7 +235,10 @@ fn template_interpolation_rejects_context_selector() {
 /// Protects explicit failure for removed `${context.config_dir}` input-binding syntax.
 #[tokio::test]
 async fn resolve_input_binding_rejects_context_config_dir() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let workflow_step = WorkflowStepSpec {
         id: "step".to_string(),
         tool: "echo@1.0.0".to_string(),
@@ -264,7 +276,10 @@ async fn resolve_input_binding_rejects_context_config_dir() {
 /// environment value during input resolution.
 #[tokio::test]
 async fn resolve_input_binding_expands_env_placeholder_segments() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let workflow_step = WorkflowStepSpec {
         id: "step".to_string(),
         tool: "echo@1.0.0".to_string(),
@@ -297,7 +312,10 @@ async fn resolve_input_binding_expands_env_placeholder_segments() {
 /// Protects explicit failure on unsupported expression syntax.
 #[test]
 fn template_interpolation_rejects_unsupported_expression() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -316,7 +334,10 @@ fn template_interpolation_rejects_unsupported_expression() {
 /// Protects literal escaping of `\${...}` markers.
 #[test]
 fn template_interpolation_supports_js_escape_for_literal_start() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -338,7 +359,10 @@ fn template_interpolation_supports_js_escape_for_literal_start() {
 /// Protects `${<left> <op> <right>?<true>|<false>}` conditional semantics.
 #[test]
 fn template_interpolation_supports_comparison_conditional_expression() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -357,7 +381,10 @@ fn template_interpolation_supports_comparison_conditional_expression() {
 /// template expressions.
 #[test]
 fn template_interpolation_supports_truthy_conditional_expression() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -380,7 +407,10 @@ fn template_interpolation_supports_truthy_conditional_expression() {
 /// value-centric option transport.
 #[test]
 fn template_interpolation_supports_comparison_against_single_item_list_input() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "switch".to_string(),
         ResolvedInput::from_string_list(vec!["true".to_string()]).expect("build list input"),
@@ -403,7 +433,10 @@ fn template_interpolation_supports_comparison_against_single_item_list_input() {
 /// from multi-item list inputs.
 #[test]
 fn template_interpolation_rejects_comparison_against_multi_item_list_input() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "switch".to_string(),
         ResolvedInput::from_string_list(vec!["true".to_string(), "false".to_string()])
@@ -429,7 +462,10 @@ fn template_interpolation_rejects_comparison_against_multi_item_list_input() {
 /// values.
 #[test]
 fn template_interpolation_supports_special_forms_inside_conditional_branches() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -456,7 +492,10 @@ fn template_interpolation_supports_special_forms_inside_conditional_branches() {
 /// Protects logical `&&` operator in conditional expressions.
 #[test]
 fn template_interpolation_supports_and_operator_in_condition() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([
         ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
         ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
@@ -487,7 +526,10 @@ fn template_interpolation_supports_and_operator_in_condition() {
 /// Protects logical `||` operator in conditional expressions.
 #[test]
 fn template_interpolation_supports_or_operator_in_condition() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([
         ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
         ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
@@ -518,7 +560,10 @@ fn template_interpolation_supports_or_operator_in_condition() {
 /// Protects mixed `||`, `&&`, and parentheses grouping in conditional expressions.
 #[test]
 fn template_interpolation_supports_mixed_logical_operators_and_parentheses() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([
         ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
         ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
@@ -550,7 +595,10 @@ fn template_interpolation_supports_mixed_logical_operators_and_parentheses() {
 /// Protects negation `!` applied to a comparison expression via parentheses.
 #[test]
 fn template_interpolation_supports_negation_of_comparison() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs =
         BTreeMap::from([("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec()))]);
     let mut pending_file_writes = Vec::new();
@@ -575,7 +623,10 @@ fn template_interpolation_supports_negation_of_comparison() {
 /// Protects omission of conditional branches that resolve to empty output.
 #[test]
 fn command_render_omits_conditionals_with_empty_false_branch() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -597,7 +648,10 @@ fn command_render_omits_conditionals_with_empty_false_branch() {
 /// inputs.
 #[test]
 fn command_render_expands_standalone_unpack_token_for_list_input() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "argv".to_string(),
         ResolvedInput::from_string_list(vec!["--alpha".to_string(), "--beta".to_string()])
@@ -619,7 +673,10 @@ fn command_render_expands_standalone_unpack_token_for_list_input() {
 /// Protects scalar unpack behavior for standalone command tokens.
 #[test]
 fn command_render_expands_unpack_token_for_scalar_input() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "argv".to_string(),
         ResolvedInput::from_plain_content(b"--single".to_vec()),
@@ -641,7 +698,10 @@ fn command_render_expands_unpack_token_for_scalar_input() {
 /// optional key/value argv pairs without mediapm-specific preprocessing.
 #[test]
 fn command_render_supports_conditional_unpack_key_value_pair() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let mut pending_file_writes = Vec::new();
 
     let with_value_inputs = BTreeMap::from([(
@@ -673,7 +733,10 @@ fn command_render_supports_conditional_unpack_key_value_pair() {
 /// `${*...}` remains compatible with both scalar and list bindings.
 #[test]
 fn command_render_supports_conditional_unpack_with_list_input() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let mut pending_file_writes = Vec::new();
     let command = vec![
         "tool".to_string(),
@@ -712,7 +775,10 @@ fn command_render_supports_conditional_unpack_with_list_input() {
 /// Protects plain `context.os` selector rendering.
 #[test]
 fn template_interpolation_supports_context_os_selector() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -733,7 +799,10 @@ fn template_interpolation_supports_context_os_selector() {
 /// Protects plain `context.working_directory` selector rendering.
 #[test]
 fn template_interpolation_supports_context_working_directory_selector() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -749,7 +818,10 @@ fn template_interpolation_supports_context_working_directory_selector() {
 /// entire command argument (standalone token only).
 #[test]
 fn command_render_rejects_non_standalone_unpack_expression() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "argv".to_string(),
         ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
@@ -777,7 +849,10 @@ fn command_render_rejects_non_standalone_unpack_expression() {
 /// interpolation and must use standalone unpack tokens.
 #[test]
 fn template_interpolation_rejects_list_input_outside_unpack_token() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "argv".to_string(),
         ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
@@ -803,7 +878,10 @@ fn template_interpolation_rejects_list_input_outside_unpack_token() {
 /// bypass config decoding helpers.
 #[tokio::test]
 async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let unified = UnifiedNickelDocument {
         external_data: BTreeMap::new(),
         tools: BTreeMap::new(),
@@ -856,7 +934,10 @@ async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
 /// Protects JavaScript-style escape decoding in literal template spans.
 #[test]
 fn template_interpolation_applies_js_string_escapes() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -874,7 +955,10 @@ fn template_interpolation_applies_js_string_escapes() {
 /// Protects explicit failure on unsupported escape sequences.
 #[test]
 fn template_interpolation_rejects_unsupported_escape_sequence() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::new();
     let mut pending_file_writes = Vec::new();
 
@@ -893,7 +977,10 @@ fn template_interpolation_rejects_unsupported_escape_sequence() {
 /// Protects deferred file materialization during planning.
 #[test]
 fn template_file_materialization_is_deferred_until_execution() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let inputs = BTreeMap::from([(
         "subject".to_string(),
         ResolvedInput::from_plain_content(b"world".to_vec()),
@@ -923,7 +1010,10 @@ fn template_file_materialization_is_deferred_until_execution() {
 /// Protects ZIP-entry selector extraction into inline template text.
 #[test]
 fn template_zip_selector_extracts_zip_entry_content() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let zip_bytes = build_test_zip_payload("nested/file.txt", b"hello-from-zip");
     let inputs =
         BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
@@ -944,7 +1034,10 @@ fn template_zip_selector_extracts_zip_entry_content() {
 /// Protects ZIP-entry selector chaining with deferred file materialization.
 #[test]
 fn template_zip_selector_can_materialize_entry_to_file_path() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
     let inputs =
         BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
@@ -971,7 +1064,10 @@ fn template_zip_selector_can_materialize_entry_to_file_path() {
 /// without opting into `:folder(...)` materialization.
 #[test]
 fn template_zip_selector_rejects_directory_without_folder_directive() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
     let inputs =
         BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
@@ -995,7 +1091,10 @@ fn template_zip_selector_rejects_directory_without_folder_directive() {
 /// to one directory and the token opts into `:folder(...)`.
 #[test]
 fn template_zip_selector_can_materialize_directory_to_folder_path() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
     let inputs =
         BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
@@ -1022,7 +1121,10 @@ fn template_zip_selector_can_materialize_directory_to_folder_path() {
 /// selector that resolves to a regular file.
 #[test]
 fn template_zip_selector_folder_materialization_rejects_file_entries() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
     let inputs =
         BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
@@ -1049,7 +1151,10 @@ fn template_zip_selector_folder_materialization_rejects_file_entries() {
 /// Protects sandbox enforcement for tool-relative paths.
 #[test]
 fn tool_relative_paths_reject_absolute_and_escape_components() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
 
     let absolute = if cfg!(windows) { r"C:\\escape.txt" } else { "/escape.txt" };
     let absolute_error = executor
@@ -1081,7 +1186,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
     let cas = Arc::new(InMemoryCas::new());
     let payload = b"#!/usr/bin/env sh\necho from-content-map\n".to_vec();
     let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let payload_dir = executor
@@ -1111,7 +1216,7 @@ async fn content_map_skips_sandbox_relink_when_payload_executable_in_cache() {
     let cas = Arc::new(InMemoryCas::new());
     let payload = b"#!/usr/bin/env sh\necho tool\n".to_vec();
     let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
     let runtime_tools_dir = temp.path().join("tools");
 
@@ -1148,7 +1253,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
     let cas = Arc::new(InMemoryCas::new());
     let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let payload_dir = executor
@@ -1180,7 +1285,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
     let cas = Arc::new(InMemoryCas::new());
     let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let payload_dir = executor
@@ -1207,7 +1312,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
 async fn content_map_directory_entry_rejects_non_zip_payload() {
     let cas = Arc::new(InMemoryCas::new());
     let hash = cas.put(b"not-a-zip".to_vec()).await.expect("store plain payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let error = executor
@@ -1237,7 +1342,7 @@ async fn content_map_directory_entry_requires_non_empty_prefix() {
     let cas = Arc::new(InMemoryCas::new());
     let zip_payload = build_test_zip_payload("nested/file.txt", b"x");
     let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let error = executor
@@ -1267,7 +1372,7 @@ async fn content_map_rejects_file_overwrite_between_entries() {
     let directory_hash = cas.put(directory_zip).await.expect("store dir zip payload");
     let file_hash =
         cas.put(b"#!/usr/bin/env sh\necho from file\n".to_vec()).await.expect("store file payload");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let error = executor
@@ -1305,7 +1410,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
     let first_hash = cas.put(first_zip).await.expect("store first zip payload");
     let second_zip = build_test_zip_payload("b.txt", b"B");
     let second_hash = cas.put(second_zip).await.expect("store second zip payload");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let payload_dir = executor
@@ -1338,7 +1443,10 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
 /// Protects process-code capture payload formatting.
 #[test]
 fn process_code_capture_serializes_exit_code_text() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let capture = ToolExecutionCapture { stdout: Vec::new(), stderr: Vec::new(), process_code: 27 };
     let output_spec = ResolvedOutputSpec {
         capture: ResolvedOutputCapture::ProcessCode,
@@ -1358,7 +1466,10 @@ fn process_code_capture_serializes_exit_code_text() {
 /// Protects folder capture behavior that emits ZIP payload bytes.
 #[test]
 fn folder_capture_emits_zip_payload_with_optional_top_folder() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     let folder = sandbox.path().join("bundle");
     std::fs::create_dir_all(folder.join("nested")).expect("create folder output");
@@ -1424,7 +1535,10 @@ fn folder_capture_emits_zip_payload_with_optional_top_folder() {
 /// Protects regex file-capture behavior for dynamic output filenames.
 #[test]
 fn file_regex_capture_selects_single_matching_file() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
@@ -1452,7 +1566,10 @@ fn file_regex_capture_selects_single_matching_file() {
 /// Protects strict missing-match checks for regex file-capture declarations.
 #[test]
 fn file_regex_capture_rejects_zero_matches() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
@@ -1480,7 +1597,10 @@ fn file_regex_capture_rejects_zero_matches() {
 /// Protects strict ambiguity checks for regex file-capture declarations.
 #[test]
 fn file_regex_capture_rejects_multiple_matches() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("first.description"), b"first")
@@ -1510,7 +1630,10 @@ fn file_regex_capture_rejects_multiple_matches() {
 /// Protects regex folder-capture behavior by zipping matched descendants.
 #[test]
 fn folder_regex_capture_packages_matched_directory_descendants() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads").join("nested"))
         .expect("create nested downloads");
@@ -1549,7 +1672,10 @@ fn folder_regex_capture_packages_matched_directory_descendants() {
 /// folder-regex capture matches no sandbox paths.
 #[test]
 fn folder_regex_capture_returns_empty_zip_when_no_paths_match() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("video.mp4"), b"media")
@@ -1580,7 +1706,10 @@ fn folder_regex_capture_returns_empty_zip_when_no_paths_match() {
 /// Protects regex folder-capture rename semantics driven by capture groups.
 #[test]
 fn folder_regex_capture_renames_zip_members_from_capture_groups() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("clip__mediapm__.en.srt"), b"subtitle")
@@ -1611,7 +1740,10 @@ fn folder_regex_capture_renames_zip_members_from_capture_groups() {
 /// Protects regex folder-capture rename conflict detection.
 #[test]
 fn folder_regex_capture_rejects_renamed_path_conflicts() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
     std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.mp3"), b"a")
@@ -1662,7 +1794,10 @@ fn executable_timeout_parser_rejects_zero_seconds() {
 /// Protects worker resilience by timing out long-running executable subprocesses.
 #[tokio::test]
 async fn execute_executable_tool_enforces_timeout_budget() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let sandbox = tempfile::tempdir().expect("tempdir");
 
     let executable_name = if cfg!(windows) { "sleep.cmd" } else { "sleep.sh" };
@@ -1710,7 +1845,7 @@ async fn execute_executable_tool_enforces_timeout_budget() {
 async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
     let cas = Arc::new(InMemoryCas::new());
     let output_hash = cas.put(b"output".to_vec()).await.expect("put output payload");
-    let executor = StepWorkerExecutor { cas: cas.clone() };
+    let executor = StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
 
     let inputs =
         BTreeMap::from([("empty".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
@@ -1733,7 +1868,7 @@ async fn external_data_full_save_policy_applies_full_save_hint_on_input_resoluti
     let cas = Arc::new(InMemoryCas::new());
     let external_bytes = b"external-data-full".to_vec();
     let external_hash = cas.put(external_bytes.clone()).await.expect("put external data");
-    let executor = StepWorkerExecutor { cas: cas.clone() };
+    let executor = StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
 
     let workflow_step = WorkflowStepSpec {
         id: "step-full-external".to_string(),
@@ -1781,7 +1916,7 @@ async fn external_data_full_save_policy_applies_full_save_hint_on_input_resoluti
 async fn external_data_saved_policy_does_not_apply_full_save_hint_on_input_resolution() {
     let cas = Arc::new(InMemoryCas::new());
     let external_hash = cas.put(b"external-data-saved".to_vec()).await.expect("put external data");
-    let executor = StepWorkerExecutor { cas: cas.clone() };
+    let executor = StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
 
     let workflow_step = WorkflowStepSpec {
         id: "step-saved-external".to_string(),
@@ -1845,7 +1980,10 @@ fn format_process_failure_stderr_uses_default_for_empty_text() {
 /// Protects crate-owned builtin echo dispatch and stream payload shape.
 #[tokio::test]
 async fn builtin_echo_dispatch_uses_echo_crate_streams() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let args = BTreeMap::from([
         ("text".to_string(), "hello".to_string()),
@@ -1872,7 +2010,10 @@ async fn builtin_echo_dispatch_uses_echo_crate_streams() {
 /// Protects builtin import dispatch for relative paths rooted in outermost config directory.
 #[tokio::test]
 async fn builtin_import_dispatch_supports_relative_local_path() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_root = temp.path().join("tool-root");
     let config_root = temp.path().join("config-root");
@@ -1905,7 +2046,10 @@ async fn builtin_import_dispatch_supports_relative_local_path() {
 /// Protects builtin import folder dispatch that exports one ZIP payload.
 #[tokio::test]
 async fn builtin_import_dispatch_exports_folder_as_zip() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let source_dir = temp.path().join("fixtures").join("pack");
     std::fs::create_dir_all(&source_dir).expect("create source dir");
@@ -1940,7 +2084,7 @@ async fn builtin_import_dispatch_exports_folder_as_zip() {
 async fn builtin_import_dispatch_supports_cas_hash_kind() {
     let cas = Arc::new(InMemoryCas::new());
     let hash = cas.put(b"from-cas".to_vec()).await.expect("seed CAS payload");
-    let executor = StepWorkerExecutor { cas };
+    let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
     let capture = executor
@@ -1965,7 +2109,10 @@ async fn builtin_import_dispatch_supports_cas_hash_kind() {
 /// Protects builtin fs dispatch and rooted file-write behavior.
 #[tokio::test]
 async fn builtin_fs_dispatch_writes_rooted_file() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_root = temp.path().join("tool-root");
     let config_root = temp.path().join("config-root");
@@ -1999,7 +2146,10 @@ async fn builtin_fs_dispatch_writes_rooted_file() {
 /// Protects builtin archive dispatch for pure file-content pack behavior.
 #[tokio::test]
 async fn builtin_archive_dispatch_packs_pure_file_content() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let input_bytes =
         BTreeMap::from([("content".to_string(), ResolvedInput::from_plain_content(b"z".to_vec()))]);
@@ -2031,7 +2181,10 @@ async fn builtin_archive_dispatch_packs_pure_file_content() {
 /// binary input while structural keys remain args.
 #[tokio::test]
 async fn builtin_export_dispatch_filters_structural_binary_inputs() {
-    let executor = StepWorkerExecutor { cas: Arc::new(InMemoryCas::new()) };
+    let executor = StepWorkerExecutor {
+        cas: Arc::new(InMemoryCas::new()),
+        conductor_tmp_dir: std::env::temp_dir(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let tool_root = temp.path().join("tool-root");
     let config_root = temp.path().join("config-root");
