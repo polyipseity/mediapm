@@ -1451,10 +1451,13 @@ machine config and regenerate downstream materialization.
 2. **Step with changed tool identity** (any tool): the generated tool identity
    differs from the previous one — companion selectors, dependency versions,
    or provisioning metadata changed. Resolution: when `previous.tool !=
-   generated.tool`, the step is unconditionally marked as unmatched
-   (`all_matched = false`), triggering a refresh cascade that installs the
-   newly-generated identity. This applies uniformly to all tools regardless
-   of name; no tool-specific special-casing is needed.
+   generated.tool`, the function first checks whether the previous tool is
+   still valid (exists in `machine.tools` with required `content_map` for
+   `Executable` kinds). If valid, `generated.tool` is rewritten to
+   `previous.tool.clone()`, preserving the old tool id and keeping impure
+   timestamps stable. Only when the previous tool is no longer valid (pruned,
+   missing `content_map`) is the step marked as unmatched, triggering a
+   refresh cascade that installs the newly-generated identity.
 
 3. **Stale previous tool**: if the previous tool id no longer exists in
    `machine.tools`, or is an `Executable` kind whose `machine.tool_configs`
@@ -1468,21 +1471,36 @@ builtins have no materialized payload to clean up.
 
 **Edge case — same step id, different generated tool id**: when the step
 itself is unchanged (same `generated.id`) but the generated `tool` identity
-string differs, the mismatch path always fires. This is correct: any tool
-identity can encode volatile fields (companion selectors, dependency versions)
-that legitimately change across sync cycles, and the generated identity is
-always authoritative for the current configuration.
+string differs, the function checks whether the previous tool id is still
+valid. If valid, the old tool id is preserved — the generated identity is not
+installed until the old tool becomes invalid (e.g., pruned, provisioned with
+new version). This prevents unnecessary cache invalidation from tool version
+updates or volatile identity fields. Only when the old tool id is no longer
+valid does the mismatch path fire, installing the newly-generated identity.
+
+**Edge case — tool version update with valid previous tool**: when a managed
+tool version changes (e.g., ffmpeg 6.0 → 7.0), the generated tool identity
+differs from the previous one. Since the previous tool is still valid (its
+`content_map` still exists in `machine.tool_configs` and the binary is
+materialized), the old tool id IS preserved. The conductor resolves to the old
+(cached) binary. MediaPM's impure timestamp remains unchanged — tool version
+updates do NOT refresh it. The new version binary is provisioned alongside the
+old one; a later sync switches to it when the old tool id is pruned.
 
 **Test coverage**:
 
 - `unchanged_step_config_uses_generated_tool_identity_when_changed` — ffmpeg
-  step, expects new_tool when generated identity differs from previous
+  step, expects preserved tool id when previous tool is still valid
 - `unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_changes`
-  — step with companion selectors, expects new_tool when identities differ
+  — step with companion selectors, expects preserved tool id when previous
+  tool is still valid
 - `forward_scan_matching_refreshes_later_step_tool_identity_when_needed` — both
-  steps expect new_tool, step 1 expects refreshed timestamp
+  steps expect preserved tool id when previous tools are valid; step 1
+  expects refreshed timestamp only when previous tool is invalid
 - `missing_step_timestamp_forces_refresh_to_active_tool` — ffmpeg step without
   timestamp, expects new_tool
+- `tool_version_update_preserves_old_tool_id` — tool version change, expects
+  preserved tool id when previous tool's content_map still exists
 
 ---
 
@@ -1808,16 +1826,58 @@ via `BTreeMap::insert()`, silently overwriting existing entries with the same
 
 **Risk**: Stale tool versions used; features expected in new version unavailable.
 
-**Recommendations**:
+**Resolution (post-Q2 fix)**: MediaPM now has explicit tool-id preservation
+during workflow re-synthesis. When a tool version changes, the
+`preserve_existing_generated_step_tools()` function rewrites the generated
+step's tool id to the previous valid one (`generated.tool = previous.tool.clone()`).
+The conductor still resolves to the old (cached) binary, and the mediapm
+impure timestamp is NOT refreshed. The new version binary is provisioned
+separately; it replaces the old one on a later sync cycle when the old tool id
+is pruned. Cache entries remain versioned; the old version stays available
+until explicitly cleaned up.
+
+**Updated Recommendations**:
 
 - **Cache key includes version**: cache entry is (tool_id, version, platform)
-- Version change: **new version automatically provisioned; old version remains** (separate cache entries)
-- Add test: "tool version change → new version downloaded, old cached separately"
+- **Tool-id preservation**: `preserve_existing_generated_step_tools` preserves
+  old tool ids across version changes, preventing unnecessary cache invalidation
+  and keeping impure timestamps stable
+- Version change: **new version automatically provisioned; old version remains**
+  (separate cache entries); the old tool id continues to resolve to the old
+  cached binary until pruned
+- Add test: "tool version change with valid previous tool → old tool id
+  preserved, impure timestamp unchanged, new binary provisioned separately"
 
 **Questions for Clarification**:
 
 1. Is tool cache versioned or version-agnostic?
 2. Should old versions be auto-cleaned up after timeout?
+
+---
+
+### 5.7 Instance Key Immutability and Failure Recovery
+
+**Concern**: Could a failed workflow step cause previously successful step instances to become unreachable, losing their I/O?
+
+**Why It Is Safe**: The design ensures prior instances are preserved through several mechanisms:
+
+1. **`state.clone()` on Error** (coordinator error checkpoint at `src/conductor/src/coordinator.rs:275-290`): When a step fails, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`. `state.clone()` preserves ALL current instances — no entries are discarded. Pending unsaved hashes are cleared (the failed step contributed no new CAS objects), but the prior state is untouched.
+
+2. **Append-Only `OrchestrationState`**: `OrchestrationState { version: u32, instances: BTreeMap<String, ToolCallInstance> }` is stored as an immutable CAS blob. The `instances` map only grows via insertions — old entries are never removed. Old CAS blobs remain reachable as long as any caller holds their hash.
+
+3. **State Pointer Only Advances on Success**: The `state_pointer` only advances on a successful run. After failure, `state_pointer` still references the old state CAS blob. Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries.
+
+4. **No Active CAS Garbage Collection**: CAS storage is append-only by default. Blobs are only deleted via explicit `cas.delete()`. There is no active pruning of unreferenced `OrchestrationState` blobs.
+
+**The One Scenario Where Instances ARE Lost**: If a user or external process explicitly calls `cas.delete()` on the CAS blob containing the old `OrchestrationState`, the prior instances become unreachable. This is an administrative action, not a normal runtime behavior.
+
+**Worked Example**:
+
+- Step 1 succeeds → instance key K1 stored in `instances` map → CAS blob B1 created (contains state with K1)
+- Step 2 fails → coordinator calls `commit_run(state.clone(), ...)` → CAS blob B2 created (contains K1 from Step 1, no entry for failed Step 2)
+- `state_pointer` still references B1 (or B2, both contain K1) → K1 remains reachable
+- Step 2 retried → new instance key K2 derived (may differ if impure) → on success, K2 added alongside K1
+- Outcome: Step 1's I/O is always available via K1
 
 ---
 

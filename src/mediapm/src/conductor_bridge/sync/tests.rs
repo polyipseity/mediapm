@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{FileSystemCas, Hash};
 use mediapm_conductor::{
-    InputBinding, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec,
+    InputBinding, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec, WorkflowSpec,
+    WorkflowStepSpec,
 };
 
-use crate::config::ToolRequirement;
+use crate::config::{MediaPmDocument, ToolRequirement};
 use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::{
@@ -16,6 +17,7 @@ use crate::tools::downloader::{
     ContentMapSource, DownloadProgressSnapshot, ProvisionedToolPayload,
 };
 
+use super::super::ToolSyncReport;
 use super::super::tool_runtime::{
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV, MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV,
@@ -23,7 +25,8 @@ use super::super::tool_runtime::{
 use super::content_import::{ContentMapSourceCacheKey, import_tool_content_source_into_cas};
 use super::lifecycle::{
     ensure_internal_launcher_content_entries_exist, is_builtin_source_ingest_requirement,
-    is_hash_still_referenced_by_tool_configs, lock_registry_version, should_skip_tag_update_check,
+    is_hash_still_referenced_by_tool_configs, lock_registry_version,
+    prune_unmanaged_tool_artifacts, should_skip_tag_update_check,
 };
 use super::provision::{
     TOOL_PROGRESS_BAR_SCALE, ToolDownloadProgressState, format_overall_tool_download_message,
@@ -1236,4 +1239,199 @@ fn hash_reference_guard_detects_shared_tool_content_hashes() {
         &machine,
         Hash::from_content(b"missing-hash")
     ));
+}
+
+/// Verifies that a tool entry referenced by an existing workflow step in the
+/// machine document is preserved even when the tool is not in the desired set
+/// and not declared in the user document.
+#[test]
+fn prune_unmanaged_tool_artifacts_preserves_workflow_referenced_tool_ids() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cas_root = temp.path().join("cas");
+    std::fs::create_dir_all(&cas_root).expect("create cas root");
+
+    let runtime =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build runtime");
+
+    runtime.block_on(async {
+        let paths = MediaPmPaths::from_root(temp.path());
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+
+        let tool_id = "mediapm.tools.workflow-referenced-tool@v1".to_string();
+        let logical_name = "workflow-referenced-tool".to_string();
+
+        let document = MediaPmDocument::default();
+
+        let mut lock = MediaLockFile {
+            tool_registry: BTreeMap::from([(
+                tool_id.clone(),
+                ToolRegistryRecord {
+                    name: logical_name.clone(),
+                    version: "latest".to_string(),
+                    source: "fixture".to_string(),
+                    registry_multihash: "hash:mock".to_string(),
+                    last_transition_unix_seconds: 100,
+                    status: ToolRegistryStatus::Active,
+                },
+            )]),
+            ..MediaLockFile::default()
+        };
+
+        let mut machine = MachineNickelDocument::default();
+        machine.tools.insert(
+            tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec!["test-tool".to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            tool_id.clone(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(
+                    "test-content".to_string(),
+                    Hash::from_content(b"payload"),
+                )])),
+                ..ToolConfigSpec::default()
+            },
+        );
+        // Workflow step references the tool by id.
+        machine.workflows.insert(
+            "test-workflow".to_string(),
+            WorkflowSpec {
+                steps: vec![WorkflowStepSpec {
+                    id: "step-1".to_string(),
+                    tool: tool_id.clone(),
+                    inputs: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                    outputs: BTreeMap::new(),
+                }],
+                ..WorkflowSpec::default()
+            },
+        );
+
+        let desired_tool_ids = BTreeSet::new();
+        let mut report = ToolSyncReport::default();
+
+        prune_unmanaged_tool_artifacts(
+            &paths,
+            &document,
+            &cas,
+            &mut machine,
+            &mut lock,
+            &desired_tool_ids,
+            &mut report,
+        )
+        .await
+        .expect("prune should not error");
+
+        // The tool should still be present because it is referenced by a
+        // workflow step.
+        assert!(machine.tools.contains_key(&tool_id), "tool should be preserved");
+
+        let registry = lock.tool_registry.get(&tool_id);
+        assert!(registry.is_some(), "registry entry should still exist");
+        assert_eq!(
+            registry.expect("registry entry").status,
+            ToolRegistryStatus::Active,
+            "tool should remain active"
+        );
+    });
+}
+
+/// Verifies that a stale tool entry not in the desired set and not referenced
+/// by any workflow step is pruned from the machine document and marked as
+/// Pruned in the lockfile registry.
+#[test]
+fn prune_unmanaged_tool_artifacts_prunes_stale_non_referenced_tools() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let cas_root = temp.path().join("cas");
+    std::fs::create_dir_all(&cas_root).expect("create cas root");
+
+    let runtime =
+        tokio::runtime::Builder::new_current_thread().enable_all().build().expect("build runtime");
+
+    runtime.block_on(async {
+        let paths = MediaPmPaths::from_root(temp.path());
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+
+        let tool_id = "mediapm.tools.stale-tool@v1".to_string();
+        let logical_name = "stale-tool".to_string();
+
+        let document = MediaPmDocument::default();
+
+        let mut lock = MediaLockFile {
+            tool_registry: BTreeMap::from([(
+                tool_id.clone(),
+                ToolRegistryRecord {
+                    name: logical_name.clone(),
+                    version: "latest".to_string(),
+                    source: "fixture".to_string(),
+                    registry_multihash: "hash:mock".to_string(),
+                    last_transition_unix_seconds: 200,
+                    status: ToolRegistryStatus::Active,
+                },
+            )]),
+            ..MediaLockFile::default()
+        };
+
+        let mut machine = MachineNickelDocument::default();
+        machine.tools.insert(
+            tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec!["test-tool".to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            tool_id.clone(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(
+                    "test-content".to_string(),
+                    Hash::from_content(b"payload"),
+                )])),
+                ..ToolConfigSpec::default()
+            },
+        );
+        // No workflow step references the tool.
+
+        let desired_tool_ids = BTreeSet::new();
+        let mut report = ToolSyncReport::default();
+
+        prune_unmanaged_tool_artifacts(
+            &paths,
+            &document,
+            &cas,
+            &mut machine,
+            &mut lock,
+            &desired_tool_ids,
+            &mut report,
+        )
+        .await
+        .expect("prune should not error");
+
+        // The tool should be removed from the machine document.
+        assert!(!machine.tools.contains_key(&tool_id), "tool should be removed");
+
+        let registry = lock.tool_registry.get(&tool_id);
+        assert!(registry.is_some(), "registry entry should still exist");
+        assert_eq!(
+            registry.expect("registry entry").status,
+            ToolRegistryStatus::Pruned,
+            "tool should be marked as Pruned"
+        );
+
+        assert!(
+            report.warnings.iter().any(|w| w.contains(&tool_id)),
+            "warning should mention the pruned tool id"
+        );
+    });
 }

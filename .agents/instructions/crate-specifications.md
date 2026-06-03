@@ -292,6 +292,35 @@ For comprehensive details, refer to the following specifications collected from 
   only emitted by the legacy `plan_level` / `execute_level` sequential path.
   The step-stream path emits only `StepCompleted` for completed step outcomes.
 
+### Instance Key Lifecycle and Failure Recovery
+
+**Instance Key Derivation** (`derive_instance_key()` in `src/conductor/src/step_worker/mod.rs`):
+
+- Input: `BLAKE3(tool.name tagged + tool.metadata serialized + optional impure_timestamp + each input hash)`
+- Deterministic for pure steps (same tool + inputs → same key)
+- Impure steps include a timestamp, so each invocation produces a distinct key
+
+**Failure Preservation** (coordinator error checkpoint at `src/conductor/src/coordinator.rs:275-290`):
+
+- On step failure, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`
+- `state.clone()` preserves ALL current instances — no entries are discarded
+- Pending hashes are cleared (failed step contributed no new CAS objects), but prior state is untouched
+
+**OrchestrationState Immutability**:
+
+- `OrchestrationState { version: u32, instances: BTreeMap<String, ToolCallInstance> }` is stored as an immutable CAS blob
+- The `instances` map only grows via insertions — old entries are never removed
+- Old CAS blobs remain reachable as long as any caller holds their hash
+
+**State Pointer Advancement**:
+
+- The `state_pointer` only advances on a **successful** run
+- After failure, `state_pointer` still references the old state CAS blob
+- Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries
+- CAS garbage collection is explicit-only (`cas.delete()`); there is no active pruning of unreferenced `OrchestrationState` blobs
+
+**Implication**: A failed workflow step cannot cause previously successful steps to lose their I/O. The instance key change only affects the failed step's retry; all prior instances remain in the immutable state blob.
+
 ### §16 Workflow Progress Display
 
 Conductor uses `pulsebar` (via `MultiProgress`) to display workflow execution
@@ -467,13 +496,28 @@ finished rows.
     is checked via `preserved_step_tool_is_valid()` (ensures the tool still
     exists in `machine.tools` and `Executable` kinds have non-empty `content_map`
     in `machine.tool_configs`).
-  - If the tool identity differs from the previously-synthesized one, mismatch
-    is flagged (`all_matched = false`) to trigger a refresh cascade that
-    installs the newly-generated identity. This applies uniformly to all tools
-    regardless of name — any tool's identity can encode volatile fields such as
-    same-step companion selectors, dependency versions, or provision timestamps.
+  - If the tool identity differs from the previously-synthesized one but the
+    previous tool is still valid (exists in `machine.tools` with required
+    `content_map`), `generated.tool` is rewritten to `previous.tool.clone()`.
+    This preserves the old tool id and keeps the impure timestamp stable — tool
+    version updates alone do NOT trigger a refresh cascade. The rewrite applies
+    uniformly across all tools regardless of name.
+  - If the previous tool is no longer valid (pruned from `machine.tools` or
+    missing `content_map` for `Executable` kinds), mismatch is flagged to
+    install the newly-generated identity.
   - Returns `true` when every generated step id was found in `existing` and
-    the tool id is unchanged and still valid.
+    the tool id is unchanged (or was successfully preserved) and still valid.
+- **Two-tier impure timestamp system**: MediaPM and Conductor maintain
+  separate impure timestamp domains with different triggers:
+  - **MediaPM-owned timestamps** (`workflow_states[media_id][index].impure_timestamp`):
+    track step config identity transitions. A timestamp refresh requires an
+    explicit configuration change in `mediapm.ncl` — tool version updates alone
+    do NOT update mediapm timestamps.
+  - **Conductor-owned timestamps** (`impure_timestamps[workflow_name][step_id]`
+    in conductor state doc): authoritative for instance key derivation in
+    `derive_instance_key()`. These are entirely separate from mediapm timestamps.
+    Step IDs use `MediaStepTool` enum values, which are stable across tool
+    versions.
 - **Dependency selector inheritance validation**: `ensure_inherit_dependency_target_is_configured()`
   enforces that `inherit`/`global` selectors on tool dependencies
   (e.g. `tools.yt-dlp.dependencies.ffmpeg_version = "inherit"`) require the
@@ -2108,6 +2152,14 @@ E.g., ffmpeg 6 → 7 produces different output format:
 4. Output hashes change; lock updated
 
 Different tool versions → different workflow outputs → different hashes. No magic; explicit version control.
+
+Note the two-tier timestamp architecture: tool version updates change the
+conductor timestamp (affecting conductor instance key derivation) but do NOT
+change the mediapm impure timestamp. MediaPM timestamps only refresh on
+explicit `mediapm.ncl` step config changes. This means a tool version rollback
+alone does not force workflow re-execution from mediapm's perspective — only
+conductor's instance keys change, which affects runtime state but not the
+mediapm-level workflow plan.
 
 ### 7. **How do I move my .mediapm workspace to a new directory?**
 

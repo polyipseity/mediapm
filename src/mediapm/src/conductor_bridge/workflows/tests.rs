@@ -187,11 +187,12 @@ fn plan_builds_exactly_one_workflow_per_media() {
     );
 }
 
-/// Protects mediapm incremental behavior for folder-style outputs by keeping
-/// prior immutable tool ids when explicit step config is unchanged and
-/// mediapm step impure timestamp is present.
+/// Protects mediapm incremental behavior by preserving prior immutable tool
+/// ids when explicit step config is unchanged and the old tool id is still
+/// valid in machine config. This avoids unnecessary cache invalidation on
+/// tool version updates.
 #[test]
-fn unchanged_step_config_uses_generated_tool_identity_when_changed() {
+fn unchanged_step_config_preserves_old_tool_when_generated_tool_changes() {
     let old_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@old".to_string();
     let new_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@new".to_string();
     let media_id = "archive-a".to_string();
@@ -265,7 +266,7 @@ fn unchanged_step_config_uses_generated_tool_identity_when_changed() {
         plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
 
     assert_eq!(workflow.steps.len(), 1);
-    assert_eq!(workflow.steps[0].tool, new_tool);
+    assert_eq!(workflow.steps[0].tool, old_tool);
 
     let stored = lock
         .workflow_states
@@ -276,10 +277,11 @@ fn unchanged_step_config_uses_generated_tool_identity_when_changed() {
     assert!(stored.impure_timestamp.is_some());
 }
 
-/// Protects tool identity refresh semantics by ensuring workflow steps adopt
-/// refreshed immutable tool ids when generated identities differ from previous.
+/// Protects tool identity preservation semantics by verifying that when
+/// companion suffixes change and the previous tool id is still valid, the
+/// old tool id is preserved to avoid unnecessary cache invalidation.
 #[test]
-fn unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_changes() {
+fn unchanged_yt_dlp_step_config_preserves_old_tool_when_companion_suffix_changes() {
     let old_tool =
         "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp+ffmpeg-old+deno-old@old".to_string();
     let new_tool =
@@ -326,7 +328,7 @@ fn unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_ch
         WorkflowSpec {
             steps: vec![WorkflowStepSpec {
                 id: "0-0-yt-dlp".to_string(),
-                tool: old_tool,
+                tool: old_tool.clone(),
                 inputs: BTreeMap::new(),
                 depends_on: Vec::new(),
                 outputs: BTreeMap::from([(
@@ -344,7 +346,7 @@ fn unchanged_yt_dlp_step_config_refreshes_tool_identity_when_companion_suffix_ch
         plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
 
     assert_eq!(workflow.steps.len(), 1);
-    assert_eq!(workflow.steps[0].tool, new_tool);
+    assert_eq!(workflow.steps[0].tool, old_tool);
 }
 
 /// Protects refresh gating by forcing refresh when explicit user-facing step
@@ -2790,4 +2792,249 @@ fn yt_dlp_primary_variant_does_not_auto_inject_skip_download() {
     let step = workflow.steps.first().expect("yt-dlp step");
 
     assert!(!step.inputs.contains_key("skip_download"));
+}
+
+/// Verifies that when the generated tool identity differs from the previous
+/// managed step tool, but the previous tool id is still valid in the machine
+/// configuration (present in `machine.tools` with a non-empty content map),
+/// the previous tool id is preserved. This prevents unnecessary cache
+/// invalidation when only the tool version string has changed.
+#[test]
+fn preserve_existing_generated_step_tools_preserves_old_tool_when_valid() {
+    let old_tool =
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@old-preserve-v1".to_string();
+    let new_tool =
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@new-preserve-v1".to_string();
+    let media_id = "preserve-old-tool-when-valid".to_string();
+    let source = MediaSourceSpec {
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([("default".to_string(), ffmpeg_output_variant(0))]),
+            options: BTreeMap::new(),
+        }],
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::from([(
+            "source".to_string(),
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]),
+    };
+    let explicit_snapshot =
+        serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(media_id.clone(), source)]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile {
+        active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 10,
+                    subsec_nanos: 20,
+                }),
+            }],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    // old_tool is valid: present in machine.tools with a non-empty content_map.
+    machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
+    machine.tool_configs.insert(
+        old_tool.clone(),
+        ToolConfigSpec {
+            content_map: Some(BTreeMap::from([(
+                "linux/ffmpeg".to_string(),
+                Hash::from_content(b"ffmpeg-old"),
+            )])),
+            ..ToolConfigSpec::default()
+        },
+    );
+    // Existing workflow step uses old_tool.
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+            }],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
+        .expect("plan should succeed");
+    let workflow = plan
+        .workflows
+        .get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"))
+        .expect("managed workflow");
+
+    assert_eq!(workflow.steps.len(), 1);
+    // The old tool id should be preserved because it is still valid.
+    assert_eq!(workflow.steps[0].tool, old_tool);
+}
+
+/// Verifies that when the generated tool identity differs from the previous
+/// managed step tool and the previous tool id is no longer valid (not present
+/// in `machine.tools`), the generated (active) tool identity is used instead.
+#[test]
+fn preserve_existing_generated_step_tools_refreshes_tool_when_old_invalid() {
+    let old_tool =
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@old-invalid-v1".to_string();
+    let new_tool =
+        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@new-invalid-v1".to_string();
+    let media_id = "refresh-tool-when-old-invalid".to_string();
+    let source = MediaSourceSpec {
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([("default".to_string(), ffmpeg_output_variant(0))]),
+            options: BTreeMap::new(),
+        }],
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::from([(
+            "source".to_string(),
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]),
+    };
+    let explicit_snapshot =
+        serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(media_id.clone(), source)]),
+        ..MediaPmDocument::default()
+    };
+
+    let mut lock = MediaLockFile {
+        active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 20,
+                    subsec_nanos: 30,
+                }),
+            }],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    // old_tool is NOT added to machine.tools, so preserved_step_tool_is_valid
+    // returns false and the generated (active) tool is used.
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+            }],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
+        .expect("plan should succeed");
+    let workflow = plan
+        .workflows
+        .get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"))
+        .expect("managed workflow");
+
+    assert_eq!(workflow.steps.len(), 1);
+    // The generated (active) tool should be used since old_tool is invalid.
+    assert_eq!(workflow.steps[0].tool, new_tool);
+}
+
+/// Verifies that when the generated tool identity matches the previous managed
+/// step tool and the tool is valid, the tool identity is kept unchanged.
+#[test]
+fn preserve_existing_generated_step_tools_keeps_same_tool_when_unchanged() {
+    let same_tool = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@same-v1".to_string();
+    let media_id = "keep-same-tool-when-unchanged".to_string();
+    let source = MediaSourceSpec {
+        steps: vec![MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["source".to_string()],
+            output_variants: BTreeMap::from([("default".to_string(), ffmpeg_output_variant(0))]),
+            options: BTreeMap::new(),
+        }],
+        id: None,
+        description: None,
+        title: None,
+        workflow_id: None,
+        metadata: None,
+        variant_hashes: BTreeMap::from([(
+            "source".to_string(),
+            "blake3:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        )]),
+    };
+    let explicit_snapshot =
+        serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
+
+    let document = MediaPmDocument {
+        media: BTreeMap::from([(media_id.clone(), source)]),
+        ..MediaPmDocument::default()
+    };
+
+    let lock = MediaLockFile {
+        active_tools: BTreeMap::from([("ffmpeg".to_string(), same_tool.clone())]),
+        workflow_states: BTreeMap::from([(
+            media_id.clone(),
+            vec![ManagedWorkflowStepState {
+                explicit_config: explicit_snapshot.clone(),
+                impure_timestamp: Some(MediaPmImpureTimestamp {
+                    epoch_seconds: 30,
+                    subsec_nanos: 40,
+                }),
+            }],
+        )]),
+        ..MediaLockFile::default()
+    };
+
+    let mut machine = machine_with_active_tool_specs(&lock);
+    // same_tool is in machine.tools (from machine_with_active_tool_specs)
+    // and is valid.
+    machine.workflows.insert(
+        format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+        WorkflowSpec {
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: same_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+            }],
+            ..WorkflowSpec::default()
+        },
+    );
+
+    let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan should succeed");
+    let workflow = plan
+        .workflows
+        .get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"))
+        .expect("managed workflow");
+
+    assert_eq!(workflow.steps.len(), 1);
+    // The tool identity should remain unchanged.
+    assert_eq!(workflow.steps[0].tool, same_tool);
 }

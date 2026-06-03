@@ -89,13 +89,24 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
 ) -> Result<(), MediaPmError> {
     let desired_logical_names = document.tools.keys().cloned().collect::<BTreeSet<_>>();
 
+    // Collect tool_ids referenced by existing workflow steps so they are
+    // preserved even when the declaring tool name no longer matches the
+    // current desired tool id (e.g. during a tool version update).
+    let referenced_by_workflow: BTreeSet<String> =
+        machine.workflows.values().flat_map(|wf| wf.steps.iter().map(|s| s.tool.clone())).collect();
+
     let stale_registry_ids = lock
         .tool_registry
         .iter()
         .filter_map(|(tool_id, record)| {
             let still_declared = desired_logical_names.contains(&record.name);
             let still_active = desired_tool_ids.contains(tool_id);
-            if still_declared && still_active { None } else { Some(tool_id.clone()) }
+            let still_referenced = referenced_by_workflow.contains(tool_id);
+            if (still_declared && still_active) || still_referenced {
+                None
+            } else {
+                Some(tool_id.clone())
+            }
         })
         .collect::<BTreeSet<_>>();
 

@@ -703,6 +703,11 @@ fn fresh_impure_timestamp() -> MediaPmImpureTimestamp {
 
 /// Rewrites generated step tool ids using an existing workflow snapshot.
 ///
+/// When a generated step's tool id differs from the previous one but the
+/// previous tool id is still valid (present and executable in machine config),
+/// the previous id is preserved to avoid unnecessary cache invalidation on
+/// tool version updates.
+///
 /// Returns `true` when every generated step id was found in `existing` and
 /// pinned to a still-valid prior immutable tool id present in current machine
 /// configuration.
@@ -724,10 +729,15 @@ fn preserve_existing_generated_step_tools(
                 if !preserved_step_tool_is_valid(machine, &previous.tool) {
                     all_matched = false;
                 }
+            } else if preserved_step_tool_is_valid(machine, &previous.tool) {
+                // Tool identity changed but the previous tool id is still
+                // valid — preserve it to avoid unnecessary cache invalidation
+                // when only the tool version has changed.
+                generated.tool = previous.tool.clone();
             } else {
-                // Tool identity changed — the generated identity is the
-                // correct one for the current configuration regardless of
-                // tool name. No tool-specific special-casing needed.
+                // Tool identity changed and the previous tool id is no longer
+                // valid — the generated identity is the correct one for the
+                // current configuration.
                 all_matched = false;
             }
         } else {
@@ -738,8 +748,11 @@ fn preserve_existing_generated_step_tools(
     all_matched
 }
 
-/// Returns whether one preserved step tool id is still executable from current
-/// machine configuration.
+/// Returns whether one preserved step tool id is still present and executable
+/// under the current machine configuration.
+///
+/// A tool id is valid if it exists in `machine.tools` and, for executable
+/// tools, has a non-empty content map. Builtin tools are always valid.
 #[must_use]
 fn preserved_step_tool_is_valid(machine: &MachineNickelDocument, tool_id: &str) -> bool {
     let Some(tool_spec) = machine.tools.get(tool_id) else {
