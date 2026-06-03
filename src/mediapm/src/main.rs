@@ -213,13 +213,13 @@ struct MediaAddArgs {
     /// - `yt-dlp`: online URI (`http` or `https`)
     /// - `local`: filesystem path
     source: String,
-    /// Optional `MusicBrainz` recording UUID.
+    /// Optional `MusicBrainz` recording MBID UUID.
     ///
     /// When supplied the recording is validated and its title, artist, and
     /// description are used as the authoritative source metadata instead of
     /// the values probed from the source file or downloader tool.
     #[arg(long)]
-    recording_id: Option<String>,
+    recording_mbid: Option<String>,
     /// Insertion position policy for media-map mutation.
     #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
     insert_position: InsertPosition,
@@ -633,7 +633,7 @@ async fn main() -> anyhow::Result<()> {
                         service
                             .add_media_source_with_position(
                                 &uri,
-                                args.recording_id.as_deref(),
+                                args.recording_mbid.as_deref(),
                                 map_insert_position(args.insert_position),
                                 args.overwrite,
                             )
@@ -644,7 +644,7 @@ async fn main() -> anyhow::Result<()> {
                         service
                             .add_local_source_with_position(
                                 &path,
-                                args.recording_id.as_deref(),
+                                args.recording_mbid.as_deref(),
                                 map_insert_position(args.insert_position),
                                 args.overwrite,
                             )

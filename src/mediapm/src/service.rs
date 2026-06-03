@@ -226,9 +226,9 @@ where
     pub async fn add_media_source(
         &self,
         uri: &Url,
-        recording_id: Option<&str>,
+        recording_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
-        self.add_media_source_with_position(uri, recording_id, AddInsertPosition::Sorted, false)
+        self.add_media_source_with_position(uri, recording_mbid, AddInsertPosition::Sorted, false)
             .await
     }
 
@@ -247,7 +247,7 @@ where
     pub async fn add_media_source_with_position(
         &self,
         uri: &Url,
-        recording_id: Option<&str>,
+        recording_mbid: Option<&str>,
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<String, MediaPmError> {
@@ -260,8 +260,8 @@ where
             ));
         }
 
-        let mb = if let Some(rid) = recording_id {
-            Some(fetch_mb_recording_metadata(rid).await?)
+        let mb = if let Some(rmbid) = recording_mbid {
+            Some(fetch_mb_recording_metadata(rmbid).await?)
         } else {
             None
         };
@@ -520,11 +520,11 @@ where
     pub async fn add_local_source(
         &self,
         local_path: &Path,
-        recording_id: Option<&str>,
+        recording_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
         self.add_local_source_with_position(
             local_path,
-            recording_id,
+            recording_mbid,
             AddInsertPosition::Sorted,
             false,
         )
@@ -547,7 +547,7 @@ where
     pub async fn add_local_source_with_position(
         &self,
         local_path: &Path,
-        recording_id: Option<&str>,
+        recording_mbid: Option<&str>,
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<String, MediaPmError> {
@@ -582,8 +582,8 @@ where
             MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
         })?;
 
-        let mb = if let Some(rid) = recording_id {
-            Some(fetch_mb_recording_metadata(rid).await?)
+        let mb = if let Some(rmbid) = recording_mbid {
+            Some(fetch_mb_recording_metadata(rmbid).await?)
         } else {
             None
         };

@@ -15,7 +15,7 @@ use url::Url;
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
-/// Metadata resolved from a `MusicBrainz` recording ID.
+/// Metadata resolved from a `MusicBrainz` recording MBID.
 pub(crate) struct MbRecordingMetadata {
     /// Recording title.
     pub(crate) title: String,
@@ -24,7 +24,7 @@ pub(crate) struct MbRecordingMetadata {
 }
 
 /// Validates that `id` is a well-formed UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
-pub(crate) fn validate_recording_id_format(id: &str) -> Result<(), MediaPmError> {
+pub(crate) fn validate_recording_mbid_format(id: &str) -> Result<(), MediaPmError> {
     let parts: Vec<&str> = id.split('-').collect();
     let valid = parts.len() == 5
         && parts[0].len() == 8
@@ -37,7 +37,7 @@ pub(crate) fn validate_recording_id_format(id: &str) -> Result<(), MediaPmError>
         Ok(())
     } else {
         Err(MediaPmError::Workflow(format!(
-            "recording id '{id}' is not a valid UUID (expected 8-4-4-4-12 lowercase hex)"
+            "recording MBID '{id}' is not a valid UUID (expected 8-4-4-4-12 lowercase hex)"
         )))
     }
 }
@@ -46,18 +46,20 @@ pub(crate) fn validate_recording_id_format(id: &str) -> Result<(), MediaPmError>
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError`] when the recording id is not a valid UUID or the
+/// Returns [`MediaPmError`] when the recording MBID is not a valid UUID or the
 /// `MusicBrainz` API call fails (network error, unknown id, etc.).
 pub(crate) async fn fetch_mb_recording_metadata(
-    recording_id: &str,
+    recording_mbid: &str,
 ) -> Result<MbRecordingMetadata, MediaPmError> {
-    validate_recording_id_format(recording_id)?;
+    validate_recording_mbid_format(recording_mbid)?;
     let recording =
-        Recording::fetch().id(recording_id).with_artists().execute_async().await.map_err(|e| {
-            MediaPmError::Workflow(format!(
-                "MusicBrainz lookup for recording '{recording_id}' failed: {e}"
-            ))
-        })?;
+        Recording::fetch().id(recording_mbid).with_artists().execute_async().await.map_err(
+            |e| {
+                MediaPmError::Workflow(format!(
+                    "MusicBrainz lookup for recording '{recording_mbid}' failed: {e}"
+                ))
+            },
+        )?;
     let title = recording.title.clone();
     let artist = recording
         .artist_credit
