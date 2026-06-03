@@ -104,7 +104,7 @@ State Persistence (state.ncl)
 | **CAS** | Temp file + atomic rename; index snapshots on mutation |
 | **Conductor** | State persisted atomically; workflow fails fast on conflicts |
 | **Builtins** | File operations succeed or rollback (no orphaned state) |
-| **MediaPM** | Staging → validation → commit; rollback on failure; per-workspace staging dirs (`.mediapm/tmp/`) replace global `SERIAL_GUARD` lock |
+| **MediaPM** | Staging → validation → commit; rollback on failure; OS-backed per-workspace staging dirs (hash of workspace root under `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock |
 
 **Verification**: If partial state persists after failure, it's a bug.
 

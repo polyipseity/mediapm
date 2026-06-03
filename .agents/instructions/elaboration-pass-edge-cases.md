@@ -1729,19 +1729,27 @@ visible in production code).
 
 - `SERIAL_GUARD` (`OnceLock<Mutex<()>>`) removed entirely from
   `src/mediapm/src/materializer/mod.rs`
-- Replaced with per-workspace staging directories at `.mediapm/tmp/` (relative
-  to the workspace being synced)
-- Each workspace gets its own staging tree, so concurrent test processes on
-  different workspaces never conflict
+- Replaced with OS-backed per-workspace staging directories using
+  `std::env::temp_dir().join(format!("mediapm-{:016x}", hash(root_dir)))`
+  where `hash` is `std::hash::DefaultHasher` applied to the workspace root
+  path.
+- Each workspace gets its own subdirectory under the OS temp dir, derived
+  deterministically from its workspace root. Concurrent test processes on
+  different workspaces never collide because they use different temp dir
+  paths. Tests use unique `tempfile::tempdir()` roots, so concurrent tests
+  on the same workspace also get distinct temp dirs.
 - The staging directory is scoped to a single sync operation; cleaned up on
   success (promoted to final location) or on failure (rolled back)
 - The Atomicity Contract in `crate-specifications.md` updated to document:
-  "per-workspace staging dirs (`.mediapm/tmp/`) replace global `SERIAL_GUARD` lock"
+  "OS-backed per-workspace staging dirs (hash of workspace root under
+  `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock"
 
 **Cross-References**:
 
+- `src/mediapm/src/paths.rs`: `default_runtime_tmp_dir()` derives OS temp
+  subdirectory from workspace root hash
 - `src/mediapm/src/materializer/mod.rs`: staging directory creation under
-  `.mediapm/tmp/`, cleanup on rollback
+  `mediapm_tmp_dir` (which now resolves to the OS-backed path)
 - `.agents/instructions/crate-specifications.md`: Atomicity Contract table,
   MediaPM row
 
