@@ -282,8 +282,10 @@ async fn add_local_hierarchy_preset_is_idempotent_for_existing_media() {
     fs::write(&local_file, b"local-bytes").expect("write local source");
     let folder = "music videos";
 
-    let media_id =
-        service.add_local_source(&local_file, None, None).await.expect("add local source");
+    let media_id = service
+        .add_local_source(&local_file, None, None, None, None, None)
+        .await
+        .expect("add local source");
 
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
@@ -335,7 +337,14 @@ async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_in_memory_at(root.path());
     let media_id = service
-        .add_media_source(&Url::parse("https://example.com/video").expect("url"), None, None)
+        .add_media_source(
+            &Url::parse("https://example.com/video").expect("url"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .await
         .expect("add remote source");
 
@@ -586,6 +595,9 @@ async fn add_hierarchy_preset_uses_default_root_folder_when_omitted() {
             &Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"),
             None,
             None,
+            None,
+            None,
+            None,
         )
         .await
         .expect("add media source");
@@ -635,8 +647,10 @@ async fn remove_hierarchy_preset_is_idempotent() {
     fs::write(&local_file, b"local-bytes").expect("write local source");
     let folder = "music videos";
 
-    let media_id =
-        service.add_local_source(&local_file, None, None).await.expect("add local source");
+    let media_id = service
+        .add_local_source(&local_file, None, None, None, None, None)
+        .await
+        .expect("add local source");
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
         .expect("add hierarchy preset");
@@ -660,8 +674,10 @@ async fn remove_media_source_removes_matching_hierarchy_nodes() {
     let local_file = root.path().join("local-source.txt");
     fs::write(&local_file, b"local-bytes").expect("write local source");
 
-    let media_id =
-        service.add_local_source(&local_file, None, None).await.expect("add local source");
+    let media_id = service
+        .add_local_source(&local_file, None, None, None, None, None)
+        .await
+        .expect("add local source");
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
         .expect("add hierarchy preset");
@@ -729,6 +745,9 @@ async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
     let media_id = service
         .add_media_source(
             &Url::parse("https://www.youtube.com/watch?v=mbid-defaults").expect("url"),
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -834,37 +853,34 @@ fn parse_online_metadata_reads_title_artist_and_description() {
     );
 }
 
-/// Ensures remote add-flow metadata falls back to built-in defaults and emits
-/// a warning when yt-dlp is not configured.
+/// Ensures remote add-flow metadata passes None through when yt-dlp is not
+/// configured and emits the warning verbatim.
 #[test]
 fn resolve_online_metadata_for_add_warns_when_yt_dlp_is_missing() {
-    let url = Url::parse("https://example.com/demo-video").expect("url");
-
     let warning = "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source 'https://example.com/demo-video'".to_string();
-    let resolved = resolve_online_source_metadata_for_add(&url, None, Some(warning.clone()));
+    let resolved = resolve_online_source_metadata_for_add(None, Some(warning.clone()));
 
-    assert_eq!(resolved.title, "demo-video");
-    assert_eq!(resolved.description, "title: demo-video\nartist: unknown");
-    assert_eq!(resolved.artist, None);
+    assert!(resolved.title.is_none());
+    assert!(resolved.artist.is_none());
+    assert!(resolved.description.is_none());
     assert_eq!(resolved.warning.as_deref(), Some(warning.as_str()));
 }
 
-/// Ensures remote add-flow metadata prefers yt-dlp-fetched title, artist, and
-/// description values when the tool is configured.
+/// Ensures remote add-flow metadata passes through yt-dlp-fetched values
+/// verbatim when the tool is configured.
 #[test]
 fn resolve_online_metadata_for_add_prefers_yt_dlp_values_when_configured() {
-    let url = Url::parse("https://example.com/demo-video").expect("url");
     let fetched = OnlineSourceMetadata {
         title: Some("Fetched Title".to_string()),
         artist: Some("Fetched Artist".to_string()),
         description: Some("Fetched Description".to_string()),
     };
 
-    let resolved = resolve_online_source_metadata_for_add(&url, Some(fetched), None);
+    let resolved = resolve_online_source_metadata_for_add(Some(fetched), None);
 
-    assert_eq!(resolved.title, "Fetched Title");
-    assert_eq!(resolved.description, "Fetched Description");
-    assert_eq!(resolved.artist, Some("Fetched Artist".to_string()));
+    assert_eq!(resolved.title.as_deref(), Some("Fetched Title"));
+    assert_eq!(resolved.artist.as_deref(), Some("Fetched Artist"));
+    assert_eq!(resolved.description.as_deref(), Some("Fetched Description"));
     assert!(resolved.warning.is_none());
 }
 
@@ -896,6 +912,7 @@ fn parse_local_metadata_reads_ffprobe_tags_case_insensitively() {
         metadata,
         LocalSourceMetadata {
             title: Some("Local Demo".to_string()),
+            artist: None,
             description: Some("Local description".to_string()),
         }
     );

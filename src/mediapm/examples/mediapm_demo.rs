@@ -738,6 +738,7 @@ fn configure_document_for_local_tool_chain(
                     .to_string(),
             ),
             title: Some(DEMO_METADATA_TITLE.to_string()),
+            artist: None,
             workflow_id: None,
             metadata: Some(BTreeMap::from([
                 ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
@@ -1122,7 +1123,8 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         source_hash.to_string()
     };
 
-    let auto_added_media_id = ingest_service.add_local_source(&source_path, None, None).await?;
+    let auto_added_media_id =
+        ingest_service.add_local_source(&source_path, None, None, None, None, None).await?;
     let auto_added_document = load_mediapm_document(&paths.mediapm_ncl)?;
     let auto_added_source = auto_added_document.media.get(&auto_added_media_id).ok_or_else(|| {
         std::io::Error::other(format!(

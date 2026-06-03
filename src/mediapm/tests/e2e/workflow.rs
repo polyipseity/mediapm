@@ -180,7 +180,10 @@ async fn add_media_source_sets_remote_download_defaults() {
     let service = MediaPmService::new_in_memory_at(root.path());
 
     let remote = Url::parse("https://example.com/video.mkv").expect("url must parse");
-    let media_id = service.add_media_source(&remote, None, None).await.expect("add media source");
+    let media_id = service
+        .add_media_source(&remote, None, None, None, None, None)
+        .await
+        .expect("add media source");
     let document = load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm doc");
     let source = document.media.get(&media_id).expect("source exists");
 
@@ -351,8 +354,10 @@ async fn add_local_source_sets_import_step_and_description() {
     let local_file = root.path().join("sample-media.txt");
     std::fs::write(&local_file, b"sample-bytes").expect("write local file");
 
-    let media_id =
-        service.add_local_source(&local_file, None, None).await.expect("add local source");
+    let media_id = service
+        .add_local_source(&local_file, None, None, None, None, None)
+        .await
+        .expect("add local source");
     let document = load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm doc");
     let source = document.media.get(&media_id).expect("source exists");
 

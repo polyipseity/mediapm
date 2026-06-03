@@ -8,77 +8,10 @@ use mediapm_conductor::{
     ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
     SimpleConductor,
 };
-use musicbrainz_rs::entity::recording::Recording;
-use musicbrainz_rs::prelude::*;
 use url::Url;
 
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
-
-/// Metadata resolved from a `MusicBrainz` recording MBID.
-pub(crate) struct MbRecordingMetadata {
-    /// Recording title.
-    pub(crate) title: String,
-    /// Combined artist credit text (may be `"unknown"` when absent).
-    pub(crate) artist: String,
-}
-
-/// Validates that `id` is a well-formed UUID (`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`).
-pub(crate) fn validate_recording_mbid_format(id: &str) -> Result<(), MediaPmError> {
-    let parts: Vec<&str> = id.split('-').collect();
-    let valid = parts.len() == 5
-        && parts[0].len() == 8
-        && parts[1].len() == 4
-        && parts[2].len() == 4
-        && parts[3].len() == 4
-        && parts[4].len() == 12
-        && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(MediaPmError::Workflow(format!(
-            "recording MBID '{id}' is not a valid UUID (expected 8-4-4-4-12 lowercase hex)"
-        )))
-    }
-}
-
-/// Fetches and validates a `MusicBrainz` recording, returning title and artist credit.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when the recording MBID is not a valid UUID or the
-/// `MusicBrainz` API call fails (network error, unknown id, etc.).
-pub(crate) async fn fetch_mb_recording_metadata(
-    recording_mbid: &str,
-) -> Result<MbRecordingMetadata, MediaPmError> {
-    validate_recording_mbid_format(recording_mbid)?;
-    let recording =
-        Recording::fetch().id(recording_mbid).with_artists().execute_async().await.map_err(
-            |e| {
-                MediaPmError::Workflow(format!(
-                    "MusicBrainz lookup for recording '{recording_mbid}' failed: {e}"
-                ))
-            },
-        )?;
-    let title = recording.title.clone();
-    let artist = recording
-        .artist_credit
-        .as_deref()
-        .filter(|credits| !credits.is_empty())
-        .map(|credits| {
-            let mut combined = String::new();
-            for credit in credits {
-                combined.push_str(&credit.name);
-                if let Some(join_phrase) = credit.joinphrase.as_deref() {
-                    combined.push_str(join_phrase);
-                }
-            }
-            combined
-        })
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
-    Ok(MbRecordingMetadata { title, artist })
-}
 
 /// Metadata tuple fetched by downloader-aware online probes.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -99,9 +32,9 @@ pub(crate) struct OnlineSourceMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedOnlineSourceMetadata {
     /// Resolved title used when adding one online media source.
-    pub(crate) title: String,
+    pub(crate) title: Option<String>,
     /// Resolved description used when adding one online media source.
-    pub(crate) description: String,
+    pub(crate) description: Option<String>,
     /// Resolved artist/uploader label used when adding one online media source.
     pub(crate) artist: Option<String>,
     /// Optional warning emitted when yt-dlp metadata cannot be fetched.
@@ -113,6 +46,8 @@ pub(crate) struct ResolvedOnlineSourceMetadata {
 pub(crate) struct LocalSourceMetadata {
     /// Best-effort media title.
     pub(crate) title: Option<String>,
+    /// Best-effort artist/uploader label.
+    pub(crate) artist: Option<String>,
     /// Best-effort textual description.
     pub(crate) description: Option<String>,
 }
@@ -127,21 +62,20 @@ pub(crate) fn fetch_online_source_metadata(
 
 /// Resolves add-flow metadata for one remote source.
 ///
-/// When yt-dlp metadata is available, the fetched values are preferred for the
-/// title, description, and artist fields. The warning is carried through so
-/// the caller can report why metadata fell back to defaults.
+/// When yt-dlp metadata is available, the fetched values are passed through
+/// as-is. The warning is carried through so the caller can report why
+/// metadata could not be fetched.
 pub(crate) fn resolve_online_source_metadata_for_add(
-    uri: &Url,
     yt_dlp_metadata: Option<OnlineSourceMetadata>,
     warning: Option<String>,
 ) -> ResolvedOnlineSourceMetadata {
     let metadata = yt_dlp_metadata.unwrap_or_default();
-    let title = metadata.title.unwrap_or_else(|| remote_default_title(uri));
-    let description = metadata.description.unwrap_or_else(|| {
-        build_remote_default_description_for_remote_source(&title, metadata.artist.as_deref())
-    });
-
-    ResolvedOnlineSourceMetadata { title, description, artist: metadata.artist, warning }
+    ResolvedOnlineSourceMetadata {
+        title: metadata.title,
+        description: metadata.description,
+        artist: metadata.artist,
+        warning,
+    }
 }
 
 /// Resolves local metadata using media-probe tooling when available.
@@ -197,7 +131,11 @@ pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let metadata = parse_local_source_metadata_from_ffprobe_json(&value);
 
-    if metadata.title.is_none() && metadata.description.is_none() { None } else { Some(metadata) }
+    if metadata.title.is_none() && metadata.artist.is_none() && metadata.description.is_none() {
+        None
+    } else {
+        Some(metadata)
+    }
 }
 
 /// Parses online metadata fields from one downloader JSON payload.
@@ -223,9 +161,10 @@ pub(crate) fn parse_local_source_metadata_from_ffprobe_json(
         .unwrap_or(serde_json::Value::Null);
 
     let title = first_non_empty_json_string(&tags, &["title", "track"]);
+    let artist = first_non_empty_json_string(&tags, &["artist", "album_artist"]);
     let description = first_non_empty_json_string(&tags, &["description", "comment", "synopsis"]);
 
-    LocalSourceMetadata { title, description }
+    LocalSourceMetadata { title, artist, description }
 }
 
 /// Returns first non-empty string value from one JSON object key list.
@@ -252,21 +191,6 @@ pub(crate) fn first_non_empty_json_string(
             .filter(|text| !text.is_empty())
             .map(ToString::to_string)
     })
-}
-
-/// Derives a human-readable title for one remote source URL.
-pub(crate) fn remote_default_title(uri: &Url) -> String {
-    uri.path_segments()
-        .and_then(|mut segments| segments.rfind(|segment| !segment.is_empty()))
-        .map(ToString::to_string)
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// Builds the generic description text used for remote-source defaults.
-fn build_remote_default_description_for_remote_source(title: &str, artist: Option<&str>) -> String {
-    let artist = artist.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
-    format!("title: {title}\nartist: {artist}")
 }
 
 /// Resolves conductor CAS root from machine runtime storage with default fallback.

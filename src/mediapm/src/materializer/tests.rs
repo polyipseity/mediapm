@@ -356,6 +356,7 @@ async fn sync_hierarchy_normalizes_expanded_metadata_placeholder_paths_to_nfd() 
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "artist".to_string(),
@@ -409,6 +410,7 @@ async fn sync_hierarchy_normalizes_expanded_media_id_placeholder_paths_to_nfd() 
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("default".to_string(), hash.to_string())]),
@@ -644,6 +646,7 @@ async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
                 id: None,
                 description: Some("local sidecars".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("sidecars".to_string(), zip_hash.to_string())]),
@@ -742,6 +745,7 @@ async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commit
                 id: None,
                 description: Some("local zip variants".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([
@@ -830,6 +834,7 @@ async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() 
                 id: None,
                 description: Some("local zip variants".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([
@@ -922,6 +927,7 @@ async fn sync_hierarchy_applies_folder_rename_replacement_media_placeholders() {
                 id: None,
                 description: Some("local sidecars".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "title".to_string(),
@@ -976,6 +982,7 @@ async fn sync_hierarchy_materializes_local_source_from_cas_variant_pointer() {
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("default".to_string(), hash.to_string())]),
@@ -1041,6 +1048,7 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
                     id: None,
                     description: Some("file: alpha.bin".to_string()),
                     title: None,
+                    artist: None,
                     workflow_id: None,
                     metadata: None,
                     variant_hashes: BTreeMap::from([(
@@ -1056,6 +1064,7 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
                     id: None,
                     description: Some("file: beta.bin".to_string()),
                     title: None,
+                    artist: None,
                     workflow_id: None,
                     metadata: None,
                     variant_hashes: BTreeMap::from([(
@@ -1169,6 +1178,7 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
                     id: None,
                     description: Some("file: alpha.bin".to_string()),
                     title: None,
+                    artist: None,
                     workflow_id: None,
                     metadata: None,
                     variant_hashes: BTreeMap::from([(
@@ -1184,6 +1194,7 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
                     id: None,
                     description: Some("file: beta.bin".to_string()),
                     title: None,
+                    artist: None,
                     workflow_id: None,
                     metadata: None,
                     variant_hashes: BTreeMap::from([(
@@ -1278,6 +1289,7 @@ async fn sync_hierarchy_playlist_rejects_non_media_hierarchy_id() {
                 id: None,
                 description: Some("local sidecars".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([(
@@ -1393,6 +1405,7 @@ async fn sync_hierarchy_generates_pls_playlist_and_records_format_label() {
                 id: None,
                 description: Some("file: alpha.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("default".to_string(), alpha_hash.to_string())]),
@@ -1480,6 +1493,7 @@ async fn sync_hierarchy_interpolates_literal_media_metadata_placeholders() {
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "title".to_string(),
@@ -1533,6 +1547,7 @@ async fn sync_hierarchy_interpolates_variant_backed_media_metadata_placeholders(
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "title".to_string(),
@@ -1595,6 +1610,7 @@ async fn sync_hierarchy_interpolates_media_id_placeholder() {
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("default".to_string(), hash.to_string())]),
@@ -1644,6 +1660,7 @@ async fn sync_hierarchy_interpolates_variant_metadata_with_dot_prefix() {
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "video_ext".to_string(),
@@ -1706,6 +1723,7 @@ async fn sync_hierarchy_interpolates_empty_variant_metadata_without_dot_prefix()
                 id: None,
                 description: Some("file: source.bin".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([(
                     "video_ext".to_string(),
@@ -1838,6 +1856,7 @@ async fn sync_hierarchy_materializes_online_variant_from_workflow_state() {
             id: None,
             description: Some("online source".to_string()),
             title: None,
+            artist: None,
             workflow_id: None,
             metadata: None,
             variant_hashes: BTreeMap::new(),
@@ -1919,6 +1938,7 @@ async fn sync_hierarchy_materializes_online_variant_from_workflow_state() {
         id: None,
         description: Some("online source".to_string()),
         title: None,
+        artist: None,
         workflow_id: None,
         metadata: None,
         variant_hashes: BTreeMap::new(),
@@ -1992,6 +2012,7 @@ async fn sync_hierarchy_fails_when_local_variant_hash_is_missing_from_cas() {
                 id: None,
                 description: Some("local source".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::from([("default".to_string(), missing_hash.to_string())]),
@@ -2041,6 +2062,7 @@ async fn sync_hierarchy_fails_when_online_variant_hash_is_unresolved() {
                 id: None,
                 description: Some("online source".to_string()),
                 title: None,
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::new(),

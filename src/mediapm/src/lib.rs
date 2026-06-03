@@ -546,11 +546,11 @@ pub(crate) fn local_default_title(path: &Path) -> String {
 }
 
 /// Builds default description for one local media source.
-pub(crate) fn build_local_default_description(path: &Path, title: &str) -> String {
+pub(crate) fn build_local_default_description(path: &Path, title: &str, artist: &str) -> String {
     let file_name = local_default_title(path);
     let mut lines = vec![format!("file: {file_name}")];
     lines.push(format!("title: {title}"));
-    lines.push("artist: unknown".to_string());
+    lines.push(format!("artist: {artist}"));
     lines.join("\n")
 }
 
@@ -625,10 +625,4 @@ pub(crate) fn local_source_default_steps(
             options: BTreeMap::new(),
         },
     ]
-}
-
-/// Builds default description for one remote media source.
-pub(crate) fn build_remote_default_description(title: &str, artist: Option<&str>) -> String {
-    let artist = artist.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("unknown");
-    format!("title: {title}\nartist: {artist}")
 }

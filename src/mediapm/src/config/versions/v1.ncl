@@ -305,6 +305,7 @@ in
 let MediaSourceV1 = {
   id | NonEmptyStringV1 | optional,
   title | String | optional,
+  artist | String | optional,
   description | String | optional,
   workflow_id | String | optional,
   metadata | Dyn | optional,

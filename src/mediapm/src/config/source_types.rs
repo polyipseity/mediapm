@@ -80,6 +80,9 @@ pub struct MediaSourceSpec {
     /// Optional human-readable title used for readability and path templates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Optional artist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artist: Option<String>,
     /// Optional explicit conductor workflow id override.
     ///
     /// When omitted, `mediapm` maps each media id to exactly one managed

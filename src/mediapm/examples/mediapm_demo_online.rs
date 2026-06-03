@@ -1118,6 +1118,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             id: None,
             description: Some(DEMO_WORKFLOW_DESCRIPTION.to_string()),
             title: Some(DEMO_EXPECTED_TITLE.to_string()),
+            artist: None,
             workflow_id: None,
             metadata: Some(BTreeMap::from([
                 (

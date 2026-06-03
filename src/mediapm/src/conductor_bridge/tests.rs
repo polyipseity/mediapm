@@ -1210,6 +1210,7 @@ fn config_edit_reconcile_populates_workflows_with_unresolved_tool_placeholders()
                 id: None,
                 description: Some("demo source".to_string()),
                 title: Some("demo title".to_string()),
+                artist: None,
                 workflow_id: None,
                 metadata: None,
                 variant_hashes: BTreeMap::new(),

@@ -39,8 +39,7 @@ use crate::hierarchy::{
 use crate::lockfile::{MediaLockFile, load_lockfile, save_lockfile};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::{
-    LocalSourceMetadata, fetch_local_source_metadata, fetch_mb_recording_metadata,
-    fetch_online_source_metadata, resolve_conductor_cas_root,
+    fetch_local_source_metadata, fetch_online_source_metadata, resolve_conductor_cas_root,
     resolve_online_source_metadata_for_add, run_workflow_with_filesystem_cas,
     should_prefer_filesystem_workflow_runner, should_retry_workflow_with_filesystem_cas,
 };
@@ -49,11 +48,10 @@ use crate::{
     MediaStepInvalidationSummary, SyncSummary, ToolsSyncSummary,
 };
 use crate::{
-    build_local_default_description, build_remote_default_description,
-    conductor_run_workflow_options, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
-    local_default_title, local_extension_with_dot, local_source_default_steps,
-    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
-    validate_source_uri,
+    build_local_default_description, conductor_run_workflow_options,
+    export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_default_title,
+    local_extension_with_dot, local_source_default_steps, media_id_from_local_path,
+    media_id_from_uri, merge_runtime_storage, normalize_source_uri, validate_source_uri,
 };
 use crate::{conductor_bridge, config, materializer, tools};
 
@@ -219,6 +217,9 @@ where
 
     /// Adds one online media source to `mediapm.ncl`.
     ///
+    /// `title`, `artist`, and `description` are CLI-level overrides that take
+    /// precedence over metadata fetched from the remote source.
+    ///
     /// # Errors
     ///
     /// Returns [`MediaPmError`] when source validation fails, config cannot be
@@ -226,11 +227,17 @@ where
     pub async fn add_media_source(
         &self,
         uri: &Url,
+        title: Option<&str>,
+        artist: Option<&str>,
+        description: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
         self.add_media_source_with_position(
             uri,
+            title,
+            artist,
+            description,
             recording_mbid,
             release_mbid,
             AddInsertPosition::Sorted,
@@ -254,6 +261,9 @@ where
     pub async fn add_media_source_with_position(
         &self,
         uri: &Url,
+        title: Option<&str>,
+        artist: Option<&str>,
+        description: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
         _position: AddInsertPosition,
@@ -267,12 +277,6 @@ where
                     .to_string(),
             ));
         }
-
-        let mb = if let Some(rmbid) = recording_mbid {
-            Some(fetch_mb_recording_metadata(rmbid).await?)
-        } else {
-            None
-        };
 
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let normalized_uri = normalize_source_uri(uri);
@@ -326,21 +330,24 @@ where
             )
         };
         let resolved_online_metadata =
-            resolve_online_source_metadata_for_add(&normalized_uri, yt_dlp_metadata, warning);
+            resolve_online_source_metadata_for_add(yt_dlp_metadata, warning);
         if let Some(warning) = resolved_online_metadata.warning.as_ref() {
             eprintln!("warning: {warning}");
         }
-        let source_title = if let Some(mb) = mb.as_ref() {
-            mb.title.clone()
-        } else {
-            resolved_online_metadata.title.clone()
-        };
-        let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
-        let source_description = if let Some(mb) = mb.as_ref() {
-            build_remote_default_description(&mb.title, Some(&mb.artist))
-        } else {
-            resolved_online_metadata.description.clone()
-        };
+        let source_title = title
+            .map(str::to_string)
+            .or(resolved_online_metadata.title)
+            .unwrap_or_else(|| "unknown".to_string());
+        let source_artist_literal = artist.map(str::to_string).or(resolved_online_metadata.artist);
+        let source_description = description
+            .map(str::to_string)
+            .or(resolved_online_metadata.description)
+            .unwrap_or_else(|| {
+                format!(
+                    "title: {source_title}\nartist: {}",
+                    source_artist_literal.as_deref().unwrap_or("unknown")
+                )
+            });
 
         // Do-not-overwrite guard: skip insert when entry exists and overwrite is not requested.
         if !overwrite && document.media.contains_key(&media_id) {
@@ -353,6 +360,7 @@ where
                 id: None,
                 description: Some(source_description),
                 title: Some(source_title.clone()),
+                artist: source_artist_literal.clone(),
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([
                     (
@@ -396,7 +404,7 @@ where
                             }),
                             MediaMetadataValueCandidate::Literal(
                                 source_artist_literal
-                                    .or(resolved_online_metadata.artist.clone())
+                                    .clone()
                                     .unwrap_or_else(|| "unknown".to_string()),
                             ),
                         ]),
@@ -522,6 +530,9 @@ where
     /// Adds one local media source to `mediapm.ncl` as an `import`
     /// CAS-hash ingest step.
     ///
+    /// `title`, `artist`, and `description` are CLI-level overrides that take
+    /// precedence over metadata fetched from the local file.
+    ///
     /// # Errors
     ///
     /// Returns [`MediaPmError`] when the local source path cannot be
@@ -530,11 +541,17 @@ where
     pub async fn add_local_source(
         &self,
         local_path: &Path,
+        title: Option<&str>,
+        artist: Option<&str>,
+        description: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
         self.add_local_source_with_position(
             local_path,
+            title,
+            artist,
+            description,
             recording_mbid,
             release_mbid,
             AddInsertPosition::Sorted,
@@ -559,6 +576,9 @@ where
     pub async fn add_local_source_with_position(
         &self,
         local_path: &Path,
+        title: Option<&str>,
+        artist: Option<&str>,
+        description: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
         _position: AddInsertPosition,
@@ -595,25 +615,21 @@ where
             MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
         })?;
 
-        let mb = if let Some(rmbid) = recording_mbid {
-            Some(fetch_mb_recording_metadata(rmbid).await?)
-        } else {
-            None
-        };
-
         let media_id = media_id_from_local_path(&hash);
-        let LocalSourceMetadata { title, description } = fetch_local_source_metadata(&absolute);
-        let source_title = mb
-            .as_ref()
-            .map(|m| m.title.clone())
-            .or(title)
+        let local_metadata = fetch_local_source_metadata(&absolute);
+        let source_title = title
+            .map(str::to_string)
+            .or(local_metadata.title)
             .unwrap_or_else(|| local_default_title(&absolute));
-        let source_artist_literal = mb.as_ref().map(|m| m.artist.clone());
-        let source_description = mb
-            .as_ref()
-            .map(|m| build_remote_default_description(&m.title, Some(&m.artist)))
-            .or(description)
-            .unwrap_or_else(|| build_local_default_description(&absolute, &source_title));
+        let source_artist_literal = artist.map(str::to_string).or(local_metadata.artist);
+        let source_description =
+            description.map(str::to_string).or(local_metadata.description).unwrap_or_else(|| {
+                build_local_default_description(
+                    &absolute,
+                    &source_title,
+                    source_artist_literal.as_deref().unwrap_or("unknown"),
+                )
+            });
         let source_extension_with_dot = local_extension_with_dot(&absolute);
         let hash_text = hash.to_string();
 
@@ -628,6 +644,7 @@ where
                 id: None,
                 description: Some(source_description),
                 title: Some(source_title.clone()),
+                artist: source_artist_literal.clone(),
                 workflow_id: None,
                 metadata: Some(BTreeMap::from([
                     (
