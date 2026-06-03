@@ -1189,7 +1189,7 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
     let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
-    let payload_dir = executor
+    let (payload_dir, _guard) = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
@@ -1198,8 +1198,8 @@ async fn content_map_file_entry_materializes_plain_file_bytes() {
             temp.path(),
         )
         .await
-        .expect("file-form content_map entry should materialize bytes")
-        .expect("payload dir should be returned");
+        .expect("file-form content_map entry should materialize bytes");
+    let payload_dir = payload_dir.expect("payload dir should be returned");
 
     assert_eq!(
         std::fs::read(payload_dir.join("bin").join("run.sh"))
@@ -1221,7 +1221,7 @@ async fn content_map_skips_sandbox_relink_when_payload_executable_in_cache() {
     let runtime_tools_dir = temp.path().join("tools");
 
     let executable_relative = format!("{}/my-tool", host_payload_platform_dir());
-    let payload_dir = executor
+    let (payload_dir, _guard) = executor
         .materialize_tool_content_map(
             "mediapm.tools.my-tool@1.0.0",
             &BTreeMap::from([(executable_relative.clone(), hash)]),
@@ -1230,8 +1230,8 @@ async fn content_map_skips_sandbox_relink_when_payload_executable_in_cache() {
             runtime_tools_dir.as_path(),
         )
         .await
-        .expect("managed-tool payload should materialize")
-        .expect("payload dir should be returned");
+        .expect("managed-tool payload should materialize");
+    let payload_dir = payload_dir.expect("payload dir should be returned");
 
     assert!(
         payload_dir.join(&executable_relative).is_file(),
@@ -1256,7 +1256,7 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
     let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
-    let payload_dir = executor
+    let (payload_dir, _guard) = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("tool/".to_string(), hash)]),
@@ -1265,8 +1265,8 @@ async fn content_map_directory_entry_unpacks_zip_payload() {
             temp.path(),
         )
         .await
-        .expect("directory-form content_map entry should unpack ZIP")
-        .expect("payload dir should be returned");
+        .expect("directory-form content_map entry should unpack ZIP");
+    let payload_dir = payload_dir.expect("payload dir should be returned");
 
     assert_eq!(
         std::fs::read_to_string(payload_dir.join("tool").join("bin").join("run.sh"))
@@ -1288,7 +1288,7 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
     let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
-    let payload_dir = executor
+    let (payload_dir, _guard) = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([("./".to_string(), hash)]),
@@ -1297,8 +1297,8 @@ async fn content_map_directory_entry_accepts_current_directory_root() {
             temp.path(),
         )
         .await
-        .expect("'./' directory-form content_map entry should unpack ZIP at payload root")
-        .expect("payload dir should be returned");
+        .expect("'./' directory-form content_map entry should unpack ZIP at payload root");
+    let payload_dir = payload_dir.expect("payload dir should be returned");
 
     assert_eq!(
         std::fs::read_to_string(payload_dir.join("bin").join("run.sh"))
@@ -1413,7 +1413,7 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
     let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
     let temp = tempfile::tempdir().expect("tempdir");
 
-    let payload_dir = executor
+    let (payload_dir, _guard) = executor
         .materialize_tool_content_map(
             "test-tool",
             &BTreeMap::from([
@@ -1425,8 +1425,8 @@ async fn content_map_allows_distinct_paths_across_directory_entries() {
             temp.path(),
         )
         .await
-        .expect("non-overlapping directory entries should merge successfully")
-        .expect("payload dir should be returned");
+        .expect("non-overlapping directory entries should merge successfully");
+    let payload_dir = payload_dir.expect("payload dir should be returned");
 
     assert_eq!(
         std::fs::read_to_string(payload_dir.join("tool").join("a.txt"))
@@ -1827,6 +1827,7 @@ async fn execute_executable_tool_enforces_timeout_budget() {
             &env_vars,
             &BTreeSet::from([0]),
             sandbox.path(),
+            None,
             None,
             Duration::from_millis(200),
         )
