@@ -60,7 +60,7 @@ const DEFAULT_EXECUTABLE_TIMEOUT_SECS: u64 = 15 * 60;
 
 /// Worker actor request envelope.
 #[derive(Debug)]
-pub(super) enum StepWorkerMessage {
+pub(crate) enum StepWorkerMessage {
     /// Executes one planned step request and returns its merge-ready bundle.
     ExecuteStep(
         Box<StepExecutionRequest>,
@@ -2215,7 +2215,7 @@ where
 }
 
 /// Spawns one deterministic worker pool for workflow step execution.
-pub(super) async fn spawn_step_worker_pool<C>(
+pub(crate) async fn spawn_step_worker_pool<C>(
     cas: Arc<C>,
     worker_count: usize,
 ) -> Result<Vec<ActorRef<StepWorkerMessage>>, ConductorError>
@@ -2238,7 +2238,7 @@ where
 }
 
 /// Executes one step directly without going through worker RPC, used for fallback handling.
-pub(super) async fn execute_step_direct<C>(
+pub(crate) async fn execute_step_direct<C>(
     cas: Arc<C>,
     request: StepExecutionRequest,
 ) -> Result<StepExecutionBundle, ConductorError>

@@ -5,7 +5,6 @@
 //! actor mailboxes.
 
 pub(super) mod documents;
-pub(super) mod execution_hub;
 pub(super) mod scheduler;
 pub(super) mod state_store;
 pub(crate) mod step_worker;

@@ -32,17 +32,19 @@ pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Option<Hash>>>;
 
 /// One tool definition after user/machine document unification.
 #[derive(Debug, Clone)]
-pub(super) struct UnifiedToolSpec {
+pub(crate) struct UnifiedToolSpec {
     /// Whether the tool is treated as impure for instance-key invalidation.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.
     ///
     /// `-1` means unlimited.
+    #[expect(dead_code)]
     pub max_concurrent_calls: i32,
     /// Maximum retry count after the initial failed call.
     ///
     /// This value is already normalized to a non-negative integer in the
     /// unified runtime view.
+    #[expect(dead_code)]
     pub max_retries: i32,
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
@@ -75,7 +77,7 @@ pub(super) struct UnifiedToolSpec {
 
 /// The runtime view of the merged conductor documents.
 #[derive(Debug, Clone)]
-pub(super) struct UnifiedNickelDocument {
+pub(crate) struct UnifiedNickelDocument {
     /// External CAS-backed inputs keyed by CAS hash identity.
     pub external_data: BTreeMap<Hash, ExternalContentRef>,
     /// Unified tool catalog keyed by immutable tool name.
@@ -99,18 +101,9 @@ pub(super) struct LoadedDocuments {
     pub unified: UnifiedNickelDocument,
 }
 
-/// One deterministic worker assignment for a workflow step.
-#[derive(Debug, Clone)]
-pub(super) struct StepWorkerAssignment {
-    /// Worker index selected by the scheduler.
-    pub worker_index: usize,
-    /// Step payload that the worker should execute.
-    pub step: WorkflowStepSpec,
-}
-
 /// One step execution request sent from the execution hub to a worker actor.
 #[derive(Debug, Clone)]
-pub(super) struct StepExecutionRequest {
+pub(crate) struct StepExecutionRequest {
     /// Unified configuration snapshot shared across one workflow run.
     pub unified: Arc<UnifiedNickelDocument>,
     /// Step definition to execute.
@@ -154,7 +147,7 @@ pub(super) struct StepExecutionRequest {
 /// Fine-grained phase timings captured within one step execution.
 #[derive(Debug, Clone, Copy, Default)]
 #[allow(clippy::struct_field_names)]
-pub(super) struct StepExecutionPhaseTimings {
+pub(crate) struct StepExecutionPhaseTimings {
     /// Time spent resolving step/default input bindings.
     pub resolve_inputs_ms: f64,
     /// Time spent resolving process and output specs from templates.
@@ -173,12 +166,14 @@ pub(super) struct StepExecutionPhaseTimings {
 
 /// Result of one worker step execution.
 #[derive(Debug)]
-pub(super) struct StepExecutionBundle {
+pub(crate) struct StepExecutionBundle {
     /// Completed step id.
+    #[expect(dead_code)]
     pub step_id: String,
     /// Immutable tool name used by the step.
     pub tool_name: String,
     /// Worker index that produced the result.
+    #[expect(dead_code)]
     pub worker_index: usize,
     /// Deterministic instance key for deduplication and cache lookup.
     pub instance_key: String,
@@ -200,59 +195,9 @@ pub(super) struct StepExecutionBundle {
     pub fallback_used: bool,
 }
 
-/// Request sent to the execution hub for one workflow level.
-#[derive(Debug, Clone)]
-pub(super) struct LevelExecutionRequest {
-    /// Workflow name used for diagnostics and impure-timestamp lookup.
-    pub workflow_name: String,
-    /// Zero-based topological level index inside the workflow.
-    pub level_index: usize,
-    /// Steps ready to execute at this level.
-    pub level: Vec<WorkflowStepSpec>,
-    /// Unified configuration snapshot shared across the workflow run.
-    pub unified: Arc<UnifiedNickelDocument>,
-    /// State snapshot used for cache and rematerialization checks.
-    pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved root for the tool-content cache.
-    ///
-    /// Each tool id occupies one subdirectory here; entries are keyed on the
-    /// full `content_map` and expire after 24 hours of non-use.
-    ///
-    /// Derived from `RuntimeStoragePaths.conductor_tools_dir`, defaulting to
-    /// `<conductor_dir>/tools`.
-    pub runtime_tools_dir: PathBuf,
-    /// Absolute directory that directly contains the outermost conductor
-    /// configuration file used for this run.
-    pub outermost_config_dir: PathBuf,
-    /// Root path for per-step temporary directories (sandboxes, ZIP
-    /// extraction, regex capture staging).
-    ///
-    /// Derived from `RuntimeStoragePaths.conductor_tmp_dir`, defaulting to
-    /// `<os-temp>/mediapm-conductor-<conductor-dir-hash>`.
-    pub conductor_tmp_dir: PathBuf,
-    /// Output hashes produced by previous workflow levels.
-    pub step_outputs: Arc<StepOutputs>,
-    /// Per-step output names that are actually referenced by downstream
-    /// `${step_output...}` input bindings.
-    pub required_outputs_by_step: BTreeMap<String, BTreeSet<String>>,
-    /// Preallocated impure timestamps keyed by step id.
-    pub impure_timestamps: BTreeMap<String, Option<ImpureTimestamp>>,
-}
-
-/// One level-dispatch result together with worker-RPC failure metadata.
-#[derive(Debug)]
-pub(super) struct StepDispatchOutcome {
-    /// Merge-ready execution result bundle.
-    pub result: StepExecutionBundle,
-    /// Whether the worker RPC failed before fallback local execution.
-    pub rpc_failed: bool,
-    /// Optional human-readable RPC failure reason.
-    pub rpc_failure_reason: Option<String>,
-}
-
 /// Scheduler-facing completion facts derived from one finished step.
 #[derive(Debug, Clone)]
-pub(super) struct StepCompletionRecord {
+pub(crate) struct StepCompletionRecord {
     /// Completed step id.
     pub step_id: String,
     /// Immutable tool name used for runtime estimation.
@@ -282,34 +227,4 @@ pub(super) struct CommitStateRequest {
     pub unified: UnifiedNickelDocument,
     /// State pointer that was active before the current run started, if any.
     pub prior_state_pointer: Option<Hash>,
-}
-
-/// One step-reference in a cross-workflow stream dispatch batch.
-///
-/// Carries the originating workflow name so the execution hub can tag the
-/// outcome correctly without the coordinator resolving workflow→step mappings
-/// after the fact.
-#[derive(Debug, Clone)]
-pub(super) struct StreamStep {
-    /// Originating workflow name used for outcome routing and diagnostics.
-    pub workflow_name: String,
-    /// Step definition to execute.
-    pub step_spec: WorkflowStepSpec,
-    /// Output hashes already produced by earlier steps in the same workflow.
-    pub step_outputs: Arc<StepOutputs>,
-}
-
-/// One step outcome produced by the step-stream dispatch path.
-///
-/// Mirrors `StepDispatchOutcome` but adds the originating workflow name so the
-/// coordinator can route outcomes back to the correct workflow stream without
-/// maintaining a separate lookup table.
-#[derive(Debug)]
-pub(super) struct StepOutcome {
-    /// Originating workflow name.
-    pub workflow_name: String,
-    /// Completed step id inside the originating workflow.
-    pub step_id: String,
-    /// Full dispatch outcome including execution bundle and RPC metadata.
-    pub result: StepDispatchOutcome,
 }

@@ -14,15 +14,14 @@ use crate::api::{
     ToolRuntimeEstimate, WorkerQueueDiagnostics,
 };
 use crate::error::ConductorError;
-use crate::model::config::WorkflowStepSpec;
 use crate::orchestration::config::{
     DEFAULT_RPC_TIMEOUT_MS, scheduler_ewma_alpha, scheduler_trace_capacity, unknown_step_cost_ms,
 };
-use crate::orchestration::protocol::{StepCompletionRecord, StepWorkerAssignment};
+use crate::orchestration::protocol::StepCompletionRecord;
 
 /// Typed client for the scheduler actor.
 #[derive(Debug, Clone)]
-pub(super) struct SchedulerClient {
+pub(crate) struct SchedulerClient {
     /// Actor reference used for all scheduling RPC calls.
     actor: ActorRef<SchedulerMessage>,
 }
@@ -34,30 +33,8 @@ impl SchedulerClient {
         Self { actor }
     }
 
-    /// Plans one workflow level onto the available workers.
-    pub(super) async fn plan_level(
-        &self,
-        workflow_name: &str,
-        level_index: usize,
-        level: Vec<WorkflowStepSpec>,
-        worker_count: usize,
-    ) -> Result<Vec<StepWorkerAssignment>, ConductorError> {
-        call_t!(
-            self.actor,
-            SchedulerMessage::PlanLevel,
-            DEFAULT_RPC_TIMEOUT_MS,
-            workflow_name.to_string(),
-            level_index,
-            level,
-            worker_count
-        )
-        .map_err(|err| {
-            ConductorError::Internal(format!("scheduler plan_level RPC failed: {err}"))
-        })?
-    }
-
     /// Records one completed step so estimates, metrics, and traces stay current.
-    pub(super) async fn record_completion(
+    pub(crate) async fn record_completion(
         &self,
         record: StepCompletionRecord,
     ) -> Result<(), ConductorError> {
@@ -68,7 +45,7 @@ impl SchedulerClient {
     }
 
     /// Returns the latest diagnostics snapshot owned by the scheduler actor.
-    pub(super) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
+    pub(crate) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
         call_t!(self.actor, SchedulerMessage::GetRuntimeDiagnostics, DEFAULT_RPC_TIMEOUT_MS)
             .map_err(|err| {
                 ConductorError::Internal(format!(
@@ -81,14 +58,6 @@ impl SchedulerClient {
 /// Requests supported by the scheduler actor.
 #[derive(Debug)]
 enum SchedulerMessage {
-    /// Plans one workflow level and records assignment-side diagnostics.
-    PlanLevel(
-        String,
-        usize,
-        Vec<WorkflowStepSpec>,
-        usize,
-        RpcReplyPort<Result<Vec<StepWorkerAssignment>, ConductorError>>,
-    ),
     /// Records one finished step and updates runtime estimates and traces.
     RecordCompletion(StepCompletionRecord, RpcReplyPort<Result<(), ConductorError>>),
     /// Returns the current diagnostics snapshot.
@@ -136,16 +105,6 @@ struct WorkerQueueMetricsState {
 }
 
 impl WorkerQueueMetricsState {
-    /// Records one new step assignment against this worker.
-    fn record_level_assignment(&mut self, estimated_ms: f64) {
-        self.assigned_steps_total = self.assigned_steps_total.saturating_add(1);
-        self.last_level_assigned_steps = self.last_level_assigned_steps.saturating_add(1);
-        self.last_level_estimated_load_ms += estimated_ms;
-        self.cumulative_estimated_load_ms += estimated_ms;
-        self.in_flight = self.in_flight.saturating_add(1);
-        self.peak_in_flight = self.peak_in_flight.max(self.in_flight);
-    }
-
     /// Records one step completion and its fallback/RPC-failure status.
     fn record_completion(&mut self, observed_ms: f64, rpc_failed: bool, fallback_used: bool) {
         self.completed_steps_total = self.completed_steps_total.saturating_add(1);
@@ -200,11 +159,6 @@ impl Default for SchedulerState {
 }
 
 impl SchedulerState {
-    /// Returns the best current runtime estimate for one tool.
-    fn estimate_tool_ms(&self, tool_name: &str) -> f64 {
-        self.ewma_by_tool_ms.get(tool_name).copied().unwrap_or(self.unknown_cost_ms)
-    }
-
     /// Incorporates one observed runtime into the EWMA estimate table.
     fn observe_tool_runtime(&mut self, tool_name: &str, observed_ms: f64) -> (Option<f64>, f64) {
         let observed = observed_ms.max(0.001);
@@ -237,24 +191,6 @@ impl SchedulerService {
             self.instrumentation
                 .worker_metrics
                 .resize(worker_count, WorkerQueueMetricsState::default());
-        }
-    }
-
-    /// Starts per-level bookkeeping before assignments are emitted.
-    fn begin_level_metrics(&mut self, worker_count: usize) {
-        self.worker_pool_size = worker_count;
-        self.ensure_worker_metrics(worker_count);
-        for metric in self.instrumentation.worker_metrics.iter_mut().take(worker_count) {
-            metric.last_level_assigned_steps = 0;
-            metric.last_level_estimated_load_ms = 0.0;
-        }
-    }
-
-    /// Records assignment-side metrics for one worker.
-    fn record_assignment_metrics(&mut self, worker_index: usize, estimated_ms: f64) {
-        self.ensure_worker_metrics(worker_index + 1);
-        if let Some(metric) = self.instrumentation.worker_metrics.get_mut(worker_index) {
-            metric.record_level_assignment(estimated_ms.max(0.001));
         }
     }
 
@@ -298,58 +234,6 @@ impl SchedulerService {
     /// Returns the current wall-clock time in Unix nanoseconds for trace events.
     fn now_unix_nanos() -> u128 {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
-    }
-
-    /// Plans one level onto workers using deterministic greedy load balancing.
-    fn plan_level(
-        &mut self,
-        workflow_name: &str,
-        level_index: usize,
-        level: Vec<WorkflowStepSpec>,
-        worker_count: usize,
-    ) -> Vec<StepWorkerAssignment> {
-        self.begin_level_metrics(worker_count);
-        self.push_trace(SchedulerTraceKind::LevelPlanned {
-            workflow_name: workflow_name.to_string(),
-            level_index,
-            step_count: level.len(),
-            worker_count,
-        });
-
-        let mut scheduled = level;
-        scheduled.sort_by(|left, right| {
-            let left_estimate = self.scheduler.estimate_tool_ms(&left.tool);
-            let right_estimate = self.scheduler.estimate_tool_ms(&right.tool);
-            right_estimate
-                .total_cmp(&left_estimate)
-                .then_with(|| left.id.cmp(&right.id))
-                .then_with(|| left.tool.cmp(&right.tool))
-        });
-
-        let mut loads = vec![0.0_f64; worker_count.max(1)];
-        let mut assignments = Vec::with_capacity(scheduled.len());
-        for step in scheduled {
-            let estimate = self.scheduler.estimate_tool_ms(&step.tool);
-            let (worker_index, _) = loads
-                .iter()
-                .enumerate()
-                .min_by(|(_, left), (_, right)| left.total_cmp(right))
-                .unwrap_or((0, &0.0));
-
-            self.record_assignment_metrics(worker_index, estimate);
-            self.push_trace(SchedulerTraceKind::StepAssigned {
-                workflow_name: workflow_name.to_string(),
-                level_index,
-                step_id: step.id.clone(),
-                tool_name: step.tool.clone(),
-                worker_index,
-                estimated_ms: estimate,
-            });
-            assignments.push(StepWorkerAssignment { worker_index, step });
-            loads[worker_index] += estimate.max(0.001);
-        }
-
-        assignments
     }
 
     /// Records one completed step and updates diagnostics-visible state.
@@ -472,14 +356,6 @@ impl Actor for SchedulerActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            SchedulerMessage::PlanLevel(workflow_name, level_index, level, worker_count, reply) => {
-                let _ = reply.send(Ok(state.plan_level(
-                    &workflow_name,
-                    level_index,
-                    level,
-                    worker_count,
-                )));
-            }
             SchedulerMessage::RecordCompletion(record, reply) => {
                 state.record_completion(record);
                 let _ = reply.send(Ok(()));
@@ -493,60 +369,9 @@ impl Actor for SchedulerActor {
 }
 
 /// Spawns the scheduler actor and returns its typed client.
-pub(super) async fn spawn_scheduler_actor() -> Result<SchedulerClient, ConductorError> {
+pub(crate) async fn spawn_scheduler_actor() -> Result<SchedulerClient, ConductorError> {
     let (actor_ref, _handle) = Actor::spawn(None, SchedulerActor, ()).await.map_err(|err| {
         ConductorError::Internal(format!("failed spawning scheduler actor: {err}"))
     })?;
     Ok(SchedulerClient::new(actor_ref))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use crate::api::SchedulerTraceKind;
-    use crate::model::config::WorkflowStepSpec;
-
-    use super::SchedulerService;
-
-    /// Protects deterministic scheduling order and trace generation for one level.
-    #[test]
-    fn scheduler_plans_levels_deterministically() {
-        let mut scheduler = SchedulerService::default();
-        scheduler.scheduler.ewma_by_tool_ms.insert("slow@1".to_string(), 20.0);
-        scheduler.scheduler.ewma_by_tool_ms.insert("fast@1".to_string(), 5.0);
-
-        let assignments = scheduler.plan_level(
-            "wf",
-            0,
-            vec![
-                WorkflowStepSpec {
-                    id: "b".to_string(),
-                    tool: "fast@1".to_string(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::new(),
-                },
-                WorkflowStepSpec {
-                    id: "a".to_string(),
-                    tool: "slow@1".to_string(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::new(),
-                },
-            ],
-            2,
-        );
-
-        assert_eq!(assignments.len(), 2);
-        assert_eq!(assignments[0].step.id, "a");
-        assert_eq!(assignments[1].step.id, "b");
-        assert!(
-            scheduler
-                .instrumentation
-                .traces
-                .iter()
-                .any(|event| matches!(event.kind, SchedulerTraceKind::LevelPlanned { .. }))
-        );
-    }
 }
