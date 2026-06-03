@@ -34,6 +34,7 @@ let RuntimeStorageV1 = {
   inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
   media_state_config | Dyn | optional,
   env_file | Dyn | optional,
+  env_generated_file | Dyn | optional,
   mediapm_schema_dir | Dyn | optional,
   # ||| Optional instance GC time-to-live in seconds.
   # ||| Passed through to conductor runtime config.
