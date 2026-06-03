@@ -46,6 +46,7 @@ use std::sync::Arc;
 use futures_util::future::try_join_all;
 use mediapm_cas::{CasApi, Hash};
 use serde::{Deserialize, Serialize};
+use std::fs::TryLockError;
 use tokio::task;
 
 use crate::error::ConductorError;
@@ -68,6 +69,9 @@ const TOOL_CONTENT_CACHE_METADATA_FILE_NAME: &str = "metadata.json";
 const TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME: &str = "payload";
 /// Schema version marker for `metadata.json`.
 const TOOL_CONTENT_CACHE_VERSION: u32 = 1;
+
+/// File name of the per-entry advisory lock file.
+const TOOL_CONTENT_CACHE_LOCK_FILE_NAME: &str = ".lock";
 
 /// Persistent metadata stored alongside every cache entry.
 ///
@@ -98,6 +102,23 @@ struct ToolContentCacheMetadata {
     execute_bits_verified: bool,
 }
 
+/// RAII guard that holds a shared (read) lock on a tool-content cache entry.
+///
+/// While the guard lives, the cache entry's `.lock` file is held with a shared
+/// `flock` — preventing concurrent exclusive locks (cache-miss extraction or
+/// pruning) from removing or modifying the entry.
+///
+/// Dropping the guard closes the lock-file fd, releasing the kernel-level lock.
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct ToolCacheReadGuard {
+    /// Open file descriptor on the entry's `.lock` file.
+    ///
+    /// The shared flock is acquired when the guard is constructed; dropping the
+    /// guard closes the fd, releasing the lock automatically.
+    _lock_file: std::fs::File,
+}
+
 /// Classified kind for one raw `content_map` key.
 #[derive(Debug)]
 enum ContentMapKeyKind {
@@ -117,26 +138,30 @@ enum ContentMapKeyKind {
 }
 
 /// Prepares the persistent cache entry for one conductor tool and returns the
-/// `payload/` directory path.
+/// `payload/` directory path together with a [`ToolCacheReadGuard`] that holds
+/// a shared (read) advisory lock on the cache entry.
 ///
-/// # Cache-hit path
+/// # Advisory locking protocol
 ///
-/// When the entry's `metadata.json` contains a `content_map` that equals
-/// `content_map` entry-for-entry and `payload/` exists as a directory, the
-/// entry is reused: `last_used_unix_seconds` is refreshed and the existing
-/// payload path is returned without touching the CAS.
+/// A per-entry `.lock` file serialises cache-miss extraction so only one
+/// worker populates an entry; concurrent readers share the entry via shared
+/// (read) locks once populated.
 ///
-/// # Cache-miss path
+/// ## Cache-hit path (fast)
 ///
-/// CAS bytes for every entry in `content_map` are fetched concurrently.  Any
-/// previous entry directory is removed.  All content is then extracted into a
-/// fresh `payload/` tree (CPU-bound ZIP extraction runs in a blocking task).
-/// Finally, `metadata.json` is written atomically via a temp-file rename.
+/// A non-blocking `try_lock_shared()` is attempted on the `.lock` file.  If the
+/// lock file doesn't exist or the lock is held by another worker (exclusive
+/// extraction in progress), the function falls through to the exclusive path.
 ///
-/// When the tool executable resolves directly inside the returned payload
-/// path, the caller may execute from it without populating the sandbox.
-/// Otherwise, the caller populates the execution sandbox from the returned
-/// path via [`link_payload_to_sandbox`].
+/// ## Cache-miss / busy path (exclusive)
+///
+/// An exclusive lock is acquired (blocking), then the entry is double-checked
+/// (another worker may have just finished extraction).  On confirmed miss the
+/// full extraction pipeline runs inside a blocking task — the exclusive lock
+/// fd is moved into the closure so the lock remains held across all I/O.  After
+/// extraction a fresh `.lock` file is created and a shared lock is acquired on
+/// it before the exclusive fd is dropped, providing a lock-upgrade handover
+/// with no gap.
 ///
 /// # Errors
 ///
@@ -156,34 +181,73 @@ pub(crate) async fn prepare_tool_content_cache<C>(
     tool_id: &str,
     content_map: &BTreeMap<String, Hash>,
     cas: &Arc<C>,
-) -> Result<PathBuf, ConductorError>
+) -> Result<(PathBuf, ToolCacheReadGuard), ConductorError>
 where
     C: CasApi + Send + Sync + 'static,
 {
     let entry_dir = tools_dir.join(sanitize_tool_id(tool_id));
     let payload_dir = entry_dir.join(TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME);
     let metadata_path = entry_dir.join(TOOL_CONTENT_CACHE_METADATA_FILE_NAME);
+    let lock_path = entry_dir.join(TOOL_CONTENT_CACHE_LOCK_FILE_NAME);
     let now = now_unix_seconds();
 
     // Best-effort expiry pruning: errors are intentionally swallowed so
     // cleanup never blocks workflow execution.
     let _ = maybe_prune_expired_tool_content_cache_entries(tools_dir, now);
 
-    // --- Cache hit ---
+    // --- Advisory locking protocol ---
+    //
+    // Try a non-blocking shared lock for a fast cache-hit check.  If the
+    // entry doesn't exist or another worker holds the exclusive lock (cache-
+    // miss extraction in progress), fall through to the exclusive path below.
+    if let Some(guard) = try_lock_entry_shared(
+        &entry_dir,
+        &lock_path,
+        &payload_dir,
+        &metadata_path,
+        content_map,
+        now,
+    )? {
+        return Ok((payload_dir, guard));
+    }
+
+    // --- Cache miss or busy entry: acquire exclusive lock ---
+    //
+    // Create the entry directory so the `.lock` file can be created, then
+    // open/create the lock file and acquire an exclusive (write) lock.
+    // This call blocks until any other worker's extraction finishes.
+    fs::create_dir_all(&entry_dir).map_err(|source| ConductorError::Io {
+        operation: "creating tool-content cache entry directory for exclusive lock".to_string(),
+        path: entry_dir.clone(),
+        source,
+    })?;
+    let excl_file =
+        std::fs::OpenOptions::new().create(true).read(true).write(true).open(&lock_path).map_err(
+            |source| ConductorError::Io {
+                operation: "opening tool-content cache lock file".to_string(),
+                path: lock_path.clone(),
+                source,
+            },
+        )?;
+    excl_file.lock().map_err(|source| ConductorError::Io {
+        operation: "acquiring exclusive lock on tool-content cache entry".to_string(),
+        path: lock_path.clone(),
+        source,
+    })?;
+
+    // Double-check: another worker may have populated the entry while we
+    // were waiting for the exclusive lock.
     if payload_dir.is_dir()
         && let Ok(raw) = fs::read_to_string(&metadata_path)
         && let Ok(metadata) = serde_json::from_str::<ToolContentCacheMetadata>(&raw)
         && metadata.version == TOOL_CONTENT_CACHE_VERSION
         && metadata.content_map == *content_map
     {
-        // Skip the O(n_files) permission walk when it has already been done
-        // for this payload tree.  The flag defaults to false so entries
-        // written by older code trigger one re-verification on first access.
+        // Double-check hit — another worker finished extraction while we
+        // waited.  Refresh metadata and downgrade to a shared lock.
         if !metadata.execute_bits_verified {
             ensure_payload_tree_user_execute_bits(&payload_dir)?;
         }
-        // Refresh last-used timestamp and record verified status (best-effort;
-        // miss is harmless).
         let _ = persist_cache_metadata(
             &metadata_path,
             &ToolContentCacheMetadata {
@@ -193,7 +257,25 @@ where
                 execute_bits_verified: true,
             },
         );
-        return Ok(payload_dir);
+        // Open a second fd and acquire shared lock while still holding the
+        // exclusive lock (different open-file descriptions → independent locks).
+        let shared_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|source| ConductorError::Io {
+                operation: "opening tool-content cache lock file for shared downgrade".to_string(),
+                path: lock_path.clone(),
+                source,
+            })?;
+        shared_file.lock_shared().map_err(|source| ConductorError::Io {
+            operation: "acquiring shared lock after double-check hit".to_string(),
+            path: lock_path.clone(),
+            source,
+        })?;
+        // Drop the exclusive fd — the shared fd still holds the lock.
+        drop(excl_file);
+        return Ok((payload_dir, ToolCacheReadGuard { _lock_file: shared_file }));
     }
 
     // --- Cache miss: classify keys ---
@@ -220,9 +302,10 @@ where
     let entry_dir_for_task = entry_dir;
     let payload_dir_for_task = payload_dir;
     let metadata_path_for_task = metadata_path;
+    let lock_path_for_task = lock_path;
     let content_map_for_task = content_map.clone();
 
-    task::spawn_blocking(move || {
+    let (payload_dir, shared_lock_file) = task::spawn_blocking(move || {
         // Remove stale entry so extraction starts clean.
         if entry_dir_for_task.exists() {
             fs::remove_dir_all(&entry_dir_for_task).map_err(|source| ConductorError::Io {
@@ -326,6 +409,21 @@ where
         ensure_payload_tree_user_execute_bits(&payload_dir_for_task)?;
 
         // Phase 3 — write metadata atomically.
+        // Recreate the .lock file (removed by remove_dir_all above) so
+        // callers can acquire shared locks on the new entry.  The exclusive
+        // lock fd (excl_file) is held throughout, preventing concurrent
+        // access.
+        std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path_for_task)
+            .map_err(|source| ConductorError::Io {
+                operation: "recreating tool-content cache lock file after extraction".to_string(),
+                path: lock_path_for_task.clone(),
+                source,
+            })?;
+
         persist_cache_metadata(
             &metadata_path_for_task,
             &ToolContentCacheMetadata {
@@ -336,14 +434,108 @@ where
             },
         )?;
 
-        Ok::<PathBuf, ConductorError>(payload_dir_for_task)
+        // Acquire a shared lock on the new .lock file while still holding
+        // the exclusive lock on the old inode (orphaned by remove_dir_all).
+        let shared_lock = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&lock_path_for_task)
+            .map_err(|source| ConductorError::Io {
+                operation: "opening new tool-content cache lock file for shared lock".to_string(),
+                path: lock_path_for_task.clone(),
+                source,
+            })?;
+        shared_lock.lock_shared().map_err(|source| ConductorError::Io {
+            operation: "acquiring shared lock on new tool-content cache entry".to_string(),
+            path: lock_path_for_task.clone(),
+            source,
+        })?;
+
+        // Drop the exclusive lock fd — the old inode is now orphaned and
+        // the new .lock file holds the shared lock via shared_lock.
+        drop(excl_file);
+
+        Ok::<(PathBuf, std::fs::File), ConductorError>((payload_dir_for_task, shared_lock))
     })
     .await
     .map_err(|join_err| {
         ConductorError::Internal(format!(
             "joining tool-content cache extraction task failed: {join_err}"
         ))
-    })?
+    })??;
+
+    Ok((payload_dir, ToolCacheReadGuard { _lock_file: shared_lock_file }))
+}
+
+/// Attempts a non-blocking shared lock and cache-hit check on one entry.
+///
+/// Returns `Ok(Some(guard))` on cache hit (shared lock acquired, metadata
+/// valid).  Returns `Ok(None)` when the entry does not exist, the lock file
+/// is missing, the lock is held exclusively, or the entry data is stale.
+/// Returns `Err` only on actual I/O errors from the locking machinery.
+fn try_lock_entry_shared(
+    _entry_dir: &Path,
+    lock_path: &Path,
+    payload_dir: &Path,
+    metadata_path: &Path,
+    content_map: &BTreeMap<String, Hash>,
+    now: u64,
+) -> Result<Option<ToolCacheReadGuard>, ConductorError> {
+    // Fast bail-out when no entry exists at all.
+    if !lock_path.exists() {
+        return Ok(None);
+    }
+
+    let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(lock_path) {
+        Ok(f) => f,
+        Err(_) => return Ok(None),
+    };
+
+    match lock_file.try_lock_shared() {
+        Ok(()) => {
+            // Shared lock acquired — check cache validity.
+            if !payload_dir.is_dir() {
+                return Ok(None);
+            }
+            let Ok(raw) = fs::read_to_string(metadata_path) else {
+                return Ok(None);
+            };
+            let Ok(metadata) = serde_json::from_str::<ToolContentCacheMetadata>(&raw) else {
+                return Ok(None);
+            };
+            if metadata.version != TOOL_CONTENT_CACHE_VERSION {
+                return Ok(None);
+            }
+            if metadata.content_map != *content_map {
+                return Ok(None);
+            }
+
+            // Cache hit!
+            if !metadata.execute_bits_verified {
+                ensure_payload_tree_user_execute_bits(payload_dir)?;
+            }
+            let _ = persist_cache_metadata(
+                metadata_path,
+                &ToolContentCacheMetadata {
+                    version: TOOL_CONTENT_CACHE_VERSION,
+                    content_map: content_map.clone(),
+                    last_used_unix_seconds: now,
+                    execute_bits_verified: true,
+                },
+            );
+            Ok(Some(ToolCacheReadGuard { _lock_file: lock_file }))
+        }
+        Err(TryLockError::WouldBlock) => {
+            // Another worker holds the exclusive lock (extraction in progress).
+            Ok(None)
+        }
+        Err(TryLockError::Error(e)) => Err(ConductorError::Io {
+            operation: "trying shared lock on tool-content cache entry".to_string(),
+            path: lock_path.to_path_buf(),
+            source: e,
+        }),
+    }
 }
 
 /// Ensures one extracted payload file is executable by the current user.
@@ -581,6 +773,23 @@ pub(super) fn prune_expired_tool_content_cache_entries(
         if metadata.last_used_unix_seconds > cutoff {
             continue;
         }
+
+        // Try to acquire an exclusive lock non-blockingly.  If another worker
+        // is using this entry (shared or exclusive lock held), skip it to
+        // avoid the prune-vs-execution race.
+        let lock_path = path.join(TOOL_CONTENT_CACHE_LOCK_FILE_NAME);
+        let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(&lock_path) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        match lock_file.try_lock() {
+            Ok(()) => {
+                // Lock acquired — entry is ours to prune.
+            }
+            Err(TryLockError::WouldBlock) => continue,
+            Err(TryLockError::Error(_)) => continue,
+        }
+
         let _ = fs::remove_dir_all(&path);
     }
 

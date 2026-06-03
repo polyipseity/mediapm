@@ -518,6 +518,85 @@ WorkflowSpec {
 
 ---
 
+### 2.9 Tool Content Cache Race Conditions
+
+**Issue**: The tool content cache lacked inter-worker locking, allowing three
+race conditions when multiple workers concurrently access the same tool
+content directory. These races are now prevented by per-entry `flock` advisory
+locks.
+
+#### Race Scenario 1 — ENOENT on cache path spawn
+
+**Description**: Worker A performs a cache-hit check, finds the payload
+directory present, and proceeds to spawn the tool process referencing
+`payload_dir`. Concurrently, Worker B cache-misses on the same tool and
+deletes the entire tool content directory as part of cache-miss preparation.
+Worker A's spawn fails with `ENOENT` because `payload_dir` was removed
+between the existence check and the spawn syscall.
+
+**Root cause**: The existence check and process spawn are not atomic — a
+competing writer can remove the directory in the window between them.
+
+**How locking prevents it**: Worker A acquires a shared lock
+(`try_lock_shared()`) on the `.lock` file before treating a cache hit as
+authoritative. Worker B's cache-miss path requires an exclusive lock
+(`lock()`), which blocks until all shared lock holders release. Worker A's
+shared lock ensures `payload_dir` remains live throughout process spawn.
+
+#### Race Scenario 2 — ENOTEMPTY on remove_dir_all
+
+**Description**: Two workers both cache-miss on the same tool simultaneously.
+Both proceed to `remove_dir_all()` + `create_dir_all()` on the same cache
+entry path. One worker's `remove_dir_all()` is still in progress when the
+other's `create_dir_all()` executes, or both `remove_dir_all()` calls race
+on the same directory tree. The result is `ENOTEMPTY` or similar filesystem
+conflicts.
+
+**Root cause**: Uncoordinated concurrent mutation of the same cache directory.
+
+**How locking prevents it**: Exclusive lock acquisition serializes cache-miss
+workers. The first worker to acquire the exclusive lock proceeds with
+extraction. Subsequent workers block on `lock()` until the first finishes,
+then double-check: since the cache entry is now populated, they switch to the
+shared-lock (cache-hit) path.
+
+#### Race Scenario 3 — ENOENT on sandbox path spawn
+
+**Description**: Worker A cache-hits, acquires access to `payload_dir`, and
+spawns the tool with a sandbox that references tool content files. Worker B
+cache-misses, acquires the exclusive lock, and replaces `payload_dir`
+contents mid-way through Worker A's process execution. Worker A's process
+encounters `ENOENT` when reading tool content files that were removed by
+Worker B.
+
+**Root cause**: No read-side lock held across the tool execution lifetime —
+the cache-hit guard was not held past the spawn call.
+
+**How locking prevents it**: `ToolCacheReadGuard` (holding a shared-lock fd)
+is returned from `prepare_tool_cache()` and kept alive for the duration of
+the process (direct-execution paths). This prevents cache-miss writers from
+acquiring the exclusive lock and modifying `payload_dir` until all readers
+have finished.
+
+#### Residual Risk Notes
+
+**Lock-upgrade gap closed**: The downgrade pattern (recreate `.lock` file →
+acquire new shared fd → drop exclusive fd) eliminates the TOCTOU window
+between exclusive release and shared acquisition. There is no moment where
+the entry is unlocked.
+
+**Cross-process safety**: Because `flock` is an OS-level advisory lock, two
+conductor processes sharing the same `tools/` directory automatically get
+cross-process race protection. This is relevant for container environments
+or multi-instance deployments sharing a networked filesystem (if `flock` is
+supported by the filesystem driver).
+
+**Non-Unix platforms**: Locking is gated behind `cfg(unix)`. On platforms
+without `flock` support, `ToolCacheReadGuard` is a no-op (always succeeds).
+No cross-process race protection is available on those platforms.
+
+---
+
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
 
 ### 3.1 Path Traversal & Symlink Loops

@@ -535,7 +535,7 @@ async fn run_managed_tool(
         })?;
 
     let cas = Arc::new(cas);
-    let payload_dir =
+    let (payload_dir, _cache_guard) =
         crate::orchestration::actors::step_worker::tool_content_cache::prepare_tool_content_cache(
             conductor_tools_dir,
             &tool_id,

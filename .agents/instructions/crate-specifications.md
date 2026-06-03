@@ -407,6 +407,46 @@ bar per worker (showing the currently dispatched step or idle status).
   constant from `execution_hub.rs` was removed).
 
 
+### §17 Tool Content Cache Locking Protocol
+
+The tool content cache at
+`src/conductor/src/orchestration/actors/step_worker/tool_content_cache.rs`
+uses per-entry `flock` advisory locking to prevent three classes of race
+conditions when multiple workers concurrently access the same tool content
+directory.
+
+**Lock file location**: `tools/<sanitized_tool_id>/.lock`
+
+**Lock type**: Advisory `flock` via `fs4::FileExt`. Lock mode mapping:
+- **Cache-hit reader (fast path)**: non-blocking `try_lock_shared()` on
+  `.lock` file. If the lock file does not exist or the lock is already held
+  exclusively, fall through to the exclusive path.
+- **Cache-miss writer (slow path)**: blocking `lock()` exclusive. After
+  acquisition, double-check that the cache entry is still missing (another
+  worker may have completed extraction while we waited). Extraction happens
+  in `spawn_blocking` with the exclusive fd held alive throughout.
+- **Prune**: non-blocking `try_lock()` exclusive per entry. Skip entries
+  that return `WouldBlock`.
+
+**Guard lifecycle**: `ToolCacheReadGuard` is an RAII guard returned from
+`prepare_tool_cache()`. For direct-execution paths, the guard is held across
+the entire process spawn so the cache entry cannot be evicted mid-use.
+
+**Safety**: Locks are per-open-file-description (standard `flock` semantics).
+They are automatically released when the fd is closed — no manual unlock
+needed, even if the holding task panics.
+
+**Downgrade pattern**: During extraction, the exclusive lock fd is held inside
+`spawn_blocking`. After extraction completes, the `.lock` file is recreated,
+a new fd is opened with a shared lock acquired, and then the exclusive fd is
+dropped. This eliminates the lock-upgrade gap: there is no moment where the
+entry is unlocked between exclusive (write) and shared (read) access.
+
+**Platform guard**: Locking is gated behind `cfg(unix)`. On non-Unix
+platforms, `ToolCacheReadGuard` is a no-op that always succeeds — no
+cross-process race protection is provided.
+
+
 ### Conductor-Builtins Specification (src/conductor-builtins/)
 
 **9 Detailed Sections**:

@@ -1464,7 +1464,7 @@ where
         if tool_content_map.is_empty() {
             return Ok(None);
         }
-        let payload_dir = tool_content_cache::prepare_tool_content_cache(
+        let (payload_dir, _cache_guard) = tool_content_cache::prepare_tool_content_cache(
             tools_dir,
             tool_id,
             tool_content_map,

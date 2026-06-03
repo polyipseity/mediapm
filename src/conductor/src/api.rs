@@ -238,7 +238,7 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
             cas_store_dir.display()
         ))
     })?);
-    let payload_dir =
+    let (payload_dir, _cache_guard) =
         crate::orchestration::actors::step_worker::tool_content_cache::prepare_tool_content_cache(
             conductor_tools_dir,
             &tool_id,
