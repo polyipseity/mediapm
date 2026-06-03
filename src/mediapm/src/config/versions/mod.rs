@@ -233,7 +233,10 @@ mod tests {
     use super::{
         decode_mediapm_document_value, encode_mediapm_document_value, latest_nickel_version,
     };
-    use crate::config::MediaPmDocument;
+    use crate::config::{
+        ManagedFileRecord, ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp,
+        MediaPmState, MediaRuntimeStorage, ToolRegistryRecord, ToolRegistryStatus,
+    };
 
     /// Verifies decode rejects unsupported top-level schema markers.
     #[test]
@@ -251,5 +254,168 @@ mod tests {
         let encoded = encode_mediapm_document_value(runtime).expect("encode document");
         let decoded = decode_mediapm_document_value(encoded).expect("decode document");
         assert_eq!(decoded.version, latest_nickel_version());
+    }
+
+    /// Verifies round-trip preserves all `MediaRuntimeStorage` fields through
+    /// the typed envelope.
+    #[test]
+    fn populated_runtime_storage_round_trips_through_typed_envelope() {
+        let doc = MediaPmDocument {
+            runtime: MediaRuntimeStorage {
+                mediapm_dir: Some("/custom/mediapm".into()),
+                hierarchy_root_dir: Some("/custom/hierarchy".into()),
+                materialization_preference_order: Some(vec![
+                    crate::config::MaterializationMethod::Hardlink,
+                    crate::config::MaterializationMethod::Copy,
+                ]),
+                conductor_config: Some("/custom/conductor.ncl".into()),
+                conductor_machine_config: Some("/custom/machine.ncl".into()),
+                conductor_state_config: Some("/custom/state.ncl".into()),
+                conductor_schema_dir: Some("/custom/schemas".into()),
+                inherited_env_vars: Some(
+                    [("macos".into(), vec!["PATH".into(), "HOME".into()])].into_iter().collect(),
+                ),
+                media_state_config: Some("/custom/media_state.ncl".into()),
+                env_file: Some("/custom/.env".into()),
+                mediapm_schema_dir: Some(Some("/custom/schemas/mediapm".into())),
+                instance_ttl_seconds: Some(3600),
+                ..Default::default()
+            },
+            ..MediaPmDocument::default()
+        };
+
+        let encoded = encode_mediapm_document_value(doc.clone()).expect("encode document");
+        let decoded = decode_mediapm_document_value(encoded).expect("decode document");
+
+        assert_eq!(decoded.version, doc.version);
+        assert_eq!(decoded.runtime.mediapm_dir, doc.runtime.mediapm_dir);
+        assert_eq!(decoded.runtime.hierarchy_root_dir, doc.runtime.hierarchy_root_dir);
+        assert_eq!(
+            decoded.runtime.materialization_preference_order,
+            doc.runtime.materialization_preference_order
+        );
+        assert_eq!(decoded.runtime.conductor_config, doc.runtime.conductor_config);
+        assert_eq!(decoded.runtime.conductor_machine_config, doc.runtime.conductor_machine_config);
+        assert_eq!(decoded.runtime.conductor_state_config, doc.runtime.conductor_state_config);
+        assert_eq!(decoded.runtime.conductor_schema_dir, doc.runtime.conductor_schema_dir);
+        assert_eq!(decoded.runtime.media_state_config, doc.runtime.media_state_config);
+        assert_eq!(decoded.runtime.env_file, doc.runtime.env_file);
+        assert_eq!(decoded.runtime.mediapm_schema_dir, doc.runtime.mediapm_schema_dir);
+    }
+
+    /// Verifies round-trip preserves `MediaPmState` fields through the typed
+    /// envelope, including managed_files, tool_registry, and workflow_states
+    /// with impure timestamps.
+    #[test]
+    fn populated_mediapm_state_round_trips_through_typed_envelope() {
+        let doc = MediaPmDocument {
+            state: MediaPmState {
+                managed_files: [(
+                    "videos/demo.mp4".into(),
+                    ManagedFileRecord {
+                        media_id: "demo".into(),
+                        variant: "default".into(),
+                        hash: "abc123".into(),
+                        last_synced_unix_millis: 1_700_000_000_000,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                tool_registry: [(
+                    "ffmpeg@7.0".into(),
+                    ToolRegistryRecord {
+                        name: "ffmpeg".into(),
+                        version: "7.0".into(),
+                        source: "catalog".into(),
+                        registry_multihash: "Qm123".into(),
+                        last_transition_unix_seconds: 1_700_000_000,
+                        status: ToolRegistryStatus::Active,
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                active_tools: [("ffmpeg".into(), "ffmpeg@7.0".into())]
+                    .into_iter()
+                    .collect(),
+                workflow_states: [(
+                    "demo-media".into(),
+                    vec![ManagedWorkflowStepState {
+                        explicit_config: json!({ "tool": "echo@1.0.0", "inputs": { "args": "hello" } }),
+                        impure_timestamp: Some(MediaPmImpureTimestamp {
+                            epoch_seconds: 1_700_000_000,
+                            subsec_nanos: 123_456_789,
+                        }),
+                    }],
+                )]
+                .into_iter()
+                .collect(),
+            },
+            ..MediaPmDocument::default()
+        };
+
+        let encoded = encode_mediapm_document_value(doc.clone()).expect("encode document");
+        let decoded = decode_mediapm_document_value(encoded).expect("decode document");
+
+        assert_eq!(decoded.state.managed_files, doc.state.managed_files);
+        assert_eq!(decoded.state.tool_registry, doc.state.tool_registry);
+        assert_eq!(decoded.state.active_tools, doc.state.active_tools);
+        assert_eq!(decoded.state.workflow_states, doc.state.workflow_states);
+    }
+
+    /// Verifies the typed envelope's `deny_unknown_fields` on
+    /// `MediaPmDocumentEnvelopeV1` rejects extra top-level fields.
+    #[test]
+    fn typed_envelope_rejects_unknown_top_level_field() {
+        let value = json!({
+            "version": latest_nickel_version(),
+            "runtime": {},
+            "unknown_field": "should_be_rejected",
+        });
+
+        let err = decode_mediapm_document_value(value)
+            .expect_err("unknown top-level field should be rejected by envelope");
+        assert!(
+            err.to_string().contains("unknown field")
+                || err.to_string().contains("unknown_field")
+                || err.to_string().contains("`deny_unknown_fields`")
+        );
+    }
+
+    /// Verifies round-trip preserves `PlatformInheritedEnvVars` correctly
+    /// through the typed envelope for all three platform entries.
+    #[test]
+    fn inherited_env_vars_round_trip_preserves_platform_keys() {
+        let doc = MediaPmDocument {
+            runtime: MediaRuntimeStorage {
+                inherited_env_vars: Some(
+                    [
+                        ("windows".into(), vec!["PATH".into(), "TEMP".into()]),
+                        ("linux".into(), vec!["LD_LIBRARY_PATH".into()]),
+                        ("macos".into(), vec!["PATH".into(), "HOME".into(), "SHELL".into()]),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ..Default::default()
+            },
+            ..MediaPmDocument::default()
+        };
+
+        let encoded = encode_mediapm_document_value(doc.clone()).expect("encode document");
+        let decoded = decode_mediapm_document_value(encoded).expect("decode document");
+
+        let got = decoded.runtime.inherited_env_vars.expect("inherited_env_vars should be present");
+        assert_eq!(
+            got.get("windows").map(|v| v.as_slice()),
+            Some(&["PATH".to_string(), "TEMP".to_string()][..])
+        );
+        assert_eq!(
+            got.get("linux").map(|v| v.as_slice()),
+            Some(&["LD_LIBRARY_PATH".to_string()][..])
+        );
+        assert_eq!(
+            got.get("macos").map(|v| v.as_slice()),
+            Some(&["PATH".to_string(), "HOME".to_string(), "SHELL".to_string()][..])
+        );
     }
 }
