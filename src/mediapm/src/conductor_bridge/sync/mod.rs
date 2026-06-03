@@ -268,36 +268,53 @@ pub(crate) async fn reconcile_desired_tools(
                     .or_insert(multihash);
             }
 
-            if should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults)
-                && let Some(companion_selector_path) = companion_ffmpeg_host_command_path.as_deref()
-                && let Some(ffmpeg_path) = resolve_managed_tool_payload_directory_from_selector(
-                    paths,
-                    &desired_tool_id,
-                    companion_selector_path,
-                )
+            // Always resolve companion paths when yt-dlp is provisioned.
+            // Env var generation (below) always fires when companion paths
+            // resolve. The should_set_* guards only gate input_defaults
+            // template-string injection so re-runs don't skip companion
+            // resolution once the template ref is already in place.
             {
-                yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
-                desired_config.input_defaults.insert(
-                    "ffmpeg_location".to_string(),
-                    InputBinding::String("${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string()),
-                );
+                let companion_ffmpeg_path =
+                    companion_ffmpeg_host_command_path.as_deref().and_then(|selector_path| {
+                        resolve_managed_tool_payload_directory_from_selector(
+                            paths,
+                            &desired_tool_id,
+                            selector_path,
+                        )
+                    });
+                if let Some(ffmpeg_path) = companion_ffmpeg_path {
+                    yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
+                    if should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults) {
+                        desired_config.input_defaults.insert(
+                            "ffmpeg_location".to_string(),
+                            InputBinding::String(
+                                "${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}".to_string(),
+                            ),
+                        );
+                    }
+                }
             }
 
-            if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults)
-                && let Some(js_runtimes_path) =
+            {
+                let companion_js_path =
                     companion_deno_host_command_path.as_deref().and_then(|selector_path| {
                         resolve_managed_tool_payload_command_path_from_selector(
                             paths,
                             &desired_tool_id,
                             selector_path,
                         )
-                    })
-            {
-                yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
-                desired_config.input_defaults.insert(
-                    "js_runtimes".to_string(),
-                    InputBinding::String("deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string()),
-                );
+                    });
+                if let Some(js_runtimes_path) = companion_js_path {
+                    yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
+                    if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults) {
+                        desired_config.input_defaults.insert(
+                            "js_runtimes".to_string(),
+                            InputBinding::String(
+                                "deno:${env.MEDIAPM_YT_DLP_JS_RUNTIMES}".to_string(),
+                            ),
+                        );
+                    }
+                }
             }
         }
         remove_redundant_inherited_env_vars_from_tool_config(
