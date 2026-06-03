@@ -76,6 +76,7 @@ impl ExecutionHubClient {
 
     /// Executes a batch of steps from multiple workflows (step-stream dispatch)
     /// and returns per-step outcomes keyed by their originating workflow.
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::orchestration) async fn execute_stream(
         &self,
         steps: Vec<StreamStep>,
@@ -419,6 +420,7 @@ where
     /// incoming step to a worker via round-robin, then runs the same
     /// retry-with-fallback loop as `execute_level`, returning outcomes keyed by
     /// workflow name.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_stream(
         &self,
         steps: Vec<StreamStep>,
