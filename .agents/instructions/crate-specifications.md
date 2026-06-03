@@ -521,6 +521,26 @@ finished rows.
   `add_local_source_with_position()` accept an `overwrite: bool` parameter;
   when `true`, the existing entry is replaced unconditionally. The CLI exposes
   this as `mediapm media add --overwrite`.
+- **Media metadata resolution policy**: When adding a media source, metadata
+  is resolved through independent fallback chains for 5 persisted slots.
+  The `--title`, `--artist`, `--description` CLI flags override all other
+  sources. MBID (recording/release) is restricted to the media-tagger step
+  options — it never feeds into `MediaSourceSpec.title`, `MediaSourceSpec.artist`,
+  `MediaSourceSpec.description`, `metadata["title"]`, or `metadata["artist"]`.
+  The final fallback for every slot is the literal string `"unknown"`.
+  The five slots and their chains are:
+
+  | Slot | CLI | Remote (yt-dlp) | Local (ffprobe) | Fallback |
+  |---|---|---|---|---|
+  | `MediaSourceSpec.title` | `--title` | metadata.title | format.tags.title/track | `"unknown"` |
+  | `MediaSourceSpec.artist` | `--artist` | uploader/channel/artist/creator | format.tags.artist/album_artist | `"unknown"` |
+  | `MediaSourceSpec.description` | `--description` | metadata.description | format.tags.description/comment/synopsis | auto-build → `"unknown"` |
+  | `metadata["title"]` | `--title` literal | `Video:title` → `Video:track` → `Infojson:title` | `media:title` | resolved `MediaSourceSpec.title` → `"unknown"` |
+  | `metadata["artist"]` | `--artist` literal | `Video:artist` → `Video:album_artist` → `Infojson:uploader` | `media:artist` → `media:album_artist` | resolved `MediaSourceSpec.artist` → `"unknown"` |
+
+  The auto-built description template differs between flows:
+  - Remote: `"title: {title}\nartist: {artist}"`
+  - Local: `"file: {filename}\ntitle: {title}\nartist: {artist}"`
 - **Local media ID from CAS hash**: `media_id_from_local_path()` no longer
   uses nanoid-based random suffixes. Local media IDs now derive from the CAS
   content hash of the source file:
