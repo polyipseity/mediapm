@@ -605,6 +605,100 @@ tool_configs = {
     assert!(err.to_string().contains("max_retries must be -1 or a non-negative integer"));
 }
 
+/// Verifies the NCL `IntegerNumberV1` contract rejects fractional numbers
+/// for `max_concurrent_calls`.
+#[test]
+fn tool_config_ncl_rejects_non_integer_max_concurrent_calls() {
+    let source = r#"
+{
+version = 1,
+tools = {
+    "echo@1.0.0" = {
+        kind = "builtin",
+        name = "echo",
+        version = "1.0.0",
+    },
+},
+tool_configs = {
+    "echo@1.0.0" = {
+        max_concurrent_calls = 3.14,
+    },
+},
+}
+"#;
+
+    let err = decode_user_document(source.as_bytes())
+        .expect_err("fractional max_concurrent_calls must be rejected by NCL IntegerNumberV1");
+    assert!(err.to_string().contains("contract") || err.to_string().contains("integer"));
+}
+
+/// Verifies the NCL `IntegerNumberV1` contract rejects non-number values
+/// for `max_concurrent_calls`.
+#[test]
+fn tool_config_ncl_rejects_non_number_max_concurrent_calls() {
+    let source = r#"
+{
+version = 1,
+tools = {
+    "echo@1.0.0" = {
+        kind = "builtin",
+        name = "echo",
+        version = "1.0.0",
+    },
+},
+tool_configs = {
+    "echo@1.0.0" = {
+        max_concurrent_calls = "unlimited",
+    },
+},
+}
+"#;
+
+    let err = decode_user_document(source.as_bytes())
+        .expect_err("string max_concurrent_calls must be rejected by NCL IntegerNumberV1");
+    assert!(err.to_string().contains("contract") || err.to_string().contains("IntegerNumberV1"));
+}
+
+/// Verifies the NCL `IntegerNumberV1` contract accepts boundary integer
+/// values for `max_concurrent_calls`.
+#[test]
+fn tool_config_ncl_accepts_boundary_integer_max_concurrent_calls() {
+    let source_pairs = [
+        (-1, "negative boundary for max_concurrent_calls"),
+        (1, "minimum positive for max_concurrent_calls"),
+        (100, "positive value for max_concurrent_calls"),
+    ];
+
+    for (value, description) in &source_pairs {
+        let source = format!(
+            r#"
+{{
+version = 1,
+tools = {{
+    "echo@1.0.0" = {{
+        kind = "builtin",
+        name = "echo",
+        version = "1.0.0",
+    }},
+}},
+tool_configs = {{
+    "echo@1.0.0" = {{
+        max_concurrent_calls = {value},
+    }},
+}},
+}}
+"#
+        );
+        let decoded = decode_user_document(source.as_bytes())
+            .unwrap_or_else(|_| panic!("{description} should be accepted by NCL IntegerNumberV1"));
+        assert_eq!(
+            decoded.tool_configs.get("echo@1.0.0").unwrap().max_concurrent_calls,
+            *value,
+            "{description}",
+        );
+    }
+}
+
 /// Verifies workflow-step string bindings accept `${external_data.<hash>}`.
 #[test]
 fn decode_user_document_accepts_external_data_input_binding() {
