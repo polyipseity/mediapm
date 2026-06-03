@@ -461,6 +461,61 @@ WorkflowSpec {
 | Unicode characters in step IDs | Character-count based truncation | Works correctly |
 | Zero-width terminal | Returns empty message | Accepted |
 
+### 2.8 Instance GC Edge Cases
+
+**Scenario 1 — `instance_ttl_seconds = 0`**:
+
+| Aspect | Behavior |
+|---|---|
+| Cutoff computation | `now - 0 = now` → every instance with `last_used ≤ now` is removed |
+| Effective result | GC runs on every persist, immediately pruning all instances with any `last_used` value |
+| `last_used = None` instances | Preserved (treated as timeless) |
+| Risk | Users expecting "keep nothing" may be surprised that `None` instances survive; only explicit timestamps are pruned |
+
+**Scenario 2 — `instance_ttl_seconds = None` (default)**:
+
+| Aspect | Behavior |
+|---|---|
+| GC guard | `if let Some(ttl_seconds)` short-circuits — no cutoff computed, no `gc_instances()` call |
+| Effective result | Instance map is purely append-mostly; old entries remain forever |
+| Migration safety | State written before this field existed (with `last_used = None` on all instances) is fully preserved |
+| Risk | None; this is the backward-compatible default |
+
+**Scenario 3 — `instance_ttl_seconds` near `u64::MAX`**:
+
+| Aspect | Behavior |
+|---|---|
+| Cutoff computation | `now - u64::MAX` saturates to 0 via `saturating_sub` |
+| Effective result | Cutoff is epoch 0 — all instances with `last_used.epoch_seconds >= 0` are preserved (all of them) |
+| Practical effect | Identical to `None` — no GC ever fires |
+| Risk | User may expect garbage collection but configured a value so large it never triggers. Document that extreme values are effectively "never GC" |
+
+**Scenario 4 — Clock skew and cutoff timing**:
+
+| Aspect | Behavior |
+|---|---|
+| Source of truth | `SystemTime::now().duration_since(UNIX_EPOCH)` — system monotonic clock, not CAS timestamps |
+| Clock skew | If system clock jumps forward, cutoff moves forward, prematurely GC-ing recent instances. If clock jumps backward, cutoff moves backward, delaying GC |
+| `unwrap_or_default` fallback | If `duration_since` fails (system clock before UNIX_EPOCH), defaults to zero-offset, which sets cutoff at `0 - ttl = 0` (saturated) — no GC on that persist cycle |
+| Risk | Clock jumps are rare but destructive. The fallback is safe (skips aggressive GC) but may cause an unexpected bloat cycle |
+
+**Scenario 5 — `last_used = None` instances after GC**:
+
+| Aspect | Behavior |
+|---|---|
+| GC predicate | `instance.last_used.map_or(true, \|lu\| lu >= cutoff)` — the `map_or(true)` branch preserves `None` entries |
+| Rationale | `None` represents "not yet tracked by GC" — either pre-GC state or freshly inserted entries that haven't been through `merge_step_result_into_state()` |
+| Risk | If a code path inserts instances without setting `last_used`, those instances become immortal. Document that `gc_instances` preserves `None` as a safety net, not as intended long-term behavior |
+
+**Scenario 6 — Large instance maps**:
+
+| Aspect | Behavior |
+|---|---|
+| GC complexity | `gc_instances()` calls `BTreeMap::retain()` which visits every entry — O(n) for iteration, O(log n) per removal |
+| Baseline cost | For typical workflows (tens to low thousands of instances), GC is negligible compared to CAS blob serialization |
+| Risk | With millions of instances, a full GC scan before every persist could become expensive. Incremental GC or sampling-based approaches are not implemented |
+| Mitigation | Reduce TTL or batch persist calls. Consider a separate GC actor for very large state if this becomes a bottleneck |
+
 ---
 
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
@@ -1868,6 +1923,8 @@ until explicitly cleaned up.
 3. **State Pointer Only Advances on Success**: The `state_pointer` only advances on a successful run. After failure, `state_pointer` still references the old state CAS blob. Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries.
 
 4. **No Active CAS Garbage Collection**: CAS storage is append-only by default. Blobs are only deleted via explicit `cas.delete()`. There is no active pruning of unreferenced `OrchestrationState` blobs.
+
+   **Update — Instance GC added (post-implementation)**: The `OrchestrationState` instance map inside the live state blob is now pruned by configurable TTL-based GC (`gc_instances(cutoff)` called from `commit_run()` and `persist_and_publish_state()`). This removes stale `ToolCallInstance` entries from the in-memory snapshot **before** it is serialized to a new CAS blob. The old CAS blobs (pre-GC) remain reachable in CAS storage until the `state_pointer` advances past them. Instance GC therefore controls growth within the state blob itself, but does not reclaim old CAS blobs — that still requires explicit CAS-level GC.
 
 **The One Scenario Where Instances ARE Lost**: If a user or external process explicitly calls `cas.delete()` on the CAS blob containing the old `OrchestrationState`, the prior instances become unreachable. This is an administrative action, not a normal runtime behavior.
 

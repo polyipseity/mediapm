@@ -309,7 +309,7 @@ For comprehensive details, refer to the following specifications collected from 
 **OrchestrationState Immutability**:
 
 - `OrchestrationState { version: u32, instances: BTreeMap<String, ToolCallInstance> }` is stored as an immutable CAS blob
-- The `instances` map only grows via insertions — old entries are never removed
+- The `instances` map is append-mostly — new entries are inserted on each successful step, but old entries may be removed by instance GC (see below) before the blob is persisted
 - Old CAS blobs remain reachable as long as any caller holds their hash
 
 **State Pointer Advancement**:
@@ -320,6 +320,14 @@ For comprehensive details, refer to the following specifications collected from 
 - CAS garbage collection is explicit-only (`cas.delete()`); there is no active pruning of unreferenced `OrchestrationState` blobs
 
 **Implication**: A failed workflow step cannot cause previously successful steps to lose their I/O. The instance key change only affects the failed step's retry; all prior instances remain in the immutable state blob.
+
+**Instance Garbage Collection**:
+
+- **`last_used` field** (`ToolCallInstance`): optional timestamp set to the current time by `merge_step_result_into_state()` when a step completes successfully. Instances with `last_used = None` are treated as timeless (pre-GC state or freshly-inserted entries not yet tracked).
+- **`gc_instances(cutoff)` method** (`OrchestrationState`): removes all instances where `last_used < cutoff` using epoch-seconds comparison (with subsec-nanos tiebreaker). Instances with `last_used = None` are always preserved.
+- **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`): optional integer seconds. When `None`, instance GC is disabled. When set, cutoff is computed as `SystemTime::now() - Duration::from_secs(ttl)` before each persistence call.
+- **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
+- **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
 ### §16 Workflow Progress Display
 
