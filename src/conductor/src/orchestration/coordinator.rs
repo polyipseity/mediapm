@@ -157,9 +157,12 @@ where
     }
 
     /// Lazily spawns the CAS-backed orchestration state-store actor.
+    ///
+    /// Instance GC TTL starts as `None` (disabled) until the first config
+    /// load sets it via `StateStoreClient::set_instance_ttl`.
     async fn ensure_state_store(&mut self) -> Result<(), ConductorError> {
         if self.state_store.is_none() {
-            self.state_store = Some(spawn_state_store_actor(self.cas.clone()).await?);
+            self.state_store = Some(spawn_state_store_actor(self.cas.clone(), None).await?);
         }
         Ok(())
     }
@@ -226,6 +229,7 @@ where
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
+        state_store.set_instance_ttl(machine_document.runtime.instance_ttl_seconds)?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
@@ -389,7 +393,7 @@ where
             profile_output_path: None,
             profiler_enabled: false,
         };
-        let LoadedDocuments { mut state_document, unified, .. } = document_loader
+        let LoadedDocuments { mut state_document, unified, machine_document, .. } = document_loader
             .load_and_unify(
                 user_ncl,
                 machine_ncl,
@@ -397,6 +401,7 @@ where
                 load_options,
             )
             .await?;
+        state_store.set_instance_ttl(machine_document.runtime.instance_ttl_seconds)?;
 
         Self::validate_state_against_unified(&next_state, &unified)?;
         let next_pointer = state_store.persist_and_publish_state(next_state).await?;
@@ -823,10 +828,12 @@ where
                         .pending_unsaved_hashes
                         .extend(result.pending_unsaved_hashes.iter().copied());
 
+                    let now = Self::fresh_timestamp();
                     let step_hashes = Self::merge_step_result_into_state(
                         state,
                         result,
                         &mut wf_state.pending_unsaved_hashes,
+                        now,
                     )?;
                     wf_state.step_outputs.insert(outcome.step_id, step_hashes);
                 }
@@ -1099,10 +1106,14 @@ where
     /// `pending_unsaved_hashes` for post-commit cleanup eligibility. Cleanup is
     /// still centralized in the state-store commit path, so displaced hashes
     /// are never deleted if workflow execution fails before commit.
+    ///
+    /// `now` is the impure timestamp assigned to the merged instance so GC can
+    /// eventually prune unused instances by their `last_used` age.
     fn merge_step_result_into_state(
         state: &mut OrchestrationState,
         result: StepExecutionBundle,
         pending_unsaved_hashes: &mut BTreeSet<Hash>,
+        now: ImpureTimestamp,
     ) -> Result<BTreeMap<String, Option<Hash>>, ConductorError> {
         let StepExecutionBundle {
             step_id: _,
@@ -1150,6 +1161,8 @@ where
                 occupied.into_mut()
             }
         };
+
+        final_instance.last_used = Some(now);
 
         requested_output_names
             .into_iter()

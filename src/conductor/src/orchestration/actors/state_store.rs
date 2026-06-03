@@ -7,11 +7,13 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::{CasApi, CasError, Hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
 use crate::error::ConductorError;
+use crate::model::config::ImpureTimestamp;
 use crate::model::state::{OrchestrationState, decode_state, encode_state};
 use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
 use crate::orchestration::protocol::{CommitStateRequest, UnifiedNickelDocument};
@@ -70,6 +72,16 @@ impl StateStoreClient {
             })?
     }
 
+    /// Sets the instance GC TTL on the state-store actor (fire-and-forget).
+    pub(in crate::orchestration) fn set_instance_ttl(
+        &self,
+        ttl: Option<u64>,
+    ) -> Result<(), ConductorError> {
+        self.actor.cast(StateStoreMessage::SetInstanceTtl(ttl)).map_err(|err| {
+            ConductorError::Internal(format!("state store set_instance_ttl cast failed: {err}"))
+        })
+    }
+
     /// Persists one provided state snapshot and publishes it as current state
     /// without unsaved-output cleanup.
     pub(in crate::orchestration) async fn persist_and_publish_state(
@@ -101,6 +113,8 @@ enum StateStoreMessage {
     CommitRun(Box<CommitStateRequest>, RpcReplyPort<Result<Hash, ConductorError>>),
     /// Persists one external state snapshot and publishes it without cleanup.
     PersistAndPublishState(Box<OrchestrationState>, RpcReplyPort<Result<Hash, ConductorError>>),
+    /// Sets the instance TTL for GC pruning.
+    SetInstanceTtl(Option<u64>),
 }
 
 /// Marker actor for orchestration-state persistence.
@@ -127,6 +141,9 @@ where
     cas: Arc<C>,
     /// Current in-memory orchestration state published to callers.
     current_state: OrchestrationState,
+    /// Optional instance TTL in seconds for GC pruning.
+    /// When `None`, instance GC is disabled.
+    instance_ttl_seconds: Option<u64>,
 }
 
 impl<C> StateStoreService<C>
@@ -150,7 +167,18 @@ where
     }
 
     /// Persists one completed run, updates published state, and deletes unprotected unsaved outputs.
-    async fn commit_run(&mut self, request: CommitStateRequest) -> Result<Hash, ConductorError> {
+    async fn commit_run(
+        &mut self,
+        mut request: CommitStateRequest,
+    ) -> Result<Hash, ConductorError> {
+        if let Some(ttl_seconds) = self.instance_ttl_seconds {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let cutoff = ImpureTimestamp {
+                epoch_seconds: now.as_secs().saturating_sub(ttl_seconds),
+                subsec_nanos: now.subsec_nanos(),
+            };
+            request.next_state.gc_instances(cutoff);
+        }
         let current_state_pointer = self.persist_state_blob(&request.next_state).await?;
         self.delete_unsaved_outputs(
             &request.next_state,
@@ -168,8 +196,16 @@ where
     /// without unsaved-output cleanup side effects.
     async fn persist_and_publish_state(
         &mut self,
-        next_state: OrchestrationState,
+        mut next_state: OrchestrationState,
     ) -> Result<Hash, ConductorError> {
+        if let Some(ttl_seconds) = self.instance_ttl_seconds {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let cutoff = ImpureTimestamp {
+                epoch_seconds: now.as_secs().saturating_sub(ttl_seconds),
+                subsec_nanos: now.subsec_nanos(),
+            };
+            next_state.gc_instances(cutoff);
+        }
         let pointer = self.persist_state_blob(&next_state).await?;
         self.current_state = next_state;
         Ok(pointer)
@@ -235,15 +271,19 @@ where
 {
     type Msg = StateStoreMessage;
     type State = StateStoreService<C>;
-    type Arguments = Arc<C>;
+    type Arguments = (Arc<C>, Option<u64>);
 
-    /// Initializes the actor with the shared CAS handle and an empty in-memory state snapshot.
+    /// Initializes the actor with the shared CAS handle, instance TTL, and an empty in-memory state snapshot.
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        Ok(StateStoreService { cas: args, current_state: OrchestrationState::default() })
+        Ok(StateStoreService {
+            cas: args.0,
+            current_state: OrchestrationState::default(),
+            instance_ttl_seconds: args.1,
+        })
     }
 
     /// Handles state loading, current-state queries, and completed-run commits.
@@ -266,6 +306,9 @@ where
             StateStoreMessage::PersistAndPublishState(next_state, reply) => {
                 let _ = reply.send(state.persist_and_publish_state(*next_state).await);
             }
+            StateStoreMessage::SetInstanceTtl(ttl) => {
+                state.instance_ttl_seconds = ttl;
+            }
         }
         Ok(())
     }
@@ -274,13 +317,16 @@ where
 /// Spawns the state-store actor and returns its typed client.
 pub(in crate::orchestration) async fn spawn_state_store_actor<C>(
     cas: Arc<C>,
+    instance_ttl_seconds: Option<u64>,
 ) -> Result<StateStoreClient, ConductorError>
 where
     C: CasApi + Send + Sync + 'static,
 {
     let (actor_ref, _handle) =
-        Actor::spawn(None, StateStoreActor::<C>::default(), cas).await.map_err(|err| {
-            ConductorError::Internal(format!("failed spawning state store actor: {err}"))
-        })?;
+        Actor::spawn(None, StateStoreActor::<C>::default(), (cas, instance_ttl_seconds))
+            .await
+            .map_err(|err| {
+                ConductorError::Internal(format!("failed spawning state store actor: {err}"))
+            })?;
     Ok(StateStoreClient::new(actor_ref))
 }
