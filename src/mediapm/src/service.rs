@@ -24,6 +24,7 @@ use mediapm_conductor::{
 use url::Url;
 
 use crate::conductor_bridge::ConductorToolRow;
+use crate::conductor_bridge::fresh_impure_timestamp;
 use crate::config::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
     MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
@@ -1308,6 +1309,24 @@ where
                 }
             }
         };
+
+        // Backfill impure_timestamp for freshly-synthesized steps after
+        // workflow completion, so the timestamp reflects the time when the
+        // workflow actually ran rather than synthesis.
+        if let Err(e) = self.conductor.get_state().await {
+            eprintln!(
+                "[mediapm::sync] warning: conductor state unavailable after \
+                 workflow run, skipping impure_timestamp backfill: {e}"
+            );
+        } else {
+            for step_states in lock.workflow_states.values_mut() {
+                for step_state in step_states.iter_mut() {
+                    if step_state.impure_timestamp.is_none() {
+                        step_state.impure_timestamp = Some(fresh_impure_timestamp());
+                    }
+                }
+            }
+        }
 
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let materialize_report = materializer::sync_hierarchy(

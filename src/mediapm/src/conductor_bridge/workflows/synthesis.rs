@@ -20,10 +20,9 @@ use super::{
     FfmpegSlotLimits, IMPORT_KIND_CAS_HASH, INPUT_CONTENT, INPUT_IMPORT_HASH, INPUT_IMPORT_KIND,
     INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS, VariantProducer,
     explicit_media_step_config_snapshot, extract_step_list_args, find_matching_step_state_index,
-    fresh_impure_timestamp, matched_state_requires_refresh, media_step_id,
-    preserve_existing_generated_step_tools, resolve_input_variant_producer,
-    resolve_logical_tool_requirement, resolve_step_tool_id, step_option_input_bindings,
-    step_option_scalar,
+    matched_state_requires_refresh, media_step_id, preserve_existing_generated_step_tools,
+    resolve_input_variant_producer, resolve_logical_tool_requirement, resolve_step_tool_id,
+    step_option_input_bindings, step_option_scalar,
 };
 
 /// Creates ordered workflow steps from unified media-step declarations.
@@ -265,7 +264,7 @@ pub(super) fn synthesize_media_steps(
         }
 
         let impure_timestamp = if requires_refresh {
-            Some(fresh_impure_timestamp())
+            None
         } else {
             existing_step_state.and_then(|state| state.impure_timestamp)
         };

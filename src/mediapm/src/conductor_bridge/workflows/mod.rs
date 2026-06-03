@@ -696,7 +696,7 @@ fn matched_state_requires_refresh(existing_state: Option<&ManagedWorkflowStepSta
 
 /// Generates one fresh monotonic impure timestamp for mediapm step refresh.
 #[must_use]
-fn fresh_impure_timestamp() -> MediaPmImpureTimestamp {
+pub(crate) fn fresh_impure_timestamp() -> MediaPmImpureTimestamp {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     MediaPmImpureTimestamp { epoch_seconds: now.as_secs(), subsec_nanos: now.subsec_nanos() }
 }

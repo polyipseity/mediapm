@@ -1637,8 +1637,9 @@ machine config and regenerate downstream materialization.
    (input hashes, options) is unchanged and the generated tool id is identical
    to the previous one (tool identity fields like companion selectors and
    versions are unchanged). Resolution: when `previous.tool == generated.tool`,
-   the id is kept after validity check; the impure timestamp is preserved from
-   the previous cycle, preventing unnecessary machine config churn.
+   the id is kept after validity check; the impure timestamp from the previous
+   cycle is preserved (since `requires_refresh` is false), preventing
+   unnecessary machine config churn.
 
 2. **Step with changed tool identity** (any tool): the generated tool identity
    differs from the previous one — companion selectors, dependency versions,
@@ -1676,8 +1677,12 @@ differs from the previous one. Since the previous tool is still valid (its
 `content_map` still exists in `machine.tool_configs` and the binary is
 materialized), the old tool id IS preserved. The conductor resolves to the old
 (cached) binary. MediaPM's impure timestamp remains unchanged — tool version
-updates do NOT refresh it. The new version binary is provisioned alongside the
-old one; a later sync switches to it when the old tool id is pruned.
+updates do NOT cause a refresh (they never trigger `requires_refresh = true`).
+The new version binary is provisioned alongside the old one; a later sync
+switches to it when the old tool id is pruned. Note that `requires_refresh` is
+only set true when `matched_state_requires_refresh()` detects a missing
+timestamp (fresh step) or when `preserve_existing_generated_step_tools()`
+fails to map every generated step to a still-valid prior tool.
 
 **Test coverage**:
 
@@ -2122,10 +2127,12 @@ during workflow re-synthesis. When a tool version changes, the
 `preserve_existing_generated_step_tools()` function rewrites the generated
 step's tool id to the previous valid one (`generated.tool = previous.tool.clone()`).
 The conductor still resolves to the old (cached) binary, and the mediapm
-impure timestamp is NOT refreshed. The new version binary is provisioned
-separately; it replaces the old one on a later sync cycle when the old tool id
-is pruned. Cache entries remain versioned; the old version stays available
-until explicitly cleaned up.
+impure timestamp is NOT refreshed (synthesis emits `None` for refreshed steps;
+the post-workflow backfill writes the actual timestamp only after the workflow
+completes, and unchanged steps carry forward their prior timestamp). The new
+version binary is provisioned separately; it replaces the old one on a later
+sync cycle when the old tool id is pruned. Cache entries remain versioned; the
+old version stays available until explicitly cleaned up.
 
 **Updated Recommendations**:
 

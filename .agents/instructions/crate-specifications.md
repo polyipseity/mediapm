@@ -652,9 +652,14 @@ cross-process race protection is provided.
 - **Two-tier impure timestamp system**: MediaPM and Conductor maintain
   separate impure timestamp domains with different triggers:
   - **MediaPM-owned timestamps** (`workflow_states[media_id][index].impure_timestamp`):
-    track step config identity transitions. A timestamp refresh requires an
-    explicit configuration change in `mediapm.ncl` — tool version updates alone
-    do NOT update mediapm timestamps.
+    track step config identity transitions. Timestamps are withheld during
+    workflow synthesis (`None` when `requires_refresh` is true) and written
+    after the conductor workflow completes — the
+    `sync_library_with_tag_update_checks()` backfill pass iterates lockfile
+    step states and stamps `fresh_impure_timestamp()` where `impure_timestamp`
+    is `None`. A timestamp refresh requires an explicit configuration change
+    in `mediapm.ncl` — tool version updates alone do NOT update mediapm
+    timestamps.
   - **Conductor-owned timestamps** (`impure_timestamps[workflow_name][step_id]`
     in conductor state doc): authoritative for instance key derivation in
     `derive_instance_key()`. These are entirely separate from mediapm timestamps.
