@@ -30,6 +30,7 @@ clap_complete = { workspace = true, optional = true }
 dirs.workspace = true
 dotenvy.workspace = true
 flate2 = { workspace = true, optional = true }
+fs4.workspace = true
 fp-library.workspace = true
 futures-util.workspace = true
 mediapm-cas = { path = "../cas", default-features = false }
