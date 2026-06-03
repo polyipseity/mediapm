@@ -1419,6 +1419,9 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),
+        // Optional default runtime GC TTL in seconds.
+        // Not set: inherits conductor's built-in default.
+        instance_ttl_seconds: None,
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;

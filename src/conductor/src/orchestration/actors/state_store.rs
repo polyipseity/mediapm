@@ -100,6 +100,18 @@ impl StateStoreClient {
             ))
         })?
     }
+
+    /// Runs instance GC on the current in-memory state, optionally with a TTL
+    /// override. The cleaned state is persisted to CAS and published.
+    pub(in crate::orchestration) async fn run_gc(
+        &self,
+        ttl_override: Option<u64>,
+    ) -> Result<(), ConductorError> {
+        call_t!(self.actor, StateStoreMessage::RunGc, DEFAULT_RPC_TIMEOUT_MS, ttl_override)
+            .map_err(|err| {
+                ConductorError::Internal(format!("state store run_gc RPC failed: {err}"))
+            })?
+    }
 }
 
 /// Requests supported by the state-store actor.
@@ -115,6 +127,8 @@ enum StateStoreMessage {
     PersistAndPublishState(Box<OrchestrationState>, RpcReplyPort<Result<Hash, ConductorError>>),
     /// Sets the instance TTL for GC pruning.
     SetInstanceTtl(Option<u64>),
+    /// Runs instance GC with an optional TTL override.
+    RunGc(Option<u64>, RpcReplyPort<Result<(), ConductorError>>),
 }
 
 /// Marker actor for orchestration-state persistence.
@@ -150,6 +164,23 @@ impl<C> StateStoreService<C>
 where
     C: CasApi + Send + Sync + 'static,
 {
+    /// Runs instance GC on the in-memory state using the provided TTL override
+    /// (or the stored TTL if override is `None`). Persists the cleaned state
+    /// to CAS and publishes it.
+    async fn run_gc(&mut self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
+        let ttl = ttl_override.or(self.instance_ttl_seconds);
+        if let Some(ttl_seconds) = ttl {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+            let cutoff = ImpureTimestamp {
+                epoch_seconds: now.as_secs().saturating_sub(ttl_seconds),
+                subsec_nanos: now.subsec_nanos(),
+            };
+            self.current_state.gc_instances(cutoff);
+            let _pointer = self.persist_state_blob(&self.current_state).await?;
+        }
+        Ok(())
+    }
+
     /// Loads a state snapshot from CAS or falls back to the actor's in-memory state.
     async fn load_state_from_pointer(
         &self,
@@ -308,6 +339,9 @@ where
             }
             StateStoreMessage::SetInstanceTtl(ttl) => {
                 state.instance_ttl_seconds = ttl;
+            }
+            StateStoreMessage::RunGc(ttl_override, reply) => {
+                let _ = reply.send(state.run_gc(ttl_override).await);
             }
         }
         Ok(())

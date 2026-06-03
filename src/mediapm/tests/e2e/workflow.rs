@@ -115,6 +115,7 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
             mediapm_schema_dir: None,
             profiler_enabled: None,
             path_sanitization: None,
+            instance_ttl_seconds: None,
         },
         ..MediaPmDocument::default()
     };
@@ -153,6 +154,7 @@ async fn sync_honors_explicit_conductor_state_override() {
             mediapm_schema_dir: None,
             profiler_enabled: None,
             path_sanitization: None,
+            instance_ttl_seconds: None,
         },
         ..MediaPmDocument::default()
     };

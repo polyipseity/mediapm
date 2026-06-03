@@ -1896,7 +1896,7 @@ async fn sync_hierarchy_materializes_online_variant_from_workflow_state() {
                 tool_name: tool_id.clone(),
                 metadata: tool_spec,
                 impure_timestamp: None,
-                last_used: None,
+                last_used: ImpureTimestamp::default(),
                 inputs: instance_inputs,
                 outputs: BTreeMap::from([(
                     "primary".to_string(),
@@ -2110,7 +2110,7 @@ fn instance_matching_allows_extra_runtime_inputs() {
             ..ToolSpec::default()
         },
         impure_timestamp: None,
-        last_used: None,
+        last_used: ImpureTimestamp::default(),
         inputs: BTreeMap::from([
             ("text".to_string(), mediapm_conductor::ResolvedInput::from_hash(expected_text_hash)),
             (
@@ -2202,7 +2202,7 @@ async fn resolve_step_output_hashes_matches_instance_with_expected_output_names(
                     tool_name: tool_id.clone(),
                     metadata: tool_spec.clone(),
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "source_url".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(source_url_hash),
@@ -2223,7 +2223,7 @@ async fn resolve_step_output_hashes_matches_instance_with_expected_output_names(
                     tool_name: tool_id,
                     metadata: tool_spec,
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "source_url".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(source_url_hash),
@@ -2366,7 +2366,7 @@ async fn resolve_step_output_hashes_prefers_materializable_zip_selector_instance
                     tool_name: tagger_tool_id.clone(),
                     metadata: tagger_tool_spec.clone(),
                     impure_timestamp: Some(ImpureTimestamp { epoch_seconds: 1, subsec_nanos: 0 }),
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "input_content".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(input_hash),
@@ -2387,7 +2387,7 @@ async fn resolve_step_output_hashes_prefers_materializable_zip_selector_instance
                     tool_name: tagger_tool_id,
                     metadata: tagger_tool_spec,
                     impure_timestamp: Some(ImpureTimestamp { epoch_seconds: 2, subsec_nanos: 0 }),
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "input_content".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(input_hash),
@@ -2408,7 +2408,7 @@ async fn resolve_step_output_hashes_prefers_materializable_zip_selector_instance
                     tool_name: apply_tool_id,
                     metadata: apply_tool_spec,
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "cover_flag".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
@@ -2550,7 +2550,7 @@ async fn resolve_step_output_hashes_tolerates_missing_zip_selector_source_bytes(
                     tool_name: tagger_tool_id,
                     metadata: tagger_tool_spec,
                     impure_timestamp: Some(ImpureTimestamp { epoch_seconds: 2, subsec_nanos: 0 }),
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "input_content".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
@@ -2573,6 +2573,7 @@ async fn resolve_step_output_hashes_tolerates_missing_zip_selector_source_bytes(
                     tool_name: apply_tool_id,
                     metadata: apply_tool_spec,
                     impure_timestamp: Some(ImpureTimestamp { epoch_seconds: 3, subsec_nanos: 0 }),
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "cover_flag".to_string(),
                         mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(

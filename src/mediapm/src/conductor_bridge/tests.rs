@@ -1022,6 +1022,7 @@ fn runtime_storage_normalization_keeps_explicit_legacy_values() {
         cas_store_dir: Some(".conductor/store/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: Some(BTreeMap::new()),
+        instance_ttl_seconds: None,
     };
 
     assert!(!normalize_runtime_storage_defaults(&paths, &mut runtime_storage));
@@ -1047,6 +1048,7 @@ fn runtime_storage_normalization_backfills_inherited_env_var_defaults() {
         cas_store_dir: Some(".conductor/store/".to_string()),
         conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
         inherited_env_vars: None,
+        instance_ttl_seconds: None,
     };
 
     let changed = normalize_runtime_storage_defaults(&paths, &mut runtime_storage);

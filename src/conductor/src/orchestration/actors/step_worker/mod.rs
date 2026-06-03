@@ -34,8 +34,8 @@ use regex::Regex;
 
 use crate::error::{ConductorError, CorruptWorkflowOutputContext};
 use crate::model::config::{
-    InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
-    ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
+    ImpureTimestamp, InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec,
+    ToolInputKind, ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{
     OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
@@ -336,7 +336,7 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: resolved_inputs.clone(),
                 outputs,
-                last_used: None,
+                last_used: ImpureTimestamp::default(),
             }
         } else {
             ToolCallInstance {
@@ -345,7 +345,7 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: resolved_inputs.clone(),
                 outputs: BTreeMap::new(),
-                last_used: None,
+                last_used: ImpureTimestamp::default(),
             }
         };
 

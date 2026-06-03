@@ -110,6 +110,16 @@ where
         Ok(Self::empty_runtime_diagnostics())
     }
 
+    /// Runs instance GC on the state-store's in-memory state with an optional
+    /// TTL override. When `ttl_override` is `None`, the store's configured TTL
+    /// is used; if neither is set the call is a no-op.
+    pub(super) async fn run_gc(&self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
+        if let Some(state_store) = &self.state_store {
+            return state_store.run_gc(ttl_override).await;
+        }
+        Ok(())
+    }
+
     /// Builds an empty diagnostics shell when runtime snapshots are unavailable.
     #[must_use]
     fn empty_runtime_diagnostics() -> RuntimeDiagnostics {
@@ -1162,7 +1172,7 @@ where
             }
         };
 
-        final_instance.last_used = Some(now);
+        final_instance.last_used = now;
 
         requested_output_names
             .into_iter()

@@ -9,7 +9,7 @@ use super::{
     persisted_state_json_pretty, register_or_merge_imported_tool,
 };
 use crate::model::config::{
-    MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
+    ImpureTimestamp, MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
 };
 use crate::model::state::{OrchestrationState, ToolCallInstance};
 use clap::Parser;
@@ -343,7 +343,7 @@ fn persisted_state_json_pretty_normalizes_builtin_metadata() {
                     outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
                 },
                 impure_timestamp: None,
-                last_used: None,
+                last_used: ImpureTimestamp::default(),
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
             },

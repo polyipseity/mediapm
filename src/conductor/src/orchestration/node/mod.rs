@@ -49,6 +49,8 @@ pub(super) enum ConductorNodeMessage {
         Box<StateMutationOptions>,
         RpcReplyPort<Result<Hash, ConductorError>>,
     ),
+    /// Runs instance GC with an optional TTL override.
+    RunGc(Option<u64>, RpcReplyPort<Result<(), ConductorError>>),
 }
 
 /// Typed client for interacting with the conductor node actor.
@@ -175,6 +177,22 @@ impl ConductorActorClient {
             ))
         })?
     }
+
+    /// Runs instance GC with an optional TTL override.
+    ///
+    /// When `ttl_override` is `None`, the state store's configured TTL is used;
+    /// if neither is set the call is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or GC/persistence fails
+    /// in the state store.
+    pub async fn run_gc(&self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
+        call_t!(self.actor, ConductorNodeMessage::RunGc, DEFAULT_RPC_TIMEOUT_MS, ttl_override)
+            .map_err(|err| {
+                ConductorError::Internal(format!("conductor actor run_gc RPC failed: {err}"))
+            })?
+    }
 }
 
 /// Marker actor for top-level conductor node command dispatch.
@@ -252,6 +270,9 @@ where
                         )
                         .await,
                 );
+            }
+            ConductorNodeMessage::RunGc(ttl_override, reply) => {
+                let _ = reply.send(state.run_gc(ttl_override).await);
             }
         }
         Ok(())

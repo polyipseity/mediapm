@@ -94,8 +94,10 @@ fn apply_runtime_storage_defaults(
         changed = true;
     }
     if runtime_storage.instance_ttl_seconds.is_none() {
-        runtime_storage.instance_ttl_seconds = defaults.instance_ttl_seconds;
-        changed = true;
+        if let Some(ttl) = defaults.instance_ttl_seconds {
+            runtime_storage.instance_ttl_seconds = Some(ttl);
+            changed = true;
+        }
     }
     changed
 }

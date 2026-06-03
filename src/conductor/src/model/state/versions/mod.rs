@@ -197,10 +197,13 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),
-            last_used: versioned.last_used.map(|timestamp| ImpureTimestamp {
-                epoch_seconds: timestamp.epoch_seconds,
-                subsec_nanos: timestamp.subsec_nanos,
-            }),
+            last_used: versioned
+                .last_used
+                .map(|timestamp| ImpureTimestamp {
+                    epoch_seconds: timestamp.epoch_seconds,
+                    subsec_nanos: timestamp.subsec_nanos,
+                })
+                .unwrap_or_else(ImpureTimestamp::now),
             inputs: versioned
                 .inputs
                 .into_iter()
@@ -219,9 +222,9 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),
-            last_used: runtime.last_used.map(|timestamp| latest::ImpureTimestamp {
-                epoch_seconds: timestamp.epoch_seconds,
-                subsec_nanos: timestamp.subsec_nanos,
+            last_used: Some(latest::ImpureTimestamp {
+                epoch_seconds: runtime.last_used.epoch_seconds,
+                subsec_nanos: runtime.last_used.subsec_nanos,
             }),
             inputs: runtime
                 .inputs
@@ -307,14 +310,17 @@ pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, Conductor
     let migrated = migrate_envelope_to_version(envelope, marker, latest_state_version())?;
 
     let state = latest::version_iso().from(migrated);
-    Ok(state_runtime_iso().from(state))
+    let runtime_state = state_runtime_iso().from(state);
+    Ok(runtime_state)
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::model::config::{ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec};
+    use crate::model::config::{
+        ImpureTimestamp, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
+    };
     use crate::model::state::{OrchestrationState, OutputSaveMode};
 
     /// Verifies encoded state uses flattened top-level `instances` shape.
@@ -334,7 +340,7 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },
@@ -398,7 +404,7 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([("text".to_string(), input)]),
                     outputs: BTreeMap::new(),
                 },
@@ -469,7 +475,7 @@ mod tests {
                         )]),
                     },
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

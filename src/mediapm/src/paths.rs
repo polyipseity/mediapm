@@ -288,6 +288,7 @@ mod tests {
             conductor_state_config: Some("state/custom.state.ncl".to_string()),
             conductor_schema_dir: Some("schemas/conductor".to_string()),
             inherited_env_vars: None,
+            instance_ttl_seconds: None,
             media_state_config: Some("state/custom.state.mediapm.ncl".to_string()),
             env_file: Some("state/custom.env".to_string()),
             env_generated_file: None,

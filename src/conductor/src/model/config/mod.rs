@@ -12,6 +12,7 @@
 //!   is now `model::config`.
 
 use std::collections::BTreeMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,18 @@ pub struct ImpureTimestamp {
     pub epoch_seconds: u64,
     /// Nanoseconds within `epoch_seconds`, in range `0..=999_999_999`.
     pub subsec_nanos: u32,
+}
+
+impl ImpureTimestamp {
+    /// Returns an `ImpureTimestamp` representing the current system time.
+    ///
+    /// Falls back to `UNIX_EPOCH` when the system clock is set before the
+    /// epoch (extremely unlikely in practice).
+    #[must_use]
+    pub fn now() -> Self {
+        let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        Self { epoch_seconds: duration.as_secs(), subsec_nanos: duration.subsec_nanos() }
+    }
 }
 
 /// Runtime storage path defaults persisted in user/machine config documents.

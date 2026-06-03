@@ -50,6 +50,20 @@ where
             .get_or_try_init(|| async { node::spawn_conductor_actor(self.cas.clone()).await })
             .await
     }
+
+    /// Runs instance GC with an optional TTL override.
+    ///
+    /// When `ttl_override` is `None`, the state store's configured TTL is used;
+    /// if neither is set the call is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the conductor actor; returns an error when RPC delivery
+    /// or GC/persistence fails in the state store.
+    pub async fn run_gc(&self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
+        let client = self.actor_client().await?;
+        client.run_gc(ttl_override).await
+    }
 }
 
 #[async_trait]
@@ -117,8 +131,8 @@ mod tests {
 
     use crate::api::{ConductorApi, StateMutationOptions};
     use crate::model::config::{
-        OutputCaptureSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
-        encode_state_document, encode_user_document,
+        ImpureTimestamp, OutputCaptureSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
+        UserNickelDocument, encode_state_document, encode_user_document,
     };
     use crate::model::state::{OrchestrationState, OutputRef, PersistenceFlags, ToolCallInstance};
 
@@ -198,7 +212,7 @@ mod tests {
                         outputs: BTreeMap::new(),
                     },
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp { epoch_seconds: 42, subsec_nanos: 0 },
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([(
                         "result".to_string(),
@@ -253,7 +267,7 @@ mod tests {
                     tool_name: "missing@1.0.0".to_string(),
                     metadata: ToolSpec::default(),
                     impure_timestamp: None,
-                    last_used: None,
+                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

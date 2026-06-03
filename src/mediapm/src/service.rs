@@ -1687,7 +1687,7 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: Some(timestamp),
-            last_used: None,
+            last_used: super::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "result".to_string(),
@@ -1713,7 +1713,7 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: None,
-            last_used: None,
+            last_used: super::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         };
@@ -1732,6 +1732,7 @@ mod tests {
             tool_name: "tool-b".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: None,
+            last_used: mediapm_conductor::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         };
