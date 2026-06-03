@@ -54,12 +54,12 @@ atomic commits, use this stash-first workflow:
    hook sees a clean working tree.
    d. `git commit -m "type(scope): precise message"` — commit only
    staged changes in a clean tree.
-      - **If the commit fails because hooks modified staged files** (e.g.,
-        `cargo fmt` auto-fixed formatting): the hook-produced changes are
-        now unstaged modifications. Stage them (`git add <modified-files>`)
-        and retry step 3d. Do NOT retry without staging first — the hook
-        will produce the same modifications and fail identically.
-   e. `git stash list` — verify stash state is as expected.
+   - **If the commit fails because hooks modified staged files** (e.g.,
+     `cargo fmt` auto-fixed formatting): the hook-produced changes are
+     now unstaged modifications. Stage them (`git add <modified-files>`)
+     and retry step 3d. Do NOT retry without staging first — the hook
+     will produce the same modifications and fail identically.
+     e. `git stash list` — verify stash state is as expected.
 4. After all commits are created, `git stash pop` any remaining leftovers.
 
 ### Hard rules
