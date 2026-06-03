@@ -235,6 +235,9 @@ pub struct ToolCallInstanceV1 {
     /// Optional machine-managed impurity timestamp.
     #[serde(default)]
     pub impure_timestamp: Option<ImpureTimestampV1>,
+    /// Optional last-use timestamp for GC ordering.
+    #[serde(default)]
+    pub last_used: Option<ImpureTimestampV1>,
     /// Resolved inputs.
     #[serde(default)]
     pub inputs: BTreeMap<String, ResolvedInputV1>,

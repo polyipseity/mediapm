@@ -197,6 +197,10 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),
+            last_used: versioned.last_used.map(|timestamp| ImpureTimestamp {
+                epoch_seconds: timestamp.epoch_seconds,
+                subsec_nanos: timestamp.subsec_nanos,
+            }),
             inputs: versioned
                 .inputs
                 .into_iter()
@@ -212,6 +216,10 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
             tool_name: runtime.tool_name,
             metadata: tool_metadata_iso().to(runtime.metadata),
             impure_timestamp: runtime.impure_timestamp.map(|timestamp| latest::ImpureTimestamp {
+                epoch_seconds: timestamp.epoch_seconds,
+                subsec_nanos: timestamp.subsec_nanos,
+            }),
+            last_used: runtime.last_used.map(|timestamp| latest::ImpureTimestamp {
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),

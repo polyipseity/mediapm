@@ -190,6 +190,13 @@ pub struct ToolCallInstance {
     /// config declarations.
     #[serde(default)]
     pub impure_timestamp: Option<ImpureTimestamp>,
+    /// Optional timestamp of last use for GC ordering.
+    ///
+    /// When `None`, the instance is treated as timeless (not yet tracked by GC).
+    /// Runtime sets this on every instance insert or update so stale instances
+    /// can be reclaimed by the configurable TTL GC sweep.
+    #[serde(default)]
+    pub last_used: Option<ImpureTimestamp>,
     /// Resolved inputs participating in cache identity.
     pub inputs: BTreeMap<String, ResolvedInput>,
     /// Captured output CAS refs and effective persistence policies.
@@ -212,6 +219,23 @@ pub struct OrchestrationState {
 impl Default for OrchestrationState {
     fn default() -> Self {
         Self { version: versions::latest_state_version(), instances: BTreeMap::new() }
+    }
+}
+
+impl OrchestrationState {
+    /// Removes instances whose `last_used` is before `cutoff`.
+    ///
+    /// Instances with `last_used == None` are preserved (backward-compat with
+    /// state written before the field existed).
+    pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
+        self.instances.retain(|_, instance| {
+            instance.last_used.map_or(true, |lu| {
+                // Compare epoch_seconds first, then subsec_nanos.
+                lu.epoch_seconds > cutoff.epoch_seconds
+                    || (lu.epoch_seconds == cutoff.epoch_seconds
+                        && lu.subsec_nanos >= cutoff.subsec_nanos)
+            })
+        });
     }
 }
 

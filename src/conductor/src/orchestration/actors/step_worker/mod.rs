@@ -336,6 +336,7 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: resolved_inputs.clone(),
                 outputs,
+                last_used: None,
             }
         } else {
             ToolCallInstance {
@@ -344,6 +345,7 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: resolved_inputs.clone(),
                 outputs: BTreeMap::new(),
+                last_used: None,
             }
         };
 
