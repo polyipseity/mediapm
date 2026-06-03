@@ -5,6 +5,7 @@
 //! Keeping path decisions in one place prevents accidental drift between CLI,
 //! sync service, and tests.
 
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
 use crate::config::MediaRuntimeStorage;
@@ -52,7 +53,7 @@ impl MediaPmPaths {
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
-        let tmp_dir = runtime_root.join("tmp");
+        let tmp_dir = default_runtime_tmp_dir(&root_dir);
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
@@ -146,7 +147,7 @@ impl MediaPmPaths {
             .as_deref()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = runtime_root.join("tmp");
+        let tmp_dir = default_runtime_tmp_dir(&self.root_dir);
 
         let conductor_user_ncl = runtime_storage
             .conductor_config
@@ -210,6 +211,19 @@ impl MediaPmPaths {
     }
 }
 
+/// Returns an OS-backed temporary directory unique to this workspace.
+///
+/// Uses the workspace root path to derive a deterministic subdirectory name
+/// under the system temp dir, ensuring concurrent runs on different workspaces
+/// never collide on staging paths.
+#[must_use]
+fn default_runtime_tmp_dir(root_dir: &Path) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root_dir.hash(&mut hasher);
+    let key = format!("{:016x}", hasher.finish());
+    std::env::temp_dir().join(format!("mediapm-{key}"))
+}
+
 /// Resolves one path value against a base directory unless it is absolute.
 #[must_use]
 fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
@@ -221,23 +235,25 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
 mod tests {
     use crate::config::MediaRuntimeStorage;
 
-    use super::MediaPmPaths;
+    use super::{MediaPmPaths, default_runtime_tmp_dir};
 
     /// Ensures default runtime paths keep state under `.mediapm` while tmp
-    /// uses runtime-rooted temp storage and library remains config-rooted.
+    /// uses OS-backed temp storage with per-workspace unique path and library
+    /// remains config-rooted.
     #[test]
     fn default_paths_use_dot_mediapm_root() {
         let root = tempfile::tempdir().expect("tempdir");
         let paths = MediaPmPaths::from_root(root.path());
+        let expected_tmp_dir = default_runtime_tmp_dir(root.path());
 
         assert_eq!(paths.runtime_root, root.path().join(".mediapm"));
         assert_eq!(paths.hierarchy_root_dir, root.path());
-        assert_eq!(paths.mediapm_tmp_dir, root.path().join(".mediapm").join("tmp"));
+        assert_eq!(paths.mediapm_tmp_dir, expected_tmp_dir.clone());
         assert_eq!(
             paths.conductor_state_config,
             root.path().join(".mediapm").join("state.conductor.ncl")
         );
-        assert_eq!(paths.conductor_tmp_dir, root.path().join(".mediapm").join("tmp"));
+        assert_eq!(paths.conductor_tmp_dir, expected_tmp_dir);
         assert_eq!(
             paths.conductor_schema_dir,
             root.path().join(".mediapm").join("config").join("conductor")
@@ -291,11 +307,12 @@ mod tests {
         };
 
         let resolved = base.with_runtime_storage(&runtime_storage);
+        let expected_tmp_dir = default_runtime_tmp_dir(root.path());
 
         assert_eq!(resolved.runtime_root, root.path().join(".mediapm-runtime"));
         assert_eq!(resolved.hierarchy_root_dir, root.path().join("library-custom"));
-        assert_eq!(resolved.mediapm_tmp_dir, root.path().join(".mediapm-runtime").join("tmp"));
-        assert_eq!(resolved.conductor_tmp_dir, root.path().join(".mediapm-runtime").join("tmp"));
+        assert_eq!(resolved.mediapm_tmp_dir, expected_tmp_dir.clone());
+        assert_eq!(resolved.conductor_tmp_dir, expected_tmp_dir);
         assert_eq!(resolved.conductor_schema_dir, root.path().join("schemas/conductor"));
         assert_eq!(
             resolved.conductor_user_ncl,
