@@ -47,6 +47,7 @@ use crate::orchestration::protocol::{
 };
 mod template;
 pub(crate) mod tool_content_cache;
+use tool_content_cache::ToolCacheReadGuard;
 
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
@@ -379,7 +380,7 @@ where
             // executed from its stable persistent cache path rather than from
             // the per-step sandbox hard-link, avoiding repeated macOS
             // Gatekeeper/XProtect per-path security scans on every step.
-            let payload_dir = self
+            let (payload_dir, cache_guard) = self
                 .materialize_tool_content_map(
                     &request.step.tool,
                     &tool.tool_content_map,
@@ -400,6 +401,7 @@ where
                     execution_cwd,
                     &request.outermost_config_dir,
                     payload_dir.as_deref(),
+                    cache_guard,
                 )
                 .await?;
             phase_timings.execution_ms = execution_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1178,6 +1180,7 @@ where
         tool_cwd: &Path,
         outermost_config_dir: &Path,
         payload_dir: Option<&Path>,
+        _cache_guard: Option<ToolCacheReadGuard>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         match process {
             ResolvedProcessExecution::Executable { executable, args, env_vars, success_codes } => {
@@ -1188,6 +1191,7 @@ where
                     success_codes,
                     tool_cwd,
                     payload_dir,
+                    _cache_guard,
                 )
                 .await
             }
@@ -1247,6 +1251,7 @@ where
         success_codes: &BTreeSet<i32>,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
+        _cache_guard: Option<ToolCacheReadGuard>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         let executable_timeout = Self::resolve_executable_timeout_duration()?;
 
@@ -1257,6 +1262,7 @@ where
             success_codes,
             tool_cwd,
             payload_dir,
+            _cache_guard,
             executable_timeout,
         )
         .await
@@ -1328,6 +1334,7 @@ where
         success_codes: &BTreeSet<i32>,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
+        _cache_guard: Option<ToolCacheReadGuard>,
         executable_timeout: Duration,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         if executable_name.trim().is_empty() {
@@ -1460,11 +1467,11 @@ where
         resolved_process: &ResolvedProcessExecution,
         tool_cwd: &Path,
         tools_dir: &Path,
-    ) -> Result<Option<PathBuf>, ConductorError> {
+    ) -> Result<(Option<PathBuf>, Option<ToolCacheReadGuard>), ConductorError> {
         if tool_content_map.is_empty() {
-            return Ok(None);
+            return Ok((None, None));
         }
-        let (payload_dir, _cache_guard) = tool_content_cache::prepare_tool_content_cache(
+        let (payload_dir, guard) = tool_content_cache::prepare_tool_content_cache(
             tools_dir,
             tool_id,
             tool_content_map,
@@ -1482,14 +1489,14 @@ where
             let normalized =
                 self.normalized_relative_tool_path(executable, "tool process executable")?;
             if payload_dir.join(&normalized).is_file() {
-                return Ok(Some(payload_dir));
+                return Ok((Some(payload_dir), Some(guard)));
             }
         }
 
         tool_content_cache::link_payload_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
             ConductorError::Workflow(format!("materializing tool content sandbox: {err}"))
         })?;
-        Ok(Some(payload_dir))
+        Ok((Some(payload_dir), Some(guard)))
     }
 
     /// Executes one builtin implementation and returns synthetic stdout/stderr.
