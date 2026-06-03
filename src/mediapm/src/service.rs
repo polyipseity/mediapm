@@ -1222,6 +1222,10 @@ where
         )
         .await?;
 
+        if !report.updated_tool_ids.is_empty() {
+            eprintln!("[mediapm] tool id(s) updated: {}", report.updated_tool_ids.join(", "));
+        }
+
         Ok((
             ToolsSyncSummary {
                 added_tools: report.added_tool_ids.len(),
