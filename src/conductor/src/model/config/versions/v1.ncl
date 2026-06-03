@@ -319,6 +319,10 @@ let RuntimeStorageV1 = {
   # host platform entry from this map and merges those names after defaults
   # with case-insensitive de-duplication.
   inherited_env_vars | PlatformInheritedEnvVarsV1 | optional,
+  # ||| Optional instance GC time-to-live in seconds.
+  # ||| Instances older than this value are pruned on state persistence.
+  # ||| When omitted, instance GC is disabled.
+  instance_ttl_seconds | IntegerNumberV1 | optional,
 }
 in
 

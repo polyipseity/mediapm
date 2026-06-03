@@ -123,6 +123,13 @@ pub struct RuntimeStorageConfig {
     /// with case-insensitive deduplication.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
+    /// Optional instance GC time-to-live in seconds.
+    ///
+    /// When set, orchestration instances whose `last_used` timestamp is older
+    /// than this many seconds are removed on every state persistence cycle.
+    /// When `None`, instance GC is disabled (instances persist indefinitely).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_ttl_seconds: Option<u64>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by
@@ -198,6 +205,7 @@ impl RuntimeStorageConfig {
             && self.cas_store_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.instance_ttl_seconds.is_none()
     }
 
     /// Returns inherited runtime environment names merged with host defaults.

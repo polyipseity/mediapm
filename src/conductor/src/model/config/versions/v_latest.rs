@@ -337,6 +337,9 @@ pub(crate) struct RuntimeStorageLatest {
     /// platform.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
+    /// Optional instance GC time-to-live in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) instance_ttl_seconds: Option<u64>,
 }
 
 impl RuntimeStorageLatest {
@@ -348,6 +351,7 @@ impl RuntimeStorageLatest {
             && self.cas_store_dir.is_none()
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
+            && self.instance_ttl_seconds.is_none()
     }
 }
 

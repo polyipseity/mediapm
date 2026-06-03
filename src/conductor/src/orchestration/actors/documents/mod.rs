@@ -699,6 +699,7 @@ impl DocumentLoaderActor {
                 .clone()
                 .or_else(|| machine.conductor_schema_dir.clone()),
             inherited_env_vars,
+            instance_ttl_seconds: user.instance_ttl_seconds.or(machine.instance_ttl_seconds),
         })
     }
 
