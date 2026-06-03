@@ -40,6 +40,14 @@ let RuntimeStorageV1 = {
   # ||| Passed through to conductor runtime config.
   # ||| When omitted, GC is left to conductor defaults.
   instance_ttl_seconds | Dyn | optional,
+  # ||| Optional custom reserved-character replacement mapping used by
+  # ||| hierarchy[*].sanitize_names when set to true or a custom mapping.
+  # ||| When omitted, each reserved char defaults to _.
+  path_sanitization | Dyn | optional,
+  # ||| Optional toggle for conductor workflow profiling during managed runs.
+  # ||| When Some(true), conductor writes a per-step timing profile.
+  # ||| When omitted, profiling is disabled.
+  profiler_enabled | Dyn | optional,
 }
 in
 

@@ -85,9 +85,15 @@ pub(crate) struct MediaRuntimeStorageWireV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) env_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) env_generated_file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mediapm_schema_dir: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) instance_ttl_seconds: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) path_sanitization: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profiler_enabled: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
