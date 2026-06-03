@@ -233,6 +233,8 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use crate::config::MediaRuntimeStorage;
 
     use super::{MediaPmPaths, default_runtime_tmp_dir};
@@ -333,5 +335,114 @@ mod tests {
         assert_eq!(resolved.env_file, root.path().join("state").join("custom.env"));
         assert_eq!(resolved.schema_export_dir, Some(root.path().join("schemas/mediapm")));
         assert_eq!(resolved.tools_dir, root.path().join(".mediapm-runtime").join("tools"));
+    }
+
+    /// Ensures overriding only `mediapm_dir` relocates all runtime-dependent
+    /// paths while leaving config-rooted paths (conductor config files,
+    /// hierarchy root) at their defaults.
+    #[test]
+    fn mediapm_dir_override_relocates_all_runtime_dependent_paths() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let base = MediaPmPaths::from_root(root.path());
+        let runtime_storage = MediaRuntimeStorage {
+            mediapm_dir: Some(".custom-mediapm".to_string()),
+            ..MediaRuntimeStorage::default()
+        };
+
+        let resolved = base.with_runtime_storage(&runtime_storage);
+        let expected_tmp_dir = default_runtime_tmp_dir(root.path());
+
+        // runtime-root paths use the overridden mediapm_dir
+        let expected_runtime_root = root.path().join(".custom-mediapm");
+        assert_eq!(resolved.runtime_root, expected_runtime_root);
+        assert_eq!(resolved.tools_dir, expected_runtime_root.join("tools"));
+        assert_eq!(
+            resolved.conductor_state_config,
+            expected_runtime_root.join("state.conductor.ncl")
+        );
+        assert_eq!(resolved.mediapm_state_ncl, expected_runtime_root.join("state.ncl"));
+        assert_eq!(resolved.env_file, expected_runtime_root.join(".env"));
+        assert_eq!(resolved.env_generated_file, expected_runtime_root.join(".env.generated"));
+        assert_eq!(
+            resolved.conductor_schema_dir,
+            expected_runtime_root.join("config").join("conductor")
+        );
+        assert_eq!(
+            resolved.schema_export_dir,
+            Some(expected_runtime_root.join("config").join("mediapm"))
+        );
+        assert_eq!(resolved.workspace_cache_dir(), expected_runtime_root.join("cache"));
+        assert_eq!(
+            resolved.workspace_cache_store_dir(),
+            expected_runtime_root.join("cache").join("store")
+        );
+
+        // config-rooted paths remain at defaults
+        assert_eq!(resolved.mediapm_ncl, root.path().join("mediapm.ncl"));
+        assert_eq!(resolved.conductor_user_ncl, root.path().join("mediapm.conductor.ncl"));
+        assert_eq!(
+            resolved.conductor_machine_ncl,
+            root.path().join("mediapm.conductor.machine.ncl")
+        );
+        assert_eq!(resolved.hierarchy_root_dir, root.path());
+
+        // tmp dirs unchanged
+        assert_eq!(resolved.mediapm_tmp_dir, expected_tmp_dir);
+        assert_eq!(resolved.conductor_tmp_dir, expected_tmp_dir);
+    }
+
+    /// Ensures an absolute `mediapm_dir` path is used as-is without
+    /// resolving against the config directory.
+    #[test]
+    fn mediapm_dir_absolute_resolves_correctly() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let base = MediaPmPaths::from_root(root.path());
+        let runtime_storage = MediaRuntimeStorage {
+            mediapm_dir: Some("/custom/absolute/mediapm".to_string()),
+            ..MediaRuntimeStorage::default()
+        };
+
+        let resolved = base.with_runtime_storage(&runtime_storage);
+
+        assert_eq!(resolved.runtime_root, PathBuf::from("/custom/absolute/mediapm"));
+        assert_eq!(resolved.tools_dir, PathBuf::from("/custom/absolute/mediapm").join("tools"));
+        assert_eq!(
+            resolved.conductor_state_config,
+            PathBuf::from("/custom/absolute/mediapm").join("state.conductor.ncl")
+        );
+    }
+
+    /// Ensures `mediapm_dir = None` preserves the default `.mediapm`
+    /// runtime_root even when other runtime-storage fields are overridden.
+    #[test]
+    fn mediapm_dir_none_preserves_default_runtime_root_with_other_overrides() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let base = MediaPmPaths::from_root(root.path());
+        let runtime_storage = MediaRuntimeStorage {
+            mediapm_dir: None,
+            conductor_state_config: Some("overridden/state.conductor.ncl".to_string()),
+            env_file: Some("overridden/.env".to_string()),
+            ..MediaRuntimeStorage::default()
+        };
+
+        let resolved = base.with_runtime_storage(&runtime_storage);
+
+        // runtime_root stays as the .mediapm default
+        assert_eq!(resolved.runtime_root, root.path().join(".mediapm"));
+        assert_eq!(resolved.tools_dir, root.path().join(".mediapm").join("tools"));
+
+        // overridden fields take effect
+        assert_eq!(
+            resolved.conductor_state_config,
+            root.path().join("overridden").join("state.conductor.ncl")
+        );
+        assert_eq!(resolved.env_file, root.path().join("overridden").join(".env"));
+
+        // non-overridden fields stay at defaults
+        assert_eq!(resolved.mediapm_state_ncl, root.path().join(".mediapm").join("state.ncl"));
+        assert_eq!(
+            resolved.conductor_schema_dir,
+            root.path().join(".mediapm").join("config").join("conductor")
+        );
     }
 }

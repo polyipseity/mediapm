@@ -272,6 +272,45 @@ async fn sync_tools_skips_schema_export_when_runtime_schema_dir_is_null() {
     assert!(conductor_schema_dir.join("v1.ncl").exists());
 }
 
+/// Ensures sync bootstraps state files inside a custom `mediapm_dir`
+/// instead of the default `.mediapm` directory.
+///
+/// Service paths (`service.paths()`) remain at the `from_root()` default;
+/// the overridden effective paths are computed internally by
+/// `sync_tools_from_document`.  This test verifies that files land in the
+/// custom directory by checking the filesystem directly.
+#[tokio::test]
+async fn sync_tools_bootstraps_state_files_in_custom_mediapm_dir() {
+    let root = tempdir().expect("tempdir");
+    let service = MediaPmService::new_in_memory_at_with_runtime_storage_overrides(
+        root.path(),
+        MediaRuntimeStorage {
+            mediapm_dir: Some(".custom-mediapm".to_string()),
+            ..MediaRuntimeStorage::default()
+        },
+    );
+
+    let summary = service.sync_tools().await.expect("tool sync");
+
+    assert_eq!(summary.added_tools, 0);
+    assert_eq!(summary.updated_tools, 0);
+    assert_eq!(summary.unchanged_tools, 0);
+
+    let custom_root = root.path().join(".custom-mediapm");
+    // Runtime env scaffolding (created by sync_tools)
+    assert!(custom_root.join(".env").exists());
+    assert!(custom_root.join(".env.generated").exists());
+    assert!(custom_root.join(".gitignore").exists());
+
+    // The default .mediapm directory must NOT have been created
+    assert!(!root.path().join(".mediapm").exists());
+
+    // Config files live at the workspace root, not inside the runtime dir
+    assert!(root.path().join("mediapm.ncl").exists());
+    assert!(root.path().join("mediapm.conductor.ncl").exists());
+    assert!(root.path().join("mediapm.conductor.machine.ncl").exists());
+}
+
 /// Ensures local hierarchy preset insertion is idempotent for one
 /// `(media, folder)` target and emits the expected folder tree.
 #[tokio::test]
