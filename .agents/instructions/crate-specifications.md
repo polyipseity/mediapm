@@ -446,6 +446,18 @@ entry is unlocked between exclusive (write) and shared (read) access.
 platforms, `ToolCacheReadGuard` is a no-op that always succeeds — no
 cross-process race protection is provided.
 
+**Sync-time stale-entry pruning**: When `mediapm sync` reconciles desired
+tools and replaces a tool (e.g. due to companion dependency changes), the
+old tool ID is captured in `ToolSyncReport.replaced_tool_ids`. The
+`prune_unmanaged_tool_artifacts` function in `lifecycle.rs` iterates these
+replaced IDs, sanitizes each via `sanitize_dir_name()` (mirroring the
+conductor's `sanitize_tool_id` rules), and removes the corresponding
+`<tools_dir>/<sanitized_id>/` directory via `std::fs::remove_dir_all`. This
+ensures stale tool content cache entries do not persist after a tool
+identity change, so subsequent `sync` invocations (with incomplete steps
+that now have `impure_timestamp = None`) re-materialize from fresh cache
+entries.
+
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)
 

@@ -32,8 +32,10 @@ pub(crate) use workflows::resolve_media_variant_output_binding;
 pub struct ToolSyncReport {
     /// Tool ids newly inserted into conductor machine config.
     pub added_tool_ids: Vec<String>,
-    /// Tool ids promoted/replaced due desired version change.
+    /// New tool ids promoted/replaced due to desired version change.
     pub updated_tool_ids: Vec<String>,
+    /// Previous tool ids that were replaced (one per `updated_tool_ids` entry).
+    pub replaced_tool_ids: Vec<String>,
     /// Tool ids that already matched desired state.
     pub unchanged_tool_ids: Vec<String>,
     /// Non-fatal reconciliation notices.

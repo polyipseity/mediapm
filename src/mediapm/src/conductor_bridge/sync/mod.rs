@@ -368,8 +368,9 @@ pub(crate) async fn reconcile_desired_tools(
         );
         lock.active_tools.insert(name.clone(), desired_tool_id.clone());
 
-        if existing_active.is_some() {
+        if let Some(old_tool_id) = existing_active {
             report.updated_tool_ids.push(desired_tool_id);
+            report.replaced_tool_ids.push(old_tool_id);
         } else {
             report.added_tool_ids.push(desired_tool_id);
         }
