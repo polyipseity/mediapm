@@ -14,8 +14,6 @@
 //!   never import `versions::vX` directly.
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 
-use std::collections::BTreeMap;
-
 use fp_library::brands::RcBrand;
 use fp_library::types::optics::IsoPrime;
 use serde_json::Value;
@@ -175,11 +173,22 @@ pub(crate) fn decode_mediapm_document_value(value: Value) -> Result<MediaPmDocum
 
     let state = latest::version_iso().from(migrated);
 
-    let mut object = serde_json::Map::new();
+    // Serialize typed state, then inject the version marker back.
+    let mut object = serde_json::to_value(&state)
+        .map_err(|err| {
+            MediaPmError::Serialization(format!(
+                "serializing typed mediapm.ncl v{} state to JSON: {err}",
+                latest::VERSION
+            ))
+        })?
+        .as_object()
+        .cloned()
+        .ok_or_else(|| {
+            MediaPmError::Serialization(
+                "decoding mediapm.ncl value: typed state must be a top-level object".to_string(),
+            )
+        })?;
     object.insert("version".to_string(), Value::from(latest::VERSION));
-    for (key, value) in state.payload {
-        object.insert(key, value);
-    }
 
     serde_json::from_value(Value::Object(object)).map_err(|err| {
         MediaPmError::Serialization(format!(
@@ -194,6 +203,7 @@ pub(crate) fn encode_mediapm_document_value(
 ) -> Result<Value, MediaPmError> {
     let _ = dispatch_nickel_version(document.version)?;
 
+    // Serialize runtime document to JSON, then separate version from payload.
     let value = serde_json::to_value(document)
         .map_err(|err| MediaPmError::Serialization(format!("encoding mediapm.ncl value: {err}")))?;
     let mut object = value.as_object().cloned().ok_or_else(|| {
@@ -202,9 +212,16 @@ pub(crate) fn encode_mediapm_document_value(
         )
     })?;
     let _ = object.remove("version");
-    let latest_state =
-        latest::State { payload: object.into_iter().collect::<BTreeMap<String, Value>>() };
-    let envelope = latest::version_iso().to(latest_state);
+
+    // Build typed state from raw JSON object fields — serde handles field-level
+    // deserialization and validation.
+    let state: latest::State = serde_json::from_value(Value::Object(object)).map_err(|err| {
+        MediaPmError::Serialization(format!(
+            "encoding mediapm.ncl value: building typed state from runtime fields: {err}"
+        ))
+    })?;
+
+    let envelope = latest::version_iso().to(state);
     serde_json::to_value(envelope)
         .map_err(|err| MediaPmError::Serialization(format!("encoding mediapm.ncl value: {err}")))
 }
