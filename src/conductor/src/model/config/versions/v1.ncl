@@ -28,7 +28,7 @@ in
 # ||| Nickel numbers are floating-point; this predicate guards integer-only
 # ||| fields such as process success exit codes.
 let IntegerNumberV1 =
-  std.contract.from_predicate (fun value => std.is_number value && value == std.number.floor value)
+  std.contract.from_predicate (fun value => std.is_number value && std.number.is_integer value)
 in
 
 # ||| Timezone-independent impure execution timestamp.
@@ -261,12 +261,12 @@ in
 # ||| `max_concurrent_calls` controls execution scheduling only; it does not
 # ||| participate in tool identity metadata/dedup keys.
 let ToolConfigV1 = {
-  # Keep this dynamic in Nickel and enforce `-1` or positive integer in Rust
-  # validation so sentinel semantics stay stable across evaluators.
-  max_concurrent_calls | Dyn | optional,
-  # Keep this dynamic in Nickel and enforce `-1` or non-negative integer in
-  # Rust validation so retry semantics stay stable across evaluators.
-  max_retries | Dyn | optional,
+  # Enforce `-1` or positive integer in Rust validation; integer contract
+  # catches non-number violations earlier.
+  max_concurrent_calls | IntegerNumberV1 | optional,
+  # Enforce `-1` or non-negative integer in Rust validation; integer contract
+  # catches non-number violations earlier.
+  max_retries | IntegerNumberV1 | optional,
   # Optional human-facing note for runtime config context.
   # This field is informational only and does not affect runtime identity.
   description | String | optional,
@@ -340,6 +340,9 @@ let NickelDocumentV1 = {
   workflows | { _ : WorkflowSpecV1 } | optional,
   tool_configs | { _ : ToolConfigV1 } | optional,
   impure_timestamps | { _ : { _ : ImpureTimestampV1 } } | optional,
+  # Orchestration state pointer: CAS hash string when set, or null for unset.
+  # Dyn is required because null and String are unrelated types in Nickel's
+  # contract system; Rust-side Option<Hash> handles both cases.
   state_pointer | Dyn | optional,
 }
 in
