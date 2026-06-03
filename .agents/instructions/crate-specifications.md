@@ -306,39 +306,39 @@ For comprehensive details, refer to the following specifications collected from 
 **Key Takeaways**:
 - **3-Document Pattern**: user (intent), machine (setup), state (volatile)
 - **Public Trait**: `ConductorApi` with workflow execution, state inspection, diagnostics
-- **Orchestration**: Actor-based (ractor); step-stream batch dispatch (`StreamBatch`/`StreamStep`/`StepOutcome`); adaptive cost model
+- **Orchestration**: Actor-based (ractor); dependency-stream dispatch with inline coordination (`WorkflowDepState` + `FuturesUnordered`); round-robin worker assignment; adaptive cost model
 - **State Model**: `OrchestrationState` with tool call instances; persisted in CAS
 - **Versioning**: Explicit version markers; optics-based migration
 - **Performance**: < 10ms planning; adaptive scheduler for load balancing
 
-**Step dispatch and cache probe**:
-- Coordinator collects ready steps across active workflows into a `StreamBatch`
-  (`Vec<StreamStep>`), where each `StreamStep` carries `workflow_name`, `step_id`,
-  `step`, and `outputs`.
-- The execution hub dispatches these steps concurrently via `execute_batch`,
-  bounded by a semaphore, enabling cross-workflow parallelism within a batch.
-- `StepOutcome { step_id, result }` outcomes are routed back to individual
-  workflow states.
-- The step-worker cache probe uses `cas.exists_many(check_hashes)` →
-  `CasExistenceBitmap` (backed by `BitVec`) instead of sequential per-output
-  `cas.exists()` calls, reducing CAS round-trips from O(output_count) to O(1).
+**Step dispatch (dependency-stream model)**:
+- Coordinator builds per-workflow dependency graphs (`WorkflowDepState` with
+  `remaining_deps` + `dependents` + `step_outputs`) during Phase 1 — deduplicates
+  shared dependent steps, detects cycles, validates all referenced steps exist.
+- Phase 2 dispatches via a single `FuturesUnordered` loop across all workflows:
+  seeds a `global_ready_queue` with zero-dependency steps, assigns workers
+  round-robin, processes completions (updates `remaining_deps`, enqueues newly-
+  ready dependents), and handles impure timestamp planning inline.
+- The old `execution_hub.rs` actor is eliminated — dispatch and completion
+  processing are inline in `coordinator.rs`; the protocol-level
+  `StreamBatch`/`StreamStep`/`StepOutcome` types are removed.
+- Step-worker cache probe still uses `cas.exists_many(check_hashes)` →
+  `CasExistenceBitmap` (backed by `BitVec`) for O(1) batch existence checks.
 
-**Step-stream dedup and trace semantics**:
+**Dedup and trace semantics**:
 - Steps from multiple workflows started simultaneously do not see each other's
   in-flight cache entries, so naturally-identical steps across workflows may
   both execute (`executed_instances=N`) instead of one caching off the other
   (`executed_instances=1`, `cached_instances=N-1`). This is inherent to
   parallel dispatch, not a bug.
-- Step-stream dispatch bypasses `plan_level()` and `begin_level_metrics()`. The
-  scheduler's `runtime_diagnostics()` must therefore fall back to
-  `max(self.worker_pool_size, worker_metrics.len())` when
-  `begin_level_metrics()` was never called (worker_pool_size defaults to 0).
-- `assigned_steps_total` is incremented in the step-stream path via
-  `record_completion()` using `saturating_add(1)`, since the stream dispatch
-  does not go through the sequential assignment tracking.
-- Trace events differ by dispatch path: `LevelPlanned` and `StepAssigned` are
-  only emitted by the legacy `plan_level` / `execute_level` sequential path.
-  The step-stream path emits only `StepCompleted` for completed step outcomes.
+- The dependency-stream model has no `plan_level()` or `begin_level_metrics()`
+  (both removed). The scheduler's `runtime_diagnostics()` falls back to
+  `max(self.worker_pool_size, worker_metrics.len())` (worker_pool_size
+  defaults to 0).
+- `assigned_steps_total` is incremented via `record_completion()` using
+  `saturating_add(1)` at each step completion.
+- Trace events: `LevelPlanned` and `StepAssigned` no longer exist (removed
+  with `plan_level`/`execute_level`). Only `StepCompleted` is emitted.
 
 ### Instance Key Lifecycle and Failure Recovery
 
@@ -377,27 +377,33 @@ For comprehensive details, refer to the following specifications collected from 
 - **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
 - **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
-### §16 Workflow Progress Display
+### §16 Worker-Based Progress Display
 
 Conductor uses `pulsebar` (via `MultiProgress`) to display workflow execution
-progress. Each workflow step gets a progress bar. On completion, bars are not
-marked as finished through `finish_success`/`finish_error`; instead, the pattern
-from `provision.rs` is used: `set_message("ready")` or `set_message("failed")`
-(to display the final state) without an explicit finish call. This avoids
-pulsebar's behavior of appending a render-time-clock-based elapsed duration to
-finished rows.
+progress. Unlike the old per-workflow bars, the dependency-stream model uses a
+single `overall_bar` (tracking completed steps across all workflows) plus one
+bar per worker (showing the currently dispatched step or idle status).
 
-- Format strings intentionally omit `{elapsed}` so finished bars show no
-  ticking duration.
-- `bar.finish_error("failed")` → `bar.set_message("failed")` (bars stay in
-  Running state; no finished-line render).
-- `bar.finish_success("ready")` → `bar.set_message("ready")` (similarly avoids
-  the finished-line render).
-- The constant `WORKFLOW_PROGRESS_SETTLE_MS` (75 ms) ensures the background
-  render thread has time to flush final bar states before `MultiProgress` is
-  dropped.
-- Zero-step workflows still create bars (no format string set, handled by
-  pulsebar defaults).
+- **Overall bar**: `total_steps` (sum of all workflow step counts), advanced by
+  `overall_bar.advance(1)` on each successful step completion. Format:
+  `"{msg}  [{bar:20}]  {pos}/{total}"`.
+- **Worker bars**: Each initialized as `worker#{i}: idle`; updated on dispatch
+  to `worker#{i}: → {wf_name}.{step_id}`; reset to idle on completion.
+- On failure, the worker bar is set to `worker#{i}: failed`.
+- After the dispatch loop, `overall_bar` message is set to `"all steps done"`
+  and each worker bar to `"done"`.
+- No `finish_success`/`finish_error` calls — bars stay in Running state.
+  `set_message(...)` + `set_position(...)` is used for all status updates,
+  following the pattern from `provision.rs`. This avoids pulsebar's render-
+  time-clock elapsed display on finished rows.
+- Format strings intentionally omit `{elapsed}` so bars show no ticking
+  duration.
+- Zero-step workflows: `overall_bar` is created with `total_steps.max(1)` so
+  even a zero-step dispatch still renders a bar (no format string special-
+  casing needed).
+- `MultiProgress` is dropped naturally at end of `execute_workflows()` scope;
+  no explicit settle delay is needed (the old `WORKFLOW_PROGRESS_SETTLE_MS`
+  constant from `execution_hub.rs` was removed).
 
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)

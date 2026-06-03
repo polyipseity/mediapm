@@ -1261,12 +1261,12 @@ this guard.
 
 ---
 
-### 4.16 Step-Stream Parallel Dispatch: Cache-Probe Race Across Workflows
+### 4.16 Dependency-Stream: Cache-Probe Race Across Workflows
 
-**Issue**: Step-stream dispatches ready steps from multiple workflows
-simultaneously within a batch (`StreamBatch`). Steps started in parallel do
-not see each other's in-flight cache entries, so identically-keyed outputs may
-both execute instead of one caching off the other.
+**Issue**: The dependency-stream model dispatches ready steps from multiple
+workflows simultaneously (via `FuturesUnordered`). Steps started in parallel
+do not see each other's in-flight cache entries, so identically-keyed outputs
+may both execute instead of one caching off the other.
 
 **Scenario**:
 
@@ -1274,31 +1274,33 @@ both execute instead of one caching off the other.
   (e.g., the same file ingested from the same source URL)
 - Sequential dispatch: A executes, writes to CAS → B probes cache, finds A's
   entries, skips execution → `executed=1, cached=1`
-- Step-stream dispatch: A and B both dispatched simultaneously → neither sees
-  the other's CAS entries → both execute → `executed=2, cached=0`
+- Dependency-stream dispatch: A and B both dispatched simultaneously → neither
+  sees the other's CAS entries → both execute → `executed=2, cached=0`
 
-**Current Spec**: "Coordinator collects ready steps into StreamBatch; execution
-hub dispatches concurrently"
+**Current Spec**: "Coordinator builds per-workflow dependency graphs and
+dispatches via `FuturesUnordered` across all active workflows"
 
 **Gap**: No documentation of this dedup limitation.
 
-**Risk**: Surprise when dedup ratios differ between sequential and step-stream
-paths; tests may assume sequential-like dedup behavior.
+**Risk**: Surprise when dedup ratios differ between sequential and parallel
+dispatch; tests may assume sequential-like dedup behavior.
 
 **Resolution (documented in crate-specifications.md)**:
 
 - This is inherent to parallel dispatch, not a bug.
 - Test expectations for `executed_instances` and `cached_instances` must be
-  computed with parallel semantics: steps in the same batch may both execute
-  if they arrive concurrently.
+  computed with parallel semantics: steps from different workflows at the
+  same readiness level may both execute if they arrive concurrently.
 - The coordinator does **not** perform cross-workflow cache-key dedup before
   dispatch; dedup happens at the per-step cache-probe level and only catches
   entries already written to CAS before the probe.
+- This applies equally to all dispatch ordering: the old `StreamBatch` model
+  had the same limitation, and it's unchanged in the dependency-stream model.
 
 **Questions for Clarification**:
 
-1. Should the coordinator perform a pre-dispatch dedup pass across the
-   `StreamBatch` to eliminate redundant cache probes?
+1. Should the coordinator perform a pre-dispatch cache-key dedup pass before
+   submitting steps to workers?
 2. If yes, what's the dedup key: full output hash set, tool+args identity, or
    workflow-level step identity?
 
@@ -1346,24 +1348,24 @@ when Display delegates transparently.
 
 ---
 
-### 4.18 Scheduler Diagnostics Metrics Fallback for Step-Stream
+### 4.18 Scheduler Diagnostics Metrics Fallback
 
 **Issue**: The scheduler's `runtime_diagnostics()` method reports
 `worker_pool_size` from the `SchedulerService` struct, but this field is only
-set by `begin_level_metrics()`, which is called from `plan_level()` — the
-legacy sequential dispatch path. The step-stream's `execute_stream()` bypasses
-`plan_level()` entirely, so `worker_pool_size` remains 0.
+set by `begin_level_metrics()`, which was called from `plan_level()` — the
+removed legacy sequential dispatch path. The dependency-stream dispatch
+bypasses `plan_level()` entirely, so `worker_pool_size` remains 0.
 
 **Scenario**:
 
-- Conductor is configured to use step-stream dispatch (default)
+- Conductor is configured using the dependency-stream dispatch (the only path)
 - `runtime_diagnostics()` called mid-sync
 - `worker_pool_size` returns 0, making diagnostics misleading
 - Downstream monitoring or test assertions on pool size fail
 
 **Current Spec**: "Scheduler provides worker queue metrics and trace events"
 
-**Gap**: Diagnostics incomplete for step-stream path.
+**Gap**: Diagnostics incomplete for dependency-stream path.
 
 **Resolution**:
 
@@ -1377,74 +1379,68 @@ legacy sequential dispatch path. The step-stream's `execute_stream()` bypasses
 
 **Questions for Clarification**:
 
-1. Should the step-stream path also call `begin_level_metrics()` with an
-   appropriate pool size derived from execution hub configuration, instead of
-   relying on a fallback?
-2. Should the fallback be gated behind a more specific flag (e.g., an explicit
-   `step_stream_used` boolean) rather than `worker_pool_size == 0`?
+None (the fallback is sufficient for the single dispatch path).
 
 ---
 
-### 4.19 Trace Event Completeness Per Dispatch Path
+### 4.19 Trace Event Completeness
 
-**Issue**: The legacy sequential dispatch path (`plan_level` → `execute_level`)
-emits `LevelPlanned` and `StepAssigned` trace events during planning. The
-step-stream dispatch path (`execute_stream` → `execute_batch`) bypasses
-planning entirely and only emits `StepCompleted` traces as steps finish.
-Code that reads the trace ring buffer and expects `LevelPlanned`/`StepAssigned`
-will silently miss those events in step-stream mode.
+**Issue**: The dependency-stream dispatch emits `StepCompleted` trace events as
+steps finish, but does not emit `LevelPlanned` or `StepAssigned` events (these
+were removed with the legacy `plan_level()`/`execute_level()` paths). Code that
+reads the trace ring buffer and expects all three event types will miss them.
 
 **Scenario**:
 
 - Test `diagnostics_include_worker_queue_metrics_and_trace_events` reads the
   trace ring buffer after a workflow runs
-- In step-stream mode, the buffer contains only `StepCompleted` entries
+- In dependency-stream mode, the buffer contains only `StepCompleted` entries
 - Loop that looks for `LevelPlanned`/`StepAssigned` finds none → variables
   remain unset → assertion failures
 
 **Resolution**:
 
 - Trace consumers must be dispatch-path-aware: code that expects all three
-  event types (`LevelPlanned`, `StepAssigned`, `StepCompleted`) only works
-  for the sequential dispatch path.
-- Step-stream consumers should expect only `StepCompleted`.
-- The trace ring buffer is append-only and shared across dispatch modes, so a
-  mixed-session (sequential + step-stream) will contain a superset of both
-  event types.
+  event types (`LevelPlanned`, `StepAssigned`, `StepCompleted`) is only
+  compatible with the removed legacy sequential dispatch.
+- Dependency-stream consumers should expect only `StepCompleted`.
+- The trace ring buffer is append-only and shared, so replaying old sessions
+  against new consumers may still contain legacy events.
 
 **Questions for Clarification**:
 
-1. Should the step-stream path emit synthetic `LevelPlanned` and `StepAssigned`
-   events at logical equivalent points (e.g., when the batch is assembled and
-   when each step is dispatched to the execution hub) for trace compatibility?
+1. Should the dependency-stream path emit synthetic `LevelPlanned` and
+   `StepAssigned` events at logical equivalent points (e.g., when the
+   dependency graph is built and when each step is dispatched to a worker)
+   for trace compatibility?
 
 ---
 
-### 4.20 assigned_steps_total Tracking Gap in Step-Stream
+### 4.20 assigned_steps_total Tracking Gap
 
-**Issue**: In the sequential dispatch path, steps are assigned to workers via
-`assign_step_to_worker()`, which increments `assigned_steps_total` on the
-worker metric. The step-stream path does not call `assign_step_to_worker()`;
-instead, steps are dispatched directly via `execute_batch`. Consequently,
-`assigned_steps_total` remains 0 in step-stream mode unless explicitly
-incremented elsewhere.
+**Issue**: In the removed legacy sequential dispatch path, steps were assigned
+to workers via `assign_step_to_worker()`, which increments `assigned_steps_total`
+on the worker metric. The dependency-stream dispatch does not call
+`assign_step_to_worker()`; instead, steps are dispatched directly via the
+round-robin `workers[next_worker]` assignment. Consequently,
+`assigned_steps_total` remains 0 unless explicitly incremented elsewhere.
 
 **Resolution**:
 
-- `record_completion()` is called for every completed step in the step-stream
-  path and now includes `metric.assigned_steps_total = metric.assigned_steps_total.saturating_add(1)`.
+- `record_completion()` is called for every completed step and includes
+  `metric.assigned_steps_total = metric.assigned_steps_total.saturating_add(1)`.
 - This is a heuristic: `record_completion` is called for each step as it
   finishes, so each completed step retroactively increments the assignment
   counter. In-flight steps that are still running are not counted until they
   complete.
-- For accurate in-flight accounting, the step-stream path would need to call
-  `assign_step_to_worker()` at dispatch time, which is a future enhancement.
+- For accurate in-flight accounting, the dispatch path would need to increment
+  at dispatch time, which is a future enhancement.
 
 **Questions for Clarification**:
 
-1. Should the step-stream path call `assign_step_to_worker()` at dispatch time
-   (before execution) for accurate in-flight metrics, even though the round-robin
-   assignment differs from the sequential scheduler's logic?
+1. Should `dispatch_step_rpc_with_fallback()` increment `assigned_steps_total`
+   before execution (for accurate in-flight metrics), even though the round-robin
+   assignment doesn't go through the scheduler's worker assignment logic?
 
 ---
 
@@ -1605,17 +1601,17 @@ declared (even as a minimal stub) to participate in dependency resolution.
 
 ---
 
-#### §4.24 Workflow progress display
+#### §4.24 Worker-based progress display
 
 | Property | Value |
 |---|---|
 | **Crates** | `mediapm-conductor` |
 | **Files** | `src/conductor/src/orchestration/coordinator.rs` |
 | **Risk** | Finished-bar duration display is deceiving (render-time clock, not per-bar). |
-| **Pre-fix** | Pulsebar `finish_success("ready")` and `finish_error("failed")` rendered finished lines like `✔ ready (Xs)` where `X` was the *render-thread-clock elapsed* since the bar's `start_time`, not the time spent since start of that workflow. Because `MultiProgress` ticks all bars (including finished) at ~20 fps, all finished bars showed nearly the same elapsed value (the render instant), and it kept ticking indefinitely. |
-| **Post-fix** | `{elapsed}` removed from all format strings. `finish_success`/`finish_error` replaced with `set_message` + `set_position` (bars stay in Running state). No duration display on any bar. Follows the pattern set by `provision.rs`. |
-| **Interaction risk** | Removing `{elapsed}` from progress bars means users lose the ability to see how long a workflow has been running. This was an intentional trade-off: the duration display was not reliable enough (render-time clock) to keep, and fixing it would require vendoring/patching pulsebar to add a `finish_time` field to `BarState`. |
-| **Mitigation** | A 75 ms settle delay (`WORKFLOW_PROGRESS_SETTLE_MS`) ensures the final bar states are flushed before `MultiProgress` drop. The settle-constant comment avoids mentioning `finish_success`/`finish_error`. |
+| **Pre-fix (old per-workflow bars in execution_hub.rs)** | Pulsebar `finish_success("ready")` and `finish_error("failed")` rendered finished lines like `✔ ready (Xs)` where `X` was the *render-thread-clock elapsed* since the bar's `start_time`, not the time spent since start of that workflow. Because `MultiProgress` ticks all bars (including finished) at ~20 fps, all finished bars showed nearly the same elapsed value (the render instant), and it kept ticking indefinitely. |
+| **Post-fix (dependency-stream worker-based bars)** | `execution_hub.rs` deleted, replaced by inline dispatch in `coordinator.rs`. Per-workflow bars are replaced by one `overall_bar` (tracking completed step count) plus one bar per worker (showing current step or idle). `{elapsed}` removed from all format strings. No `finish_success`/`finish_error` calls anywhere — all status updates use `set_message` + `set_position`. Bars stay in Running state. Follows the pattern set by `provision.rs`. |
+| **Interaction risk** | Removing `{elapsed}` from progress bars means users lose the ability to see how long a workflow has been running. This was an intentional trade-off: the duration display was not reliable enough (render-time clock) to keep, and fixing it would require vendoring/patching pulsebar to add a `finish_time` field to `BarState`. Worker bars show no per-worker duration either. |
+| **Mitigation** | No explicit settle delay is needed — `MultiProgress` is dropped naturally at end of `execute_workflows()` scope (the old `WORKFLOW_PROGRESS_SETTLE_MS` constant was removed with `execution_hub.rs`). |
 
 ---
 
@@ -2279,13 +2275,13 @@ Does "fail-fast" mean:
 
 **Issue**: Specification states "parallel workflows; bounded worker pool" but details unspecified.
 
-**Current implementation**: The step-stream model now dispatches steps from multiple
-workflows in parallel within the execution hub, not just per-workflow sequential
-execution. The parallelization strategy operates at two levels:
+**Current implementation**: The dependency-stream model dispatches steps from multiple
+workflows in parallel. The parallelization strategy operates at two levels:
 
-1. **Cross-workflow step-stream dispatch**: The coordinator collects ready steps
-   across all active workflows into a `StreamBatch`, and the execution hub's
-   `execute_batch` dispatches them concurrently (bounded by a semaphore).
+1. **Cross-workflow dispatch**: The coordinator builds per-workflow dependency
+   graphs and dispatches all ready steps via `FuturesUnordered`. Steps from
+   different workflows are submitted to a shared worker pool in round-robin
+   order.
 2. **Per-workflow cache probe and execution**: Within each step, the step worker
    probes the CAS using `exists_many` (`CasExistenceBitmap`) in O(1) round-trips
    and executes the tool when cache misses occur.
@@ -2300,8 +2296,8 @@ execution. The parallelization strategy operates at two levels:
 
 **Recommendation**:
 
-- Document parallelization: "Two-level dispatch: cross-workflow step-stream
-  dispatch in the execution hub (`StreamBatch`/`StreamStep`/`StepOutcome`),
+- Document parallelization: "Two-level dispatch: cross-workflow dependency-stream
+  dispatch in the coordinator (`FuturesUnordered` + round-robin worker assignment),
   plus per-workflow step execution with batch cache probe
   (`exists_many`/`CasExistenceBitmap`). Per-file hashing parallelized across
   available workers. Per-file materialization also parallelized. No hash tree;
