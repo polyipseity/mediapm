@@ -49,8 +49,9 @@ atomic commits, use this stash-first workflow:
    b. `git add -p` (or `git add <specific-files>`) — stage **only** the
    changes that belong to this commit. Use interactive hunk selection
    if a single file contains changes for multiple commits.
-   c. `git stash -u` — stash everything that remains unstaged, so the
-   pre-commit hook sees a clean working tree.
+   c. `git stash -u --keep-index` — stash everything that remains
+   unstaged while keeping staged changes intact, so the pre-commit
+   hook sees a clean working tree.
    d. `git commit -m "type(scope): precise message"` — commit only
    staged changes in a clean tree.
    e. `git stash list` — verify stash state is as expected.
