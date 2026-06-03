@@ -74,3 +74,5 @@ atomic commits, use this stash-first workflow:
   every stash operation.
 - **ALWAYS** use `git add -p` for fine-grained separation when one file has
   changes belonging to multiple commits.
+- **NEVER** ask subagents to run git commit. Commit MUST be done by the MAIN
+  agent to prevent race conditions.
