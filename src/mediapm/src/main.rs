@@ -629,6 +629,7 @@ async fn main() -> anyhow::Result<()> {
                                 &uri,
                                 args.recording_id.as_deref(),
                                 map_insert_position(args.insert_position),
+                                false,
                             )
                             .await?
                     }
@@ -639,6 +640,7 @@ async fn main() -> anyhow::Result<()> {
                                 &path,
                                 args.recording_id.as_deref(),
                                 map_insert_position(args.insert_position),
+                                false,
                             )
                             .await?
                     }

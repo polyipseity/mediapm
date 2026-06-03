@@ -228,7 +228,8 @@ where
         uri: &Url,
         recording_id: Option<&str>,
     ) -> Result<String, MediaPmError> {
-        self.add_media_source_with_position(uri, recording_id, AddInsertPosition::Sorted).await
+        self.add_media_source_with_position(uri, recording_id, AddInsertPosition::Sorted, false)
+            .await
     }
 
     /// Adds one online media source to `mediapm.ncl` with one insertion
@@ -248,6 +249,7 @@ where
         uri: &Url,
         recording_id: Option<&str>,
         _position: AddInsertPosition,
+        overwrite: bool,
     ) -> Result<String, MediaPmError> {
         validate_source_uri(uri)?;
 
@@ -331,6 +333,11 @@ where
         } else {
             resolved_online_metadata.description.clone()
         };
+
+        // Do-not-overwrite guard: skip insert when entry exists and overwrite is not requested.
+        if !overwrite && document.media.contains_key(&media_id) {
+            return Ok(media_id);
+        }
 
         document.media.insert(
             media_id.clone(),
@@ -515,8 +522,13 @@ where
         local_path: &Path,
         recording_id: Option<&str>,
     ) -> Result<String, MediaPmError> {
-        self.add_local_source_with_position(local_path, recording_id, AddInsertPosition::Sorted)
-            .await
+        self.add_local_source_with_position(
+            local_path,
+            recording_id,
+            AddInsertPosition::Sorted,
+            false,
+        )
+        .await
     }
 
     /// Adds one local media source to `mediapm.ncl` with one insertion-policy
@@ -537,6 +549,7 @@ where
         local_path: &Path,
         recording_id: Option<&str>,
         _position: AddInsertPosition,
+        overwrite: bool,
     ) -> Result<String, MediaPmError> {
         let absolute = local_path.canonicalize().map_err(|source| MediaPmError::Io {
             operation: "canonicalizing local media path".to_string(),
@@ -575,7 +588,7 @@ where
             None
         };
 
-        let media_id = media_id_from_local_path(&absolute);
+        let media_id = media_id_from_local_path(&hash);
         let LocalSourceMetadata { title, description } = fetch_local_source_metadata(&absolute);
         let source_title = mb
             .as_ref()
@@ -590,6 +603,11 @@ where
             .unwrap_or_else(|| build_local_default_description(&absolute, &source_title));
         let source_extension_with_dot = local_extension_with_dot(&absolute);
         let hash_text = hash.to_string();
+
+        // Do-not-overwrite guard: skip insert when entry exists and overwrite is not requested.
+        if !overwrite && document.media.contains_key(&media_id) {
+            return Ok(media_id);
+        }
 
         document.media.insert(
             media_id.clone(),

@@ -2092,7 +2092,6 @@ dependencies = [
  "musicbrainz_rs",
  "nickel-lang-core",
  "pulsebar",
- "rand",
  "regex",
  "reqwest",
  "same-file",

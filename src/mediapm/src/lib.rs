@@ -34,7 +34,6 @@ use std::path::{Path, PathBuf};
 
 use mediapm_conductor::runtime_env::load_runtime_env_files;
 use mediapm_conductor::{RunWorkflowOptions, RuntimeStoragePaths};
-use rand::Rng as _;
 use url::Url;
 
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
@@ -368,26 +367,6 @@ pub(crate) fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
     }
 }
 
-/// `NanoID` alphabet: URL-safe characters (`A-Za-z0-9_-`), 64 symbols.
-const NANOID_ALPHABET: &[u8; 64] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
-
-/// Generates an 8-character `NanoID` using the thread-local RNG.
-///
-/// The ID is drawn from the 64-symbol URL-safe alphabet and is suitable for
-/// stable user-facing identifiers.  Each call produces an independent,
-/// non-deterministic value; test code that requires determinism must use a
-/// seeded `StdRng` with the `NANOID_ALPHABET` constant directly.
-pub(crate) fn nanoid_8() -> String {
-    let mut rng = rand::rng();
-    (0..8)
-        .map(|_| {
-            let idx = (rng.random::<u8>() & 0x3F) as usize;
-            NANOID_ALPHABET[idx] as char
-        })
-        .collect()
-}
-
 /// Derives a yt-dlp media id from a canonical source URI.
 ///
 /// For `YouTube` (`www.youtube.com` / `youtube.com` / `youtu.be`), the id is
@@ -413,13 +392,13 @@ pub(crate) fn media_id_from_uri(uri: &Url) -> String {
     format!("{host_slug}.{}", &hash[..12])
 }
 
-/// Derives a stable local media id for a new local source registration.
+/// Derives a deterministic local media id from a CAS content hash.
 ///
-/// Each call returns a fresh 8-character `NanoID` so that multiple imports of
-/// different files never collide even when the file names are identical.
+/// Uses the first 12 hex characters of the CAS blake3 hash so the identifier
+/// remains stable across repeated imports of the same file content.
 /// The `local.` prefix makes the id preset visible in config files.
-pub(crate) fn media_id_from_local_path(_path: &Path) -> String {
-    format!("local.{}", nanoid_8())
+pub(crate) fn media_id_from_local_path(hash: &mediapm_cas::Hash) -> String {
+    format!("local.{}", &hash.to_hex()[..12])
 }
 
 /// Merges config-declared runtime storage with service-level overrides.
