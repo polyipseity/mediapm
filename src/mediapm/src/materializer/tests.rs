@@ -1,10 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
-use std::sync::{Mutex, OnceLock};
-
-/// Serialization guard for tests that race on shared tempdir / CAS state.
-static SERIAL_GUARD: OnceLock<Mutex<()>> = OnceLock::new();
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::model::config::ImpureTimestamp;
@@ -630,7 +626,6 @@ fn folder_rename_rules_flatten_nested_yt_dlp_root_sidecars() {
 /// ZIP member file names before final materialization.
 #[tokio::test]
 async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
-    let _guard = SERIAL_GUARD.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let cas_root = paths.root_dir.join(".mediapm").join("store");
@@ -731,7 +726,6 @@ async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
 /// updates preserve previously materialized nested outputs.
 #[tokio::test]
 async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commits_later() {
-    let _guard = SERIAL_GUARD.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let cas_root = paths.root_dir.join(".mediapm").join("store");
@@ -817,7 +811,6 @@ async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commit
 /// directory names.
 #[tokio::test]
 async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() {
-    let _guard = SERIAL_GUARD.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let cas_root = paths.root_dir.join(".mediapm").join("store");
@@ -1033,7 +1026,6 @@ async fn sync_hierarchy_materializes_local_source_from_cas_variant_pointer() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() {
-    let _guard = SERIAL_GUARD.get_or_init(|| Mutex::new(())).lock().unwrap();
     let temp = tempfile::tempdir().expect("tempdir");
     let paths = MediaPmPaths::from_root(temp.path());
     let cas_root = paths.root_dir.join(".mediapm").join("store");

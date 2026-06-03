@@ -52,20 +52,20 @@ impl MediaPmPaths {
     pub fn from_root(root_dir: impl Into<PathBuf>) -> Self {
         let root_dir = root_dir.into();
         let runtime_root = root_dir.join(".mediapm");
-        let default_tmp_dir = default_runtime_tmp_dir();
+        let tmp_dir = runtime_root.join("tmp");
 
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
             conductor_user_ncl: root_dir.join("mediapm.conductor.ncl"),
             conductor_machine_ncl: root_dir.join("mediapm.conductor.machine.ncl"),
             conductor_state_config: runtime_root.join("state.conductor.ncl"),
-            conductor_tmp_dir: default_tmp_dir.clone(),
+            conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
             mediapm_state_ncl: runtime_root.join("state.ncl"),
             env_file: runtime_root.join(".env"),
             env_generated_file: runtime_root.join(".env.generated"),
             schema_export_dir: Some(runtime_root.join("config").join("mediapm")),
-            mediapm_tmp_dir: default_tmp_dir,
+            mediapm_tmp_dir: tmp_dir,
             hierarchy_root_dir: root_dir.clone(),
             tools_dir: runtime_root.join("tools"),
             runtime_root,
@@ -146,7 +146,7 @@ impl MediaPmPaths {
             .as_deref()
             .map_or_else(|| config_dir.to_path_buf(), |raw| resolve_path(config_dir, raw));
 
-        let tmp_dir = default_runtime_tmp_dir();
+        let tmp_dir = runtime_root.join("tmp");
 
         let conductor_user_ncl = runtime_storage
             .conductor_config
@@ -217,34 +217,27 @@ fn resolve_path(base_dir: &Path, raw: &str) -> PathBuf {
     if candidate.is_absolute() { candidate } else { base_dir.join(candidate) }
 }
 
-/// Returns the default OS-backed runtime temp directory.
-#[must_use]
-fn default_runtime_tmp_dir() -> PathBuf {
-    std::env::temp_dir()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::config::MediaRuntimeStorage;
 
-    use super::{MediaPmPaths, default_runtime_tmp_dir};
+    use super::MediaPmPaths;
 
     /// Ensures default runtime paths keep state under `.mediapm` while tmp
-    /// uses OS-backed temp storage and library remains config-rooted.
+    /// uses runtime-rooted temp storage and library remains config-rooted.
     #[test]
     fn default_paths_use_dot_mediapm_root() {
         let root = tempfile::tempdir().expect("tempdir");
         let paths = MediaPmPaths::from_root(root.path());
-        let expected_tmp_dir = default_runtime_tmp_dir();
 
         assert_eq!(paths.runtime_root, root.path().join(".mediapm"));
         assert_eq!(paths.hierarchy_root_dir, root.path());
-        assert_eq!(paths.mediapm_tmp_dir, expected_tmp_dir.clone());
+        assert_eq!(paths.mediapm_tmp_dir, root.path().join(".mediapm").join("tmp"));
         assert_eq!(
             paths.conductor_state_config,
             root.path().join(".mediapm").join("state.conductor.ncl")
         );
-        assert_eq!(paths.conductor_tmp_dir, expected_tmp_dir);
+        assert_eq!(paths.conductor_tmp_dir, root.path().join(".mediapm").join("tmp"));
         assert_eq!(
             paths.conductor_schema_dir,
             root.path().join(".mediapm").join("config").join("conductor")
@@ -301,8 +294,8 @@ mod tests {
 
         assert_eq!(resolved.runtime_root, root.path().join(".mediapm-runtime"));
         assert_eq!(resolved.hierarchy_root_dir, root.path().join("library-custom"));
-        assert_eq!(resolved.mediapm_tmp_dir, default_runtime_tmp_dir());
-        assert_eq!(resolved.conductor_tmp_dir, default_runtime_tmp_dir());
+        assert_eq!(resolved.mediapm_tmp_dir, root.path().join(".mediapm-runtime").join("tmp"));
+        assert_eq!(resolved.conductor_tmp_dir, root.path().join(".mediapm-runtime").join("tmp"));
         assert_eq!(resolved.conductor_schema_dir, root.path().join("schemas/conductor"));
         assert_eq!(
             resolved.conductor_user_ncl,
