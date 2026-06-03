@@ -40,7 +40,7 @@ mediapm-conductor-builtin-archive = { path = "../conductor-builtins/archive", de
 mediapm-conductor-builtin-export = { path = "../conductor-builtins/export", default-features = false }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
-terminal_size = "0.1"
+terminal_size = "0.4"
 ractor.workspace = true
 regex.workspace = true
 serde.workspace = true
