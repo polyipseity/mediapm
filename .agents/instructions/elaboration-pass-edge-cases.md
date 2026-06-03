@@ -1743,6 +1743,11 @@ visible in production code).
 - The Atomicity Contract in `crate-specifications.md` updated to document:
   "OS-backed per-workspace staging dirs (hash of workspace root under
   `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock"
+- Conductor crate follows the same pattern: `ResolvedRuntimeStoragePaths.conductor_tmp_dir`
+  computes `<os-temp>/mediapm-conductor-<conductor-dir-hash>` using `DefaultHasher` over
+  `conductor_dir`. This path is threaded through `StepExecutionRequest` →
+  `StepWorkerExecutor` for sandbox `run-` directories, ZIP extraction workspaces
+  (`step-output-zip-`, `zip-entry-`), and regex capture staging directories.
 
 **Cross-References**:
 

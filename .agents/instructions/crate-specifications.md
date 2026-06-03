@@ -102,7 +102,7 @@ State Persistence (state.ncl)
 | Crate | Mechanism |
 |-------|-----------|
 | **CAS** | Temp file + atomic rename; index snapshots on mutation |
-| **Conductor** | State persisted atomically; workflow fails fast on conflicts |
+| **Conductor** | State persisted atomically; workflow fails fast on conflicts; OS-backed per-conductor-dir temp dirs (hash of conductor_dir under `std::env::temp_dir()`) replace global temp for sandboxes, ZIP extractions, and regex captures |
 | **Builtins** | File operations succeed or rollback (no orphaned state) |
 | **MediaPM** | Staging → validation → commit; rollback on failure; OS-backed per-workspace staging dirs (hash of workspace root under `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock |
 
@@ -228,6 +228,7 @@ round-trip tests pass.
 
 **Contract**:
 - Conductor documents isolated per-workspace (no cross-workspace bleed)
+- Conductor temp directories isolated per-conductor-dir (hash-based path under `std::env::temp_dir()`)
 - MediaPM respects conductor's state versioning (explicit migration support)
 - Sync is all-or-nothing: succeeds and persists, or fails and reverts staged
 
