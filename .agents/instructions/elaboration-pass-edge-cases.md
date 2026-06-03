@@ -1753,6 +1753,53 @@ visible in production code).
 - `.agents/instructions/crate-specifications.md`: Atomicity Contract table,
   MediaPM row
 
+### 4.29 Media Metadata Resolution Edge Cases (Online & Local)
+
+**Issue**: The metadata resolution system has 5 independent persisted slots
+(`MediaSourceSpec.title`, `MediaSourceSpec.artist`, `MediaSourceSpec.description`,
+`metadata["title"]`, `metadata["artist"]`) with independent fallback chains.
+Several edge cases arise from the decoupling of these slots and the removal of
+MBID-based metadata override.
+
+**Scenarios**:
+
+| Scenario | Current Behavior | Potential Issue |
+|---|---|---|
+| `--title` provided but no `--artist` | `MediaSourceSpec.title` = CLI value; `MediaSourceSpec.artist` = fallback chain (yt-dlp/ffprobe → `"unknown"`) | Description auto-build uses resolved `MediaSourceSpec.artist` which may be `"unknown"` — intentional, not a gap |
+| URL has no path segment title (e.g. `https://example.com/`) | `MediaSourceSpec.title` falls through to `"unknown"` | `metadata["title"]` chain also ends at `"unknown"` — consistent |
+| Local file has no artist tag and no album_artist tag | `MediaSourceSpec.artist` = `"unknown"` | `metadata["artist"]` ends at `"unknown"` — consistent |
+| `--description` CLI flag provided | Both remote and local flows use it directly, bypassing auto-build | Auto-build never runs; description may be inconsistent with resolved title/artist — caller's responsibility |
+| MBID is provided alongside `--title`/`--artist`/`--description` | MBID goes to media-tagger step options only; CLI flags take precedence for metadata slots | No conflict by design — MBID and CLI flags are independent |
+| `--artist` provided but yt-dlp/ffprobe also has an artist value | CLI flag wins for both `MediaSourceSpec.artist` and `metadata["artist"]` (prepended as literal) | `metadata["artist"]` chain has both CLI literal and variant binding; CLI value appears first in the candidate list |
+| yt-dlp not configured for remote source | Warning emitted; all `ResolvedOnlineSourceMetadata` fields are `None`; `MediaSourceSpec.title`/`.artist` fall to `"unknown"` | Warning informs user; behavior matches local-file-without-probe fallback |
+| ffprobe not available for local source | `LocalSourceMetadata` all `None`; `MediaSourceSpec.title` falls to `local_default_title()` then `"unknown"`; `MediaSourceSpec.artist` falls to `"unknown"` | Graceful degradation consistent with remote flow |
+| Same file imported twice with different `--title` | Two media entries with different titles but same CAS hash | Expected — metadata is per-registration, not per-content |
+| Description auto-build references resolved `MediaSourceSpec.artist` which is `"unknown"` | Auto-build produces e.g. `"title: My Video\nartist: unknown"` | Acceptable — `"unknown"` is the defined final fallback for all slots |
+
+**Resolution**:
+
+- All 5 slots resolve independently; no slot's resolution depends on MBID data
+- `metadata["title"]` and `MediaSourceSpec.title` are intentionally decoupled
+  (separate chains starting from `--title` but with different secondary sources)
+- `metadata["artist"]` and `MediaSourceSpec.artist` follow the same decoupled pattern
+- The auto-built description is a best-effort composite of the top-level slots;
+  users who require precise description formatting should use `--description`
+- No transient/ephemeral values: every slot is persisted in `MediaSourceSpec`;
+  the old separate "artist literal" that was only used for description auto-build
+  has been replaced by the persisted `MediaSourceSpec.artist` field
+
+**Cross-references**:
+
+- `src/mediapm/src/service.rs`: `add_media_source_with_position()` and
+  `add_local_source_with_position()` — resolution chain implementations
+- `src/mediapm/src/source_metadata.rs`: `ResolvedOnlineSourceMetadata`,
+  `LocalSourceMetadata`, `resolve_online_source_metadata_for_add()`,
+  `parse_local_source_metadata_from_ffprobe_json()`
+- `src/mediapm/src/lib.rs`: `build_local_default_description()`,
+  `local_default_title()`
+- `src/mediapm/src/main.rs`: `MediaAddArgs` — `--title`, `--artist`, `--description`
+- `.agents/instructions/crate-specifications.md`: Media Metadata Resolution Policy — detailed chain table
+
 ---
 
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
