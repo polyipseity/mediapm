@@ -611,6 +611,25 @@ cross-process race protection is provided.
   augmented with the generated variable names so conductor inherits them at
   execution time. Absolute paths may only leak via generated env files; they
   must never appear in any other persisted configuration or cached state.
+- **Companion resolution independent of `should_set_*` guards**: companion
+  path resolution (ffmpeg, deno for yt-dlp) is always performed during tool
+  reconciliation whenever yt-dlp is provisioned, independent of
+  `should_set_yt_dlp_ffmpeg_location` and `should_set_yt_dlp_js_runtimes`
+  guards. The guards only control whether `input_defaults` receives the
+  template ref string (e.g. `${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}`). Env var
+  generation fires whenever companion paths resolve, ensuring
+  `.env.generated` is refreshed on every `media tool sync` run regardless of
+  prior runs.
+- **`media sync` env dependency**: `sync_library_with_tag_update_checks()`
+  (`media sync`) does not call `reconcile_desired_tools()`. Users must run
+  `media tool sync` before `media sync` to ensure `.env.generated` is
+  current. This is by design — tool sync provisions companion binaries and
+  generates runtime env vars, while library sync consumes them.
+- **mediapm_dir resolution contract**:
+  `MediaRuntimeStorage.mediapm_dir` → `MediaPmPaths::with_runtime_storage()`
+  → `runtime_root` → all dependent paths (tools, cache, state, env files,
+  schema export, tmp). Default is `<root_dir>/.mediapm`. Relative paths
+  resolve against the `mediapm.ncl` parent directory.
 - **Tool identity preservation during workflow re-synthesis**: when sync runs
   against a previously-synthesized workflow, `preserve_existing_generated_step_tools()`
   rewrites each generated step's tool id from the existing workflow snapshot.

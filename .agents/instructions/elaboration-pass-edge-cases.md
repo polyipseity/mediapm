@@ -1225,7 +1225,69 @@ re-provision.
 
 ---
 
-### 4.14 Hierarchy Preset Do-Not-Overwrite by Node ID
+### 4.14 Stale `.env.generated` on Re-run (FIXED)
+
+**Issue**: On the second `media tool sync` run, `should_set_yt_dlp_ffmpeg_location`
+and `should_set_yt_dlp_js_runtimes` returned `false` because `input_defaults`
+already contained the template ref string (e.g.
+`${env.MEDIAPM_YT_DLP_FFMPEG_LOCATION}`). Companion path resolution was gated
+behind these guards, so it was skipped — and `.env.generated` was NOT
+regenerated, leaving the env var undefined.
+
+**Scenario**:
+
+- First `media tool sync`: guards evaluate `true`, companion paths resolve,
+  template refs injected into `input_defaults`, `.env.generated` written.
+- Second `media tool sync` (no tool changes): guards evaluate `false`
+  (`input_defaults` already has the ref), companion paths NOT resolved,
+  `.env.generated` NOT refreshed — env var is stale or missing.
+
+**Resolution**:
+
+- Companion path resolution is now always performed when yt-dlp is
+  provisioned, regardless of guard state.
+- Guards only control whether `input_defaults` receives the template ref
+  string. If the ref is already present, it is simply kept as-is.
+- Env var generation fires whenever companion paths resolve. This ensures
+  `.env.generated` is regenerated on every sync run.
+- **Invariant**: companion resolution and env var generation are independent
+  of `should_set_*` guards.
+
+### 4.15 mediapm_dir with Custom Root
+
+**Issue**: The `MediaRuntimeStorage.mediapm_dir` field controls where
+`MediaPmPaths::with_runtime_storage()` resolves `runtime_root` and all
+dependent paths. If `mediapm_dir` changes between sync runs, the old runtime
+directory becomes orphaned — tools, cache, and env files under the previous
+root are no longer referenced.
+
+**Scenario**:
+
+- Initial config: `runtime.mediapm_dir = ".mediapm"` (default) →
+  `runtime_root = <root>/.mediapm`. Tools provisioned, `.env.generated`
+  written under this root.
+- User changes config to `runtime.mediapm_dir = ".custom_dir"` →
+  `runtime_root = <root>/.custom_dir`. Next sync provisions tools under the
+  new path, writes `.env.generated` to the new location.
+- The old `<root>/.mediapm/` directory remains on disk with stale state and
+  orphaned tool payloads.
+
+**Resolution**:
+
+- `MediaPmPaths::with_runtime_storage()` always derives paths from the
+  current `mediapm_dir`. There is no automatic migration — orphaned runtime
+  directories must be cleaned up manually by the user.
+- Default: `<root_dir>/.mediapm`.
+- Relative paths resolve against the `mediapm.ncl` parent directory.
+- All dependent paths (tools, cache, state, env files, schema export, tmp)
+  are computed from `runtime_root` and follow the new root immediately on
+  the next sync.
+- **Invariant**: the runtime directory is ephemeral; changing `mediapm_dir`
+  produces a fresh namespace without migrating prior state.
+
+---
+
+### 4.16 Hierarchy Preset Do-Not-Overwrite by Node ID
 
 **Issue**: `insert_hierarchy_preset_node()` runs during hierarchy build to
 insert preset media nodes. Without an id-based guard, a preset node could
