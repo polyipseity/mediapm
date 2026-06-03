@@ -1,7 +1,7 @@
 ---
 description: "Use when creating commits or editing commit workflow/policy files in this repository."
 name: "Commit Message Policy"
-applyTo: "AGENTS.md, .agents/prompts/commit-staged.prompt.md, .commitlintrc.mjs"
+applyTo: "**"
 ---
 
 # Commit Message Policy
@@ -35,3 +35,36 @@ applyTo: "AGENTS.md, .agents/prompts/commit-staged.prompt.md, .commitlintrc.mjs"
   `.agents/instructions/crate-specifications.md`.
 - Edge-case and ambiguity analysis:
   `.agents/instructions/elaboration-pass-edge-cases.md`.
+
+## Atomic commit workflow (unstaged changes → multiple commits)
+
+When you have a set of unstaged changes and need to split them into multiple
+atomic commits, use this stash-first workflow:
+
+1. `git stash` — save everything, get a clean working tree.
+2. `git stash list` — note the stash reference (e.g. `stash@{0}`).
+3. For each atomic commit you want to create:
+   a. `git stash pop` — restore all remaining stashed changes to the
+   working tree.
+   b. `git add -p` (or `git add <specific-files>`) — stage **only** the
+   changes that belong to this commit. Use interactive hunk selection
+   if a single file contains changes for multiple commits.
+   c. `git stash -u` — stash everything that remains unstaged, so the
+   pre-commit hook sees a clean working tree.
+   d. `git commit -m "type(scope): precise message"` — commit only
+   staged changes in a clean tree.
+   e. `git stash list` — verify stash state is as expected.
+4. After all commits are created, `git stash pop` any remaining leftovers.
+
+### Hard rules
+
+- **NEVER** rely on staged vs unstaged to separate changes across multiple
+  commits. Pre-commit hooks (fmt, commitlint) may stash and pop,
+  destroying the staged/unstaged boundary mid-flight.
+- **NEVER** use `git commit --amend` while combining changes from multiple
+  sources — it re-opens the last commit and interacts catastrophically with
+  hook-driven stash/pop cycles.
+- **ALWAYS** keep explicit track of the stash stack (`git stash list`) after
+  every stash operation.
+- **ALWAYS** use `git add -p` for fine-grained separation when one file has
+  changes belonging to multiple commits.
