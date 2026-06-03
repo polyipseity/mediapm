@@ -53,9 +53,12 @@ use crate::error::ConductorError;
 
 /// Seconds since last use after which a cache entry is eligible for pruning.
 ///
-/// 30 days: extracted tool payloads are large and expensive to re-extract from
-/// CAS; keeping them for 30 days avoids unnecessary re-extraction across runs.
-const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+/// 1 day (86 400 seconds). Tool payloads change frequently — companion
+/// dependency updates (e.g. deno for yt-dlp) produce new tool IDs, making
+/// old entries unreachable from new workflows. Keeping a short TTL bounds
+/// disk use without meaningful re-extraction cost for entries that would
+/// never be looked up again anyway.
+const TOOL_CONTENT_CACHE_ENTRY_TTL_SECONDS: u64 = 86_400;
 /// Minimum interval between best-effort prune scans.
 ///
 /// Prune scans traverse the full `tools/` tree; running them on every step can
