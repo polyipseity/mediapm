@@ -29,11 +29,11 @@ pub use api::{
 };
 pub use error::ConductorError;
 pub use model::config::{
-    AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef, InputBinding,
-    MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, OutputPolicy,
-    ProcessSpec, RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec, ToolInputSpec,
-    ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
-    decode_machine_document, decode_state_document, decode_user_document,
+    AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef, ImpureTimestamp,
+    InputBinding, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec,
+    OutputPolicy, ProcessSpec, RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec,
+    ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
+    WorkflowStepSpec, decode_machine_document, decode_state_document, decode_user_document,
     default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_state_document,
     encode_user_document, evaluate_total_configuration_sources,
 };

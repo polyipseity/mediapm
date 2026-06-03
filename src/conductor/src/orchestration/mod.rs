@@ -198,6 +198,7 @@ mod tests {
                         outputs: BTreeMap::new(),
                     },
                     impure_timestamp: None,
+                    last_used: None,
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([(
                         "result".to_string(),
@@ -252,6 +253,7 @@ mod tests {
                     tool_name: "missing@1.0.0".to_string(),
                     metadata: ToolSpec::default(),
                     impure_timestamp: None,
+                    last_used: None,
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

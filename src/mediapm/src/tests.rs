@@ -792,6 +792,27 @@ fn merge_runtime_storage_prefers_override_fields() {
     );
 }
 
+/// Ensures `instance_ttl_seconds` merges correctly: the override value wins
+/// when set, and `None` in the override preserves the config value.
+#[test]
+fn merge_runtime_storage_preserves_instance_ttl_override() {
+    let config =
+        MediaRuntimeStorage { instance_ttl_seconds: Some(3600), ..MediaRuntimeStorage::default() };
+    let override_value_some =
+        MediaRuntimeStorage { instance_ttl_seconds: Some(7200), ..MediaRuntimeStorage::default() };
+    let override_value_none = MediaRuntimeStorage::default();
+
+    let merged_some = merge_runtime_storage(&config, &override_value_some);
+    let merged_none = merge_runtime_storage(&config, &override_value_none);
+
+    assert_eq!(merged_some.instance_ttl_seconds, Some(7200), "override value should win when set");
+    assert_eq!(
+        merged_none.instance_ttl_seconds,
+        Some(3600),
+        "config value should survive when override is None"
+    );
+}
+
 /// Ensures online metadata parsing extracts title/artist/description when
 /// downloader JSON includes those fields.
 #[test]

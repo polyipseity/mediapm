@@ -1687,6 +1687,7 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: Some(timestamp),
+            last_used: None,
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "result".to_string(),
@@ -1712,6 +1713,7 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: None,
+            last_used: None,
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         };

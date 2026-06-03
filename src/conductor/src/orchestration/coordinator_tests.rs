@@ -839,6 +839,7 @@ async fn replace_and_load_resolved_state_roundtrip() {
                     outputs: BTreeMap::new(),
                 },
                 impure_timestamp: None,
+                last_used: None,
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::from([(
                     "result".to_string(),
@@ -906,6 +907,7 @@ async fn replace_resolved_state_rejects_unknown_tool_instances() {
                 tool_name: "missing@1.0.0".to_string(),
                 metadata: ToolSpec::default(),
                 impure_timestamp: None,
+                last_used: None,
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
             },

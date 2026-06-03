@@ -334,6 +334,7 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
+                    last_used: None,
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },
@@ -397,6 +398,7 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
+                    last_used: None,
                     inputs: BTreeMap::from([("text".to_string(), input)]),
                     outputs: BTreeMap::new(),
                 },
@@ -467,6 +469,7 @@ mod tests {
                         )]),
                     },
                     impure_timestamp: None,
+                    last_used: None,
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

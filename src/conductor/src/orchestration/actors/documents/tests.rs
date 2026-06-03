@@ -513,6 +513,7 @@ fn machine_document_is_not_backfilled_with_user_runtime_storage() {
             cas_store_dir: Some(".runtime/store".to_string()),
             conductor_schema_dir: Some(".runtime/config/conductor".to_string()),
             inherited_env_vars: None,
+            instance_ttl_seconds: None,
         },
         tools: BTreeMap::from([(
             "echo@1.0.0".to_string(),

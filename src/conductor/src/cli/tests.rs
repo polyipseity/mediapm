@@ -343,6 +343,7 @@ fn persisted_state_json_pretty_normalizes_builtin_metadata() {
                     outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
                 },
                 impure_timestamp: None,
+                last_used: None,
                 inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
             },
