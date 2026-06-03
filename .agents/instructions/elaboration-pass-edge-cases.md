@@ -2011,11 +2011,11 @@ until explicitly cleaned up.
 
 **Why It Is Safe**: The design ensures prior instances are preserved through several mechanisms:
 
-1. **`state.clone()` on Error** (coordinator error checkpoint at `src/conductor/src/coordinator.rs:275-290`): When a step fails, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`. `state.clone()` preserves ALL current instances — no entries are discarded. Pending unsaved hashes are cleared (the failed step contributed no new CAS objects), but the prior state is untouched.
+1. **`state.clone()` on Error** (coordinator error checkpoint at `src/conductor/src/orchestration/coordinator.rs:303-320`): When a step fails, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`. `state.clone()` preserves ALL current instances — no entries are discarded. Pending unsaved hashes are cleared (the failed step contributed no new CAS objects), but the prior state is untouched.
 
 2. **Append-Only `OrchestrationState`**: `OrchestrationState { version: u32, instances: BTreeMap<String, ToolCallInstance> }` is stored as an immutable CAS blob. The `instances` map only grows via insertions — old entries are never removed. Old CAS blobs remain reachable as long as any caller holds their hash.
 
-3. **State Pointer Only Advances on Success**: The `state_pointer` only advances on a successful run. After failure, `state_pointer` still references the old state CAS blob. Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries.
+3. **State Pointer Advances on Every Run**: The `state_pointer` advances on **both** success and failure — it always points to the latest checkpoint. The difference is `pending_unsaved_hashes`: on error it is empty, meaning unsaved-output GC protection is weaker. (See [`crate-specifications.md` — State Pointer Advancement] for details and caveats about in-flight steps.)
 
 4. **No Active CAS Garbage Collection**: CAS storage is append-only by default. Blobs are only deleted via explicit `cas.delete()`. There is no active pruning of unreferenced `OrchestrationState` blobs.
 
