@@ -1163,6 +1163,49 @@ path.
 
 ---
 
+### 4.15 Hierarchy Preset Overwrite CLI Flag
+
+**Issue**: `insert_hierarchy_preset_node()` has a do-not-overwrite guard that
+skips insertion when the incoming node's `id` already exists. Users who
+intentionally want to replace an existing hierarchy node had no way to bypass
+this guard.
+
+**Scenario**:
+
+- User defines a custom hierarchy folder node with `id: "my-videos"`
+- Later user adds a hierarchy preset that would generate a node with the same
+  `id` via `mediapm hierarchy add --preset yt-dlp ...`
+- Without an overwrite flag, the preset node is silently skipped — the user
+  must manually edit `mediapm.ncl` to remove the existing node first
+
+**Resolution**:
+
+- `insert_hierarchy_preset_node()` gains an `overwrite: bool` parameter
+- When `overwrite: false` (default): existing behavior — skip if any node or
+  child id already exists
+- When `overwrite: true`: remove existing nodes with matching ids (both
+  the top-level node and all children) via `remove_hierarchy_nodes_by_id()`,
+  then proceed with normal insertion
+- The CLI exposes this as `mediapm hierarchy add --overwrite`
+- The `add_media_hierarchy_preset_with_position()` service-layer method
+  propagates the flag to `insert_hierarchy_preset_node()`
+- The wrapper `add_media_hierarchy_preset()` passes `overwrite: false` for
+  backward-compatible programmatic callers
+
+**Edge Cases**:
+
+- Removing existing nodes before insertion ensures overwrite works even when
+  the existing layout differs structurally from the incoming node
+- If no matching ids exist, overwrite behaves identically to normal insertion
+  (the removal step is a no-op)
+
+**Questions for Clarification**:
+
+1. Should overwrite also warn when no existing node was found to remove?
+2. Should there be a dry-run mode to preview which nodes would be removed?
+
+---
+
 ### 4.16 Step-Stream Parallel Dispatch: Cache-Probe Race Across Workflows
 
 **Issue**: Step-stream dispatches ready steps from multiple workflows
@@ -1514,6 +1557,81 @@ declared (even as a minimal stub) to participate in dependency resolution.
 | **Post-fix** | Worker bars: `worker_bar.set_position(100)` + `worker_bar.set_message(...)`. Hierarchy bar: `hierarchy_progress.set_message("done")` (position already at total via `advance(1)` per entry). `{elapsed}` removed from both format strings. |
 | **Interaction risk** | Workers show no duration during or after execution. For long-running workers this loses feedback about how long they've been running. Same trade-off rationale as §4.24. |
 | **Mitigation** | A 75 ms settle delay mirrors the conductor pattern. |
+
+---
+
+### 4.26 Local Media ID from CAS Hash
+
+**Issue**: Local media IDs were generated using nanoid (random 8-char
+alphanumeric suffix), making them non-deterministic — the same file added
+twice would get different media IDs.
+
+**Scenario**:
+
+- User runs `mediapm media add --preset local ./song.mp3` twice
+- First run: media ID `local.aB3xK9mZ`
+- Second run: media ID `local.Q7rT2pLx` (different, even though same file)
+- This made cache-key dedup impossible for local sources and caused
+  unnecessary workflow churn
+
+**Resolution**:
+
+- `media_id_from_local_path()` now takes `&mediapm_cas::Hash` instead of
+  `&Path` and produces `local.<first-12-hex-chars-of-Blake3-hash>`
+- The hash is computed from the file contents before media-id assignment,
+  so the same file always produces the same media ID
+- The `rand` dependency and `NANOID_ALPHABET` constant were removed from
+  `lib.rs`
+- The nanoid-based approach is fully replaced; no backward compatibility is
+  provided since all local IDs were ephemeral anyway
+
+**Questions for Clarification**:
+
+1. Should the hash prefix length be configurable?
+2. Should there be a migration path for existing nanoid-based local IDs?
+
+---
+
+### 4.27 Media Source Registration Do-Not-Overwrite
+
+**Issue**: Media source registration (`add_media_source()` and
+`add_local_source()`) unconditionally inserted entries into `document.media`
+via `BTreeMap::insert()`, silently overwriting existing entries with the same
+`media_id`.
+
+**Scenario**:
+
+- User registers media source id `video1` with yt-dlp preset
+- Later, user accidentally registers a different source with id `video1`
+- The old entry is silently replaced — no warning, no error
+
+**Resolution**:
+
+- Both `add_media_source_with_position()` and
+  `add_local_source_with_position()` gain an `overwrite: bool` parameter
+- When `overwrite: false` (default): check whether `media_id` already exists
+  in `document.media`; if yes, return successfully without modifying the
+  entry (do-not-overwrite)
+- When `overwrite: true`: replace unconditionally via `BTreeMap::insert()`
+- The convenience wrappers `add_media_source()` and `add_local_source()`
+  default to `overwrite: false`
+- The CLI exposes this as `mediapm media add --overwrite`
+
+**Edge Cases**:
+
+- Do-not-overwrite guard runs early, before any file I/O or hashing, so no
+  work is wasted when the entry already exists
+- The guard checks the effective `media_id` (already resolved from path/CAS
+  hash), not the raw CLI input
+- Overwrite mode does not remove existing hierarchy nodes for the media id;
+  hierarchy removal is handled separately by `mediapm hierarchy remove` and
+  the `--overwrite` flag on hierarchy add
+
+**Questions for Clarification**:
+
+1. Should overwrite also remove associated hierarchy nodes for the media id?
+2. Should there be a warning when an existing entry is skipped (non-overwrite)
+   or replaced (overwrite)?
 
 ---
 

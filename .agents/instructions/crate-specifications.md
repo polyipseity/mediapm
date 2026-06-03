@@ -424,6 +424,26 @@ finished rows.
   preset children are merged into the existing folder instead of being inserted
   as a duplicate sibling. This prevents parent-folder duplication when a user
   manually created a container folder at the same path that a preset targets.
+- **Hierarchy preset overwrite flag**: `insert_hierarchy_preset_node()`
+  accepts an `overwrite: bool` parameter. When `true`, existing hierarchy
+  nodes with matching ids (top-level or child) are removed before insertion,
+  bypassing the do-not-overwrite guard. The CLI exposes this as
+  `mediapm hierarchy add --overwrite`.
+- **Media source registration do-not-overwrite by default**:
+  `add_media_source()` and `add_local_source()` use `overwrite: false` by
+  default — they check whether the target `media_id` already exists in
+  `document.media` and return successfully without modifying the entry.
+  The service-layer methods `add_media_source_with_position()` and
+  `add_local_source_with_position()` accept an `overwrite: bool` parameter;
+  when `true`, the existing entry is replaced unconditionally. The CLI exposes
+  this as `mediapm media add --overwrite`.
+- **Local media ID from CAS hash**: `media_id_from_local_path()` no longer
+  uses nanoid-based random suffixes. Local media IDs now derive from the CAS
+  content hash of the source file:
+  `media_id_from_local_path(hash: &mediapm_cas::Hash)` produces
+  `local.<first-12-hex-chars-of-hash>`. This makes local media IDs
+  deterministic (same file → same media ID) and removes the `rand` dependency
+  from mediapm's public API surface.
 - **Empty directory cleanup after stale hierarchy removal**: after removing
   stale materialized paths, the materializer walks up from each removed path's
   parent directory, removing directories that contain no files (recursively),
