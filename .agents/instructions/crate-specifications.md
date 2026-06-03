@@ -348,11 +348,12 @@ For comprehensive details, refer to the following specifications collected from 
 - Deterministic for pure steps (same tool + inputs → same key)
 - Impure steps include a timestamp, so each invocation produces a distinct key
 
-**Failure Preservation** (coordinator error checkpoint at `src/conductor/src/coordinator.rs:275-290`):
+**Failure Preservation** (coordinator error checkpoint at `src/conductor/src/orchestration/coordinator.rs:303-320`):
 
-- On step failure, the coordinator calls `commit_run(next_state: state.clone(), pending_unsaved_hashes: BTreeSet::new())`
-- `state.clone()` preserves ALL current instances — no entries are discarded
-- Pending hashes are cleared (failed step contributed no new CAS objects), but prior state is untouched
+- On **both** success and error, the coordinator calls `commit_run(next_state: state.clone(), ...)` and advances `state_document.state_pointer`.
+- On success: `pending_unsaved_hashes` is the accumulated set from all completed steps — all new CAS outputs are protected from GC.
+- On error: `pending_unsaved_hashes: BTreeSet::new()` is empty — the failed step contributed no new CAS objects, and any in-flight steps' pending outputs (dropped by `FuturesUnordered`) are also unprotected.
+- `state.clone()` preserves ALL current instances — no entries are discarded.
 
 **OrchestrationState Immutability**:
 
@@ -362,12 +363,12 @@ For comprehensive details, refer to the following specifications collected from 
 
 **State Pointer Advancement**:
 
-- The `state_pointer` only advances on a **successful** run
-- After failure, `state_pointer` still references the old state CAS blob
-- Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries
-- CAS garbage collection is explicit-only (`cas.delete()`); there is no active pruning of unreferenced `OrchestrationState` blobs
+- The `state_pointer` advances on **every run** (both success and failure) — it always points to a CAS blob containing the latest checkpoint.
+- The key difference between success and error is `pending_unsaved_hashes`: on the error branch it is empty, meaning unsaved-output GC protection is weaker.
+- Old blobs are only unreferenced when `state_pointer` moves to a new blob that omits old entries.
+- CAS garbage collection is explicit-only (`cas.delete()`); there is no active pruning of unreferenced `OrchestrationState` blobs.
 
-**Implication**: A failed workflow step cannot cause previously successful steps to lose their I/O. The instance key change only affects the failed step's retry; all prior instances remain in the immutable state blob.
+**Implication**: A failed workflow step cannot cause previously **completed** steps to lose their I/O. The instance key change only affects the failed step's retry; all prior instances remain in the immutable state blob. However, any steps that were in-flight (dispatched but not yet completed) when the error occurred have their pending outputs dropped — those steps must be re-executed on the next run.
 
 **Instance Garbage Collection**:
 
