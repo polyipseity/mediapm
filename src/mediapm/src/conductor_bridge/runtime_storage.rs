@@ -47,6 +47,7 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         } else {
             Some(inherited_env_vars)
         },
+        instance_ttl_seconds: None,
     }
 }
 
@@ -90,6 +91,10 @@ fn apply_runtime_storage_defaults(
     }
     if include_inherited_env_vars && runtime_storage.inherited_env_vars.is_none() {
         runtime_storage.inherited_env_vars.clone_from(&defaults.inherited_env_vars);
+        changed = true;
+    }
+    if runtime_storage.instance_ttl_seconds.is_none() {
+        runtime_storage.instance_ttl_seconds = defaults.instance_ttl_seconds;
         changed = true;
     }
     changed

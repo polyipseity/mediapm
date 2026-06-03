@@ -459,6 +459,9 @@ pub(crate) fn merge_runtime_storage(
             .clone()
             .or_else(|| config_value.mediapm_schema_dir.clone()),
         profiler_enabled: override_value.profiler_enabled.or(config_value.profiler_enabled),
+        instance_ttl_seconds: override_value
+            .instance_ttl_seconds
+            .or(config_value.instance_ttl_seconds),
         path_sanitization: override_value
             .path_sanitization
             .clone()

@@ -525,6 +525,7 @@ async fn main() -> anyhow::Result<()> {
         env_generated_file: option_path_to_string(cli.env_generated_file),
         mediapm_schema_dir: None,
         profiler_enabled: None,
+        instance_ttl_seconds: None,
         path_sanitization: None,
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();

@@ -404,6 +404,14 @@ pub struct MediaRuntimeStorage {
     /// Default: `None` (disabled).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiler_enabled: Option<bool>,
+
+    /// Optional instance GC time-to-live in seconds.
+    ///
+    /// When set, stale orchestration instances are pruned after this many
+    /// seconds of inactivity. Passed through to conductor runtime config.
+    /// When `None`, GC is left to conductor defaults (usually disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_ttl_seconds: Option<u64>,
 }
 
 /// Returns whether runtime schema-export policy was omitted from config.

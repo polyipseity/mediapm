@@ -35,6 +35,10 @@ let RuntimeStorageV1 = {
   media_state_config | Dyn | optional,
   env_file | Dyn | optional,
   mediapm_schema_dir | Dyn | optional,
+  # ||| Optional instance GC time-to-live in seconds.
+  # ||| Passed through to conductor runtime config.
+  # ||| When omitted, GC is left to conductor defaults.
+  instance_ttl_seconds | Dyn | optional,
 }
 in
 
