@@ -684,6 +684,7 @@ where
             media_id,
             Some(folder),
             AddInsertPosition::Sorted,
+            false,
         )
     }
 
@@ -706,6 +707,7 @@ where
         media_id: &str,
         folder: Option<&str>,
         position: AddInsertPosition,
+        overwrite: bool,
     ) -> Result<(), MediaPmError> {
         let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
 
@@ -724,7 +726,13 @@ where
         }
 
         let node = build_hierarchy_preset_node(preset, media_id, &normalized_folder, hierarchy_id);
-        insert_hierarchy_preset_node(&mut document.hierarchy, node, &normalized_folder, position);
+        insert_hierarchy_preset_node(
+            &mut document.hierarchy,
+            node,
+            &normalized_folder,
+            position,
+            overwrite,
+        );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
         Ok(())

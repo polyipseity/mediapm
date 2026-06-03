@@ -438,7 +438,13 @@ fn add_hierarchy_preset_merges_into_existing_nameless_container() {
         folder,
         "new-media".to_string(),
     );
-    super::insert_hierarchy_preset_node(&mut hierarchy, inserted, folder, AddInsertPosition::End);
+    super::insert_hierarchy_preset_node(
+        &mut hierarchy,
+        inserted,
+        folder,
+        AddInsertPosition::End,
+        false,
+    );
 
     // Verify no duplicate folder: exactly one node at the target path.
     let matching: Vec<_> = hierarchy
@@ -553,6 +559,7 @@ fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
         inserted,
         root_folder,
         AddInsertPosition::Sorted,
+        false,
     );
 
     let observed_ids: Vec<Option<String>> = hierarchy
@@ -587,6 +594,7 @@ async fn add_hierarchy_preset_uses_default_root_folder_when_omitted() {
             &media_id,
             None,
             AddInsertPosition::Sorted,
+            false,
         )
         .expect("add hierarchy preset with default folder");
 

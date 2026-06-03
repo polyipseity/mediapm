@@ -155,12 +155,26 @@ pub(crate) fn insert_hierarchy_preset_node(
     node: HierarchyNode,
     normalized_folder: &str,
     position: AddInsertPosition,
+    overwrite: bool,
 ) {
-    // Do-not-overwrite: skip if any node id in the tree already exists.
-    if node.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
-        || node.children.iter().any(|child| {
-            child.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
-        })
+    // Remove existing nodes that will be overwritten.
+    if overwrite {
+        let ids_to_remove: Vec<String> = std::iter::once(node.id.clone())
+            .flatten()
+            .chain(node.children.iter().filter_map(|c| c.id.clone()))
+            .collect();
+        for id in &ids_to_remove {
+            remove_hierarchy_nodes_by_id(hierarchy, id);
+        }
+    }
+
+    // Do-not-overwrite: skip if any node id in the tree already exists
+    // (only when overwrite is false).
+    if !overwrite
+        && (node.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
+            || node.children.iter().any(|child| {
+                child.id.as_deref().is_some_and(|id| hierarchy_contains_node_id(hierarchy, id))
+            }))
     {
         return;
     }

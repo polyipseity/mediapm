@@ -223,6 +223,9 @@ struct MediaAddArgs {
     /// Insertion position policy for media-map mutation.
     #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
     insert_position: InsertPosition,
+    /// Overwrite an existing media entry with the same id.
+    #[arg(long)]
+    overwrite: bool,
 }
 
 /// Media-add presets.
@@ -250,6 +253,9 @@ struct HierarchyAddArgs {
     /// Insertion position policy inside the affected root-folder group.
     #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
     insert_position: InsertPosition,
+    /// Overwrite an existing hierarchy node with the same id.
+    #[arg(long)]
+    overwrite: bool,
 }
 
 /// Arguments for `mediapm hierarchy remove`.
@@ -629,7 +635,7 @@ async fn main() -> anyhow::Result<()> {
                                 &uri,
                                 args.recording_id.as_deref(),
                                 map_insert_position(args.insert_position),
-                                false,
+                                args.overwrite,
                             )
                             .await?
                     }
@@ -640,7 +646,7 @@ async fn main() -> anyhow::Result<()> {
                                 &path,
                                 args.recording_id.as_deref(),
                                 map_insert_position(args.insert_position),
-                                false,
+                                args.overwrite,
                             )
                             .await?
                     }
@@ -701,6 +707,7 @@ async fn main() -> anyhow::Result<()> {
                     &args.media_id,
                     args.root_folder.as_deref(),
                     map_insert_position(args.insert_position),
+                    args.overwrite,
                 )?;
                 println!(
                     "registered hierarchy preset={} for media id={} at folder={}",
