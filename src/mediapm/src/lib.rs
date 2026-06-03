@@ -570,7 +570,11 @@ pub(crate) fn local_extension_with_dot(path: &Path) -> String {
 /// `import -> media-tagger -> rsgain`, while reusing one stable variant key
 /// across the full pipeline.
 #[must_use]
-pub(crate) fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
+pub(crate) fn local_source_default_steps(
+    hash_text: &str,
+    recording_mbid: Option<&str>,
+    release_mbid: Option<&str>,
+) -> Vec<MediaStep> {
     vec![
         MediaStep {
             tool: MediaStepTool::Import,
@@ -596,8 +600,14 @@ pub(crate) fn local_source_default_steps(hash_text: &str) -> Vec<MediaStep> {
                 }),
             )]),
             options: BTreeMap::from([
-                ("recording_mbid".to_string(), TransformInputValue::String(String::new())),
-                ("release_mbid".to_string(), TransformInputValue::String(String::new())),
+                (
+                    "recording_mbid".to_string(),
+                    TransformInputValue::String(recording_mbid.unwrap_or("").to_string()),
+                ),
+                (
+                    "release_mbid".to_string(),
+                    TransformInputValue::String(release_mbid.unwrap_or("").to_string()),
+                ),
             ]),
         },
         MediaStep {

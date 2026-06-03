@@ -282,7 +282,8 @@ async fn add_local_hierarchy_preset_is_idempotent_for_existing_media() {
     fs::write(&local_file, b"local-bytes").expect("write local source");
     let folder = "music videos";
 
-    let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
+    let media_id =
+        service.add_local_source(&local_file, None, None).await.expect("add local source");
 
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
@@ -334,7 +335,7 @@ async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_in_memory_at(root.path());
     let media_id = service
-        .add_media_source(&Url::parse("https://example.com/video").expect("url"), None)
+        .add_media_source(&Url::parse("https://example.com/video").expect("url"), None, None)
         .await
         .expect("add remote source");
 
@@ -584,6 +585,7 @@ async fn add_hierarchy_preset_uses_default_root_folder_when_omitted() {
         .add_media_source(
             &Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"),
             None,
+            None,
         )
         .await
         .expect("add media source");
@@ -633,7 +635,8 @@ async fn remove_hierarchy_preset_is_idempotent() {
     fs::write(&local_file, b"local-bytes").expect("write local source");
     let folder = "music videos";
 
-    let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
+    let media_id =
+        service.add_local_source(&local_file, None, None).await.expect("add local source");
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
         .expect("add hierarchy preset");
@@ -657,7 +660,8 @@ async fn remove_media_source_removes_matching_hierarchy_nodes() {
     let local_file = root.path().join("local-source.txt");
     fs::write(&local_file, b"local-bytes").expect("write local source");
 
-    let media_id = service.add_local_source(&local_file, None).await.expect("add local source");
+    let media_id =
+        service.add_local_source(&local_file, None, None).await.expect("add local source");
     service
         .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
         .expect("add hierarchy preset");
@@ -700,7 +704,7 @@ fn remove_media_source_rejects_unknown_media_id() {
 /// optional `MusicBrainz` identifier fields as empty placeholders.
 #[test]
 fn local_preset_media_tagger_defaults_include_empty_mbids() {
-    let steps = super::local_source_default_steps("blake3:deadbeef");
+    let steps = super::local_source_default_steps("blake3:deadbeef", None, None);
     let media_tagger_step = steps
         .iter()
         .find(|step| step.tool == super::MediaStepTool::MediaTagger)
@@ -725,6 +729,7 @@ async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
     let media_id = service
         .add_media_source(
             &Url::parse("https://www.youtube.com/watch?v=mbid-defaults").expect("url"),
+            None,
             None,
         )
         .await

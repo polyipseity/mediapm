@@ -227,9 +227,16 @@ where
         &self,
         uri: &Url,
         recording_mbid: Option<&str>,
+        release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
-        self.add_media_source_with_position(uri, recording_mbid, AddInsertPosition::Sorted, false)
-            .await
+        self.add_media_source_with_position(
+            uri,
+            recording_mbid,
+            release_mbid,
+            AddInsertPosition::Sorted,
+            false,
+        )
+        .await
     }
 
     /// Adds one online media source to `mediapm.ncl` with one insertion
@@ -248,6 +255,7 @@ where
         &self,
         uri: &Url,
         recording_mbid: Option<&str>,
+        release_mbid: Option<&str>,
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<String, MediaPmError> {
@@ -482,11 +490,13 @@ where
                         options: BTreeMap::from([
                             (
                                 "recording_mbid".to_string(),
-                                TransformInputValue::String(String::new()),
+                                TransformInputValue::String(
+                                    recording_mbid.unwrap_or("").to_string(),
+                                ),
                             ),
                             (
                                 "release_mbid".to_string(),
-                                TransformInputValue::String(String::new()),
+                                TransformInputValue::String(release_mbid.unwrap_or("").to_string()),
                             ),
                         ]),
                     },
@@ -521,10 +531,12 @@ where
         &self,
         local_path: &Path,
         recording_mbid: Option<&str>,
+        release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
         self.add_local_source_with_position(
             local_path,
             recording_mbid,
+            release_mbid,
             AddInsertPosition::Sorted,
             false,
         )
@@ -548,6 +560,7 @@ where
         &self,
         local_path: &Path,
         recording_mbid: Option<&str>,
+        release_mbid: Option<&str>,
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<String, MediaPmError> {
@@ -657,7 +670,7 @@ where
                     ),
                 ])),
                 variant_hashes: BTreeMap::new(),
-                steps: local_source_default_steps(&hash_text),
+                steps: local_source_default_steps(&hash_text, recording_mbid, release_mbid),
             },
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;

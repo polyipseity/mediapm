@@ -220,6 +220,10 @@ struct MediaAddArgs {
     /// the values probed from the source file or downloader tool.
     #[arg(long)]
     recording_mbid: Option<String>,
+    /// Optional `MusicBrainz` release MBID UUID passed through to the
+    /// media-tagger step.
+    #[arg(long)]
+    release_mbid: Option<String>,
     /// Insertion position policy for media-map mutation.
     #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
     insert_position: InsertPosition,
@@ -634,6 +638,7 @@ async fn main() -> anyhow::Result<()> {
                             .add_media_source_with_position(
                                 &uri,
                                 args.recording_mbid.as_deref(),
+                                args.release_mbid.as_deref(),
                                 map_insert_position(args.insert_position),
                                 args.overwrite,
                             )
@@ -645,6 +650,7 @@ async fn main() -> anyhow::Result<()> {
                             .add_local_source_with_position(
                                 &path,
                                 args.recording_mbid.as_deref(),
+                                args.release_mbid.as_deref(),
                                 map_insert_position(args.insert_position),
                                 args.overwrite,
                             )
