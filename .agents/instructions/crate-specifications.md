@@ -104,7 +104,7 @@ State Persistence (state.ncl)
 | **CAS** | Temp file + atomic rename; index snapshots on mutation |
 | **Conductor** | State persisted atomically; workflow fails fast on conflicts |
 | **Builtins** | File operations succeed or rollback (no orphaned state) |
-| **MediaPM** | Staging → validation → commit; rollback on failure |
+| **MediaPM** | Staging → validation → commit; rollback on failure; per-workspace staging dirs (`.mediapm/tmp/`) replace global `SERIAL_GUARD` lock |
 
 **Verification**: If partial state persists after failure, it's a bug.
 
@@ -120,6 +120,53 @@ State Persistence (state.ncl)
 | **MediaPM** | Lock state deterministic; sync can skip if hash unchanged |
 
 **Verification**: If pure operation produces different output, it's a bug.
+
+### 6. NCL↔Rust Schema Sync Contract
+
+**Principle**: NCL schema definitions and Rust struct definitions must remain
+bidirectionally consistent — field names, types, optionality, and version
+markers must match exactly.
+
+| Crate | Enforcement |
+|-------|-------------|
+| **Conductor** | Typed Rust bridge (`v_latest.rs`) with exhaustive round-trip tests covering all fields and variant branches. NCL `IntegerNumberV1` contract validated against Rust integer sentinels. |
+| **MediaPM** | Typed envelope (`MediaPmDocumentEnvelopeV1`) wrapping flattened inner struct at the version layer (conductor pattern). `deny_unknown_fields` on parent envelope. Round-trip decode/encode tests for runtime, state, and platform-specific fields. |
+| **Builtins** | N/A (no NCL schema — CLI/API contracts enforced by builtin validation) |
+
+**Architecture**:
+- Each versioned NCL document has a corresponding typed Rust struct at the
+  version layer (e.g., `v1.rs`), with an envelope struct that carries the
+  explicit `version` marker and flattens the inner document.
+- `decode()`: deserialize JSON value → typed envelope → extract inner document.
+- `encode()`: serialize inner document → wrap in typed envelope → JSON value.
+- `deny_unknown_fields` lives on the **parent envelope** because
+  `#[serde(flatten)]` on the child prevents it from carrying its own
+  `deny_unknown_fields`.
+- Child structs with `#[serde(flatten)]` must NOT set `deny_unknown_fields`.
+
+**Test coverage**:
+- `decode_rejects_unsupported_mediapm_ncl_version` — future version markers fail.
+- `encode_round_trip_preserves_latest_version_marker` — default document keeps
+  current version.
+- `populated_runtime_storage_round_trips_through_typed_envelope` — all
+  `MediaRuntimeStorage` fields survive encode→decode.
+- `populated_mediapm_state_round_trips_through_typed_envelope` — managed files,
+  tool registry, workflow states with impure timestamps round-trip.
+- `typed_envelope_rejects_unknown_top_level_field` — envelope-level
+  `deny_unknown_fields` catches extra keys.
+- `inherited_env_vars_round_trip_preserves_platform_keys` — all three platform
+  entries survive round-trip.
+
+**`PlatformInheritedEnvVars`**: This is a type alias for
+`BTreeMap<String, Vec<String>>` (not a struct with named fields). Platform
+keys are `"windows"`, `"linux"`, `"macos"` — access via `.get(key)` /
+
+`.map(|v| v.as_slice())`.
+
+**Verification**: If a new field is added to the Rust struct but not to the NCL
+schema (or vice versa), the round-trip tests will detect the mismatch. Adding
+a field requires: (1) update NCL schema, (2) update Rust struct, (3) verify
+round-trip tests pass.
 
 ---
 

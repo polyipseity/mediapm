@@ -1708,6 +1708,45 @@ via `BTreeMap::insert()`, silently overwriting existing entries with the same
 
 ---
 
+### 4.28 SERIAL_GUARD Removal and Per-Workspace tmp Isolation
+
+**Issue**: Materializer tests used a global `OnceLock<Mutex<()>>` (`SERIAL_GUARD`)
+to serialize access to the system temp directory, preventing concurrent test
+processes from colliding on staging paths. This global lock did not scale to
+parallel test execution and leaked abstraction (test infrastructure concern
+visible in production code).
+
+**Scenario**:
+
+- Two concurrent `cargo test` processes run materializer tests
+- Both try to create staging directories under the system temp dir
+- Without serialization, tests race on temp dir entries, producing spurious
+  failures
+- `SERIAL_GUARD` serialized all materializer tests globally, eliminating races
+  at the cost of sequentializing test execution
+
+**Resolution**:
+
+- `SERIAL_GUARD` (`OnceLock<Mutex<()>>`) removed entirely from
+  `src/mediapm/src/materializer/mod.rs`
+- Replaced with per-workspace staging directories at `.mediapm/tmp/` (relative
+  to the workspace being synced)
+- Each workspace gets its own staging tree, so concurrent test processes on
+  different workspaces never conflict
+- The staging directory is scoped to a single sync operation; cleaned up on
+  success (promoted to final location) or on failure (rolled back)
+- The Atomicity Contract in `crate-specifications.md` updated to document:
+  "per-workspace staging dirs (`.mediapm/tmp/`) replace global `SERIAL_GUARD` lock"
+
+**Cross-References**:
+
+- `src/mediapm/src/materializer/mod.rs`: staging directory creation under
+  `.mediapm/tmp/`, cleanup on rollback
+- `.agents/instructions/crate-specifications.md`: Atomicity Contract table,
+  MediaPM row
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination
@@ -1935,6 +1974,59 @@ until explicitly cleaned up.
 - `state_pointer` still references B1 (or B2, both contain K1) → K1 remains reachable
 - Step 2 retried → new instance key K2 derived (may differ if impure) → on success, K2 added alongside K1
 - Outcome: Step 1's I/O is always available via K1
+
+---
+
+### 5.8 NCL↔Rust Schema Sync Contract
+
+**Issue**: With crate-specific NCL configurations (Conductor document, MediaPM
+document, builtin tool configs) each having their own versioned schema, there
+was no explicit contract for keeping the Rust-side `serde` structs in sync
+with the NCL-side type annotations and contracts. Mismatches would only be
+caught at runtime (NCL evaluation or JSON deserialization failure), not at
+compile time.
+
+**Key design decisions**:
+
+1. **Typed envelope pattern** (MediaPM): `MediaPmDocumentEnvelopeV1` wraps
+   `MediaPmDocumentStateV1` via `#[serde(flatten)]`. The parent carries
+   `deny_unknown_fields` (works here since `deny_unknown_fields` on the parent
+   rejects unknown JSON keys even with `flatten` on the child). The child
+   struct does NOT carry `deny_unknown_fields` (it would be ignored under
+   `flatten`).
+
+2. **Typed bridge** (Conductor): `ConductorDocumentEnvelopeV1` wraps document
+   state without `flatten` — version + body are separate named fields. Each
+   inner document type has its own `deny_unknown_fields`. Round-trip tests
+   verify JSON serialization symmetry.
+
+3. **Dual decode path**: NCL produces a `nickel::Value` → JSON string → typed
+   envelope → inner document. Encode reverses: inner document → envelope →
+   JSON string. Unknown fields are rejected at the typed envelope boundary.
+
+4. **PlatformInheritedEnvVars** is a `BTreeMap<String, Vec<String>>` type
+   alias (not a struct with named fields). Platform keys are `"windows"`,
+   `"linux"`, `"macos"`.
+
+**Test coverage**:
+
+- Conductor: `IntegerNumberV1 contract enforcement` (3 tests: valid integer,
+  non-integer decimal, and non-numeric values) + round-trip serialize ↔
+  deserialize for each versioned document type
+- MediaPM: envelope-level `deny_unknown_fields` reject, round-trip of
+  populated runtime storage (13 fields), round-trip of populated state
+  (managed_files, tool_registry, active_tools, workflow_states), round-trip of
+  `PlatformInheritedEnvVars` (3 platform entries)
+
+**Verification rule for adding new fields**: When a new field is added to a
+versioned Rust struct that maps to an NCL document:
+
+- Add the field to the Rust struct (with `serde` attribute)
+- Add corresponding field to the NCL schema (if applicable)
+- Verify the typed envelope's `deny_unknown_fields` would catch a stray
+  JSON key (parent envelope must carry the attribute)
+- Add a round-trip test that populates the new field and verifies JSON
+  symmetry
 
 ---
 
