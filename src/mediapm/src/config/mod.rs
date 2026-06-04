@@ -405,6 +405,14 @@ pub struct MediaRuntimeStorage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profiler_enabled: Option<bool>,
 
+    /// When true, verify materialized output against CAS hash after write.
+    ///
+    /// Defaults to `false` (trust CAS by default). When enabled, the
+    /// materializer recomputes the BLAKE3 hash of each written output file
+    /// and panics/errors on mismatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_materialization: Option<bool>,
+
     /// Optional instance GC time-to-live in seconds.
     ///
     /// When set, stale orchestration instances are pruned after this many
@@ -412,6 +420,14 @@ pub struct MediaRuntimeStorage {
     /// When `None`, GC is left to conductor defaults (usually disabled).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,
+}
+
+impl MediaRuntimeStorage {
+    /// Returns whether materialization verification is enabled.
+    #[must_use]
+    pub fn verify_materialization(&self) -> bool {
+        self.verify_materialization.unwrap_or(false)
+    }
 }
 
 /// Returns whether runtime schema-export policy was omitted from config.

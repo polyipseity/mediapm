@@ -1402,6 +1402,7 @@ where
             &machine,
             &conductor_cas_root,
             &mut lock,
+            document.runtime.verify_materialization(),
         )
         .await?;
         let mut warnings = Vec::new();

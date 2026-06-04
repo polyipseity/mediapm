@@ -94,6 +94,9 @@ pub(crate) struct MediaRuntimeStorageWireV1 {
     pub(crate) path_sanitization: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) profiler_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wire field for `MediaRuntimeStorage.verify_materialization`.
+    pub(crate) verify_materialization: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

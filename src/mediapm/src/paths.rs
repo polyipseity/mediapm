@@ -305,6 +305,7 @@ mod tests {
             env_generated_file: None,
             mediapm_schema_dir: Some(Some("schemas/mediapm".to_string())),
             profiler_enabled: None,
+            verify_materialization: None,
             path_sanitization: None,
         };
 

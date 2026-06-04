@@ -496,12 +496,40 @@ impl TagUpdatePolicyArgs {
     }
 }
 
+/// Optional verify-materialization override flags for sync commands.
+#[derive(Debug, Args, Clone, Copy, Default)]
+struct VerifyMaterializationArgs {
+    /// Enables materialization verification (recomputes BLAKE3 hash after write).
+    #[arg(long, conflicts_with = "no_verify_materialization")]
+    verify_materialization: bool,
+    /// Disables materialization verification.
+    #[arg(long)]
+    no_verify_materialization: bool,
+}
+
+impl VerifyMaterializationArgs {
+    /// Resolves effective verify-materialization policy using command-specific default.
+    #[expect(dead_code, reason = "reserved for future CLI wiring")]
+    fn resolve(self, default_value: bool) -> bool {
+        if self.verify_materialization {
+            true
+        } else if self.no_verify_materialization {
+            false
+        } else {
+            default_value
+        }
+    }
+}
+
 /// Arguments for top-level `mediapm sync`.
 #[derive(Debug, Args, Clone, Copy, Default)]
 struct SyncArgs {
     /// Optional override for tag-only tool update checks.
     #[command(flatten)]
     tag_update_policy: TagUpdatePolicyArgs,
+    /// Optional override for materialization verification.
+    #[command(flatten)]
+    verify_materialization: VerifyMaterializationArgs,
 }
 
 /// Arguments for `mediapm tool sync`.
@@ -510,6 +538,9 @@ struct ToolSyncArgs {
     /// Optional override for tag-only tool update checks.
     #[command(flatten)]
     tag_update_policy: TagUpdatePolicyArgs,
+    /// Optional override for materialization verification.
+    #[command(flatten)]
+    verify_materialization: VerifyMaterializationArgs,
 }
 
 #[tokio::main]
@@ -534,6 +565,7 @@ async fn main() -> anyhow::Result<()> {
         env_generated_file: option_path_to_string(cli.env_generated_file),
         mediapm_schema_dir: None,
         profiler_enabled: None,
+        verify_materialization: None,
         instance_ttl_seconds: None,
         path_sanitization: None,
     };

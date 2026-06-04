@@ -48,6 +48,9 @@ let RuntimeStorageV1 = {
   # ||| When Some(true), conductor writes a per-step timing profile.
   # ||| When omitted, profiling is disabled.
   profiler_enabled | Dyn | optional,
+  # ||| When true, verify materialized output against CAS hash after write.
+  # ||| Defaults to false (trust CAS by default).
+  verify_materialization | Dyn | optional,
 }
 in
 

@@ -382,9 +382,16 @@ async fn sync_hierarchy_normalizes_expanded_metadata_placeholder_paths_to_nfd() 
     };
 
     let mut lock = MediaLockFile::default();
-    sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-        .await
-        .expect("sync hierarchy");
+    sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     let normalized_path = format!("library/{}/track.mkv", artist_name.nfd().collect::<String>());
     assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
@@ -433,9 +440,16 @@ async fn sync_hierarchy_normalizes_expanded_media_id_placeholder_paths_to_nfd() 
     };
 
     let mut lock = MediaLockFile::default();
-    sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-        .await
-        .expect("sync hierarchy");
+    sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     let normalized_path = format!("library/{}/track.mkv", media_id.nfd().collect::<String>());
     assert!(paths.hierarchy_root_dir.join(&normalized_path).is_file());
@@ -673,10 +687,16 @@ async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(
@@ -787,10 +807,16 @@ async fn sync_hierarchy_preserves_nested_outputs_when_parent_media_folder_commit
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 2);
     assert!(paths.hierarchy_root_dir.join("library/media-a/sidecars/info.json").is_file());
@@ -876,10 +902,16 @@ async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() 
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 2);
     assert!(paths.hierarchy_root_dir.join("library/media-a/sidecars/info.json").is_file());
@@ -956,10 +988,16 @@ async fn sync_hierarchy_applies_folder_rename_replacement_media_placeholders() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/renamed/Demo Title [media-a].jpg").is_file());
@@ -1005,10 +1043,16 @@ async fn sync_hierarchy_materializes_local_source_from_cas_variant_pointer() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/media-a.bin").exists());
@@ -1130,10 +1174,16 @@ async fn sync_hierarchy_generates_playlist_with_relative_and_absolute_entries() 
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 3);
 
@@ -1259,10 +1309,16 @@ async fn sync_hierarchy_playlist_resolves_hierarchy_id_mapping() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 3);
 
@@ -1334,10 +1390,16 @@ async fn sync_hierarchy_playlist_rejects_non_media_hierarchy_id() {
     };
 
     let mut lock = MediaLockFile::default();
-    let error =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect_err("playlist references to non-media hierarchy ids must fail");
+    let error = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect_err("playlist references to non-media hierarchy ids must fail");
 
     assert!(error.to_string().contains("references unknown hierarchy id 'folder-only'"));
     assert!(!paths.hierarchy_root_dir.join("library/playlists/folder-only.m3u8").exists());
@@ -1451,10 +1513,16 @@ async fn sync_hierarchy_generates_pls_playlist_and_records_format_label() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 2);
 
@@ -1519,10 +1587,16 @@ async fn sync_hierarchy_interpolates_literal_media_metadata_placeholders() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/Demo Title.bin").exists());
@@ -1580,10 +1654,16 @@ async fn sync_hierarchy_interpolates_variant_backed_media_metadata_placeholders(
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/Variant Title.bin").exists());
@@ -1633,10 +1713,16 @@ async fn sync_hierarchy_interpolates_media_id_placeholder() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/media-a/output.bin").exists());
@@ -1696,10 +1782,16 @@ async fn sync_hierarchy_interpolates_variant_metadata_with_dot_prefix() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/output.mkv").exists());
@@ -1759,10 +1851,16 @@ async fn sync_hierarchy_interpolates_empty_variant_metadata_without_dot_prefix()
     };
 
     let mut lock = MediaLockFile::default();
-    let report =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect("sync hierarchy");
+    let report = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect("sync hierarchy");
 
     assert_eq!(report.materialized_paths, 1);
     assert!(paths.hierarchy_root_dir.join("library/output").exists());
@@ -1984,7 +2082,7 @@ async fn sync_hierarchy_materializes_online_variant_from_workflow_state() {
     };
 
     let mut lock = MediaLockFile::default();
-    let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock)
+    let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock, false)
         .await
         .expect("sync hierarchy");
 
@@ -2035,10 +2133,16 @@ async fn sync_hierarchy_fails_when_local_variant_hash_is_missing_from_cas() {
     };
 
     let mut lock = MediaLockFile::default();
-    let error =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect_err("missing local CAS payload must fail materialization");
+    let error = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect_err("missing local CAS payload must fail materialization");
 
     let error_text = error.to_string();
     assert!(error_text.contains("variant 'default'"), "unexpected error: {error_text}");
@@ -2096,10 +2200,16 @@ async fn sync_hierarchy_fails_when_online_variant_hash_is_unresolved() {
     };
 
     let mut lock = MediaLockFile::default();
-    let error =
-        sync_hierarchy(&paths, &document, &MachineNickelDocument::default(), &cas_root, &mut lock)
-            .await
-            .expect_err("online source without resolved workflow output hash must fail");
+    let error = sync_hierarchy(
+        &paths,
+        &document,
+        &MachineNickelDocument::default(),
+        &cas_root,
+        &mut lock,
+        false,
+    )
+    .await
+    .expect_err("online source without resolved workflow output hash must fail");
 
     let error_text = error.to_string();
     assert!(error_text.contains(source_uri), "unexpected error: {error_text}");

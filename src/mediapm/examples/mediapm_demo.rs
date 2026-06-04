@@ -898,6 +898,9 @@ fn configure_document_for_local_tool_chain(
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
         profiler_enabled: Some(true),
+        // CAS integrity trusted by default; set to Some(true) to verify each
+        // materialized output against its CAS record.
+        verify_materialization: None,
         // Optional default runtime GC TTL in seconds.
         // Not set: inherits conductor's built-in default.
         instance_ttl_seconds: None,

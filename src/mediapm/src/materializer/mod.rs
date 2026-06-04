@@ -1,8 +1,8 @@
-//! Atomic staging + commit materializer for mediapm hierarchy sync.
+//! Direct materialization of CAS objects to final output paths for mediapm hierarchy sync.
 //!
-//! The materializer enforces path invariants, stages all outputs under
-//! the resolved runtime staging directory, and then commits with atomic rename
-//! operations into the resolved library directory.
+//! The materializer resolves hierarchy entries, extracts ZIP folders to a
+//! temporary directory, and materializes all outputs directly to their final
+//! paths under the resolved library directory.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -34,7 +34,7 @@ mod tests;
 mod zip;
 
 use self::commit::{
-    commit_staged_output, now_unix_seconds, remove_path, sanitize_hierarchy_path,
+    ensure_managed_path_readonly, now_unix_seconds, remove_path, sanitize_hierarchy_path,
     unix_epoch_millis, validate_hierarchy_path,
 };
 use self::file_ops::materialize_file_from_cas_with_order;
@@ -58,22 +58,18 @@ use self::resolve::{instance_matches_expected_inputs, resolve_workflow_step_outp
 use self::zip::{apply_hierarchy_folder_rename_rules, register_zip_file_entry};
 use self::zip::{compile_hierarchy_folder_rename_rules, extract_zip_folder_variant_bytes};
 
-/// Upper bound for concurrent hierarchy staging workers.
-const HIERARCHY_STAGE_MAX_CONCURRENCY: usize = 8;
+/// Maximum concurrent hierarchy materialization workers.
+const HIERARCHY_MAX_CONCURRENCY: usize = 1024;
 
 /// Maximum number of Unicode scalar values shown in one progress filename.
 const HIERARCHY_PROGRESS_MAX_FILENAME_CHARS: usize = 48;
 
-/// One prepared hierarchy-entry staging result.
+/// One prepared hierarchy-entry materialization result.
 #[derive(Debug)]
 struct PreparedHierarchyEntryResult {
     /// Flat hierarchy entry path template after placeholder resolution.
     relative_path: String,
-    /// Entry kind used during final commit policy selection.
-    entry_kind: HierarchyEntryKind,
-    /// Staged output path prepared for commit.
-    staged_path: PathBuf,
-    /// Final destination path used for commit.
+    /// Final destination path for materialized output.
     final_path: PathBuf,
     /// Managed media id to persist in lock records when materialized.
     managed_media_id: Option<String>,
@@ -192,15 +188,15 @@ struct RenderedPlaylistItem {
     path: String,
 }
 
-/// Computes bounded hierarchy staging worker parallelism.
+/// Computes bounded hierarchy materialization worker parallelism.
 #[must_use]
-fn hierarchy_stage_worker_count(total_entries: usize) -> usize {
+fn hierarchy_worker_count(total_entries: usize) -> usize {
     if total_entries == 0 {
         return 1;
     }
 
     let cpu_hint = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
-    total_entries.min(cpu_hint).clamp(1, HIERARCHY_STAGE_MAX_CONCURRENCY)
+    total_entries.min(cpu_hint).clamp(1, HIERARCHY_MAX_CONCURRENCY)
 }
 
 /// Formats one hierarchy entry kind for progress-row messages.
@@ -246,14 +242,14 @@ fn truncate_progress_label(value: &str, max_chars: usize) -> String {
     format!("{prefix}…")
 }
 
-/// Prepares one hierarchy entry in the staging root without final commit.
+/// Prepares one hierarchy entry for materialization to its final output path.
 #[expect(
     clippy::too_many_lines,
-    reason = "this helper intentionally keeps per-entry staging behavior unified for deterministic worker execution"
+    reason = "this helper intentionally keeps per-entry materialization behavior unified for deterministic worker execution"
 )]
 #[expect(
     clippy::too_many_arguments,
-    reason = "per-entry staging needs explicit immutable inputs to keep worker behavior deterministic"
+    reason = "per-entry materialization needs explicit immutable inputs to keep worker behavior deterministic"
 )]
 async fn prepare_hierarchy_entry(
     paths: &MediaPmPaths,
@@ -261,7 +257,6 @@ async fn prepare_hierarchy_entry(
     lock: &MediaLockFile,
     lookup: &MaterializationLookupContext,
     materialization_methods: &[crate::config::MaterializationMethod],
-    staging_root: &Path,
     playlist_media_index: &BTreeMap<String, String>,
     media_file_templates: &BTreeMap<String, crate::config::HierarchyEntry>,
     flattened_entry: &FlattenedHierarchyEntry,
@@ -303,24 +298,6 @@ async fn prepare_hierarchy_entry(
         )));
     }
 
-    // MediaFolder entries must each have their own isolated staging directory.
-    //
-    // Two or more MediaFolder entries may resolve to the same final path (for
-    // example two `path=""` nodes materializing thumbnails and links into the
-    // same media-root folder). If their staged paths shared a common prefix, the
-    // first commit's `merge_staged_directory_into_existing` call would
-    // recursively consume and remove nested staging directories that still
-    // belong to sibling entries, leaving those siblings with a missing staged
-    // path on their own commit.
-    //
-    // Using a flat `staging_root/{job_index}/` directory for every MediaFolder
-    // entry guarantees isolation: no commit can ever traverse into another
-    // entry's staging area.
-    let staged_path = if matches!(entry.kind, HierarchyEntryKind::MediaFolder) {
-        staging_root.join(job_index.to_string())
-    } else {
-        staging_root.join(fs_relative_path)
-    };
     let final_path = paths.hierarchy_root_dir.join(fs_relative_path);
     progress_bar.set_position(10);
 
@@ -369,8 +346,6 @@ async fn prepare_hierarchy_entry(
                     progress_bar.set_position(100);
                     return Ok(PreparedHierarchyEntryResult {
                         relative_path,
-                        entry_kind: entry.kind,
-                        staged_path,
                         final_path,
                         managed_media_id: None,
                         managed_file_variants: BTreeMap::new(),
@@ -383,9 +358,9 @@ async fn prepare_hierarchy_entry(
                 }
             }
 
-            if let Some(parent) = staged_path.parent() {
+            if let Some(parent) = final_path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|source_err| MediaPmError::Io {
-                    operation: "creating staged parent directory".to_string(),
+                    operation: "creating final parent directory".to_string(),
                     path: parent.to_path_buf(),
                     source: source_err,
                 })?;
@@ -412,7 +387,7 @@ async fn prepare_hierarchy_entry(
             materialize_file_from_cas_with_order(
                 &lookup.cas,
                 file_hash,
-                &staged_path,
+                &final_path,
                 relative_path.as_str(),
                 materialization_methods,
                 &mut notices,
@@ -444,10 +419,10 @@ async fn prepare_hierarchy_entry(
                     ))
                 })?;
 
-            tokio::fs::create_dir_all(&staged_path).await.map_err(|source_err| {
+            tokio::fs::create_dir_all(&final_path).await.map_err(|source_err| {
                 MediaPmError::Io {
-                    operation: "creating staged output directory".to_string(),
-                    path: staged_path.clone(),
+                    operation: "creating final output directory".to_string(),
+                    path: final_path.clone(),
                     source: source_err,
                 }
             })?;
@@ -475,6 +450,16 @@ async fn prepare_hierarchy_entry(
                 &entry.media_id,
             )?;
 
+            let extract_dir =
+                paths.mediapm_tmp_dir.join(format!("extract-{}-{}", now_unix_seconds(), job_index));
+            tokio::fs::create_dir_all(&extract_dir).await.map_err(|source_err| {
+                MediaPmError::Io {
+                    operation: "creating temp extraction directory".to_string(),
+                    path: extract_dir.clone(),
+                    source: source_err,
+                }
+            })?;
+
             progress_bar.set_position(30);
             let mut extracted_entries = BTreeMap::new();
             let mut extracted_entry_variants = BTreeMap::<String, String>::new();
@@ -487,7 +472,7 @@ async fn prepare_hierarchy_entry(
 
                 extract_zip_folder_variant_bytes(
                     variant_source.bytes.as_slice(),
-                    &staged_path,
+                    &extract_dir,
                     &relative_path,
                     &entry.media_id,
                     variant,
@@ -505,31 +490,31 @@ async fn prepare_hierarchy_entry(
                 }
 
                 let managed_path = join_relative_paths(fs_relative_path, entry_path);
-                let staged_file_path = staged_path.join(entry_path);
-                let staged_bytes =
-                    tokio::fs::read(&staged_file_path).await.map_err(|source_err| {
+                let extract_file_path = extract_dir.join(entry_path);
+                let extracted_bytes =
+                    tokio::fs::read(&extract_file_path).await.map_err(|source_err| {
                         MediaPmError::Io {
-                            operation: "reading extracted staged file bytes for CAS import"
-                                .to_string(),
-                            path: staged_file_path.clone(),
+                            operation: "reading extracted file bytes for CAS import".to_string(),
+                            path: extract_file_path.clone(),
                             source: source_err,
                         }
                     })?;
-                let staged_hash = lookup.cas.put(staged_bytes).await.map_err(|source| {
+                let extracted_hash = lookup.cas.put(extracted_bytes).await.map_err(|source| {
                         MediaPmError::Workflow(format!(
                             "importing materialized folder member '{managed_path}' into CAS failed: {source}",
                         ))
                     })?;
+                let final_file_path = final_path.join(entry_path);
                 materialize_file_from_cas_with_order(
                     &lookup.cas,
-                    staged_hash,
-                    &staged_file_path,
+                    extracted_hash,
+                    &final_file_path,
                     &managed_path,
                     materialization_methods,
                     &mut notices,
                 )
                 .await?;
-                managed_file_hashes.insert(managed_path, staged_hash);
+                managed_file_hashes.insert(managed_path.clone(), extracted_hash);
 
                 let entry_variant = extracted_entry_variants
                         .get(entry_path)
@@ -540,9 +525,17 @@ async fn prepare_hierarchy_entry(
                                 entry.media_id
                             ))
                         })?;
-                managed_file_variants
-                    .insert(join_relative_paths(fs_relative_path, entry_path), entry_variant);
+                managed_file_variants.insert(managed_path, entry_variant);
             }
+
+            // Clean up temp extraction directory.
+            tokio::fs::remove_dir_all(&extract_dir).await.map_err(|source_err| {
+                MediaPmError::Io {
+                    operation: "removing temp extraction directory".to_string(),
+                    path: extract_dir.clone(),
+                    source: source_err,
+                }
+            })?;
 
             (Some(entry.media_id.clone()), managed_file_variants, managed_file_hashes, false)
         }
@@ -598,9 +591,9 @@ async fn prepare_hierarchy_entry(
                 });
             }
 
-            if let Some(parent) = staged_path.parent() {
+            if let Some(parent) = final_path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|source_err| MediaPmError::Io {
-                    operation: "creating staged parent directory".to_string(),
+                    operation: "creating final parent directory".to_string(),
                     path: parent.to_path_buf(),
                     source: source_err,
                 })?;
@@ -616,7 +609,7 @@ async fn prepare_hierarchy_entry(
             materialize_file_from_cas_with_order(
                 &lookup.cas,
                 playlist_hash,
-                &staged_path,
+                &final_path,
                 relative_path.as_str(),
                 materialization_methods,
                 &mut notices,
@@ -638,8 +631,6 @@ async fn prepare_hierarchy_entry(
     progress_bar.set_position(100);
     Ok(PreparedHierarchyEntryResult {
         relative_path,
-        entry_kind: entry.kind,
-        staged_path,
         final_path,
         managed_media_id,
         managed_file_variants,
@@ -651,7 +642,8 @@ async fn prepare_hierarchy_entry(
     })
 }
 
-/// Synchronizes desired hierarchy entries using stage-verify-commit flow.
+/// Synchronizes hierarchy entries, materializing CAS objects directly to
+/// final output paths. CAS integrity is trusted without separate verification.
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
@@ -662,6 +654,7 @@ pub async fn sync_hierarchy(
     machine: &MachineNickelDocument,
     conductor_cas_root: &Path,
     lock: &mut MediaLockFile,
+    _verify_materialization: bool,
 ) -> Result<MaterializeReport, MediaPmError> {
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
     let ffmpeg_max_input_slots = ffmpeg_slot_limits.max_input_slots;
@@ -698,19 +691,12 @@ pub async fn sync_hierarchy(
         managed_ffprobe_path,
     };
 
-    let staging_root = paths.mediapm_tmp_dir.join(format!("sync-{}", now_unix_seconds()));
-    tokio::fs::create_dir_all(&staging_root).await.map_err(|source| MediaPmError::Io {
-        operation: "creating sync staging directory".to_string(),
-        path: staging_root.clone(),
-        source,
-    })?;
-
     let mut report = MaterializeReport::default();
     let mut desired_paths = BTreeSet::new();
     let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     let playlist_media_index = collect_playlist_media_index(&flattened_hierarchy)?;
     let media_file_templates = collect_media_file_hierarchy_templates(&flattened_hierarchy)?;
-    let worker_count = hierarchy_stage_worker_count(flattened_hierarchy.len());
+    let worker_count = hierarchy_worker_count(flattened_hierarchy.len());
 
     let total_entries = flattened_hierarchy.len();
     let multi = MultiProgress::new();
@@ -740,7 +726,6 @@ pub async fn sync_hierarchy(
     let shared_document = Arc::new(document.clone());
     let shared_lookup = Arc::new(lookup);
     let shared_materialization_methods = Arc::new(materialization_methods);
-    let shared_staging_root = Arc::new(staging_root.clone());
     let shared_playlist_media_index = Arc::new(playlist_media_index);
     let shared_media_file_templates = Arc::new(media_file_templates);
     let shared_lock_snapshot = Arc::new(lock.clone());
@@ -753,7 +738,6 @@ pub async fn sync_hierarchy(
         let worker_document = Arc::clone(&shared_document);
         let worker_lookup = Arc::clone(&shared_lookup);
         let worker_materialization_methods = Arc::clone(&shared_materialization_methods);
-        let worker_staging_root = Arc::clone(&shared_staging_root);
         let worker_playlist_media_index = Arc::clone(&shared_playlist_media_index);
         let worker_media_file_templates = Arc::clone(&shared_media_file_templates);
         let worker_lock_snapshot = Arc::clone(&shared_lock_snapshot);
@@ -782,7 +766,6 @@ pub async fn sync_hierarchy(
                     worker_lock_snapshot.as_ref(),
                     worker_lookup.as_ref(),
                     worker_materialization_methods.as_ref(),
-                    worker_staging_root.as_ref(),
                     worker_playlist_media_index.as_ref(),
                     worker_media_file_templates.as_ref(),
                     &flattened_entry,
@@ -871,23 +854,11 @@ pub async fn sync_hierarchy(
             continue;
         }
 
-        if let Some(parent) = prepared.final_path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|source_err| MediaPmError::Io {
-                operation: "creating final output parent directory".to_string(),
-                path: parent.to_path_buf(),
-                source: source_err,
-            })?;
-        }
-
-        let staged_commit = prepared.staged_path.clone();
-        let final_commit = prepared.final_path.clone();
-        let entry_kind = prepared.entry_kind;
-        tokio::task::spawn_blocking(move || {
-            commit_staged_output(&staged_commit, &final_commit, entry_kind)
-        })
-        .await
-        .map_err(|e| {
-            MediaPmError::Workflow(format!("commit staged output task panicked: {e}"))
+        let managed_path = prepared.final_path.clone();
+        tokio::task::spawn_blocking(move || ensure_managed_path_readonly(&managed_path))
+            .await
+            .map_err(|e| {
+            MediaPmError::Workflow(format!("readonly enforcement task panicked: {e}"))
         })??;
 
         let managed_media_id = prepared.managed_media_id.ok_or_else(|| {
@@ -987,6 +958,5 @@ pub async fn sync_hierarchy(
     hierarchy_progress.set_message("done");
     tokio::time::sleep(Duration::from_millis(75)).await;
 
-    let _ = fs::remove_dir_all(&staging_root);
     Ok(report)
 }
