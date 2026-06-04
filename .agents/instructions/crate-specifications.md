@@ -378,33 +378,42 @@ For comprehensive details, refer to the following specifications collected from 
 - **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
 - **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
-### §16 Worker-Based Progress Display
+### §16 Channel-Based Workflow Progress Events
 
-Conductor uses `pulsebar` (via `MultiProgress`) to display workflow execution
-progress. Unlike the old per-workflow bars, the dependency-stream model uses a
-single `overall_bar` (tracking completed steps across all workflows) plus one
-bar per worker (showing the currently dispatched step or idle status).
+Conductor no longer renders progress bars internally. Instead, it emits
+workflow step completion events through an optional channel. The consumer
+(mediapm service layer) creates the channel, owns the `MultiProgress` and
+`ProgressBar` instances, and renders progress based on received events.
 
-- **Overall bar**: `total_steps` (sum of all workflow step counts), advanced by
-  `overall_bar.advance(1)` on each successful step completion. Format:
-  `"{msg}  [{bar:20}]  {pos}/{total}"`.
-- **Worker bars**: Each initialized as `worker#{i}: idle`; updated on dispatch
-  to `worker#{i}: → {wf_name}.{step_id}`; reset to idle on completion.
-- On failure, the worker bar is set to `worker#{i}: failed`.
-- After the dispatch loop, `overall_bar` message is set to `"all steps done"`
-  and each worker bar to `"done"`.
-- No `finish_success`/`finish_error` calls — bars stay in Running state.
-  `set_message(...)` + `set_position(...)` is used for all status updates,
-  following the pattern from `provision.rs`. This avoids pulsebar's render-
-  time-clock elapsed display on finished rows.
-- Format strings intentionally omit `{elapsed}` so bars show no ticking
-  duration.
-- Zero-step workflows: `overall_bar` is created with `total_steps.max(1)` so
-  even a zero-step dispatch still renders a bar (no format string special-
-  casing needed).
-- `MultiProgress` is dropped naturally at end of `execute_workflows()` scope;
-  no explicit settle delay is needed (the old `WORKFLOW_PROGRESS_SETTLE_MS`
-  constant from `execution_hub.rs` was removed).
+- **API types** (`src/conductor/src/api.rs`):
+  - `WorkflowStepEvent` struct with fields: `total_steps: usize`,
+    `completed_steps: usize`, `workflow_name: String`, `step_id: String`,
+    `workflow_display_name: String`, `executed: bool`. Derives `Debug + Clone`.
+  - `WorkflowProgressSender` type alias:
+    `tokio::sync::mpsc::UnboundedSender<WorkflowStepEvent>`.
+  - `RunWorkflowOptions.progress_sender: Option<WorkflowProgressSender>`.
+
+- **Coordinator event emission** (`src/conductor/src/orchestration/coordinator.rs`):
+  - `execute_workflows` accepts `progress_sender: Option<WorkflowProgressSender>`.
+  - Before the dispatch loop, `total_steps` is computed as the sum of
+    `ds.step_outputs.len() + ds.ready_queue.len()` across all `dep_states`.
+  - After each step completion, if `progress_sender` is `Some`, a
+    `WorkflowStepEvent` is sent via the channel.
+  - The coordinator no longer imports or uses `pulsebar` at all.
+  - No `MultiProgress` or progress bars are created in the coordinator.
+
+- **Consumer rendering** (`src/mediapm/src/service.rs`):
+  - `sync_library_with_tag_update_checks` creates an
+    `mpsc::unbounded_channel`, a `MultiProgress` with one `ProgressBar`, and
+    spawns a `tokio` receiver task.
+  - The receiver task uses `rx.recv().await` to listen for events, updating
+    the bar's position and message on each event.
+  - When the channel closes (sender dropped), the bar shows
+    `"all workflows complete"` and a 75 ms settle delay is applied.
+  - For the filesystem CAS branch (no events), `rx` is dropped immediately
+    and the handle awaited.
+  - For the normal conductor branch, `tx` is dropped after the match
+    completes and the handle awaited.
 
 
 ### §17 Tool Content Cache Locking Protocol
@@ -457,6 +466,12 @@ ensures stale tool content cache entries do not persist after a tool
 identity change, so subsequent `sync` invocations (with incomplete steps
 that now have `impure_timestamp = None`) re-materialize from fresh cache
 entries.
+
+**Pruned entry filtering**: In addition to the directory-pruning logic,
+`compute_stale_entry_report` in `lifecycle.rs` filters out entries whose
+`status == ToolRegistryStatus::Pruned`. The filter short-circuits the
+per-record scan so pruned IDs never reach the sync report, preventing
+repeated stale-entry warnings on every sync cycle.
 
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)

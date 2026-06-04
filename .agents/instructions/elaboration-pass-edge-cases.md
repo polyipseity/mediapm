@@ -1751,13 +1751,13 @@ declared (even as a minimal stub) to participate in dependency resolution.
 
 | Property | Value |
 |---|---|
-| **Crates** | `mediapm-conductor` |
-| **Files** | `src/conductor/src/orchestration/coordinator.rs` |
-| **Risk** | Finished-bar duration display is deceiving (render-time clock, not per-bar). |
-| **Pre-fix (old per-workflow bars in execution_hub.rs)** | Pulsebar `finish_success("ready")` and `finish_error("failed")` rendered finished lines like `✔ ready (Xs)` where `X` was the *render-thread-clock elapsed* since the bar's `start_time`, not the time spent since start of that workflow. Because `MultiProgress` ticks all bars (including finished) at ~20 fps, all finished bars showed nearly the same elapsed value (the render instant), and it kept ticking indefinitely. |
-| **Post-fix (dependency-stream worker-based bars)** | `execution_hub.rs` deleted, replaced by inline dispatch in `coordinator.rs`. Per-workflow bars are replaced by one `overall_bar` (tracking completed step count) plus one bar per worker (showing current step or idle). `{elapsed}` removed from all format strings. No `finish_success`/`finish_error` calls anywhere — all status updates use `set_message` + `set_position`. Bars stay in Running state. Follows the pattern set by `provision.rs`. |
-| **Interaction risk** | Removing `{elapsed}` from progress bars means users lose the ability to see how long a workflow has been running. This was an intentional trade-off: the duration display was not reliable enough (render-time clock) to keep, and fixing it would require vendoring/patching pulsebar to add a `finish_time` field to `BarState`. Worker bars show no per-worker duration either. |
-| **Mitigation** | No explicit settle delay is needed — `MultiProgress` is dropped naturally at end of `execute_workflows()` scope (the old `WORKFLOW_PROGRESS_SETTLE_MS` constant was removed with `execution_hub.rs`). |
+| **Crates** | `mediapm-conductor`, `mediapm` |
+| **Files** | `src/conductor/src/api.rs`, `src/conductor/src/orchestration/coordinator.rs`, `src/mediapm/src/service.rs` |
+| **Risk** | Channel-based progress events use an unbounded channel (`mpsc::unbounded_channel`). A slow receiver could cause unbounded memory growth. The receiver task lifecycle must be carefully managed to avoid dropped events or zombie tasks. |
+| **Pre-fix (in-executor pulsebar bars)** | Pulsebar `MultiProgress` was rendered directly inside `coordinator.rs`'s `execute_workflows()` function using an `overall_bar` plus per-worker bars. The coordinator imported `pulsebar` and managed all progress display inline. No progress events were emitted — the caller had no visibility into step completion. |
+| **Post-fix (channel-based progress events)** | Conductor no longer renders progress bars internally. New API types (`WorkflowStepEvent`, `WorkflowProgressSender`) and `RunWorkflowOptions.progress_sender` field let callers opt into event delivery. The coordinator emits one `WorkflowStepEvent` after each step completion via the channel. The consumer (mediapm `service.rs`) creates the channel, a `MultiProgress`, and spawns a tokio receiver task that updates a single progress bar on each event. On channel close, it shows `"all workflows complete"` with a 75 ms settle delay. Pulsebar removed from coordinator entirely. |
+| **Interaction risk** | The unbounded channel could grow indefinitely if the receiver is slower than the step dispatch rate, though in practice steps are I/O-bound so this is unlikely. If the receiver panics or is dropped, events are silently dropped (unbounded sender never blocks). The `progress_sender.is_some()` field in `PartialEq` for `RunWorkflowOptions` means two options with different `progress_sender` values (Some vs None) are treated as unequal; this only affects caching, which relies on `PartialEq`. |
+| **Mitigation** | No settle delay in conductor (events are fire-and-forget). 75ms settle delay in the mediapm consumer so the bar displays the completion message briefly before the `MultiProgress` is dropped. |
 
 ---
 
@@ -1772,6 +1772,20 @@ declared (even as a minimal stub) to participate in dependency resolution.
 | **Post-fix** | Worker bars: `worker_bar.set_position(100)` + `worker_bar.set_message(...)`. Hierarchy bar: `hierarchy_progress.set_message("done")` (position already at total via `advance(1)` per entry). `{elapsed}` removed from both format strings. |
 | **Interaction risk** | Workers show no duration during or after execution. For long-running workers this loses feedback about how long they've been running. Same trade-off rationale as §4.24. |
 | **Mitigation** | A 75 ms settle delay mirrors the conductor pattern. |
+
+---
+
+#### §4.25a Pruned status filter in stale-entry detection
+
+| Property | Value |
+|---|---|
+| **Crates** | `mediapm` |
+| **Files** | `src/mediapm/src/conductor_bridge/sync/lifecycle.rs` |
+| **Risk** | Pruned entries produce repeated "stale entry" warnings every sync cycle, confusing users and cluttering logs. |
+| **Pre-fix** | `compute_stale_entry_report` scanned all tool registry records including pruned ones, reporting them as stale every sync. |
+| **Post-fix** | Added `if record.status == ToolRegistryStatus::Pruned { return None; }` filter before per-record stale check. Pruned IDs are silently excluded from the sync report. |
+| **Interaction risk** | If a pruned tool reappears later (e.g. manual registry edit), its entry would have no sync record and might not auto-recover. This is acceptable since the operator can re-sync. |
+| **Mitigation** | None needed — this is a best-effort performance filter, not a security boundary. |
 
 ---
 
