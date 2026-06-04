@@ -3,14 +3,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use mediapm_cas::FileSystemCas;
-use mediapm_conductor::{
-    ConductorApi, ConductorError, MachineNickelDocument, RunSummary, RunWorkflowOptions,
-    SimpleConductor,
-};
+use mediapm_conductor::MachineNickelDocument;
 use url::Url;
 
-use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
 /// Metadata tuple fetched by downloader-aware online probes.
@@ -206,60 +201,8 @@ pub(crate) fn resolve_conductor_cas_root(
     }
 }
 
-/// Executes workflows with a filesystem-backed conductor rooted at one CAS
-/// store path.
-///
-/// This path is used when workflow steps need payload hashes imported into the
-/// persistent runtime CAS store during tool reconciliation.
-pub(crate) async fn run_workflow_with_filesystem_cas(
-    conductor_cas_root: &Path,
-    user_ncl: &Path,
-    machine_ncl: &Path,
-    options: RunWorkflowOptions,
-) -> Result<RunSummary, MediaPmError> {
-    let cas = FileSystemCas::open(conductor_cas_root).await.map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "opening conductor CAS store '{}' for workflow execution failed: {source}",
-            conductor_cas_root.display()
-        ))
-    })?;
-    let conductor = SimpleConductor::new(cas);
-    conductor.run_workflow_with_options(user_ncl, machine_ncl, options).await.map_err(Into::into)
-}
-
-/// Returns true when workflow execution should run directly against
-/// filesystem-backed CAS instead of an in-memory conductor backend.
-///
-/// Managed executable tools persist runtime `content_map` hashes in the
-/// resolved conductor CAS store during tool reconciliation. Running workflow
-/// execution with in-memory CAS in that state would force a fail-then-retry
-/// fallback path and duplicate workflow progress output.
-#[must_use]
-pub(crate) fn should_prefer_filesystem_workflow_runner(machine: &MachineNickelDocument) -> bool {
-    machine
-        .tool_configs
-        .values()
-        .any(|config| config.content_map.as_ref().is_some_and(|map| !map.is_empty()))
-}
-
-/// Returns true when conductor workflow execution should retry on filesystem CAS.
-///
-/// The default in-memory conductor used by high-level `mediapm` service
-/// constructors cannot resolve hashes imported into the persistent runtime
-/// store during tool reconciliation. When that mismatch surfaces as a
-/// deterministic missing-object CAS error, sync falls back to a temporary
-/// filesystem-backed conductor bound to the resolved runtime store.
-pub(crate) fn should_retry_workflow_with_filesystem_cas(error: &ConductorError) -> bool {
-    let text = error.to_string();
-    text.contains("cas operation failed") && text.contains("object not found")
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use mediapm_cas::Hash;
-    use mediapm_conductor::{MachineNickelDocument, ToolConfigSpec};
     use serde_json::json;
 
     use super::*;
@@ -338,41 +281,5 @@ mod tests {
                 description: Some("Local description".to_string()),
             }
         );
-    }
-
-    /// Ensures workflow execution prefers filesystem CAS when managed runtime
-    /// tool configs reference persisted payload hashes.
-    #[test]
-    fn prefer_filesystem_workflow_runner_when_content_map_hashes_exist() {
-        let machine = MachineNickelDocument {
-            tool_configs: BTreeMap::from([(
-                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(
-                        "./".to_string(),
-                        Hash::from_content(b"payload"),
-                    )])),
-                    ..ToolConfigSpec::default()
-                },
-            )]),
-            ..MachineNickelDocument::default()
-        };
-
-        assert!(should_prefer_filesystem_workflow_runner(&machine));
-    }
-
-    /// Ensures workflow execution keeps existing conductor backend when no
-    /// managed runtime payload hashes are configured.
-    #[test]
-    fn prefer_filesystem_workflow_runner_is_false_without_content_map_hashes() {
-        let machine = MachineNickelDocument {
-            tool_configs: BTreeMap::from([(
-                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
-                ToolConfigSpec::default(),
-            )]),
-            ..MachineNickelDocument::default()
-        };
-
-        assert!(!should_prefer_filesystem_workflow_runner(&machine));
     }
 }

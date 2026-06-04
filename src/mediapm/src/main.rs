@@ -579,10 +579,11 @@ async fn main() -> anyhow::Result<()> {
     ) {
         let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
     }
-    let service = MediaPmService::new_in_memory_at_with_runtime_storage_overrides(
+    let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
         &cli.root,
         runtime_storage_overrides,
-    );
+    )
+    .await?;
 
     match cli.command {
         Command::Sync(args) => {

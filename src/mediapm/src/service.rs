@@ -13,7 +13,7 @@ use std::future::Future;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 
-use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
+use mediapm_cas::{CasApi, FileSystemCas};
 use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
@@ -43,8 +43,7 @@ use crate::lockfile::{MediaLockFile, load_lockfile, save_lockfile};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::{
     fetch_local_source_metadata, fetch_online_source_metadata, resolve_conductor_cas_root,
-    resolve_online_source_metadata_for_add, run_workflow_with_filesystem_cas,
-    should_prefer_filesystem_workflow_runner, should_retry_workflow_with_filesystem_cas,
+    resolve_online_source_metadata_for_add,
 };
 use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaRuntimeStorage,
@@ -1328,55 +1327,23 @@ where
         workflow_options.progress_sender = Some(tx.clone());
 
         eprintln!("[mediapm::sync] running conductor workflows...");
-        let conductor_summary = if should_prefer_filesystem_workflow_runner(&machine) {
-            let result = run_workflow_with_filesystem_cas(
-                &conductor_cas_root,
+        let conductor_summary = match self
+            .conductor
+            .run_workflow_with_options(
                 &effective_paths.conductor_user_ncl,
                 &effective_paths.conductor_machine_ncl,
                 workflow_options,
             )
-            .await;
-            drop(tx);
-            receiver_handle.await.ok();
-            result?
-        } else {
-            let result = match self
-                .conductor
-                .run_workflow_with_options(
-                    &effective_paths.conductor_user_ncl,
-                    &effective_paths.conductor_machine_ncl,
-                    workflow_options,
-                )
-                .await
-            {
-                Ok(summary) => summary,
-                Err(primary_error) => {
-                    if !should_retry_workflow_with_filesystem_cas(&primary_error) {
-                        return Err(primary_error.into());
-                    }
-
-                    run_workflow_with_filesystem_cas(
-                        &conductor_cas_root,
-                        &effective_paths.conductor_user_ncl,
-                        &effective_paths.conductor_machine_ncl,
-                        conductor_run_workflow_options(
-                            &effective_paths,
-                            &effective_runtime_storage,
-                        ),
-                    )
-                    .await
-                    .map_err(|fallback_error| {
-                        MediaPmError::Workflow(format!(
-                            "workflow execution failed with primary conductor backend ({primary_error}); filesystem-CAS fallback also failed: {fallback_error}"
-                        ))
-                    })?
-                }
-            };
-            // Drop sender so receiver task can complete.
-            drop(tx);
-            receiver_handle.await.ok();
-            result
+            .await
+        {
+            Ok(summary) => summary,
+            Err(primary_error) => {
+                return Err(primary_error.into());
+            }
         };
+        // Drop sender so receiver task can complete.
+        drop(tx);
+        receiver_handle.await.ok();
 
         // Backfill impure_timestamp for freshly-synthesized steps after
         // workflow completion, so the timestamp reflects the time when the
@@ -1431,32 +1398,29 @@ where
     }
 }
 
-impl MediaPmService<SimpleConductor<InMemoryCas>> {
-    /// Creates an in-memory conductor stack rooted at the current directory.
-    #[must_use]
-    pub fn new_in_memory() -> Self {
-        Self::new_in_memory_at(Path::new("."))
-    }
-
-    /// Creates an in-memory conductor stack for one explicit workspace root.
-    #[must_use]
-    pub fn new_in_memory_at(root_dir: &Path) -> Self {
-        let cas = InMemoryCas::new();
-        let conductor = SimpleConductor::new(cas);
-        let paths = MediaPmPaths::from_root(root_dir);
-        Self::new(conductor, paths)
-    }
-
-    /// Creates an in-memory conductor stack with runtime-storage overrides.
-    #[must_use]
-    pub fn new_in_memory_at_with_runtime_storage_overrides(
+impl MediaPmService<SimpleConductor<FileSystemCas>> {
+    /// Creates a filesystem-backed conductor stack rooted at the given directory.
+    ///
+    /// This is the production constructor used by the `mediapm` CLI.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError`] when the underlying filesystem CAS backend
+    /// cannot be opened or initialized at the resolved runtime store path.
+    pub async fn new_fs_at_with_runtime_storage_overrides(
         root_dir: &Path,
         runtime_storage_overrides: MediaRuntimeStorage,
-    ) -> Self {
-        let cas = InMemoryCas::new();
-        let conductor = SimpleConductor::new(cas);
+    ) -> Result<Self, MediaPmError> {
         let paths = MediaPmPaths::from_root(root_dir);
-        Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides)
+        let cas_store_root = paths.runtime_root.join("store");
+        let file_system_cas = FileSystemCas::open(&cas_store_root).await.map_err(|error| {
+            MediaPmError::Workflow(format!(
+                "opening conductor CAS store '{}' for workflow execution failed: {error}",
+                cas_store_root.display()
+            ))
+        })?;
+        let conductor = SimpleConductor::new(file_system_cas);
+        Ok(Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides))
     }
 }
 
@@ -1485,9 +1449,6 @@ pub fn registered_builtin_ids() -> [&'static str; 5] {
     mediapm_conductor::registered_builtin_ids()
 }
 
-/// Resolves effective runtime paths for one workspace root without mutating
-/// workspace files.
-///
 /// Unlike `load_runtime_dotenv_for_root`, this helper does not bootstrap a
 /// missing `mediapm.ncl` and does not load dotenv files into process state.
 /// It is intended for passthrough CLI routing where the parent executable must
