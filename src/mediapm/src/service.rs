@@ -1748,13 +1748,26 @@ fn should_invalidate_instance(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
 
     use mediapm_cas::Hash;
-    use mediapm_conductor::{OutputRef, PersistenceFlags, ToolSpec};
+    use mediapm_conductor::{
+        ExternalContentRef, MachineNickelDocument, OutputRef, PersistenceFlags, ToolConfigSpec,
+        ToolKindSpec, ToolSpec, encode_machine_document,
+    };
+    use tempfile::tempdir;
+    use url::Url;
+
+    use crate::HierarchyNodeKind;
+    use crate::ToolRequirementDependencies;
+    use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus, save_lockfile};
 
     use super::{
-        ManagedWorkflowStepTarget, ToolInvalidationRule, remove_target_step_impure_timestamps,
-        should_invalidate_instance,
+        AddInsertPosition, ManagedWorkflowStepTarget, MediaHierarchyPreset, MediaPmApi,
+        MediaPmDocument, MediaPmService, MediaRuntimeStorage, MediaStepTool, ToolInvalidationRule,
+        ToolRequirement, TransformInputValue, load_mediapm_document,
+        load_mediapm_document_without_validation, remove_target_step_impure_timestamps,
+        save_mediapm_document, should_invalidate_instance,
     };
 
     /// Ensures helper removes targeted impure timestamps and tracks tool mapping.
@@ -1848,5 +1861,628 @@ mod tests {
         )]);
 
         assert!(!should_invalidate_instance(&instance, &rules));
+    }
+
+    // ===== Tests consolidated from tests.rs =====
+
+    /// Ensures sync bootstraps default docs and state on a fresh workspace.
+    #[tokio::test]
+    async fn sync_library_bootstraps_default_phase3_state_files() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let _ = service.sync_library().await.expect("sync");
+
+        assert!(service.paths().mediapm_ncl.exists());
+        assert!(service.paths().conductor_user_ncl.exists());
+        assert!(service.paths().conductor_machine_ncl.exists());
+        assert!(service.paths().mediapm_state_ncl.exists());
+        assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
+        assert!(service.paths().runtime_root.join(".gitignore").exists());
+
+        let dotenv_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
+        assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
+        assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        let _ = dotenv_generated_text;
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
+
+        let schema_dir =
+            service.paths().schema_export_dir.as_ref().expect("default schema export dir");
+        assert!(schema_dir.join("mod.ncl").exists());
+        assert!(schema_dir.join("v1.ncl").exists());
+
+        let conductor_schema_dir = service.paths().conductor_schema_dir.clone();
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
+    }
+
+    /// Ensures tools-only sync bootstraps documents without running workflows.
+    #[tokio::test]
+    async fn sync_tools_bootstraps_default_state_files() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let summary = service.sync_tools().await.expect("tool sync");
+
+        assert_eq!(summary.added_tools, 0);
+        assert_eq!(summary.updated_tools, 0);
+        assert_eq!(summary.unchanged_tools, 0);
+        assert!(service.paths().mediapm_ncl.exists());
+        assert!(service.paths().conductor_user_ncl.exists());
+        assert!(service.paths().conductor_machine_ncl.exists());
+        assert!(service.paths().mediapm_state_ncl.exists());
+        assert!(service.paths().runtime_root.join(".env").exists());
+        assert!(service.paths().runtime_root.join(".env.generated").exists());
+        assert!(service.paths().runtime_root.join(".gitignore").exists());
+
+        let dotenv_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
+        assert!(dotenv_text.contains("# conductor runtime environment variables"));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
+        assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
+        assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));
+
+        let dotenv_generated_text =
+            fs::read_to_string(service.paths().runtime_root.join(".env.generated"))
+                .expect("read .env.generated");
+        let _ = dotenv_generated_text;
+
+        let gitignore_text = fs::read_to_string(service.paths().runtime_root.join(".gitignore"))
+            .expect("read runtime .gitignore");
+        assert!(gitignore_text.contains("/.env"));
+        assert!(gitignore_text.contains("/.env.generated"));
+
+        let schema_dir =
+            service.paths().schema_export_dir.as_ref().expect("default schema export dir");
+        assert!(schema_dir.join("mod.ncl").exists());
+        assert!(schema_dir.join("v1.ncl").exists());
+
+        let conductor_schema_dir = service.paths().conductor_schema_dir.clone();
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
+    }
+
+    /// Ensures `tool add` can bootstrap a missing managed dependency target even
+    /// when another tool currently uses `inherit` for that dependency selector.
+    #[test]
+    fn add_tool_requirement_skips_cross_field_validation_during_bootstrap() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let mut document = MediaPmDocument::default();
+        document.tools.insert(
+            "yt-dlp".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies {
+                    ffmpeg_version: Some("inherit".to_string()),
+                    deno_version: None,
+                    sd_version: None,
+                },
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        );
+        save_mediapm_document(&service.paths().mediapm_ncl, &document).expect("seed mediapm.ncl");
+
+        let added = service.add_tool_requirement("ffmpeg").expect("add ffmpeg");
+
+        assert!(added, "ffmpeg should be added even when yt-dlp depends on inherit");
+
+        let loaded = load_mediapm_document_without_validation(&service.paths().mediapm_ncl)
+            .expect("load mediapm.ncl without validation");
+        assert!(loaded.tools.contains_key("ffmpeg"));
+        assert!(loaded.tools.contains_key("yt-dlp"));
+    }
+
+    /// Ensures `sync` does not emit stale tool-sync warnings when a tag-based
+    /// tool requirement (`tag = "latest"`) already has an active, materialized
+    /// runtime registration from a previous tool-sync pass.
+    #[tokio::test]
+    async fn sync_library_does_not_warn_for_latest_tag_with_current_runtime_state() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let mut document = MediaPmDocument::default();
+        document.tools.insert(
+            "ffmpeg".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        );
+        save_mediapm_document(&service.paths().mediapm_ncl, &document).expect("seed mediapm.ncl");
+
+        let tool_id = "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
+        let registry_hash = Hash::from_content(b"registry-row");
+
+        let mut machine = MachineNickelDocument::default();
+        machine.external_data.insert(
+            registry_hash,
+            ExternalContentRef {
+                description: Some("test content-map payload".to_string()),
+                save: None,
+            },
+        );
+        machine.tools.insert(
+            tool_id.clone(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec!["./ffmpeg".to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            tool_id.clone(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([("./".to_string(), registry_hash)])),
+                ..ToolConfigSpec::default()
+            },
+        );
+        fs::create_dir_all(
+            service.paths().conductor_machine_ncl.parent().expect("machine parent directory"),
+        )
+        .expect("create machine parent directory");
+        fs::write(
+            &service.paths().conductor_machine_ncl,
+            encode_machine_document(machine).expect("encode machine"),
+        )
+        .expect("write machine doc");
+
+        let mut lock = MediaLockFile::default();
+        lock.active_tools.insert("ffmpeg".to_string(), tool_id.clone());
+        lock.tool_registry.insert(
+            tool_id,
+            ToolRegistryRecord {
+                name: "ffmpeg".to_string(),
+                version: "2026.05.31".to_string(),
+                source: "github-releases:btbn/ffmpeg-builds".to_string(),
+                registry_multihash: registry_hash.to_string(),
+                last_transition_unix_seconds: 1,
+                status: ToolRegistryStatus::Active,
+            },
+        );
+        save_lockfile(&service.paths().mediapm_state_ncl, &lock).expect("write lockfile");
+
+        let summary = service.sync_library().await.expect("sync library");
+        let warning = "tool state appears outdated for [";
+        assert!(
+            summary.warnings.iter().all(|entry| !entry.contains(warning)),
+            "sync should not emit outdated-tool warning when active lock+machine state is current: {:?}",
+            summary.warnings
+        );
+    }
+
+    /// Ensures explicit `runtime.mediapm_schema_dir = null` disables schema
+    /// file export during sync.
+    #[tokio::test]
+    async fn sync_tools_skips_schema_export_when_runtime_schema_dir_is_null() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at_with_runtime_storage_overrides(
+            root.path(),
+            MediaRuntimeStorage {
+                mediapm_schema_dir: Some(None),
+                ..MediaRuntimeStorage::default()
+            },
+        );
+
+        let summary = service.sync_tools().await.expect("tool sync");
+
+        assert_eq!(summary.added_tools, 0);
+        assert_eq!(summary.updated_tools, 0);
+        assert_eq!(summary.unchanged_tools, 0);
+        assert!(!root.path().join(".mediapm").join("config").join("mediapm").exists());
+        let conductor_schema_dir = root.path().join(".mediapm").join("config").join("conductor");
+        assert!(conductor_schema_dir.join("mod.ncl").exists());
+        assert!(conductor_schema_dir.join("v1.ncl").exists());
+    }
+
+    /// Ensures sync bootstraps state files inside a custom `mediapm_dir`
+    /// instead of the default `.mediapm` directory.
+    ///
+    /// Service paths (`service.paths()`) remain at the `from_root()` default;
+    /// the overridden effective paths are computed internally by
+    /// `sync_tools_from_document`.  This test verifies that files land in the
+    /// custom directory by checking the filesystem directly.
+    #[tokio::test]
+    async fn sync_tools_bootstraps_state_files_in_custom_mediapm_dir() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at_with_runtime_storage_overrides(
+            root.path(),
+            MediaRuntimeStorage {
+                mediapm_dir: Some(".custom-mediapm".to_string()),
+                ..MediaRuntimeStorage::default()
+            },
+        );
+
+        let summary = service.sync_tools().await.expect("tool sync");
+
+        assert_eq!(summary.added_tools, 0);
+        assert_eq!(summary.updated_tools, 0);
+        assert_eq!(summary.unchanged_tools, 0);
+
+        let custom_root = root.path().join(".custom-mediapm");
+        // Runtime env scaffolding (created by sync_tools)
+        assert!(custom_root.join(".env").exists());
+        assert!(custom_root.join(".env.generated").exists());
+        assert!(custom_root.join(".gitignore").exists());
+
+        // The default .mediapm directory must NOT have been created
+        assert!(!root.path().join(".mediapm").exists());
+
+        // Config files live at the workspace root, not inside the runtime dir
+        assert!(root.path().join("mediapm.ncl").exists());
+        assert!(root.path().join("mediapm.conductor.ncl").exists());
+        assert!(root.path().join("mediapm.conductor.machine.ncl").exists());
+    }
+
+    /// Ensures local hierarchy preset insertion is idempotent for one
+    /// `(media, folder)` target and emits the expected folder tree.
+    #[tokio::test]
+    async fn add_local_hierarchy_preset_is_idempotent_for_existing_media() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
+
+        let media_id = service
+            .add_local_source(&local_file, None, None, None, None, None)
+            .await
+            .expect("add local source");
+
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("first hierarchy preset insertion should succeed");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("second hierarchy preset insertion should remain idempotent");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+
+        let matching_nodes: Vec<_> = document
+            .hierarchy
+            .iter()
+            .filter(|node| {
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == folder
+                    && node.media_id.is_none()
+                    && node.children.len() == 1
+            })
+            .collect();
+
+        assert_eq!(
+            matching_nodes.len(),
+            1,
+            "local hierarchy preset should exist exactly once for one media id/folder"
+        );
+        assert!(matching_nodes[0].id.is_none(), "outer hierarchy folder should not carry an id");
+        let media_root = &matching_nodes[0].children[0];
+        assert_eq!(
+            media_root.id.as_deref(),
+            Some(media_id.as_str()),
+            "inner media-root folder should use the media id"
+        );
+        assert_eq!(
+            media_root.path, "${media.metadata.title} [${media.id}]",
+            "local hierarchy preset should keep stable media-root template"
+        );
+        let variants: Vec<_> =
+            media_root.children.iter().map(|node| node.variant.as_deref().unwrap_or("")).collect();
+        assert_eq!(variants, vec!["media"]);
+        assert_eq!(
+            media_root.children[0].id.as_deref(),
+            Some(format!("{media_id}.media").as_str())
+        );
+    }
+
+    /// Ensures yt-dlp hierarchy preset adds infojson projection while keeping
+    /// the same media-root style as the online demo (without sidecars folder).
+    #[tokio::test]
+    async fn add_yt_dlp_hierarchy_preset_includes_infojson_projection() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(
+                &Url::parse("https://example.com/video").expect("url"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("add remote source");
+
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::YtDlp, &media_id, "music videos")
+            .expect("add yt-dlp hierarchy preset");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let media_root = document
+            .hierarchy
+            .iter()
+            .find(|node| {
+                node.kind == HierarchyNodeKind::Folder
+                    && node.path == "music videos"
+                    && node.media_id.is_none()
+            })
+            .and_then(|node| node.children.first())
+            .expect("yt-dlp preset should create media-root child folder");
+
+        let variants: std::collections::BTreeSet<_> = media_root
+            .children
+            .iter()
+            .flat_map(|node| {
+                let mut values = Vec::new();
+                if let Some(variant) = node.variant.as_deref() {
+                    values.push(variant.to_string());
+                }
+                values.extend(node.variants.iter().cloned());
+                values
+            })
+            .collect();
+        assert_eq!(
+            variants,
+            std::collections::BTreeSet::from([
+                "archive".to_string(),
+                "description".to_string(),
+                "infojson".to_string(),
+                "links".to_string(),
+                "subtitles".to_string(),
+                "thumbnails".to_string(),
+                "video".to_string(),
+            ])
+        );
+
+        let variant_ids: std::collections::BTreeSet<_> = media_root
+            .children
+            .iter()
+            .map(|node| node.id.as_deref().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(
+            variant_ids,
+            std::collections::BTreeSet::from([
+                format!("{media_id}.archive"),
+                format!("{media_id}.description"),
+                format!("{media_id}.infojson"),
+                format!("{media_id}.links"),
+                format!("{media_id}.subtitles"),
+                format!("{media_id}.thumbnails"),
+                format!("{media_id}.thumbnails.folder"),
+                format!("{media_id}.video"),
+            ])
+        );
+    }
+
+    /// Ensures hierarchy add defaults to preset-specific root folder when no
+    /// folder is provided.
+    #[tokio::test]
+    async fn add_hierarchy_preset_uses_default_root_folder_when_omitted() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(
+                &Url::parse("https://www.youtube.com/watch?v=default-root").expect("url"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("add media source");
+
+        service
+            .add_media_hierarchy_preset_with_position(
+                MediaHierarchyPreset::YtDlp,
+                &media_id,
+                None,
+                AddInsertPosition::Sorted,
+                false,
+            )
+            .expect("add hierarchy preset with default folder");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        assert!(
+            document.hierarchy.iter().any(|node| node.path == "music videos/online"),
+            "yt-dlp hierarchy preset should default to music videos/online root"
+        );
+    }
+
+    /// Ensures hierarchy preset insertion fails for unknown media ids.
+    #[test]
+    fn add_hierarchy_preset_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .add_media_hierarchy_preset(
+                MediaHierarchyPreset::Local,
+                "missing-media",
+                "music videos",
+            )
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error.to_string().contains(
+                "cannot add local hierarchy preset: media id 'missing-media' does not exist"
+            ),
+            "error should explain missing media id"
+        );
+    }
+
+    /// Ensures hierarchy preset removal is idempotent for one media/folder.
+    #[tokio::test]
+    async fn remove_hierarchy_preset_is_idempotent() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+        let folder = "music videos";
+
+        let media_id = service
+            .add_local_source(&local_file, None, None, None, None, None)
+            .await
+            .expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("add hierarchy preset");
+
+        let removed_first = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("first hierarchy-preset removal should succeed");
+        let removed_second = service
+            .remove_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, folder)
+            .expect("second hierarchy-preset removal should remain idempotent");
+
+        assert_eq!(removed_first, 1, "first removal should remove one node");
+        assert_eq!(removed_second, 0, "second removal should remove zero nodes");
+    }
+
+    /// Ensures media-source removal drops matching hierarchy nodes.
+    #[tokio::test]
+    async fn remove_media_source_removes_matching_hierarchy_nodes() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let local_file = root.path().join("local-source.txt");
+        fs::write(&local_file, b"local-bytes").expect("write local source");
+
+        let media_id = service
+            .add_local_source(&local_file, None, None, None, None, None)
+            .await
+            .expect("add local source");
+        service
+            .add_media_hierarchy_preset(MediaHierarchyPreset::Local, &media_id, "music videos")
+            .expect("add hierarchy preset");
+
+        let removed_hierarchy_nodes =
+            service.remove_media_source(&media_id).expect("remove media source");
+        assert_eq!(
+            removed_hierarchy_nodes, 1,
+            "media-source removal should cascade one matching hierarchy node"
+        );
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        assert!(!document.media.contains_key(&media_id), "removed media id should no longer exist");
+        assert!(
+            document.hierarchy.iter().all(|node| node.media_id.as_deref() != Some(&media_id)),
+            "matching hierarchy nodes should also be removed"
+        );
+    }
+
+    /// Ensures media-source removal rejects unknown media ids.
+    #[test]
+    fn remove_media_source_rejects_unknown_media_id() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        let error = service
+            .remove_media_source("missing-media")
+            .expect_err("unknown media id should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("cannot remove media source: media id 'missing-media' does not exist"),
+            "error should explain missing media id"
+        );
+    }
+
+    /// Ensures yt-dlp preset media-tagger defaults explicitly include both
+    /// optional `MusicBrainz` identifier fields as empty placeholders.
+    #[tokio::test]
+    async fn yt_dlp_preset_media_tagger_defaults_include_empty_mbids() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+        let media_id = service
+            .add_media_source(
+                &Url::parse("https://www.youtube.com/watch?v=mbid-defaults").expect("url"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("add online media source");
+
+        let document =
+            load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
+        let media = document.media.get(&media_id).expect("media source should exist");
+        let media_tagger_step = media
+            .steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::MediaTagger)
+            .expect("yt-dlp preset should include media-tagger step");
+
+        assert_eq!(
+            media_tagger_step.options.get("recording_mbid"),
+            Some(&TransformInputValue::String(String::new()))
+        );
+        assert_eq!(
+            media_tagger_step.options.get("release_mbid"),
+            Some(&TransformInputValue::String(String::new()))
+        );
+    }
+
+    // ── Test consolidated from tool_add_defaults_tests.rs ─────────────────
+
+    /// Ensures `tool add` seeds each managed tool with its catalog default
+    /// dependency selectors instead of hardcoding one-off special cases.
+    #[test]
+    fn add_tool_requirement_uses_catalog_default_dependency_selectors() {
+        let cases = [
+            ("ffmpeg", None, None, None),
+            ("deno", None, None, None),
+            ("sd", None, None, None),
+            ("yt-dlp", Some("inherit"), Some("inherit"), None),
+            ("media-tagger", Some("inherit"), None, None),
+            ("rsgain", Some("inherit"), None, Some("inherit")),
+        ];
+
+        for (tool_name, ffmpeg_version, deno_version, sd_version) in cases {
+            let root = tempdir().expect("tempdir");
+            let service = MediaPmService::new_in_memory_at(root.path());
+
+            let added =
+                service.add_tool_requirement(tool_name).expect("add managed tool requirement");
+            assert!(added, "{tool_name} should be added on a fresh workspace");
+
+            let document = load_mediapm_document_without_validation(&service.paths().mediapm_ncl)
+                .expect("load seeded mediapm.ncl without validation");
+            let dependencies = &document.tools[tool_name].dependencies;
+
+            assert_eq!(dependencies.ffmpeg_version.as_deref(), ffmpeg_version, "{tool_name}");
+            assert_eq!(dependencies.deno_version.as_deref(), deno_version, "{tool_name}");
+            assert_eq!(dependencies.sd_version.as_deref(), sd_version, "{tool_name}");
+        }
     }
 }

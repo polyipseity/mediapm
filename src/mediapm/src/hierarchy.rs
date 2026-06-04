@@ -445,3 +445,185 @@ pub(crate) fn build_hierarchy_preset_node(
         }],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{HierarchyNode, HierarchyNodeKind, PlaylistFormat, SanitizeNamesConfig};
+    use crate::{AddInsertPosition, MediaHierarchyPreset};
+
+    use super::{build_hierarchy_preset_node, insert_hierarchy_preset_node};
+
+    /// Ensures adding a hierarchy preset merges into an existing nameless
+    /// container folder at the same path instead of creating a duplicate
+    /// sibling.
+    #[test]
+    fn add_hierarchy_preset_merges_into_existing_nameless_container() {
+        let folder = "music videos";
+        let mut hierarchy = vec![HierarchyNode {
+            path: folder.to_string(),
+            kind: HierarchyNodeKind::Folder,
+            id: None,
+            media_id: None,
+            variant: None,
+            variants: Vec::new(),
+            rename_files: Vec::new(),
+            format: PlaylistFormat::default(),
+            ids: Vec::new(),
+            sanitize_names: SanitizeNamesConfig::Inherit,
+            children: vec![HierarchyNode {
+                path: "existing-media-root".to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: Some("existing-id".to_string()),
+                media_id: Some("existing-media".to_string()),
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::default(),
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+                children: Vec::new(),
+            }],
+        }];
+
+        let inserted = build_hierarchy_preset_node(
+            MediaHierarchyPreset::Local,
+            "new-media",
+            folder,
+            "new-media".to_string(),
+        );
+        insert_hierarchy_preset_node(
+            &mut hierarchy,
+            inserted,
+            folder,
+            AddInsertPosition::End,
+            false,
+        );
+
+        // Verify no duplicate folder: exactly one node at the target path.
+        let matching: Vec<_> = hierarchy
+            .iter()
+            .filter(|node| node.kind == HierarchyNodeKind::Folder && node.path == folder)
+            .collect();
+        assert_eq!(matching.len(), 1, "should not create a duplicate container folder");
+
+        // Verify both media roots are present as children of the same folder.
+        let container = &matching[0];
+        let child_ids: Vec<Option<&str>> =
+            container.children.iter().map(|child| child.id.as_deref()).collect();
+        assert!(
+            child_ids.contains(&Some("existing-id")),
+            "existing media root should still be present"
+        );
+        assert!(child_ids.contains(&Some("new-media")), "new media root should be present");
+    }
+
+    /// Ensures sorted hierarchy insertion places missing ids first, then empty
+    /// ids, then lexicographically ordered non-empty ids within one root
+    /// folder.
+    #[test]
+    fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
+        let root_folder = "music videos/online";
+        let mut hierarchy = vec![
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::default(),
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+                children: vec![HierarchyNode {
+                    path: "missing-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: None,
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    children: Vec::new(),
+                }],
+            },
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::default(),
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+                children: vec![HierarchyNode {
+                    path: "empty-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: Some(String::new()),
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    children: Vec::new(),
+                }],
+            },
+            HierarchyNode {
+                path: root_folder.to_string(),
+                kind: HierarchyNodeKind::Folder,
+                id: None,
+                media_id: None,
+                variant: None,
+                variants: Vec::new(),
+                rename_files: Vec::new(),
+                format: PlaylistFormat::default(),
+                ids: Vec::new(),
+                sanitize_names: SanitizeNamesConfig::Inherit,
+                children: vec![HierarchyNode {
+                    path: "zzz-id".to_string(),
+                    kind: HierarchyNodeKind::Folder,
+                    id: Some("zzz".to_string()),
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    format: PlaylistFormat::default(),
+                    ids: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    children: Vec::new(),
+                }],
+            },
+        ];
+
+        let inserted = build_hierarchy_preset_node(
+            MediaHierarchyPreset::YtDlp,
+            "aaa",
+            root_folder,
+            "aaa".to_string(),
+        );
+        insert_hierarchy_preset_node(
+            &mut hierarchy,
+            inserted,
+            root_folder,
+            AddInsertPosition::Sorted,
+            false,
+        );
+
+        let observed_ids: Vec<Option<String>> = hierarchy
+            .iter()
+            .filter(|node| node.path == root_folder)
+            .map(|node| node.children.first().and_then(|child| child.id.clone()))
+            .collect();
+
+        assert_eq!(
+            observed_ids,
+            vec![None, Some(String::new()), Some("aaa".to_string()), Some("zzz".to_string())]
+        );
+    }
+}

@@ -2258,4 +2258,2241 @@ where
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    //! Step-worker tests for template semantics, builtin dispatch contracts, and
+    //! output-capture behavior for the actor-backed step worker.
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
+    use regex::Regex;
+
+    use crate::error::ConductorError;
+    use crate::model::config::{
+        ExternalContentRef, ImpureTimestamp, InputBinding, ProcessSpec, ToolInputKind,
+        ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowStepSpec,
+    };
+    use crate::model::state::{OutputSaveMode, PersistenceFlags, ResolvedInput};
+    use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
+
+    use super::{
+        ResolvedOutputCapture, ResolvedOutputSpec, ResolvedProcessExecution, StepWorkerExecutor,
+        ToolExecutionCapture,
+    };
+
+    /// Builds one minimal executable-process descriptor for helper invocations.
+    fn test_executable_process(executable: &str) -> ResolvedProcessExecution {
+        ResolvedProcessExecution::Executable {
+            executable: executable.to_string(),
+            args: Vec::new(),
+            env_vars: BTreeMap::new(),
+            success_codes: BTreeSet::from([0]),
+        }
+    }
+
+    /// Returns the host platform directory label used by managed tool payloads.
+    fn host_payload_platform_dir() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            "macos"
+        }
+        #[cfg(target_os = "linux")]
+        {
+            "linux"
+        }
+        #[cfg(target_os = "windows")]
+        {
+            "windows"
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        {
+            "host"
+        }
+    }
+
+    /// Builds one ZIP payload for template-selector tests.
+    fn build_test_zip_payload(entry_relative_path: &str, entry_content: &[u8]) -> Vec<u8> {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_dir = temp.path().join("source");
+        let source_file = source_dir.join(entry_relative_path);
+        if let Some(parent) = source_file.parent() {
+            std::fs::create_dir_all(parent).expect("create zip source parent");
+        }
+        std::fs::write(&source_file, entry_content).expect("write zip source file");
+
+        mediapm_conductor_builtin_archive::pack_directory_to_uncompressed_zip_bytes(
+            &source_dir,
+            false,
+        )
+        .expect("build test zip payload")
+    }
+
+    /// Protects deterministic instance-key derivation across repeated calls.
+    #[test]
+    fn derived_keys_are_deterministic() {
+        let metadata = ToolSpec {
+            is_impure: false,
+            kind: ToolKindSpec::Executable {
+                command: vec!["bin/tool".to_string(), "a".to_string(), "1".to_string()],
+                env_vars: BTreeMap::from([("RUST_LOG".to_string(), "info".to_string())]),
+                success_codes: vec![0],
+            },
+            ..ToolSpec::default()
+        };
+        let inputs = BTreeMap::from([(
+            "input".to_string(),
+            ResolvedInput::from_plain_content(b"abc".to_vec()),
+        )]);
+
+        let impure_timestamp = Some(ImpureTimestamp { epoch_seconds: 12, subsec_nanos: 34 });
+        let key_a = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@1.0.0",
+            &metadata,
+            impure_timestamp,
+            &inputs,
+        )
+        .expect("derive instance key");
+        let key_b = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@1.0.0",
+            &metadata,
+            impure_timestamp,
+            &inputs,
+        )
+        .expect("derive instance key");
+        assert_eq!(key_a, key_b);
+    }
+
+    /// Protects tool-name participation in deterministic instance-key derivation.
+    #[test]
+    fn derived_keys_include_tool_name() {
+        let metadata = ToolSpec {
+            kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
+            ..ToolSpec::default()
+        };
+        let inputs = BTreeMap::from([(
+            "text".to_string(),
+            ResolvedInput::from_plain_content(b"abc".to_vec()),
+        )]);
+
+        let key_a = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@1.0.0",
+            &metadata,
+            None,
+            &inputs,
+        )
+        .expect("derive key for first tool name");
+        let key_b = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@2.0.0",
+            &metadata,
+            None,
+            &inputs,
+        )
+        .expect("derive key for second tool name");
+
+        assert_ne!(key_a, key_b);
+    }
+
+    /// Protects builtin identity-only metadata projection in instance-key derivation.
+    #[test]
+    fn derived_keys_for_builtin_ignore_non_identity_metadata_fields() {
+        let builtin_minimal = ToolSpec {
+            is_impure: false,
+            inputs: BTreeMap::new(),
+            kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
+            outputs: BTreeMap::new(),
+        };
+        let builtin_verbose = ToolSpec {
+            is_impure: true,
+            inputs: BTreeMap::from([("text".to_string(), ToolInputSpec::default())]),
+            kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
+            outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
+        };
+        let inputs = BTreeMap::from([(
+            "text".to_string(),
+            ResolvedInput::from_plain_content(b"abc".to_vec()),
+        )]);
+
+        let minimal_key = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@1.0.0",
+            &builtin_minimal,
+            None,
+            &inputs,
+        )
+        .expect("derive minimal builtin key");
+        let verbose_key = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
+            "echo@1.0.0",
+            &builtin_verbose,
+            None,
+            &inputs,
+        )
+        .expect("derive verbose builtin key");
+
+        assert_eq!(minimal_key, verbose_key);
+    }
+
+    /// Protects support for bare-identifier template interpolation.
+    #[test]
+    fn template_interpolation_supports_bare_identifier() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value("hello ${subject}", &inputs, &mut pending_file_writes)
+            .expect("bare identifier interpolation should resolve");
+
+        assert_eq!(rendered, "hello world");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects support for JavaScript-style bracket selector interpolation.
+    #[test]
+    fn template_interpolation_supports_inputs_bracket_notation() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "hello ${inputs[\"subject\"]}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("bracket interpolation should resolve");
+
+        assert_eq!(rendered, "hello world");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects policy that unsupported context selectors are rejected.
+    #[test]
+    fn template_interpolation_rejects_context_selector() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value(
+                "${context.config_dir}/notes/report.txt",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect_err("context selector should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("unsupported template expression"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects explicit failure for removed `${context.config_dir}` input-binding syntax.
+    #[tokio::test]
+    async fn resolve_input_binding_rejects_context_config_dir() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let workflow_step = WorkflowStepSpec {
+            id: "step".to_string(),
+            tool: "echo@1.0.0".to_string(),
+            inputs: BTreeMap::new(),
+            depends_on: Vec::new(),
+            outputs: BTreeMap::new(),
+        };
+        let unified = UnifiedNickelDocument {
+            external_data: BTreeMap::new(),
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            tool_content_hashes: BTreeSet::new(),
+        };
+        let error = executor
+            .resolve_input_binding(
+                &unified,
+                "wf",
+                &workflow_step,
+                "${context.config_dir}",
+                &BTreeMap::new(),
+            )
+            .await
+            .expect_err("context.config_dir binding should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("unsupported input binding expression"));
+                assert!(message.contains("context.config_dir"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects `${env.<VAR_NAME>}` input-binding handling by expanding the
+    /// environment value during input resolution.
+    #[tokio::test]
+    async fn resolve_input_binding_expands_env_placeholder_segments() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let workflow_step = WorkflowStepSpec {
+            id: "step".to_string(),
+            tool: "echo@1.0.0".to_string(),
+            inputs: BTreeMap::new(),
+            depends_on: Vec::new(),
+            outputs: BTreeMap::new(),
+        };
+        let unified = UnifiedNickelDocument {
+            external_data: BTreeMap::new(),
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            tool_content_hashes: BTreeSet::new(),
+        };
+        let path = std::env::var("PATH").expect("PATH available in test environment");
+
+        let resolved = executor
+            .resolve_input_binding(
+                &unified,
+                "wf",
+                &workflow_step,
+                "prefix-${env.PATH}/bin",
+                &BTreeMap::new(),
+            )
+            .await
+            .expect("env placeholder binding should resolve");
+
+        assert_eq!(resolved.plain_content, format!("prefix-{path}/bin").into_bytes());
+    }
+
+    /// Protects explicit failure on unsupported expression syntax.
+    #[test]
+    fn template_interpolation_rejects_unsupported_expression() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value("${foo.bar}", &inputs, &mut pending_file_writes)
+            .expect_err("unsupported expression should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("unsupported template expression"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects literal escaping of `\${...}` markers.
+    #[test]
+    fn template_interpolation_supports_js_escape_for_literal_start() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                r"show \${subject} and ${subject}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("escaped interpolation marker should render literally");
+
+        assert_eq!(rendered, "show ${subject} and world");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects `${<left> <op> <right>?<true>|<false>}` conditional semantics.
+    #[test]
+    fn template_interpolation_supports_comparison_conditional_expression() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let current = "${context.os == \"windows\" ? win | nonwin}";
+
+        let rendered = executor
+            .render_template_value(current, &inputs, &mut pending_file_writes)
+            .expect("comparison conditional should render selected branch");
+
+        let expected = if cfg!(windows) { "win" } else { "nonwin" };
+        assert_eq!(rendered, expected);
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects truthiness conditional semantics for `${<operand>?<true>|<false>}`
+    /// template expressions.
+    #[test]
+    fn template_interpolation_supports_truthy_conditional_expression() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${inputs.subject ? has-subject | no-subject}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("truthy conditional should render selected branch");
+
+        assert_eq!(rendered, "has-subject");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects comparison conditional support for single-item list inputs used by
+    /// value-centric option transport.
+    #[test]
+    fn template_interpolation_supports_comparison_against_single_item_list_input() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "switch".to_string(),
+            ResolvedInput::from_string_list(vec!["true".to_string()]).expect("build list input"),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${inputs.switch == \"true\" ? enabled | disabled}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("single-item list comparison should render selected branch");
+
+        assert_eq!(rendered, "enabled");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects deterministic errors for ambiguous comparison operands sourced
+    /// from multi-item list inputs.
+    #[test]
+    fn template_interpolation_rejects_comparison_against_multi_item_list_input() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "switch".to_string(),
+            ResolvedInput::from_string_list(vec!["true".to_string(), "false".to_string()])
+                .expect("build list input"),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value(
+                "${inputs.switch == \"true\" ? enabled | disabled}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect_err("multi-item list comparison should fail");
+
+        assert!(
+            format!("{error}").contains("comparisons support at most one list item"),
+            "error should describe list-size comparison constraint"
+        );
+    }
+
+    /// Protects recursive selector/materialization support inside comparison
+    /// values.
+    #[test]
+    fn template_interpolation_supports_special_forms_inside_conditional_branches() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let current = "${context.os == \"windows\" ? subject:file(runtime/windows-subject.txt) | subject:file(runtime/other-subject.txt)}";
+
+        let rendered = executor
+            .render_template_value(current, &inputs, &mut pending_file_writes)
+            .expect("matching conditional should resolve special-form value recursively");
+
+        let expected_path =
+            if cfg!(windows) { "runtime/windows-subject.txt" } else { "runtime/other-subject.txt" };
+        assert_eq!(rendered.replace('\\', "/"), expected_path);
+        assert_eq!(pending_file_writes.len(), 1);
+        assert_eq!(
+            pending_file_writes[0].relative_path.to_string_lossy().replace('\\', "/"),
+            expected_path
+        );
+        assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
+    }
+
+    /// Protects logical `&&` operator in conditional expressions.
+    #[test]
+    fn template_interpolation_supports_and_operator_in_condition() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([
+            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+        ]);
+        let mut pending_file_writes = Vec::new();
+
+        // Both sides true → true branch.
+        let rendered = executor
+            .render_template_value(
+                "${a == \"x\" && b == \"y\" ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("and-condition should render selected branch");
+        assert_eq!(rendered, "true");
+
+        // One side false → false branch.
+        let rendered_false = executor
+            .render_template_value(
+                "${a == \"x\" && b == \"z\" ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("and-condition with false rhs should render false branch");
+        assert_eq!(rendered_false, "false");
+    }
+
+    /// Protects logical `||` operator in conditional expressions.
+    #[test]
+    fn template_interpolation_supports_or_operator_in_condition() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([
+            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+        ]);
+        let mut pending_file_writes = Vec::new();
+
+        // First side true → true branch.
+        let rendered = executor
+            .render_template_value(
+                "${a == \"x\" || b == \"z\" ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("or-condition with true lhs should render true branch");
+        assert_eq!(rendered, "true");
+
+        // Both sides false → false branch.
+        let rendered_false = executor
+            .render_template_value(
+                "${a == \"nope\" || b == \"nope\" ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("or-condition with both false should render false branch");
+        assert_eq!(rendered_false, "false");
+    }
+
+    /// Protects mixed `||`, `&&`, and parentheses grouping in conditional expressions.
+    #[test]
+    fn template_interpolation_supports_mixed_logical_operators_and_parentheses() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([
+            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
+            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+            ("c".to_string(), ResolvedInput::from_plain_content(b"set".to_vec())),
+        ]);
+        let mut pending_file_writes = Vec::new();
+
+        // (a == "x" || b == "y") && c → (true || false) && true → true.
+        let rendered = executor
+            .render_template_value(
+                "${(a == \"x\" || b == \"z\") && c ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("mixed condition should render selected branch");
+        assert_eq!(rendered, "true");
+
+        // (a == "nope" || b == "nope") && c → false && true → false.
+        let rendered_false = executor
+            .render_template_value(
+                "${(a == \"nope\" || b == \"nope\") && c ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("mixed condition with false group should render false branch");
+        assert_eq!(rendered_false, "false");
+    }
+
+    /// Protects negation `!` applied to a comparison expression via parentheses.
+    #[test]
+    fn template_interpolation_supports_negation_of_comparison() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs =
+            BTreeMap::from([("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec()))]);
+        let mut pending_file_writes = Vec::new();
+
+        // !(a == "x") → !(true) → false → selects false branch.
+        let rendered = executor
+            .render_template_value(
+                "${!(a == \"x\") ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("negated comparison should render selected branch");
+        assert_eq!(rendered, "false");
+
+        // !(a == "nope") → !(false) → true → selects true branch.
+        let rendered_true = executor
+            .render_template_value(
+                "${!(a == \"nope\") ? true | false}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("negated false comparison should render true branch");
+        assert_eq!(rendered_true, "true");
+    }
+
+    /// Protects omission of conditional branches that resolve to empty output.
+    #[test]
+    fn command_render_omits_conditionals_with_empty_false_branch() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let non_matching = if cfg!(windows) {
+            "${context.os == \"linux\" ? --linux-only | ''}".to_string()
+        } else {
+            "${context.os == \"windows\" ? --windows-only | ''}".to_string()
+        };
+        let command = vec!["tool".to_string(), non_matching, "--always".to_string()];
+
+        let rendered = executor
+            .render_template_command(&command, &inputs, &mut pending_file_writes)
+            .expect("command rendering should succeed");
+
+        assert_eq!(rendered, vec!["tool".to_string(), "--always".to_string()]);
+    }
+
+    /// Protects standalone command unpack token expansion for list-of-strings
+    /// inputs.
+    #[test]
+    fn command_render_expands_standalone_unpack_token_for_list_input() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_string_list(vec!["--alpha".to_string(), "--beta".to_string()])
+                .expect("build list input"),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let command = vec!["tool".to_string(), "${*inputs.argv}".to_string(), "--tail".to_string()];
+        let rendered = executor
+            .render_template_command(&command, &inputs, &mut pending_file_writes)
+            .expect("command unpack token should expand");
+
+        assert_eq!(
+            rendered,
+            vec![
+                "tool".to_string(),
+                "--alpha".to_string(),
+                "--beta".to_string(),
+                "--tail".to_string(),
+            ]
+        );
+    }
+
+    /// Protects scalar unpack behavior for standalone command tokens.
+    #[test]
+    fn command_render_expands_unpack_token_for_scalar_input() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_plain_content(b"--single".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_command(
+                &["tool".to_string(), "${*inputs.argv}".to_string(), "--tail".to_string()],
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("scalar unpack token should expand to one argument");
+
+        assert_eq!(
+            rendered,
+            vec!["tool".to_string(), "--single".to_string(), "--tail".to_string()]
+        );
+    }
+
+    /// Protects conditional unpack support so command templates can include
+    /// optional key/value argv pairs without mediapm-specific preprocessing.
+    #[test]
+    fn command_render_supports_conditional_unpack_key_value_pair() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let mut pending_file_writes = Vec::new();
+
+        let with_value_inputs = BTreeMap::from([(
+            "test".to_string(),
+            ResolvedInput::from_plain_content(b"alpha".to_vec()),
+        )]);
+        let command = vec![
+            "tool".to_string(),
+            "${*inputs.test ? --test | ''}".to_string(),
+            "${*inputs.test}".to_string(),
+        ];
+        let rendered_with_value = executor
+            .render_template_command(&command, &with_value_inputs, &mut pending_file_writes)
+            .expect(
+                "conditional unpack command should render key/value pair when value is present",
+            );
+        assert_eq!(
+            rendered_with_value,
+            vec!["tool".to_string(), "--test".to_string(), "alpha".to_string()]
+        );
+
+        let empty_value_inputs =
+            BTreeMap::from([("test".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+        let rendered_without_value = executor
+            .render_template_command(&command, &empty_value_inputs, &mut pending_file_writes)
+            .expect("conditional unpack command should omit key/value pair when value is empty");
+        assert_eq!(rendered_without_value, vec!["tool".to_string()]);
+    }
+
+    /// Protects standalone conditional-unpack semantics for list-valued inputs so
+    /// `${*...}` remains compatible with both scalar and list bindings.
+    #[test]
+    fn command_render_supports_conditional_unpack_with_list_input() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let mut pending_file_writes = Vec::new();
+        let command = vec![
+            "tool".to_string(),
+            "${*inputs.argv ? --has-args | ''}".to_string(),
+            "${*inputs.argv}".to_string(),
+        ];
+
+        let list_inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_string_list(vec!["--alpha".to_string(), "--beta".to_string()])
+                .expect("build list input"),
+        )]);
+        let rendered_with_list = executor
+            .render_template_command(&command, &list_inputs, &mut pending_file_writes)
+            .expect("conditional unpack should render list flag and unpacked list values");
+        assert_eq!(
+            rendered_with_list,
+            vec![
+                "tool".to_string(),
+                "--has-args".to_string(),
+                "--alpha".to_string(),
+                "--beta".to_string(),
+            ]
+        );
+
+        let empty_list_inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_string_list(Vec::new()).expect("build empty list input"),
+        )]);
+        let rendered_without_list = executor
+            .render_template_command(&command, &empty_list_inputs, &mut pending_file_writes)
+            .expect("conditional unpack should omit list flag and values when list input is empty");
+        assert_eq!(rendered_without_list, vec!["tool".to_string()]);
+    }
+
+    /// Protects plain `context.os` selector rendering.
+    #[test]
+    fn template_interpolation_supports_context_os_selector() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value("${context.os}", &inputs, &mut pending_file_writes)
+            .expect("context selector should render");
+
+        let expected = if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        assert_eq!(rendered, expected);
+    }
+
+    /// Protects plain `context.working_directory` selector rendering.
+    #[test]
+    fn template_interpolation_supports_context_working_directory_selector() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${context.working_directory}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("context working-directory selector should render");
+
+        let expected = std::env::current_dir().expect("current directory");
+        assert_eq!(rendered, expected.to_string_lossy());
+    }
+
+    /// Protects syntax rule that `${*...}` unpack expressions must occupy the
+    /// entire command argument (standalone token only).
+    #[test]
+    fn command_render_rejects_non_standalone_unpack_expression() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_command(
+                &["tool".to_string(), "prefix-${*inputs.argv}".to_string()],
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect_err("non-standalone unpack expression should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("only valid as a standalone executable command argument"));
+                assert!(message.contains("${*inputs.argv}"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects policy that list-typed inputs are invalid in normal `${...}`
+    /// interpolation and must use standalone unpack tokens.
+    #[test]
+    fn template_interpolation_rejects_list_input_outside_unpack_token() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "argv".to_string(),
+            ResolvedInput::from_string_list(vec!["--alpha".to_string()]).expect("build list input"),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value("prefix-${inputs.argv}", &inputs, &mut pending_file_writes)
+            .expect_err("list interpolation outside unpack token should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(
+                    message
+                        .contains("list inputs are only valid in standalone command unpack tokens")
+                );
+                assert!(message.contains("inputs.argv"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects runtime executable input-kind validation when programmatic callers
+    /// bypass config decoding helpers.
+    #[tokio::test]
+    async fn resolve_inputs_rejects_executable_input_kind_mismatch() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let unified = UnifiedNickelDocument {
+            external_data: BTreeMap::new(),
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            tool_content_hashes: BTreeSet::new(),
+        };
+        let tool = UnifiedToolSpec {
+            is_impure: false,
+            max_concurrent_calls: -1,
+            max_retries: 0,
+            inputs: BTreeMap::from([(
+                "argv".to_string(),
+                ToolInputSpec { kind: ToolInputKind::StringList },
+            )]),
+            default_inputs: BTreeMap::new(),
+            process: ProcessSpec::Executable {
+                command: vec!["bin/tool".to_string(), "${*inputs.argv}".to_string()],
+                env_vars: BTreeMap::new(),
+                success_codes: vec![0],
+            },
+            execution_env_vars: BTreeMap::new(),
+            outputs: BTreeMap::from([("result".to_string(), ToolOutputSpec::default())]),
+            tool_content_map: BTreeMap::new(),
+        };
+        let step = WorkflowStepSpec {
+            id: "step".to_string(),
+            tool: "tool_exec@1.0.0".to_string(),
+            inputs: BTreeMap::from([(
+                "argv".to_string(),
+                InputBinding::String("--scalar-value".to_string()),
+            )]),
+            depends_on: Vec::new(),
+            outputs: BTreeMap::new(),
+        };
+
+        let error = executor
+            .resolve_inputs(&unified, &tool, "wf", &step, &BTreeMap::new())
+            .await
+            .expect_err("kind mismatch should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("expects kind 'string_list'"));
+                assert!(message.contains("received 'string'"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects JavaScript-style escape decoding in literal template spans.
+    #[test]
+    fn template_interpolation_applies_js_string_escapes() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(r"line1\nline2 ${subject}", &inputs, &mut pending_file_writes)
+            .expect("js escape sequences should decode");
+
+        assert_eq!(rendered, "line1\nline2 world");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects explicit failure on unsupported escape sequences.
+    #[test]
+    fn template_interpolation_rejects_unsupported_escape_sequence() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::new();
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value(r"bad\q", &inputs, &mut pending_file_writes)
+            .expect_err("unsupported escape should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("unsupported escape sequence"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects deferred file materialization during planning.
+    #[test]
+    fn template_file_materialization_is_deferred_until_execution() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let inputs = BTreeMap::from([(
+            "subject".to_string(),
+            ResolvedInput::from_plain_content(b"world".to_vec()),
+        )]);
+        let temp = tempfile::tempdir().expect("tempdir");
+        let deferred_path = temp.path().join("runtime").join("subject.txt");
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${subject:file(runtime/subject.txt)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("file materialization token should resolve");
+
+        assert_eq!(pending_file_writes.len(), 1);
+        assert_eq!(
+            pending_file_writes[0].relative_path,
+            std::path::PathBuf::from("runtime").join("subject.txt")
+        );
+        assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
+        assert!(!deferred_path.exists(), "planning should not write files before execution");
+        assert!(rendered.ends_with("subject.txt"));
+    }
+
+    /// Protects ZIP-entry selector extraction into inline template text.
+    #[test]
+    fn template_zip_selector_extracts_zip_entry_content() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let zip_bytes = build_test_zip_payload("nested/file.txt", b"hello-from-zip");
+        let inputs =
+            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${inputs.archive:zip(nested/file.txt)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("zip selector should extract entry content");
+
+        assert_eq!(rendered, "hello-from-zip");
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects ZIP-entry selector chaining with deferred file materialization.
+    #[test]
+    fn template_zip_selector_can_materialize_entry_to_file_path() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
+        let inputs =
+            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${inputs.archive:zip(nested/file.txt):file(runtime/from_zip.txt)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("zip selector + file materialization should resolve");
+
+        assert_eq!(rendered.replace('\\', "/"), "runtime/from_zip.txt");
+        assert_eq!(pending_file_writes.len(), 1);
+        assert_eq!(
+            pending_file_writes[0].relative_path,
+            std::path::PathBuf::from("runtime").join("from_zip.txt")
+        );
+        assert_eq!(pending_file_writes[0].plain_content, b"zip-file-content".to_vec());
+    }
+
+    /// Protects explicit failure when a ZIP selector resolves to a directory
+    /// without opting into `:folder(...)` materialization.
+    #[test]
+    fn template_zip_selector_rejects_directory_without_folder_directive() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
+        let inputs =
+            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value(
+                "${inputs.archive:zip(nested)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect_err("zip directory selector should require :folder(...) materialization");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("resolved 'nested' to a directory"));
+                assert!(message.contains(":folder(<relative_path>)"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects deferred directory materialization when ZIP selection resolves
+    /// to one directory and the token opts into `:folder(...)`.
+    #[test]
+    fn template_zip_selector_can_materialize_directory_to_folder_path() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
+        let inputs =
+            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let mut pending_file_writes = Vec::new();
+
+        let rendered = executor
+            .render_template_value(
+                "${inputs.archive:zip(nested):folder(runtime/from_zip)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect("zip directory selector + folder materialization should resolve");
+
+        assert_eq!(rendered.replace('\\', "/"), "runtime/from_zip");
+        assert_eq!(pending_file_writes.len(), 1);
+        assert_eq!(
+            pending_file_writes[0].relative_path,
+            std::path::PathBuf::from("runtime").join("from_zip").join("file.txt")
+        );
+        assert_eq!(pending_file_writes[0].plain_content, b"zip-dir-content".to_vec());
+    }
+
+    /// Protects explicit failure when `:folder(...)` is requested for a ZIP
+    /// selector that resolves to a regular file.
+    #[test]
+    fn template_zip_selector_folder_materialization_rejects_file_entries() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
+        let inputs =
+            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let mut pending_file_writes = Vec::new();
+
+        let error = executor
+            .render_template_value(
+                "${inputs.archive:zip(nested/file.txt):folder(runtime/from_zip)}",
+                &inputs,
+                &mut pending_file_writes,
+            )
+            .expect_err("zip file selector should reject :folder(...) materialization");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("resolved 'nested/file.txt' to a file"));
+                assert!(message.contains("expected a directory for :folder(...)"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+        assert!(pending_file_writes.is_empty());
+    }
+
+    /// Protects sandbox enforcement for tool-relative paths.
+    #[test]
+    fn tool_relative_paths_reject_absolute_and_escape_components() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+
+        let absolute = if cfg!(windows) { r"C:\\escape.txt" } else { "/escape.txt" };
+        let absolute_error = executor
+            .normalized_relative_tool_path(absolute, "test")
+            .expect_err("absolute tool path should fail");
+        match absolute_error {
+            ConductorError::Workflow(message) => assert!(message.contains("must be relative")),
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+
+        let escape_error = executor
+            .normalized_relative_tool_path("../escape.txt", "test")
+            .expect_err("parent traversal should fail");
+        match escape_error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("must not escape the tool sandbox"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects regular file materialization for `content_map` entries whose keys
+    /// do not end with `/` or `\\`.
+    ///
+    /// With the sandbox-relinking optimization the payload stays in the persistent
+    /// cache directory; the assertion checks the cache path, not the sandbox.
+    #[tokio::test]
+    async fn content_map_file_entry_materializes_plain_file_bytes() {
+        let cas = Arc::new(InMemoryCas::new());
+        let payload = b"#!/usr/bin/env sh\necho from-content-map\n".to_vec();
+        let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (payload_dir, _guard) = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
+                &test_executable_process("bin/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("file-form content_map entry should materialize bytes");
+        let payload_dir = payload_dir.expect("payload dir should be returned");
+
+        assert_eq!(
+            std::fs::read(payload_dir.join("bin").join("run.sh"))
+                .expect("read output from payload cache"),
+            payload
+        );
+    }
+
+    /// Protects the general execution-path optimization by skipping per-step
+    /// recursive payload relinking when the managed-tool executable exists in the
+    /// persistent payload cache.
+    #[tokio::test]
+    async fn content_map_skips_sandbox_relink_when_payload_executable_in_cache() {
+        let cas = Arc::new(InMemoryCas::new());
+        let payload = b"#!/usr/bin/env sh\necho tool\n".to_vec();
+        let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime_tools_dir = temp.path().join("tools");
+
+        let executable_relative = format!("{}/my-tool", host_payload_platform_dir());
+        let (payload_dir, _guard) = executor
+            .materialize_tool_content_map(
+                "mediapm.tools.my-tool@1.0.0",
+                &BTreeMap::from([(executable_relative.clone(), hash)]),
+                &test_executable_process(&executable_relative),
+                temp.path(),
+                runtime_tools_dir.as_path(),
+            )
+            .await
+            .expect("managed-tool payload should materialize");
+        let payload_dir = payload_dir.expect("payload dir should be returned");
+
+        assert!(
+            payload_dir.join(&executable_relative).is_file(),
+            "payload cache should contain the managed-tool executable"
+        );
+        assert!(
+            !temp.path().join(&executable_relative).exists(),
+            "optimization should skip recursive payload relinking into sandbox when executable is in cache"
+        );
+    }
+
+    /// Protects directory materialization semantics for trailing-slash
+    /// `content_map` keys where CAS payloads are ZIP archives.
+    ///
+    /// With the sandbox-relinking optimization the payload stays in the persistent
+    /// cache directory; the assertion checks the cache path, not the sandbox.
+    #[tokio::test]
+    async fn content_map_directory_entry_unpacks_zip_payload() {
+        let cas = Arc::new(InMemoryCas::new());
+        let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
+        let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (payload_dir, _guard) = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([("tool/".to_string(), hash)]),
+                &test_executable_process("tool/bin/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("directory-form content_map entry should unpack ZIP");
+        let payload_dir = payload_dir.expect("payload dir should be returned");
+
+        assert_eq!(
+            std::fs::read_to_string(payload_dir.join("tool").join("bin").join("run.sh"))
+                .expect("read unpacked script from payload cache"),
+            "echo from zip\n"
+        );
+    }
+
+    /// Protects support for `./` as a directory-form key that unpacks directly
+    /// into the payload cache root.
+    ///
+    /// With the sandbox-relinking optimization the payload stays in the persistent
+    /// cache directory; the assertion checks the cache path, not the sandbox.
+    #[tokio::test]
+    async fn content_map_directory_entry_accepts_current_directory_root() {
+        let cas = Arc::new(InMemoryCas::new());
+        let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
+        let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (payload_dir, _guard) = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([("./".to_string(), hash)]),
+                &test_executable_process("bin/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("'./' directory-form content_map entry should unpack ZIP at payload root");
+        let payload_dir = payload_dir.expect("payload dir should be returned");
+
+        assert_eq!(
+            std::fs::read_to_string(payload_dir.join("bin").join("run.sh"))
+                .expect("read unpacked root script from payload cache"),
+            "echo from zip\n"
+        );
+    }
+
+    /// Protects ZIP validation for trailing-slash `content_map` directory keys.
+    #[tokio::test]
+    async fn content_map_directory_entry_rejects_non_zip_payload() {
+        let cas = Arc::new(InMemoryCas::new());
+        let hash = cas.put(b"not-a-zip".to_vec()).await.expect("store plain payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let error = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([("tool/".to_string(), hash)]),
+                &test_executable_process("tool/bin/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect_err("directory-form content_map entry should require ZIP payload");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("expects ZIP payload"));
+                assert!(message.contains("tool/"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects explicit failure for trailing-slash directory keys that do not
+    /// include any concrete path component.
+    #[tokio::test]
+    async fn content_map_directory_entry_requires_non_empty_prefix() {
+        let cas = Arc::new(InMemoryCas::new());
+        let zip_payload = build_test_zip_payload("nested/file.txt", b"x");
+        let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let error = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([("/".to_string(), hash)]),
+                &test_executable_process("bin/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect_err("root-only directory key should fail");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("must contain at least one path component"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects collision safety across separate `content_map` entries.
+    #[tokio::test]
+    async fn content_map_rejects_file_overwrite_between_entries() {
+        let cas = Arc::new(InMemoryCas::new());
+        let directory_zip = build_test_zip_payload("run.sh", b"echo from dir\n");
+        let directory_hash = cas.put(directory_zip).await.expect("store dir zip payload");
+        let file_hash = cas
+            .put(b"#!/usr/bin/env sh\necho from file\n".to_vec())
+            .await
+            .expect("store file payload");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let error = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([
+                    ("tool/".to_string(), directory_hash),
+                    ("tool/run.sh".to_string(), file_hash),
+                ]),
+                &test_executable_process("tool/run.sh"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect_err("conflicting content_map entries should fail before writes");
+
+        match error {
+            ConductorError::Workflow(message) => {
+                assert!(message.contains("tool/"));
+                assert!(message.contains("tool/run.sh"));
+                assert!(message.contains("both materialize"));
+            }
+            other => panic!("expected workflow error, got {other:?}"),
+        }
+    }
+
+    /// Protects merged directory behavior when entries target different files.
+    ///
+    /// With the sandbox-relinking optimization the payload stays in the persistent
+    /// cache directory; assertions check the cache path, not the sandbox.
+    #[tokio::test]
+    async fn content_map_allows_distinct_paths_across_directory_entries() {
+        let cas = Arc::new(InMemoryCas::new());
+        let first_zip = build_test_zip_payload("a.txt", b"A");
+        let first_hash = cas.put(first_zip).await.expect("store first zip payload");
+        let second_zip = build_test_zip_payload("b.txt", b"B");
+        let second_hash = cas.put(second_zip).await.expect("store second zip payload");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let (payload_dir, _guard) = executor
+            .materialize_tool_content_map(
+                "test-tool",
+                &BTreeMap::from([
+                    ("tool/".to_string(), first_hash),
+                    ("tool/nested/".to_string(), second_hash),
+                ]),
+                &test_executable_process("tool/a.txt"),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("non-overlapping directory entries should merge successfully");
+        let payload_dir = payload_dir.expect("payload dir should be returned");
+
+        assert_eq!(
+            std::fs::read_to_string(payload_dir.join("tool").join("a.txt"))
+                .expect("read first from payload cache"),
+            "A"
+        );
+        assert_eq!(
+            std::fs::read_to_string(payload_dir.join("tool").join("nested").join("b.txt"))
+                .expect("read second from payload cache"),
+            "B"
+        );
+    }
+
+    /// Protects process-code capture payload formatting.
+    #[test]
+    fn process_code_capture_serializes_exit_code_text() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let capture =
+            ToolExecutionCapture { stdout: Vec::new(), stderr: Vec::new(), process_code: 27 };
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::ProcessCode,
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+
+        let payload = executor
+            .capture_output_payload(&output_spec, &capture, sandbox.path())
+            .expect("process-code capture should serialize")
+            .expect("process-code capture must not be empty");
+
+        assert_eq!(payload, b"27".to_vec());
+    }
+
+    /// Protects folder capture behavior that emits ZIP payload bytes.
+    #[test]
+    fn folder_capture_emits_zip_payload_with_optional_top_folder() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        let folder = sandbox.path().join("bundle");
+        std::fs::create_dir_all(folder.join("nested")).expect("create folder output");
+        std::fs::write(folder.join("nested").join("a.txt"), b"A")
+            .expect("write folder output file");
+        let capture = ToolExecutionCapture::default();
+
+        let without_top = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderAsZip {
+                relative_path: std::path::PathBuf::from("bundle"),
+                include_topmost_folder: false,
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+        let payload_without_top = executor
+            .capture_output_payload(&without_top, &capture, sandbox.path())
+            .expect("folder capture without top-level folder should succeed")
+            .expect("folder capture must not be empty");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
+            &payload_without_top,
+            &sandbox.path().join("unzipped_without_top"),
+        )
+        .expect("unpack zip without top folder");
+        assert!(sandbox.path().join("unzipped_without_top").join("nested").join("a.txt").exists());
+        assert!(
+            !sandbox
+                .path()
+                .join("unzipped_without_top")
+                .join("bundle")
+                .join("nested")
+                .join("a.txt")
+                .exists()
+        );
+
+        let with_top = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderAsZip {
+                relative_path: std::path::PathBuf::from("bundle"),
+                include_topmost_folder: true,
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+        let payload_with_top = executor
+            .capture_output_payload(&with_top, &capture, sandbox.path())
+            .expect("folder capture with top-level folder should succeed")
+            .expect("folder capture must not be empty");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
+            &payload_with_top,
+            &sandbox.path().join("unzipped_with_top"),
+        )
+        .expect("unpack zip with top folder");
+        assert!(
+            sandbox
+                .path()
+                .join("unzipped_with_top")
+                .join("bundle")
+                .join("nested")
+                .join("a.txt")
+                .exists()
+        );
+    }
+
+    /// Protects regex file-capture behavior for dynamic output filenames.
+    #[test]
+    fn file_regex_capture_selects_single_matching_file() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+            .expect("write infojson");
+        std::fs::write(sandbox.path().join("downloads").join("video.description"), b"desc")
+            .expect("write description");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FileRegex {
+                path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+                pattern: "^downloads/.+\\.description$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let payload = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect("regex file capture should select one match")
+            .expect("regex file capture must not be empty");
+
+        assert_eq!(payload, b"desc");
+    }
+
+    /// Protects strict missing-match checks for regex file-capture declarations.
+    #[test]
+    fn file_regex_capture_rejects_zero_matches() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+            .expect("write infojson");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FileRegex {
+                path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+                pattern: "^downloads/.+\\.description$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let error = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect_err("regex file capture with zero matches should fail");
+
+        let ConductorError::Workflow(message) = error else {
+            panic!("expected workflow error");
+        };
+        assert!(message.contains("no sandbox file matched"), "unexpected message: {message}");
+    }
+
+    /// Protects strict ambiguity checks for regex file-capture declarations.
+    #[test]
+    fn file_regex_capture_rejects_multiple_matches() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(sandbox.path().join("downloads").join("first.description"), b"first")
+            .expect("write first description");
+        std::fs::write(sandbox.path().join("downloads").join("second.description"), b"second")
+            .expect("write second description");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FileRegex {
+                path_regex: Regex::new(r"^downloads/.+\.description$").expect("compile regex"),
+                pattern: "^downloads/.+\\.description$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let err = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect_err("regex file capture with multiple matches should fail");
+
+        let ConductorError::Workflow(message) = err else {
+            panic!("expected workflow error");
+        };
+        assert!(message.contains("ambiguous"), "unexpected message: {message}");
+    }
+
+    /// Protects regex folder-capture behavior by zipping matched descendants.
+    #[test]
+    fn folder_regex_capture_packages_matched_directory_descendants() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads").join("nested"))
+            .expect("create nested downloads");
+        std::fs::create_dir_all(sandbox.path().join("logs")).expect("create logs");
+        std::fs::write(sandbox.path().join("downloads").join("video.info.json"), br#"{"id":"1"}"#)
+            .expect("write infojson");
+        std::fs::write(sandbox.path().join("downloads").join("nested").join("clip.mp4"), b"media")
+            .expect("write media");
+        std::fs::write(sandbox.path().join("logs").join("debug.txt"), b"noise")
+            .expect("write unrelated file");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderRegexAsZip {
+                path_regex: Regex::new(r"^downloads$").expect("compile regex"),
+                pattern: "^downloads$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let payload = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect("regex folder capture should succeed")
+            .expect("regex folder capture must not be empty");
+
+        let unzip_dir = sandbox.path().join("unzipped_regex");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+            .expect("unpack regex folder zip");
+
+        assert!(unzip_dir.join("downloads").join("video.info.json").exists());
+        assert!(unzip_dir.join("downloads").join("nested").join("clip.mp4").exists());
+        assert!(!unzip_dir.join("logs").join("debug.txt").exists());
+    }
+
+    /// Protects optional-family behavior by emitting an empty ZIP payload when a
+    /// folder-regex capture matches no sandbox paths.
+    #[test]
+    fn folder_regex_capture_returns_empty_zip_when_no_paths_match() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(sandbox.path().join("downloads").join("video.mp4"), b"media")
+            .expect("write primary output");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderRegexAsZip {
+                path_regex: Regex::new(r"^downloads/.+\.comments\.json$").expect("compile regex"),
+                pattern: "^downloads/.+\\.comments\\.json$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let payload = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect("regex folder capture with no matches should succeed with empty zip")
+            .expect("regex folder capture must not be empty");
+
+        let unzip_dir = sandbox.path().join("unzipped_regex_empty");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+            .expect("unpack empty regex folder zip");
+
+        let mut entries = std::fs::read_dir(&unzip_dir).expect("read empty unzip root");
+        assert!(entries.next().is_none(), "empty capture should unpack to an empty directory tree");
+    }
+
+    /// Protects regex folder-capture rename semantics driven by capture groups.
+    #[test]
+    fn folder_regex_capture_renames_zip_members_from_capture_groups() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(
+            sandbox.path().join("downloads").join("clip__mediapm__.en.srt"),
+            b"subtitle",
+        )
+        .expect("write subtitle sidecar");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderRegexAsZip {
+                path_regex: Regex::new(r"^downloads/(.+?)__mediapm__(\..+)$")
+                    .expect("compile regex"),
+                pattern: "^downloads/(.+?)__mediapm__(\\..+)$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let payload = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect("regex folder capture should succeed")
+            .expect("regex folder capture must not be empty");
+
+        let unzip_dir = sandbox.path().join("unzipped_regex_renamed");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(&payload, &unzip_dir)
+            .expect("unpack regex folder zip");
+
+        assert!(unzip_dir.join("clip.en.srt").exists());
+        assert!(!unzip_dir.join("downloads").join("clip__mediapm__.en.srt").exists());
+    }
+
+    /// Protects regex folder-capture rename conflict detection.
+    #[test]
+    fn folder_regex_capture_rejects_renamed_path_conflicts() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(sandbox.path().join("downloads")).expect("create downloads");
+        std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.mp3"), b"a")
+            .expect("write first media output");
+        std::fs::write(sandbox.path().join("downloads").join("song__mediapm__.flac"), b"b")
+            .expect("write second media output");
+
+        let output_spec = ResolvedOutputSpec {
+            capture: ResolvedOutputCapture::FolderRegexAsZip {
+                path_regex: Regex::new(r"^downloads/(.+?)__mediapm__\..+$").expect("compile regex"),
+                pattern: "^downloads/(.+?)__mediapm__\\..+$".to_string(),
+            },
+            persistence: PersistenceFlags::default(),
+            allow_empty: false,
+        };
+
+        let error = executor
+            .capture_output_payload(&output_spec, &ToolExecutionCapture::default(), sandbox.path())
+            .expect_err("regex folder capture conflict should fail");
+
+        let ConductorError::Workflow(message) = error else {
+            panic!("expected workflow error");
+        };
+        assert!(message.contains("renamed-path conflict"), "unexpected message: {message}");
+    }
+
+    /// Protects executable success-code membership logic.
+    #[test]
+    fn success_code_membership_checks_configured_set() {
+        let success_codes = BTreeSet::from([0_i32, 2_i32, 7_i32]);
+
+        assert!(StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(2, &success_codes));
+        assert!(!StepWorkerExecutor::<InMemoryCas>::is_success_exit_code(1, &success_codes));
+    }
+
+    /// Protects executable timeout-policy parsing by rejecting zero-second values.
+    #[test]
+    fn executable_timeout_parser_rejects_zero_seconds() {
+        let error = StepWorkerExecutor::<InMemoryCas>::parse_executable_timeout_duration("0")
+            .expect_err("zero-second timeout should be rejected");
+
+        let ConductorError::Workflow(message) = error else {
+            panic!("expected workflow parse error");
+        };
+        assert!(message.contains("greater than 0 seconds"), "unexpected parse message: {message}");
+    }
+
+    /// Protects worker resilience by timing out long-running executable subprocesses.
+    #[tokio::test]
+    async fn execute_executable_tool_enforces_timeout_budget() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let sandbox = tempfile::tempdir().expect("tempdir");
+
+        let executable_name = if cfg!(windows) { "sleep.cmd" } else { "sleep.sh" };
+        let executable_path = sandbox.path().join(executable_name);
+
+        let script = if cfg!(windows) {
+            "@echo off\r\n\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoProfile -ExecutionPolicy Bypass -Command \"Start-Sleep -Seconds 2\"\r\n"
+        } else {
+            "#!/bin/sh\nsleep 2\n"
+        };
+        std::fs::write(&executable_path, script).expect("write timeout script");
+
+        let mut env_vars = BTreeMap::new();
+        if cfg!(windows) {
+            if let Ok(path) = std::env::var("PATH") {
+                env_vars.insert("PATH".to_string(), path);
+            }
+            if let Ok(system_root) = std::env::var("SystemRoot") {
+                env_vars.insert("SystemRoot".to_string(), system_root);
+            }
+        }
+
+        let error = executor
+            .execute_executable_tool_with_timeout(
+                executable_name,
+                &[],
+                &env_vars,
+                &BTreeSet::from([0]),
+                sandbox.path(),
+                None,
+                None,
+                Duration::from_millis(200),
+            )
+            .await
+            .expect_err("long-running subprocess should time out");
+
+        let ConductorError::Workflow(message) = error else {
+            panic!("expected workflow timeout error");
+        };
+        assert!(message.contains("exceeded timeout"), "unexpected timeout message: {message}");
+    }
+
+    /// Protects reverse-diff hinting by skipping CAS constraint patches for the
+    /// empty-content root input hash.
+    #[tokio::test]
+    async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
+        let cas = Arc::new(InMemoryCas::new());
+        let output_hash = cas.put(b"output".to_vec()).await.expect("put output payload");
+        let executor =
+            StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
+
+        let inputs =
+            BTreeMap::from([("empty".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+
+        executor
+            .apply_reverse_diff_hints(output_hash, &inputs)
+            .await
+            .expect("reverse-diff hinting should skip empty-content root input hash");
+
+        assert!(
+            cas.get_constraint(empty_content_hash())
+                .await
+                .expect("query empty constraint")
+                .is_none(),
+            "empty-content root should remain unconstrained"
+        );
+    }
+
+    /// Protects external-data full-save policy behavior by applying full-save CAS
+    /// constraints when `${external_data.<hash>}` bindings are consumed.
+    #[tokio::test]
+    async fn external_data_full_save_policy_applies_full_save_hint_on_input_resolution() {
+        let cas = Arc::new(InMemoryCas::new());
+        let external_bytes = b"external-data-full".to_vec();
+        let external_hash = cas.put(external_bytes.clone()).await.expect("put external data");
+        let executor =
+            StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
+
+        let workflow_step = WorkflowStepSpec {
+            id: "step-full-external".to_string(),
+            tool: "echo@1.0.0".to_string(),
+            inputs: BTreeMap::new(),
+            depends_on: Vec::new(),
+            outputs: BTreeMap::new(),
+        };
+        let unified = UnifiedNickelDocument {
+            external_data: BTreeMap::from([(
+                external_hash,
+                ExternalContentRef {
+                    description: Some("full external fixture".to_string()),
+                    save: Some(OutputSaveMode::Full),
+                },
+            )]),
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            tool_content_hashes: BTreeSet::new(),
+        };
+
+        let resolved = executor
+            .resolve_input_binding(
+                &unified,
+                "wf",
+                &workflow_step,
+                &format!("${{external_data.{external_hash}}}"),
+                &BTreeMap::new(),
+            )
+            .await
+            .expect("full external-data binding should resolve");
+
+        assert_eq!(resolved.plain_content, external_bytes);
+        assert_eq!(resolved.hash, external_hash);
+
+        let constraint =
+            cas.get_constraint(external_hash).await.expect("query full-save external constraint");
+        let expected = BTreeSet::from([empty_content_hash()]);
+        assert_eq!(constraint.as_ref().map(|entry| &entry.potential_bases), Some(&expected));
+    }
+
+    /// Protects regular external-data save behavior by avoiding full-save hints
+    /// for `save = true` references.
+    #[tokio::test]
+    async fn external_data_saved_policy_does_not_apply_full_save_hint_on_input_resolution() {
+        let cas = Arc::new(InMemoryCas::new());
+        let external_hash =
+            cas.put(b"external-data-saved".to_vec()).await.expect("put external data");
+        let executor =
+            StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
+
+        let workflow_step = WorkflowStepSpec {
+            id: "step-saved-external".to_string(),
+            tool: "echo@1.0.0".to_string(),
+            inputs: BTreeMap::new(),
+            depends_on: Vec::new(),
+            outputs: BTreeMap::new(),
+        };
+        let unified = UnifiedNickelDocument {
+            external_data: BTreeMap::from([(
+                external_hash,
+                ExternalContentRef {
+                    description: Some("saved external fixture".to_string()),
+                    save: Some(OutputSaveMode::Saved),
+                },
+            )]),
+            tools: BTreeMap::new(),
+            workflows: BTreeMap::new(),
+            tool_content_hashes: BTreeSet::new(),
+        };
+
+        executor
+            .resolve_input_binding(
+                &unified,
+                "wf",
+                &workflow_step,
+                &format!("${{external_data.{external_hash}}}"),
+                &BTreeMap::new(),
+            )
+            .await
+            .expect("saved external-data binding should resolve");
+
+        assert!(
+            cas.get_constraint(external_hash)
+                .await
+                .expect("query saved external constraint")
+                .is_none(),
+            "save=true should not inject full-save CAS hint"
+        );
+    }
+
+    /// Protects workflow-error diagnostics by preserving ANSI styling bytes.
+    #[test]
+    fn format_process_failure_stderr_preserves_ansi_sequences() {
+        let raw = "\u{001b}[31merror\u{001b}[0m from tool \u{001b}]8;;https://example.com\u{0007}link\u{001b}]8;;\u{0007}";
+
+        let formatted =
+            StepWorkerExecutor::<InMemoryCas>::format_process_failure_stderr(raw.as_bytes());
+
+        assert_eq!(formatted, raw);
+    }
+
+    /// Protects fallback message when stderr contains only whitespace.
+    #[test]
+    fn format_process_failure_stderr_uses_default_for_empty_text() {
+        let raw = "\n\t\r";
+
+        let formatted =
+            StepWorkerExecutor::<InMemoryCas>::format_process_failure_stderr(raw.as_bytes());
+
+        assert_eq!(formatted, "no stderr output");
+    }
+
+    /// Protects crate-owned builtin echo dispatch and stream payload shape.
+    #[tokio::test]
+    async fn builtin_echo_dispatch_uses_echo_crate_streams() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let args = BTreeMap::from([
+            ("text".to_string(), "hello".to_string()),
+            ("stream".to_string(), "both".to_string()),
+        ]);
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_echo::TOOL_NAME,
+                mediapm_conductor_builtin_echo::TOOL_VERSION,
+                &args,
+                &BTreeMap::new(),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("builtin echo dispatch should succeed");
+
+        assert_eq!(capture.stdout, b"hello\n".to_vec());
+        assert_eq!(capture.stderr, b"hello\n".to_vec());
+        assert_eq!(capture.process_code, 0);
+    }
+
+    /// Protects builtin import dispatch for relative paths rooted in outermost config directory.
+    #[tokio::test]
+    async fn builtin_import_dispatch_supports_relative_local_path() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tool_root = temp.path().join("tool-root");
+        let config_root = temp.path().join("config-root");
+        std::fs::create_dir_all(&tool_root).expect("create tool root");
+        std::fs::create_dir_all(&config_root).expect("create config root");
+
+        let source_path = config_root.join("input.txt");
+        std::fs::write(&source_path, b"abc").expect("write source");
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_import::TOOL_NAME,
+                mediapm_conductor_builtin_import::TOOL_VERSION,
+                &BTreeMap::from([
+                    ("kind".to_string(), "file".to_string()),
+                    ("path_mode".to_string(), "relative".to_string()),
+                    ("path".to_string(), "input.txt".to_string()),
+                ]),
+                &BTreeMap::new(),
+                &tool_root,
+                &config_root,
+            )
+            .await
+            .expect("builtin import dispatch should succeed");
+
+        assert_eq!(capture.stdout, b"abc");
+        assert_eq!(capture.process_code, 0);
+    }
+
+    /// Protects builtin import folder dispatch that exports one ZIP payload.
+    #[tokio::test]
+    async fn builtin_import_dispatch_exports_folder_as_zip() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source_dir = temp.path().join("fixtures").join("pack");
+        std::fs::create_dir_all(&source_dir).expect("create source dir");
+        std::fs::write(source_dir.join("a.txt"), b"z").expect("write source file");
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_import::TOOL_NAME,
+                mediapm_conductor_builtin_import::TOOL_VERSION,
+                &BTreeMap::from([
+                    ("kind".to_string(), "folder".to_string()),
+                    ("path".to_string(), "fixtures/pack".to_string()),
+                ]),
+                &BTreeMap::new(),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("builtin import folder dispatch should succeed");
+
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
+            &capture.stdout,
+            &temp.path().join("unzipped"),
+        )
+        .expect("unpack imported folder zip");
+
+        assert!(temp.path().join("unzipped").join("a.txt").exists());
+    }
+
+    /// Protects builtin import `cas_hash` dispatch that reads payload bytes from CAS.
+    #[tokio::test]
+    async fn builtin_import_dispatch_supports_cas_hash_kind() {
+        let cas = Arc::new(InMemoryCas::new());
+        let hash = cas.put(b"from-cas".to_vec()).await.expect("seed CAS payload");
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_import::TOOL_NAME,
+                mediapm_conductor_builtin_import::TOOL_VERSION,
+                &BTreeMap::from([
+                    ("kind".to_string(), "cas_hash".to_string()),
+                    ("hash".to_string(), hash.to_string()),
+                ]),
+                &BTreeMap::new(),
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("builtin import cas_hash dispatch should succeed");
+
+        assert_eq!(capture.stdout, b"from-cas");
+        assert_eq!(capture.process_code, 0);
+    }
+
+    /// Protects builtin fs dispatch and rooted file-write behavior.
+    #[tokio::test]
+    async fn builtin_fs_dispatch_writes_rooted_file() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let tool_root = temp.path().join("tool-root");
+        let config_root = temp.path().join("config-root");
+        std::fs::create_dir_all(&tool_root).expect("create tool root");
+        std::fs::create_dir_all(&config_root).expect("create config root");
+        let output_path = config_root.join("out").join("out.txt");
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_fs::TOOL_NAME,
+                mediapm_conductor_builtin_fs::TOOL_VERSION,
+                &BTreeMap::from([
+                    ("op".to_string(), "write_text".to_string()),
+                    ("path_mode".to_string(), "relative".to_string()),
+                    ("path".to_string(), "out/out.txt".to_string()),
+                    ("content".to_string(), "payload".to_string()),
+                ]),
+                &BTreeMap::new(),
+                &tool_root,
+                &config_root,
+            )
+            .await
+            .expect("builtin fs dispatch should succeed");
+
+        assert!(capture.stdout.is_empty(), "fs builtin should not emit stdout payload");
+        assert!(!tool_root.join("out").join("out.txt").exists());
+        assert_eq!(std::fs::read_to_string(output_path).expect("read written file"), "payload");
+        assert_eq!(capture.process_code, 0);
+    }
+
+    /// Protects builtin archive dispatch for pure file-content pack behavior.
+    #[tokio::test]
+    async fn builtin_archive_dispatch_packs_pure_file_content() {
+        let executor = StepWorkerExecutor {
+            cas: Arc::new(InMemoryCas::new()),
+            conductor_tmp_dir: std::env::temp_dir(),
+        };
+        let temp = tempfile::tempdir().expect("tempdir");
+        let input_bytes = BTreeMap::from([(
+            "content".to_string(),
+            ResolvedInput::from_plain_content(b"z".to_vec()),
+        )]);
+
+        let capture = executor
+            .execute_builtin_tool(
+                mediapm_conductor_builtin_archive::TOOL_NAME,
+                mediapm_conductor_builtin_archive::TOOL_VERSION,
+                &BTreeMap::from([
+                    ("action".to_string(), "pack".to_string()),
+                    ("kind".to_string(), "file".to_string()),
+                    ("entry_name".to_string(), "a.txt".to_string()),
+                ]),
+                &input_bytes,
+                temp.path(),
+                temp.path(),
+            )
+            .await
+            .expect("builtin archive dispatch should succeed");
+
+        let unpack_dir = temp.path().join("unpacked");
+        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
+            &capture.stdout,
+            &unpack_dir,
+        )
+        .expect("unpack archive payload");
+        assert_eq!(std::fs::read(unpack_dir.join("a.txt")).ok(), Some(b"z".to_vec()));
+        assert_eq!(capture.process_code, 0);
+    }
+}

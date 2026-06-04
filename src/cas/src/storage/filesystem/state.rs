@@ -1748,3 +1748,44 @@ fn ensure_reconstructed_hash(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::FileSystemState;
+    use crate::{Hash, IndexState, ObjectMeta, ensure_empty_record};
+
+    #[test]
+    fn localized_depth_recompute_updates_transitive_descendants() {
+        let base = Hash::from_content(b"depth-base");
+        let pivot = Hash::from_content(b"depth-pivot");
+        let child = Hash::from_content(b"depth-child");
+        let grandchild = Hash::from_content(b"depth-grandchild");
+
+        let mut index = IndexState::default();
+        ensure_empty_record(&mut index);
+        index.objects.insert(base, ObjectMeta::full(4, 4, 1));
+        index.objects.insert(pivot, ObjectMeta::full(4, 4, 1));
+        index.objects.insert(child, ObjectMeta::delta(2, 4, 2, pivot));
+        index.objects.insert(grandchild, ObjectMeta::delta(2, 4, 3, child));
+        index.rebuild_delta_reverse();
+
+        let next_pivot = ObjectMeta::delta(2, 4, 2, base);
+        let previous_pivot = index.objects.insert(pivot, next_pivot);
+        FileSystemState::sync_delta_reverse_for_meta_update(
+            &mut index,
+            pivot,
+            previous_pivot,
+            next_pivot,
+        );
+
+        let roots = BTreeSet::from([pivot]);
+        FileSystemState::recompute_descendant_depths_with_fallback(&mut index, &roots)
+            .expect("localized depth recompute should succeed");
+
+        assert_eq!(index.objects.get(&pivot).expect("pivot meta").depth(), 2);
+        assert_eq!(index.objects.get(&child).expect("child meta").depth(), 3);
+        assert_eq!(index.objects.get(&grandchild).expect("grandchild meta").depth(), 4);
+    }
+}

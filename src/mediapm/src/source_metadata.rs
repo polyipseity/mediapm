@@ -253,3 +253,126 @@ pub(crate) fn should_retry_workflow_with_filesystem_cas(error: &ConductorError) 
     let text = error.to_string();
     text.contains("cas operation failed") && text.contains("object not found")
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use mediapm_cas::Hash;
+    use mediapm_conductor::{MachineNickelDocument, ToolConfigSpec};
+    use serde_json::json;
+
+    use super::*;
+
+    /// Ensures online metadata parsing extracts title/artist/description when
+    /// downloader JSON includes those fields.
+    #[test]
+    fn parse_online_metadata_reads_title_artist_and_description() {
+        let payload = json!({
+            "fulltitle": "Demo Song",
+            "uploader": "Demo Artist",
+            "description": "A short description"
+        });
+
+        let metadata = parse_online_source_metadata(&payload);
+        assert_eq!(
+            metadata,
+            OnlineSourceMetadata {
+                title: Some("Demo Song".to_string()),
+                artist: Some("Demo Artist".to_string()),
+                description: Some("A short description".to_string()),
+            }
+        );
+    }
+
+    /// Ensures remote add-flow metadata passes `None` through when yt-dlp is
+    /// not configured and emits the warning verbatim.
+    #[test]
+    fn resolve_online_metadata_for_add_warns_when_yt_dlp_is_missing() {
+        let warning = "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source 'https://example.com/demo-video'".to_string();
+        let resolved = resolve_online_source_metadata_for_add(None, Some(warning.clone()));
+
+        assert!(resolved.title.is_none());
+        assert!(resolved.artist.is_none());
+        assert!(resolved.description.is_none());
+        assert_eq!(resolved.warning.as_deref(), Some(warning.as_str()));
+    }
+
+    /// Ensures remote add-flow metadata passes through yt-dlp-fetched values
+    /// verbatim when the tool is configured.
+    #[test]
+    fn resolve_online_metadata_for_add_prefers_yt_dlp_values_when_configured() {
+        let fetched = OnlineSourceMetadata {
+            title: Some("Fetched Title".to_string()),
+            artist: Some("Fetched Artist".to_string()),
+            description: Some("Fetched Description".to_string()),
+        };
+
+        let resolved = resolve_online_source_metadata_for_add(Some(fetched), None);
+
+        assert_eq!(resolved.title.as_deref(), Some("Fetched Title"));
+        assert_eq!(resolved.artist.as_deref(), Some("Fetched Artist"));
+        assert_eq!(resolved.description.as_deref(), Some("Fetched Description"));
+        assert!(resolved.warning.is_none());
+    }
+
+    /// Ensures local metadata parsing extracts title/description from ffprobe
+    /// `format.tags` payloads with case-insensitive key matching.
+    #[test]
+    fn parse_local_metadata_reads_ffprobe_tags_case_insensitively() {
+        let payload = json!({
+            "format": {
+                "tags": {
+                    "TITLE": "Local Demo",
+                    "Comment": "Local description"
+                }
+            }
+        });
+
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&payload);
+        assert_eq!(
+            metadata,
+            LocalSourceMetadata {
+                title: Some("Local Demo".to_string()),
+                artist: None,
+                description: Some("Local description".to_string()),
+            }
+        );
+    }
+
+    /// Ensures workflow execution prefers filesystem CAS when managed runtime
+    /// tool configs reference persisted payload hashes.
+    #[test]
+    fn prefer_filesystem_workflow_runner_when_content_map_hashes_exist() {
+        let machine = MachineNickelDocument {
+            tool_configs: BTreeMap::from([(
+                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([(
+                        "./".to_string(),
+                        Hash::from_content(b"payload"),
+                    )])),
+                    ..ToolConfigSpec::default()
+                },
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        assert!(should_prefer_filesystem_workflow_runner(&machine));
+    }
+
+    /// Ensures workflow execution keeps existing conductor backend when no
+    /// managed runtime payload hashes are configured.
+    #[test]
+    fn prefer_filesystem_workflow_runner_is_false_without_content_map_hashes() {
+        let machine = MachineNickelDocument {
+            tool_configs: BTreeMap::from([(
+                "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
+                ToolConfigSpec::default(),
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        assert!(!should_prefer_filesystem_workflow_runner(&machine));
+    }
+}

@@ -25,9 +25,6 @@ mod service;
 mod source_metadata;
 mod tools;
 
-#[cfg(test)]
-mod tool_add_defaults_tests;
-
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -283,16 +280,6 @@ pub use service::{
     resolve_effective_paths_for_root,
 };
 
-#[cfg(test)]
-pub(crate) use hierarchy::{build_hierarchy_preset_node, insert_hierarchy_preset_node};
-#[cfg(test)]
-pub(crate) use source_metadata::{
-    LocalSourceMetadata, OnlineSourceMetadata, parse_local_source_metadata_from_ffprobe_json,
-    parse_online_source_metadata, should_prefer_filesystem_workflow_runner,
-};
-
-#[cfg(test)]
-mod tests;
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
 pub(crate) fn load_runtime_dotenv(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
     load_runtime_env_files(&paths.runtime_root).map_err(|source| {
@@ -628,4 +615,127 @@ pub(crate) fn local_source_default_steps(
             options: BTreeMap::new(),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use url::Url;
+
+    use super::*;
+
+    /// Ensures scheme validation allows online and local URI inputs.
+    #[test]
+    fn source_scheme_validation_matches_phase3_policy() {
+        let http = Url::parse("https://example.com/video.mkv").expect("url");
+        let local = Url::parse("local:media-id").expect("url");
+
+        assert!(validate_source_uri(&http).is_ok());
+        assert!(validate_source_uri(&local).is_ok());
+    }
+
+    /// Ensures unsupported schemes are rejected.
+    #[test]
+    fn source_scheme_validation_rejects_unsupported_schemes() {
+        let ftp = Url::parse("ftp://example.com/video.mkv").expect("url");
+        assert!(validate_source_uri(&ftp).is_err());
+    }
+
+    /// Ensures local preset media-tagger defaults explicitly include both
+    /// optional `MusicBrainz` identifier fields as empty placeholders.
+    #[test]
+    fn local_preset_media_tagger_defaults_include_empty_mbids() {
+        let steps = local_source_default_steps("blake3:deadbeef", None, None);
+        let media_tagger_step = steps
+            .iter()
+            .find(|step| step.tool == MediaStepTool::MediaTagger)
+            .expect("local preset should include media-tagger step");
+
+        assert_eq!(
+            media_tagger_step.options.get("recording_mbid"),
+            Some(&TransformInputValue::String(String::new()))
+        );
+        assert_eq!(
+            media_tagger_step.options.get("release_mbid"),
+            Some(&TransformInputValue::String(String::new()))
+        );
+    }
+
+    /// Ensures service-level runtime overrides keep precedence for retained
+    /// runtime-storage fields.
+    #[test]
+    fn merge_runtime_storage_prefers_override_fields() {
+        let config = MediaRuntimeStorage {
+            env_file: Some("config.env".to_string()),
+            env_generated_file: None,
+            inherited_env_vars: Some(BTreeMap::from([(
+                "windows".to_string(),
+                vec!["SYSTEMROOT".to_string(), "PATH".to_string()],
+            )])),
+            ..MediaRuntimeStorage::default()
+        };
+        let override_value = MediaRuntimeStorage {
+            env_file: Some("override.env".to_string()),
+            env_generated_file: None,
+            inherited_env_vars: Some(BTreeMap::from([
+                ("WINDOWS".to_string(), vec!["path".to_string(), "TMPDIR".to_string()]),
+                ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()]),
+            ])),
+            ..MediaRuntimeStorage::default()
+        };
+
+        let merged = merge_runtime_storage(&config, &override_value);
+
+        assert_eq!(merged.env_file.as_deref(), Some("override.env"));
+        assert_eq!(
+            merged.inherited_env_vars,
+            Some(BTreeMap::from([
+                ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()],),
+                (
+                    "windows".to_string(),
+                    vec!["SYSTEMROOT".to_string(), "PATH".to_string(), "TMPDIR".to_string(),],
+                ),
+            ]))
+        );
+    }
+
+    /// Ensures `instance_ttl_seconds` merges correctly: the override value wins
+    /// when set, and `None` in the override preserves the config value.
+    #[test]
+    fn merge_runtime_storage_preserves_instance_ttl_override() {
+        let config = MediaRuntimeStorage {
+            instance_ttl_seconds: Some(3600),
+            ..MediaRuntimeStorage::default()
+        };
+        let override_value_some = MediaRuntimeStorage {
+            instance_ttl_seconds: Some(7200),
+            ..MediaRuntimeStorage::default()
+        };
+        let override_value_none = MediaRuntimeStorage::default();
+
+        let merged_some = merge_runtime_storage(&config, &override_value_some);
+        let merged_none = merge_runtime_storage(&config, &override_value_none);
+
+        assert_eq!(
+            merged_some.instance_ttl_seconds,
+            Some(7200),
+            "override value should win when set"
+        );
+        assert_eq!(
+            merged_none.instance_ttl_seconds,
+            Some(3600),
+            "config value should survive when override is None"
+        );
+    }
+
+    /// Ensures short `YouTube` links are normalized to the canonical watch URL.
+    #[test]
+    fn normalize_source_uri_expands_short_youtube_links() {
+        let short = Url::parse("https://youtu.be/dQw4w9WgXcQ?t=43").expect("url");
+
+        let normalized = normalize_source_uri(&short);
+
+        assert_eq!(normalized.as_str(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    }
 }
