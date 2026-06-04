@@ -28,7 +28,7 @@ use ractor::{ActorRef, call_t};
 
 use crate::api::{
     RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics, StateMutationOptions,
-    resolve_runtime_storage_paths,
+    WorkflowProgressSender, WorkflowStepEvent, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -222,6 +222,7 @@ where
             &mut effective_options.runtime_inherited_env_vars,
             &runtime_env_names,
         );
+        let progress_sender = effective_options.progress_sender.take();
         let conductor_state_config = resolved_runtime_paths.conductor_state_config.clone();
         let profile_output_path = effective_options
             .profile_output_path
@@ -263,6 +264,7 @@ where
                 &resolved_runtime_paths.conductor_tools_dir,
                 &resolved_runtime_paths.conductor_tmp_dir,
                 &outermost_config_dir,
+                progress_sender,
             )
             .await;
 
@@ -549,6 +551,7 @@ where
         tools_dir: &Path,
         conductor_tmp_dir: &Path,
         outermost_config_dir: &Path,
+        progress_sender: Option<WorkflowProgressSender>,
     ) -> Result<ExecutionOutcome, ConductorError> {
         let unified_shared = Arc::new(unified.clone());
         let mut summary = RunSummary::new();
@@ -708,6 +711,10 @@ where
                 },
             );
         }
+
+        // Pre-compute total steps across all workflows for progress reporting.
+        let total_steps: usize =
+            dep_states.values().map(|ds| ds.step_outputs.len() + ds.ready_queue.len()).sum();
 
         if dep_states.is_empty() {
             return Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions });
@@ -927,6 +934,23 @@ where
                             }
                         }
                     }
+                }
+
+                // Send progress event after step completion.
+                if let Some(ref tx) = progress_sender {
+                    let completed_steps: usize =
+                        dep_states.values().map(|ds| ds.step_outputs.len()).sum();
+                    let _ = tx.send(WorkflowStepEvent {
+                        total_steps,
+                        completed_steps,
+                        workflow_name: event_wf.clone(),
+                        step_id: event_step.clone(),
+                        workflow_display_name: workflow_display_names
+                            .get(&event_wf)
+                            .cloned()
+                            .unwrap_or_else(|| event_wf.clone()),
+                        executed: bundle.executed,
+                    });
                 }
             }
         }
