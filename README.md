@@ -95,5 +95,5 @@ When setting `MEDIAPM_DEMO_ONLINE_RUN_SYNC` explicitly, use `true`.
 
 Integration tests across workspace crates share one harness shape:
 
-- top-level `tests/tests.rs` entrypoint,
+- top-level `tests/mod.rs` entrypoint,
 - grouped modules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
