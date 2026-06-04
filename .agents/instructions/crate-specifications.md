@@ -412,16 +412,19 @@ workflow step completion events through an optional channel. The consumer
   - `sync_library_with_tag_update_checks` creates an
     `mpsc::unbounded_channel`, a `MultiProgress`, and spawns a `tokio` receiver
     task.
-  - On the first event, an overall bar and `worker_count` per-worker bars are
-    created. The overall bar uses format `"{msg}  [{bar:20}]  {pos}/{total}"`
-    and per-worker bars use `"{msg}  [{bar:18}]  {pos}/{total}"`.
-  - Per-worker completed counts are tracked in a separate `Vec<usize>` and
-    incremented on each event using `event.worker_index`.
+  - On the first event, one overall bar and `worker_count` text-only worker
+    lines are created. The overall bar uses format
+    `"{msg}  [{bar:20}]  {pos}/{total}"` and worker lines use
+    `mp.add_bar(0).with_format("{msg}")` (no bar, no total — pure text).
+  - Per-worker step counts are tracked in a `Vec<usize>` and incremented on
+    each event using `event.worker_index`.
   - The receiver task updates the overall bar's position and message on each
-    event, and the specific worker bar's position and message to show which
-    step that worker is processing.
-  - When the channel closes (sender dropped), all bars show completion
-    messages and a 75 ms settle delay flushes the render thread.
+    event. Worker lines show the current step and per-worker count:
+    `"worker {wi}: {workflow}: {step}  ({count})"`.
+  - When the channel closes (sender dropped), the overall bar shows
+    `"all workflows complete"` and each worker line shows
+    `"worker {wi}: done  ({count})"`. A 75 ms settle delay flushes the render
+    thread.
   - For the filesystem CAS branch (no events), `rx` is dropped immediately
     and the handle awaited.
   - For the normal conductor branch, `tx` is dropped after the match
