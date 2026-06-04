@@ -115,6 +115,10 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
         .tool_registry
         .iter()
         .filter_map(|(tool_id, record)| {
+            // Skip already-pruned entries so they don't generate repeated warnings.
+            if record.status == ToolRegistryStatus::Pruned {
+                return None;
+            }
             let still_declared = desired_logical_names.contains(&record.name);
             let still_active = desired_tool_ids.contains(tool_id);
             let still_referenced = referenced_by_workflow.contains(tool_id);
