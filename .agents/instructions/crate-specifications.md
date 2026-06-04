@@ -44,9 +44,10 @@ Conductor Workflow Execution
     └─ Step N: export (builtin) → Materialized files
     ↓
 CAS-Backed Materialization
-    ├─ Staging: Link/copy CAS objects to temp dir
-    ├─ Validation: Verify hashes
-    └─ Commit: Atomic rename to final location
+    └─ Direct materialization to final output paths
+
+Temp extraction directory (`mediapm_tmp_dir`, for zip processing only)
+    └─ Extract → materialize → cleanup
     ↓
 State Persistence (state.ncl)
     └─ Lock records: path → media_id, variant, hash
@@ -104,7 +105,7 @@ State Persistence (state.ncl)
 | **CAS** | Temp file + atomic rename; index snapshots on mutation |
 | **Conductor** | State persisted atomically; workflow fails fast on conflicts; OS-backed per-conductor-dir temp dirs (hash of conductor_dir under `std::env::temp_dir()`) replace global temp for sandboxes, ZIP extractions, and regex captures |
 | **Builtins** | File operations succeed or rollback (no orphaned state) |
-| **MediaPM** | Staging → validation → commit; rollback on failure; OS-backed per-workspace staging dirs (hash of workspace root under `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock |
+| **MediaPM** | Direct materialization to final output paths; CAS integrity trusted by default; temp extraction dir (hash of workspace root under `std::env::temp_dir()`) used for zip processing only; per-workspace temp dirs are for sandboxes and ZIP extractions |
 
 **Verification**: If partial state persists after failure, it's a bug.
 
@@ -230,7 +231,7 @@ round-trip tests pass.
 - Conductor documents isolated per-workspace (no cross-workspace bleed)
 - Conductor temp directories isolated per-conductor-dir (hash-based path under `std::env::temp_dir()`)
 - MediaPM respects conductor's state versioning (explicit migration support)
-- Sync is all-or-nothing: succeeds and persists, or fails and reverts staged
+- Sync materializes directly to final output paths; no intermediate staging phase
 
 ### MediaPM ↔ CAS (Direct)
 
@@ -240,11 +241,10 @@ round-trip tests pass.
 **Operations**:
 1. Content verification: Check file hash against lock record
 2. Cache hit detection: If hash unchanged, skip re-materialization
-3. Link materialization: Call `cas.get()` and write to staging area
-4. Atomic commit: Rename staged files to final location
+3. Link materialization: Call `cas.get()` and write to final output path
 
 **Ownership**:
-- **MediaPM owns**: Hierarchy logic, staging/commit orchestration, lock records
+- **MediaPM owns**: Hierarchy logic, materialization orchestration, lock records
 - **CAS owns**: Storage, persistence, object retrieval
 
 **Contract**:
@@ -543,7 +543,7 @@ repeated stale-entry warnings on every sync cycle.
 - **Configuration**: `mediapm.ncl` (user), `state.ncl` (machine), with versioning
 - **Module Hierarchy**: 13 submodules (config, lockfile, paths, conductor_bridge, materializer, tools, etc.)
 - **Public Trait**: `MediaPmApi` with `process_source()` and `sync_library()`
-- **State Management**: Staged → commit atomicity; lock records for cache hits
+- **State Management**: Direct materialization; lock records for cache hits
 - **Tool Provisioning**: User-level cache (downloads) vs. workspace cache (extracted binaries)
 - **Materialization**: Link order preference (hardlink → symlink → reflink → copy)
 - **Hierarchy path sanitization**:
@@ -580,7 +580,7 @@ repeated stale-entry warnings on every sync cycle.
   - overlapping variants with identical `rename_files` at the same path are
     rejected as duplicates,
   - `rename_files` coexistence is supported by materializer isolation: each
-    `media_folder` entry gets an independent staging directory so that
+    `media_folder` entry gets an independent working directory so that
     per-entry `rename_files` rules can produce files without cross-entry
     overwrite conflicts.
 - **Hierarchy node ID suffix convention**: tagged media nodes carry no
@@ -792,7 +792,7 @@ MediaPM Errors
 **Contract**:
 - **Fail-fast**: Validation before execution; no partial state on error
 - **Atomicity**: CAS failures in pure workflows trigger one-shot retry; impure workflows fail immediately
-- **Recovery**: MediaPM staged directory rollback on failure; state.ncl unchanged
+- **Recovery**: MediaPM cleans up on failure; state.ncl unchanged
 - **Diagnostics**: Error messages include actionable context (path, hash, expected vs. actual)
 
 **Error detection patterns**:
@@ -825,7 +825,7 @@ tests/
 |----------|-----|-----------|----------|---------|
 | **Happy Path** | put → get | user → machine → execute | valid args → correct output | sync roundtrip |
 | **Validation** | Constraint logic | Document merging | Fail-fast keys | Lock reconciliation |
-| **Error Paths** | NotFound, Codec | Corrupt output | Invalid input | Staged rollback |
+| **Error Paths** | NotFound, Codec | Corrupt output | Invalid input | Materialization rollback |
 | **Determinism** | Hash stability | State stability | Pure output consistency | Idempotent sync |
 | **Concurrency** | Concurrent puts | Actor coordination | N/A | Parallel materialization |
 
@@ -876,13 +876,13 @@ tests/
 
 **Benefit**: Type-safe; explicit migrations; no ad-hoc serialization
 
-### 6. Staged-and-Commit Materialization
+### 6. Direct Materialization
 
-**Pattern**: Write to temp directory, validate, then atomic rename to final location
+**Pattern**: Materialize directly to final output paths; temp extraction only for zip processing
 
-**Used By**: CAS, MediaPM (via conductor)
+**Used By**: MediaPM (via conductor)
 
-**Benefit**: Atomicity; clean rollback on failure; no orphaned partial state
+**Benefit**: Simpler, faster; CAS integrity trusted by default
 
 ---
 
@@ -1022,7 +1022,7 @@ depend on it.
 - **Public Trait**: `MediaPmApi`
 - **Implementation**: `MediaPmService`
 - **Schemas**: mediapm.ncl (user), state.ncl (machine)
-- **Materialization**: Staging → validation → commit; atomic
+- **Materialization**: Direct to final output paths; temp extraction only for zip processing
 
 ---
 
@@ -1309,37 +1309,33 @@ let ffmpeg_path =
 
 **Trade-off**: Developers need to learn Nickel syntax. Benefit: expressive, type-checked, reusable templates.
 
-### Why Staged-and-Commit Materialization Instead of Direct Writes?
+### Why Direct Materialization Instead of Staged-and-Commit?
 
-**The Problem**: Media workflows are long-running. If a workflow crashes halfway through materializing 100 files, you're left with 47 partially-written files, corrupted lock state, and unclear recovery.
+**The Problem**: The old staged-and-commit approach wrote all output to a staging directory, verified hashes, then atomically renamed to the final location. This added complexity, required extra disk space for staging, and slowed materialization.
 
-**Staged-and-Commit Solution**:
-1. Write to temporary directory (staging area)
-2. Validate all files (hashes, permissions)
-3. Atomic rename entire directory to final location
-4. Update lock file only after successful commit
+**Direct Materialization Solution**:
+1. Materialize directly to final output paths from CAS
+2. CAS integrity is trusted by default — objects validated at CAS put time, not at materialization time
+3. Lock file updated after successful materialization
 
-If anything fails mid-way, staging directory is left untouched, final location is unchanged, lock file is unchanged.
+If anything fails mid-way, partial files are cleaned up, and re-run resumes from the lock record (unfinished entries have no lock record, so they are re-materialized).
 
 **Example**:
 ```
-Step 1: CAS → /tmp/mediapm_stage_XYZ/
+Step 1: CAS → /media/library/song/
         ├─ song.mp3 (from CAS)
         ├─ song.jpg (from CAS)
         └─ song.txt (from CAS)
 
-Step 2: Validate hashes against lock records
+Step 2: Update lock file
 
-Step 3: Crash? → No problem, /tmp/mediapm_stage_XYZ/ is orphaned.
-        Original files untouched. Re-run sync → starts fresh.
+Step 3: Done. All files at final location, lock file consistent.
 
-Step 4: Success? → atomic mv /tmp/mediapm_stage_XYZ/ → /media/library/song/
-        Update lock file
-
-Step 5: Done. All files at final location, lock file consistent.
+Temp extraction directory (`mediapm_tmp_dir`) is used only for zip processing
+and sandbox isolation — not for staging materialization output.
 ```
 
-**Trade-off**: Requires temporary space; slightly slower (rename + lock write). Benefit: atomic, recoverable, no orphaned partial state.
+**Trade-off**: No atomic-materialization safety net for CAS integrity failures. Benefit: simpler, faster, less disk overhead. Pure workflows may auto-retry on CAS integrity failure (warn + drop + retry once); impure workflows fail without auto-retry.
 
 ### Why Three-Document Pattern (User, Machine, State) Instead of Single File?
 
@@ -1776,17 +1772,17 @@ Re-running sync has unpredictable behavior
 ```
 
 **Causes**:
-1. **Crash during commit**: Staged directory committed, but lock file write failed
+1. **Crash during materialization**: Files already written to output paths, but lock file write failed
 2. **Disk full**: Materialization succeeded, but lock write failed
-3. **Permission error**: Earlier stages succeeded, later permission check failed
+3. **Permission error**: Earlier writes succeeded, later permission check failed
 
 **Debug**:
 ```bash
 # Check lock file for partial entries
 $ cat ~/.mediapm/lock.ncl | grep -E "media_id|cas_hash"
 
-# Check staged directory (orphaned partial writes)
-$ ls ~/.mediapm/.staged/ 2>/dev/null
+# Check for orphaned output files
+$ ls -la ~/.mediapm/output/ 2>/dev/null
 
 # Check permissions
 $ ls -la ~/.mediapm/lock.ncl
@@ -1794,7 +1790,7 @@ $ ls -la ~/.mediapm/lock.ncl
 
 **Solution**:
 - Manually delete orphaned lock entries or re-run with `--force-resync`
-- Clean up staged directory: `rm -rf ~/.mediapm/.staged/*`
+- Clean up orphaned output files: remove files in output paths that have no lock record
 - Verify disk space: `df -h ~/.mediapm`
 - Verify write permissions: `touch ~/.mediapm/test_write`
 
@@ -2052,14 +2048,13 @@ User Config (mediapm.ncl)
 MediaPM (back in materialization phase)
         ↓
 ┌───────────────────────────────────────────────────────┐
-│ Staging & Commit                                      │
+│ Materialization                                       │
 │ ┌─────────────────────────────────────────────────┐   │
 │ │ 1. Get final output hash from Conductor         │   │
 │ │ 2. CAS.get(hash) → bytes                        │   │
-│ │ 3. Write to staging directory                   │   │
-│ │ 4. Validate permissions, read-only bit          │   │
-│ │ 5. Atomic rename → final location               │   │
-│ │ 6. Update lock file (media_id → hash)           │   │
+│ │ 3. Write directly to final output path          │   │
+│ │ 4. Set permissions, read-only bit               │   │
+│ │ 5. Update lock file (media_id → hash)           │   │
 │ └─────────────────────────────────────────────────┘   │
 └───────────────────────────────────────────────────────┘
         ↓
@@ -2216,22 +2211,25 @@ Output Files + Updated Lock
     │ LOCK &    │   │ → PROCEED    │
     │ HASH OK   │   └──────┬───────┘
     │ → SKIP    │          │
-    └───────────┘   ┌──────▼────────────┐
-                    │ STAGING PHASE     │
-                    │ 1. CAS.get(hash)  │
-                    │ 2. Write to /tmp/ │
-                    │ 3. Check perms    │
-                    └──────┬────────────┘
+    └───────────┘   ┌──────▼────────────────┐
+                    │ MATERIALIZE PHASE     │
+                    │ 1. CAS.get(hash)      │
+                    │ 2. Write to output    │
+                    │ 3. Set perms          │
+                    └──────┬────────────────┘
                            │
               ┌────────────┴───────────────┐
               │                           │
          ┌────▼──────┐         ┌─────────▼──┐
          │ SUCCESS   │         │ FAILURE    │
-         │ → COMMIT  │         │ → ROLLBACK │
+         │ → PERSIST │         │ → CLEANUP  │
          └────┬──────┘         └────────┬───┘
               │                         │
-    ┌─────────▼──────────┐   ┌──────────▼──────┐
-    │ COMMIT PHASE       │   │ ROLLBACK PHASE  │
+    ┌─────────▼──────────┐   ┌──────────▼──────────┐
+    │ PERSIST PHASE      │   │ CLEANUP PHASE       │
+    │ (update lock file) │   │ (remove partial     │
+    └────────────────────┘   │  output files)      │
+                             └─────────────────────┘
     │ 1. Atomic rename   │   │ 1. Delete /tmp/ │
     │ 2. Set read-only   │   │ 2. Leave lock   │
     │ 3. Update lock     │   │    unchanged    │
@@ -2260,12 +2258,12 @@ Output Files + Updated Lock
 | **Workflow** | Directed acyclic graph (DAG) of steps. Each step invokes a tool; output feeds to next step. | `steps: [import, ffmpeg, media-tagger, export]` |
 | **Step** | Single operation in a workflow. Invokes one tool with input bindings. | `{ id = "convert", tool = "ffmpeg", args = { format = "mp3" } }` |
 | **OrchestrationState** | Complete state of workflow execution: which steps ran, outputs, errors. Persisted to CAS. | Includes per-step: id, status, output hash, error message |
-| **Staging Directory** | Temporary location where files are written before final commit. Atomic rename moves files to output location. | `~/.mediapm/.staged_xyz/` → `~/.mediapm/output/` |
+| **Staging Directory (legacy)** | Previously used for intermediate temp storage before final commit. Direct materialization replaced this. | No longer used. Temp extraction uses per-workspace `mediapm_tmp_dir`. |
 | **Lock File** | Records what's been synced: media_id + variant → final CAS hash. Enables cache hits on re-run. | `{ media_id = "song_1", variant = "primary", cas_hash = "..." }` |
 | **Media Source** | Origin of media data: URL, local file, CAS hash, etc. Specified in `mediapm.ncl`. | `source = "https://example.com/video.mp4"` |
 | **Hierarchy** | Folder/media organization in output directory. Specifies which media go where. | `hierarchy = [{ kind = "folder", name = "Music", children = [...] }]` |
 | **Variant** | Output type for media (primary, audio, thumbnail, etc.). One media entry → multiple variants. | Media: song.mp3; Variants: primary, lyrics, cover_art |
-| **Materialization** | Process of writing CAS objects to disk (final output files). Atomic: stage → validate → commit. | CAS object → /media/library/song/song.mp3 |
+| **Materialization** | Process of writing CAS objects to disk at final output paths. CAS integrity trusted by default. | CAS object → /media/library/song/song.mp3 |
 | **Pure** | Operation with deterministic output. Same input always → same output. No side effects. | `echo` and `archive` are pure; `fs` and `import` are impure |
 | **Impure** | Operation with non-deterministic or side-effect output. May vary on retry. | `import` (network), `fs` (file system), `export` (disk I/O) |
 | **Determinism** | Property: identical inputs produce identical outputs. Required for cache hits and reproducible builds. | If sync ran twice without config change, skip all steps (cache) |
@@ -2503,7 +2501,7 @@ mediapm/
 │       │   ├── lockfile/ (lock.ncl persistence)
 │       │   ├── paths.rs (runtime path resolution)
 │       │   ├── conductor_bridge.rs (ConductorApi integration)
-│       │   ├── materializer.rs (staging/commit)
+│       │   ├── materializer.rs (materialization)
 │       │   ├── tools.rs (tool provisioning)
 │       │   └── error.rs (MediaPmError)
 │       └── tests/

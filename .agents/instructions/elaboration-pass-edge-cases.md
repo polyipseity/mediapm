@@ -790,32 +790,32 @@ No cross-process race protection is available on those platforms.
 
 ### 4.1 Partial CAS Sync Failure (Mid-Way Materialization)
 
-**Issue**: Specification states "Staging → validation → commit; rollback on failure" but does not detail **partial materialization failure**.
+**Issue**: Specification states direct materialization but needs to address **partial materialization failure** under the simpler model.
 
 **Scenario**:
 
-- Sync materializes 100 files
+- Sync materializes 100 files directly to output paths
 - File 50 fails to materialize (CAS corrupted, hash mismatch)
-- Files 1–49 already staged
+- Files 1–49 already written to final output paths
 - Files 51–100 not attempted
 
-**Current Spec**: "Atomic staging-and-commit materialization"
+**Current Spec**: Direct materialization; CAS integrity trusted by default; impure workflows fail without auto-retry
 
-**Gap**: Rollback scope unclear; "all-or-nothing" semantics not explicit.
+**Gap**: Cleanup semantics for files already written before failure.
 
-**Risk**: Partial sync leaves staging directory with 49 files; lock file not updated; next sync may retry/resume ambiguously.
+**Risk**: Partial sync leaves 49 files at output paths; lock file not updated; next sync may skip these files (lock records absent) but files exist on disk confusingly.
 
 **Recommendations**:
 
-- Explicit atomic semantics: **All files must materialize successfully or ALL staged files are deleted and state.ncl unchanged**
-- Staging cleanup: **on any failure, remove all staged files (atomic cleanup)**
-- Lock update: **only after successful commit of all files**
-- Add test: "mid-sync failure (file 50 of 100) → all staged files deleted, lock unchanged"
+- **Cleanup on failure**: remove all files materialized during this sync run, even if they were written before the failure
+- **Lock update**: only after all files materialize successfully
+- Add test: "mid-sync failure (file 50 of 100) → all materialized files cleaned up, lock unchanged"
+- Pure workflows may auto-recover: warn, drop, and retry once; impure workflows fail immediately
 
 **Questions for Clarification**:
 
-1. If 50 of 100 files materialize, then one fails, are the 50 rolled back or kept?
-2. Is rollback atomic (all-or-nothing cleanup) or per-file?
+1. If 50 of 100 files materialize, then one fails, are the 50 removed or kept?
+2. Should cleanup distinguish between files written this sync vs pre-existing files at the same path?
 
 ---
 
@@ -1036,10 +1036,10 @@ mediapm.ncl:
 
 - Sync 1 starts, materializes files 1–50
 - Sync 2 starts (user triggered second sync concurrently)
-- Both try to stage to same temp directory
+- Both try to materialize to the same output paths
 - Both try to write lock file
 
-**Current Spec**: "Atomic staging-and-commit materialization"
+**Current Spec**: Direct materialization; CAS integrity trusted by default
 
 **Gap**: No locking semantics for concurrent syncs.
 
@@ -1048,7 +1048,7 @@ mediapm.ncl:
 **Recommendations**:
 
 - Explicit concurrency model: **single sync at a time (lock file-based)** or **concurrent syncs allowed with per-media locking**
-- If file-based: **acquire lock before staging; release after commit**
+- If file-based: **acquire lock before materialization; release after completion**
 - If per-media: **document isolation semantics**
 - Add test: "concurrent sync operations → serialized or isolated correctly"
 
@@ -1165,9 +1165,9 @@ custom per-entry rename rules impossible without workaround paths.
 - **Allow same-path entries with overlapping variants when `rename_files` differ**
 - Validation: compare `rename_files` arrays on same-path + overlapping-variant
   entries; allow iff they differ, reject (duplicate) iff identical
-- The materializer uses isolated staging directories per `media_folder` entry
+- The materializer uses isolated working directories per `media_folder` entry
   (keyed by job index), so each entry's `rename_files` rules operate in their
-  own staging namespace, with final output filenames resolved independently
+  own working namespace, with final output filenames resolved independently
 - Cross-entry deduplication uses the materialized filename (after `rename_files`
   rewrite) so same-path + same-variant entries with different `rename_files`
   produce unique final files
@@ -1176,7 +1176,7 @@ custom per-entry rename rules impossible without workaround paths.
 
 1. Should this exception apply to all hierarchy node kinds or only `media_folder`?
 2. What happens if `rename_files`-differentiated entries produce the same final
-   filename? (Materializer would overwrite; last-write-wins per staging order.)
+   filename? (Materializer would overwrite; last-write-wins per working order.)
 
 ---
 
@@ -1864,53 +1864,50 @@ via `BTreeMap::insert()`, silently overwriting existing entries with the same
 
 ---
 
-### 4.28 SERIAL_GUARD Removal and Per-Workspace tmp Isolation
+### 4.28 SERIAL_GUARD Removal and Temp Directory Strategy
 
-**Issue**: Materializer tests used a global `OnceLock<Mutex<()>>` (`SERIAL_GUARD`)
+**Issue**: Materializer tests previously used a global `OnceLock<Mutex<()>>` (`SERIAL_GUARD`)
 to serialize access to the system temp directory, preventing concurrent test
-processes from colliding on staging paths. This global lock did not scale to
+processes from colliding on shared temp paths. This global lock did not scale to
 parallel test execution and leaked abstraction (test infrastructure concern
 visible in production code).
 
 **Scenario**:
 
 - Two concurrent `cargo test` processes run materializer tests
-- Both try to create staging directories under the system temp dir
-- Without serialization, tests race on temp dir entries, producing spurious
-  failures
-- `SERIAL_GUARD` serialized all materializer tests globally, eliminating races
-  at the cost of sequentializing test execution
+- Previously, both tried to create temp directories under the system temp dir
+- With the old staging approach, tests raced on temp dir entries
+- `SERIAL_GUARD` serialized all materializer tests globally at the cost of
+  sequentializing test execution
 
 **Resolution**:
 
-- `SERIAL_GUARD` (`OnceLock<Mutex<()>>`) removed entirely from
-  `src/mediapm/src/materializer/mod.rs`
-- Replaced with OS-backed per-workspace staging directories using
+- `SERIAL_GUARD` (`OnceLock<Mutex<()>>`) removed entirely
+- Direct materialization replaces the old staging model; temp directories are
+  used only for zip extraction and sandbox isolation — not for materialization
+  staging
+- Per-workspace temp dirs use
   `std::env::temp_dir().join(format!("mediapm-{:016x}", hash(root_dir)))`
   where `hash` is `std::hash::DefaultHasher` applied to the workspace root
-  path.
-- Each workspace gets its own subdirectory under the OS temp dir, derived
-  deterministically from its workspace root. Concurrent test processes on
-  different workspaces never collide because they use different temp dir
-  paths. Tests use unique `tempfile::tempdir()` roots, so concurrent tests
-  on the same workspace also get distinct temp dirs.
-- The staging directory is scoped to a single sync operation; cleaned up on
-  success (promoted to final location) or on failure (rolled back)
-- The Atomicity Contract in `crate-specifications.md` updated to document:
-  "OS-backed per-workspace staging dirs (hash of workspace root under
-  `std::env::temp_dir()`) replace global `SERIAL_GUARD` lock"
+  path
+- Each workspace gets its own subdirectory under the OS temp dir. Concurrent
+  test processes on different workspaces never collide because they use
+  different temp dir paths. Tests use unique `tempfile::tempdir()` roots,
+  so concurrent tests on the same workspace also get distinct temp dirs
+- Temp directories are scoped to a single sync operation; cleaned up on success
+  or failure
 - Conductor crate follows the same pattern: `ResolvedRuntimeStoragePaths.conductor_tmp_dir`
   computes `<os-temp>/mediapm-conductor-<conductor-dir-hash>` using `DefaultHasher` over
   `conductor_dir`. This path is threaded through `StepExecutionRequest` →
   `StepWorkerExecutor` for sandbox `run-` directories, ZIP extraction workspaces
-  (`step-output-zip-`, `zip-entry-`), and regex capture staging directories.
+  (`step-output-zip-`, `zip-entry-`), and regex capture working directories
 
 **Cross-References**:
 
 - `src/mediapm/src/paths.rs`: `default_runtime_tmp_dir()` derives OS temp
   subdirectory from workspace root hash
-- `src/mediapm/src/materializer/mod.rs`: staging directory creation under
-  `mediapm_tmp_dir` (which now resolves to the OS-backed path)
+- `src/mediapm/src/materializer/mod.rs`: temp directory handling under
+  `mediapm_tmp_dir`
 - `.agents/instructions/crate-specifications.md`: Atomicity Contract table,
   MediaPM row
 
@@ -2100,7 +2097,7 @@ MBID-based metadata override.
 - Next startup: CAS state blob exists, MediaPM state.ncl missing/stale
 - Inconsistency: which is source of truth?
 
-**Current Spec**: "Atomic staging-and-commit; state persisted atomically"
+**Current Spec**: "Direct materialization with trusted CAS integrity"
 
 **Gap**: No coordination between CAS state blob and state.ncl lock records.
 
@@ -2298,22 +2295,22 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.3 "Atomic Commit": Automatic Rollback Trigger
+### 6.3 "Direct Materialization": Cleanup on Failure
 
-**Issue**: Specification states "atomic commit" but does not clarify **who triggers rollback** if validation fails after staging.
+**Issue**: Under direct materialization, if a sync fails mid-way, files written to output paths before the failure need cleanup.
 
 **Ambiguity**:
 
-- Staging complete, validation happens
-- Validation fails
-- Does rollback happen automatically or does caller invoke `rollback()`?
+- Files 1–49 written to final output
+- File 50 fails
+- Does cleanup happen automatically or does caller invoke `cleanup()`?
 
-**Current Spec**: "Staging → validation → commit; rollback on failure"
+**Current Spec**: "Direct materialization; cleanup on failure"
 
 **Recommendation**:
 
-- **Clarify to automatic**: "Atomic commit semantics mean if any step fails (validation, final write, etc.), rollback is automatic and unconditional. The API returns error; no manual rollback needed."
-- Add test: "failure during validation → automatic cleanup (no orphaned files)"
+- **Clarify to automatic**: "Direct materialization semantics mean if any step fails, cleanup of files written during this sync is automatic and unconditional. The API returns error; no manual cleanup needed."
+- Add test: "failure during materialization → automatic cleanup (no orphaned files)"
 
 ---
 

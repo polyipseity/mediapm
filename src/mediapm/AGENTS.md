@@ -15,8 +15,8 @@ instruction files in `.agents/instructions/`.
 
 - Treat `mediapm` as specialized media orchestration over conductor + CAS:
   deterministic planning/state reconciliation first, side effects second.
-- Keep sync behavior atomic through staging under effective `.mediapm/tmp`
-  before commit into materialized output roots.
+- Keep sync behavior atomic through direct materialization to final output paths;
+  temp extraction under `.mediapm/tmp` is used only for zip processing.
 - Preserve strict cross-platform path safety and deterministic link fallback
   behavior.
 
