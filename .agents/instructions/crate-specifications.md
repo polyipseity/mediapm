@@ -388,7 +388,9 @@ workflow step completion events through an optional channel. The consumer
 - **API types** (`src/conductor/src/api.rs`):
   - `WorkflowStepEvent` struct with fields: `total_steps: usize`,
     `completed_steps: usize`, `workflow_name: String`, `step_id: String`,
-    `workflow_display_name: String`, `executed: bool`. Derives `Debug + Clone`.
+    `workflow_display_name: String`, `executed: bool`,
+    `worker_index: usize`, `worker_count: usize`.
+    Derives `Debug + Clone`.
   - `WorkflowProgressSender` type alias:
     `tokio::sync::mpsc::UnboundedSender<WorkflowStepEvent>`.
   - `RunWorkflowOptions.progress_sender: Option<WorkflowProgressSender>`.
@@ -398,18 +400,28 @@ workflow step completion events through an optional channel. The consumer
   - Before the dispatch loop, `total_steps` is computed as the sum of
     `ds.step_outputs.len() + ds.ready_queue.len()` across all `dep_states`.
   - After each step completion, if `progress_sender` is `Some`, a
-    `WorkflowStepEvent` is sent via the channel.
+    `WorkflowStepEvent` is sent via the channel with the step's worker index
+    and total worker count.
+  - Completed steps are tracked via a local `completed_steps` counter
+    (`saturating_add(1)` per event) rather than re-computed from dependency
+    state lengths, ensuring every dispatched event is counted exactly once.
   - The coordinator no longer imports or uses `pulsebar` at all.
   - No `MultiProgress` or progress bars are created in the coordinator.
 
 - **Consumer rendering** (`src/mediapm/src/service.rs`):
   - `sync_library_with_tag_update_checks` creates an
-    `mpsc::unbounded_channel`, a `MultiProgress` with one `ProgressBar`, and
-    spawns a `tokio` receiver task.
-  - The receiver task uses `rx.recv().await` to listen for events, updating
-    the bar's position and message on each event.
-  - When the channel closes (sender dropped), the bar shows
-    `"all workflows complete"` and a 75 ms settle delay is applied.
+    `mpsc::unbounded_channel`, a `MultiProgress`, and spawns a `tokio` receiver
+    task.
+  - On the first event, an overall bar and `worker_count` per-worker bars are
+    created. The overall bar uses format `"{msg}  [{bar:20}]  {pos}/{total}"`
+    and per-worker bars use `"{msg}  [{bar:18}]  {pos}/{total}"`.
+  - Per-worker completed counts are tracked in a separate `Vec<usize>` and
+    incremented on each event using `event.worker_index`.
+  - The receiver task updates the overall bar's position and message on each
+    event, and the specific worker bar's position and message to show which
+    step that worker is processing.
+  - When the channel closes (sender dropped), all bars show completion
+    messages and a 75 ms settle delay flushes the render thread.
   - For the filesystem CAS branch (no events), `rx` is dropped immediately
     and the handle awaited.
   - For the normal conductor branch, `tx` is dropped after the match
