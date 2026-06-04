@@ -362,6 +362,7 @@ where
             runtime_inherited_env_vars,
             profile_output_path: None,
             profiler_enabled: false,
+            progress_sender: None,
         };
         let LoadedDocuments { prior_state_pointer, unified, .. } = document_loader
             .load_and_unify(
@@ -412,6 +413,7 @@ where
             runtime_inherited_env_vars,
             profile_output_path: None,
             profiler_enabled: false,
+            progress_sender: None,
         };
         let LoadedDocuments { mut state_document, unified, machine_document, .. } = document_loader
             .load_and_unify(

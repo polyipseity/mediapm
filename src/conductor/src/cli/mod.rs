@@ -921,6 +921,7 @@ async fn run_workflow(
                 runtime_inherited_env_vars,
                 profile_output_path,
                 profiler_enabled: enable_profiler,
+                progress_sender: None,
             },
         )
         .await?;

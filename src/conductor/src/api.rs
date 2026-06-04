@@ -524,8 +524,28 @@ impl Default for RunSummary {
     }
 }
 
+/// One step completion event sent from conductor to mediapm for progress reporting.
+#[derive(Debug, Clone)]
+pub struct WorkflowStepEvent {
+    /// Total number of steps across all workflows.
+    pub total_steps: usize,
+    /// Number of steps completed so far.
+    pub completed_steps: usize,
+    /// The workflow name for this event.
+    pub workflow_name: String,
+    /// The step id for this event.
+    pub step_id: String,
+    /// Human-readable display name for the workflow being executed.
+    pub workflow_display_name: String,
+    /// Whether this step was freshly executed or served from cache.
+    pub executed: bool,
+}
+
+/// Sender type for workflow step progress events.
+pub type WorkflowProgressSender = tokio::sync::mpsc::UnboundedSender<WorkflowStepEvent>;
+
 /// Runtime options controlling one `run_workflow` invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RunWorkflowOptions {
     /// Allows user-side tool definitions to override previously locked machine
     /// definitions when the same immutable tool name is redefined.
@@ -567,7 +587,22 @@ pub struct RunWorkflowOptions {
     ///
     /// Defaults to `false` so profiling is opt-in per call site.
     pub profiler_enabled: bool,
+    /// Optional sender for step-level progress events, allowing callers to
+    /// render progress bars during multi-workflow execution.
+    pub progress_sender: Option<WorkflowProgressSender>,
 }
+
+impl PartialEq for RunWorkflowOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.allow_tool_redefinition == other.allow_tool_redefinition
+            && self.runtime_storage_paths == other.runtime_storage_paths
+            && self.runtime_inherited_env_vars == other.runtime_inherited_env_vars
+            && self.profile_output_path == other.profile_output_path
+            && self.profiler_enabled == other.profiler_enabled
+            && self.progress_sender.is_some() == other.progress_sender.is_some()
+    }
+}
+impl Eq for RunWorkflowOptions {}
 
 impl RunWorkflowOptions {
     /// Returns strict-safe defaults for workflow execution.
@@ -579,6 +614,7 @@ impl RunWorkflowOptions {
             runtime_inherited_env_vars: Vec::new(),
             profile_output_path: None,
             profiler_enabled: false,
+            progress_sender: None,
         }
     }
 }
