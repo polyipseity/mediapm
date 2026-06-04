@@ -1276,21 +1276,27 @@ where
             let mp = MultiProgress::new();
             let mut total_steps: usize = 0;
             let mut overall_bar: Option<ProgressBar> = None;
+            let mut worker_bars: Vec<ProgressBar> = Vec::new();
+            let mut per_worker_completed: Vec<usize> = Vec::new();
             while let Some(event) = rx.recv().await {
                 if total_steps == 0 {
                     total_steps = event.total_steps;
                     overall_bar = Some(
                         mp.add_bar(total_steps as u64)
                             .with_format("{msg}  [{bar:20}]  {pos}/{total}")
-                            .with_message(&format!(
-                                "{}: {} ({}/{})",
-                                event.workflow_display_name,
-                                event.step_id,
-                                event.completed_steps,
-                                total_steps,
-                            )),
+                            .with_message("overall"),
                     );
+                    for wi in 0..event.worker_count {
+                        worker_bars.push(
+                            mp.add_bar(total_steps as u64)
+                                .with_format("{msg}  [{bar:18}]  {pos}/{total}")
+                                .with_message(&format!("worker {wi}")),
+                        );
+                        per_worker_completed.push(0);
+                    }
                 }
+                per_worker_completed[event.worker_index] =
+                    per_worker_completed[event.worker_index].saturating_add(1);
                 if let Some(ref bar) = overall_bar {
                     bar.set_position(event.completed_steps as u64);
                     bar.set_message(&format!(
@@ -1301,10 +1307,21 @@ where
                         total_steps,
                     ));
                 }
+                if let Some(worker_bar) = worker_bars.get(event.worker_index) {
+                    let wi = event.worker_index;
+                    worker_bar.set_position(per_worker_completed[wi] as u64);
+                    worker_bar.set_message(&format!(
+                        "worker {wi}: {}: {}",
+                        event.workflow_display_name, event.step_id,
+                    ));
+                }
             }
             if let Some(ref bar) = overall_bar {
                 bar.set_message("all workflows complete");
                 bar.set_position(total_steps as u64);
+            }
+            for bar in &worker_bars {
+                bar.set_message("done");
             }
             tokio::time::sleep(std::time::Duration::from_millis(75)).await;
             // mp dropped here → render thread joins.
