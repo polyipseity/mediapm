@@ -18,7 +18,7 @@
 - Integration tests currently live with workspace crates (for example,
   `src/mediapm/tests/`).
   Prefer one shared harness shape across crates:
-  - top-level `tests/tests.rs` as the integration harness,
+  - top-level `tests/mod.rs` as the integration harness,
   - grouped submodules under `tests/e2e/`, `tests/int/`, and `tests/prop/`.
 
 ## Architecture
@@ -339,8 +339,10 @@
   instruction files and remove them.
 - When splitting one Rust module into multiple files, adopt folder-module
   layout consistently: move `foo.rs` to `foo/mod.rs`, place sibling modules in
-  `foo/*.rs`, and place local unit tests in `foo/tests.rs` with
-  `#[cfg(test)] mod tests;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and
+  `foo/*.rs`, and place unit tests as `#[cfg(test)]` blocks inline in the
+  source file they test. If the inline block exceeds ~300 lines, split into a
+  themed sibling file `foo_<theme>.rs` declared with
+  `#[cfg(test)] mod foo_<theme>;`. Avoid keeping both `foo.rs` and `foo/mod.rs`, and
   avoid `#[path = "..."]` for routine in-crate module/test placement.
 - Do not deliberately rename examples/tests solely to force workspace-wide
   unique target names. Shared canonical names (for example `demo`) are allowed;

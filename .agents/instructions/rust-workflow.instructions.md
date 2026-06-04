@@ -142,7 +142,9 @@ SKIP=cargo-test git commit -m "message"
   layout by default:
   - move `foo.rs` to `foo/mod.rs`,
   - place submodules as `foo/<submodule>.rs`,
-  - place module-local unit tests in `foo/tests.rs`.
+  - place unit tests as `#[cfg(test)]` blocks inline in the source file they
+    test. If the inline block exceeds ~300 lines, split into a themed sibling
+    file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
 - In `foo/mod.rs`, prefer conventional declarations (`mod tests;`) instead of
   `#[path = "..."]` for routine in-folder test/module wiring.
 - Do not keep both `foo.rs` and `foo/mod.rs` for the same module.

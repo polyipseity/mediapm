@@ -387,7 +387,9 @@ layout consistently:
 
 - move `foo.rs` to `foo/mod.rs`,
 - place sibling module files in `foo/*.rs`,
-- place local unit tests in `foo/tests.rs` with `#[cfg(test)] mod tests;`.
+- place unit tests as `#[cfg(test)]` blocks inline in the source file they
+  test. If the inline block exceeds ~300 lines, split into a themed sibling
+  file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
 
 Avoid keeping both `foo.rs` and `foo/mod.rs` for one module and avoid
 `#[path = "..."]` for ordinary in-crate module/test placement.

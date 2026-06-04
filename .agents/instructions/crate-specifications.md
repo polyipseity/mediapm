@@ -813,7 +813,7 @@ MediaPM Errors
 All crates follow this pattern:
 ```
 tests/
-├── tests.rs              # Entry module
+├── mod.rs                # Entry module
 ├── e2e/                  # End-to-end workflows
 ├── int/                  # API-level integration
 └── prop/                 # Property-based (reserved)
@@ -2460,7 +2460,7 @@ mediapm/
 │   │   │   ├── orchestration/ (actor-based coordination)
 │   │   │   └── storage/ (FileSystemCas, InMemoryCas)
 │   │   └── tests/
-│   │       ├── tests.rs (harness)
+│   │       ├── mod.rs (harness)
 │   │       ├── e2e/ (end-to-end)
 │   │       ├── int/ (integration)
 │   │       └── prop/ (property-based)
@@ -2478,7 +2478,7 @@ mediapm/
 │   │   │   ├── orchestration/ (actor-based execution)
 │   │   │   └── tools/ (builtin registry)
 │   │   └── tests/
-│   │       ├── tests.rs (harness)
+│   │       ├── mod.rs (harness)
 │   │       ├── e2e/ (end-to-end)
 │   │       └── int/ (integration)
 │   │
@@ -2505,7 +2505,7 @@ mediapm/
 │       │   ├── tools.rs (tool provisioning)
 │       │   └── error.rs (MediaPmError)
 │       └── tests/
-│           ├── tests.rs (harness)
+│           ├── mod.rs (harness)
 │           ├── e2e/ (end-to-end)
 │           └── int/ (integration)
 │

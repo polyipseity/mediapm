@@ -15,7 +15,7 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - GC safety semantics.
 - For workspace-crate integration tests (`src/*/tests/`), prefer one CAS-style
   harness layout:
-  - top-level `tests/tests.rs` for wiring,
+  - top-level `tests/mod.rs` for wiring,
   - scenario modules grouped under `tests/e2e/`, `tests/int/`, and
     `tests/prop/`.
 - Keep `src/mediapm/examples/demo.rs` and
@@ -121,8 +121,10 @@ When running full-sync demos, verify:
 - Tests that validate missing-AcoustID-key behavior must explicitly blank
   credentials (`ACOUSTID_API_KEY` and/or CLI override) so ambient host
   environment variables cannot mask the expected failure path.
-- When splitting a module into folder form (`foo/mod.rs`), place module-local
-  unit tests in `foo/tests.rs` and wire them with `#[cfg(test)] mod tests;`
+- When splitting a module into folder form (`foo/mod.rs`), place unit tests as
+  `#[cfg(test)]` blocks inline in the source file they test. If the inline
+  block exceeds ~300 lines, split into a themed sibling file
+  `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
   from `foo/mod.rs`.
 
 ## When behavior changes
