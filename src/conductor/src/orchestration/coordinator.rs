@@ -713,8 +713,7 @@ where
         }
 
         // Pre-compute total steps across all workflows for progress reporting.
-        let total_steps: usize =
-            dep_states.values().map(|ds| ds.step_outputs.len() + ds.ready_queue.len()).sum();
+        let total_steps: usize = dep_states.values().map(|ds| ds.steps.len()).sum();
 
         if dep_states.is_empty() {
             return Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions });
@@ -823,29 +822,25 @@ where
                     // warn, drop corrupted entries, and retry once.
                     if let Some((_consumer, producer, output_name, output_hash)) =
                         Self::recoverable_corrupt_output_context(&event_wf, &err)
+                        && workflow_is_pure_map.get(&event_wf).copied().unwrap_or(false)
                     {
-                        if workflow_is_pure_map.get(&event_wf).copied().unwrap_or(false) {
-                            eprintln!(
-                                "warning: corrupt output '{output_name}' from step \
+                        eprintln!(
+                            "warning: corrupt output '{output_name}' from step \
                                  '{producer}' in pure workflow '{event_wf}', \
                                  attempting recovery"
-                            );
-                            if let Some(dep_state) = dep_states.get_mut(&event_wf) {
-                                self.recover_from_corrupt_output_hash(
-                                    state,
-                                    output_hash,
-                                    &mut dep_state.pending_unsaved_hashes,
-                                )
-                                .await?;
-                                dep_state.step_outputs.remove(&producer);
-                                if dep_state.remaining_deps.get(&producer).copied().unwrap_or(0)
-                                    == 0
-                                {
-                                    global_ready_queue
-                                        .push_back((event_wf.clone(), producer.clone()));
-                                }
-                                continue;
+                        );
+                        if let Some(dep_state) = dep_states.get_mut(&event_wf) {
+                            self.recover_from_corrupt_output_hash(
+                                state,
+                                output_hash,
+                                &mut dep_state.pending_unsaved_hashes,
+                            )
+                            .await?;
+                            dep_state.step_outputs.remove(&producer);
+                            if dep_state.remaining_deps.get(&producer).copied().unwrap_or(0) == 0 {
+                                global_ready_queue.push_back((event_wf.clone(), producer.clone()));
                             }
+                            continue;
                         }
                     }
                     return Err(err);
@@ -916,6 +911,7 @@ where
                     .pending_unsaved_hashes
                     .extend(bundle.pending_unsaved_hashes.iter().copied());
 
+                let executed = bundle.executed;
                 let step_hashes = Self::merge_step_result_into_state(
                     state,
                     bundle,
@@ -949,7 +945,7 @@ where
                             .get(&event_wf)
                             .cloned()
                             .unwrap_or_else(|| event_wf.clone()),
-                        executed: bundle.executed,
+                        executed,
                     });
                 }
             }

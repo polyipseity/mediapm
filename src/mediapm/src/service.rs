@@ -18,9 +18,8 @@ use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
     ConductorApi, MachineNickelDocument, SimpleConductor, StateMutationOptions,
-    StateNickelDocument, ToolCallInstance, ToolKindSpec, WorkflowProgressSender, WorkflowStepEvent,
-    decode_state_document, encode_state_document,
-    resolve_managed_tool_executable_with_filesystem_cas,
+    StateNickelDocument, ToolCallInstance, ToolKindSpec, WorkflowStepEvent, decode_state_document,
+    encode_state_document, resolve_managed_tool_executable_with_filesystem_cas,
 };
 use pulsebar::{MultiProgress, ProgressBar};
 use tokio::sync::mpsc;
@@ -1272,28 +1271,43 @@ where
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
         // Conductor workflow progress bars.
         let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowStepEvent>();
-        let mp = MultiProgress::new();
-        let overall_bar = mp.add_bar(
-            ProgressBar::new(1u64)
-                .with_style("{msg}  [{bar:20}]  {pos}/{total}")
-                .with_message("preparing workflows...".to_string()),
-        );
+
         let receiver_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            let mp = MultiProgress::new();
             let mut total_steps: usize = 0;
+            let mut overall_bar: Option<ProgressBar> = None;
             while let Some(event) = rx.recv().await {
                 if total_steps == 0 {
                     total_steps = event.total_steps;
-                    overall_bar.set_length(total_steps as u64);
+                    overall_bar = Some(
+                        mp.add_bar(total_steps as u64)
+                            .with_format("{msg}  [{bar:20}]  {pos}/{total}")
+                            .with_message(&format!(
+                                "{}: {} ({}/{})",
+                                event.workflow_display_name,
+                                event.step_id,
+                                event.completed_steps,
+                                total_steps,
+                            )),
+                    );
                 }
-                overall_bar.set_position(event.completed_steps as u64);
-                overall_bar.set_message(format!(
-                    "{}: {} ({}/{})",
-                    event.workflow_display_name, event.step_id, event.completed_steps, total_steps,
-                ));
+                if let Some(ref bar) = overall_bar {
+                    bar.set_position(event.completed_steps as u64);
+                    bar.set_message(&format!(
+                        "{}: {} ({}/{})",
+                        event.workflow_display_name,
+                        event.step_id,
+                        event.completed_steps,
+                        total_steps,
+                    ));
+                }
             }
-            overall_bar.set_message("all workflows complete");
-            overall_bar.set_position(total_steps as u64);
+            if let Some(ref bar) = overall_bar {
+                bar.set_message("all workflows complete");
+                bar.set_position(total_steps as u64);
+            }
             tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+            // mp dropped here → render thread joins.
         });
 
         let mut workflow_options =
@@ -1302,15 +1316,16 @@ where
 
         eprintln!("[mediapm::sync] running conductor workflows...");
         let conductor_summary = if should_prefer_filesystem_workflow_runner(&machine) {
-            drop(rx);
-            receiver_handle.await.ok();
-            run_workflow_with_filesystem_cas(
+            let result = run_workflow_with_filesystem_cas(
                 &conductor_cas_root,
                 &effective_paths.conductor_user_ncl,
                 &effective_paths.conductor_machine_ncl,
                 workflow_options,
             )
-            .await?
+            .await;
+            drop(tx);
+            receiver_handle.await.ok();
+            result?
         } else {
             let result = match self
                 .conductor
