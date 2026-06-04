@@ -1251,6 +1251,7 @@ where
     pub async fn sync_library_with_tag_update_checks(
         &self,
         _check_tag_updates: bool,
+        _verify_materialization_override: Option<bool>,
     ) -> Result<SyncSummary, MediaPmError> {
         // Load the mediapm document once and keep tool reconciliation explicit:
         // this path intentionally does not invoke desired-tool sync.
@@ -1402,7 +1403,8 @@ where
             &machine,
             &conductor_cas_root,
             &mut lock,
-            document.runtime.verify_materialization(),
+            _verify_materialization_override
+                .unwrap_or_else(|| document.runtime.verify_materialization()),
         )
         .await?;
         let mut warnings = Vec::new();
@@ -1473,7 +1475,7 @@ where
     }
 
     async fn sync_library(&self) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks(false).await
+        self.sync_library_with_tag_update_checks(false, None).await
     }
 }
 

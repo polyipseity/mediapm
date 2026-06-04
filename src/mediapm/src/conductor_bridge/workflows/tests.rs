@@ -429,10 +429,9 @@ fn changed_step_config_forces_refresh_to_active_tool() {
         .and_then(|steps| steps.first())
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, new_snapshot);
-    assert!(stored.impure_timestamp.is_some());
-    assert_ne!(
-        stored.impure_timestamp,
-        Some(MediaPmImpureTimestamp { epoch_seconds: 1, subsec_nanos: 2 })
+    assert!(
+        stored.impure_timestamp.is_none(),
+        "refresh clears impure_timestamp; backfill happens after workflow execution"
     );
 }
 
@@ -497,7 +496,10 @@ fn missing_step_timestamp_forces_refresh_to_active_tool() {
         .and_then(|steps| steps.first())
         .expect("stored step refresh state");
     assert_eq!(stored.explicit_config, explicit_snapshot);
-    assert!(stored.impure_timestamp.is_some());
+    assert!(
+        stored.impure_timestamp.is_none(),
+        "refresh preserves None impure_timestamp; backfill happens after execution"
+    );
 }
 
 /// Protects unchanged-step reconciliation by refreshing to the current active

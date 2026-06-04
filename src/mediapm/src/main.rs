@@ -509,7 +509,6 @@ struct VerifyMaterializationArgs {
 
 impl VerifyMaterializationArgs {
     /// Resolves effective verify-materialization policy using command-specific default.
-    #[expect(dead_code, reason = "reserved for future CLI wiring")]
     fn resolve(self, default_value: bool) -> bool {
         if self.verify_materialization {
             true
@@ -588,7 +587,13 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Sync(args) => {
             let check_tag_updates = args.tag_update_policy.resolve(true);
-            let summary = service.sync_library_with_tag_update_checks(check_tag_updates).await?;
+            let verify_materialization = args.verify_materialization.resolve(true);
+            let summary = service
+                .sync_library_with_tag_update_checks(
+                    check_tag_updates,
+                    Some(verify_materialization),
+                )
+                .await?;
             println!(
                 "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}, removed_empty_dirs={}",
                 summary.executed_instances,

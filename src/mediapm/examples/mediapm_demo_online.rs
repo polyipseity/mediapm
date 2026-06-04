@@ -2535,7 +2535,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         workspace_root.display()
     );
 
-    let sync_future = service.sync_library_with_tag_update_checks(true);
+    let sync_future = service.sync_library_with_tag_update_checks(true, None);
     tokio::pin!(sync_future);
     let timeout_future = tokio::time::sleep(sync_timeout);
     tokio::pin!(timeout_future);
