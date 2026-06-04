@@ -18,9 +18,12 @@ use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
     ConductorApi, MachineNickelDocument, SimpleConductor, StateMutationOptions,
-    StateNickelDocument, ToolCallInstance, ToolKindSpec, decode_state_document,
-    encode_state_document, resolve_managed_tool_executable_with_filesystem_cas,
+    StateNickelDocument, ToolCallInstance, ToolKindSpec, WorkflowProgressSender, WorkflowStepEvent,
+    decode_state_document, encode_state_document,
+    resolve_managed_tool_executable_with_filesystem_cas,
 };
+use pulsebar::{MultiProgress, ProgressBar};
+use tokio::sync::mpsc;
 use url::Url;
 
 use crate::conductor_bridge::ConductorToolRow;
@@ -1267,11 +1270,40 @@ where
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let tools_requiring_sync = Self::collect_tools_requiring_sync(&document, &lock, &machine);
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-        let workflow_options =
+        // Conductor workflow progress bars.
+        let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowStepEvent>();
+        let mp = MultiProgress::new();
+        let overall_bar = mp.add_bar(
+            ProgressBar::new(1u64)
+                .with_style("{msg}  [{bar:20}]  {pos}/{total}")
+                .with_message("preparing workflows...".to_string()),
+        );
+        let receiver_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+            let mut total_steps: usize = 0;
+            while let Some(event) = rx.recv().await {
+                if total_steps == 0 {
+                    total_steps = event.total_steps;
+                    overall_bar.set_length(total_steps as u64);
+                }
+                overall_bar.set_position(event.completed_steps as u64);
+                overall_bar.set_message(format!(
+                    "{}: {} ({}/{})",
+                    event.workflow_display_name, event.step_id, event.completed_steps, total_steps,
+                ));
+            }
+            overall_bar.set_message("all workflows complete");
+            overall_bar.set_position(total_steps as u64);
+            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+        });
+
+        let mut workflow_options =
             conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
+        workflow_options.progress_sender = Some(tx.clone());
 
         eprintln!("[mediapm::sync] running conductor workflows...");
         let conductor_summary = if should_prefer_filesystem_workflow_runner(&machine) {
+            drop(rx);
+            receiver_handle.await.ok();
             run_workflow_with_filesystem_cas(
                 &conductor_cas_root,
                 &effective_paths.conductor_user_ncl,
@@ -1280,7 +1312,7 @@ where
             )
             .await?
         } else {
-            match self
+            let result = match self
                 .conductor
                 .run_workflow_with_options(
                     &effective_paths.conductor_user_ncl,
@@ -1311,7 +1343,11 @@ where
                         ))
                     })?
                 }
-            }
+            };
+            // Drop sender so receiver task can complete.
+            drop(tx);
+            receiver_handle.await.ok();
+            result
         };
 
         // Backfill impure_timestamp for freshly-synthesized steps after
