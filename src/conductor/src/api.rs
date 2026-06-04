@@ -539,6 +539,10 @@ pub struct WorkflowStepEvent {
     pub workflow_display_name: String,
     /// Whether this step was freshly executed or served from cache.
     pub executed: bool,
+    /// Index of the worker that executed this step.
+    pub worker_index: usize,
+    /// Total number of workers in the pool.
+    pub worker_count: usize,
 }
 
 /// Sender type for workflow step progress events.

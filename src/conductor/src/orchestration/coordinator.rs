@@ -721,6 +721,7 @@ where
 
         // ── Phase 2: Dependency-stream dispatch loop ──
 
+        let mut completed_steps = 0usize;
         let state_snapshot = Arc::new(state.clone());
         let worker_count = self.workers.len();
         if worker_count == 0 {
@@ -934,8 +935,7 @@ where
 
                 // Send progress event after step completion.
                 if let Some(ref tx) = progress_sender {
-                    let completed_steps: usize =
-                        dep_states.values().map(|ds| ds.step_outputs.len()).sum();
+                    completed_steps = completed_steps.saturating_add(1);
                     let _ = tx.send(WorkflowStepEvent {
                         total_steps,
                         completed_steps,
@@ -946,6 +946,8 @@ where
                             .cloned()
                             .unwrap_or_else(|| event_wf.clone()),
                         executed,
+                        worker_index: event_wi,
+                        worker_count,
                     });
                 }
             }
