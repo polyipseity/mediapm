@@ -284,6 +284,53 @@ For comprehensive details, refer to the following specifications collected from 
 - **Versioning**: Adjacent-only migrations; optics-based bridging
 - **Performance**: O(1) full objects, O(depth) delta objects; mmap for ≥64KB
 
+### CAS Integrity Verification
+
+**Overview**: CAS objects carry a `verify_time` field in the primary header
+that records when each object's BLAKE3 hash was last confirmed. This enables
+configurable verify-on-read strategies that balance integrity guarantees
+against read-latency overhead.
+
+**Header change**: `_padding` replaced with `verify_time: u64` (Unix epoch
+seconds, 0 = never verified). `PrimaryHeaderV1` grows from 56 to 64 bytes.
+
+**`INDEX_SCHEMA_VERSION`**: Bumped from 1 to 2. Migration adds `verify_time`
+field, initializing it to 0 for all existing objects.
+
+**`VerifyTriggerStrategy` enum** (four variants):
+
+| Variant   | Semantics |
+|-----------|-----------|
+| `Always`  | Recompute hash on every `get()` — maximum integrity, highest overhead |
+| `Modified`| Compare file mtime to `verify_time`; verify only when mtime changed |
+| `Sample`  | Probabilistic check — default 1% sample rate via `sample_rate` |
+| `Stale`   | Verify when `now - verify_time > stale_threshold` (default 7 days) |
+
+**`CasIntegrityConfig`** (builder pattern):
+
+- `strategies: Vec<VerifyTriggerStrategy>` — default `[Modified, Sample]`
+- `stale_threshold: Duration` — default 7 days
+- `sample_rate: f64` — default 0.01
+- `ttl_cache_ttl: Duration` — default 60 seconds
+
+**TTL cache** (`HashMap<Hash, (Instant, Arc<[u8]>)>` in `FileSystemState`):
+Fast path that skips verification for recently accessed objects. Evicted on
+object delete/prune or TTL expiry. Configurable TTL.
+
+**Config keys** (flat under `runtime.*`):
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `verify_on_read_strategies` | `Array<String>` | `["modified", "sample"]` | Ordered list of strategy names |
+| `verify_on_read_stale_threshold_secs` | `Number` | `604800` | Seconds before Stale triggers |
+| `verify_on_read_sample_rate` | `Number` | `0.01` | Fraction for Sample strategy |
+| `verify_on_read_ttl_cache_ttl_secs` | `Number` | `60` | TTL cache seconds |
+
+**Default behavior**: `["modified", "sample"]` means most objects skip
+verification (TTL cache hit), modified files trigger verification, and a
+random 1% sample provides probabilistic coverage. Pure workflows may
+auto-recover on verification failure; impure workflows fail immediately.
+
 ### Conductor Specification (src/conductor/)
 
 **15 Detailed Sections**:

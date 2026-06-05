@@ -308,6 +308,245 @@ the lock after the first instance releases it when `wait_for_lock=true`.
 
 ---
 
+### 1.10 verify_time = 0 Recovery
+
+**Issue**: Newly stored or migrated objects have `verify_time = 0`. The
+Stale strategy compares `now - 0 > stale_threshold`, which always triggers
+verification on first access.
+
+**Scenarios**:
+
+- Object created with `verify_time = 0` via normal `put()`
+- Object upgraded from `INDEX_SCHEMA_VERSION` 1 → 2 with `verify_time = 0`
+- Object cloned or replicated without copying `verify_time`
+
+**Current Spec**: "A value of 0 means never verified"
+
+**Gap**: No guidance on how Stale strategy treats `verify_time = 0`.
+
+**Risk**: Every object migrated from v1 gets verified on first access after
+migration — potentially mass re-verification on next sync.
+
+**Recommendations**:
+
+- Stale strategy should treat `verify_time = 0` as "stale" and trigger
+  verification
+- Consider staggering first-access verification across maintenance windows to
+  avoid latency spike
+- Document that first sync after v1→v2 migration may be slower due to
+  verification catch-up
+
+### 1.11 TTL Cache Invalidation on Delete/Prune
+
+**Issue**: When an object is deleted or pruned from storage, its TTL cache
+entry in `FileSystemState` persists until TTL expiry, potentially serving
+stale or dangling references.
+
+**Scenarios**:
+
+- `delete(hash)` succeeds but TTL cache still holds an entry for that hash
+- `prune()` removes unreferenced objects but TTL cache entries remain
+- Index is rebuilt and some hashes no longer exist; TTL cache not consulted
+
+**Current Spec**: "Entries are evicted when the underlying object is deleted
+or pruned"
+
+**Gap**: Eviction trigger is specified but not how it is enforced — synchronous
+deletion on write path or lazy check on read?
+
+**Risk**: A concurrent `get(hash)` after `delete(hash)` could hit the TTL
+cache and return stale data as if the object still exists.
+
+**Recommendations**:
+
+- On `delete()`, synchronously remove the corresponding TTL cache entry
+- On `prune()`, clear all TTL cache entries for pruned hashes (batch removal)
+- Add a lazily-checked generation counter: each maintenance sweep increments
+  a generation; TTL entries tagged with their creation generation are discarded
+  on access when the generation has advanced
+- Test: "delete then get returns NotFound rather than cached bytes"
+
+### 1.12 Concurrent get() Race in TTL Cache Fill
+
+**Issue**: Two concurrent `get(hash)` calls both TTL-cache-miss and both
+evaluate strategies as needing verification, duplicating work.
+
+**Scenarios**:
+
+- Thread A and Thread B both call `get(X)` simultaneously
+- Both miss the TTL cache
+- Both compute hash, both succeed, both update `verify_time`
+- Both populate the TTL cache with duplicate entries
+
+**Current Spec**: Not specified
+
+**Gap**: No concurrency control for the cache-fill path
+
+**Risk**: Unnecessary double-verification — doubled latency and I/O on the
+same object
+
+**Recommendations**:
+
+- Use a per-hash lock (e.g., `HashMap<Hash, Mutex<()>>`) to serialize
+  verification for the same hash
+- First caller verifies and populates cache; second caller finds cache hit
+- Never hold multiple hash locks simultaneously (deadlock avoidance)
+- Test: "concurrent get() same hash verifies only once"
+
+### 1.13 Stale Strategy with verify_time = 0
+
+**Issue**: Overlaps with 1.9 but focuses specifically on the Stale strategy's
+interaction with `verify_time = 0` in production workloads.
+
+**Scenarios**:
+
+- Large library sync after v1→v2 migration: every object triggers Stale
+  verification
+- Mixed environment: some objects have `verify_time` from a previous
+  runtime, some are 0
+- After `repair_index()`, all objects reset to `verify_time = 0`
+
+**Current Spec**: Stale triggers when
+`now - verify_time > stale_threshold`; `0` is treated as "infinitely stale"
+
+**Gap**: Stale strategy does not distinguish between "just written with
+`verify_time = 0`" and "verified yesterday but now stale"
+
+**Risk**: Mass re-verification after index rebuild or migration
+
+**Recommendations**:
+
+- Clarify: `verify_time = 0` always triggers Stale (equivalent to
+  "never verified")
+- Document that index rebuild resets all `verify_time` to 0
+- Consider a grace-period parameter: if `verify_time = 0` and object age
+  (file mtime) < grace period, skip Stale verification (object is freshly
+  written)
+
+### 1.14 Sample Strategy Determinism Across Restarts
+
+**Issue**: The Sample strategy uses randomness to select which objects to
+verify. Non-deterministic sampling means the same object may be sampled
+repeatedly or never, depending on restart state.
+
+**Scenarios**:
+
+- Restart between syncs changes the RNG seed; sampled set differs every time
+- Some objects may go years without being sampled
+- User expects at least a known probability over N accesses, but probability
+  is per-access, not per-object
+
+**Current Spec**: "Verify a random fraction (default 1%) of recently-fetched
+objects"
+
+**Gap**: No determinism guarantee; sampling is not reproducible
+
+**Risk**: Unpredictable coverage; hard to audit or test
+
+**Recommendations**:
+
+- Use hash-derived seed (e.g., `hash.bytes[..8]` as u64 seed) so sampling is
+  deterministic per object — each object gets a stable sampling decision
+- Document that Sample strategy is per-access probabilistic, not per-object
+  guaranteed
+- Provide `sample_seed` config option to override the derivation
+- Test: "same hash sampled consistently across runs"
+
+### 1.15 verify_time Interaction with Delta Chain Reconstruction
+
+**Issue**: Delta chain reconstruction produces a full object from base +
+deltas. The reconstructed object's `verify_time` is ambiguous — should it
+reflect the base object's verification time or the reconstruction time?
+
+**Scenarios**:
+
+- Base object verified 7 days ago; deltas applied today for reconstruction
+- Reconstruction reads all chain members, each with different `verify_time`s
+- After reconstruction, the in-memory full object's `verify_time` is not
+  persisted to any single chain member
+
+**Current Spec**: Not specified
+
+**Gap**: No rule for what `verify_time` means on a delta-reconstructed object
+
+**Risk**: Stale strategy may re-verify unnecessarily or miss verification
+depending on how reconstruction populates `verify_time`
+
+**Recommendations**:
+
+- Reconstruction should not modify any chain member's `verify_time`
+- The reconstructed object's `verify_time` should be the minimum of all
+  chain members' `verify_time` (most conservative — treat as stale if any
+  member is stale)
+- Or use reconstruction timestamp when reconstructing for read (do not
+  persist verify_time to disk)
+- Spec clarify: `verify_time` lives only in the primary header of stored
+  objects; in-memory reconstructed objects derive a transient `verify_time`
+  for strategy evaluation but do not write it back
+
+### 1.16 System Clock Jump (verify_time > now)
+
+**Issue**: If the system clock jumps backward, `verify_time` may be greater
+than `now`, causing nonsensical duration calculations.
+
+**Scenarios**:
+
+- NTP correction moves clock back by minutes/hours
+- RTC battery failure causes reset to epoch on next boot
+- Container migrated to host with different system time
+
+**Current Spec**: None — assumes monotonic time
+
+**Gap**: No handling for `verify_time > now`
+
+**Risk**: Stale strategy computes `now - verify_time` as a negative duration,
+which underflows to a very large positive value, triggering unnecessary
+verification on every access
+
+**Recommendations**:
+
+- Clamp `now - verify_time` to `Duration::ZERO` when `verify_time > now`
+  (treat as "just verified" to avoid mass re-verification)
+- Log a warning when clock skew is detected (verify_time far in the future)
+- Optionally reset `verify_time` to `now` on clock skew detection
+- Test: "clock jumps backward → no mass re-verification"
+
+### 1.17 TTL Cache and content_cache Interaction
+
+**Issue**: CAS has two caching layers — `content_cache` (general read cache)
+and the TTL cache (integrity fast path). Their interaction is underspecified.
+
+**Scenarios**:
+
+- Object is in `content_cache` but not in TTL cache — should integrity
+  verification still run on the cached bytes?
+- Object is in TTL cache (verified recently) but not in `content_cache` —
+  should the TTL cache serve the bytes or is it a miss-through to storage?
+- One cache evicts while the other still holds the entry — inconsistency
+  possible?
+
+**Current Spec**: "TTL cache supplements content_cache"
+
+**Gap**: No ordering or dependency rules between the two caches
+
+**Risk**: Double caching wastes memory; stale bytes in one cache cause
+verification to be skipped on the other
+
+**Recommendations**:
+
+- On `get()`: check TTL cache first (fastest path). If hit, return bytes
+  directly. If miss, check `content_cache`. If `content_cache` hit, run
+  verification strategies on the cached bytes (if verification triggered,
+  re-read from disk; if not, return cached bytes). If both miss, read from
+  disk, verify, populate both caches.
+- TTL cache stores `Arc<[u8]>` — share the underlying bytes with
+  `content_cache` where possible to avoid duplication.
+- On eviction from either cache, the other is unaffected (independent TTLs).
+- Test: "object in content_cache but not TTL cache → still verified if
+  strategy triggers"
+
+---
+
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
 ### 2.1 External Data Retrieval Failure (put_from_uri)
