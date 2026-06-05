@@ -218,19 +218,17 @@ where
     }
 
     /// Persists one provided state snapshot and publishes it as current state
-    /// without unsaved-output cleanup side effects.
+    /// without GC or unsaved-output cleanup side effects.
+    ///
+    /// GC is intentionally NOT applied here — it is the responsibility of
+    /// `commit_run` (which GCs before persisting) and `run_gc` (which is
+    /// explicitly invoked).  Applying GC in this method would create a
+    /// double-GC hazard when `load_resolved_state` re-publishes a snapshot
+    /// that was already committed.
     async fn persist_and_publish_state(
         &mut self,
-        mut next_state: OrchestrationState,
+        next_state: OrchestrationState,
     ) -> Result<Hash, ConductorError> {
-        if let Some(ttl_seconds) = self.instance_ttl_seconds {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-            let cutoff = ImpureTimestamp {
-                epoch_seconds: now.as_secs().saturating_sub(ttl_seconds),
-                subsec_nanos: now.subsec_nanos(),
-            };
-            next_state.gc_instances(cutoff);
-        }
         let pointer = self.persist_state_blob(&next_state).await?;
         self.current_state = next_state;
         Ok(pointer)

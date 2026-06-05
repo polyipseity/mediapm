@@ -68,7 +68,7 @@ where
     C: CasApi,
 {
     /// Shared CAS handle passed into child actors.
-    cas: Arc<C>,
+    pub(super) cas: Arc<C>,
     /// Typed client for the document-loader actor.
     document_loader: Option<DocumentLoaderClient>,
     /// Typed client for the workflow scheduler actor.
@@ -87,6 +87,18 @@ where
     #[must_use]
     pub(super) fn new(cas: Arc<C>) -> Self {
         Self { cas, document_loader: None, scheduler: None, workers: Vec::new(), state_store: None }
+    }
+
+    /// Returns a clone of the state-store client if one has been initialized.
+    #[must_use]
+    pub(super) fn state_store(&self) -> Option<StateStoreClient> {
+        self.state_store.clone()
+    }
+
+    /// Replaces the state-store client so the coordinator uses an externally
+    /// provided store instance.
+    pub(super) fn set_state_store(&mut self, store: StateStoreClient) {
+        self.state_store = Some(store);
     }
 
     /// Returns the current in-memory orchestration-state snapshot published by the state-store actor.
@@ -140,7 +152,7 @@ where
     }
 
     /// Ensures all supporting actors are spawned before workflow execution.
-    async fn ensure_runtime_support(&mut self) -> Result<(), ConductorError> {
+    pub(super) async fn ensure_runtime_support(&mut self) -> Result<(), ConductorError> {
         self.ensure_document_loader().await?;
         self.ensure_scheduler().await?;
         self.ensure_workers().await?;
@@ -375,6 +387,10 @@ where
 
         let state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         Self::validate_state_against_unified(&state, &unified)?;
+        // Publish the loaded state to the state-store's in-memory snapshot so
+        // subsequent current_state() / run_gc() calls reflect persisted state
+        // (for example after a background workflow task completes).
+        state_store.persist_and_publish_state(state.clone()).await?;
         Ok(state)
     }
 

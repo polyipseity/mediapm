@@ -4,12 +4,14 @@
 //! messages, typed RPC client, actor marker, spawn helper, and the concrete
 //! `ractor::Actor` implementation that delegates to the workflow coordinator.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mediapm_cas::CasApi;
 use mediapm_cas::Hash;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
+use tokio::task::JoinHandle;
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
@@ -20,13 +22,17 @@ use crate::orchestration::coordinator::WorkflowCoordinator;
 /// Conductor node actor command envelope.
 #[derive(Debug)]
 pub(super) enum ConductorNodeMessage {
-    /// Executes workflows from user/machine config paths plus runtime storage
-    /// path options.
-    RunWorkflow(
+    /// Submits a workflow for background execution, returning a handle ID.
+    SubmitWorkflow(
         PathBuf,
         PathBuf,
         Box<RunWorkflowOptions>,
-        RpcReplyPort<Result<RunSummary, ConductorError>>,
+        RpcReplyPort<Result<u64, ConductorError>>,
+    ),
+    /// Polls a previously submitted workflow by handle ID.
+    PollWorkflow(
+        u64,
+        RpcReplyPort<Result<Option<Result<RunSummary, ConductorError>>, ConductorError>>,
     ),
     /// Returns the current in-memory orchestration-state snapshot.
     GetState(RpcReplyPort<Result<OrchestrationState, ConductorError>>),
@@ -67,30 +73,62 @@ impl ConductorActorClient {
         Self { actor }
     }
 
-    /// Executes workflows from user/machine config paths plus runtime storage
-    /// path options.
+    /// Submits a workflow for background execution, returning a handle ID.
     ///
     /// # Errors
     ///
-    /// Returns an error when actor RPC delivery fails or when workflow
-    /// evaluation/execution fails in the coordinator.
-    pub async fn run_workflow(
+    /// Returns an error when actor RPC delivery fails.
+    pub async fn submit_workflow(
         &self,
         user_ncl: &Path,
         machine_ncl: &Path,
         options: RunWorkflowOptions,
-    ) -> Result<RunSummary, ConductorError> {
+    ) -> Result<u64, ConductorError> {
         call_t!(
             self.actor,
-            ConductorNodeMessage::RunWorkflow,
+            ConductorNodeMessage::SubmitWorkflow,
             rpc_timeout_ms(),
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
             Box::new(options)
         )
         .map_err(|err| {
-            ConductorError::Internal(format!("conductor actor run_workflow RPC failed: {err}"))
+            ConductorError::Internal(format!("conductor actor submit_workflow RPC failed: {err}"))
         })?
+    }
+
+    /// Polls a previously submitted workflow by handle ID.
+    ///
+    /// Returns `None` if the workflow is still running, `Some(Ok(...))` on
+    /// success, or `Some(Err(...))` on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails or the handle ID is
+    /// not found.
+    pub async fn poll_workflow(
+        &self,
+        handle_id: u64,
+    ) -> Result<Option<Result<RunSummary, ConductorError>>, ConductorError> {
+        call_t!(self.actor, ConductorNodeMessage::PollWorkflow, rpc_timeout_ms(), handle_id)
+            .map_err(|err| {
+                ConductorError::Internal(format!("conductor actor poll_workflow RPC failed: {err}"))
+            })?
+    }
+
+    /// Polls in a loop until a previously submitted workflow completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails, the handle ID is not
+    /// found, or the workflow itself failed.
+    pub async fn wait_workflow(&self, handle_id: u64) -> Result<RunSummary, ConductorError> {
+        loop {
+            match self.poll_workflow(handle_id).await? {
+                Some(result) => return result,
+                None => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
     }
 
     /// Returns the actor's current in-memory orchestration-state snapshot.
@@ -195,6 +233,16 @@ impl ConductorActorClient {
     }
 }
 
+/// Actor state wrapping the workflow coordinator with background task tracking.
+struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
+    /// Core workflow coordinator.
+    coordinator: WorkflowCoordinator<C>,
+    /// Background workflow tasks keyed by handle ID.
+    workflow_handles: HashMap<u64, JoinHandle<Result<RunSummary, ConductorError>>>,
+    /// Monotonically increasing handle ID counter.
+    next_handle_id: u64,
+}
+
 /// Marker actor for top-level conductor node command dispatch.
 #[derive(Debug, Clone, Copy)]
 struct ConductorNodeActor<C> {
@@ -214,7 +262,7 @@ where
     C: CasApi + Send + Sync + 'static,
 {
     type Msg = ConductorNodeMessage;
-    type State = WorkflowCoordinator<C>;
+    type State = ConductorActorState<C>;
     type Arguments = Arc<C>;
 
     /// Initializes the node actor with a workflow coordinator bound to the shared CAS handle.
@@ -223,7 +271,11 @@ where
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        Ok(WorkflowCoordinator::new(args))
+        Ok(ConductorActorState {
+            coordinator: WorkflowCoordinator::new(args),
+            workflow_handles: HashMap::new(),
+            next_handle_id: 0,
+        })
     }
 
     /// Handles top-level conductor RPC calls by delegating into the workflow coordinator.
@@ -234,23 +286,71 @@ where
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            ConductorNodeMessage::RunWorkflow(user_ncl, machine_ncl, options, reply) => {
-                let result = if *options == RunWorkflowOptions::default() {
-                    state.run_workflow(&user_ncl, &machine_ncl).await
+            ConductorNodeMessage::SubmitWorkflow(user_ncl, machine_ncl, options, reply) => {
+                let handle_id = state.next_handle_id;
+                state.next_handle_id += 1;
+
+                // Pre-ensure runtime support so the main coordinator has a
+                // state_store that the background task can share.  When the bg
+                // coordinator uses the same state_store actor, commit_run
+                // directly updates the in-memory current_state — no
+                // post-hoc load_resolved_state is needed.
+                let main_state_store =
+                    if let Err(e) = state.coordinator.ensure_runtime_support().await {
+                        tracing::warn!("failed to ensure main coordinator runtime support: {e}");
+                        None
+                    } else {
+                        state.coordinator.state_store()
+                    };
+
+                let cas = state.coordinator.cas.clone();
+                let user_ncl2 = user_ncl.clone();
+                let machine_ncl2 = machine_ncl.clone();
+                let join_handle = tokio::spawn(async move {
+                    let mut coord = WorkflowCoordinator::new(cas);
+                    if let Some(store) = main_state_store {
+                        coord.set_state_store(store);
+                    }
+                    if *options == RunWorkflowOptions::default() {
+                        coord.run_workflow(&user_ncl2, &machine_ncl2).await
+                    } else {
+                        coord.run_workflow_with_options(&user_ncl2, &machine_ncl2, *options).await
+                    }
+                });
+                state.workflow_handles.insert(handle_id, join_handle);
+                let _ = reply.send(Ok(handle_id));
+            }
+            ConductorNodeMessage::PollWorkflow(handle_id, reply) => {
+                if let Some(handle) = state.workflow_handles.get(&handle_id) {
+                    if handle.is_finished() {
+                        let handle = state.workflow_handles.remove(&handle_id).unwrap();
+                        let result = handle.await;
+                        let _ = reply.send(Ok(Some(result.unwrap_or_else(|join_err| {
+                            Err(ConductorError::Internal(format!(
+                                "workflow background task panicked: {join_err}"
+                            )))
+                        }))));
+                    } else {
+                        let _ = reply.send(Ok(None));
+                    }
                 } else {
-                    state.run_workflow_with_options(&user_ncl, &machine_ncl, *options).await
-                };
-                let _ = reply.send(result);
+                    let _ = reply.send(Err(ConductorError::Internal(format!(
+                        "workflow handle {handle_id} not found"
+                    ))));
+                }
             }
             ConductorNodeMessage::GetState(reply) => {
-                let _ = reply.send(state.current_state().await);
+                let _ = reply.send(state.coordinator.current_state().await);
             }
             ConductorNodeMessage::GetRuntimeDiagnostics(reply) => {
-                let _ = reply.send(state.runtime_diagnostics().await);
+                let _ = reply.send(state.coordinator.runtime_diagnostics().await);
             }
             ConductorNodeMessage::LoadResolvedState(user_ncl, machine_ncl, options, reply) => {
                 let _ = reply.send(
-                    state.load_resolved_state_with_options(&user_ncl, &machine_ncl, *options).await,
+                    state
+                        .coordinator
+                        .load_resolved_state_with_options(&user_ncl, &machine_ncl, *options)
+                        .await,
                 );
             }
             ConductorNodeMessage::ReplaceResolvedState(
@@ -262,6 +362,7 @@ where
             ) => {
                 let _ = reply.send(
                     state
+                        .coordinator
                         .replace_resolved_state_with_options(
                             &user_ncl,
                             &machine_ncl,
@@ -272,7 +373,7 @@ where
                 );
             }
             ConductorNodeMessage::RunGc(ttl_override, reply) => {
-                let _ = reply.send(state.run_gc(ttl_override).await);
+                let _ = reply.send(state.coordinator.run_gc(ttl_override).await);
             }
         }
         Ok(())
