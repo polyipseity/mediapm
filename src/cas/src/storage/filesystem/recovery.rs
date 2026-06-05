@@ -28,6 +28,7 @@ use crate::{
 };
 
 use super::STORAGE_VERSION;
+use super::paths::object_path;
 
 /// Directory name for serialized index backup snapshots.
 const INDEX_BACKUP_DIR_NAME: &str = "index-backups";
@@ -85,8 +86,10 @@ struct IndexBackupSnapshot {
 #[derive(Debug, Clone)]
 /// Object-store scan catalog used as recovery input.
 struct ScannedObjectCatalog {
-    /// Parsed objects keyed by hash.
-    objects: BTreeMap<Hash, StoredObject>,
+    /// Full objects: metadata only, no content bytes stored.
+    full_objects: BTreeMap<Hash, ObjectMeta>,
+    /// Delta objects: full `StoredObject` kept for chain reconstruction.
+    delta_objects: BTreeMap<Hash, StoredObject>,
     /// Count of file entries visited during scan.
     scanned_object_files: usize,
     /// Count of file entries skipped as invalid/corrupt/unparseable.
@@ -100,6 +103,17 @@ enum ParsedObjectKind {
     Full,
     /// Delta-envelope object file (`<hash>.diff`).
     Delta,
+}
+
+/// Reads and verifies a full object from disk by hash.
+/// Returns the content bytes if hash matches, None otherwise.
+fn read_full_object_from_disk(root: &Path, hash: Hash) -> Option<Vec<u8>> {
+    let path = object_path(root, hash);
+    let bytes = std::fs::read(&path).ok()?;
+    if Hash::from_content(&bytes) != hash {
+        return None;
+    }
+    Some(bytes)
 }
 
 /// Loads durable index state, recovering from object files when required.
@@ -220,7 +234,7 @@ pub(super) fn rebuild_index_from_object_store(
     constraint_seed: &ConstraintSeed,
 ) -> Result<RecoveredIndexState, CasError> {
     let catalog = scan_object_store(root)?;
-    let (mut state, additional_skipped) = validate_catalog_into_index_state(&catalog);
+    let (mut state, additional_skipped) = validate_catalog_into_index_state(&catalog, root);
     let restored_constraint_rows = restore_explicit_constraints(&mut state, constraint_seed);
 
     ensure_empty_record(&mut state);
@@ -403,11 +417,15 @@ fn object_store_contains_non_empty_objects(root: &Path) -> Result<bool, CasError
 }
 
 /// Recursively scans object-store files and builds a best-effort object catalog.
+///
+/// Full objects are metadata-only (bytes discarded after hash verification).
+/// Delta objects retain full bytes for chain reconstruction.
 fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
     let storage_root = root.join(STORAGE_VERSION);
     if !storage_root.exists() {
         return Ok(ScannedObjectCatalog {
-            objects: BTreeMap::new(),
+            full_objects: BTreeMap::new(),
+            delta_objects: BTreeMap::new(),
             scanned_object_files: 0,
             skipped_object_files: 0,
         });
@@ -415,7 +433,8 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
 
     let mut scanned_object_files = 0usize;
     let mut skipped_object_files = 0usize;
-    let mut objects = BTreeMap::new();
+    let mut full_objects = BTreeMap::new();
+    let mut delta_objects = BTreeMap::new();
     let mut stack = vec![storage_root];
 
     while let Some(dir) = stack.pop() {
@@ -458,87 +477,101 @@ fn scan_object_store(root: &Path) -> Result<ScannedObjectCatalog, CasError> {
                 continue;
             };
 
-            let Ok(bytes) = std::fs::read(&path) else {
-                skipped_object_files = skipped_object_files.saturating_add(1);
-                continue;
-            };
-
-            let candidate = match kind {
+            match kind {
                 ParsedObjectKind::Full => {
+                    let Ok(bytes) = std::fs::read(&path) else {
+                        skipped_object_files = skipped_object_files.saturating_add(1);
+                        continue;
+                    };
                     if Hash::from_content(&bytes) != hash {
                         skipped_object_files = skipped_object_files.saturating_add(1);
                         continue;
                     }
-                    StoredObject::full(bytes)
+                    let meta = ObjectMeta::full(bytes.len() as u64, bytes.len() as u64, 0);
+                    // Prefer full over existing delta for same hash
+                    full_objects.entry(hash).or_insert(meta);
                 }
                 ParsedObjectKind::Delta => {
-                    if let Ok(object) = StoredObject::decode_delta(&bytes) {
-                        object
-                    } else {
+                    let Ok(bytes) = std::fs::read(&path) else {
                         skipped_object_files = skipped_object_files.saturating_add(1);
                         continue;
-                    }
+                    };
+                    let Ok(object) = StoredObject::decode_delta(&bytes) else {
+                        skipped_object_files = skipped_object_files.saturating_add(1);
+                        continue;
+                    };
+                    // Only insert delta if no full object exists for this hash
+                    delta_objects.entry(hash).or_insert(object);
                 }
-            };
-
-            match objects.get(&hash) {
-                Some(existing)
-                    if matches!(existing, StoredObject::Delta { .. })
-                        && matches!(candidate, StoredObject::Full { .. }) =>
-                {
-                    objects.insert(hash, candidate);
-                }
-                None => {
-                    objects.insert(hash, candidate);
-                }
-                Some(_) => {}
             }
         }
     }
 
-    Ok(ScannedObjectCatalog { objects, scanned_object_files, skipped_object_files })
+    Ok(ScannedObjectCatalog {
+        full_objects,
+        delta_objects,
+        scanned_object_files,
+        skipped_object_files,
+    })
 }
 
-/// Validates scanned catalog content integrity and converts to runtime index state.
-fn validate_catalog_into_index_state(catalog: &ScannedObjectCatalog) -> (IndexState, usize) {
+/// Validates catalog content integrity and converts to runtime index state.
+///
+/// Full objects are already verified during scan; only delta chains undergo
+/// recursive reconstruction validation. Full object bytes are never stored in
+/// the memo, preventing memory blowup for large stores.
+fn validate_catalog_into_index_state(
+    catalog: &ScannedObjectCatalog,
+    root: &Path,
+) -> (IndexState, usize) {
     let mut memo = HashMap::<Hash, Vec<u8>>::new();
     let mut invalid = HashSet::<Hash>::new();
     let mut visiting = HashSet::<Hash>::new();
 
-    for hash in catalog.objects.keys().copied() {
-        let _ =
-            validate_hash_content(hash, &catalog.objects, &mut memo, &mut invalid, &mut visiting);
+    // Validate delta chains
+    for hash in catalog.delta_objects.keys().copied() {
+        let _ = validate_delta_content(
+            hash,
+            &catalog.delta_objects,
+            root,
+            &mut memo,
+            &mut invalid,
+            &mut visiting,
+        );
     }
 
     let mut state = IndexState::default();
-    for (hash, object) in &catalog.objects {
+
+    // Insert full objects — already validated during scan
+    for (hash, meta) in &catalog.full_objects {
+        state.objects.insert(*hash, *meta);
+    }
+
+    // Insert valid deltas
+    for (hash, object) in &catalog.delta_objects {
         if invalid.contains(hash) {
             continue;
         }
-        match object.base_hash() {
-            Some(base_hash) => {
-                state.objects.insert(
-                    *hash,
-                    ObjectMeta::delta(object.payload_len(), object.content_len(), 0, base_hash),
-                );
-            }
-            None => {
-                state
-                    .objects
-                    .insert(*hash, ObjectMeta::full(object.payload_len(), object.content_len(), 0));
-            }
+        if let Some(base_hash) = object.base_hash() {
+            state.objects.insert(
+                *hash,
+                ObjectMeta::delta(object.payload_len(), object.content_len(), 0, base_hash),
+            );
         }
     }
 
     (state, invalid.len())
 }
 
-/// Validates one object hash by recursively reconstructing/confirming its bytes.
+/// Validates delta chain integrity by recursive reconstruction.
 ///
-/// Uses memoization and cycle detection to avoid repeated reconstruction.
-fn validate_hash_content(
+/// Only processes deltas. When a delta's base is a full object (already verified
+/// during scan), re-reads from disk on demand. Memoizes only delta reconstruction
+/// results, not full object bytes, to avoid memory blowup.
+fn validate_delta_content(
     hash: Hash,
-    objects: &BTreeMap<Hash, StoredObject>,
+    deltas: &BTreeMap<Hash, StoredObject>,
+    root: &Path,
     memo: &mut HashMap<Hash, Vec<u8>>,
     invalid: &mut HashSet<Hash>,
     visiting: &mut HashSet<Hash>,
@@ -554,30 +587,39 @@ fn validate_hash_content(
         return None;
     }
 
-    let resolved = match objects.get(&hash)? {
-        StoredObject::Full { payload } => {
-            if Hash::from_content(payload) == hash {
-                Some(payload.clone())
-            } else {
-                None
+    let delta = deltas.get(&hash);
+    let result = if let Some(StoredObject::Delta { state }) = delta {
+        let base_bytes = if let Some(StoredObject::Delta { .. }) = deltas.get(&state.base_hash) {
+            // Base is also a delta -> resolve recursively
+            validate_delta_content(state.base_hash, deltas, root, memo, invalid, visiting)?
+        } else {
+            // Base is a full object -> verify from disk
+            let bytes = read_full_object_from_disk(root, state.base_hash)?;
+            // Verify hash matches
+            if Hash::from_content(&bytes) != state.base_hash {
+                invalid.insert(state.base_hash);
+                return None;
             }
+            bytes
+        };
+        let patch = DeltaPatch::decode(state.payload.as_ref());
+        let rebuilt = patch.apply(&base_bytes).ok()?;
+        if rebuilt.len() as u64 != state.content_len || Hash::from_content(&rebuilt) != hash {
+            None
+        } else {
+            Some(rebuilt)
         }
-        StoredObject::Delta { state } => {
-            let base_bytes =
-                validate_hash_content(state.base_hash, objects, memo, invalid, visiting)?;
-            let patch = DeltaPatch::decode(state.payload.as_ref());
-            let rebuilt = patch.apply(&base_bytes).ok()?;
-            if rebuilt.len() as u64 != state.content_len || Hash::from_content(&rebuilt) != hash {
-                None
-            } else {
-                Some(rebuilt)
-            }
-        }
+    } else {
+        // Not a delta at all -- it's a full object, read from disk
+        read_full_object_from_disk(root, hash)
     };
 
-    let _ = visiting.remove(&hash);
-    if let Some(bytes) = resolved {
-        memo.insert(hash, bytes.clone());
+    visiting.remove(&hash);
+    if let Some(bytes) = result {
+        // Only memoize if this was a delta (full objects re-read from disk)
+        if delta.is_some() {
+            memo.insert(hash, bytes.clone());
+        }
         Some(bytes)
     } else {
         invalid.insert(hash);
