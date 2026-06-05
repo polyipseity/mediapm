@@ -1521,9 +1521,56 @@ impl CasApi for FileSystemState {
     }
 
     async fn get_stream(&self, hash: Hash) -> Result<CasByteStream, CasError> {
-        // Integrity-first stream path: emit one verified chunk.
+        if hash == empty_content_hash() {
+            return Ok(Box::pin(stream::once(async move { Ok(Bytes::new()) })));
+        }
+
+        // Fast path: stream full object files directly from disk in chunks.
+        // This avoids loading large objects entirely into memory.
+        let full_path = object_path(&self.root, hash);
+        match try_open_and_stream_full_object(&full_path).await {
+            Ok(Some(stream)) => return Ok(stream),
+            Ok(None) => { /* full object file doesn't exist; reconstruct from delta chain */ }
+            Err(e) => return Err(e),
+        }
+
+        // Fallback: reconstruct from delta chain (loads full object into memory).
         let bytes = self.get(hash).await?;
         Ok(Box::pin(stream::once(async move { Ok(bytes) })))
+    }
+
+    async fn materialize_to_path(&self, hash: Hash, dest: PathBuf) -> Result<(), CasError> {
+        if hash == empty_content_hash() {
+            tokio::fs::write(&dest, []).await.map_err(|err| {
+                CasError::io("materialize_to_path: write empty content", &dest, err)
+            })?;
+            return Ok(());
+        }
+
+        // Fast path: copy full object file directly (kernel-level zero-copy).
+        let full_path = object_path(&self.root, hash);
+        match fs::try_exists(&full_path).await {
+            Ok(true) => {
+                return fs::copy(&full_path, &dest).await.map(|_| ()).map_err(|err| {
+                    CasError::io("materialize_to_path: copy full object file", &dest, err)
+                });
+            }
+            Ok(false) => { /* fall through to default */ }
+            Err(err) => {
+                return Err(CasError::io(
+                    "materialize_to_path: check object existence",
+                    &full_path,
+                    err,
+                ));
+            }
+        }
+
+        // Fallback: reconstruct from delta chain and then write.
+        let data = self.get(hash).await?;
+        tokio::fs::write(&dest, data).await.map_err(|err| {
+            CasError::io("materialize_to_path: write reconstructed content", &dest, err)
+        })?;
+        Ok(())
     }
 
     async fn info(&self, hash: Hash) -> Result<ObjectInfo, CasError> {
@@ -1714,6 +1761,84 @@ fn apply_delta_patch_stack(
     }
 
     Ok(base_payload)
+}
+
+/// Attempts to open a full object file and produce a chunked streaming reader.
+///
+/// Returns `Ok(None)` when `path` does not exist (e.g. it is a delta-chain
+/// object, or the object is simply absent). Small files (≤ 256 KiB) are read
+/// entirely into a single chunk to amortize async-read overhead.
+async fn try_open_and_stream_full_object(path: &Path) -> Result<Option<CasByteStream>, CasError> {
+    // Check existence first to avoid signalling a spurious IO error for a
+    // legitimate delta-object lookup.
+    match fs::try_exists(path).await {
+        Ok(true) => { /* proceed */ }
+        Ok(false) => return Ok(None),
+        Err(source) => {
+            return Err(CasError::io(
+                "checking full object file existence for streaming",
+                path,
+                source,
+            ));
+        }
+    }
+
+    let file = fs::File::open(path)
+        .await
+        .map_err(|source| CasError::io("opening full object for streaming", path, source))?;
+    let file_len = file
+        .metadata()
+        .await
+        .map_err(|source| CasError::io("getting full object metadata for streaming", path, source))?
+        .len();
+
+    const SMALL_OBJECT_BYTES: u64 = 256 * 1024;
+    if file_len <= SMALL_OBJECT_BYTES {
+        // Read entirely into one chunk to avoid tiny-async-read overhead.
+        drop(file); // release the fd before the independent fs::read call
+        let bytes = fs::read(path).await.map_err(|source| {
+            CasError::io("reading small full object for streaming", path, source)
+        })?;
+        return Ok(Some(Box::pin(stream::once(async move { Ok(Bytes::from(bytes)) }))));
+    }
+
+    // Chunked stream for larger objects — 256 KiB per chunk.
+    Ok(Some(chunked_full_object_stream(file, file_len, path)))
+}
+
+/// Produces a chunked [`CasByteStream`] that reads a large full-object file in
+/// fixed-size blocks, yielding each block as a [`Bytes`] slice.
+///
+/// The stream signals the end of the file by returning `None` (i.e. the stream
+/// itself, not an error).
+fn chunked_full_object_stream(file: fs::File, file_len: u64, path: &Path) -> CasByteStream {
+    const CHUNK_BYTES: u64 = 256 * 1024;
+    let path = path.to_path_buf();
+
+    Box::pin(stream::unfold((file, 0u64), move |(mut file, pos)| {
+        let path = path.clone();
+        async move {
+            if pos >= file_len {
+                return None;
+            }
+            let remaining = file_len - pos;
+            let to_read = std::cmp::min(CHUNK_BYTES, remaining) as usize;
+            let mut buf = vec![0u8; to_read];
+            match file.read_exact(&mut buf).await {
+                Ok(_n) => {
+                    let bytes = Bytes::from(buf);
+                    let new_pos = pos + to_read as u64;
+                    Some((Ok(bytes), (file, new_pos)))
+                }
+                Err(source) => {
+                    let err = CasError::io("reading chunk from full object stream", &path, source);
+                    // Advance pos past the remaining length so the stream
+                    // terminates after this error.
+                    Some((Err(err), (file, file_len)))
+                }
+            }
+        }
+    }))
 }
 
 /// Validates reconstructed payload length against optional expected size.

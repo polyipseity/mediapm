@@ -26,6 +26,7 @@ use futures_util::Stream;
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 
@@ -346,6 +347,29 @@ pub trait CasApi: Send + Sync {
     /// # Performance
     /// Backend-defined; may avoid full-buffer materialization.
     async fn get_stream(&self, hash: Hash) -> Result<CasByteStream, CasError>;
+
+    /// Materializes CAS content to a file-system path.
+    ///
+    /// The default implementation reads content via [`Self::get`] and writes
+    /// it to `dest`. Backends may override this with kernel-level zero-copy
+    /// file-system operations when the content is stored as a standalone file
+    /// on the same filesystem.
+    ///
+    /// # Errors
+    /// Returns [`CasError::NotFound`] when `hash` is unknown.
+    /// Returns [`CasError`] when materialization fails.
+    ///
+    /// # Performance
+    /// Default: O(content length) read + write. Filesystem backends may
+    /// perform a zero-copy filesystem-level copy for full (non-delta)
+    /// objects.
+    async fn materialize_to_path(&self, hash: Hash, dest: PathBuf) -> Result<(), CasError> {
+        let data = self.get(hash).await?;
+        tokio::fs::write(&dest, data)
+            .await
+            .map_err(|err| CasError::io("materialize_to_path: write CAS content", &dest, err))?;
+        Ok(())
+    }
 
     /// Retrieves many objects in one logical call.
     ///

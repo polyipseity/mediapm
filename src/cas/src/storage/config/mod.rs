@@ -365,6 +365,10 @@ impl CasApi for ConfiguredCas {
         delegate_configured_backend!(self, |cas| cas.get_stream(hash).await)
     }
 
+    async fn materialize_to_path(&self, hash: Hash, dest: PathBuf) -> Result<(), CasError> {
+        delegate_configured_backend!(self, |cas| cas.materialize_to_path(hash, dest).await)
+    }
+
     async fn info(&self, hash: Hash) -> Result<ObjectInfo, CasError> {
         delegate_configured_backend!(self, |cas| cas.info(hash).await)
     }

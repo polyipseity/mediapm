@@ -392,10 +392,7 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
         .instances
         .values()
         .find(|instance| {
-            instance
-                .inputs
-                .get("text")
-                .is_some_and(|input| input.plain_content.as_slice() == b"hello")
+            instance.inputs.get("text").is_some_and(|input| &input.plain_content[..] == b"hello")
         })
         .and_then(|instance| instance.outputs.get("result"))
         .map(|output| output.hash)

@@ -388,7 +388,7 @@ mod tests {
     /// Verifies persisted inputs store only hash identities, not inline bytes.
     #[test]
     fn encode_state_persists_input_hash_without_plain_content() {
-        let input = crate::model::state::ResolvedInput::from_plain_content(b"abc".to_vec());
+        let input = crate::model::state::ResolvedInput::from_plain_content(b"abc".to_vec().into());
         let expected_hash = input.hash;
         let state = OrchestrationState {
             version: super::latest_state_version(),

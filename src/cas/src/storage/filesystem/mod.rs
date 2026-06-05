@@ -30,7 +30,6 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::stream;
 use ractor::ActorStatus;
 
 use crate::storage::{
@@ -40,7 +39,7 @@ use crate::storage::{
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasMaintenanceApi,
     Constraint, ConstraintPatch, Hash, IndexRepairReport, ObjectInfo, OptimizeOptions,
-    OptimizeReport, PruneReport, empty_content_hash,
+    OptimizeReport, PruneReport,
 };
 
 /// Filesystem object-store layout version segment.
@@ -435,12 +434,11 @@ impl CasApi for FileSystemCas {
     }
 
     async fn get_stream(&self, hash: Hash) -> Result<CasByteStream, CasError> {
-        if hash == empty_content_hash() {
-            return Ok(Box::pin(stream::once(async { Ok(Bytes::new()) })));
-        }
+        self.state.get_stream(hash).await
+    }
 
-        let bytes = self.get(hash).await?;
-        Ok(Box::pin(stream::once(async move { Ok(bytes) })))
+    async fn materialize_to_path(&self, hash: Hash, dest: PathBuf) -> Result<(), CasError> {
+        self.state.materialize_to_path(hash, dest).await
     }
 
     async fn info(&self, hash: Hash) -> Result<ObjectInfo, CasError> {

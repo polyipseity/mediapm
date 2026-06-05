@@ -168,6 +168,12 @@ struct TemplateFileWrite {
     relative_path: std::path::PathBuf,
     /// Raw bytes that should be written to `relative_path` at execution time.
     plain_content: Bytes,
+    /// CAS hash of `plain_content`, when it originates from a resolved input.
+    ///
+    /// When `Some`, the materializer can use
+    /// [`CasApi::materialize_to_path`] for zero-copy file-system-level
+    /// copies instead of reading and writing the bytes through user-space.
+    cas_hash: Option<Hash>,
 }
 
 /// Concrete ZIP-selector result before optional template materialization.
@@ -391,7 +397,7 @@ where
                     &request.runtime_tools_dir,
                 )
                 .await?;
-            self.materialize_template_file_writes(&template_file_writes, execution_cwd)?;
+            self.materialize_template_file_writes(&template_file_writes, execution_cwd).await?;
             phase_timings.materialization_ms =
                 materialization_started_at.elapsed().as_secs_f64() * 1000.0;
 
@@ -1224,11 +1230,11 @@ where
     }
 
     /// Materializes deferred template file writes into one execution sandbox.
-    #[expect(
-        clippy::unused_self,
-        reason = "method form preserves a cohesive helper surface on StepWorkerExecutor"
-    )]
-    fn materialize_template_file_writes(
+    ///
+    /// When [`TemplateFileWrite::cas_hash`] is `Some`, the materializer uses
+    /// [`CasApi::materialize_to_path`] to perform a kernel-level zero-copy
+    /// copy instead of reading content through user-space.
+    async fn materialize_template_file_writes(
         &self,
         pending_file_writes: &[TemplateFileWrite],
         tool_cwd: &Path,
@@ -1242,13 +1248,17 @@ where
                     source,
                 })?;
             }
-            std::fs::write(&target_path, &file_write.plain_content).map_err(|source| {
-                ConductorError::Io {
-                    operation: "materializing deferred template input file".to_string(),
-                    path: target_path.clone(),
-                    source,
-                }
-            })?;
+            if let Some(hash) = file_write.cas_hash {
+                self.cas.materialize_to_path(hash, target_path.clone()).await?;
+            } else {
+                std::fs::write(&target_path, &file_write.plain_content).map_err(|source| {
+                    ConductorError::Io {
+                        operation: "materializing deferred template input file".to_string(),
+                        path: target_path,
+                        source,
+                    }
+                })?;
+            }
         }
         Ok(())
     }
@@ -1707,7 +1717,8 @@ where
                         ))
                     })?;
                     let bytes = self.cas.get(hash).await?;
-                    resolved_hash_payloads.insert(hash_text.clone(), bytes.as_ref().to_vec());
+                    resolved_hash_payloads
+                        .insert(hash_text.clone(), bytes.as_ref().to_vec().into());
                 }
 
                 let payload = mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
@@ -1800,7 +1811,7 @@ where
         resolved_inputs
             .iter()
             .filter(|(key, _)| accepted_keys.contains(&key.as_str()))
-            .map(|(key, input)| (key.clone(), input.plain_content.clone().to_vec()))
+            .map(|(key, input)| (key.clone(), input.plain_content.clone().to_vec().into()))
             .collect()
     }
 
@@ -2387,6 +2398,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
+    use bytes::Bytes;
     use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
     use regex::Regex;
 
@@ -2464,7 +2476,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "input".to_string(),
-            ResolvedInput::from_plain_content(b"abc".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
         )]);
 
         let impure_timestamp = Some(ImpureTimestamp { epoch_seconds: 12, subsec_nanos: 34 });
@@ -2494,7 +2506,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInput::from_plain_content(b"abc".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
         )]);
 
         let key_a = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -2532,7 +2544,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInput::from_plain_content(b"abc".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
         )]);
 
         let minimal_key = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -2562,7 +2574,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -2583,7 +2595,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -2733,7 +2745,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -2780,7 +2792,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -2861,7 +2873,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -2879,7 +2891,7 @@ mod tests {
             pending_file_writes[0].relative_path.to_string_lossy().replace('\\', "/"),
             expected_path
         );
-        assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
+        assert_eq!(pending_file_writes[0].plain_content, Bytes::from_static(b"world"));
     }
 
     /// Protects logical `&&` operator in conditional expressions.
@@ -2890,8 +2902,8 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let inputs = BTreeMap::from([
-            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
-            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+            ("a".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"x"))),
+            ("b".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"y"))),
         ]);
         let mut pending_file_writes = Vec::new();
 
@@ -2924,8 +2936,8 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let inputs = BTreeMap::from([
-            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
-            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
+            ("a".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"x"))),
+            ("b".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"y"))),
         ]);
         let mut pending_file_writes = Vec::new();
 
@@ -2958,9 +2970,9 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let inputs = BTreeMap::from([
-            ("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec())),
-            ("b".to_string(), ResolvedInput::from_plain_content(b"y".to_vec())),
-            ("c".to_string(), ResolvedInput::from_plain_content(b"set".to_vec())),
+            ("a".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"x"))),
+            ("b".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"y"))),
+            ("c".to_string(), ResolvedInput::from_plain_content(Bytes::from_static(b"set"))),
         ]);
         let mut pending_file_writes = Vec::new();
 
@@ -2992,8 +3004,10 @@ mod tests {
             cas: Arc::new(InMemoryCas::new()),
             conductor_tmp_dir: std::env::temp_dir(),
         };
-        let inputs =
-            BTreeMap::from([("a".to_string(), ResolvedInput::from_plain_content(b"x".to_vec()))]);
+        let inputs = BTreeMap::from([(
+            "a".to_string(),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"x")),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         // !(a == "x") → !(true) → false → selects false branch.
@@ -3081,7 +3095,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "argv".to_string(),
-            ResolvedInput::from_plain_content(b"--single".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"--single")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -3111,7 +3125,7 @@ mod tests {
 
         let with_value_inputs = BTreeMap::from([(
             "test".to_string(),
-            ResolvedInput::from_plain_content(b"alpha".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"alpha")),
         )]);
         let command = vec![
             "tool".to_string(),
@@ -3128,8 +3142,10 @@ mod tests {
             vec!["tool".to_string(), "--test".to_string(), "alpha".to_string()]
         );
 
-        let empty_value_inputs =
-            BTreeMap::from([("test".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+        let empty_value_inputs = BTreeMap::from([(
+            "test".to_string(),
+            ResolvedInput::from_plain_content(Vec::new().into()),
+        )]);
         let rendered_without_value = executor
             .render_template_command(&command, &empty_value_inputs, &mut pending_file_writes)
             .expect("conditional unpack command should omit key/value pair when value is empty");
@@ -3352,7 +3368,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let mut pending_file_writes = Vec::new();
 
@@ -3395,7 +3411,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "subject".to_string(),
-            ResolvedInput::from_plain_content(b"world".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"world")),
         )]);
         let temp = tempfile::tempdir().expect("tempdir");
         let deferred_path = temp.path().join("runtime").join("subject.txt");
@@ -3414,7 +3430,7 @@ mod tests {
             pending_file_writes[0].relative_path,
             std::path::PathBuf::from("runtime").join("subject.txt")
         );
-        assert_eq!(pending_file_writes[0].plain_content, b"world".to_vec());
+        assert_eq!(pending_file_writes[0].plain_content, Bytes::from_static(b"world"));
         assert!(!deferred_path.exists(), "planning should not write files before execution");
         assert!(rendered.ends_with("subject.txt"));
     }
@@ -3427,8 +3443,10 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let zip_bytes = build_test_zip_payload("nested/file.txt", b"hello-from-zip");
-        let inputs =
-            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let inputs = BTreeMap::from([(
+            "archive".to_string(),
+            ResolvedInput::from_plain_content(zip_bytes.into()),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         let rendered = executor
@@ -3451,8 +3469,10 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
-        let inputs =
-            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let inputs = BTreeMap::from([(
+            "archive".to_string(),
+            ResolvedInput::from_plain_content(zip_bytes.into()),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         let rendered = executor
@@ -3469,7 +3489,7 @@ mod tests {
             pending_file_writes[0].relative_path,
             std::path::PathBuf::from("runtime").join("from_zip.txt")
         );
-        assert_eq!(pending_file_writes[0].plain_content, b"zip-file-content".to_vec());
+        assert_eq!(pending_file_writes[0].plain_content, Bytes::from_static(b"zip-file-content"));
     }
 
     /// Protects explicit failure when a ZIP selector resolves to a directory
@@ -3481,8 +3501,10 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
-        let inputs =
-            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let inputs = BTreeMap::from([(
+            "archive".to_string(),
+            ResolvedInput::from_plain_content(zip_bytes.into()),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         let error = executor
@@ -3512,8 +3534,10 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-dir-content");
-        let inputs =
-            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let inputs = BTreeMap::from([(
+            "archive".to_string(),
+            ResolvedInput::from_plain_content(zip_bytes.into()),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         let rendered = executor
@@ -3530,7 +3554,7 @@ mod tests {
             pending_file_writes[0].relative_path,
             std::path::PathBuf::from("runtime").join("from_zip").join("file.txt")
         );
-        assert_eq!(pending_file_writes[0].plain_content, b"zip-dir-content".to_vec());
+        assert_eq!(pending_file_writes[0].plain_content, Bytes::from_static(b"zip-dir-content"));
     }
 
     /// Protects explicit failure when `:folder(...)` is requested for a ZIP
@@ -3542,8 +3566,10 @@ mod tests {
             conductor_tmp_dir: std::env::temp_dir(),
         };
         let zip_bytes = build_test_zip_payload("nested/file.txt", b"zip-file-content");
-        let inputs =
-            BTreeMap::from([("archive".to_string(), ResolvedInput::from_plain_content(zip_bytes))]);
+        let inputs = BTreeMap::from([(
+            "archive".to_string(),
+            ResolvedInput::from_plain_content(zip_bytes.into()),
+        )]);
         let mut pending_file_writes = Vec::new();
 
         let error = executor
@@ -3727,7 +3753,8 @@ mod tests {
     #[tokio::test]
     async fn content_map_directory_entry_rejects_non_zip_payload() {
         let cas = Arc::new(InMemoryCas::new());
-        let hash = cas.put(b"not-a-zip".to_vec()).await.expect("store plain payload in CAS");
+        let hash =
+            cas.put(Bytes::from_static(b"not-a-zip")).await.expect("store plain payload in CAS");
         let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
 
@@ -3787,7 +3814,7 @@ mod tests {
         let directory_zip = build_test_zip_payload("run.sh", b"echo from dir\n");
         let directory_hash = cas.put(directory_zip).await.expect("store dir zip payload");
         let file_hash = cas
-            .put(b"#!/usr/bin/env sh\necho from file\n".to_vec())
+            .put(Bytes::from_static(b"#!/usr/bin/env sh\necho from file\n"))
             .await
             .expect("store file payload");
         let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
@@ -3879,7 +3906,7 @@ mod tests {
             .expect("process-code capture should serialize")
             .expect("process-code capture must not be empty");
 
-        assert_eq!(payload, b"27".to_vec());
+        assert_eq!(payload, Bytes::from_static(b"27"));
     }
 
     /// Protects folder capture behavior that emits ZIP payload bytes.
@@ -4270,12 +4297,14 @@ mod tests {
     #[tokio::test]
     async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
         let cas = Arc::new(InMemoryCas::new());
-        let output_hash = cas.put(b"output".to_vec()).await.expect("put output payload");
+        let output_hash = cas.put(Bytes::from_static(b"output")).await.expect("put output payload");
         let executor =
             StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
 
-        let inputs =
-            BTreeMap::from([("empty".to_string(), ResolvedInput::from_plain_content(Vec::new()))]);
+        let inputs = BTreeMap::from([(
+            "empty".to_string(),
+            ResolvedInput::from_plain_content(Vec::new().into()),
+        )]);
 
         executor
             .apply_reverse_diff_hints(output_hash, &inputs)
@@ -4347,7 +4376,7 @@ mod tests {
     async fn external_data_saved_policy_does_not_apply_full_save_hint_on_input_resolution() {
         let cas = Arc::new(InMemoryCas::new());
         let external_hash =
-            cas.put(b"external-data-saved".to_vec()).await.expect("put external data");
+            cas.put(Bytes::from_static(b"external-data-saved")).await.expect("put external data");
         let executor =
             StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
 
@@ -4438,8 +4467,8 @@ mod tests {
             .await
             .expect("builtin echo dispatch should succeed");
 
-        assert_eq!(capture.stdout, b"hello\n".to_vec());
-        assert_eq!(capture.stderr, b"hello\n".to_vec());
+        assert_eq!(capture.stdout, Bytes::from_static(b"hello\n"));
+        assert_eq!(capture.stderr, Bytes::from_static(b"hello\n"));
         assert_eq!(capture.process_code, 0);
     }
 
@@ -4519,7 +4548,7 @@ mod tests {
     #[tokio::test]
     async fn builtin_import_dispatch_supports_cas_hash_kind() {
         let cas = Arc::new(InMemoryCas::new());
-        let hash = cas.put(b"from-cas".to_vec()).await.expect("seed CAS payload");
+        let hash = cas.put(Bytes::from_static(b"from-cas")).await.expect("seed CAS payload");
         let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
 
@@ -4589,7 +4618,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let input_bytes = BTreeMap::from([(
             "content".to_string(),
-            ResolvedInput::from_plain_content(b"z".to_vec()),
+            ResolvedInput::from_plain_content(Bytes::from_static(b"z")),
         )]);
 
         let capture = executor

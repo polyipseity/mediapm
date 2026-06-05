@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use bytes::Bytes;
-use mediapm_cas::CasApi;
+use mediapm_cas::{CasApi, Hash};
 
 use crate::error::ConductorError;
 use crate::model::state::ResolvedInput;
@@ -219,6 +219,7 @@ where
             selector = selector_prefix;
         }
 
+        let mut cas_hash: Option<Hash> = None;
         let plain_content = match self.resolve_template_selector(selector)? {
             TemplateSelectorSource::Input(input_key) => {
                 let input = inputs.get(&input_key).ok_or_else(|| {
@@ -266,12 +267,14 @@ where
                                 pending_file_writes.push(TemplateFileWrite {
                                     relative_path: normalized_relative.join(entry_relative_path),
                                     plain_content: entry_content,
+                                    cas_hash: None,
                                 });
                             }
                             return Ok(normalized_relative.to_string_lossy().to_string());
                         }
                     }
                 } else {
+                    cas_hash = Some(input.hash);
                     input.plain_content.clone()
                 }
             }
@@ -307,6 +310,7 @@ where
             pending_file_writes.push(TemplateFileWrite {
                 relative_path: normalized_relative.clone(),
                 plain_content,
+                cas_hash,
             });
             Ok(normalized_relative.to_string_lossy().to_string())
         } else {
