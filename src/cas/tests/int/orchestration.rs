@@ -110,7 +110,7 @@ async fn index_actor_and_node_command_can_migrate_index() {
     let hash = node.put(Bytes::from_static(b"migrate-through-node")).await.expect("put object");
 
     let migrate_response = node
-        .execute(CasWireCommand::MigrateIndex { target_version: 1 })
+        .execute(CasWireCommand::MigrateIndex { target_version: 2 })
         .await
         .expect("migrate index command");
     assert!(matches!(migrate_response, CasWireResponse::Ack));

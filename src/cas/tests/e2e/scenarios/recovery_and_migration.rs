@@ -257,11 +257,11 @@ async fn backup_retention_and_migration_roundtrip() {
         assert_eq!(backup_count, 2, "backup retention must keep newest two snapshots");
 
         let reopened = FileSystemCas::open_for_tests(root.path()).await.expect("reopen");
-        reopened.migrate_index_to_version(1).await.expect("migrate to v1");
+        reopened.migrate_index_to_version(2).await.expect("migrate to v2");
         reopened
-            .migrate_index_to_version(1)
+            .migrate_index_to_version(2)
             .await
-            .expect("repeat migrate to v1 should be idempotent");
+            .expect("repeat migrate to v2 should be idempotent");
 
         let restored = reopened.get(sample_hash).await.expect("get sample after migration");
         assert!(restored.len() >= 4096, "sample payload should remain accessible after migration");

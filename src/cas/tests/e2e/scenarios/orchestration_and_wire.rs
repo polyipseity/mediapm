@@ -229,7 +229,7 @@ async fn index_actor_flush_and_repair_workflow() {
 /// Steps:
 /// 1. Open filesystem backend and spawn node actor.
 /// 2. Store object through node actor API.
-/// 3. Issue migrate-index command (`target_version = 1`).
+/// 3. Issue migrate-index command (`target_version = 2`).
 /// 4. Assert migration acknowledgment.
 /// 5. Re-read object and verify exact bytes.
 /// 6. Issue repair command post-migration.
@@ -248,7 +248,7 @@ async fn node_migrate_index_and_payload_survives() {
         let hash = node.put(payload.clone()).await.expect("node put");
 
         let migrated = node
-            .execute(CasWireCommand::MigrateIndex { target_version: 1 })
+            .execute(CasWireCommand::MigrateIndex { target_version: 2 })
             .await
             .expect("migrate index");
         assert!(matches!(migrated, CasWireResponse::Ack));
