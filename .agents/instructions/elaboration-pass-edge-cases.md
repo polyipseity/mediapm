@@ -45,13 +45,13 @@ The collected specifications establish strong contracts around content identity,
 | Delta chain depth exceeds MAX_DELTA_DEPTH (32) | Optimizer avoids creating longer chains | What if old chains exceed limit after config change? |
 | Corrupted delta (bytes don't apply cleanly) | Codec error raised | Does CAS fall back to full object? Automatic? |
 | Orphaned deltas (no base references them) | Prune removes them | Is prune automatic on GC or manual? |
-| Cyclic delta reference (A → B → A) | Not mentioned | Can this occur? How is it detected? |
+| Cyclic delta reference (A → B → A) | Addressed via `check_no_cycle()` in `storage/chain.rs` | Detected before chain traversal in both filesystem and in-memory backends; `HashSet`-based visited tracking |
 
 **Risk**: Silent data corruption if intermediate base is manually deleted and reconstruction is attempted.
 
 **Recommendations**:
 
-- Add explicit **delta chain integrity check** (scan all deltas, verify bases exist)
+- ✅ Done: cyclic delta reference detection via shared `check_no_cycle()` helper
 - Document fallback: if reconstruction fails, **automatically promote to full object copy**
 - Specify prune trigger: automatic (on size threshold), manual (operator invokes), or both
 - Add test: "corrupted delta chain recovery" with orphaned intermediate base
@@ -106,9 +106,11 @@ set_constraint(A, base=C) where C depends on A (direct or transitive)
 
 **Current Spec**: "Optimizer honors constraints"
 
-**Gap**: No cycle detection; no "constraint satisfiability" guarantee.
+**Gap**: Constraint-graph DAG validation at `set_constraint()` API not yet implemented; delta-chain cycle detection exists at the storage layer.
 
 **Risk**: Optimizer fails at runtime when trying to resolve circular constraint; customer-visible error.
+
+**Status**: Delta-chain cycle detection is implemented via `check_no_cycle()` in `storage/chain.rs` (used by both filesystem and in-memory backends). Constraint-graph-level DAG validation on `set_constraint()` remains as future work.
 
 **Recommendations**:
 
@@ -1968,8 +1970,9 @@ MBID-based metadata override.
 
 **Scenario**:
 
-- CAS codec v2 released (incompatible with v1)
-- Conductor persists state blob to CAS (using new codec v2)
+- CAS codec v2 is current (`MDCASD\x02\x00`, 24-byte metadata, no CRC32)
+- V1→V2 migration bridge in `codec/versions/v1.rs` (`From<DeltaStateV1> for DeltaStateV2`)
+- Decode dispatches V2 first, falls back to V1 with inline migration
 - Old conductor binary (expects v1 codec) loads state
 - Codec version mismatch; state unmarshaling fails
 
@@ -1978,6 +1981,8 @@ MBID-based metadata override.
 **Gap**: No coordinated versioning strategy; no version negotiation between layers.
 
 **Risk**: Deployment of new CAS forces Conductor upgrade; or old Conductor can't read new state.
+
+**Status**: CAS codec V2 is landed. Read-side backward compatibility exists: V1 envelopes are decoded and migrated to V2 format in memory. Write-side always produces V2. V1→V2 migration is lossy (CRC32 field is set to 0 in the V2 representation). The VCDIFF magic-byte check was also removed — validation is delegated to the `oxidelta` library internally.
 
 **Recommendations**:
 
@@ -1988,7 +1993,7 @@ MBID-based metadata override.
 
 **Questions for Clarification**:
 
-1. If CAS codec v2 is incompatible with v1, how does Conductor detect/handle it?
+1. If CAS codec v2 is incompatible with v1, how does Conductor detect/handle it? (Now: decode dispatches V2 first, falls back to V1 with inline migration — read-side compatibility exists; write-side is V2-only.)
 2. Should version coordination be explicit (encoded in state blob) or implicit (same version numbers)?
 
 ---
