@@ -40,7 +40,7 @@ pub use model::config::{
 };
 pub use model::state::{
     OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
-    ToolCallInstance, decode_state, encode_state, merge_persistence_flags,
+    ResolvedInputKey, ToolCallInstance, decode_state, encode_state, merge_persistence_flags,
     persisted_state_json_pretty, persisted_state_json_value,
 };
 pub use orchestration::SimpleConductor;

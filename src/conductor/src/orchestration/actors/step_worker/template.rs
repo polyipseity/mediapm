@@ -13,7 +13,7 @@
 //! template-rendering concern (parsing, conditionals, zip selectors, JS string
 //! decoding) also argues for keeping this file whole.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bytes::Bytes;
@@ -1444,5 +1444,345 @@ where
             }
         }
         Ok(rendered)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Template-input reference scanner
+//
+// Standalone functions that scan template strings for `${...}` input
+// references without needing a StepWorkerExecutor instance or CAS access.
+// ---------------------------------------------------------------------------
+
+/// Scans template strings for input key references.
+///
+/// Extracts input key names from template interpolation expressions:
+/// - `${inputs.key}` → `"key"`
+/// - `${inputs["key"]}` or `${inputs['key']}` → `"key"`
+/// - `${bare_word}` → `"bare_word"` (unless it's `context.*`)
+/// - `${*inputs.key}` (unpack) → `"key"`
+/// - `${*bare_word}` (unpack) → `"bare_word"`
+/// - `${condition ? true_branch | false_branch}` → scan both branches
+///
+/// Trailing materialization directives (`:file(...)`, `:folder(...)`,
+/// `:zip(...)`) are stripped before extracting the selector.
+///
+/// # Errors
+///
+/// Returns [`ConductorError::Workflow`] when a template expression has an
+/// unclosed `${}`.
+///
+pub(super) fn scan_template_referenced_inputs(
+    templates: &[String],
+) -> Result<BTreeSet<String>, ConductorError> {
+    let mut referenced = BTreeSet::new();
+    for template in templates {
+        scan_template_for_inputs(template, &mut referenced)?;
+    }
+    Ok(referenced)
+}
+
+/// Scans one template string for `${...}` input key references.
+fn scan_template_for_inputs(
+    template: &str,
+    referenced: &mut BTreeSet<String>,
+) -> Result<(), ConductorError> {
+    let chars: Vec<char> = template.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // Skip escaped dollar sign (\${) to avoid false positives.
+        if i + 1 < chars.len() && chars[i] == '\\' && chars[i + 1] == '$' {
+            i += 2;
+            continue;
+        }
+        if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
+            let start = i + 2;
+            match find_matching_brace(&chars, start) {
+                Some(end) => {
+                    let body: String = chars[start..end].iter().collect();
+                    let body = body.trim();
+                    if !body.is_empty() {
+                        extract_input_keys_from_body(body, referenced);
+                    }
+                    i = end + 1;
+                }
+                None => {
+                    return Err(ConductorError::Workflow(format!(
+                        "template has unclosed '${{}}' at or near position {i}"
+                    )));
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Walks forward from `start` to find the matching `}`, handling nested
+/// `{...}` pairs.
+fn find_matching_brace(chars: &[char], start: usize) -> Option<usize> {
+    let mut depth: u32 = 1;
+    let mut i = start;
+    while i < chars.len() && depth > 0 {
+        match chars[i] {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Extracts input key references from one `${...}` body.
+fn extract_input_keys_from_body(body: &str, referenced: &mut BTreeSet<String>) {
+    debug_assert!(!body.is_empty(), "body must be non-empty");
+
+    // Strip leading `*` (unpack token like `${*inputs.list}`).
+    let body = match body.strip_prefix('*') {
+        Some(stripped) => stripped.trim(),
+        None => body,
+    };
+    if body.is_empty() {
+        return;
+    }
+
+    // Handle conditional: `<condition> ? <true_branch> | <false_branch>`
+    if let Some((condition, after_question)) = split_conditional(body) {
+        extract_input_keys_from_condition(condition, referenced);
+        if let Some((true_branch, false_branch)) = split_branches(after_question) {
+            if let Some(sel) = strip_template_directives(true_branch) {
+                extract_input_keys_from_selector(&sel, referenced);
+            }
+            if let Some(sel) = strip_template_directives(false_branch) {
+                extract_input_keys_from_selector(&sel, referenced);
+            }
+        }
+        return;
+    }
+
+    // Simple (non-conditional) selector — strip directives and extract.
+    if let Some(selector) = strip_template_directives(body) {
+        extract_input_keys_from_selector(&selector, referenced);
+    }
+}
+
+/// If `body` contains a ` ? ` separator at the top level (outside quotes,
+/// brackets, and parentheses), returns `(condition_text, rest_after_?)`.
+fn split_conditional(body: &str) -> Option<(&str, &str)> {
+    let pos = find_top_level_pattern(body, '?')?;
+    let rest_start = pos + 3; // skip " ? "
+    if rest_start < body.len() { Some((&body[..pos], &body[rest_start..])) } else { None }
+}
+
+/// Splits `after_question` at the first ` | ` at the top level.
+fn split_branches(after_question: &str) -> Option<(&str, &str)> {
+    let pos = find_top_level_pattern(after_question, '|')?;
+    let false_start = pos + 3; // skip " | "
+    if false_start <= after_question.len() {
+        Some((&after_question[..pos], &after_question[false_start..]))
+    } else {
+        None
+    }
+}
+
+/// Finds the first occurrence of ` <ch> ` (space, ch, space) that is not
+/// inside quotes, brackets, or parentheses.
+fn find_top_level_pattern(s: &str, ch: char) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 3 {
+        return None;
+    }
+    let mut in_double_quote = false;
+    let mut in_single_quote = false;
+    let mut bracket_depth: u32 = 0;
+    let mut paren_depth: u32 = 0;
+
+    // Start at index 1 because the pattern ` <ch> ` needs a char before.
+    for i in 1..bytes.len().saturating_sub(1) {
+        let c = bytes[i] as char;
+        let prev_was_backslash = i > 0 && bytes[i - 1] == b'\\';
+
+        // Check for pattern before updating state for this character, since
+        // `?` and `|` are not quote/bracket/paren characters.
+        if !in_single_quote
+            && !in_double_quote
+            && bracket_depth == 0
+            && paren_depth == 0
+            && c == ch
+            && bytes[i - 1] == b' '
+            && bytes[i + 1] == b' '
+        {
+            return Some(i - 1);
+        }
+
+        // Update tracking state.
+        if !in_single_quote && !in_double_quote {
+            match c {
+                '"' => in_double_quote = true,
+                '\'' => in_single_quote = true,
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth = bracket_depth.saturating_sub(1),
+                '(' => paren_depth += 1,
+                ')' => paren_depth = paren_depth.saturating_sub(1),
+                _ => {}
+            }
+        } else if c == '"' && in_double_quote && !prev_was_backslash {
+            in_double_quote = false;
+        } else if c == '\'' && in_single_quote && !prev_was_backslash {
+            in_single_quote = false;
+        }
+    }
+    None
+}
+
+/// Extracts input key references from the condition part of a conditional
+/// template expression.
+///
+/// The condition may be a bare selector or a comparison like
+/// `inputs.key == "value"`.  Operator characters are replaced with spaces,
+/// then each whitespace-delimited token is checked for input references.
+fn extract_input_keys_from_condition(condition: &str, referenced: &mut BTreeSet<String>) {
+    let condition = condition.trim();
+    if condition.is_empty() {
+        return;
+    }
+
+    // Replace operator characters with spaces so split_whitespace yields
+    // clean candidate tokens.
+    let sanitized: String = condition
+        .chars()
+        .map(|c| if matches!(c, '=' | '!' | '&' | '|' | '<' | '>' | '(' | ')') { ' ' } else { c })
+        .collect();
+
+    for token in sanitized.split_whitespace() {
+        let token = token.trim();
+        if token.is_empty() {
+            continue;
+        }
+        extract_input_keys_from_selector(token, referenced);
+    }
+}
+
+/// Strips trailing `:file(...)`, `:folder(...)`, and `:zip(...)` directives
+/// from a selector body.
+///
+/// Returns `None` if nothing remains after stripping.
+fn strip_template_directives(selector: &str) -> Option<String> {
+    let mut s = selector.trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    loop {
+        let before = s.clone();
+        if let Some(prefix) = strip_one_directive(&s, "file") {
+            s = prefix;
+        }
+        if let Some(prefix) = strip_one_directive(&s, "folder") {
+            s = prefix;
+        }
+        if let Some(prefix) = strip_one_directive(&s, "zip") {
+            s = prefix;
+        }
+        if s == before {
+            break;
+        }
+    }
+    let s = s.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+/// Strips one `:<name>(<argument>)` suffix if present at the end of `s`.
+fn strip_one_directive(s: &str, name: &str) -> Option<String> {
+    let pattern = format!(":{name}(");
+    if let Some(pos) = s.rfind(&pattern) {
+        if s.ends_with(')') {
+            return Some(s[..pos].to_string());
+        }
+    }
+    None
+}
+
+/// Extracts an input key reference from a selector string.
+///
+/// Handles:
+/// - `inputs.key` → inserts `key`
+/// - `inputs["key"]` or `inputs['key']` → inserts `key`
+/// - bare word (alphanumeric/underscore, no punctuation, not `context.*`)
+///   → inserts word
+///
+/// Does nothing for `context.*`, quoted literals, or complex expressions.
+fn extract_input_keys_from_selector(selector: &str, referenced: &mut BTreeSet<String>) {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return;
+    }
+
+    // Skip quoted string literals (branches like `''` or `"literal"`).
+    if (selector.starts_with('"') && selector.ends_with('"'))
+        || (selector.starts_with('\'') && selector.ends_with('\''))
+    {
+        return;
+    }
+
+    // Skip tokens containing partial quotes (fragments from multi-word
+    // quoted strings in condition comparisons).
+    if selector.contains('"') || selector.contains('\'') {
+        return;
+    }
+
+    // Skip operator-like tokens that may appear in condition expressions.
+    if matches!(selector, "==" | "!=" | "&&" | "||" | "!" | "<" | ">" | "<=" | ">=") {
+        return;
+    }
+
+    // `inputs.key` → inserts `key`.
+    if let Some(key) = selector.strip_prefix("inputs.") {
+        let key = key.trim();
+        if !key.is_empty() {
+            referenced.insert(key.to_string());
+        }
+        return;
+    }
+
+    // `inputs["key"]` or `inputs['key']` → inserts `key`.
+    if let Some(index) = selector.strip_prefix("inputs[") {
+        if let Some(inner) = index.strip_suffix(']') {
+            let inner = inner.trim();
+            if (inner.starts_with('"') && inner.ends_with('"'))
+                || (inner.starts_with('\'') && inner.ends_with('\''))
+            {
+                let key = &inner[1..inner.len() - 1];
+                if !key.is_empty() {
+                    referenced.insert(key.to_string());
+                }
+            }
+        }
+        return;
+    }
+
+    // `context.*` → not an input reference.
+    if selector.starts_with("context.") {
+        return;
+    }
+
+    // Bare word — starts with ASCII letter or underscore and contains no
+    // punctuation or whitespace.
+    let first_byte = selector.as_bytes().first().copied();
+    let starts_ident = matches!(first_byte, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'));
+    let has_punctuation = selector.contains('.')
+        || selector.contains('(')
+        || selector.contains(')')
+        || selector.contains('[')
+        || selector.contains(']')
+        || selector.contains(':')
+        || selector.chars().any(|c| c.is_ascii_whitespace());
+
+    if starts_ident && !has_punctuation {
+        referenced.insert(selector.to_string());
     }
 }

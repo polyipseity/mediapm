@@ -139,6 +139,23 @@ impl ResolvedInput {
     }
 }
 
+/// Hash-only reference to a resolved step input.
+///
+/// Intentionally excludes `plain_content` and `string_list` — this type is
+/// used inside `ToolCallInstance` so that runtime content bytes cannot
+/// accidentally be retained across the state boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedInputKey {
+    /// CAS hash identity for this resolved input payload.
+    pub hash: Hash,
+}
+
+impl From<ResolvedInput> for ResolvedInputKey {
+    fn from(input: ResolvedInput) -> Self {
+        Self { hash: input.hash }
+    }
+}
+
 /// Output map entry for an executed instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputRef {
@@ -195,7 +212,12 @@ pub struct ToolCallInstance {
     #[serde(default)]
     pub last_used: ImpureTimestamp,
     /// Resolved inputs participating in cache identity.
-    pub inputs: BTreeMap<String, ResolvedInput>,
+    ///
+    /// Uses [`ResolvedInputKey`] (hash-only) so that runtime content bytes
+    /// cannot accidentally be retained across the state boundary. Full
+    /// [`ResolvedInput`] values live only in the hot execution path
+    /// (`step_worker`).
+    pub inputs: BTreeMap<String, ResolvedInputKey>,
     /// Captured output CAS refs and effective persistence policies.
     pub outputs: BTreeMap<String, OutputRef>,
 }

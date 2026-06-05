@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mediapm_cas::{CasApi, FileSystemCas};
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
     ConductorApi, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputPolicy,
     OutputSaveMode, SimpleConductor, ToolKindSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
@@ -392,7 +392,10 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
         .instances
         .values()
         .find(|instance| {
-            instance.inputs.get("text").is_some_and(|input| &input.plain_content[..] == b"hello")
+            instance
+                .inputs
+                .get("text")
+                .is_some_and(|input| input.hash == Hash::from_content(b"hello"))
         })
         .and_then(|instance| instance.outputs.get("result"))
         .map(|output| output.hash)

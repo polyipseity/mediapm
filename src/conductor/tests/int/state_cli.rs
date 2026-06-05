@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use mediapm_cas::Hash;
 use mediapm_conductor::cli::run_from_argv;
 use mediapm_conductor::{
-    MachineNickelDocument, OutputCaptureSpec, ResolvedInput, ToolKindSpec, ToolOutputSpec,
+    MachineNickelDocument, OutputCaptureSpec, ResolvedInputKey, ToolKindSpec, ToolOutputSpec,
     ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec, decode_state,
     encode_machine_document, encode_state, encode_user_document,
 };
@@ -461,7 +461,7 @@ async fn state_import_rejects_unknown_input_reference() {
         .expect("exported state should contain one instance");
     invalid_state.instances.get_mut(&first_key).expect("instance should exist").inputs.insert(
         "rogue_input".to_string(),
-        ResolvedInput::from_hash(Hash::from_content(b"rogue-input")),
+        ResolvedInputKey { hash: Hash::from_content(b"rogue-input") },
     );
     std::fs::write(&state_path, encode_state(invalid_state).expect("encode invalid state"))
         .expect("write invalid state");

@@ -40,7 +40,7 @@ use crate::model::config::{
     ToolInputKind, ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{
-    OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
+    OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ResolvedInputKey, ToolCallInstance,
     merge_persistence_flags,
 };
 use crate::orchestration::protocol::{
@@ -250,6 +250,43 @@ impl<C> StepWorkerExecutor<C>
 where
     C: CasApi + Send + Sync + 'static,
 {
+    /// Collects all template strings from one tool definition.
+    ///
+    /// Template strings are gathered from process command/args, execution
+    /// environment variables, and output capture paths/regexes. The returned
+    /// vector is used by [`template::scan_template_referenced_inputs`] to
+    /// determine which input names need content loaded for template rendering.
+    fn collect_step_templates(tool: &UnifiedToolSpec) -> Vec<String> {
+        let mut templates = Vec::new();
+
+        match &tool.process {
+            ProcessSpec::Executable { command, env_vars, .. } => {
+                templates.extend(command.iter().cloned());
+                templates.extend(env_vars.values().cloned());
+            }
+            ProcessSpec::Builtin { args, .. } => {
+                templates.extend(args.values().cloned());
+            }
+        }
+
+        templates.extend(tool.execution_env_vars.values().cloned());
+
+        for output_spec in tool.outputs.values() {
+            match &output_spec.capture {
+                OutputCaptureSpec::File { path } | OutputCaptureSpec::Folder { path, .. } => {
+                    templates.push(path.clone())
+                }
+                OutputCaptureSpec::FileRegex { path_regex }
+                | OutputCaptureSpec::FolderRegex { path_regex } => {
+                    templates.push(path_regex.clone())
+                }
+                _ => {}
+            }
+        }
+
+        templates
+    }
+
     /// Executes one planned step request and returns the bundle needed for state merge.
     #[expect(
         clippy::too_many_lines,
@@ -269,9 +306,14 @@ where
 
         let mut phase_timings = StepExecutionPhaseTimings::default();
 
+        // Phase B: Two-pass input resolution.
+        // 1. Hash-only pass (no content loading) for instance-key derivation
+        //    and state storage.
+        // 2. Content pass (only for inputs referenced by templates) for
+        //    template rendering — deferred until after the cache probe.
         let resolve_inputs_started_at = Instant::now();
-        let resolved_inputs = self
-            .resolve_inputs(
+        let hash_only_inputs = self
+            .resolve_inputs_hash_only(
                 request.unified.as_ref(),
                 tool,
                 &request.workflow_name,
@@ -282,13 +324,13 @@ where
         phase_timings.resolve_inputs_ms =
             resolve_inputs_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        // Cheap metadata and key derivation — no template rendering.
+        // Cheap metadata and key derivation — no content needed.
         let metadata = Self::tool_spec_from_unified(tool);
         let instance_key = Self::derive_instance_key(
             &request.step.tool,
             &metadata,
             request.impure_timestamp,
-            &resolved_inputs,
+            &hash_only_inputs,
         )?;
 
         // Derive the effective output name set from the tool schema.
@@ -335,7 +377,7 @@ where
         }
         phase_timings.cache_probe_ms = cache_probe_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        // Construct the instance, pulling cached outputs on hit.
+        // Construct the instance from hash-only inputs.
         // Step-level persistence overrides are applied upfront so the
         // cache-hit path can skip template-heavy output spec resolution.
         let mut instance = if let Some(existing) = existing_instance {
@@ -349,7 +391,7 @@ where
                 tool_name: request.step.tool.clone(),
                 metadata,
                 impure_timestamp: request.impure_timestamp,
-                inputs: BTreeMap::new(),
+                inputs: hash_only_inputs.clone(),
                 outputs,
                 last_used: ImpureTimestamp::default(),
             }
@@ -358,7 +400,7 @@ where
                 tool_name: request.step.tool.clone(),
                 metadata,
                 impure_timestamp: request.impure_timestamp,
-                inputs: BTreeMap::new(),
+                inputs: hash_only_inputs,
                 outputs: BTreeMap::new(),
                 last_used: ImpureTimestamp::default(),
             }
@@ -366,15 +408,44 @@ where
 
         // Template-heavy resolution (process execution + output specs) runs
         // only when a miss or partial miss forces actual execution.
+        //
+        // Phase B: Content loading is deferred — only inputs referenced by
+        // templates are loaded. Builtins need ALL inputs loaded since their
+        // ProcessSpec injects every input as an argument.
         let output_specs: BTreeMap<String, ResolvedOutputSpec> = if needs_execution {
+            // Phase B: Two-pass content loading — determine which inputs need
+            // content bytes, then load only those for template rendering.
+            let needed_input_names = match &tool.process {
+                ProcessSpec::Builtin { .. } => {
+                    instance.inputs.keys().cloned().collect::<BTreeSet<_>>()
+                }
+                ProcessSpec::Executable { .. } => {
+                    let templates = Self::collect_step_templates(tool);
+                    template::scan_template_referenced_inputs(&templates)?
+                }
+            };
+            let inputs_with_content = self
+                .load_inputs_content(
+                    request.unified.as_ref(),
+                    tool,
+                    &request.workflow_name,
+                    &request.step,
+                    request.step_outputs.as_ref(),
+                    &needed_input_names,
+                )
+                .await?;
+
             let resolve_specs_started_at = Instant::now();
             let mut template_file_writes = Vec::new();
-            let resolved_process =
-                self.resolve_process_execution(tool, &resolved_inputs, &mut template_file_writes)?;
+            let resolved_process = self.resolve_process_execution(
+                tool,
+                &inputs_with_content,
+                &mut template_file_writes,
+            )?;
             let output_specs = self.resolve_output_specs(
                 tool,
                 &request.step,
-                &resolved_inputs,
+                &inputs_with_content,
                 &mut template_file_writes,
             )?;
             phase_timings.resolve_specs_ms =
@@ -408,7 +479,7 @@ where
             let capture = self
                 .execute_tool(
                     &resolved_process,
-                    &resolved_inputs,
+                    &inputs_with_content,
                     capture_stdout,
                     execution_cwd,
                     &request.outermost_config_dir,
@@ -507,7 +578,7 @@ where
             if merged.save.prefers_full() {
                 self.apply_full_save_hint(output_ref.hash).await?;
             }
-            self.apply_reverse_diff_hints(output_ref.hash, &resolved_inputs).await?;
+            self.apply_reverse_diff_hints(output_ref.hash, &instance.inputs).await?;
             if !merged.save.should_persist() {
                 pending_unsaved_hashes.insert(output_ref.hash);
             }
@@ -515,7 +586,8 @@ where
         phase_timings.persistence_merge_ms =
             persistence_merge_started_at.elapsed().as_secs_f64() * 1000.0;
 
-        instance.inputs = resolved_inputs;
+        // Phase B: instance.inputs already holds ResolvedInputKey from the
+        // two-pass hash-only resolution — no content-strip boundary needed.
 
         Ok(StepExecutionBundle {
             step_id: request.step.id,
@@ -545,6 +617,7 @@ where
         clippy::too_many_lines,
         reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
     )]
+    #[allow(dead_code)]
     async fn resolve_inputs(
         &self,
         unified: &UnifiedNickelDocument,
@@ -674,6 +747,227 @@ where
         Ok(resolved)
     }
 
+    /// Resolves workflow-step inputs into hash-only keys without loading
+    /// content bytes into memory.
+    ///
+    /// This is the hash-only pass of Phase B two-pass input resolution. It
+    /// validates input declarations (for executable tools) or passes through
+    /// (for builtin tools), then resolves each binding to a
+    /// [`ResolvedInputKey`] containing only the CAS hash identity.
+    ///
+    /// The caller must use [`load_inputs_content`] to load content bytes for
+    /// inputs that need template rendering.
+    async fn resolve_inputs_hash_only(
+        &self,
+        unified: &UnifiedNickelDocument,
+        tool: &UnifiedToolSpec,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        step_outputs: &StepOutputs,
+    ) -> Result<BTreeMap<String, ResolvedInputKey>, ConductorError> {
+        // Builtin tools: pass-through, all step inputs accepted as hash-only.
+        if matches!(tool.process, ProcessSpec::Builtin { .. }) {
+            let mut passthrough = BTreeMap::new();
+            for (input_name, binding) in &step.inputs {
+                let InputBinding::String(binding_text) = binding else {
+                    return Err(ConductorError::Workflow(format!(
+                        "workflow '{workflow_name}' step '{}' input '{input_name}' has kind '{}' \
+                         but builtin tool '{}' accepts only scalar string step inputs",
+                        step.id,
+                        binding.kind_name(),
+                        step.tool,
+                    )));
+                };
+                let hash = self
+                    .resolve_input_binding_hash(
+                        unified,
+                        workflow_name,
+                        step,
+                        binding_text,
+                        step_outputs,
+                    )
+                    .await?;
+                passthrough.insert(input_name.clone(), ResolvedInputKey { hash });
+            }
+            return Ok(passthrough);
+        }
+
+        // Executable tools: validate against declared inputs.
+        for input_name in step.inputs.keys() {
+            if !tool.inputs.contains_key(input_name) {
+                return Err(ConductorError::Workflow(format!(
+                    "workflow '{workflow_name}' step '{}' provides undeclared input '{input_name}' \
+                     for tool '{}'",
+                    step.id, step.tool,
+                )));
+            }
+        }
+
+        let mut resolved = BTreeMap::new();
+
+        for (input_name, input_spec) in &tool.inputs {
+            if let Some(binding) = step.inputs.get(input_name) {
+                let key = match (input_spec.kind, binding) {
+                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
+                        let hash = self
+                            .resolve_input_binding_hash(
+                                unified,
+                                workflow_name,
+                                step,
+                                binding_text,
+                                step_outputs,
+                            )
+                            .await?;
+                        ResolvedInputKey { hash }
+                    }
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
+                        self.resolve_list_input_binding_hash_only(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects \
+                             kind 'string' for tool '{}', but received 'string_list'",
+                            step.id, step.tool,
+                        )));
+                    }
+                    (ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects \
+                             kind 'string_list' for tool '{}', but received 'string'",
+                            step.id, step.tool,
+                        )));
+                    }
+                };
+                resolved.insert(input_name.clone(), key);
+                continue;
+            }
+
+            if let Some(default_binding) = tool.default_inputs.get(input_name) {
+                let key = match (input_spec.kind, default_binding) {
+                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
+                        let hash = self
+                            .resolve_input_binding_hash(
+                                unified,
+                                workflow_name,
+                                step,
+                                binding_text,
+                                step_outputs,
+                            )
+                            .await?;
+                        ResolvedInputKey { hash }
+                    }
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
+                        self.resolve_list_input_binding_hash_only(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?
+                    }
+                    (ToolInputKind::String, InputBinding::StringList(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input default '{input_name}' \
+                             expects kind 'string' for tool '{}', but tool_configs default \
+                             provides 'string_list'",
+                            step.id, step.tool,
+                        )));
+                    }
+                    (ToolInputKind::StringList, InputBinding::String(_)) => {
+                        return Err(ConductorError::Workflow(format!(
+                            "workflow '{workflow_name}' step '{}' input default '{input_name}' \
+                             expects kind 'string_list' for tool '{}', but tool_configs default \
+                             provides 'string'",
+                            step.id, step.tool,
+                        )));
+                    }
+                };
+                resolved.insert(input_name.clone(), key);
+                continue;
+            }
+
+            return Err(ConductorError::Workflow(format!(
+                "workflow '{workflow_name}' step '{}' is missing required input '{input_name}' \
+                 for tool '{}'",
+                step.id, step.tool,
+            )));
+        }
+
+        Ok(resolved)
+    }
+
+    /// Loads content bytes for a specified subset of step inputs.
+    ///
+    /// This is the content-pass companion to [`resolve_inputs_hash_only`]. It
+    /// re-resolves only the bindings for `needed_names`, loading full content
+    /// into [`ResolvedInput`] records suitable for template rendering.
+    async fn load_inputs_content(
+        &self,
+        unified: &UnifiedNickelDocument,
+        tool: &UnifiedToolSpec,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        step_outputs: &StepOutputs,
+        needed_names: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, ResolvedInput>, ConductorError> {
+        let mut contents = BTreeMap::new();
+
+        for input_name in needed_names {
+            // Look up binding: step inputs take priority, then tool defaults.
+            let binding = step
+                .inputs
+                .get(input_name.as_str())
+                .or_else(|| tool.default_inputs.get(input_name.as_str()));
+
+            let Some(binding) = binding else {
+                // Input has a hash key but no resolvable binding — skip.
+                // This should not happen in practice because the hash-only
+                // pass already validated all required input bindings.
+                continue;
+            };
+
+            match binding {
+                InputBinding::String(binding_text) => {
+                    let input = self
+                        .resolve_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            binding_text,
+                            step_outputs,
+                        )
+                        .await?;
+                    contents.insert(input_name.clone(), input);
+                }
+                InputBinding::StringList(binding_list) => {
+                    let input = self
+                        .resolve_list_input_binding(
+                            unified,
+                            workflow_name,
+                            step,
+                            input_name,
+                            binding_list,
+                            step_outputs,
+                        )
+                        .await?;
+                    contents.insert(input_name.clone(), input);
+                }
+            }
+        }
+
+        Ok(contents)
+    }
+
     /// Resolves one string input binding into concrete bytes plus one CAS hash
     /// identity persisted for orchestration state snapshots.
     ///
@@ -704,6 +998,111 @@ where
             )
             .await?;
         self.persist_resolved_input(plain_content).await
+    }
+
+    /// Resolves one string input binding into its CAS hash identity without
+    /// retaining content bytes in memory.
+    ///
+    /// For single-segment bindings where the hash is directly available
+    /// (ExternalData, StepOutput without `zip_member`, Literal, Env), the
+    /// hash is returned without content loading. Multi-segment bindings and
+    /// `zip_member` selectors fall through to content loading and CAS
+    /// persistence.
+    async fn resolve_input_binding_hash(
+        &self,
+        unified: &UnifiedNickelDocument,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        binding: &str,
+        step_outputs: &StepOutputs,
+    ) -> Result<Hash, ConductorError> {
+        let parsed_segments = parse_input_binding(binding).map_err(|err| {
+            ConductorError::Workflow(format!(
+                "workflow '{workflow_name}' step '{}' has invalid input binding '{binding}': {err}",
+                step.id
+            ))
+        })?;
+
+        // Single-segment fast path: hash is directly available without content load.
+        if parsed_segments.len() == 1 {
+            let segment = &parsed_segments[0];
+            let can_fast_path = match segment {
+                ParsedInputBindingSegment::StepOutput { zip_member, .. } => zip_member.is_none(),
+                _ => true,
+            };
+            if can_fast_path {
+                return match segment {
+                    ParsedInputBindingSegment::ExternalData { hash } => Ok(*hash),
+                    ParsedInputBindingSegment::StepOutput { step_id, output, .. } => {
+                        let producer = step_outputs.get(*step_id).ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references output '{}' from \
+                                 step '{step_id}' before it is available",
+                                step.id, output,
+                            ))
+                        })?;
+                        let output_slot = producer.get(*output).ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references missing output \
+                                 '{}' on step '{step_id}'",
+                                step.id, output,
+                            ))
+                        })?;
+                        let output_hash = output_slot.ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references output '{}' from \
+                                 step '{step_id}', but that output was captured as empty \
+                                 (allow_empty = true) and cannot be used as a step input",
+                                step.id, output,
+                            ))
+                        })?;
+                        // Verify the referenced CAS object is still readable, not corrupted.
+                        match self.cas.get(output_hash).await {
+                            Ok(_) => Ok(output_hash),
+                            Err(source) if Self::is_cas_corruption_read_error(&source) => {
+                                Err(ConductorError::CorruptWorkflowOutput(Box::new(
+                                    CorruptWorkflowOutputContext {
+                                        workflow_name: workflow_name.to_string(),
+                                        consumer_step_id: step.id.clone(),
+                                        producer_step_id: step_id.to_string(),
+                                        output_name: output.to_string(),
+                                        output_hash,
+                                        detail: source.to_string(),
+                                    },
+                                )))
+                            }
+                            Err(source) => Err(ConductorError::Cas(source)),
+                        }
+                    }
+                    ParsedInputBindingSegment::Literal(content) => {
+                        Ok(Hash::from_content(content.as_bytes()))
+                    }
+                    ParsedInputBindingSegment::Env { name } => {
+                        let value = std::env::var(name).map_err(|error| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references environment \
+                                 variable '{name}' in input binding '{binding}': {error}",
+                                step.id
+                            ))
+                        })?;
+                        Ok(Hash::from_content(value.as_bytes()))
+                    }
+                };
+            }
+        }
+
+        // Multi-segment or zip_member: load content and persist to CAS.
+        let plain_content = self
+            .resolve_input_binding_plain_content(
+                unified,
+                workflow_name,
+                step,
+                binding,
+                step_outputs,
+            )
+            .await?;
+        let hash = self.cas.put(plain_content).await?;
+        Ok(hash)
     }
 
     /// Resolves one string input binding into concrete payload bytes.
@@ -905,6 +1304,48 @@ where
         }
 
         self.persist_resolved_list_input(resolved_values).await
+    }
+
+    /// Resolves one string-list input binding into a hash-only key without
+    /// retaining content bytes in memory.
+    ///
+    /// Each list item is resolved through
+    /// [`resolve_input_binding_plain_content`] (which may load content for
+    /// ExternalData/StepOutput segments), then the full list is serialized to
+    /// JSON and persisted to CAS. Only the hash identity is returned.
+    async fn resolve_list_input_binding_hash_only(
+        &self,
+        unified: &UnifiedNickelDocument,
+        workflow_name: &str,
+        step: &WorkflowStepSpec,
+        input_name: &str,
+        binding_list: &[String],
+        step_outputs: &StepOutputs,
+    ) -> Result<ResolvedInputKey, ConductorError> {
+        let mut resolved_values = Vec::with_capacity(binding_list.len());
+        for (item_index, binding_item) in binding_list.iter().enumerate() {
+            let plain_content = self
+                .resolve_input_binding_plain_content(
+                    unified,
+                    workflow_name,
+                    step,
+                    binding_item,
+                    step_outputs,
+                )
+                .await
+                .map_err(|error| match error {
+                    ConductorError::Workflow(message) => ConductorError::Workflow(format!(
+                        "{message} (while resolving list item {item_index} for input '{input_name}')"
+                    )),
+                    other => other,
+                })?;
+            resolved_values.push(String::from_utf8_lossy(&plain_content).to_string());
+        }
+
+        let plain_content_vec = serde_json::to_vec(&resolved_values)
+            .map_err(|err| ConductorError::Serialization(err.to_string()))?;
+        let hash = self.cas.put(plain_content_vec).await?;
+        Ok(ResolvedInputKey { hash })
     }
 
     /// Persists one resolved input payload into CAS and returns the runtime
@@ -2220,7 +2661,7 @@ where
     async fn apply_reverse_diff_hints(
         &self,
         output_hash: Hash,
-        inputs: &BTreeMap<String, ResolvedInput>,
+        inputs: &BTreeMap<String, ResolvedInputKey>,
     ) -> Result<(), ConductorError> {
         let empty_hash = empty_content_hash();
         for input_hash in inputs.values().map(|input| input.hash) {
@@ -2250,7 +2691,7 @@ where
         tool_name: &str,
         metadata: &ToolSpec,
         impure_timestamp: Option<crate::model::config::ImpureTimestamp>,
-        inputs: &BTreeMap<String, ResolvedInput>,
+        inputs: &BTreeMap<String, ResolvedInputKey>,
     ) -> Result<String, ConductorError> {
         let mut hasher = blake3::Hasher::new();
         let metadata_bytes = Self::serialize_metadata_for_instance_key(metadata)?;
@@ -2399,7 +2840,7 @@ mod tests {
     use std::time::Duration;
 
     use bytes::Bytes;
-    use mediapm_cas::{CasApi, InMemoryCas, empty_content_hash};
+    use mediapm_cas::{CasApi, Hash, InMemoryCas, empty_content_hash};
     use regex::Regex;
 
     use crate::error::ConductorError;
@@ -2407,7 +2848,7 @@ mod tests {
         ExternalContentRef, ImpureTimestamp, InputBinding, ProcessSpec, ToolInputKind,
         ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowStepSpec,
     };
-    use crate::model::state::{OutputSaveMode, PersistenceFlags, ResolvedInput};
+    use crate::model::state::{OutputSaveMode, PersistenceFlags, ResolvedInput, ResolvedInputKey};
     use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 
     use super::{
@@ -2476,7 +2917,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "input".to_string(),
-            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
+            ResolvedInputKey { hash: Hash::from_content(b"abc") },
         )]);
 
         let impure_timestamp = Some(ImpureTimestamp { epoch_seconds: 12, subsec_nanos: 34 });
@@ -2506,7 +2947,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
+            ResolvedInputKey { hash: Hash::from_content(b"abc") },
         )]);
 
         let key_a = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -2544,7 +2985,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInput::from_plain_content(Bytes::from_static(b"abc")),
+            ResolvedInputKey { hash: Hash::from_content(b"abc") },
         )]);
 
         let minimal_key = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -4303,7 +4744,7 @@ mod tests {
 
         let inputs = BTreeMap::from([(
             "empty".to_string(),
-            ResolvedInput::from_plain_content(Vec::new().into()),
+            ResolvedInputKey { hash: empty_content_hash() },
         )]);
 
         executor

@@ -21,7 +21,7 @@ use fp_library::types::optics::IsoPrime;
 use crate::error::ConductorError;
 use crate::model::config::{ImpureTimestamp, ToolKindSpec, ToolSpec};
 use crate::model::state::{
-    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInputKey,
     ToolCallInstance,
 };
 
@@ -43,7 +43,7 @@ mod latest {
     pub(super) type State = v1::OrchestrationStateV1;
     pub(super) type PersistenceFlags = v1::PersistenceFlagsV1;
     pub(super) type OutputSaveMode = v1::OutputSaveModeV1;
-    pub(super) type ResolvedInput = v1::ResolvedInputV1;
+    pub(super) type ResolvedInputKey = v1::ResolvedInputV1;
     pub(super) type OutputRef = v1::OutputRefV1;
     pub(super) type ToolMetadata = v1::ToolMetadataV1;
     pub(super) type ToolCallInstance = v1::ToolCallInstanceV1;
@@ -138,10 +138,11 @@ fn persistence_flags_iso() -> IsoPrime<'static, RcBrand, latest::PersistenceFlag
     )
 }
 
-fn resolved_input_iso() -> IsoPrime<'static, RcBrand, latest::ResolvedInput, ResolvedInput> {
+fn resolved_input_key_iso() -> IsoPrime<'static, RcBrand, latest::ResolvedInputKey, ResolvedInputKey>
+{
     IsoPrime::new(
-        |versioned: latest::ResolvedInput| ResolvedInput::from_hash(versioned.hash),
-        |runtime: ResolvedInput| latest::ResolvedInput { hash: runtime.hash },
+        |versioned: latest::ResolvedInputKey| ResolvedInputKey { hash: versioned.hash },
+        |runtime: ResolvedInputKey| latest::ResolvedInputKey { hash: runtime.hash },
     )
 }
 
@@ -207,7 +208,7 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
             inputs: versioned
                 .inputs
                 .into_iter()
-                .map(|(name, input)| (name, resolved_input_iso().from(input)))
+                .map(|(name, input)| (name, resolved_input_key_iso().from(input)))
                 .collect(),
             outputs: versioned
                 .outputs
@@ -229,7 +230,7 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
             inputs: runtime
                 .inputs
                 .into_iter()
-                .map(|(name, input)| (name, resolved_input_iso().to(input)))
+                .map(|(name, input)| (name, resolved_input_key_iso().to(input)))
                 .collect(),
             outputs: runtime
                 .outputs
@@ -385,11 +386,14 @@ mod tests {
         assert!(decoded.instances.contains_key("instance-a"));
     }
 
-    /// Verifies persisted inputs store only hash identities, not inline bytes.
+    /// Verifies persisted inputs store only hash identities.
+    ///
+    /// With [`ResolvedInputKey`] the type system guarantees that runtime
+    /// content bytes are never part of the persisted shape. This test
+    /// validates encoding round-trips the hash correctly.
     #[test]
     fn encode_state_persists_input_hash_without_plain_content() {
-        let input = crate::model::state::ResolvedInput::from_plain_content(b"abc".to_vec().into());
-        let expected_hash = input.hash;
+        let expected_hash = mediapm_cas::Hash::from_content(b"abc");
         let state = OrchestrationState {
             version: super::latest_state_version(),
             instances: BTreeMap::from([(
@@ -405,7 +409,10 @@ mod tests {
                     },
                     impure_timestamp: None,
                     last_used: ImpureTimestamp::default(),
-                    inputs: BTreeMap::from([("text".to_string(), input)]),
+                    inputs: BTreeMap::from([(
+                        "text".to_string(),
+                        crate::model::state::ResolvedInputKey { hash: expected_hash },
+                    )]),
                     outputs: BTreeMap::new(),
                 },
             )]),
@@ -417,7 +424,6 @@ mod tests {
 
         let input_json = &json["instances"]["instance-a"]["inputs"]["text"];
         assert_eq!(input_json.get("hash"), Some(&serde_json::json!(expected_hash)));
-        assert!(input_json.get("plain_content").is_none());
     }
 
     /// Verifies old payload-wrapper envelopes are no longer accepted.
