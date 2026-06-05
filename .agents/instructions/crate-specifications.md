@@ -345,6 +345,7 @@ For comprehensive details, refer to the following specifications collected from 
 **Instance Key Derivation** (`derive_instance_key()` in `src/conductor/src/step_worker/mod.rs`):
 
 - Input: `BLAKE3(tool.name tagged + tool.metadata serialized + optional impure_timestamp + each input hash)`
+- Operates on `BTreeMap<String, ResolvedInputKey>` — reads hashes directly from the state-stored type without loading any content bytes
 - Deterministic for pure steps (same tool + inputs → same key)
 - Impure steps include a timestamp, so each invocation produces a distinct key
 
@@ -358,6 +359,7 @@ For comprehensive details, refer to the following specifications collected from 
 **OrchestrationState Immutability**:
 
 - `OrchestrationState { version: u32, instances: BTreeMap<String, ToolCallInstance> }` is stored as an immutable CAS blob
+- `ToolCallInstance.inputs` uses `BTreeMap<String, ResolvedInputKey>` (hash-only) — no content bytes are retained in state, keeping each entry at ~32 bytes per input regardless of content size
 - The `instances` map is append-mostly — new entries are inserted on each successful step, but old entries may be removed by instance GC (see below) before the blob is persisted
 - Old CAS blobs remain reachable as long as any caller holds their hash
 
@@ -906,6 +908,41 @@ tests/
 **Used By**: CAS, Conductor (step worker input resolution), MediaPM (materialization)
 
 **Benefit**: Reduced memory pressure on large syncs; no unnecessary copies on hot path; pluggable fast path for filesystem backend.
+
+### 8. Two-Phase Input Resolution (Hash-First, Content-On-Demand)
+
+**Pattern**: Split input resolution into two passes so the state-stored `ToolCallInstance` carries only lightweight hash references. Full content (`Bytes`) is loaded only for inputs that templates actually reference at execution time.
+
+**Rationale**:
+- `ToolCallInstance.inputs` is persisted to CAS in `OrchestrationState`. Storing full `ResolvedInput` (with `plain_content: Bytes`) in every instance would pin GB-scale data in long-lived CAS blobs, even for steps whose outputs are never re-executed.
+- Most step inputs are materialized as files and never need in-memory content — only template-referenced inputs (via `${...}`) require content bytes.
+- Separating the hash (state identity) from the content (execution payload) follows the functional-core / imperative-shell principle: state is pure identity, content is ephemeral runtime.
+
+**Design**:
+
+- **`ResolvedInputKey { hash: Hash }`** — a hash-only type used in `ToolCallInstance.inputs: BTreeMap<String, ResolvedInputKey>`. Stores only the content hash; occupies ~32 bytes per entry regardless of content size.
+- **`ResolvedInput`** — the full content type, kept for the execution hot path (`step_worker`). Includes `plain_content: Bytes` alongside the hash. Used only during active step execution, then dropped.
+- **Two-pass resolution in `StepWorker`**:
+  1. **Pass 1 (hash resolution)**: Resolve all bindings to their CAS hashes. Produce `BTreeMap<String, ResolvedInputKey>`. No CAS `get()` is called — only `HashConstraint` evaluation and `content_map` key lookups. This map is stored in `ToolCallInstance.inputs`.
+  2. **Pass 2 (content loading)**: Scan step templates for `${input_name}` or `${input_name.path}` references. For each referenced input, call `cas.get(hash)` to load `Bytes` content. Produce `BTreeMap<String, ResolvedInput>` only for the referenced subset. Unreferenced inputs remain hash-only — zero content loaded.
+- **ZIP member selectors** (`hash#member_path`): Pass 1 resolves the parent archive hash only. If a template references a ZIP member selector, Pass 2 loads the full archive, extracts the member, hashes the extracted content, and returns it as `ResolvedInput`. The archive `Bytes` is dropped after extraction — only the member's Bytes is retained.
+
+**Invariants**:
+- Every binding in the original step spec MUST resolve to a hash in Pass 1. A binding that fails hash resolution (missing `content_map` entry, unresolvable `from` reference) is a hard error.
+- Pass 2 content loading is lazy: only inputs whose name appears in a template expression are loaded. Inputs that are materialized only via `content_map` → file write are never loaded into memory.
+- `ResolvedInputKey` is comparable and hashable — instance key derivation (`derive_instance_key`) uses input hashes directly without loading content.
+- `ToolCallInstance.inputs` stores `ResolvedInputKey` exclusively. `ResolvedInput` exists only transiently during `step_worker` execution.
+
+**Examples**:
+- `ResolvedInputKey { hash }` — state-stored identity reference
+- `ResolvedInput { hash, plain_content: Bytes }` — ephemeral execution context
+- Pass 1: `resolve_input_binding_hash(binding) -> Hash` — no CAS content read
+- Pass 2: `scan_template_referenced_inputs(template) -> BTreeSet<String>` then `load_inputs_content(referenced) -> BTreeMap<String, ResolvedInput>`
+- Instance key: `derive_instance_key(tool_id, inputs: &BTreeMap<String, ResolvedInputKey>)` — pure hash comparison
+
+**Used By**: Conductor (state model, step worker)
+
+**Benefit**: Eliminates GB-scale content retention in `OrchestrationState` CAS blobs. Post-execution memory per instance drops from O(content_size) to O(32 bytes). Peak execution memory only loads the subset of inputs that templates reference — for file-only pipelines, zero content bytes are loaded into memory.
 
 ---
 

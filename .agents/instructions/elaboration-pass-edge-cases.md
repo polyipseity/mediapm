@@ -2840,6 +2840,200 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
+## PART 7: Two-Phase Input Resolution Edge Cases
+
+### 7.1 Binding Resolved to Hash but Content Never Requested
+
+**Issue**: With two-phase resolution, a binding resolves to a hash in Pass 1
+but if no template `${input_name}` reference exists, Pass 2 never loads its
+content. The `ToolCallInstance.inputs` stores `ResolvedInputKey { hash }` —
+the content bytes are never fetched from CAS.
+
+**Scenario**:
+
+- Step spec declares `input "video"` with a `content_map` entry mapping it to
+  a media file
+- The step's `command` template only references `${output.path}` and
+  `\${env.SOME_VAR}` — `${video}` never appears
+- Pass 1 resolves `"video"` → `Hash("abc123")`, stores as `ResolvedInputKey`
+- Pass 2 scans templates, finds zero input references, loads nothing
+- Step executes with the file path from `content_map` materialization; the
+  video content is never loaded into memory
+
+**Memory Impact**: Zero content bytes loaded for that input. For large media
+files (GB-scale), this eliminates the dominant memory cost.
+
+**Risk**: None — the content is still available via `content_map` → file
+materialization at the filesystem level. The `ResolvedInputKey` preserves the
+hash for instance identity and cache-key derivation.
+
+**Test**: "step with no template input refs → inputs resolved to hashes only,
+content never loaded, instance key derived correctly"
+
+### 7.2 Template References a Binding Not in First-Pass Hash Resolution
+
+**Issue**: A template `${undefined_input}` references a binding name that was
+not resolved in Pass 1. Since Pass 1 resolves ALL declared bindings (every
+key in the step's `args` and `content_map`), this cannot happen for declared
+inputs. However, a template typo or programmatic template construction could
+produce a reference to a name that was never declared.
+
+**Scenario**:
+
+- Step declares `input "audio"` with hash `H(audio_content)`
+- Template writes `\${video.path}` — a typo: `video` instead of `audio`
+- Pass 1 resolves `"audio"` → `Hash(audio_content)`. No `"video"` binding
+  exists.
+- Pass 2 looks for `video` in the resolved bindings: not found.
+
+**Resolution**: Pass 2 MUST fail with a clear error. Example:
+`"Template references undeclared input 'video'. Declared inputs: audio"`.
+This is not a silent ignore — it catches template bugs.
+
+**Edge Cases**:
+
+- Dot-path references (`\${audio.some_field}`): the base name `audio` is
+  checked against declared bindings. If `audio` exists, the path suffix is
+  resolved within the loaded content. If `audio` doesn't exist, error.
+- Environment variable refs (`\${env.PATH}`) are handled separately by the
+  env resolver, not the input-binding resolver — they are not checked against
+  Pass 1 bindings.
+- Nested template expressions that evaluate to a binding name at runtime: not
+  supported — binding names must be statically determinable from the template
+  AST.
+
+**Test**: "template ref to undeclared input → clear error listing declared
+inputs"
+
+### 7.3 List Inputs Spanning Multiple Bindings
+
+**Issue**: Some step inputs are list-valued (`args.inputs = [ "id1", "id2" ]`)
+that resolve to multiple bindings. Pass 1 must resolve each list element to
+its hash independently, and Pass 2 must load content for all list elements
+when the list-binding name appears in a template.
+
+**Scenario**:
+
+- Step spec: `args.inputs = [ "audio_track_1", "audio_track_2" ]`
+- Each list element is a binding reference that resolves to a hash
+- Template: `${inputs}` — references the entire list
+- Pass 1: resolves `"audio_track_1"` → `H1`, `"audio_track_2"` → `H2`
+- Pass 2: sees `${inputs}` in template, loads content for all list bindings
+  → loads content at `H1` and `H2`
+
+**Edge Cases**:
+
+- Mixed list: `["audio_track_1", "direct_hash_abc"]` — first element is a
+  binding name, second is a literal hash string. Pass 1 must distinguish
+  binding names from literal hashes (by checking against declared binding
+  names). A literal hash is used as-is without content loading unless the
+  template references it.
+- Empty list: no bindings to resolve; Pass 2 loads nothing.
+- List of lists (nested): not supported — flatten to a single-level list
+  before Pass 1.
+- Template references a single list element by index (e.g., `\${inputs[0]}`):
+  Pass 2 loads content for the entire list (conservative), not just the
+  indexed element, because the template AST may not statically reveal which
+  index is accessed.
+
+**Test**: "list input with multiple binding refs → all resolved in Pass 1,
+all loaded in Pass 2, content available"
+
+### 7.4 ZIP Member Selectors During Hash Resolution
+
+**Issue**: A ZIP member selector (`hash#member_path`) in a `content_map` value
+requires loading the parent archive, extracting the member, and hashing the
+extracted content. This must happen during Pass 1 (hash resolution) because
+the member hash is part of the instance key.
+
+**Scenario**:
+
+- `content_map."some_key" = "H(archive.zip)#inner/file.txt"`
+- Pass 1 needs to compute `H(inner/file.txt)` as the resolved hash
+- This requires: loading `H(archive.zip)` from CAS → decompressing ZIP →
+  extracting `inner/file.txt` → hashing extracted bytes → using that hash as
+  the `ResolvedInputKey.hash`
+
+**Memory Impact**: The parent archive (`archive.zip`) is loaded into memory,
+its content is extracted, and the extracted member is hashed. After hashing,
+the parent archive `Bytes` is dropped immediately — only the member hash is
+retained in `ResolvedInputKey`. For a 2 GB archive, this means 2 GB of
+transient memory during Pass 1, which is then freed before Pass 2 begins.
+
+**Optimization**:
+
+- Streaming ZIP extraction (when supported) would reduce peak memory by
+  reading the archive sequentially instead of loading it entirely.
+- Without streaming: the archive is loaded fully, the member is extracted to
+  a temporary `Bytes`, hashed, and both buffers are dropped.
+- If the same archive appears in multiple `content_map` entries, the
+  extraction is repeated per-member (no archive-level caching across entries
+  in Pass 1).
+
+**Edge Cases**:
+
+- Member path not found in archive → hard error in Pass 1: cannot resolve
+  hash for that binding.
+- Archive hash not in CAS → `CasError::NotFound` propagated as a binding
+  resolution failure.
+- Nested ZIP within ZIP (`H(a.zip)#inner/b.zip#deeper/file.txt`): the
+  innermost selector is resolved iteratively — extract `inner/b.zip` from
+  `H(a.zip)`, then extract `deeper/file.txt` from the inner ZIP. Only the
+  final member hash is retained.
+- Member is a directory rather than a file → error: ZIP member selectors
+  must resolve to a file entry.
+
+**Test**: "ZIP member selector → archive loaded, member extracted, hash
+computed, archive Bytes dropped, member hash stored in ResolvedInputKey"
+
+### 7.5 Builtins vs Executables — Builtins Always Load All Content
+
+**Issue**: Builtin tools receive their inputs as `BTreeMap<String, String>`
+in the API path, or as CLI `--arg KEY VALUE` pairs. Since builtins do not
+use file-based materialization for their inputs, ALL declared inputs must
+have content loaded — there is no template-referenced subset optimization.
+
+**Scenario**:
+
+- Builtin `echo` declares `args.message` with a `content_map` binding to a
+  500 MB file
+- Builtins resolve inputs by converting `ResolvedInput.plain_content` to
+  `String` (for string args) or passing `Bytes` directly (for binary args)
+- Pass 1 resolves all bindings to hashes
+- Pass 2: since the step uses a builtin tool (not an executable with a
+  template `command`), there is no template string to scan. Instead, ALL
+  resolved bindings are treated as referenced — content is loaded for every
+  input key
+
+**Contrast with Executables**:
+
+- Executable steps have a `command` template string. Only `${...}`-referenced
+  inputs are loaded in Pass 2. Inputs that are materialized via `content_map`
+  file writes are never loaded into memory.
+- Builtin steps have no `command` template — they consume input content
+  directly via the API contract. Every declared input must be available as
+  `ResolvedInput`.
+
+**Memory Impact**:
+
+- Builtins: O(total input content size) peak memory — all inputs are loaded.
+- Executables: O(referenced input content size) peak memory — only template-
+  referenced inputs are loaded; file-only inputs cost zero memory.
+
+**Edge Cases**:
+
+- Mixed builtin/executable tool types: not supported — a tool is either a
+  builtin or an executable; the distinction is known at step-synthesis time.
+- Impure builtins (e.g., `fs`, `import`, `export`): same behavior — all
+  inputs are loaded, even if the impure builtin doesn't use some of them
+  (fail-fast validation: undeclared keys are rejected, but declared-but-unused
+  keys are silently accepted).
+
+**Test**: "builtin step → all inputs loaded in Pass 2 regardless of template
+refs; executable step → only template-referenced inputs loaded"
+
+---
+
 ### A.1 Same Template Path with Different Media IDs in Hierarchy
 
 **Issue**: The flattening dedup key was initially only the template path string
