@@ -886,6 +886,27 @@ tests/
 
 **Benefit**: Simpler, faster; CAS integrity trusted by default
 
+### 7. Content-Addressed Memory Lifecycle
+
+**Pattern**: Use `bytes::Bytes` for all CAS-resident data to enable zero-copy sharing and cheap clones (ref-count bumps). Avoid `Vec<u8>` for hot-path CAS data in public APIs.
+
+**Rationale**:
+- CAS `get()` returns `Bytes` — clone is O(1) ref-count increment, not O(n) memory copy
+- `materialize_to_path()` skips the `Bytes` round-trip entirely when the backend can fast-path via `fs::copy`
+- `ResolvedInput.plain_content` uses `Bytes` so cloning resolved inputs for step invocation is O(1) instead of O(content_size)
+- File content comparisons operate on `&[u8]` slices without allocating new buffers
+
+**Examples**:
+- `CasApi::put<D: TryInto<Bytes>>(data: D)` — accepts anything that converts to `Bytes`
+- `CasApi::get(hash) -> Result<Bytes>` — returns shared ref-counted buffer
+- `CasApi::get_stream(hash) -> CasByteStream` — streams large objects in 256 KiB chunks
+- `CasApi::materialize_to_path(hash, dest) -> Result<()>` — writes directly without returning bytes to caller
+- `ResolvedInput.plain_content: Bytes` — step inputs are cheap to clone across worker boundaries
+
+**Used By**: CAS, Conductor (step worker input resolution), MediaPM (materialization)
+
+**Benefit**: Reduced memory pressure on large syncs; no unnecessary copies on hot path; pluggable fast path for filesystem backend.
+
 ---
 
 ## Performance Considerations
@@ -898,6 +919,8 @@ tests/
 | **CAS delta read** | O(depth × patch_size) | Concurrent candidate scoring (8 tasks) |
 | **Conductor planning** | < 10ms | Level-based topological sort (no DAG simulation) |
 | **Conductor scheduling** | EWMA cost model + O(1) batch cache probe | Step-stream batch dispatch; `exists_many` via `CasExistenceBitmap` |
+| **CAS stream read** (large object) | O(file_size) | Streaming chunks (256 KiB) via `stream::unfold`; small objects ≤256 KiB read in one chunk |
+| **CAS materialize** (full object fast path) | O(file_size) | `fs::copy` for filesystem backend — kernel-level copy, no userspace buffer allocation; delta fallback via `get()` + write |
 | **MediaPM sync** | Parallel workflows + step-stream dispatch | Bounded worker pool; cross-workflow step-stream dispatch in execution hub |
 
 ### Resource Bounds
@@ -2274,6 +2297,10 @@ Output Files + Updated Lock
 | **Index** | CAS metadata: (hash → storage location, compressed status, size). Updated on every put/optimize. | Maps `hash:abc123` to `/store/ab/c123` on disk |
 | **Repair** | CAS maintenance operation: scan storage, rebuild index, detect orphaned objects. | `cas.repair_index() → IndexRepairReport` |
 | **Optimize** | CAS maintenance: convert full objects to delta-encoded to save space. | `cas.optimize() → OptimizeReport { bytes_saved: 5GB }` |
+| **Stream** | CAS read returning an async `Stream<Item = Result<Bytes>>` instead of a single buffer. Enables processing large objects without loading them entirely into memory. | `cas.get_stream(hash) → CasByteStream` |
+| **Materialize** | CAS read that writes object bytes directly to a file path without returning the full buffer. Fast path uses `fs::copy` in the filesystem backend for full objects. | `cas.materialize_to_path(hash, dest) → Result<()>` |
+| **CasByteStream** | Type alias for `Pin<Box<dyn Stream<Item = Result<Bytes, CasError>> + Send + 'static>>`. Produced by `get_stream()`. Streams 256 KiB chunks for large objects; single chunk for ≤256 KiB. | Stream of `Result<Bytes>` |
+| **CasByteReader** | Type alias for `Box<dyn AsyncRead + Unpin + Send + 'static>`. Alternative streaming interface for async-read consumers. | AsyncRead adapter |
 
 ---
 

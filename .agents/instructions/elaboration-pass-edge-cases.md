@@ -2700,6 +2700,146 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
+## PART 6: Memory & Streaming Edge Cases
+
+### 6.1 CAS Streaming (`get_stream`) Edge Cases
+
+#### 6.1.1 File Deleted Mid-Stream
+
+**Issue**: If a file in the filesystem CAS store is deleted while a `get_stream` is actively reading it, the stream produces an `Err(CasError::Io { ... })` on the next chunk read.
+
+**Mitigation**: The stream is lazy — no data is read until the consumer polls. Each chunk read maps to `stream::unfold` state machine; a deletion mid-stream surfaces as an `std::io::Error` that propagates as `CasError`. The caller can retry after confirming the hash is still valid via `contains()`.
+
+**Cross-reference**: `chunked_full_object_stream()` in `src/cas/src/storage/filesystem/state.rs`.
+
+#### 6.1.2 Truncated File
+
+**Issue**: A partial write to a CAS object file leaves it shorter than expected. `read_exact` on the last chunk returns `UnexpectedEof`.
+
+**Mitigation**: The unfold state catches `UnexpectedEof` during `read_exact` and maps it to `CasError::Io`. On any error, the stream yields `Err(...)` and terminates. The caller should treat a truncated read as a CAS integrity failure and fall back to checking `contains()` or repairing.
+
+#### 6.1.3 Concurrent Writes During Stream
+
+**Issue**: Another process writes to a file being streamed. Behavior depends on filesystem — macOS APFS generally provides atomic page-level updates, but partial-page torn writes can produce corrupted data.
+
+**Mitigation**: CAS objects are immutable by convention after creation. Concurrent writes to the same path represent a CAS integrity violation. Streaming does not add new risk beyond what `get()` already has.
+
+#### 6.1.4 Zero-Bytes File
+
+**Issue**: A CAS object file exists but is zero length. `read_exact` on the first chunk fails with `UnexpectedEof`.
+
+**Edge**: The small-object fast path (≤256 KiB) reads the entire file into one chunk; a zero-length file produces a valid zero-length `Bytes`. The large-object path fails on the first `read_exact`. Both paths must handle zero-length cleanly.
+
+**Resolution**: The small-object fast path naturally handles zero-length files. The large-object path should check file length before entering the chunked loop: if the file is empty, yield an empty `Bytes` and return `Ok` to terminate the stream.
+
+#### 6.1.5 Very Large Single Chunk (Near Overflow)
+
+**Issue**: A full object slightly over 256 KiB hits `read_exact` on the full-object path. If the chunk read returns less than requested without EOF, the stream may hang.
+
+**Mitigation**: `read_exact` guarantees the requested bytes or an error. The chunk size (256 KiB) is well within `usize` range on all targets. No overflow risk.
+
+---
+
+### 6.2 `materialize_to_path` Edge Cases
+
+#### 6.2.1 Destination Already Exists
+
+**Issue**: `materialize_to_path(hash, dest)` called with a `dest` path that already exists as a file or directory.
+
+**Behavior**: The fast path (`fs::copy`) overwrites the destination file atomically (on macOS, `copyfile` replaces in-place). Writing via `get()` + `tokio::fs::write` also overwrites.
+
+**Risk**: No data loss since the source is the immutable CAS store. Callers must ensure the destination is intentional — accidental overwrite can lose user edits to materialized output.
+
+**Recommendation**: Callers should check `dest.exists()` and confirm overwrite is desired before calling `materialize_to_path`.
+
+#### 6.2.2 Read-Only Parent Directory
+
+**Issue**: The parent of `dest` is read-only. `fs::copy` or `tokio::fs::write` returns `EACCES`.
+
+**Behavior**: Propagates as `Io { operation: "copy"|"write", path: dest, source: EACCES }`.
+
+**Mitigation**: The caller should validate write permissions on the destination directory before materialization. In the filesystem backend, this produces a standard `CasError::Io`.
+
+#### 6.2.3 Symlink Destination
+
+**Issue**: `dest` is a dangling or valid symlink. `fs::copy` follows the symlink and writes to the target. `tokio::fs::write` also follows symlinks.
+
+**Behavior**: `fs::copy` writes to the symlink target. If the symlink is dangling, `fs::copy` creates the target file. No special handling needed — standard POSIX semantics apply.
+
+#### 6.2.4 Cross-Device Copy
+
+**Issue**: The CAS store is on one filesystem (e.g., `ext4` on `/data/cas`) and the destination is on another (e.g., `apfs` on `/Users`). `fs::copy` falls back to read-write via the VFS layer — it still works but loses the kernel-level fast-path performance benefit.
+
+**Behavior**: `fs::copy` detects cross-device via `rename` returning `EXDEV` and falls back to read+write. The default `CasApi::materialize_to_path` implementation does read+write via `get()`, which is similar performance.
+
+**Detection**: Callers cannot currently detect whether the fast path succeeded. The `Result<()>` return value only signals success/failure.
+
+#### 6.2.5 Delta Object Fast Path
+
+**Issue**: The requested hash is a delta (has a `.diff` extension file), not a full object. `fs::copy` on the object path would copy the delta encoding, not the reconstructed content.
+
+**Mitigation**: The filesystem backend checks `fs::try_exists(object_path)` first. If the object path doesn't exist (delta-only), it falls back to `self.get(hash).await?` which reconstructs the full object, then `tokio::fs::write(dest).await`. The fast path only applies to full objects.
+
+**Cross-reference**: `materialize_to_path()` in `src/cas/src/storage/filesystem/state.rs`.
+
+---
+
+### 6.3 Template Materialization (`TemplateFileWrite.cas_hash`) Edge Cases
+
+#### 6.3.1 Hash Mismatch on Materialization
+
+**Issue**: `TemplateFileWrite.cas_hash` was computed from template content before writing to CAS, but the CAS `put` produced a different hash (e.g., due to content normalization or encoding differences).
+
+**Mitigation**: The template rendering flow computes the hash from the same bytes that are written to CAS (`put(rendered_bytes)` → returns `hash` → stored as `cas_hash`). If the CAS implementation transforms bytes (e.g., compression), the hash is computed after transformation. No mismatch should occur if hash is derived from the `put` return value.
+
+**Cross-reference**: `materialize_template_file_writes()` in `src/conductor/src/orchestration/actors/step_worker/mod.rs`, template rendering in `src/conductor/src/orchestration/actors/step_worker/template.rs`.
+
+#### 6.3.2 Concurrent Materialization to Same Path
+
+**Issue**: Two concurrent materializations targeting the same `dest` path race on `fs::copy` or `fs::write`.
+
+**Behavior**: On macOS, atomic file replacement means one write wins and the other may see a transient state. Both operations return `Ok` since the file system guarantees the final content is correct (same hash → same bytes).
+
+**Risk**: If hashes differ (different content materialized to the same path), the last write wins. Callers should deduplicate materialization targets to avoid this.
+
+#### 6.3.3 CAS Hash Existential Check
+
+**Issue**: `cas_hash` is `Some(hash)` but the CAS does not contain that hash at materialization time (e.g., CAS pruning removed the object).
+
+**Behavior**: The CAS fast path (`materialize_to_path`) returns `Err(CasError::NotFound)` or equivalent. The conductor fallback re-renders content and re-puts to CAS, restoring the object.
+
+**Cross-reference**: The async `materialize_template_file_writes()` has a CAS fast path first, then falls back to in-memory rendering + write.
+
+---
+
+### 6.4 Memory Lifecycle (`Bytes` vs `Vec<u8>`) Edge Cases
+
+#### 6.4.1 Large Object Clone Cost
+
+**Issue**: Passing `Vec<u8>` for large template content across step worker boundaries causes O(content_size) clones. With `Bytes`, clone is O(1).
+
+**Impact**: On a 5.2 GB sync, each clone of `Vec<u8>` resolved inputs adds 5.2 GB of memory traffic. With `Bytes`, clone is an atomic ref-count increment. This is the primary driver of the Fix 1 (`Vec<u8>` → `Bytes`) change in `ResolvedInput.plain_content`.
+
+#### 6.4.2 Zero-Copy Materialization Chain
+
+**Issue**: Without `materialize_to_path`, the chain was: `get() → Bytes → write(dest)`. With fast path: `fs::copy(object_path, dest)` — zero userspace copies.
+
+**Benefit**: Large file materialization avoids allocating a `Bytes` buffer equal to file size. For a 5.2 GB sync with many large outputs, this eliminates GB-scale temporary allocations.
+
+#### 6.4.3 Stream vs Single Buffer Tradeoff
+
+**Issue**: `get_stream` trades per-call overhead for bounded memory: the caller controls how much data is buffered at once. `get()` loads the full object into memory.
+
+**Choice**: Use `get()` for objects ≤256 KiB (typical for templates, configs, small outputs). Use `get_stream()` for objects that are large or of unknown size. The small-object fast path in the filesystem backend reads the whole file in one chunk to avoid async overhead.
+
+#### 6.4.4 `Bytes` to `Vec<u8>` Conversion Cost
+
+**Issue**: Some APIs (e.g., `std::fs::read`, `Write::write_all`) expect `Vec<u8>` or `&[u8]`. `Bytes` provides `&[u8]` via `&b[..]` at zero cost. Converting to `Vec<u8>` via `to_vec()` allocates.
+
+**Pattern**: Keep CAS data as `Bytes` as long as possible. Convert to `Vec<u8>` only at the boundary where a non-CAS API requires it.
+
+---
+
 ### A.1 Same Template Path with Different Media IDs in Hierarchy
 
 **Issue**: The flattening dedup key was initially only the template path string
