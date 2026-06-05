@@ -83,6 +83,10 @@ pub(crate) struct ObjectMeta {
     pub(crate) payload_len: u64,
     /// Logical content length.
     pub(crate) content_len: u64,
+    /// UNIX epoch seconds when this object was last integrity-verified,
+    /// or 0 if never verified.
+    #[serde(default)]
+    pub(crate) verify_time: i64,
     /// Packed encoding tag + depth (`bit31 => full-data flag`, lower bits => depth).
     depth_and_tag: u32,
     /// Base-hash multihash storage bytes for delta encoding (`[0; 34]` for full-data objects).
@@ -98,6 +102,7 @@ impl ObjectMeta {
         Self {
             payload_len,
             content_len,
+            verify_time: 0,
             depth_and_tag: OBJECT_META_FULL_FLAG | (depth & OBJECT_META_DEPTH_MASK),
             base_storage: [0u8; HASH_STORAGE_KEY_BYTES],
         }
@@ -109,6 +114,7 @@ impl ObjectMeta {
         Self {
             payload_len,
             content_len,
+            verify_time: 0,
             depth_and_tag: depth & OBJECT_META_DEPTH_MASK,
             base_storage: base_hash.storage_bytes(),
         }
@@ -130,6 +136,18 @@ impl ObjectMeta {
     pub(crate) const fn set_depth(&mut self, depth: u32) {
         self.depth_and_tag =
             (self.depth_and_tag & OBJECT_META_FULL_FLAG) | (depth & OBJECT_META_DEPTH_MASK);
+    }
+
+    /// Returns the UNIX epoch seconds when this object was last
+    /// integrity-verified, or 0 if never verified.
+    #[must_use]
+    pub(crate) const fn verify_time(&self) -> i64 {
+        self.verify_time
+    }
+
+    /// Sets the integrity-verification timestamp.
+    pub(crate) fn set_verify_time(&mut self, ts: i64) {
+        self.verify_time = ts;
     }
 
     /// Returns metadata encoding mode.

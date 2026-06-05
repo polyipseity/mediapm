@@ -39,10 +39,11 @@ pub use orchestration::{
     spawn_storage_actor_with_dependencies,
 };
 pub use storage::{
-    CasBackendConfig, CasConfig, CasLocatorParseOptions, CasTopologyConstraint,
+    CasBackendConfig, CasConfig, CasIntegrityConfig, CasLocatorParseOptions, CasTopologyConstraint,
     CasTopologyEncoding, CasTopologyNode, CasTopologySnapshot, ConfiguredCas, FileSystemCas,
     FileSystemMetrics, FileSystemRecoveryOptions, InMemoryCas, IndexRecoveryMode,
-    render_topology_mermaid, render_topology_mermaid_neighborhood, topology_neighborhood_snapshot,
+    VerifyTriggerStrategy, render_topology_mermaid, render_topology_mermaid_neighborhood,
+    topology_neighborhood_snapshot,
 };
 
 pub(crate) use codec::{DeltaPatch, StoredObject};

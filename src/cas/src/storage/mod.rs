@@ -50,8 +50,8 @@ pub(crate) fn normalize_explicit_constraint_set(bases: BTreeSet<Hash>) -> Option
 
 /// Storage backend configuration and runtime backend delegation.
 pub use config::{
-    CasBackendConfig, CasConfig, CasLocatorParseOptions, ConfiguredCas, FileSystemRecoveryOptions,
-    IndexRecoveryMode,
+    CasBackendConfig, CasConfig, CasIntegrityConfig, CasLocatorParseOptions, ConfiguredCas,
+    FileSystemRecoveryOptions, IndexRecoveryMode, VerifyTriggerStrategy,
 };
 /// Filesystem-backed persistent CAS implementation and observability metrics.
 pub use filesystem::{FileSystemCas, FileSystemMetrics};

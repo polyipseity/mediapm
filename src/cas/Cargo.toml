@@ -34,6 +34,7 @@ multihash-derive.workspace = true
 oxidelta.workspace = true
 parking_lot.workspace = true
 postcard.workspace = true
+rand.workspace = true
 ractor.workspace = true
 redb.workspace = true
 serde.workspace = true

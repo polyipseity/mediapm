@@ -33,7 +33,7 @@ use bytes::Bytes;
 use ractor::ActorStatus;
 
 use crate::storage::{
-    CasTopologySnapshot, FileSystemRecoveryOptions, render_topology_mermaid,
+    CasIntegrityConfig, CasTopologySnapshot, FileSystemRecoveryOptions, render_topology_mermaid,
     render_topology_mermaid_neighborhood,
 };
 use crate::{
@@ -113,7 +113,13 @@ impl FileSystemCas {
     /// Returns [`CasError`] when directory initialization, durable index
     /// loading/recovery, or object-actor startup fails.
     pub async fn open(root: impl AsRef<Path>) -> Result<Self, CasError> {
-        Self::open_with_alpha_and_recovery(root, 4, FileSystemRecoveryOptions::default()).await
+        Self::open_with_alpha_and_recovery(
+            root,
+            4,
+            FileSystemRecoveryOptions::default(),
+            CasIntegrityConfig::default(),
+        )
+        .await
     }
 
     /// Opens a CAS repository with test-oriented drop behavior.
@@ -136,10 +142,17 @@ impl FileSystemCas {
     /// Returns [`CasError`] when backend initialization or startup recovery
     /// cannot complete.
     pub async fn open_with_alpha(root: impl AsRef<Path>, alpha: u64) -> Result<Self, CasError> {
-        Self::open_with_alpha_and_recovery(root, alpha, FileSystemRecoveryOptions::default()).await
+        Self::open_with_alpha_and_recovery(
+            root,
+            alpha,
+            FileSystemRecoveryOptions::default(),
+            CasIntegrityConfig::default(),
+        )
+        .await
     }
 
-    /// Opens a CAS repository with explicit optimizer and recovery settings.
+    /// Opens a CAS repository with explicit optimizer, recovery settings, and
+    /// integrity verification policy.
     ///
     /// # Errors
     ///
@@ -148,11 +161,13 @@ impl FileSystemCas {
         root: impl AsRef<Path>,
         alpha: u64,
         recovery: FileSystemRecoveryOptions,
+        integrity: CasIntegrityConfig,
     ) -> Result<Self, CasError> {
         Self::open_with_alpha_and_drop_grace_period(
             root,
             alpha,
             recovery,
+            integrity,
             FILESYSTEM_DEFAULT_DROP_GRACE_PERIOD,
         )
         .await
@@ -191,7 +206,29 @@ impl FileSystemCas {
             root,
             alpha,
             recovery,
+            CasIntegrityConfig::default(),
             FILESYSTEM_TEST_DROP_GRACE_PERIOD,
+        )
+        .await
+    }
+
+    /// Opens a CAS repository with explicit optimizer depth penalty and
+    /// integrity policy, using default recovery settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError`] when backend initialization or startup recovery
+    /// cannot complete.
+    pub async fn open_with_alpha_and_integrity(
+        root: impl AsRef<Path>,
+        alpha: u64,
+        integrity: CasIntegrityConfig,
+    ) -> Result<Self, CasError> {
+        Self::open_with_alpha_and_recovery(
+            root,
+            alpha,
+            FileSystemRecoveryOptions::default(),
+            integrity,
         )
         .await
     }
@@ -200,11 +237,14 @@ impl FileSystemCas {
         root: impl AsRef<Path>,
         alpha: u64,
         recovery: FileSystemRecoveryOptions,
+        integrity: CasIntegrityConfig,
         drop_grace_period: Duration,
     ) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
-        let state =
-            Arc::new(FileSystemState::open_with_alpha_and_recovery(&root, alpha, recovery).await?);
+        let state = Arc::new(
+            FileSystemState::open_with_alpha_and_recovery(&root, alpha, recovery, integrity)
+                .await?,
+        );
         Ok(Self { root, state, drop_grace_period })
     }
 

@@ -19,12 +19,14 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use ractor::{Actor, ActorRef, call_t};
+use rand::Rng;
 use smallvec::SmallVec;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -32,9 +34,9 @@ use tracing::{Span, error, info, instrument};
 
 use crate::index::{DELTA_PROMOTION_DEPTH, MAX_DELTA_DEPTH, resolve_object_depth};
 use crate::storage::{
-    CasTopologyConstraint, CasTopologyEncoding, CasTopologyNode, CasTopologySnapshot,
-    FileSystemRecoveryOptions, StreamBufferPool, chain::check_no_cycle,
-    is_unconstrained_constraint_row, normalize_explicit_constraint_set,
+    CasIntegrityConfig, CasTopologyConstraint, CasTopologyEncoding, CasTopologyNode,
+    CasTopologySnapshot, FileSystemRecoveryOptions, StreamBufferPool, VerifyTriggerStrategy,
+    chain::check_no_cycle, is_unconstrained_constraint_row, normalize_explicit_constraint_set,
     validate_constraint_target_not_in_bases,
 };
 use crate::{
@@ -77,6 +79,10 @@ pub(super) struct FileSystemState {
     index_db: CasIndexDb,
     /// Startup recovery and backup retention settings.
     recovery: FileSystemRecoveryOptions,
+    /// Integrity verification policy for read-path hash checks.
+    integrity: CasIntegrityConfig,
+    /// TTL-based in-memory cache of recently verified hashes.
+    integrity_cache: Mutex<HashMap<Hash, i64>>,
     /// Number of incremental mutation batches persisted since process start.
     backup_batch_counter: AtomicU64,
     /// In-process observability counters for filesystem CAS operations.
@@ -95,11 +101,13 @@ pub(super) struct FileSystemState {
 
 /// Internal filesystem backend runtime operations and helpers.
 impl FileSystemState {
-    /// Opens a CAS repository with an explicit optimizer depth penalty.
+    /// Opens a CAS repository with an explicit optimizer depth penalty and optional
+    /// integrity verification policy.
     pub async fn open_with_alpha_and_recovery(
         root: impl AsRef<Path>,
         alpha: u64,
         recovery: FileSystemRecoveryOptions,
+        integrity: CasIntegrityConfig,
     ) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(root.join(STORAGE_VERSION).join(empty_content_hash().algorithm_name()))
@@ -185,6 +193,8 @@ impl FileSystemState {
             ),
             index_db: redb_index,
             recovery,
+            integrity,
+            integrity_cache: Mutex::new(HashMap::new()),
             backup_batch_counter: AtomicU64::new(0),
             metrics: FileSystemMetricsState::default(),
             optimize_in_progress: AtomicBool::new(false),
@@ -226,6 +236,116 @@ impl FileSystemState {
     /// Removes one hash from in-process reconstructed-byte cache.
     fn invalidate_cached_object_bytes(&self, hash: Hash) {
         let mut cache = self.lock_content_cache("invalidating object-byte cache");
+        cache.remove(&hash);
+    }
+
+    /// Returns the integrity verification policy for read-path hash checks.
+    #[allow(dead_code)]
+    pub(super) fn integrity(&self) -> &CasIntegrityConfig {
+        &self.integrity
+    }
+
+    /// Acquires the integrity verification cache lock.
+    fn lock_integrity_cache(
+        &self,
+        _operation: &str,
+    ) -> parking_lot::MutexGuard<'_, HashMap<Hash, i64>> {
+        self.integrity_cache.lock()
+    }
+
+    /// Returns the current unix epoch timestamp in seconds.
+    fn now_unix() -> i64 {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+
+    /// Checks whether a hash can skip full BLAKE3 re-verification based on
+    /// the configured integrity strategy.
+    fn can_skip_verification(&self, hash: Hash) -> bool {
+        let config = &self.integrity;
+        if config.verify_on_read.is_empty() {
+            return true;
+        }
+
+        let index_guard = self.index.read();
+        let meta = index_guard.objects.get(&hash);
+        let verify_time = meta.map_or(0, ObjectMeta::verify_time);
+        drop(index_guard);
+
+        for strategy in &config.verify_on_read {
+            match strategy {
+                VerifyTriggerStrategy::Always => return false,
+                VerifyTriggerStrategy::Modified { .. } => {
+                    // Check mtime of on-disk object file.
+                    let path = object_path(&self.root, hash);
+                    if let Ok(metadata) = std::fs::metadata(&path) {
+                        if let Ok(mtime) = metadata.modified().map(|t| {
+                            t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
+                                as i64
+                        }) {
+                            if mtime > verify_time {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                VerifyTriggerStrategy::Sample { denominator } => {
+                    if *denominator > 0 && rand::rng().random_range(0..*denominator) == 0 {
+                        return false;
+                    }
+                }
+                VerifyTriggerStrategy::Stale { timeout } => {
+                    let now = Self::now_unix();
+                    if verify_time == 0
+                        || now.saturating_sub(verify_time) as u64 >= timeout.as_secs()
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Looks up the integrity cache for a hash, returning the cached
+    /// verification timestamp if found and not expired.
+    ///
+    /// When `cache_ttl` is zero (cache disabled), always returns `None`.
+    fn integrity_cache_get(&self, hash: Hash) -> Option<i64> {
+        let ttl = self.integrity.cache_ttl.as_secs();
+        if ttl == 0 {
+            return None;
+        }
+        let cache = self.lock_integrity_cache("integrity cache lookup");
+        let now = Self::now_unix();
+        cache.get(&hash).copied().filter(|&ts| (now.saturating_sub(ts) as u64) < ttl)
+    }
+
+    /// Stores a verification timestamp in the integrity cache.
+    fn integrity_cache_put(&self, hash: Hash, ts: i64) {
+        let mut cache = self.lock_integrity_cache("integrity cache update");
+        cache.insert(hash, ts);
+    }
+
+    /// Records a successful verification in both the object metadata and
+    /// the in-memory integrity cache.
+    fn record_verified(&self, hash: Hash) {
+        let now = Self::now_unix();
+        let mut index = self.index.write();
+        if let Some(meta) = index.objects.get_mut(&hash) {
+            meta.set_verify_time(now);
+        }
+        drop(index);
+        self.integrity_cache_put(hash, now);
+    }
+
+    /// Invalidates the integrity cache entry for a hash, forcing
+    /// re-verification on the next read.
+    #[allow(dead_code)]
+    pub(super) fn invalidate_verified_cache(&self, hash: Hash) {
+        let mut cache = self.lock_integrity_cache("invalidating integrity cache");
         cache.remove(&hash);
     }
 
@@ -1133,11 +1253,10 @@ impl FileSystemState {
             Self::upsert_object_meta(&mut index, target_hash, &full)?
         };
 
-        self.persist_index_batch(vec![BatchOperation::UpsertObject {
-            hash: target_hash,
-            meta: Self::meta_for_object(&full, resolved_depth),
-        }])
-        .await?;
+        let mut meta = Self::meta_for_object(&full, resolved_depth);
+        meta.set_verify_time(Self::now_unix());
+        self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target_hash, meta }])
+            .await?;
         Ok(target_hash)
     }
 
@@ -1394,11 +1513,9 @@ impl FileSystemState {
             Self::upsert_object_meta(&mut index, target, &best.object)?
         };
 
-        self.persist_index_batch(vec![BatchOperation::UpsertObject {
-            hash: target,
-            meta: Self::meta_for_object(&best.object, resolved_depth),
-        }])
-        .await?;
+        let mut meta = Self::meta_for_object(&best.object, resolved_depth);
+        meta.set_verify_time(Self::now_unix());
+        self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target, meta }]).await?;
 
         Ok(true)
     }
@@ -1533,13 +1650,24 @@ impl CasApi for FileSystemState {
 
                 if patch_payloads.is_empty() {
                     ensure_reconstructed_size(hash, expected_len, mapped_full.len())?;
-                    ensure_reconstructed_hash(hash, mapped_full.as_ref(), "mmap full-object read")?;
+                    if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none()
+                    {
+                        ensure_reconstructed_hash(
+                            hash,
+                            mapped_full.as_ref(),
+                            "mmap full-object read",
+                        )?;
+                        self.record_verified(hash);
+                    }
                     return Ok(mapped_full);
                 }
 
                 let data = apply_delta_patch_stack(mapped_full.to_vec(), &mut patch_payloads)?;
                 ensure_reconstructed_size(hash, expected_len, data.len())?;
-                ensure_reconstructed_hash(hash, data.as_slice(), "mmap+delta reconstruction")?;
+                if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none() {
+                    ensure_reconstructed_hash(hash, data.as_slice(), "mmap+delta reconstruction")?;
+                    self.record_verified(hash);
+                }
 
                 return Ok(Bytes::from(data));
             }
@@ -1552,7 +1680,15 @@ impl CasApi for FileSystemState {
                 StoredObject::Full { payload } => {
                     let data = apply_delta_patch_stack(payload, &mut patch_payloads)?;
                     ensure_reconstructed_size(hash, expected_len, data.len())?;
-                    ensure_reconstructed_hash(hash, data.as_slice(), "full/delta reconstruction")?;
+                    if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none()
+                    {
+                        ensure_reconstructed_hash(
+                            hash,
+                            data.as_slice(),
+                            "full/delta reconstruction",
+                        )?;
+                        self.record_verified(hash);
+                    }
                     return Ok(Bytes::from(data));
                 }
                 StoredObject::Delta { state } => {

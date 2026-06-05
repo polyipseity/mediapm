@@ -16,6 +16,27 @@ use crate::{
     OptimizeReport, PruneReport,
 };
 
+/// Strategy that controls when `get()` re-verifies the reconstructed content
+/// against the BLAKE3 hash.
+///
+/// Multiple strategies can be combined; if ANY strategy indicates that
+/// verification is needed, the full hash check runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyTriggerStrategy {
+    /// Always re-verify, regardless of prior verification state.
+    Always,
+    /// Re-verify only when the object file's modification timestamp (mtime)
+    /// is newer than the stored `verify_time`. This detects external tampering
+    /// between the last verified read and the current read.
+    Modified { last_verified: i64 },
+    /// Re-verify approximately one out of every `denominator` reads
+    /// (randomized sampling). `denominator` must be >= 1.
+    Sample { denominator: u64 },
+    /// Re-verify when the stored `verify_time` is older than `timeout`.
+    /// A `verify_time` of 0 (never verified) always triggers re-verification.
+    Stale { timeout: std::time::Duration },
+}
+
 /// Default optimizer depth penalty for filesystem backend.
 const DEFAULT_FILESYSTEM_ALPHA: u64 = 4;
 /// Default maximum retained index backup snapshots.
@@ -61,6 +82,44 @@ impl Default for FileSystemRecoveryOptions {
             max_backup_snapshots: DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT,
             backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
             wait_for_lock: false,
+        }
+    }
+}
+
+/// Configuration for CAS integrity verification on read.
+///
+/// Controls when `get()` performs a full BLAKE3 re-verification of
+/// reconstructed content versus using a cached result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CasIntegrityConfig {
+    /// Ordered list of strategies that trigger re-verification.
+    /// If any strategy matches, full verification runs.
+    /// Default: `[Modified, Sample]`.
+    pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    /// Denominator for `Sample` strategy. 1 = verify every read,
+    /// 100 = verify ~1% of reads. Ignored unless `Sample` is in the list.
+    /// Default: 100.
+    pub sample_denominator: u64,
+    /// Timeout duration for `Stale` strategy. Ignored unless `Stale` is in
+    /// the list. Default: 1 hour.
+    pub stale_timeout: std::time::Duration,
+    /// Time-to-live for the in-memory verified-content cache.
+    /// A cached result is used within this duration; after expiry, the
+    /// strategies are re-evaluated. Default: 1 hour. Set to 0 to disable
+    /// the cache entirely.
+    pub cache_ttl: std::time::Duration,
+}
+
+impl Default for CasIntegrityConfig {
+    fn default() -> Self {
+        Self {
+            verify_on_read: vec![
+                VerifyTriggerStrategy::Modified { last_verified: 0 },
+                VerifyTriggerStrategy::Sample { denominator: 100 },
+            ],
+            sample_denominator: 100,
+            stale_timeout: std::time::Duration::from_secs(3600),
+            cache_ttl: std::time::Duration::from_secs(3600),
         }
     }
 }
@@ -186,13 +245,14 @@ impl CasBackendConfig {
 pub struct CasConfig {
     backend: CasBackendConfig,
     filesystem_recovery: FileSystemRecoveryOptions,
+    integrity: CasIntegrityConfig,
 }
 
 /// Builder-style constructors and open methods for configured backends.
 impl CasConfig {
     /// Creates configuration for in-memory backend.
     #[must_use]
-    pub const fn in_memory() -> Self {
+    pub fn in_memory() -> Self {
         Self {
             backend: CasBackendConfig::InMemory,
             filesystem_recovery: FileSystemRecoveryOptions {
@@ -201,6 +261,7 @@ impl CasConfig {
                 backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
                 wait_for_lock: false,
             },
+            integrity: CasIntegrityConfig::default(),
         }
     }
 
@@ -213,6 +274,7 @@ impl CasConfig {
                 alpha: DEFAULT_FILESYSTEM_ALPHA,
             },
             filesystem_recovery: FileSystemRecoveryOptions::default(),
+            integrity: CasIntegrityConfig::default(),
         }
     }
 
@@ -222,6 +284,7 @@ impl CasConfig {
         Self {
             backend: CasBackendConfig::FileSystem { root: root.into(), alpha },
             filesystem_recovery: FileSystemRecoveryOptions::default(),
+            integrity: CasIntegrityConfig::default(),
         }
     }
 
@@ -235,6 +298,7 @@ impl CasConfig {
         Self {
             backend: CasBackendConfig::FileSystem { root: root.into(), alpha },
             filesystem_recovery,
+            integrity: CasIntegrityConfig::default(),
         }
     }
 
@@ -251,6 +315,7 @@ impl CasConfig {
                 CasLocatorParseOptions::default(),
             )?,
             filesystem_recovery: FileSystemRecoveryOptions::default(),
+            integrity: CasIntegrityConfig::default(),
         })
     }
 
@@ -266,6 +331,7 @@ impl CasConfig {
         Ok(Self {
             backend: CasBackendConfig::from_locator_with_options(locator, options)?,
             filesystem_recovery: FileSystemRecoveryOptions::default(),
+            integrity: CasIntegrityConfig::default(),
         })
     }
 
@@ -277,6 +343,19 @@ impl CasConfig {
     ) -> Self {
         self.filesystem_recovery = filesystem_recovery;
         self
+    }
+
+    /// Overrides integrity verification behavior for this configuration.
+    #[must_use]
+    pub fn with_integrity(mut self, integrity: CasIntegrityConfig) -> Self {
+        self.integrity = integrity;
+        self
+    }
+
+    /// Returns the integrity verification configuration.
+    #[must_use]
+    pub fn integrity(&self) -> &CasIntegrityConfig {
+        &self.integrity
     }
 
     /// Opens the configured backend.
@@ -293,6 +372,7 @@ impl CasConfig {
                     root,
                     alpha,
                     self.filesystem_recovery,
+                    self.integrity,
                 )
                 .await?;
                 Ok(ConfiguredCas::FileSystem(cas))

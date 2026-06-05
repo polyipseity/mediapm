@@ -2133,6 +2133,7 @@ dependencies = [
  "postcard",
  "proptest",
  "ractor",
+ "rand",
  "redb",
  "serde",
  "serde_json",

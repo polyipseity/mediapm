@@ -97,7 +97,7 @@ pub(crate) fn hash_from_index_key(key: &[u8]) -> Result<Hash, CasError> {
 fn object_meta_iso() -> IsoPrime<'static, RcBrand, latest::ObjectMeta, ObjectMeta> {
     IsoPrime::new(
         |versioned: latest::ObjectMeta| {
-            if versioned.is_full() {
+            let mut meta = if versioned.is_full() {
                 ObjectMeta::full(versioned.payload_len, versioned.content_len, versioned.depth())
             } else {
                 let base_hash = versioned
@@ -109,18 +109,26 @@ fn object_meta_iso() -> IsoPrime<'static, RcBrand, latest::ObjectMeta, ObjectMet
                     versioned.depth(),
                     base_hash,
                 )
-            }
+            };
+            meta.set_verify_time(versioned.verify_time());
+            meta
         },
-        |runtime: ObjectMeta| match runtime.encoding() {
-            ObjectEncoding::Full => {
-                latest::object_meta_full(runtime.payload_len, runtime.content_len, runtime.depth())
-            }
-            ObjectEncoding::Delta { base_hash } => latest::object_meta_delta(
-                runtime.payload_len,
-                runtime.content_len,
-                runtime.depth(),
-                base_hash,
-            ),
+        |runtime: ObjectMeta| {
+            let mut versioned = match runtime.encoding() {
+                ObjectEncoding::Full => latest::object_meta_full(
+                    runtime.payload_len,
+                    runtime.content_len,
+                    runtime.depth(),
+                ),
+                ObjectEncoding::Delta { base_hash } => latest::object_meta_delta(
+                    runtime.payload_len,
+                    runtime.content_len,
+                    runtime.depth(),
+                    base_hash,
+                ),
+            };
+            versioned.set_verify_time(runtime.verify_time());
+            versioned
         },
     )
 }

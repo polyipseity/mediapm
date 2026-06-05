@@ -59,7 +59,7 @@ mod base_storage_serde {
 pub(crate) const HASH_STORAGE_KEY_BYTES: usize = 34;
 
 /// Current redb schema version for active index storage.
-pub(crate) const INDEX_SCHEMA_VERSION: u32 = 1;
+pub(crate) const INDEX_SCHEMA_VERSION: u32 = 2;
 
 /// Returns the active V1 schema marker.
 #[must_use]
@@ -164,6 +164,9 @@ pub(crate) fn write_bloom_payload_to_table_v1(
 pub(crate) struct PrimaryHeaderV1 {
     payload_len: u64,
     content_len: u64,
+    /// UNIX epoch seconds when this object was last verified, or 0 if
+    /// unverified. Written by the CAS integrity verification fast-path.
+    verify_time: i64,
     depth: u32,
     flags: u8,
     _reserved: [u8; 3],
@@ -207,6 +210,7 @@ impl PrimaryHeaderV1 {
         let header = Self {
             payload_len: meta.payload_len,
             content_len: meta.content_len,
+            verify_time: meta.verify_time,
             depth,
             flags,
             _reserved: [0u8; 3],
@@ -236,7 +240,7 @@ impl PrimaryHeaderV1 {
 
     /// Converts this header into V1 object metadata.
     pub(crate) fn to_object_meta_v1(self) -> ObjectMetaV1 {
-        if self.flags & Self::FLAG_FULL != 0 {
+        let base = if self.flags & Self::FLAG_FULL != 0 {
             ObjectMetaV1::full(self.payload_len, self.content_len, self.depth)
         } else {
             let mut base_storage = [0u8; HASH_STORAGE_KEY_BYTES];
@@ -246,7 +250,10 @@ impl PrimaryHeaderV1 {
             let base_hash = Hash::from_storage_bytes(&base_storage)
                 .expect("persisted delta base hash must decode from multihash storage bytes");
             ObjectMetaV1::delta(self.payload_len, self.content_len, self.depth, base_hash)
-        }
+        };
+        let mut meta = base;
+        meta.verify_time = self.verify_time;
+        meta
     }
 
     /// Validates decoded header invariants against runtime depth constraints.
@@ -266,6 +273,23 @@ impl PrimaryHeaderV1 {
         }
 
         Ok(())
+    }
+
+    /// Returns the UNIX epoch seconds when this object was last verified,
+    /// or 0 if unverified.
+    #[must_use]
+    #[expect(dead_code)]
+    pub(crate) fn verify_time(&self) -> i64 {
+        self.verify_time
+    }
+
+    /// Sets the verify_time to the current UNIX epoch seconds.
+    #[expect(dead_code)]
+    pub(crate) fn set_verify_time_now(&mut self) {
+        self.verify_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
     }
 }
 
@@ -377,6 +401,10 @@ pub(crate) struct ObjectMetaV1 {
     pub(crate) payload_len: u64,
     /// Logical content length.
     pub(crate) content_len: u64,
+    /// UNIX epoch seconds when this object was last integrity-verified,
+    /// or 0 if never verified.
+    #[serde(default)]
+    pub(crate) verify_time: i64,
     /// Packed encoding tag + depth (`bit31 => full-data flag`, lower bits => depth).
     depth_and_tag: u32,
     /// Base-hash multihash storage bytes for delta encoding (`[0; 34]` for full-data objects).
@@ -392,6 +420,7 @@ impl ObjectMetaV1 {
         Self {
             payload_len,
             content_len,
+            verify_time: 0,
             depth_and_tag: OBJECT_META_FULL_FLAG | (depth & OBJECT_META_DEPTH_MASK),
             base_storage: [0u8; HASH_STORAGE_KEY_BYTES],
         }
@@ -403,6 +432,7 @@ impl ObjectMetaV1 {
         Self {
             payload_len,
             content_len,
+            verify_time: 0,
             depth_and_tag: depth & OBJECT_META_DEPTH_MASK,
             base_storage: base_hash.storage_bytes(),
         }
@@ -418,6 +448,18 @@ impl ObjectMetaV1 {
     #[must_use]
     pub(crate) const fn depth(&self) -> u32 {
         self.depth_and_tag & OBJECT_META_DEPTH_MASK
+    }
+
+    /// Returns the UNIX epoch seconds when this object was last
+    /// integrity-verified, or 0 if never verified.
+    #[must_use]
+    pub(crate) const fn verify_time(&self) -> i64 {
+        self.verify_time
+    }
+
+    /// Sets the integrity-verification timestamp.
+    pub(crate) fn set_verify_time(&mut self, ts: i64) {
+        self.verify_time = ts;
     }
 
     /// Returns base hash for delta-encoded objects.

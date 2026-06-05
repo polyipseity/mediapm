@@ -14,3 +14,6 @@ mod storage_format;
 mod validation;
 /// CAS visualization request/output integration coverage.
 mod visualize;
+
+/// CAS integrity-verification strategy integration coverage.
+mod integrity_verification;

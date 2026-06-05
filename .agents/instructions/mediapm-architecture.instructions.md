@@ -496,6 +496,17 @@ is a narrow, documented reason.
 - Keep behavior explicit for symlink/hardlink/copy capabilities.
 - Preserve no-op behavior when existing link already matches desired target.
 
+## Cache policy
+
+- All caches in CAS and downstream should be TTL-based, not bounded by entry
+  count. This avoids memory-pressure tuning loops and keeps behavior
+  predictable under varying DB sizes.
+- The CAS integrity verification cache (`FileSystemState.integrity_cache`) uses
+  `cache_ttl` from `CasIntegrityConfig` per-entry TTL. Entries are evicted
+  naturally on TTL expiry; there is no LRU or entry-cap eviction.
+- The optional verified-content in-memory cache (an extension of the integrity
+  cache) follows the same TTL-based policy — no entry cap, no LRU.
+
 ## Documentation requirements for Rust code
 
 When you add or change public APIs in `src/`:
@@ -561,6 +572,72 @@ or download-level progress that spans blocking awaits.
     to two-step display, then finally truncate the single first step.
 - All truncation is character-count-based (not byte-based) for correct Unicode
   handling.
+
+## CAS integrity verification
+
+CAS integrity verification ensures stored objects have not been corrupted.
+The system uses a configurable strategy set to decide when to verify objects
+on read (`get()`).
+
+### Trust model
+
+CAS objects are trusted by default at materialization time — verification
+happens at CAS `get()` time, not at materialization. Pure workflows may
+auto-recover from integrity failure (warn + drop + retry once); impure
+workflows fail without auto-retry.
+
+### TTL cache fast path
+
+A TTL cache (`HashMap<Hash, (Instant, Arc<[u8]>)>`) in `FileSystemState`
+supplements `content_cache` for recently verified objects. On `get()`:
+
+1. If the TTL cache has a non-expired entry, skip verification and return
+   the cached bytes immediately.
+2. On cache miss, evaluate configured strategies. If any triggers, perform
+   full hash re-computation, update `verify_time` in the primary header,
+   and populate the TTL cache on success.
+3. On cache miss with no trigger, return the stored bytes directly without
+   updating `verify_time`.
+
+The TTL cache has a configurable TTL (default 60 seconds) and is bounded
+per `FileSystemState` — entries are evicted when the underlying object is
+deleted or pruned, or on maintenance operations.
+
+### Verify-on-read strategies
+
+Four `VerifyTriggerStrategy` variants control verification:
+
+| Strategy   | Trigger condition                                                     |
+|------------|-----------------------------------------------------------------------|
+| `Always`   | Every `get()` call triggers a full hash re-computation.              |
+| `Modified` | Verify only when file mtime changed since last `verify_time`.         |
+| `Sample`   | Verify a random fraction (default 1%) of recently-fetched objects.    |
+| `Stale`    | Verify when `now - verify_time > stale_threshold` (default 7 days). |
+
+Default strategy list: `[Modified, Sample]`.
+
+### `verify_time` field
+
+The `PrimaryHeaderV1` struct uses a `verify_time` field (Unix epoch seconds)
+to track when each object was last verified. A value of 0 means the object
+has never been verified (e.g., migrated from `INDEX_SCHEMA_VERSION` 1 or
+newly stored). The header size increased from 56 to 64 bytes with this field.
+
+### Configuration
+
+Config keys are flat under `runtime.*`:
+
+- `runtime.verify_on_read_strategies: Array<String>` — default
+  `["modified", "sample"]`
+- `runtime.verify_on_read_stale_threshold_secs: Number` — default 604800
+- `runtime.verify_on_read_sample_rate: Number` — default 0.01
+- `runtime.verify_on_read_ttl_cache_ttl_secs: Number` — default 60
+
+### Schema migration
+
+`INDEX_SCHEMA_VERSION` bumps from 1 to 2. Migration initializes `verify_time`
+to 0 for all existing objects. The schema version is stored in the index
+header and checked at startup.
 
 ## Specification references
 
