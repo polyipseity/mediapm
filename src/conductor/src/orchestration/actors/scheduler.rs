@@ -15,7 +15,7 @@ use crate::api::{
 };
 use crate::error::ConductorError;
 use crate::orchestration::config::{
-    DEFAULT_RPC_TIMEOUT_MS, scheduler_ewma_alpha, scheduler_trace_capacity, unknown_step_cost_ms,
+    rpc_timeout_ms, scheduler_ewma_alpha, scheduler_trace_capacity, unknown_step_cost_ms,
 };
 use crate::orchestration::protocol::StepCompletionRecord;
 
@@ -38,20 +38,22 @@ impl SchedulerClient {
         &self,
         record: StepCompletionRecord,
     ) -> Result<(), ConductorError> {
-        call_t!(self.actor, SchedulerMessage::RecordCompletion, DEFAULT_RPC_TIMEOUT_MS, record)
-            .map_err(|err| {
+        call_t!(self.actor, SchedulerMessage::RecordCompletion, rpc_timeout_ms(), record).map_err(
+            |err| {
                 ConductorError::Internal(format!("scheduler record_completion RPC failed: {err}"))
-            })?
+            },
+        )?
     }
 
     /// Returns the latest diagnostics snapshot owned by the scheduler actor.
     pub(crate) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
-        call_t!(self.actor, SchedulerMessage::GetRuntimeDiagnostics, DEFAULT_RPC_TIMEOUT_MS)
-            .map_err(|err| {
+        call_t!(self.actor, SchedulerMessage::GetRuntimeDiagnostics, rpc_timeout_ms()).map_err(
+            |err| {
                 ConductorError::Internal(format!(
                     "scheduler get_runtime_diagnostics RPC failed: {err}"
                 ))
-            })?
+            },
+        )?
     }
 }
 

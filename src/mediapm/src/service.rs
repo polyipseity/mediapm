@@ -1881,6 +1881,7 @@ mod tests {
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
         assert!(dotenv_text.contains("# conductor runtime environment variables"));
         assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
         assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));
@@ -1928,6 +1929,7 @@ mod tests {
             fs::read_to_string(service.paths().runtime_root.join(".env")).expect("read .env");
         assert!(dotenv_text.contains("# conductor runtime environment variables"));
         assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS="));
+        assert!(dotenv_text.contains("# MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS="));
         assert!(dotenv_text.contains("# ACOUSTID_API_KEY="));
         assert!(dotenv_text.contains("# MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN="));

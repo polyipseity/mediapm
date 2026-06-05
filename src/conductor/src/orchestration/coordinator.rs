@@ -42,9 +42,7 @@ use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor
 use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
 use super::actors::state_store::{StateStoreClient, spawn_state_store_actor};
 use super::actors::step_worker::{StepWorkerMessage, execute_step_direct, spawn_step_worker_pool};
-use super::config::{
-    DEFAULT_RPC_TIMEOUT_MS, default_worker_pool_size, profile_output_path_from_env,
-};
+use super::config::{default_worker_pool_size, profile_output_path_from_env, rpc_timeout_ms};
 use super::profiler::{
     StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, write_profile_json,
 };
@@ -983,7 +981,7 @@ where
         let call_result: Result<StepExecutionBundle, ConductorError> = match call_t!(
             worker,
             StepWorkerMessage::ExecuteStep,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             Box::new(request.clone())
         ) {
             Ok(Ok(bundle)) => {

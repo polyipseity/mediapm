@@ -28,6 +28,7 @@ const RUNTIME_DOTENV_TEMPLATE: &str = concat!(
     "#\n",
     "# Core mediapm/conductor runtime knobs:\n",
     "# MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS=120\n",
+    "# MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS=300\n",
     "# MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS=180\n",
     "#\n",
     "# Media metadata enrichment (AcoustID -> MusicBrainz):\n",

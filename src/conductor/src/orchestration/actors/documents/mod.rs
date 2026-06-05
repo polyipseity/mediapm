@@ -28,7 +28,7 @@ use crate::model::config::{
     default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_state_document,
     encode_user_document, evaluate_total_configuration_sources,
 };
-use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
+use crate::orchestration::config::rpc_timeout_ms;
 use crate::orchestration::protocol::{LoadedDocuments, UnifiedNickelDocument, UnifiedToolSpec};
 
 /// Ownership banner for machine-managed conductor document writes.
@@ -68,7 +68,7 @@ impl DocumentLoaderClient {
         call_t!(
             self.actor,
             DocumentLoaderMessage::LoadAndUnify,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
             conductor_state_config.to_path_buf(),
@@ -88,7 +88,7 @@ impl DocumentLoaderClient {
         call_t!(
             self.actor,
             DocumentLoaderMessage::PersistMachineDocument,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             path.to_path_buf(),
             Box::new(document)
         )
@@ -108,7 +108,7 @@ impl DocumentLoaderClient {
         call_t!(
             self.actor,
             DocumentLoaderMessage::PersistStateDocument,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             path.to_path_buf(),
             Box::new(document)
         )

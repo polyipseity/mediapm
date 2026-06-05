@@ -15,7 +15,7 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
 use crate::model::state::{OrchestrationState, decode_state, encode_state};
-use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
+use crate::orchestration::config::rpc_timeout_ms;
 use crate::orchestration::protocol::{CommitStateRequest, UnifiedNickelDocument};
 
 /// Typed client for the state-store actor.
@@ -36,7 +36,7 @@ impl StateStoreClient {
     pub(in crate::orchestration) async fn current_state(
         &self,
     ) -> Result<OrchestrationState, ConductorError> {
-        call_t!(self.actor, StateStoreMessage::GetCurrentState, DEFAULT_RPC_TIMEOUT_MS).map_err(
+        call_t!(self.actor, StateStoreMessage::GetCurrentState, rpc_timeout_ms()).map_err(
             |err| {
                 ConductorError::Internal(format!("state store get_current_state RPC failed: {err}"))
             },
@@ -48,17 +48,12 @@ impl StateStoreClient {
         &self,
         pointer: Option<Hash>,
     ) -> Result<OrchestrationState, ConductorError> {
-        call_t!(
-            self.actor,
-            StateStoreMessage::LoadStateFromPointer,
-            DEFAULT_RPC_TIMEOUT_MS,
-            pointer
-        )
-        .map_err(|err| {
-            ConductorError::Internal(format!(
-                "state store load_state_from_pointer RPC failed: {err}"
-            ))
-        })?
+        call_t!(self.actor, StateStoreMessage::LoadStateFromPointer, rpc_timeout_ms(), pointer)
+            .map_err(|err| {
+                ConductorError::Internal(format!(
+                    "state store load_state_from_pointer RPC failed: {err}"
+                ))
+            })?
     }
 
     /// Persists a completed workflow run, publishes it as current state, and returns the new state pointer.
@@ -66,7 +61,7 @@ impl StateStoreClient {
         &self,
         request: CommitStateRequest,
     ) -> Result<Hash, ConductorError> {
-        call_t!(self.actor, StateStoreMessage::CommitRun, DEFAULT_RPC_TIMEOUT_MS, Box::new(request))
+        call_t!(self.actor, StateStoreMessage::CommitRun, rpc_timeout_ms(), Box::new(request))
             .map_err(|err| {
                 ConductorError::Internal(format!("state store commit_run RPC failed: {err}"))
             })?
@@ -91,7 +86,7 @@ impl StateStoreClient {
         call_t!(
             self.actor,
             StateStoreMessage::PersistAndPublishState,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             Box::new(state)
         )
         .map_err(|err| {
@@ -107,10 +102,9 @@ impl StateStoreClient {
         &self,
         ttl_override: Option<u64>,
     ) -> Result<(), ConductorError> {
-        call_t!(self.actor, StateStoreMessage::RunGc, DEFAULT_RPC_TIMEOUT_MS, ttl_override)
-            .map_err(|err| {
-                ConductorError::Internal(format!("state store run_gc RPC failed: {err}"))
-            })?
+        call_t!(self.actor, StateStoreMessage::RunGc, rpc_timeout_ms(), ttl_override).map_err(
+            |err| ConductorError::Internal(format!("state store run_gc RPC failed: {err}")),
+        )?
     }
 }
 

@@ -967,6 +967,7 @@ tests/
 | Delta chain depth | 32 | `MAX_DELTA_DEPTH` |
 | Buffer pool size | 128 | `FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS` |
 | Actor RPC timeout | 8 sec | `FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS` |
+| Conductor RPC timeout | 300 sec | `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` |
 | Optimizer concurrency | 8 | `FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY` |
 | Materialization workers | CPU cores | Derived from hardware |
 
