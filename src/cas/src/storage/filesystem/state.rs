@@ -1841,7 +1841,11 @@ fn chunked_full_object_stream(file: fs::File, file_len: u64, path: &Path) -> Cas
     }))
 }
 
-/// Validates reconstructed payload length against optional expected size.
+/// Fast O(1) length pre-check before full hash verification.
+///
+/// Strictly redundant with the subsequent hash check (any corruption that
+/// changes the size also changes the hash), but provides cheap early
+/// rejection before the hash computation.
 fn ensure_reconstructed_size(
     hash: Hash,
     expected_len: Option<u64>,
@@ -1858,7 +1862,12 @@ fn ensure_reconstructed_size(
     Ok(())
 }
 
-/// Validates reconstructed payload hash against expected object hash.
+/// Terminal integrity proof: recomputes `Hash::from_content()` on the
+/// reconstructed payload and compares against the expected hash.
+///
+/// This is the definitive integrity guarantee for reconstructed objects.
+/// The O(1) size check via [`ensure_reconstructed_size`] runs first as a
+/// fast pre-filter but is strictly redundant with this hash check.
 fn ensure_reconstructed_hash(
     expected_hash: Hash,
     content: &[u8],
