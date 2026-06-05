@@ -1281,15 +1281,15 @@ where
             while let Some(event) = rx.recv().await {
                 if total_steps == 0 {
                     total_steps = event.total_steps;
+                    for _wi in 0..event.worker_count {
+                        worker_bars.push(mp.add_bar(0).with_format("{msg}"));
+                        per_worker_count.push(0);
+                    }
                     overall_bar = Some(
                         mp.add_bar(total_steps as u64)
                             .with_format("{msg}  [{bar:20}]  {pos}/{total}")
                             .with_message("overall"),
                     );
-                    for _wi in 0..event.worker_count {
-                        worker_bars.push(mp.add_bar(0).with_format("{msg}"));
-                        per_worker_count.push(0);
-                    }
                 }
                 per_worker_count[event.worker_index] =
                     per_worker_count[event.worker_index].saturating_add(1);
