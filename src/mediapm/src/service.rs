@@ -1295,12 +1295,9 @@ where
                     per_worker_count[event.worker_index].saturating_add(1);
                 if let Some(ref bar) = overall_bar {
                     bar.set_position(event.completed_steps as u64);
-                    bar.set_message(&format!(
-                        "{}: {} ({}/{})",
-                        event.workflow_display_name,
-                        event.step_id,
-                        event.completed_steps,
-                        total_steps,
+                    bar.set_message(format!(
+                        "completed {}/{} steps",
+                        event.completed_steps, total_steps,
                     ));
                 }
                 if let Some(worker_bar) = worker_bars.get(event.worker_index) {
