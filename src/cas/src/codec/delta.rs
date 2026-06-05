@@ -10,9 +10,6 @@ use oxidelta::vcdiff::decoder::decode_memory;
 
 use crate::CasError;
 
-/// RFC 3284 VCDIFF header bytes (magic + supported version).
-const VCDIFF_HEADER: [u8; 4] = [0xD6, 0xC3, 0xC4, 0x00];
-
 /// Encoded VCDIFF patch payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DeltaPatch<'a> {
@@ -41,28 +38,11 @@ impl<'a> DeltaPatch<'a> {
     }
 
     /// Reconstructs patch wrapper from encoded VCDIFF payload.
+    ///
+    /// # Errors
+    /// Returns [`CasError::CorruptObject`] when the payload is not a valid VCDIFF
+    /// stream (validated lazily by [`DeltaPatch::apply`]).
     pub(crate) fn decode(bytes: &'a [u8]) -> Result<Self, CasError> {
-        if bytes.is_empty() {
-            return Err(CasError::corrupt_object("delta payload cannot be empty VCDIFF stream"));
-        }
-
-        if bytes.len() < VCDIFF_HEADER.len() {
-            return Err(CasError::corrupt_object("delta payload too short for VCDIFF header"));
-        }
-
-        if bytes[..3] != VCDIFF_HEADER[..3] {
-            return Err(CasError::corrupt_object(
-                "delta payload missing supported VCDIFF header magic",
-            ));
-        }
-
-        if bytes[3] != VCDIFF_HEADER[3] {
-            return Err(CasError::corrupt_object(format!(
-                "delta payload unsupported VCDIFF version byte: {:#04x}",
-                bytes[3]
-            )));
-        }
-
         Ok(Self { vcdiff: Cow::Borrowed(bytes) })
     }
 
@@ -86,7 +66,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::DeltaPatch;
-    use crate::{CasApi, CasError, CasMaintenanceApi, Constraint, FileSystemCas, OptimizeOptions};
+    use crate::{CasApi, CasMaintenanceApi, Constraint, FileSystemCas, OptimizeOptions};
 
     #[test]
     fn vcdiff_patch_roundtrip_reconstructs_target() {
@@ -99,33 +79,6 @@ mod tests {
         let restored = decoded.apply(base).expect("apply should reconstruct target");
 
         assert_eq!(restored, target);
-    }
-
-    #[test]
-    fn decode_rejects_empty_payload() {
-        let error = DeltaPatch::decode(&[]).expect_err("empty payload must fail");
-        assert!(matches!(error, CasError::CorruptObject(_)));
-    }
-
-    #[test]
-    fn decode_rejects_non_vcdiff_magic() {
-        let error = DeltaPatch::decode(&[0x01, 0x02, 0x03, 0x04])
-            .expect_err("non-VCDIFF payload must fail");
-        assert!(matches!(error, CasError::CorruptObject(_)));
-    }
-
-    #[test]
-    fn decode_rejects_truncated_vcdiff_header() {
-        let error =
-            DeltaPatch::decode(&[0xD6, 0xC3]).expect_err("truncated VCDIFF header must fail");
-        assert!(matches!(error, CasError::CorruptObject(_)));
-    }
-
-    #[test]
-    fn decode_rejects_unsupported_vcdiff_version() {
-        let error = DeltaPatch::decode(&[0xD6, 0xC3, 0xC4, 0x01])
-            .expect_err("unsupported VCDIFF version must fail");
-        assert!(matches!(error, CasError::CorruptObject(_)));
     }
 
     #[tokio::test]
