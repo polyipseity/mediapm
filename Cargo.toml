@@ -51,6 +51,7 @@ flate2 = "1.1.4"
 fp-library = "0.17.0"
 fs4 = "1.1.0"
 futures-util = "0.3.31"
+libc = "0.2"
 memmap2 = "0.9.9"
 miette = { version = "7.6.0", features = ["derive"] }
 multihash = "0.19"

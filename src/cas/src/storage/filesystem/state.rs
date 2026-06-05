@@ -16,6 +16,7 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,7 +31,7 @@ use rand::Rng;
 use smallvec::SmallVec;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use tracing::{Span, error, info, instrument};
+use tracing::{Span, error, info, instrument, warn};
 
 use crate::index::{DELTA_PROMOTION_DEPTH, MAX_DELTA_DEPTH, resolve_object_depth};
 use crate::storage::{
@@ -116,7 +117,15 @@ impl FileSystemState {
 
         bootstrap_empty_object(&root).await?;
 
-        // Acquire exclusive filesystem lock.
+        // Acquire exclusive filesystem lock with stale detection.
+        //
+        // On Unix, flock is released by the kernel when the owning process
+        // exits, so stale locks should not normally occur. However, edge
+        // cases (force-kill, system crash, macOS-specific behavior) can
+        // leave a lock file behind whose flock has been released but whose
+        // content identifies a now-dead PID. We detect this by writing our
+        // PID to the lock file after acquisition and, on subsequent
+        // startup, checking whether the recorded PID is still alive.
         let lock_path = root.join("lock");
         let lock_file = match std::fs::OpenOptions::new()
             .create(true)
@@ -125,17 +134,37 @@ impl FileSystemState {
             .truncate(false)
             .open(&lock_path)
         {
-            Ok(file) => {
+            Ok(mut file) => {
+                // Check for stale lock — a lock file whose owning PID is
+                // no longer alive.
+                if let Some(stale_pid) = check_stale_lock(&lock_path)? {
+                    warn!(
+                        path = %lock_path.display(),
+                        stale_pid,
+                        "lock file appears stale (owner process no longer \
+                         exists), breaking stale lock"
+                    );
+                    drop(file);
+                    fs::remove_file(&lock_path)
+                        .await
+                        .map_err(|e| CasError::io("removing stale lock file", &lock_path, e))?;
+                    file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .read(true)
+                        .write(true)
+                        .truncate(false)
+                        .open(&lock_path)
+                        .map_err(|e| {
+                            CasError::io("re-opening lock file after stale break", &lock_path, e)
+                        })?;
+                }
+
                 if recovery.wait_for_lock {
-                    match file.lock() {
-                        Ok(()) => Some(file),
-                        Err(e) => {
-                            return Err(CasError::io("acquire filesystem lock", &lock_path, e));
-                        }
-                    }
+                    file.lock()
+                        .map_err(|e| CasError::io("acquire filesystem lock", &lock_path, e))?;
                 } else {
                     match file.try_lock() {
-                        Ok(()) => Some(file),
+                        Ok(()) => {}
                         Err(std::fs::TryLockError::WouldBlock) => {
                             return Err(CasError::StoreLocked { root });
                         }
@@ -144,6 +173,17 @@ impl FileSystemState {
                         }
                     }
                 }
+
+                // Write our PID to the lock file so subsequent processes
+                // can detect stale locks on future startups.
+                if let Err(e) = file
+                    .set_len(0)
+                    .and_then(|_| file.write_all(std::process::id().to_string().as_bytes()))
+                {
+                    warn!("failed to write PID to lock file: {e}");
+                }
+
+                Some(file)
             }
             Err(e) => return Err(CasError::io("open lock file", &lock_path, e)),
         };
@@ -2087,6 +2127,68 @@ fn ensure_reconstructed_hash(
     }
 
     Ok(())
+}
+
+/// Checks whether the lock file at `path` contains a PID belonging to a
+/// process that is no longer alive.
+///
+/// Returns `Ok(Some(stale_pid))` if a stale lock was detected,
+/// `Ok(None)` if the lock is either not present, empty, or held by a
+/// still-running process.
+fn check_stale_lock(path: &Path) -> Result<Option<u32>, CasError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(CasError::io("reading lock file", path, e)),
+    };
+
+    let pid_str = content.trim();
+    if pid_str.is_empty() {
+        // No PID written; cannot determine staleness, assume active.
+        return Ok(None);
+    }
+
+    let pid: u32 = match pid_str.parse() {
+        Ok(p) => p,
+        Err(_) => {
+            // Lock file contains unparseable content; treat as not stale
+            // (backward compatibility with old 0-byte lock files).
+            return Ok(None);
+        }
+    };
+
+    if pid == 0 || !is_pid_alive(pid) {
+        return Ok(Some(pid));
+    }
+
+    Ok(None)
+}
+
+/// Returns `true` if a process with the given PID is still running, using
+/// the POSIX `kill` syscall with signal 0 (which probes existence without
+/// sending a signal).
+#[cfg(unix)]
+fn is_pid_alive(pid: u32) -> bool {
+    // SAFETY: `kill(pid, 0)` is a signal-safe POSIX syscall that probes
+    // process existence. It is safe even for invalid PIDs — the kernel
+    // returns ESRCH.
+    let result = unsafe { libc::kill(pid as ::std::primitive::i32, 0) };
+    match result {
+        0 => true,
+        -1 => {
+            let err = ::std::io::Error::last_os_error();
+            err.raw_os_error() != Some(libc::ESRCH) // ESRCH = no such process
+        }
+        // Unexpected return value; conservatively assume alive.
+        _ => true,
+    }
+}
+
+/// On non-Unix platforms, conservatively assume every PID is alive since
+/// we cannot use the POSIX `kill` syscall.
+#[cfg(not(unix))]
+fn is_pid_alive(_pid: u32) -> bool {
+    true
 }
 
 #[cfg(test)]

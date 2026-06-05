@@ -101,6 +101,8 @@ impl Drop for FileSystemCas {
         if self.state.object_actor.get_status() != ActorStatus::Stopped {
             self.state.object_actor.kill();
         }
+        // After this, fields are dropped: root, state (Arc<FileSystemState>), drop_grace_period
+        // When Arc refcount hits 0, FileSystemState is dropped, releasing lock_file
     }
 }
 

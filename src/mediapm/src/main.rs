@@ -573,24 +573,18 @@ async fn main() -> anyhow::Result<()> {
         path_sanitization: None,
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
-    if matches!(
-        &cli.command,
-        Command::Sync(_)
-            | Command::Tool { .. }
-            | Command::Media { .. }
-            | Command::Hierarchy { .. }
-            | Command::Builtin { .. }
-    ) {
-        let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
-    }
-    let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
-        &cli.root,
-        runtime_storage_overrides,
-    )
-    .await?;
 
+    // Determine which command group this invocation belongs to, so we can
+    // avoid opening the project-local CAS store for commands that manage
+    // it themselves (Conductor, Cas) or don't need it at all.
     match cli.command {
         Command::Sync(args) => {
+            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
+            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+                &cli.root,
+                runtime_storage_overrides,
+            )
+            .await?;
             let check_tag_updates = args.tag_update_policy.resolve(true);
             let verify_materialization = args.verify_materialization.resolve(true);
             let summary = service
@@ -613,58 +607,6 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Command::Tool { command } => match command {
-            ToolCommand::Add { name } => {
-                let added = service.add_tool_requirement(&name)?;
-                if added {
-                    println!(
-                        "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
-                    );
-                } else {
-                    println!("tool requirement '{name}' already exists; run 'tool sync' to update");
-                }
-            }
-            ToolCommand::Sync(args) => {
-                let check_tag_updates = args.tag_update_policy.resolve(true);
-                let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
-                println!(
-                    "tool sync complete: added={}, updated={}, unchanged={}",
-                    summary.added_tools, summary.updated_tools, summary.unchanged_tools
-                );
-                for warning in summary.warnings {
-                    eprintln!("warning: {warning}");
-                }
-            }
-            ToolCommand::List => {
-                let rows = service.list_tools()?;
-                if rows.is_empty() {
-                    println!("no tools registered");
-                } else {
-                    for row in rows {
-                        let status = match row.status {
-                            ToolRegistryStatus::Active => "active",
-                            ToolRegistryStatus::Pruned => "pruned",
-                        };
-                        println!(
-                            "{}\tstatus={}\tbinary_present={}",
-                            row.tool_id, status, row.has_binary
-                        );
-                    }
-                }
-            }
-            ToolCommand::Remove { name } => {
-                let removed = service.remove_tool_requirement(&name)?;
-                if removed {
-                    println!(
-                        "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
-                    );
-                } else {
-                    println!("tool requirement '{name}' was not present");
-                }
-            }
-            ToolCommand::Prune { id, metadata } => {
-                let removed_hashes = service.prune_tool(&id, metadata).await?;
-                println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
-            }
             ToolCommand::Run { tool, args } => {
                 let effective_paths = MediaPmPaths::from_root(&cli.root)
                     .with_runtime_storage(&passthrough_runtime_storage_overrides);
@@ -674,133 +616,215 @@ async fn main() -> anyhow::Result<()> {
                 conductor_args.extend(args);
                 passthrough_conductor(&conductor_args, &effective_paths).await?;
             }
-            ToolCommand::RefreshRuntime => {
-                service.refresh_runtime_configuration()?;
-                println!(
-                    "refreshed mediapm-managed conductor runtime configuration and dotenv files"
-                );
+            other_tool_command => {
+                let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
+                let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+                    &cli.root,
+                    runtime_storage_overrides,
+                )
+                .await?;
+                match other_tool_command {
+                    ToolCommand::Add { name } => {
+                        let added = service.add_tool_requirement(&name)?;
+                        if added {
+                            println!(
+                                "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
+                            );
+                        } else {
+                            println!(
+                                "tool requirement '{name}' already exists; run 'tool sync' to update"
+                            );
+                        }
+                    }
+                    ToolCommand::Sync(args) => {
+                        let check_tag_updates = args.tag_update_policy.resolve(true);
+                        let summary =
+                            service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
+                        println!(
+                            "tool sync complete: added={}, updated={}, unchanged={}",
+                            summary.added_tools, summary.updated_tools, summary.unchanged_tools
+                        );
+                        for warning in summary.warnings {
+                            eprintln!("warning: {warning}");
+                        }
+                    }
+                    ToolCommand::List => {
+                        let rows = service.list_tools()?;
+                        if rows.is_empty() {
+                            println!("no tools registered");
+                        } else {
+                            for row in rows {
+                                let status = match row.status {
+                                    ToolRegistryStatus::Active => "active",
+                                    ToolRegistryStatus::Pruned => "pruned",
+                                };
+                                println!(
+                                    "{}\tstatus={}\tbinary_present={}",
+                                    row.tool_id, status, row.has_binary
+                                );
+                            }
+                        }
+                    }
+                    ToolCommand::Remove { name } => {
+                        let removed = service.remove_tool_requirement(&name)?;
+                        if removed {
+                            println!(
+                                "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
+                            );
+                        } else {
+                            println!("tool requirement '{name}' was not present");
+                        }
+                    }
+                    ToolCommand::Prune { id, metadata } => {
+                        let removed_hashes = service.prune_tool(&id, metadata).await?;
+                        println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
+                    }
+                    ToolCommand::RefreshRuntime => {
+                        service.refresh_runtime_configuration()?;
+                        println!(
+                            "refreshed mediapm-managed conductor runtime configuration and dotenv files"
+                        );
+                    }
+                    ToolCommand::Run { .. } => unreachable!(),
+                }
             }
         },
-        Command::Media { command } => match command {
-            MediaCommand::Add(args) => {
-                let media_id = match args.preset {
-                    MediaAddPreset::YtDlp => {
-                        let uri = Url::parse(&args.source)?;
-                        service
-                            .add_media_source_with_position(
-                                &uri,
-                                args.title.as_deref(),
-                                args.artist.as_deref(),
-                                args.description.as_deref(),
-                                args.recording_mbid.as_deref(),
-                                args.release_mbid.as_deref(),
-                                map_insert_position(args.insert_position),
-                                args.overwrite,
-                            )
-                            .await?
-                    }
-                    MediaAddPreset::Local => {
-                        let path = PathBuf::from(args.source);
-                        service
-                            .add_local_source_with_position(
-                                &path,
-                                args.title.as_deref(),
-                                args.artist.as_deref(),
-                                args.description.as_deref(),
-                                args.recording_mbid.as_deref(),
-                                args.release_mbid.as_deref(),
-                                map_insert_position(args.insert_position),
-                                args.overwrite,
-                            )
-                            .await?
-                    }
-                };
-                println!("registered media source id={media_id}");
-                eprintln!(
-                    "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
-                );
-            }
-            MediaCommand::Remove { media_id } => {
-                let removed_hierarchy_nodes = service.remove_media_source(&media_id)?;
-                println!(
-                    "removed media source id={media_id} (removed_hierarchy_nodes={removed_hierarchy_nodes})"
-                );
-                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
-            }
-            MediaCommand::Invalidate(args) => {
-                let summary = match args.mode {
-                    MediaInvalidateMode::ToolCallsOnly => {
-                        service
-                            .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
-                            .await?
-                    }
-                    MediaInvalidateMode::ToolCallsAndRegenerate => {
-                        service
-                            .invalidate_media_step_tool_calls_and_regenerate(
-                                &args.media_id,
-                                args.step_index,
-                            )
-                            .await?
-                    }
-                };
+        Command::Media { command } => {
+            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
+            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+                &cli.root,
+                runtime_storage_overrides,
+            )
+            .await?;
+            match command {
+                MediaCommand::Add(args) => {
+                    let media_id = match args.preset {
+                        MediaAddPreset::YtDlp => {
+                            let uri = Url::parse(&args.source)?;
+                            service
+                                .add_media_source_with_position(
+                                    &uri,
+                                    args.title.as_deref(),
+                                    args.artist.as_deref(),
+                                    args.description.as_deref(),
+                                    args.recording_mbid.as_deref(),
+                                    args.release_mbid.as_deref(),
+                                    map_insert_position(args.insert_position),
+                                    args.overwrite,
+                                )
+                                .await?
+                        }
+                        MediaAddPreset::Local => {
+                            let path = PathBuf::from(args.source);
+                            service
+                                .add_local_source_with_position(
+                                    &path,
+                                    args.title.as_deref(),
+                                    args.artist.as_deref(),
+                                    args.description.as_deref(),
+                                    args.recording_mbid.as_deref(),
+                                    args.release_mbid.as_deref(),
+                                    map_insert_position(args.insert_position),
+                                    args.overwrite,
+                                )
+                                .await?
+                        }
+                    };
+                    println!("registered media source id={media_id}");
+                    eprintln!(
+                        "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
+                    );
+                }
+                MediaCommand::Remove { media_id } => {
+                    let removed_hierarchy_nodes = service.remove_media_source(&media_id)?;
+                    println!(
+                        "removed media source id={media_id} (removed_hierarchy_nodes={removed_hierarchy_nodes})"
+                    );
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                }
+                MediaCommand::Invalidate(args) => {
+                    let summary = match args.mode {
+                        MediaInvalidateMode::ToolCallsOnly => {
+                            service
+                                .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
+                                .await?
+                        }
+                        MediaInvalidateMode::ToolCallsAndRegenerate => {
+                            service
+                                .invalidate_media_step_tool_calls_and_regenerate(
+                                    &args.media_id,
+                                    args.step_index,
+                                )
+                                .await?
+                        }
+                    };
 
-                println!(
-                    "invalidated media id={} step_index={} mode={} workflow_id={} targeted_steps={} removed_impure_timestamps={} removed_instances={}",
-                    args.media_id,
-                    args.step_index,
-                    args.mode.to_possible_value().expect("value enum").get_name(),
-                    summary.workflow_id,
-                    summary.targeted_step_ids.join(","),
-                    summary.removed_impure_timestamps,
-                    summary.removed_instances,
-                );
-                eprintln!(
-                    "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
-                );
+                    println!(
+                        "invalidated media id={} step_index={} mode={} workflow_id={} targeted_steps={} removed_impure_timestamps={} removed_instances={}",
+                        args.media_id,
+                        args.step_index,
+                        args.mode.to_possible_value().expect("value enum").get_name(),
+                        summary.workflow_id,
+                        summary.targeted_step_ids.join(","),
+                        summary.removed_impure_timestamps,
+                        summary.removed_instances,
+                    );
+                    eprintln!(
+                        "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
+                    );
+                }
             }
-        },
-        Command::Hierarchy { command } => match command {
-            HierarchyCommand::Add(args) => {
-                let preset = map_hierarchy_preset(args.preset);
-                let effective_root = args
-                    .root_folder
-                    .as_deref()
-                    .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
-                service.add_media_hierarchy_preset_with_position(
-                    preset,
-                    &args.media_id,
-                    args.root_folder.as_deref(),
-                    map_insert_position(args.insert_position),
-                    args.overwrite,
-                )?;
-                println!(
-                    "registered hierarchy preset={} for media id={} at folder={}",
-                    args.preset.to_possible_value().expect("value enum").get_name(),
-                    args.media_id,
-                    effective_root
-                );
-                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+        }
+        Command::Hierarchy { command } => {
+            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
+            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
+                &cli.root,
+                runtime_storage_overrides,
+            )
+            .await?;
+            match command {
+                HierarchyCommand::Add(args) => {
+                    let preset = map_hierarchy_preset(args.preset);
+                    let effective_root = args
+                        .root_folder
+                        .as_deref()
+                        .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
+                    service.add_media_hierarchy_preset_with_position(
+                        preset,
+                        &args.media_id,
+                        args.root_folder.as_deref(),
+                        map_insert_position(args.insert_position),
+                        args.overwrite,
+                    )?;
+                    println!(
+                        "registered hierarchy preset={} for media id={} at folder={}",
+                        args.preset.to_possible_value().expect("value enum").get_name(),
+                        args.media_id,
+                        effective_root
+                    );
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                }
+                HierarchyCommand::Remove(args) => {
+                    let preset = map_hierarchy_preset(args.preset);
+                    let effective_root = args
+                        .root_folder
+                        .as_deref()
+                        .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
+                    let removed_nodes = service.remove_media_hierarchy_preset(
+                        preset,
+                        &args.media_id,
+                        effective_root,
+                    )?;
+                    println!(
+                        "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
+                        args.preset.to_possible_value().expect("value enum").get_name(),
+                        args.media_id,
+                        effective_root
+                    );
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                }
             }
-            HierarchyCommand::Remove(args) => {
-                let preset = map_hierarchy_preset(args.preset);
-                let effective_root = args
-                    .root_folder
-                    .as_deref()
-                    .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
-                let removed_nodes = service.remove_media_hierarchy_preset(
-                    preset,
-                    &args.media_id,
-                    effective_root,
-                )?;
-                println!(
-                    "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
-                    args.preset.to_possible_value().expect("value enum").get_name(),
-                    args.media_id,
-                    effective_root
-                );
-                eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
-            }
-        },
+        }
         Command::Global { command } => match command {
             GlobalCommand::Path => {
                 if let Some(paths) = resolve_default_global_paths() {

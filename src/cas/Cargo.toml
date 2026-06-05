@@ -27,6 +27,7 @@ dashmap.workspace = true
 fp-library.workspace = true
 fs4.workspace = true
 futures-util.workspace = true
+libc.workspace = true
 memmap2.workspace = true
 miette.workspace = true
 multihash.workspace = true
