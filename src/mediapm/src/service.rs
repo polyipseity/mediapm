@@ -1295,7 +1295,7 @@ where
                     per_worker_count[event.worker_index].saturating_add(1);
                 if let Some(ref bar) = overall_bar {
                     bar.set_position(event.completed_steps as u64);
-                    bar.set_message(format!(
+                    bar.set_message(&format!(
                         "completed {}/{} steps",
                         event.completed_steps, total_steps,
                     ));
