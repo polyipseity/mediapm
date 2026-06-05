@@ -1971,7 +1971,7 @@ MBID-based metadata override.
 **Scenario**:
 
 - CAS codec v2 is current (`MDCASD\x02\x00`, 24-byte metadata, no CRC32)
-- V1→V2 migration bridge in `codec/versions/v1.rs` (`From<DeltaStateV1> for DeltaStateV2`)
+- V1→V2 migration bridge in `codec/versions/v2.rs` (`From<super::v1::DeltaStateV1> for DeltaStateV2`)
 - Decode dispatches V2 first, falls back to V1 with inline migration
 - Old conductor binary (expects v1 codec) loads state
 - Codec version mismatch; state unmarshaling fails
