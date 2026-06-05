@@ -47,7 +47,7 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         } else {
             Some(inherited_env_vars)
         },
-        instance_ttl_seconds: None,
+        instance_ttl_seconds: Some(604800),
     }
 }
 

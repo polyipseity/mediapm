@@ -1363,49 +1363,6 @@ where
             }
         }
 
-        // Garbage-collect orchestration instances with last_used older than
-        // 24 hours to bound OrchestrationState growth in long-running sessions.
-        let cutoff = ImpureTimestamp {
-            epoch_seconds: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .saturating_sub(86400),
-            subsec_nanos: 0,
-        };
-        match self
-            .conductor
-            .load_resolved_state(
-                &effective_paths.conductor_user_ncl,
-                &effective_paths.conductor_machine_ncl,
-                StateMutationOptions::default(),
-            )
-            .await
-        {
-            Ok(mut state) => {
-                state.gc_instances(cutoff);
-                if let Err(e) = self
-                    .conductor
-                    .replace_resolved_state(
-                        &effective_paths.conductor_user_ncl,
-                        &effective_paths.conductor_machine_ncl,
-                        state,
-                        StateMutationOptions::default(),
-                    )
-                    .await
-                {
-                    eprintln!(
-                        "[mediapm::sync] warning: failed to persist GC'd orchestration state: {e}"
-                    );
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "[mediapm::sync] warning: could not load orchestration state for GC: {e}"
-                );
-            }
-        }
-
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,

@@ -376,10 +376,6 @@ For comprehensive details, refer to the following specifications collected from 
 - **`gc_instances(cutoff)` method** (`OrchestrationState`): removes all instances where `last_used < cutoff` using epoch-seconds comparison (with subsec-nanos tiebreaker). Instances with `last_used = None` are always preserved.
 - **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`): optional integer seconds. When `None`, instance GC is disabled. When set, cutoff is computed as `SystemTime::now() - Duration::from_secs(ttl)` before each persistence call.
 - **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
-  Additionally, `mediapm`'s `sync_library_with_tag_update_checks()` calls
-  `load_resolved_state()` + `gc_instances()` + `replace_resolved_state()` after
-  workflow execution to bound state growth across bulk sync operations (24-hour
-  hard-coded cutoff).
 - **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
 ### §16 Channel-Based Workflow Progress Events
