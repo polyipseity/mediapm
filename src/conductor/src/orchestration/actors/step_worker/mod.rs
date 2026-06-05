@@ -1421,40 +1421,141 @@ where
         }
         command.current_dir(tool_cwd);
         command.stdin(Stdio::null());
-        if !capture_stdout {
-            command.stdout(Stdio::null());
-        }
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
         command.env_clear();
         command.envs(env_vars);
         command.kill_on_drop(true);
-        let output = match tokio::time::timeout(executable_timeout, command.output()).await {
-            Ok(output) => output.map_err(|source| ConductorError::Io {
-                operation: format!("executing executable process '{executable_name}'"),
-                path: executable_path.clone(),
-                source,
-            })?,
-            Err(_) => {
-                return Err(ConductorError::Workflow(format!(
-                    "process '{executable_name}' exceeded timeout of {} seconds; adjust {EXECUTABLE_TIMEOUT_SECS_ENV_VAR} to override",
-                    executable_timeout.as_secs()
-                )));
-            }
-        };
 
-        let Some(process_code) = output.status.code() else {
-            return Err(ConductorError::Workflow(format!(
-                "process '{executable_name}' terminated without an exit code"
-            )));
-        };
+        let mut child = command.spawn().map_err(|source| ConductorError::Io {
+            operation: format!("spawning executable process '{executable_name}'"),
+            path: executable_path.clone(),
+            source,
+        })?;
+
+        // Take ownership of the pipes for async reading.  Pipes are always
+        // set to piped so the child never blocks on full OS buffers.
+        let mut child_stdout = child.stdout.take();
+        let mut child_stderr = child.stderr.take();
+
+        // Background task: read stdout chunk-by-chunk, forward to tracing,
+        // and accumulate only when `capture_stdout` is true.
+        let tool_name = executable_name.to_string();
+        let stdout_handle = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+
+            let mut buf = [0u8; 4096];
+            let mut accumulated = Vec::new();
+            let reader = match child_stdout.as_mut() {
+                Some(r) => r,
+                None => return accumulated,
+            };
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        tracing::info!(
+                            target: "conductor::tool::stdout",
+                            tool = tool_name,
+                            chunk = %String::from_utf8_lossy(chunk),
+                        );
+                        if capture_stdout {
+                            accumulated.extend_from_slice(chunk);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "conductor::tool::stdout",
+                            tool = tool_name,
+                            error = %e,
+                            "stdout read error",
+                        );
+                        break;
+                    }
+                }
+            }
+            accumulated
+        });
+
+        // Background task: read stderr chunk-by-chunk and always accumulate.
+        let tool_name2 = executable_name.to_string();
+        let stderr_handle = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+
+            let mut buf = [0u8; 4096];
+            let mut accumulated = Vec::new();
+            let reader = match child_stderr.as_mut() {
+                Some(r) => r,
+                None => return accumulated,
+            };
+            loop {
+                match reader.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let chunk = &buf[..n];
+                        tracing::warn!(
+                            target: "conductor::tool::stderr",
+                            tool = tool_name2,
+                            chunk = %String::from_utf8_lossy(chunk),
+                        );
+                        accumulated.extend_from_slice(chunk);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "conductor::tool::stderr",
+                            tool = tool_name2,
+                            error = %e,
+                            "stderr read error",
+                        );
+                        break;
+                    }
+                }
+            }
+            accumulated
+        });
+
+        // Wait for child exit and pipe readers within the timeout budget.
+        let (process_code, stdout_buf, stderr_buf) =
+            match tokio::time::timeout(executable_timeout, async {
+                let status = child.wait().await.map_err(|source| ConductorError::Io {
+                    operation: format!("waiting on executable process '{executable_name}'"),
+                    path: executable_path.clone(),
+                    source,
+                })?;
+                let stdout_buf = stdout_handle.await.unwrap_or_default();
+                let stderr_buf = stderr_handle.await.unwrap_or_default();
+                Ok::<_, ConductorError>((status, stdout_buf, stderr_buf))
+            })
+            .await
+            {
+                Ok(result) => {
+                    let (status, stdout_buf, stderr_buf) = result?;
+                    let Some(code) = status.code() else {
+                        return Err(ConductorError::Workflow(format!(
+                            "process '{executable_name}' terminated without an exit code"
+                        )));
+                    };
+                    (code, stdout_buf, stderr_buf)
+                }
+                Err(_) => {
+                    let _ = child.start_kill();
+                    return Err(ConductorError::Workflow(format!(
+                        "process '{executable_name}' exceeded timeout of {} seconds; adjust \
+                     {EXECUTABLE_TIMEOUT_SECS_ENV_VAR} to override",
+                        executable_timeout.as_secs()
+                    )));
+                }
+            };
 
         if !Self::is_success_exit_code(process_code, success_codes) {
-            let stderr = Self::format_process_failure_stderr(&output.stderr);
+            let stderr = Self::format_process_failure_stderr(&stderr_buf);
             return Err(ConductorError::Workflow(format!(
                 "process '{executable_name}' exited with code {process_code}, expected one of {success_codes:?}: {stderr}"
             )));
         }
 
-        Ok(ToolExecutionCapture { stdout: output.stdout, stderr: output.stderr, process_code })
+        Ok(ToolExecutionCapture { stdout: stdout_buf, stderr: stderr_buf, process_code })
     }
 
     /// Materializes per-tool `content_map` entries from CAS into the persistent
