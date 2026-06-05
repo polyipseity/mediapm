@@ -71,7 +71,7 @@ mod tests {
 
         let patch = DeltaPatch::diff(base, target).expect("diff should encode");
         let encoded = patch.encode();
-        let decoded = DeltaPatch::decode(encoded).expect("decode should accept encoded payload");
+        let decoded = DeltaPatch::decode(encoded);
         let restored = decoded.apply(base).expect("apply should reconstruct target");
 
         assert_eq!(restored, target);
