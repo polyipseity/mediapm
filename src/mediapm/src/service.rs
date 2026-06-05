@@ -13,7 +13,7 @@ use std::future::Future;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 
-use mediapm_cas::{CasApi, FileSystemCas};
+use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
@@ -1418,6 +1418,44 @@ impl MediaPmService<SimpleConductor<FileSystemCas>> {
         })?;
         let conductor = SimpleConductor::new(file_system_cas);
         Ok(Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides))
+    }
+}
+
+impl MediaPmService<SimpleConductor<InMemoryCas>> {
+    /// Creates a media service with an in-memory conductor and paths from the
+    /// current directory.
+    ///
+    /// Useful for lightweight testing of API behavior that does not require
+    /// inspecting filesystem artifacts.
+    #[must_use]
+    pub fn new_in_memory() -> Self {
+        let paths = MediaPmPaths::from_current_dir();
+        let conductor = SimpleConductor::new(InMemoryCas::new());
+        Self::new(conductor, paths)
+    }
+
+    /// Creates a media service with an in-memory conductor rooted at the given
+    /// directory.
+    ///
+    /// The workspace root is used to derive all canonical [`MediaPmPaths`] so
+    /// filesystem artifacts are available for inspection.
+    #[must_use]
+    pub fn new_in_memory_at(root_dir: &Path) -> Self {
+        let paths = MediaPmPaths::from_root(root_dir);
+        let conductor = SimpleConductor::new(InMemoryCas::new());
+        Self::new(conductor, paths)
+    }
+
+    /// Creates a media service with an in-memory conductor, rooted at the given
+    /// directory, with explicit runtime storage overrides.
+    #[must_use]
+    pub fn new_in_memory_at_with_runtime_storage_overrides(
+        root_dir: &Path,
+        runtime_storage_overrides: MediaRuntimeStorage,
+    ) -> Self {
+        let paths = MediaPmPaths::from_root(root_dir);
+        let conductor = SimpleConductor::new(InMemoryCas::new());
+        Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides)
     }
 }
 
