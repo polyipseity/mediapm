@@ -267,6 +267,47 @@ against actual storage objects.
 
 ---
 
+### 1.9 Concurrent Access During Recovery
+
+**Issue**: The `repair_index()` scan pipeline opens storage objects for
+streaming verification while other processes may concurrently write to the
+store. If a concurrent `put()` writes a new object while the scan is in
+progress, the scan may observe a partial write (truncated or corrupt content).
+
+**Resolution**: The lock file at `<store_root>/lock` serializes exclusive
+access. `FileSystemRecoveryOptions.wait_for_lock` controls behavior when the
+lock is already held:
+
+| `wait_for_lock` | Lock available | Lock held |
+|----------------|----------------|-----------|
+| `false` (default) | Acquire lock, proceed with recovery | Return `CasError::StoreLocked` immediately |
+| `true` | Acquire lock, proceed with recovery | Retry with backoff until lock acquired |
+
+**Recovery memory safety**: Before the `ScannedObjectCatalog` split, the scan
+held all verified object bytes in a `HashMap<Hash, Vec<u8>>` — memory
+`O(total_store_bytes)`. After the split, `full_objects` stores only metadata
+(bytes discarded after stream verify), and `delta_objects` retains full bytes
+only for delta objects. Memory drops to `O(delta_count × delta_size)`.
+
+| Scenario | Risk | Mitigation |
+|----------|------|------------|
+| Recovery scan while concurrent write | Partial-write observation | Lock serializes; exclusive access during scan |
+| Concurrent `put()` on same hash | Race: scan may miss new object | Index rebuild re-scans after lock; missed entries = false negative (acceptable) |
+| Stale NFS lock after process crash | Lock file exists but holder is dead | Manual lock removal; `wait_for_lock=true` may livelock on stale NFS locks |
+| Process crash mid-recovery | Partial index written | Atomic commit: index write is all-or-nothing; incomplete index is detected on next startup by version mismatch |
+| `wait_for_lock=true` with permanent holder | Infinite retry | Operator intervention required to clear stale lock |
+
+**Risk**: Without exclusive locking, a concurrent writer could produce a
+corrupt index entry (partial object → wrong hash in index). The lock prevents
+this for cooperative processes.
+
+**Verification**: Test with two concurrent `FileSystemCas` instances sharing
+the same store root. The second instance must receive
+`CasError::StoreLocked { root }` when `wait_for_lock=false`, and must acquire
+the lock after the first instance releases it when `wait_for_lock=true`.
+
+---
+
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
 ### 2.1 External Data Retrieval Failure (put_from_uri)

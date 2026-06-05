@@ -977,6 +977,10 @@ tests/
 - step preview degrades gracefully (truncation with `...` suffix,
   `+N more` counter, ...) to respect the available width.
 
+**Recovery memory**: CAS `repair_index()` uses `O(delta_count × delta_size)`
+memory instead of `O(total_store_bytes)` — full objects are streamed and
+discarded; only delta-object bytes are held in memory for chain reconstruction.
+
 ---
 
 ## Future Extension Points
@@ -1061,6 +1065,36 @@ depend on it.
 
 ---
 
+## Index Repair & Recovery Scan
+
+The CAS `repair_index()` operation rebuilds the index from the actual storage
+contents. The scan pipeline uses a two-pass approach to minimize memory
+pressure:
+
+**Pass 1 — Catalog scan**: Walk the storage backend and classify each object
+into a `ScannedObjectCatalog` with two maps:
+
+| Map | Type | Contents |
+|-----|------|----------|
+| `full_objects` | `BTreeMap<Hash, ObjectMeta>` | Metadata only (hash, size, compression). Stream-verified during scan; bytes discarded after verification. |
+| `delta_objects` | `BTreeMap<Hash, StoredObject>` | Full bytes retained in memory. Needed for delta-chain reconstruction. |
+
+**Pass 2 — Index reconstruction**: Walk the delta chain roots reachable from
+`delta_objects`, reconstruct full content on demand, and insert entries into
+the rebuilt index.
+
+**Memory model**: Recovery memory is `O(delta_count × delta_size)` instead of
+`O(total_store_bytes)`. Full-object bytes are streamed and discarded; only
+delta-object bytes are held in memory for reconstruction. The validation memo
+caches only delta reconstruction results; full objects are re-read on demand
+during the final verification pass.
+
+**Error handling**: Pure workflows may auto-recover from CAS integrity failures
+(warn + drop + retry once). Impure workflows fail without auto-retry because
+the side effects cannot be safely replayed.
+
+---
+
 ## Key References & Documentation
 
 ### CAS Reference
@@ -1086,6 +1120,48 @@ depend on it.
 - **Implementation**: `MediaPmService`
 - **Schemas**: mediapm.ncl (user), state.ncl (machine)
 - **Materialization**: Direct to final output paths; temp extraction only for zip processing
+
+---
+
+## Filesystem Locking
+
+The `FileSystemCas` backend uses an advisory lock file to coordinate access
+across processes:
+
+| Property | Value |
+|----------|-------|
+| Lock file location | `<store_root>/lock` |
+| Lock type | `fs4::fs_std::FileExt::try_lock_exclusive()` (non-blocking) |
+| Scope | Per-store-filesystem — all `FileSystemCas` instances sharing the same root |
+| Release | On `File` drop (closes file descriptor) |
+| Error type | `CasError::StoreLocked { root: PathBuf }` |
+| Wait behavior | `FileSystemRecoveryOptions.wait_for_lock: bool` (default `false`). When `true`, retries in a loop with backoff instead of failing immediately. |
+| State | `FileSystemState.lock_file: Option<File>` — held for the lifetime of the `FileSystemCas` instance |
+
+**Contract**: The lock is advisory — cooperative processes must respect it.
+Non-cooperative processes (e.g., a direct `cp` or `rsync` into the store) are
+not prevented but risk corrupting the index or creating inconsistent state.
+
+---
+
+## Known Limitations
+
+- **Advisory lock**: The store lock is advisory only. Cooperative processes
+  that attempt `try_lock_exclusive()` will be serialized, but a process that
+  bypasses the lock (direct filesystem manipulation, a CAS client built without
+  locking) can still cause concurrent-access corruption.
+- **Index false negatives**: Index-backed existence checks may return `false`
+  for objects that exist in storage (conservative by design). Callers must
+  fall back to storage for a definitive answer.
+- **Manual filesystem modification**: Direct manipulation of files under the
+  CAS store root (adding, removing, or modifying files outside the CAS API) is
+  unsupported and may produce silently incorrect index state.
+- **Recovery scope**: `repair_index()` only verifies and rebuilds the index
+  from existing storage objects. It does not detect or repair corrupted object
+  content (bit rot) — that requires an external integrity-verification tool
+  such as a periodic `blake3sum` audit.
+- **Parallel sync**: MediaPM lock file and state documents are not designed for
+  concurrent writers. Only one `mediapm sync` at a time per workspace.
 
 ---
 
