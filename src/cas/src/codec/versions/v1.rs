@@ -212,20 +212,6 @@ impl<'a> Migrate<V1Envelope<'a>> for V1Envelope<'a> {
     }
 }
 
-/// Converts V1 delta state to V2 delta state (field-wise identity copy).
-///
-/// This bridges `decode_envelope_for_version` V1→V2 migration without
-/// coupling V2-specific details into the dispatch layer beyond the trait.
-impl<'a> From<DeltaStateV1<'a>> for super::v2::DeltaStateV2<'a> {
-    fn from(v1: DeltaStateV1<'a>) -> Self {
-        super::v2::DeltaStateV2 {
-            base_hash: v1.base_hash,
-            content_len: v1.content_len,
-            payload: v1.payload,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

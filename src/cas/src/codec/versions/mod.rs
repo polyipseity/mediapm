@@ -10,7 +10,8 @@
 //!
 //! - `vX.rs` files must never import unversioned structs outside `versions/`.
 //! - A `vX` file may only reference the most recent previous version, and only
-//!   for version-to-version isomorphism/migration.///   The sole exception is v1, which may reference v2 for forward migration.//! - This `mod.rs` is the only place where latest version state is bridged to
+//!   for version-to-version isomorphism/migration.
+//! - This `mod.rs` is the only place where latest version state is bridged to
 //!   unversioned runtime state.
 //! - Files outside `codec/versions/` and `index/versions/` must interact with
 //!   versioned envelopes only through each folder's `versions/mod.rs`, never
@@ -479,26 +480,15 @@ mod tests {
                     continue;
                 }
 
-                if version == 1 {
-                    // v1 may reference v2 for forward migration (V1→V2).
-                    assert_eq!(
-                        referenced,
-                        2,
-                        "{} (v1) may reference only v2 (forward migration); found v{}",
-                        path.display(),
-                        referenced
-                    );
-                } else {
-                    assert_eq!(
-                        referenced,
-                        version - 1,
-                        "{} (v{}) may reference only v{}; found v{}",
-                        path.display(),
-                        version,
-                        version - 1,
-                        referenced
-                    );
-                }
+                assert_eq!(
+                    referenced,
+                    version - 1,
+                    "{} (v{}) may reference only v{}; found v{}",
+                    path.display(),
+                    version,
+                    version - 1,
+                    referenced
+                );
             }
         }
     }

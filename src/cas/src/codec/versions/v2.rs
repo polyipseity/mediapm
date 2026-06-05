@@ -201,6 +201,16 @@ impl<'a> Migrate<V2Envelope<'a>> for V2Envelope<'a> {
     }
 }
 
+/// Converts V1 delta state to V2 delta state (field-wise identity copy).
+///
+/// V2 owns the V1→V2 migration bridge rather than V1 owning a forward
+/// reference to V2.
+impl<'a> From<super::v1::DeltaStateV1<'a>> for DeltaStateV2<'a> {
+    fn from(v1: super::v1::DeltaStateV1<'a>) -> Self {
+        DeltaStateV2 { base_hash: v1.base_hash, content_len: v1.content_len, payload: v1.payload }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
