@@ -2120,7 +2120,6 @@ dependencies = [
  "bytes",
  "clap",
  "clap_complete",
- "crc32fast",
  "dashmap",
  "fp-library",
  "fs4",

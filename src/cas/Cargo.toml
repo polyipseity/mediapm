@@ -23,7 +23,6 @@ bytemuck.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 clap_complete = { workspace = true, optional = true }
-crc32fast.workspace = true
 dashmap.workspace = true
 fp-library.workspace = true
 fs4.workspace = true

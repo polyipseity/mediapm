@@ -10,8 +10,7 @@
 //!
 //! - `vX.rs` files must never import unversioned structs outside `versions/`.
 //! - A `vX` file may only reference the most recent previous version, and only
-//!   for version-to-version isomorphism/migration.
-//! - This `mod.rs` is the only place where latest version state is bridged to
+//!   for version-to-version isomorphism/migration.///   The sole exception is v1, which may reference v2 for forward migration.//! - This `mod.rs` is the only place where latest version state is bridged to
 //!   unversioned runtime state.
 //! - Files outside `codec/versions/` and `index/versions/` must interact with
 //!   versioned envelopes only through each folder's `versions/mod.rs`, never
@@ -26,6 +25,7 @@ use crate::CasError;
 use crate::codec::object::DeltaState;
 
 pub(crate) mod v1;
+pub(crate) mod v2;
 
 /// Prefix bytes required to dispatch a delta envelope: `magic_with_version`[8].
 const ENVELOPE_PREFIX_LEN: usize = 8;
@@ -39,14 +39,14 @@ const DIFF_STORAGE_FAMILY_PREFIX: &[u8; 6] = b"MDCASD";
 /// module so version bumps are less error-prone.
 // BEGIN latest-version bindings
 mod latest {
-    use super::v1;
+    use super::v2;
     use crate::codec::object::DeltaState;
     use fp_library::brands::RcBrand;
     use fp_library::types::optics::IsoPrime;
 
-    pub(super) const WIRE_VERSION: u16 = 1;
-    pub(super) type Envelope<'a> = v1::V1Envelope<'a>;
-    pub(super) type State<'a> = v1::DeltaStateV1<'a>;
+    pub(super) const WIRE_VERSION: u16 = 2;
+    pub(super) type Envelope<'a> = v2::V2Envelope<'a>;
+    pub(super) type State<'a> = v2::DeltaStateV2<'a>;
 
     pub(super) fn runtime_iso<'a>() -> IsoPrime<'a, RcBrand, State<'a>, DeltaState<'a>> {
         IsoPrime::new(
@@ -64,7 +64,7 @@ mod latest {
     }
 
     pub(super) fn version_iso<'a>() -> IsoPrime<'a, RcBrand, Envelope<'a>, State<'a>> {
-        v1::delta_state_v1_iso()
+        v2::delta_state_v2_iso()
     }
 }
 // END latest-version bindings
@@ -89,6 +89,7 @@ fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
 /// Internal dispatched delta envelope layout marker.
 enum DeltaEnvelopeVersion {
     V1,
+    V2,
 }
 
 /// Returns the latest supported wire envelope version marker.
@@ -102,6 +103,9 @@ pub(crate) const fn latest_delta_wire_version() -> u16 {
 /// Version checks shoud always start checking from the latest version to ensure performance.
 fn dispatch_delta_wire_version(version: u16) -> Result<DeltaEnvelopeVersion, CasError> {
     if version == latest_delta_wire_version() {
+        return Ok(DeltaEnvelopeVersion::V2);
+    }
+    if version == 1 {
         return Ok(DeltaEnvelopeVersion::V1);
     }
 
@@ -146,7 +150,9 @@ pub(crate) fn decode_delta_state_borrowed(bytes: &[u8]) -> Result<DeltaState<'_>
 
     let version = decode_magic_embedded_version(bytes)?;
     let envelope = decode_envelope_for_version(bytes, version)?;
-    let migrated = migrate_envelope_to_version(envelope, version, latest_delta_wire_version())?;
+    // V1→V2 migration is handled inside decode_envelope_for_version.
+    // V2→V2 is identity via Migrate trait.
+    let migrated = envelope.migrate();
     let latest_version_state = latest::version_iso().from(migrated);
     Ok(latest_delta_state_iso().from(latest_version_state))
 }
@@ -157,10 +163,19 @@ fn decode_envelope_for_version(
     version: u16,
 ) -> Result<latest::Envelope<'_>, CasError> {
     match dispatch_delta_wire_version(version)? {
-        DeltaEnvelopeVersion::V1 => {
-            let envelope = v1::V1Envelope::parse(bytes)?;
+        DeltaEnvelopeVersion::V2 => {
+            let envelope = v2::V2Envelope::parse(bytes)?;
             envelope.validate()?;
             Ok(envelope)
+        }
+        DeltaEnvelopeVersion::V1 => {
+            let v1_envelope = v1::V1Envelope::parse(bytes)?;
+            v1_envelope.validate()?;
+            // Migrate V1 → V2 (strip CRC32)
+            let v1_state = v1::delta_state_v1_iso().from(v1_envelope);
+            let v2_state = v2::DeltaStateV2::from(v1_state);
+            let v2_envelope = v2::delta_state_v2_iso().to(v2_state);
+            Ok(v2_envelope)
         }
     }
 }
@@ -168,6 +183,10 @@ fn decode_envelope_for_version(
 /// Migrates one parsed envelope from one wire version to one target wire version.
 ///
 /// This is intentionally the central migration gateway used by decode paths.
+///
+/// Currently only V2→V2 identity migration is supported; V1→V2 migration is
+/// handled inline in [`decode_envelope_for_version`].
+#[expect(dead_code, reason = "reserved for future cross-version migration paths")]
 pub(crate) fn migrate_envelope_to_version(
     envelope: latest::Envelope<'_>,
     from_version: u16,
@@ -177,7 +196,10 @@ pub(crate) fn migrate_envelope_to_version(
     let to_layout = dispatch_delta_wire_version(target_version)?;
 
     match (from_layout, to_layout) {
-        (DeltaEnvelopeVersion::V1, DeltaEnvelopeVersion::V1) => Ok(envelope.migrate()),
+        (DeltaEnvelopeVersion::V2, DeltaEnvelopeVersion::V2) => Ok(envelope.migrate()),
+        _ => Err(CasError::corrupt_object(format!(
+            "delta envelope: unsupported migration from version {from_version} to {target_version}"
+        ))),
     }
 }
 
@@ -320,14 +342,20 @@ mod tests {
 
     /// Detects leaked versioned type tokens outside version boundaries.
     fn has_known_versioned_type_leak(content: &str) -> bool {
-        const LEAKED_TOKENS: &[&str] =
-            &["IndexStateV", "ObjectMetaV", "PrimaryHeaderV", "V1Envelope", "DeltaStateV"];
+        const LEAKED_TOKENS: &[&str] = &[
+            "IndexStateV",
+            "ObjectMetaV",
+            "PrimaryHeaderV",
+            "V1Envelope",
+            "V2Envelope",
+            "DeltaStateV",
+        ];
         LEAKED_TOKENS.iter().any(|token| content.contains(token))
     }
 
     #[test]
     /// Verifies latest-version encoded payloads decode through dispatch path.
-    fn decode_dispatches_v1_and_restores_state() {
+    fn decode_latest_roundtrip_restores_state() {
         let state = DeltaState {
             base_hash: Hash::from_content(b"base"),
             content_len: 12,
@@ -339,6 +367,31 @@ mod tests {
             decode_delta_state_borrowed(&bytes).expect("v1 payload should decode via dispatcher");
 
         assert_eq!(restored, state);
+    }
+
+    #[test]
+    /// Verifies V1 wire format bytes decode through V1→V2 migration dispatch.
+    fn decode_dispatches_v1_and_restores_state() {
+        let v1_envelope = v1::V1Envelope {
+            base_hash: Hash::from_content(b"base"),
+            content_len: 12,
+            payload_len: 4,
+            checksum: 0,
+            payload: Cow::Owned(vec![1, 2, 3, 4]),
+        };
+
+        let v1_bytes = v1_envelope.encode();
+        let restored = decode_delta_state_borrowed(&v1_bytes)
+            .expect("V1 payload should decode and migrate via dispatcher");
+
+        assert_eq!(
+            restored,
+            DeltaState {
+                base_hash: v1_envelope.base_hash,
+                content_len: v1_envelope.content_len,
+                payload: v1_envelope.payload,
+            }
+        );
     }
 
     #[test]
@@ -383,7 +436,7 @@ mod tests {
         };
 
         let mut bytes = encode_delta_state(state);
-        bytes[6] = 2;
+        bytes[6] = 3;
         bytes[7] = 0;
 
         let error =
@@ -426,22 +479,26 @@ mod tests {
                     continue;
                 }
 
-                assert!(
-                    version != 1,
-                    "{} (v1) must not reference any other version module; found v{}",
-                    path.display(),
-                    referenced
-                );
-
-                assert_eq!(
-                    referenced,
-                    version - 1,
-                    "{} (v{}) may reference only v{}; found v{}",
-                    path.display(),
-                    version,
-                    version - 1,
-                    referenced
-                );
+                if version == 1 {
+                    // v1 may reference v2 for forward migration (V1→V2).
+                    assert_eq!(
+                        referenced,
+                        2,
+                        "{} (v1) may reference only v2 (forward migration); found v{}",
+                        path.display(),
+                        referenced
+                    );
+                } else {
+                    assert_eq!(
+                        referenced,
+                        version - 1,
+                        "{} (v{}) may reference only v{}; found v{}",
+                        path.display(),
+                        version,
+                        version - 1,
+                        referenced
+                    );
+                }
             }
         }
     }
@@ -577,11 +634,11 @@ mod tests {
                 current_fn = Some(name);
             }
 
-            if trimmed.contains("v1::") {
+            if trimmed.contains("v1::") || trimmed.contains("v2::") {
                 let fn_name = current_fn.as_deref().unwrap_or("<module>");
                 assert!(
                     allowed_functions.contains(&fn_name),
-                    "{} must use direct v1:: references only in dispatch-conditioned functions; found in {}: {}",
+                    "{} must use direct v1:: or v2:: references only in dispatch-conditioned functions; found in {}: {}",
                     mod_file.display(),
                     fn_name,
                     trimmed
