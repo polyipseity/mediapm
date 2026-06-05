@@ -1762,7 +1762,7 @@ fn apply_delta_patch_stack(
     patch_payloads: &mut Vec<Cow<'static, [u8]>>,
 ) -> Result<Vec<u8>, CasError> {
     while let Some(patch_payload) = patch_payloads.pop() {
-        let patch = DeltaPatch::decode(patch_payload.as_ref())?;
+        let patch = DeltaPatch::decode(patch_payload.as_ref());
         base_payload = patch.apply(&base_payload)?;
     }
 
@@ -1775,6 +1775,7 @@ fn apply_delta_patch_stack(
 /// object, or the object is simply absent). Small files (≤ 256 KiB) are read
 /// entirely into a single chunk to amortize async-read overhead.
 async fn try_open_and_stream_full_object(path: &Path) -> Result<Option<CasByteStream>, CasError> {
+    const SMALL_OBJECT_BYTES: u64 = 256 * 1024;
     // Check existence first to avoid signalling a spurious IO error for a
     // legitimate delta-object lookup.
     match fs::try_exists(path).await {
@@ -1788,7 +1789,6 @@ async fn try_open_and_stream_full_object(path: &Path) -> Result<Option<CasByteSt
             ));
         }
     }
-
     let file = fs::File::open(path)
         .await
         .map_err(|source| CasError::io("opening full object for streaming", path, source))?;
@@ -1798,7 +1798,6 @@ async fn try_open_and_stream_full_object(path: &Path) -> Result<Option<CasByteSt
         .map_err(|source| CasError::io("getting full object metadata for streaming", path, source))?
         .len();
 
-    const SMALL_OBJECT_BYTES: u64 = 256 * 1024;
     if file_len <= SMALL_OBJECT_BYTES {
         // Read entirely into one chunk to avoid tiny-async-read overhead.
         drop(file); // release the fd before the independent fs::read call
@@ -1828,6 +1827,7 @@ fn chunked_full_object_stream(file: fs::File, file_len: u64, path: &Path) -> Cas
                 return None;
             }
             let remaining = file_len - pos;
+            #[allow(clippy::cast_possible_truncation)]
             let to_read = std::cmp::min(CHUNK_BYTES, remaining) as usize;
             let mut buf = vec![0u8; to_read];
             match file.read_exact(&mut buf).await {

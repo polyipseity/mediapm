@@ -171,7 +171,7 @@ impl InMemoryCas {
                 )));
             };
 
-            let patch = DeltaPatch::decode(state.payload.as_ref())?;
+            let patch = DeltaPatch::decode(state.payload.as_ref());
             data = patch.apply(&data)?;
         }
 
@@ -392,7 +392,7 @@ impl InMemoryCas {
                     "expected projected delta object while replaying chain at {delta_hash}"
                 )));
             };
-            let patch = DeltaPatch::decode(state.payload.as_ref())?;
+            let patch = DeltaPatch::decode(state.payload.as_ref());
             return patch.apply(current);
         }
 
@@ -402,7 +402,7 @@ impl InMemoryCas {
                 "expected projected delta object while replaying chain at {delta_hash}"
             )));
         };
-        let patch = DeltaPatch::decode(state.payload.as_ref())?;
+        let patch = DeltaPatch::decode(state.payload.as_ref());
         patch.apply(current)
     }
 

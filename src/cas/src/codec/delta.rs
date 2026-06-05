@@ -38,12 +38,8 @@ impl<'a> DeltaPatch<'a> {
     }
 
     /// Reconstructs patch wrapper from encoded VCDIFF payload.
-    ///
-    /// # Errors
-    /// Returns [`CasError::CorruptObject`] when the payload is not a valid VCDIFF
-    /// stream (validated lazily by [`DeltaPatch::apply`]).
-    pub(crate) fn decode(bytes: &'a [u8]) -> Result<Self, CasError> {
-        Ok(Self { vcdiff: Cow::Borrowed(bytes) })
+    pub(crate) fn decode(bytes: &'a [u8]) -> Self {
+        Self { vcdiff: Cow::Borrowed(bytes) }
     }
 
     /// Applies this VCDIFF patch to `base` and returns reconstructed target bytes.

@@ -565,7 +565,7 @@ fn validate_hash_content(
         StoredObject::Delta { state } => {
             let base_bytes =
                 validate_hash_content(state.base_hash, objects, memo, invalid, visiting)?;
-            let patch = DeltaPatch::decode(state.payload.as_ref()).ok()?;
+            let patch = DeltaPatch::decode(state.payload.as_ref());
             let rebuilt = patch.apply(&base_bytes).ok()?;
             if rebuilt.len() as u64 != state.content_len || Hash::from_content(&rebuilt) != hash {
                 None
