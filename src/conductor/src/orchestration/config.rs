@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 /// that routinely exceed short interactive RPC windows. Keep this timeout long
 /// enough for end-to-end workflow calls while still bounded for failed actor
 /// paths.
-pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 1_800_000;
+pub const DEFAULT_RPC_TIMEOUT_MS: u64 = 300_000;
 
 /// Default EWMA alpha for adaptive tool runtime estimation.
 pub const DEFAULT_SCHEDULER_EWMA_ALPHA: f64 = 0.35;
@@ -35,6 +35,27 @@ pub const ENV_SCHEDULER_TRACE_CAPACITY: &str = "MEDIAPM_CONDUCTOR_SCHEDULER_TRAC
 
 /// Environment override key for optional JSON profile artifact output path.
 pub const ENV_PROFILE_OUTPUT_PATH: &str = "MEDIAPM_CONDUCTOR_PROFILE_JSON";
+
+/// Environment override key for conductor RPC timeout in seconds.
+///
+/// All actor-to-actor RPC calls within conductor use this timeout. When a
+/// workflow run or internal actor operation exceeds this limit, the call
+/// fails with a timeout error. Default is 300 seconds.
+pub const ENV_RPC_TIMEOUT_SECONDS: &str = "MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS";
+
+/// Returns the conductor RPC timeout in milliseconds from env var or default.
+///
+/// Reads `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` and multiplies by 1000.
+/// Falls back to [`DEFAULT_RPC_TIMEOUT_MS`] when unset, unparseable, or zero.
+#[must_use]
+pub fn rpc_timeout_ms() -> u64 {
+    std::env::var(ENV_RPC_TIMEOUT_SECONDS)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(|v| v * 1000)
+        .unwrap_or(DEFAULT_RPC_TIMEOUT_MS)
+}
 
 /// Returns default step-worker pool size for multi-actor execution.
 #[must_use]
