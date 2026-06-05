@@ -25,14 +25,16 @@ mod tests {
         persisted_state_json_pretty, register_or_merge_imported_tool,
     };
     use crate::model::config::{
-        ImpureTimestamp, MachineNickelDocument, ToolInputSpec, ToolKindSpec, ToolOutputSpec,
-        ToolSpec,
+        ExternalContentRef, ImpureTimestamp, MachineNickelDocument, StateNickelDocument,
+        ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
+        encode_machine_document, encode_state_document, encode_user_document,
     };
-    use crate::model::state::{OrchestrationState, ToolCallInstance};
+    use crate::model::state::{OrchestrationState, ToolCallInstance, encode_state};
     use clap::Parser;
-    use mediapm_cas::Hash;
+    use mediapm_cas::{CasApi, ConfiguredCas, Hash, InMemoryCas};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+    use tempfile::tempdir;
 
     #[test]
     fn parse_cas_passthrough_preserves_trailing_args() {
@@ -387,6 +389,123 @@ mod tests {
                 "version": "1.0.0"
             })
         );
+    }
+
+    // ==== CLI `gc` command tests ====
+
+    #[test]
+    fn parse_gc_command() {
+        let cli = Cli::parse_from(["conductor", "gc"]);
+        match cli.command {
+            CliCommand::Gc => {}
+            other => panic!("expected Gc command, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_gc_empty_docs_completes() {
+        let dir = tempdir().expect("tempdir");
+        let cas = ConfiguredCas::InMemory(InMemoryCas::new());
+
+        let result = super::run_gc(
+            cas,
+            &dir.path().join("conductor.ncl"),
+            &dir.path().join("conductor.machine.ncl"),
+            &dir.path().join("state.ncl"),
+        )
+        .await;
+        assert!(result.is_ok(), "run_gc with empty docs should succeed");
+    }
+
+    #[tokio::test]
+    async fn run_gc_with_external_data_roots() {
+        let dir = tempdir().expect("tempdir");
+        let user_path = dir.path().join("conductor.ncl");
+        let machine_path = dir.path().join("conductor.machine.ncl");
+        let state_path = dir.path().join("state.ncl");
+
+        let hash = Hash::from_content(b"gc-test-root");
+        let user = UserNickelDocument {
+            external_data: BTreeMap::from([(
+                hash,
+                ExternalContentRef { description: Some("gc test root".to_string()), save: None },
+            )]),
+            tool_configs: BTreeMap::from([(
+                "test-tool".to_string(),
+                ToolConfigSpec {
+                    content_map: Some(BTreeMap::from([("payload.bin".to_string(), hash)])),
+                    ..ToolConfigSpec::default()
+                },
+            )]),
+            ..UserNickelDocument::default()
+        };
+        let machine = MachineNickelDocument {
+            external_data: BTreeMap::from([(
+                hash,
+                ExternalContentRef {
+                    description: Some("gc test machine root".to_string()),
+                    save: None,
+                },
+            )]),
+            ..MachineNickelDocument::default()
+        };
+
+        std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+            .expect("write user");
+        std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
+            .expect("write machine");
+
+        let cas = ConfiguredCas::InMemory(InMemoryCas::new());
+        let result = super::run_gc(cas, &user_path, &machine_path, &state_path).await;
+        result.expect("run_gc with external data roots should succeed");
+    }
+
+    #[tokio::test]
+    async fn run_gc_with_state_pointer_completes() {
+        let dir = tempdir().expect("tempdir");
+        let user_path = dir.path().join("conductor.ncl");
+        let machine_path = dir.path().join("conductor.machine.ncl");
+        let state_path = dir.path().join("state.ncl");
+
+        let state = OrchestrationState {
+            instances: BTreeMap::from([(
+                "test-call".to_string(),
+                ToolCallInstance {
+                    tool_name: "echo".to_string(),
+                    metadata: ToolSpec::default(),
+                    impure_timestamp: None,
+                    last_used: ImpureTimestamp::default(),
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                },
+            )]),
+            ..OrchestrationState::default()
+        };
+        let state_blob = encode_state(state).expect("encode state");
+
+        let cas: ConfiguredCas = ConfiguredCas::InMemory(InMemoryCas::new());
+        let state_hash = cas.put(state_blob).await.expect("put state blob");
+
+        let state_doc = StateNickelDocument {
+            state_pointer: Some(state_hash),
+            ..StateNickelDocument::default()
+        };
+
+        std::fs::write(
+            &user_path,
+            encode_user_document(UserNickelDocument::default()).expect("encode"),
+        )
+        .expect("write user");
+        std::fs::write(
+            &machine_path,
+            encode_machine_document(MachineNickelDocument::default()).expect("encode"),
+        )
+        .expect("write machine");
+        std::fs::write(&state_path, encode_state_document(state_doc).expect("encode state doc"))
+            .expect("write state doc");
+
+        let result = super::run_gc(cas, &user_path, &machine_path, &state_path).await;
+        assert!(result.is_ok(), "run_gc with state pointer should succeed");
     }
 }
 mod tools;
