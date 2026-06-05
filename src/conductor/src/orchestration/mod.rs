@@ -77,11 +77,48 @@ where
         machine_ncl: &Path,
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
+        // Clone state-relevant paths before consuming `options` in submit.
+        let reload_storage_paths = options.runtime_storage_paths.clone();
+        let reload_inherited_env_vars = options.runtime_inherited_env_vars.clone();
+        let resolved_runtime_paths =
+            resolve_runtime_storage_paths(user_ncl, machine_ncl, &reload_storage_paths);
+        export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
+        let client = self.actor_client().await?;
+        let handle_id = client.submit_workflow(user_ncl, machine_ncl, options).await?;
+        let summary = client.wait_workflow(handle_id).await?;
+        // Reload state into the main coordinator so subsequent get_state()/run_gc()
+        // calls reflect the completed workflow's state changes.  This may fail
+        // if the state file was cleaned up between persist and reload; log a
+        // warning but don't fail the overall run.
+        let state_options = StateMutationOptions {
+            runtime_storage_paths: reload_storage_paths,
+            runtime_inherited_env_vars: reload_inherited_env_vars,
+        };
+        if let Err(e) = client.load_resolved_state(user_ncl, machine_ncl, state_options).await {
+            tracing::warn!("failed to reload coordinator state after workflow: {e}");
+        }
+        Ok(summary)
+    }
+
+    async fn submit_workflow(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: RunWorkflowOptions,
+    ) -> Result<u64, ConductorError> {
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
         export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
-        client.run_workflow(user_ncl, machine_ncl, options).await
+        client.submit_workflow(user_ncl, machine_ncl, options).await
+    }
+
+    async fn poll_workflow(
+        &self,
+        handle_id: u64,
+    ) -> Result<Option<Result<RunSummary, ConductorError>>, ConductorError> {
+        let client = self.actor_client().await?;
+        client.poll_workflow(handle_id).await
     }
 
     async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {

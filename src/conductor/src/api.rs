@@ -702,6 +702,31 @@ pub trait ConductorApi: Send + Sync {
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError>;
 
+    /// Submits a workflow for background execution, returning a handle ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails.
+    async fn submit_workflow(
+        &self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: RunWorkflowOptions,
+    ) -> Result<u64, ConductorError>;
+
+    /// Polls a previously submitted workflow by handle ID.
+    ///
+    /// Returns `None` if the workflow is still running, `Some(Ok(...))` on
+    /// success, or `Some(Err(...))` on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when actor RPC delivery fails.
+    async fn poll_workflow(
+        &self,
+        handle_id: u64,
+    ) -> Result<Option<Result<RunSummary, ConductorError>>, ConductorError>;
+
     /// Returns the current in-memory orchestration-state snapshot.
     async fn get_state(&self) -> Result<OrchestrationState, ConductorError>;
 
