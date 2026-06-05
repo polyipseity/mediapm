@@ -2055,7 +2055,8 @@ mod tests {
                 "source_url".to_string(),
                 mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
                     source_uri.as_bytes(),
-                )),
+                ))
+                .into(),
             ),
             (
                 "leading_args".to_string(),
@@ -2063,12 +2064,14 @@ mod tests {
                     "--format".to_string(),
                     "bestaudio/best".to_string(),
                 ])
-                .expect("list hash"),
+                .expect("list hash")
+                .into(),
             ),
             (
                 "trailing_args".to_string(),
                 mediapm_conductor::ResolvedInput::from_string_list(Vec::new())
-                    .expect("empty list hash"),
+                    .expect("empty list hash")
+                    .into(),
             ),
         ]);
 
@@ -2319,14 +2322,15 @@ mod tests {
             inputs: BTreeMap::from([
                 (
                     "text".to_string(),
-                    mediapm_conductor::ResolvedInput::from_hash(expected_text_hash),
+                    mediapm_conductor::ResolvedInput::from_hash(expected_text_hash).into(),
                 ),
                 (
                     "leading_args".to_string(),
                     mediapm_conductor::ResolvedInput::from_string_list(vec![
                         "--verbose".to_string(),
                     ])
-                    .expect("list hash"),
+                    .expect("list hash")
+                    .into(),
                 ),
             ]),
             outputs: BTreeMap::new(),
@@ -2415,7 +2419,7 @@ mod tests {
                         last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "source_url".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash),
+                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "yt_dlp_thumbnail_artifacts".to_string(),
@@ -2436,7 +2440,7 @@ mod tests {
                         last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "source_url".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash),
+                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "content".to_string(),
@@ -2582,7 +2586,7 @@ mod tests {
                         last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "input_content".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(input_hash),
+                            mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "sandbox_artifacts".to_string(),
@@ -2606,7 +2610,7 @@ mod tests {
                         last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "input_content".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(input_hash),
+                            mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "sandbox_artifacts".to_string(),
@@ -2629,7 +2633,8 @@ mod tests {
                             "cover_flag".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
                                 member_bytes,
-                            )),
+                            ))
+                            .into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "content".to_string(),
@@ -2774,7 +2779,8 @@ mod tests {
                             "input_content".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
                                 b"tagger-input",
-                            )),
+                            ))
+                            .into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "sandbox_artifacts".to_string(),
@@ -2800,7 +2806,8 @@ mod tests {
                             "cover_flag".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
                                 b"opaque-runtime-cover-flag",
-                            )),
+                            ))
+                            .into(),
                         )]),
                         outputs: BTreeMap::from([(
                             "content".to_string(),
