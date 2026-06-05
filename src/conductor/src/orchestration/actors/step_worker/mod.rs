@@ -4243,6 +4243,7 @@ mod tests {
                 &[],
                 &env_vars,
                 &BTreeSet::from([0]),
+                true,
                 sandbox.path(),
                 None,
                 None,
