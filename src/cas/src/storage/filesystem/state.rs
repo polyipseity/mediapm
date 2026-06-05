@@ -1553,13 +1553,40 @@ impl CasApi for FileSystemState {
             return Ok(());
         }
 
-        // Fast path: copy full object file directly (kernel-level zero-copy).
+        // Fast path: copy full object file directly (kernel-level zero-copy),
+        // then make the destination writable so tools can modify the file.
         let full_path = object_path(&self.root, hash);
         match fs::try_exists(&full_path).await {
             Ok(true) => {
-                return fs::copy(&full_path, &dest).await.map(|_| ()).map_err(|err| {
+                fs::copy(&full_path, &dest).await.map_err(|err| {
                     CasError::io("materialize_to_path: copy full object file", &dest, err)
-                });
+                })?;
+                // CAS store files are read-only; ensure the destination is
+                // writable so sandbox tools (e.g. rsgain) can modify it.
+                let metadata = std::fs::metadata(&dest).map_err(|source| {
+                    CasError::io("materialize_to_path: read destination metadata", &dest, source)
+                })?;
+                let mut permissions = metadata.permissions();
+                if permissions.readonly() {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = permissions.mode();
+                        permissions.set_mode(mode | 0o200);
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        permissions.set_readonly(false);
+                    }
+                    std::fs::set_permissions(&dest, permissions).map_err(|source| {
+                        CasError::io(
+                            "materialize_to_path: make destination writable",
+                            &dest,
+                            source,
+                        )
+                    })?;
+                }
+                return Ok(());
             }
             Ok(false) => { /* fall through to default */ }
             Err(err) => {
