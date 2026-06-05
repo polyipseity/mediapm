@@ -419,7 +419,9 @@ workflow step completion events through an optional channel. The consumer
   - Per-worker step counts are tracked in a `Vec<usize>` and incremented on
     each event using `event.worker_index`.
   - The receiver task updates the overall bar's position and message on each
-    event. Worker lines show the current step and per-worker count:
+    event. The overall bar's per-event message uses the aggregate format
+    `"completed {completed_steps}/{total_steps} steps"`. Worker lines show the
+    current step and per-worker count:
     `"worker {wi}: {workflow}: {step}  ({count})"`.
   - When the channel closes (sender dropped), the overall bar shows
     `"all workflows complete"` and each worker line shows
