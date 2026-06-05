@@ -14,7 +14,7 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
-use crate::orchestration::config::DEFAULT_RPC_TIMEOUT_MS;
+use crate::orchestration::config::rpc_timeout_ms;
 use crate::orchestration::coordinator::WorkflowCoordinator;
 
 /// Conductor node actor command envelope.
@@ -83,7 +83,7 @@ impl ConductorActorClient {
         call_t!(
             self.actor,
             ConductorNodeMessage::RunWorkflow,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
             Box::new(options)
@@ -100,9 +100,9 @@ impl ConductorActorClient {
     /// Returns an error when actor RPC delivery fails or state retrieval fails
     /// in the coordinator.
     pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::GetState, DEFAULT_RPC_TIMEOUT_MS).map_err(
-            |err| ConductorError::Internal(format!("conductor actor get_state RPC failed: {err}")),
-        )?
+        call_t!(self.actor, ConductorNodeMessage::GetState, rpc_timeout_ms()).map_err(|err| {
+            ConductorError::Internal(format!("conductor actor get_state RPC failed: {err}"))
+        })?
     }
 
     /// Returns runtime diagnostics including worker queue metrics and scheduler traces.
@@ -112,12 +112,13 @@ impl ConductorActorClient {
     /// Returns an error when actor RPC delivery fails or diagnostics collection
     /// fails in the coordinator.
     pub async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::GetRuntimeDiagnostics, DEFAULT_RPC_TIMEOUT_MS)
-            .map_err(|err| {
+        call_t!(self.actor, ConductorNodeMessage::GetRuntimeDiagnostics, rpc_timeout_ms()).map_err(
+            |err| {
                 ConductorError::Internal(format!(
                     "conductor actor get_runtime_diagnostics RPC failed: {err}"
                 ))
-            })?
+            },
+        )?
     }
 
     /// Loads effective orchestration state resolved from user/machine/state
@@ -136,7 +137,7 @@ impl ConductorActorClient {
         call_t!(
             self.actor,
             ConductorNodeMessage::LoadResolvedState,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
             Box::new(options)
@@ -165,7 +166,7 @@ impl ConductorActorClient {
         call_t!(
             self.actor,
             ConductorNodeMessage::ReplaceResolvedState,
-            DEFAULT_RPC_TIMEOUT_MS,
+            rpc_timeout_ms(),
             user_ncl.to_path_buf(),
             machine_ncl.to_path_buf(),
             Box::new(state),
@@ -188,10 +189,9 @@ impl ConductorActorClient {
     /// Returns an error when actor RPC delivery fails or GC/persistence fails
     /// in the state store.
     pub async fn run_gc(&self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::RunGc, DEFAULT_RPC_TIMEOUT_MS, ttl_override)
-            .map_err(|err| {
-                ConductorError::Internal(format!("conductor actor run_gc RPC failed: {err}"))
-            })?
+        call_t!(self.actor, ConductorNodeMessage::RunGc, rpc_timeout_ms(), ttl_override).map_err(
+            |err| ConductorError::Internal(format!("conductor actor run_gc RPC failed: {err}")),
+        )?
     }
 }
 
