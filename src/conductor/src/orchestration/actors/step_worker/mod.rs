@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::path::{Component, Path, PathBuf};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -394,10 +395,14 @@ where
                 materialization_started_at.elapsed().as_secs_f64() * 1000.0;
 
             let execution_started_at = Instant::now();
+            let capture_stdout = output_specs
+                .values()
+                .any(|spec| matches!(spec.capture, ResolvedOutputCapture::Stdout));
             let capture = self
                 .execute_tool(
                     &resolved_process,
                     &resolved_inputs,
+                    capture_stdout,
                     execution_cwd,
                     &request.outermost_config_dir,
                     payload_dir.as_deref(),
@@ -1177,6 +1182,7 @@ where
         &self,
         process: &ResolvedProcessExecution,
         resolved_inputs: &BTreeMap<String, ResolvedInput>,
+        capture_stdout: bool,
         tool_cwd: &Path,
         outermost_config_dir: &Path,
         payload_dir: Option<&Path>,
@@ -1189,6 +1195,7 @@ where
                     args,
                     env_vars,
                     success_codes,
+                    capture_stdout,
                     tool_cwd,
                     payload_dir,
                     _cache_guard,
@@ -1249,6 +1256,7 @@ where
         resolved_args: &[String],
         env_vars: &BTreeMap<String, String>,
         success_codes: &BTreeSet<i32>,
+        capture_stdout: bool,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
         _cache_guard: Option<ToolCacheReadGuard>,
@@ -1260,6 +1268,7 @@ where
             resolved_args,
             env_vars,
             success_codes,
+            capture_stdout,
             tool_cwd,
             payload_dir,
             _cache_guard,
@@ -1332,6 +1341,7 @@ where
         resolved_args: &[String],
         env_vars: &BTreeMap<String, String>,
         success_codes: &BTreeSet<i32>,
+        capture_stdout: bool,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
         _cache_guard: Option<ToolCacheReadGuard>,
@@ -1410,7 +1420,10 @@ where
             command.arg(arg);
         }
         command.current_dir(tool_cwd);
-        command.stdin(std::process::Stdio::null());
+        command.stdin(Stdio::null());
+        if !capture_stdout {
+            command.stdout(Stdio::null());
+        }
         command.env_clear();
         command.envs(env_vars);
         command.kill_on_drop(true);
