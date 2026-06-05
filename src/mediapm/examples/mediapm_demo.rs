@@ -907,6 +907,18 @@ fn configure_document_for_local_tool_chain(
         // Optional default runtime GC TTL in seconds.
         // Not set: inherits conductor's built-in default.
         instance_ttl_seconds: None,
+        // CAS integrity re-verification strategies on read.
+        // Default: ["modified", "sample"].
+        verify_on_read: None,
+        // Denominator for "sample" strategy (1 = every read, 100 = ~1%).
+        // Default: 100.
+        verify_on_read_sample_denominator: None,
+        // Timeout in seconds for "stale" strategy (0 = disabled).
+        // Default: 3600.
+        verify_on_read_stale_timeout_secs: None,
+        // TTL in seconds for verified-content cache (0 = no cache).
+        // Default: 3600.
+        verify_on_read_cache_ttl_secs: None,
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;

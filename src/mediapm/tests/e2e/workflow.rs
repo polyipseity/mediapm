@@ -117,6 +117,10 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
             verify_materialization: None,
             path_sanitization: None,
             instance_ttl_seconds: None,
+            verify_on_read: None,
+            verify_on_read_sample_denominator: None,
+            verify_on_read_stale_timeout_secs: None,
+            verify_on_read_cache_ttl_secs: None,
         },
         ..MediaPmDocument::default()
     };
@@ -157,6 +161,10 @@ async fn sync_honors_explicit_conductor_state_override() {
             verify_materialization: None,
             path_sanitization: None,
             instance_ttl_seconds: None,
+            verify_on_read: None,
+            verify_on_read_sample_denominator: None,
+            verify_on_read_stale_timeout_secs: None,
+            verify_on_read_cache_ttl_secs: None,
         },
         ..MediaPmDocument::default()
     };

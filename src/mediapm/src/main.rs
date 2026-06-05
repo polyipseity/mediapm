@@ -566,6 +566,10 @@ async fn main() -> anyhow::Result<()> {
         profiler_enabled: None,
         verify_materialization: None,
         instance_ttl_seconds: None,
+        verify_on_read: None,
+        verify_on_read_sample_denominator: None,
+        verify_on_read_stale_timeout_secs: None,
+        verify_on_read_cache_ttl_secs: None,
         path_sanitization: None,
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();

@@ -420,6 +420,23 @@ pub struct MediaRuntimeStorage {
     /// When `None`, GC is left to conductor defaults (usually disabled).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,
+
+    /// Ordered list of strategies that trigger CAS integrity re-verification on read.
+    /// Accepted values: "always", "modified", "sample", "stale".
+    /// Default: ["modified", "sample"].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read: Option<Vec<String>>,
+    /// Denominator for the "sample" strategy. 1 = every read, 100 = ~1%.
+    /// Default: 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_sample_denominator: Option<u64>,
+    /// Timeout in seconds for the "stale" strategy. Default: 3600 (1 hour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_stale_timeout_secs: Option<u64>,
+    /// TTL in seconds for the in-memory verified-content cache.
+    /// 0 disables caching. Default: 3600 (1 hour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_cache_ttl_secs: Option<u64>,
 }
 
 impl MediaRuntimeStorage {
@@ -427,6 +444,30 @@ impl MediaRuntimeStorage {
     #[must_use]
     pub fn verify_materialization(&self) -> bool {
         self.verify_materialization.unwrap_or(false)
+    }
+
+    /// Returns the verify_on_read strategy list or the default.
+    #[must_use]
+    pub fn verify_on_read(&self) -> Vec<String> {
+        self.verify_on_read.clone().unwrap_or_else(|| vec!["modified".into(), "sample".into()])
+    }
+
+    /// Returns the verify_on_read sample denominator or the default (100).
+    #[must_use]
+    pub fn verify_on_read_sample_denominator(&self) -> u64 {
+        self.verify_on_read_sample_denominator.unwrap_or(100)
+    }
+
+    /// Returns the verify_on_read stale timeout in seconds or the default (3600).
+    #[must_use]
+    pub fn verify_on_read_stale_timeout_secs(&self) -> u64 {
+        self.verify_on_read_stale_timeout_secs.unwrap_or(3600)
+    }
+
+    /// Returns the verify_on_read cache TTL in seconds or the default (3600).
+    #[must_use]
+    pub fn verify_on_read_cache_ttl_secs(&self) -> u64 {
+        self.verify_on_read_cache_ttl_secs.unwrap_or(3600)
     }
 }
 

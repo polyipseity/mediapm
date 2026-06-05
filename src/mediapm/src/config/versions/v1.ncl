@@ -51,6 +51,15 @@ let RuntimeStorageV1 = {
   # ||| When true, verify materialized output against CAS hash after write.
   # ||| Defaults to false (trust CAS by default).
   verify_materialization | Dyn | optional,
+  # ||| Ordered list of CAS integrity verification strategies on read.
+  # ||| Accepted: "always", "modified", "sample", "stale".
+  verify_on_read | Dyn | optional,
+  # ||| Denominator for the "sample" strategy. Default: 100.
+  verify_on_read_sample_denominator | Dyn | optional,
+  # ||| Timeout in seconds for the "stale" strategy. Default: 3600.
+  verify_on_read_stale_timeout_secs | Dyn | optional,
+  # ||| TTL in seconds for the verified-content cache. 0 = no cache. Default: 3600.
+  verify_on_read_cache_ttl_secs | Dyn | optional,
 }
 in
 
