@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use crate::{CasError, Hash};
 
 mod buffer_pool;
+mod chain;
 mod config;
 mod filesystem;
 mod in_memory;

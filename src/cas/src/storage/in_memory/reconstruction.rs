@@ -5,11 +5,10 @@
 //! - chain planning (`build_reconstruction_plan`),
 //! - replay-side integrity verification (`ensure_reconstructed_hash`).
 
-use std::collections::HashSet;
-
 use dashmap::DashMap;
 use smallvec::SmallVec;
 
+use crate::storage::chain::check_no_cycle;
 use crate::{CasError, Hash, StoredObject};
 
 use super::IN_MEMORY_SMALL_DEPENDENT_INLINE;
@@ -44,19 +43,19 @@ pub(super) fn build_reconstruction_plan(
     objects: &DashMap<Hash, StoredObject>,
     hash: Hash,
 ) -> Result<InMemoryReconstructionPlan, CasError> {
+    check_no_cycle(hash, |h| {
+        let object = objects.get(&h).ok_or(CasError::NotFound(h))?;
+        match object.value() {
+            StoredObject::Full { .. } => Ok(None),
+            StoredObject::Delta { state } => Ok(Some(state.base_hash)),
+        }
+    })?;
+
     let mut current = hash;
-    let mut visited = HashSet::new();
     let mut delta_chain: SmallVec<[Hash; IN_MEMORY_SMALL_DEPENDENT_INLINE]> = SmallVec::new();
     let mut final_len: Option<usize> = None;
 
     loop {
-        if !visited.insert(current) {
-            return Err(CasError::CycleDetected {
-                target: hash,
-                detail: format!("loop encountered at {current}"),
-            });
-        }
-
         let object = objects.get(&current).ok_or(CasError::NotFound(current))?;
         let object = object.value();
 

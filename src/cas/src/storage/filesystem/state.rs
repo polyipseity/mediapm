@@ -33,8 +33,9 @@ use tracing::{Span, error, info, instrument};
 use crate::index::{DELTA_PROMOTION_DEPTH, MAX_DELTA_DEPTH, resolve_object_depth};
 use crate::storage::{
     CasTopologyConstraint, CasTopologyEncoding, CasTopologyNode, CasTopologySnapshot,
-    FileSystemRecoveryOptions, StreamBufferPool, is_unconstrained_constraint_row,
-    normalize_explicit_constraint_set, validate_constraint_target_not_in_bases,
+    FileSystemRecoveryOptions, StreamBufferPool, chain::check_no_cycle,
+    is_unconstrained_constraint_row, normalize_explicit_constraint_set,
+    validate_constraint_target_not_in_bases,
 };
 use crate::{
     BatchOperation, CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasIndexDb,
@@ -672,21 +673,25 @@ impl FileSystemState {
 
     /// Returns whether following `start` base-chain reaches `needle`.
     fn base_chain_reaches(index: &IndexState, start: Hash, needle: Hash) -> Result<bool, CasError> {
-        let mut current = start;
-        let mut visited = BTreeSet::new();
+        // Cycle safety pre-check via shared helper before the reachability walk.
+        check_no_cycle(start, |h| {
+            let meta = index
+                .objects
+                .get(&h)
+                .ok_or_else(|| CasError::corrupt_index(format!("missing metadata for base {h}")))?;
+            match meta.encoding() {
+                ObjectEncoding::Full => Ok(None),
+                ObjectEncoding::Delta { base_hash } => Ok(Some(base_hash)),
+            }
+        })?;
 
+        let mut current = start;
         loop {
             if current == needle {
                 return Ok(true);
             }
             if current == empty_content_hash() {
                 return Ok(false);
-            }
-            if !visited.insert(current) {
-                return Err(CasError::CycleDetected {
-                    target: start,
-                    detail: format!("cycle encountered while scanning base chain from {start}"),
-                });
             }
 
             let meta = index.objects.get(&current).ok_or_else(|| {
@@ -1471,6 +1476,7 @@ impl CasApi for FileSystemState {
         }
 
         let mut current = hash;
+        // Cycle detection via local visited set (async reads preclude shared helpers in `chain.rs`).
         let mut visited = HashSet::new();
         let mut patch_payloads: Vec<Cow<'static, [u8]>> = Vec::new();
         let mut expected_len: Option<u64> = None;
