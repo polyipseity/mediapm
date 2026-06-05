@@ -27,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
     HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue, MediaPmApi,
-    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
     PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
     TransformInputValue, load_lockfile, load_mediapm_document, save_lockfile,
@@ -723,7 +723,10 @@ fn configure_document_for_local_tool_chain(
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["audio".to_string()],
             output_variants: BTreeMap::from([("audio".to_string(), json!({ "kind": "primary" }))]),
-            options: BTreeMap::new(),
+            options: BTreeMap::from([(
+                "input_extension".to_string(),
+                TransformInputValue::String("m4a".to_string()),
+            )]),
         },
     ];
 
@@ -1146,7 +1149,12 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let (configured_tool_count, configured_step_count) =
         configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
 
-    let service = MediaPmService::new_in_memory_at(&workspace_root);
+    let service = {
+        let store_root = workspace_root.join(".mediapm").join("store");
+        let file_system_cas = FileSystemCas::open(&store_root).await?;
+        let conductor = SimpleConductor::new(file_system_cas);
+        MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
+    };
     if run_sync {
         clear_machine_workflows(&service.paths().conductor_machine_ncl)?;
     }

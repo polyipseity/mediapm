@@ -47,11 +47,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
     HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
-    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmService, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat,
-    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue, load_lockfile, load_mediapm_document,
-    save_lockfile, save_mediapm_document,
+    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths, MediaPmService,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
+    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus,
+    ToolRequirement, ToolRequirementDependencies, TransformInputValue, load_lockfile,
+    load_mediapm_document, save_lockfile, save_mediapm_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1108,7 +1108,10 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
-            options: BTreeMap::new(),
+            options: BTreeMap::from([(
+                "input_extension".to_string(),
+                TransformInputValue::String("m4a".to_string()),
+            )]),
         },
     ];
 
@@ -2514,20 +2517,27 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let root = reset_artifact_root()?;
     let workspace_root = root.clone();
 
-    // Use the in-memory conductor facade for the demo entrypoint.
+    // Phase 1: tools update precheck with an in-memory conductor facade.
     //
-    // `sync_tools*` opens the persistent runtime CAS store to import managed
-    // tool payload bytes. If the demo also holds that same redb-backed store
-    // open via `SimpleConductor<FileSystemCas>`, the second open attempt fails
-    // with "Database already open. Cannot acquire lock.".
-    //
-    // The in-memory facade avoids that lock contention while still allowing
-    // workflow execution to fall back to filesystem CAS when tool payload
-    // hashes are only present in the runtime store.
+    // `sync_tools*` internally opens the persistent runtime CAS store to
+    // import managed tool payload bytes.  The in-memory facade avoids holding
+    // the CAS store open while it is being written to by the tool sync.
     let service = MediaPmService::new_in_memory_at(&workspace_root);
     let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) =
         run_tools_update_precheck(&service, &workspace_root).await?;
     let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
+
+    // Phase 2: full library sync with a filesystem-backed CAS so that tool
+    // payload bytes (stored on disk by the precheck) are visible to workflow
+    // execution.
+    let sync_service = {
+        let store_root = workspace_root.join(".mediapm").join("store");
+        let file_system_cas = FileSystemCas::open(&store_root).await.map_err(|error| {
+            format!("opening filesystem CAS store at '{}': {error}", store_root.display())
+        })?;
+        let conductor = SimpleConductor::new(file_system_cas);
+        MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
+    };
 
     eprintln!(
         "[demo_online] starting sync (timeout={}s) in '{}'",
@@ -2535,7 +2545,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         workspace_root.display()
     );
 
-    let sync_future = service.sync_library_with_tag_update_checks(true, None);
+    let sync_future = sync_service.sync_library_with_tag_update_checks(true, None);
     tokio::pin!(sync_future);
     let timeout_future = tokio::time::sleep(sync_timeout);
     tokio::pin!(timeout_future);
@@ -2556,10 +2566,12 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     eprintln!(
         "[demo_online] sync complete; rendering conductor timing profile (workflow scope only)..."
     );
-    mediapm_conductor::print_profile_timing(&service.paths().runtime_root.join("profile.json"));
+    mediapm_conductor::print_profile_timing(
+        &sync_service.paths().runtime_root.join("profile.json"),
+    );
 
     eprintln!("[demo_online] running post-sync verification and artifact summary...");
-    let machine = load_machine(&service.paths().conductor_machine_ncl)?;
+    let machine = load_machine(&sync_service.paths().conductor_machine_ncl)?;
     let tool_binaries = resolve_tool_binaries(&machine, &logical_tool_ids)?;
     configure_demo_ffprobe_command(&machine, &tool_binaries)?;
 
@@ -2570,14 +2582,14 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
     let (workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
     let hierarchy_root = {
-        let document = load_mediapm_document(&service.paths().mediapm_ncl)?;
-        service.paths().with_runtime_storage(&document.runtime).hierarchy_root_dir
+        let document = load_mediapm_document(&sync_service.paths().mediapm_ncl)?;
+        sync_service.paths().with_runtime_storage(&document.runtime).hierarchy_root_dir
     };
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
         resolve_demo_output_paths(&hierarchy_root)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
-    let cas_root = service.paths().runtime_root.join("store");
-    let lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+    let cas_root = sync_service.paths().runtime_root.join("store");
+    let lock = load_lockfile(&sync_service.paths().mediapm_state_ncl)?;
     let materialized_demo_video_hardlinked_to_cas = assert_materialized_output_hardlinked_to_cas(
         &cas_root,
         &hierarchy_root,
@@ -2611,8 +2623,8 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
             .collect(),
         yt_dlp_max_concurrent_calls,
         yt_dlp_max_retries,
-        mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
-        conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
+        mediapm_ncl_path: display_path(&sync_service.paths().mediapm_ncl),
+        conductor_machine_ncl_path: display_path(&sync_service.paths().conductor_machine_ncl),
         workflow_id,
         workflow_step_count,
         tool_update_precheck_executed: true,
@@ -2636,7 +2648,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         added_tools: summary.added_tools,
         updated_tools: summary.updated_tools,
         warning_count: summary.warnings.len(),
-        profile_path: display_path(&service.paths().runtime_root.join("profile.json")),
+        profile_path: display_path(&sync_service.paths().runtime_root.join("profile.json")),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,
         store_size_with_delta_bytes: store_size_stats.with_delta_bytes,
         store_size_ratio_with_delta_over_without: store_size_stats.ratio_with_delta_over_without(),
