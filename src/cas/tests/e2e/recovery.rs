@@ -114,6 +114,7 @@ async fn e2e_strict_mode_rejects_missing_primary_index_when_objects_exist() {
                 mode: IndexRecoveryMode::Strict,
                 max_backup_snapshots: 4,
                 backup_snapshot_interval_ops: 1,
+                wait_for_lock: false,
             },
         )
         .await
@@ -200,6 +201,7 @@ async fn e2e_backup_retention_respects_configured_limit() {
                     mode: IndexRecoveryMode::Recover,
                     max_backup_snapshots: 2,
                     backup_snapshot_interval_ops: 1,
+                    wait_for_lock: false,
                 },
             )
             .await

@@ -29,6 +29,7 @@ async fn recover_mode_rebuilds_missing_primary_index() {
                     mode: IndexRecoveryMode::Recover,
                     max_backup_snapshots: 4,
                     backup_snapshot_interval_ops: 1,
+                    wait_for_lock: false,
                 },
             )
             .await
@@ -55,6 +56,7 @@ async fn recover_mode_rebuilds_missing_primary_index() {
                 mode: IndexRecoveryMode::Recover,
                 max_backup_snapshots: 4,
                 backup_snapshot_interval_ops: 1,
+                wait_for_lock: false,
             },
         )
         .await
@@ -106,6 +108,7 @@ async fn strict_mode_rejects_missing_primary_index_when_objects_exist() {
                 mode: IndexRecoveryMode::Strict,
                 max_backup_snapshots: 4,
                 backup_snapshot_interval_ops: 1,
+                wait_for_lock: false,
             },
         )
         .await
@@ -231,6 +234,7 @@ async fn backup_retention_and_migration_roundtrip() {
                     mode: IndexRecoveryMode::Recover,
                     max_backup_snapshots: 2,
                     backup_snapshot_interval_ops: 1,
+                    wait_for_lock: false,
                 },
             )
             .await

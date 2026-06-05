@@ -47,6 +47,10 @@ pub struct FileSystemRecoveryOptions {
     /// Set to `1` to preserve per-mutation backup behavior.
     /// Values below `1` are normalized to `1` by filesystem runtime code.
     pub backup_snapshot_interval_ops: usize,
+    /// If true, the lock acquisition will block until the lock is available.
+    /// If false (default), startup fails immediately with `StoreLocked` if
+    /// another process holds the lock.
+    pub wait_for_lock: bool,
 }
 
 /// Default recovery profile used by filesystem backend constructors.
@@ -56,6 +60,7 @@ impl Default for FileSystemRecoveryOptions {
             mode: IndexRecoveryMode::Recover,
             max_backup_snapshots: DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT,
             backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
+            wait_for_lock: false,
         }
     }
 }
@@ -194,6 +199,7 @@ impl CasConfig {
                 mode: IndexRecoveryMode::Recover,
                 max_backup_snapshots: DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT,
                 backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
+                wait_for_lock: false,
             },
         }
     }
@@ -511,6 +517,7 @@ mod tests {
                 mode: IndexRecoveryMode::Strict,
                 max_backup_snapshots: 9,
                 backup_snapshot_interval_ops: 3,
+                wait_for_lock: false,
             },
         );
 

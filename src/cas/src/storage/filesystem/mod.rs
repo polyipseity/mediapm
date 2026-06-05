@@ -569,6 +569,7 @@ mod tests {
             mode: IndexRecoveryMode::Recover,
             max_backup_snapshots: 16,
             backup_snapshot_interval_ops: 3,
+            wait_for_lock: false,
         };
         let cas = FileSystemCas::open_with_alpha_and_recovery_for_tests(dir.path(), 4, recovery)
             .await

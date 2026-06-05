@@ -181,6 +181,15 @@ pub enum CasError {
         /// Current total CAS store size in bytes.
         cas_size_bytes: u64,
     },
+    /// Operation rejected because the store is locked by another process.
+    #[error("store at `{}` is locked by another process", root.display())]
+    #[diagnostic(help(
+        "retry after the other process releases the lock, or use wait_for_lock mode"
+    ))]
+    StoreLocked {
+        /// Root path of the locked store.
+        root: PathBuf,
+    },
     /// Hash parse or algorithm mapping failure.
     #[error(transparent)]
     HashParse(#[from] HashParseError),
@@ -235,6 +244,12 @@ impl CasError {
     #[must_use]
     pub fn task_join(operation: impl Into<String>, source: tokio::task::JoinError) -> Self {
         Self::TaskJoin { operation: operation.into(), source }
+    }
+
+    /// Builds a [`CasError::StoreLocked`] for a locked store root.
+    #[must_use]
+    pub fn store_locked(root: impl Into<PathBuf>) -> Self {
+        Self::StoreLocked { root: root.into() }
     }
 
     /// Builds a [`CasError::PoisonedLock`] with lock and operation context.

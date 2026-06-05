@@ -87,6 +87,10 @@ pub(super) struct FileSystemState {
     active_mmaps: Arc<ActiveMmapRegistry>,
     /// Dedicated object I/O actor for on-disk object operations.
     pub(super) object_actor: ActorRef<FileObjectActorMessage>,
+    /// Lock file handle held for the duration of this process's exclusive
+    /// access to the filesystem store. Dropped on state drop to release.
+    #[expect(dead_code)]
+    lock_file: Option<std::fs::File>,
 }
 
 /// Internal filesystem backend runtime operations and helpers.
@@ -103,6 +107,38 @@ impl FileSystemState {
             .map_err(|source| CasError::io("creating objects root", root.clone(), source))?;
 
         bootstrap_empty_object(&root).await?;
+
+        // Acquire exclusive filesystem lock.
+        let lock_path = root.join("lock");
+        let lock_file = match std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            Ok(file) => {
+                if recovery.wait_for_lock {
+                    match file.lock() {
+                        Ok(()) => Some(file),
+                        Err(e) => {
+                            return Err(CasError::io("acquire filesystem lock", &lock_path, e));
+                        }
+                    }
+                } else {
+                    match file.try_lock() {
+                        Ok(()) => Some(file),
+                        Err(std::fs::TryLockError::WouldBlock) => {
+                            return Err(CasError::StoreLocked { root });
+                        }
+                        Err(std::fs::TryLockError::Error(e)) => {
+                            return Err(CasError::io("acquire filesystem lock", &lock_path, e));
+                        }
+                    }
+                }
+            }
+            Err(e) => return Err(CasError::io("open lock file", &lock_path, e)),
+        };
 
         let (redb_index, mut index, recovery_report) =
             recovery::load_or_recover_primary_index(&root, &recovery)?;
@@ -154,6 +190,7 @@ impl FileSystemState {
             optimize_in_progress: AtomicBool::new(false),
             active_mmaps,
             object_actor,
+            lock_file,
         };
 
         cas.repair_index_file_invariant().await?;
