@@ -27,6 +27,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
 use mediapm_cas::{
     CasApi, CasError, CasExistenceBitmap, Constraint, ConstraintPatch, Hash, empty_content_hash,
 };
@@ -166,16 +167,16 @@ struct TemplateFileWrite {
     /// Relative destination path inside the ad hoc execution directory.
     relative_path: std::path::PathBuf,
     /// Raw bytes that should be written to `relative_path` at execution time.
-    plain_content: Vec<u8>,
+    plain_content: Bytes,
 }
 
 /// Concrete ZIP-selector result before optional template materialization.
 #[derive(Debug, Clone)]
 enum ExtractedZipSelection {
     /// One concrete file payload selected from the ZIP archive.
-    File(Vec<u8>),
+    File(Bytes),
     /// All descendant file payloads selected from one ZIP directory entry.
-    Directory(BTreeMap<std::path::PathBuf, Vec<u8>>),
+    Directory(BTreeMap<std::path::PathBuf, Bytes>),
 }
 
 /// Resolved selector source for one template interpolation token.
@@ -342,7 +343,7 @@ where
                 tool_name: request.step.tool.clone(),
                 metadata,
                 impure_timestamp: request.impure_timestamp,
-                inputs: resolved_inputs.clone(),
+                inputs: BTreeMap::new(),
                 outputs,
                 last_used: ImpureTimestamp::default(),
             }
@@ -351,7 +352,7 @@ where
                 tool_name: request.step.tool.clone(),
                 metadata,
                 impure_timestamp: request.impure_timestamp,
-                inputs: resolved_inputs.clone(),
+                inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),
                 last_used: ImpureTimestamp::default(),
             }
@@ -507,6 +508,8 @@ where
         }
         phase_timings.persistence_merge_ms =
             persistence_merge_started_at.elapsed().as_secs_f64() * 1000.0;
+
+        instance.inputs = resolved_inputs;
 
         Ok(StepExecutionBundle {
             step_id: request.step.id,
@@ -705,7 +708,7 @@ where
         step: &WorkflowStepSpec,
         binding: &str,
         step_outputs: &StepOutputs,
-    ) -> Result<Vec<u8>, ConductorError> {
+    ) -> Result<Bytes, ConductorError> {
         let parsed_segments = parse_input_binding(binding).map_err(|err| {
             ConductorError::Workflow(format!(
                 "workflow '{workflow_name}' step '{}' has invalid input binding '{binding}': {err}",
@@ -801,7 +804,7 @@ where
             }
         }
 
-        Ok(plain_content)
+        Ok(Bytes::from(plain_content))
     }
 
     /// Extracts one file member from ZIP bytes referenced by a step-output binding.
@@ -902,7 +905,7 @@ where
     /// input record carrying both hash identity and in-memory bytes.
     async fn persist_resolved_input(
         &self,
-        plain_content: Vec<u8>,
+        plain_content: Bytes,
     ) -> Result<ResolvedInput, ConductorError> {
         let hash = self.cas.put(plain_content.clone()).await?;
         Ok(ResolvedInput { hash, plain_content, string_list: None })
@@ -914,10 +917,14 @@ where
         &self,
         string_list: Vec<String>,
     ) -> Result<ResolvedInput, ConductorError> {
-        let plain_content = serde_json::to_vec(&string_list)
+        let plain_content_vec = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
-        let hash = self.cas.put(plain_content.clone()).await?;
-        Ok(ResolvedInput { hash, plain_content, string_list: Some(string_list) })
+        let hash = self.cas.put(plain_content_vec.clone()).await?;
+        Ok(ResolvedInput {
+            hash,
+            plain_content: Bytes::from(plain_content_vec),
+            string_list: Some(string_list),
+        })
     }
 
     /// Resolves the process definition that should be executed for one step.
@@ -1793,7 +1800,7 @@ where
         resolved_inputs
             .iter()
             .filter(|(key, _)| accepted_keys.contains(&key.as_str()))
-            .map(|(key, input)| (key.clone(), input.plain_content.clone()))
+            .map(|(key, input)| (key.clone(), input.plain_content.clone().to_vec()))
             .collect()
     }
 

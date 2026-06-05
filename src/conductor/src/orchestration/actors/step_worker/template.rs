@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use bytes::Bytes;
 use mediapm_cas::CasApi;
 
 use crate::error::ConductorError;
@@ -280,7 +281,7 @@ where
                         "template expression '${{{token}}}' cannot apply :zip(...) to 'context.os'"
                     )));
                 }
-                self.current_os_text().as_bytes().to_vec()
+                Bytes::from(self.current_os_text().as_bytes().to_vec())
             }
             TemplateSelectorSource::ContextWorkingDirectory => {
                 if zip_entry_path.is_some() {
@@ -288,7 +289,7 @@ where
                         "template expression '${{{token}}}' cannot apply :zip(...) to 'context.working_directory'"
                     )));
                 }
-                self.current_working_directory_text()?.into_bytes()
+                Bytes::from(self.current_working_directory_text()?.into_bytes())
             }
         };
 
@@ -1093,23 +1094,23 @@ where
             return Ok(ExtractedZipSelection::Directory(directory_files));
         }
 
-        std::fs::read(&selected_entry).map(ExtractedZipSelection::File).map_err(|source| {
-            ConductorError::Io {
+        std::fs::read(&selected_entry).map(|v| ExtractedZipSelection::File(Bytes::from(v))).map_err(
+            |source| ConductorError::Io {
                 operation: format!(
                     "reading extracted ZIP entry '{}' from template input",
                     normalized_entry.to_string_lossy()
                 ),
                 path: selected_entry,
                 source,
-            }
-        })
+            },
+        )
     }
 
     /// Collects all regular descendant files under one extracted ZIP directory.
     fn collect_directory_file_payloads(
         &self,
         directory_path: &Path,
-    ) -> Result<BTreeMap<std::path::PathBuf, Vec<u8>>, ConductorError> {
+    ) -> Result<BTreeMap<std::path::PathBuf, Bytes>, ConductorError> {
         let mut file_payloads = BTreeMap::new();
         self.collect_directory_file_payloads_recursive(
             directory_path,
@@ -1128,7 +1129,7 @@ where
         &self,
         root_directory: &Path,
         current_directory: &Path,
-        file_payloads: &mut BTreeMap<std::path::PathBuf, Vec<u8>>,
+        file_payloads: &mut BTreeMap<std::path::PathBuf, Bytes>,
     ) -> Result<(), ConductorError> {
         for entry in std::fs::read_dir(current_directory).map_err(|source| ConductorError::Io {
             operation: "enumerating extracted ZIP directory entries".to_string(),
@@ -1180,7 +1181,7 @@ where
                 path: entry_path_for_error,
                 source,
             })?;
-            file_payloads.insert(relative_path, payload);
+            file_payloads.insert(relative_path, Bytes::from(payload));
         }
 
         Ok(())

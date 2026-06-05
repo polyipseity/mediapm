@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use bytes::Bytes;
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +90,7 @@ pub struct ResolvedInput {
     /// This field is runtime-only execution cache and is intentionally omitted
     /// from persisted orchestration-state snapshots.
     #[serde(default, skip_serializing, skip_deserializing)]
-    pub plain_content: Vec<u8>,
+    pub plain_content: Bytes,
     /// Optional list-of-strings runtime payload.
     ///
     /// This field is runtime-only and omitted from persisted state snapshots.
@@ -106,12 +107,8 @@ impl ResolvedInput {
     /// This helper computes the deterministic hash identity directly from the
     /// provided content and is intended for tests and transient runtime values.
     #[must_use]
-    pub fn from_plain_content(plain_content: Vec<u8>) -> Self {
-        Self {
-            hash: Hash::from_content(plain_content.as_slice()),
-            plain_content,
-            string_list: None,
-        }
+    pub fn from_plain_content(plain_content: Bytes) -> Self {
+        Self { hash: Hash::from_content(plain_content.as_ref()), plain_content, string_list: None }
     }
 
     /// Builds one runtime input from an existing CAS hash.
@@ -120,7 +117,7 @@ impl ResolvedInput {
     /// snapshots record only hash identities.
     #[must_use]
     pub fn from_hash(hash: Hash) -> Self {
-        Self { hash, plain_content: Vec::new(), string_list: None }
+        Self { hash, plain_content: Bytes::new(), string_list: None }
     }
 
     /// Builds one runtime list input from ordered string values.
@@ -132,11 +129,11 @@ impl ResolvedInput {
     /// Returns an error when the ordered list cannot be serialized into its
     /// canonical JSON byte representation.
     pub fn from_string_list(string_list: Vec<String>) -> Result<Self, ConductorError> {
-        let plain_content = serde_json::to_vec(&string_list)
+        let plain_content_vec = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
         Ok(Self {
-            hash: Hash::from_content(plain_content.as_slice()),
-            plain_content,
+            hash: Hash::from_content(plain_content_vec.as_slice()),
+            plain_content: Bytes::from(plain_content_vec),
             string_list: Some(string_list),
         })
     }
