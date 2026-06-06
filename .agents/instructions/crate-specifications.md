@@ -844,18 +844,9 @@ MediaPM Errors
 
 **Contract**:
 - **Fail-fast**: Validation before execution; no partial state on error
-- **Atomicity**: CAS failures in pure workflows trigger one-shot retry; impure workflows fail immediately
+- **Atomicity**: CAS errors propagate directly via `?` regardless of workflow purity; no auto-retry on CAS failure
 - **Recovery**: MediaPM cleans up on failure; state.ncl unchanged
 - **Diagnostics**: Error messages include actionable context (path, hash, expected vs. actual)
-
-**Error detection patterns**:
-- `CorruptWorkflowOutput` uses `#[error(transparent)]` which delegates its
-  `Display` implementation entirely to the inner `CorruptWorkflowOutputContext`.
-  The inner context format is `"workflow '{name}' step '{id}' failed to read
-  output ... due to CAS corruption: {detail}"` and does **not** contain the
-  word "impure". To detect impure-workflow corruption errors, use
-  `matches!(error, ConductorError::CorruptWorkflowOutput(_))` rather than
-  string containment checks.
 
 ---
 
@@ -878,7 +869,7 @@ tests/
 |----------|-----|-----------|----------|---------|
 | **Happy Path** | put → get | user → machine → execute | valid args → correct output | sync roundtrip |
 | **Validation** | Constraint logic | Document merging | Fail-fast keys | Lock reconciliation |
-| **Error Paths** | NotFound, Codec | Corrupt output | Invalid input | Materialization rollback |
+| **Error Paths** | NotFound, Codec | CAS errors propagate directly | Invalid input | Materialization rollback |
 | **Determinism** | Hash stability | State stability | Pure output consistency | Idempotent sync |
 | **Concurrency** | Concurrent puts | Actor coordination | N/A | Parallel materialization |
 
@@ -1138,9 +1129,7 @@ delta-object bytes are held in memory for reconstruction. The validation memo
 caches only delta reconstruction results; full objects are re-read on demand
 during the final verification pass.
 
-**Error handling**: Pure workflows may auto-recover from CAS integrity failures
-(warn + drop + retry once). Impure workflows fail without auto-retry because
-the side effects cannot be safely replayed.
+**Error handling**: CAS errors propagate via `?` regardless of workflow purity; no auto-retry on CAS failure.
 
 ---
 
@@ -1523,7 +1512,7 @@ Temp extraction directory (`mediapm_tmp_dir`) is used only for zip processing
 and sandbox isolation — not for staging materialization output.
 ```
 
-**Trade-off**: No atomic-materialization safety net for CAS integrity failures. Benefit: simpler, faster, less disk overhead. Pure workflows may auto-retry on CAS integrity failure (warn + drop + retry once); impure workflows fail without auto-retry.
+**Trade-off**: No atomic-materialization safety net for CAS integrity failures. Benefit: simpler, faster, less disk overhead. CAS errors propagate directly via `?` regardless of workflow purity.
 
 ### Why Three-Document Pattern (User, Machine, State) Instead of Single File?
 
@@ -2173,7 +2162,6 @@ Tests the same pipeline with actual yt-dlp managed tool provisioning:
 - **`cargo test -p mediapm-conductor`**: 200 lib tests + 15 integration tests = 215 total, all pass ✅
 - Key test categories validated:
   - Step-stream dedup semantics (parallel dispatch cross-workflow)
-  - CorruptWorkflowOutput error variant detection (`matches!` macro)
   - Scheduler diagnostics fallback for step-stream path
   - Trace event completeness per dispatch path
 

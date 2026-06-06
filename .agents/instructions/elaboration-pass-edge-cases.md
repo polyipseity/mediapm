@@ -1093,7 +1093,7 @@ No cross-process race protection is available on those platforms.
 - Files 1–49 already written to final output paths
 - Files 51–100 not attempted
 
-**Current Spec**: Direct materialization; CAS integrity trusted by default; impure workflows fail without auto-retry
+**Current Spec**: Direct materialization; CAS integrity trusted by default
 
 **Gap**: Cleanup semantics for files already written before failure.
 
@@ -1104,7 +1104,7 @@ No cross-process race protection is available on those platforms.
 - **Cleanup on failure**: remove all files materialized during this sync run, even if they were written before the failure
 - **Lock update**: only after all files materialize successfully
 - Add test: "mid-sync failure (file 50 of 100) → all materialized files cleaned up, lock unchanged"
-- Pure workflows may auto-recover: warn, drop, and retry once; impure workflows fail immediately
+- CAS errors propagate via `?` regardless of workflow purity; no auto-retry
 
 **Questions for Clarification**:
 
@@ -1739,50 +1739,6 @@ dispatch; tests may assume sequential-like dedup behavior.
 2. If yes, what's the dedup key: full output hash set, tool+args identity, or
    workflow-level step identity?
 
----
-
-### 4.17 CorruptWorkflowOutput Error Display Delegation
-
-**Issue**: `CorruptWorkflowOutput(Box<CorruptWorkflowOutputContext>)` uses
-`#[error(transparent)]`, which delegates the entire `Display` implementation
-to the inner `CorruptWorkflowOutputContext`. The inner context's `Display`
-follows the format `"workflow '{workflow_name}' step '{consumer_step_id}'
-failed to read output ... due to CAS corruption: {detail}"` — it never
-contains the word "impure". Code that detects impure-workflow corruption via
-`.to_string().contains("impure")` silently returns false positives/negatives.
-
-**Scenario**:
-
-- Test expects error from impure workflow corruption to contain "impure"
-- `CorruptWorkflowOutput` wraps context whose Display omits "impure"
-- Assertion fails mysteriously: the error is genuinely a `CorruptWorkflowOutput`
-  but the string doesn't match
-
-**Current Spec**: "Error messages include actionable context"
-
-**Gap**: Consumers cannot rely on string matching to detect error *variants*
-when Display delegates transparently.
-
-**Resolution**:
-
-- Use `matches!(error, ConductorError::CorruptWorkflowOutput(_))` for variant
-  detection instead of `.to_string().contains(...)`.
-- The `CorruptWorkflowOutput` variant's error kind is `Corruption` (which does
-  appear in Display via `{kind}`), but the `CorruptWorkflowOutput` variant
-  entry point itself does not inject additional context after the inner
-  context's message.
-- When Display content of the inner context covers the actionable information
-  (corruption detail, workflow name, step id), string matching is correct for
-  the *message content* but not for *variant identification*.
-
-**Questions for Clarification**:
-
-1. Should `CorruptWorkflowOutput` override Display to prepend "impure workflow"
-   when the inner context corresponds to an impure workflow, or should variant
-   detection remain pattern-match-only?
-
----
-
 ### 4.18 Scheduler Diagnostics Metrics Fallback
 
 **Issue**: The scheduler's `runtime_diagnostics()` method reports
@@ -2078,7 +2034,7 @@ declared (even as a minimal stub) to participate in dependency resolution.
 | **Risk** | Pruned entries produce repeated "stale entry" warnings every sync cycle, confusing users and cluttering logs. |
 | **Pre-fix** | `compute_stale_entry_report` scanned all tool registry records including pruned ones, reporting them as stale every sync. |
 | **Post-fix** | Added `if record.status == ToolRegistryStatus::Pruned { return None; }` filter before per-record stale check. Pruned IDs are silently excluded from the sync report. |
-| **Interaction risk** | If a pruned tool reappears later (e.g. manual registry edit), its entry would have no sync record and might not auto-recover. This is acceptable since the operator can re-sync. |
+| **Interaction risk** | If a pruned tool reappears later (e.g. manual registry edit), its entry would have no sync record and might not re-sync automatically. This is acceptable since the operator can re-sync. |
 | **Mitigation** | None needed — this is a best-effort performance filter, not a security boundary. |
 
 ---
@@ -2300,7 +2256,7 @@ MBID-based metadata override.
 - Conductor captures error
 - Does Conductor retry the same step? Re-plan? Fail immediately?
 
-**Current Spec**: "Builtins fail-fast; Conductor error recovery; pure workflows one-shot retry"
+**Current Spec**: "Builtins fail-fast; CAS errors propagate via `?`; no auto-retry"
 
 **Gap**: No explicit retry contract; who retries what?
 
@@ -2630,21 +2586,6 @@ Does "fail-fast" mean:
 - Add test: "ID format validation, case sensitivity"
 
 ---
-
-### 6.5 "One-Shot Retry" for Pure Workflows: Automatic or Manual?
-
-**Issue**: Specification states "pure workflows auto-recover from CAS integrity failures (warn + drop + retry once)" but does not specify **automatic vs. manual invocation**.
-
-**Ambiguity**:
-
-- Is retry automatic (within `run_workflow()`) or does caller invoke `retry_workflow()`?
-
-**Current Spec**: "One-shot retry once"
-
-**Recommendation**:
-
-- **Explicit to automatic**: "Pure workflows automatically retry once if CAS integrity errors occur (e.g., hash mismatch). Retry is internal; no caller action needed. If retry fails, error is propagated."
-- Add test: "CAS integrity error → automatic retry → success"
 
 ---
 
