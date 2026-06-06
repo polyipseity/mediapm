@@ -1487,6 +1487,127 @@ mod tests {
         assert!(!paths.hierarchy_root_dir.join("library/playlists/folder-only.m3u8").exists());
     }
 
+    /// Protects playlist resolution when two media entries share the same
+    /// template path but reference different media_ids — without the fix,
+    /// both playlist entries resolve to the same (last-writer-wins) path.
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn sync_hierarchy_playlist_resolves_different_media_ids_with_same_template_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = MediaPmPaths::from_root(temp.path());
+        let cas_root = paths.root_dir.join(".mediapm").join("store");
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
+        let alpha_hash = cas.put(b"alpha".to_vec()).await.expect("put alpha bytes");
+        let beta_hash = cas.put(b"beta".to_vec()).await.expect("put beta bytes");
+
+        let document = MediaPmDocument {
+            media: BTreeMap::from([
+                (
+                    "song_a".to_string(),
+                    MediaSourceSpec {
+                        id: None,
+                        description: Some("file: song_a.bin".to_string()),
+                        title: None,
+                        artist: None,
+                        workflow_id: None,
+                        metadata: None,
+                        variant_hashes: BTreeMap::from([(
+                            "default".to_string(),
+                            alpha_hash.to_string(),
+                        )]),
+                        steps: Vec::new(),
+                    },
+                ),
+                (
+                    "song_b".to_string(),
+                    MediaSourceSpec {
+                        id: None,
+                        description: Some("file: song_b.bin".to_string()),
+                        title: None,
+                        artist: None,
+                        workflow_id: None,
+                        metadata: None,
+                        variant_hashes: BTreeMap::from([(
+                            "default".to_string(),
+                            beta_hash.to_string(),
+                        )]),
+                        steps: Vec::new(),
+                    },
+                ),
+            ]),
+            hierarchy: vec![
+                crate::config::HierarchyNode {
+                    path: "${media.id}.bin".to_string(),
+                    kind: HierarchyNodeKind::Media,
+                    id: Some("entry-a".to_string()),
+                    media_id: Some("song_a".to_string()),
+                    variant: Some("default".to_string()),
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    format: PlaylistFormat::M3u8,
+                    ids: Vec::new(),
+                    children: Vec::new(),
+                },
+                crate::config::HierarchyNode {
+                    path: "${media.id}.bin".to_string(),
+                    kind: HierarchyNodeKind::Media,
+                    id: Some("entry-b".to_string()),
+                    media_id: Some("song_b".to_string()),
+                    variant: Some("default".to_string()),
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    format: PlaylistFormat::M3u8,
+                    ids: Vec::new(),
+                    children: Vec::new(),
+                },
+                crate::config::HierarchyNode {
+                    path: "playlist.m3u8".to_string(),
+                    kind: HierarchyNodeKind::Playlist,
+                    id: None,
+                    media_id: None,
+                    variant: None,
+                    variants: Vec::new(),
+                    rename_files: Vec::new(),
+                    sanitize_names: SanitizeNamesConfig::Inherit,
+                    format: PlaylistFormat::M3u8,
+                    ids: vec![
+                        PlaylistItemRef {
+                            id: "entry-a".to_string(),
+                            path: PlaylistEntryPathMode::Relative,
+                        },
+                        PlaylistItemRef {
+                            id: "entry-b".to_string(),
+                            path: PlaylistEntryPathMode::Relative,
+                        },
+                    ],
+                    children: Vec::new(),
+                },
+            ],
+            ..MediaPmDocument::default()
+        };
+
+        drop(cas);
+        let mut lock = MediaPmState::default();
+        let report = sync_hierarchy(
+            &paths,
+            &document,
+            &MachineNickelDocument::default(),
+            &cas_root,
+            &mut lock,
+            false,
+        )
+        .await
+        .expect("sync hierarchy");
+
+        assert_eq!(report.materialized_paths, 3);
+
+        let playlist_path = paths.hierarchy_root_dir.join("playlist.m3u8");
+        let playlist_text = std::fs::read_to_string(&playlist_path).expect("read playlist file");
+        assert_eq!(playlist_text, "#EXTM3U\nsong_a.bin\nsong_b.bin\n");
+    }
+
     /// Protects playlist renderer support across configured common formats.
     #[test]
     fn render_playlist_bytes_supports_common_formats() {
