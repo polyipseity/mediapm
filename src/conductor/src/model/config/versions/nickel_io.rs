@@ -1,9 +1,12 @@
 //! Low-level Nickel evaluation, rendering, and document workspace helpers.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
+use blake3;
 use nickel_lang_core::error::{Error as NickelError, NullReporter};
 use nickel_lang_core::eval::cache::CacheImpl;
 use nickel_lang_core::program::Program;
@@ -14,6 +17,27 @@ use serde_json::Value;
 use crate::error::ConductorError;
 
 use super::{MOD_NCL_SOURCE, latest, resolve_version_contract};
+
+/// Cache key: (source hash, requested version).
+type EvalCacheKey = (blake3::Hash, u32);
+
+/// In-memory cache for `migrate_document_source_to_version` results.
+///
+/// Caches serialized Nickel evaluation outputs so that re-evaluating the same
+/// source text at the same version avoids all Nickel interpreter overhead.
+fn eval_cache() -> &'static Mutex<HashMap<EvalCacheKey, serde_json::Value>> {
+    static CACHE: OnceLock<Mutex<HashMap<EvalCacheKey, serde_json::Value>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// In-memory cache for `evaluate_document_source_value` results.
+///
+/// Caches raw `serde_json::Value` outputs of schema-agnostic metadata
+/// evaluation (version-marker extraction, shape validation).
+fn eval_source_value_cache() -> &'static Mutex<HashMap<blake3::Hash, serde_json::Value>> {
+    static CACHE: OnceLock<Mutex<HashMap<blake3::Hash, serde_json::Value>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Temporary Nickel workspace used to evaluate conductor-generated wrappers.
 #[derive(Debug)]
@@ -102,10 +126,23 @@ where
 ///
 /// This helper is intentionally schema-agnostic and is used for metadata
 /// inspection tasks such as top-level field/key validation.
+///
+/// Results are cached by source text hash to avoid re-evaluating unchanged
+/// documents across repeated inspection calls (version-marker extraction,
+/// shape validation).
 fn evaluate_document_source_value(
     source: &str,
     document_kind: &str,
 ) -> Result<Value, ConductorError> {
+    let cache_key = blake3::hash(source.as_bytes());
+    {
+        let cache = eval_source_value_cache();
+        let guard = cache.lock().unwrap();
+        if let Some(cached) = guard.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+    }
+
     let workspace = TempNickelWorkspace::new()?;
     write_nickel_file(
         &workspace.path().join("document_input.ncl"),
@@ -121,7 +158,17 @@ fn evaluate_document_source_value(
         "writing temporary Nickel metadata inspection wrapper",
     )?;
 
-    evaluate_main_file_as(&wrapper_path, &format!("evaluating {document_kind} source metadata"))
+    let result: Value = evaluate_main_file_as(
+        &wrapper_path,
+        &format!("evaluating {document_kind} source metadata"),
+    )?;
+
+    let cache = eval_source_value_cache();
+    let mut guard = cache.lock().unwrap();
+    guard.insert(cache_key, result.clone());
+    drop(guard);
+
+    Ok(result)
 }
 
 /// Parses and validates the explicit top-level `version` marker from one
@@ -330,14 +377,31 @@ where
 
 /// Evaluates one document source through the embedded Nickel migration wrapper
 /// into one requested persisted schema version.
+///
+/// Results are cached by (source text hash, requested version) to avoid
+/// re-evaluating unchanged documents on repeated decode calls (e.g. across
+/// reconcile and workflow-run phases in `mediapm sync`).
 pub(crate) fn migrate_document_source_to_version<T>(
     source: &str,
     requested_version: u32,
     document_kind: &str,
 ) -> Result<T, ConductorError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
+    let cache_key = (blake3::hash(source.as_bytes()), requested_version);
+    {
+        let cache = eval_cache();
+        let guard = cache.lock().unwrap();
+        if let Some(cached) = guard.get(&cache_key) {
+            return serde_json::from_value(cached.clone()).map_err(|err| {
+                ConductorError::Serialization(format!(
+                    "failed deserializing cached {document_kind}: {err}"
+                ))
+            });
+        }
+    }
+
     let (version_file_name, version_contract_source) =
         resolve_version_contract(requested_version, document_kind)?;
     let validator_name = format!("validate_document_v{requested_version}");
@@ -370,10 +434,20 @@ version.{validator_name} (migration.migrate_to {requested_version} document)
     let wrapper_path = workspace.path().join("decode_document.ncl");
     write_nickel_file(&wrapper_path, &wrapper_source, "writing temporary Nickel decode wrapper")?;
 
-    evaluate_main_file_as(
+    let result: T = evaluate_main_file_as(
         &wrapper_path,
         &format!("evaluating {document_kind} via Nickel migration wrapper"),
-    )
+    )?;
+
+    let json_value = serde_json::to_value(&result).map_err(|err| {
+        ConductorError::Serialization(format!("failed caching evaluated {document_kind}: {err}"))
+    })?;
+    let cache = eval_cache();
+    let mut guard = cache.lock().unwrap();
+    guard.insert(cache_key, json_value);
+    drop(guard);
+
+    Ok(result)
 }
 
 /// Evaluates one document source through the embedded Nickel migration wrapper
@@ -383,7 +457,7 @@ pub(super) fn evaluate_document_source<T>(
     document_kind: &str,
 ) -> Result<T, ConductorError>
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     migrate_document_source_to_version(source, latest::VERSION, document_kind)
 }
