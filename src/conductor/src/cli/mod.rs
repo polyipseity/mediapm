@@ -510,7 +510,7 @@ mod tests {
 }
 mod tools;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -520,7 +520,7 @@ use std::sync::Arc;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use mediapm_cas::{
-    CasApi, CasConfig, CasLocatorParseOptions, CasMaintenanceApi, ConfiguredCas, Hash,
+    CasApi, CasConfig, CasError, CasLocatorParseOptions, CasMaintenanceApi, ConfiguredCas, Hash,
 };
 
 #[cfg(feature = "tool-presets")]
@@ -530,8 +530,9 @@ use crate::api::{
     default_state_paths, export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
+use crate::gc::compute_gc_roots;
 use crate::model::config::{AddExternalDataOptions, ExternalContentRef};
-use crate::model::state::{decode_state, persisted_state_json_pretty};
+use crate::model::state::{OrchestrationState, decode_state, persisted_state_json_pretty};
 use crate::orchestration::SimpleConductor;
 use crate::runtime_env::load_runtime_env_files;
 
@@ -1809,40 +1810,27 @@ async fn run_gc(
 ) -> Result<(), ConductorError> {
     let user = load_user_document(user_ncl)?;
     let machine = load_machine_document(machine_ncl)?;
-    let state = load_state_document(conductor_state_config)?;
+    let state_doc = load_state_document(conductor_state_config)?;
+    let state_pointer = state_doc.state_pointer;
 
-    let mut roots: BTreeSet<Hash> = BTreeSet::new();
-    roots.extend(user.external_data.keys().copied());
-    roots.extend(machine.external_data.keys().copied());
-    roots.extend(
-        user.tool_configs
-            .values()
-            .flat_map(|config| config.content_map.iter().flat_map(|map| map.values().copied())),
-    );
-    roots.extend(
-        machine
-            .tool_configs
-            .values()
-            .flat_map(|config| config.content_map.iter().flat_map(|map| map.values().copied())),
-    );
-
-    if let Some(pointer) = state.state_pointer {
-        roots.insert(pointer);
-
-        if cas.exists(pointer).await? {
-            let state_blob = cas.get(pointer).await?;
-            let state = decode_state(&state_blob)?;
-            for instance in state.instances.values() {
-                roots.extend(instance.outputs.values().map(|output| output.hash));
-                roots.extend(instance.inputs.values().map(|input| input.hash));
-            }
+    // Load orchestration state from CAS if a pointer exists.
+    let state = if let Some(sp) = &state_pointer {
+        match cas.get(*sp).await {
+            Ok(bytes) => decode_state(&bytes).unwrap_or_default(),
+            Err(CasError::NotFound(_)) => OrchestrationState::default(),
+            Err(e) => return Err(ConductorError::Cas(e)),
         }
-    }
+    } else {
+        OrchestrationState::default()
+    };
 
-    let roots_vec: Vec<Hash> = roots.iter().copied().collect();
+    let gc_roots =
+        compute_gc_roots(&user.external_data, &machine.external_data, state_pointer, &state);
+
+    let roots_vec: Vec<Hash> = gc_roots.iter().copied().collect();
     let optimize = cas.optimize_once(mediapm_cas::OptimizeOptions::default()).await?;
     let pruned = cas.prune_constraints().await?;
-    let gc = cas.gc_sweep(&roots).await?;
+    let gc = cas.gc_sweep(&gc_roots).await?;
 
     println!("gc_roots_computed={}", roots_vec.len());
     println!("optimize_rewritten_objects={}", optimize.rewritten_objects);
