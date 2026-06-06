@@ -866,6 +866,9 @@ fn configure_document_for_local_tool_chain(
         // Default: workspace root containing `mediapm.ncl`.
         hierarchy_root_dir: Some("media".to_string()),
         path_sanitization: None,
+        // ZIP entry filename sanitization mapping.
+        // Default when omitted: uses path_sanitization defaults.
+        media_folder_entry_sanitization: None,
         // Ordered file-materialization method preference.
         // Default when omitted: hardlink -> symlink -> reflink -> copy.
         materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec()),

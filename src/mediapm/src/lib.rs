@@ -456,6 +456,10 @@ pub(crate) fn merge_runtime_storage(
             .path_sanitization
             .clone()
             .or_else(|| config_value.path_sanitization.clone()),
+        media_folder_entry_sanitization: override_value
+            .media_folder_entry_sanitization
+            .clone()
+            .or_else(|| config_value.media_folder_entry_sanitization.clone()),
         verify_on_read_sample_denominator: override_value
             .verify_on_read_sample_denominator
             .or(config_value.verify_on_read_sample_denominator),
