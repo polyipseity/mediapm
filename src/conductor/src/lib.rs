@@ -11,6 +11,7 @@ pub mod api;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod error;
+pub mod gc;
 pub mod model;
 pub mod orchestration;
 pub mod runtime_env;
