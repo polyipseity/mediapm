@@ -2242,6 +2242,47 @@ MBID-based metadata override.
 
 ---
 
+### 4.23 CAS Existence Check vs Full Content Load in Instance Output Verification
+
+**Issue**: The instance output existence check in
+`instance_has_materializable_required_outputs` originally used `cas.get(hash)`
+for every required step output, loading full content bytes (potentially
+multi-GB video files) just to verify the hash exists in CAS. Most step
+outputs (videos, audio, info JSON, thumbnails) don't require ZIP member
+extraction — the function only needs to confirm the hash is present.
+
+**Resolution**: For outputs without ZIP member requirements, the check now
+uses `cas.info(hash)` — a lightweight metadata lookup costing one redb index
+read + one stat call. Only outputs that need ZIP member extraction still call
+`cas.get(hash)` to load full bytes for member extraction.
+
+**Risk**: `cas.info()` returns `ObjectInfo` which may be served from the
+redb index rather than verified against storage. If the index reports an
+object as present but its underlying file has been deleted or corrupted, the
+existence check would pass but subsequent `cas.get()` (during actual
+materialization) would fail. This is consistent with the existing CAS
+contract: index false positives are possible (conservative-by-design index
+never returns false negatives for present objects, but may return false
+positives for missing objects).
+
+**Recommendations**:
+
+- Document that `cas.info()` existence checks may produce false positives
+  (index says present, storage missing) that are caught downstream when
+  `cas.get()` is called during actual materialization.
+- No additional index-storage reconciliation is needed — the downstream
+  `cas.get()` call is the authoritative check and the error path already
+  handles missing objects.
+
+**Questions for Clarification**:
+
+1. Should a future optimization use `cas.exists_many()` for batch existence
+   checks across all instances simultaneously, reducing N round-trips to 1?
+   (Current design checks instances sequentially and stops at the first valid
+   one, so batching across instances would waste work.)
+
+---
+
 ## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
 
 ### 5.1 CAS Versioning vs Conductor Document Versioning Coordination
