@@ -86,6 +86,20 @@ pub(crate) enum BatchOperation {
     DeleteObject { hash: Hash },
     /// Replaces explicit constraint bases for one object.
     SetConstraintBases { target_hash: Hash, bases: BTreeSet<Hash> },
+    /// Incrementally patches explicit constraint bases for one object.
+    ///
+    /// Unlike [`SetConstraintBases`](BatchOperation::SetConstraintBases) which
+    /// replaces the entire base set, this variant only persists the added and
+    /// removed bases. This avoids O(N) redb multimap operations on growing
+    /// constraint sets.
+    PatchConstraintBases {
+        /// Target object whose constraint set is being modified.
+        target_hash: Hash,
+        /// Base hashes to add to the constraint set.
+        add_bases: Vec<Hash>,
+        /// Base hashes to remove from the constraint set.
+        remove_bases: Vec<Hash>,
+    },
 }
 
 /// Snapshot of existing primary row key/value bytes during merge persistence.
@@ -731,6 +745,19 @@ impl CasIndexDb {
                             &bases,
                         )?;
                     }
+                    BatchOperation::PatchConstraintBases {
+                        target_hash,
+                        add_bases,
+                        remove_bases,
+                    } => {
+                        Self::apply_patch_constraint_bases(
+                            &mut primary,
+                            &mut constraints,
+                            target_hash,
+                            &add_bases,
+                            &remove_bases,
+                        )?;
+                    }
                 }
             }
 
@@ -822,6 +849,47 @@ impl CasIndexDb {
 
         constraints.remove_all(target_key.as_slice()).map_err(CasError::redb)?;
         for base in bases.iter().copied().filter(|base| *base != empty_content_hash()) {
+            let base_key = index_key_from_hash(base);
+            constraints
+                .insert(target_key.as_slice(), base_key.as_slice())
+                .map_err(CasError::redb)?;
+        }
+        Ok(())
+    }
+
+    /// Incrementally patches explicit constraint bases for one target hash.
+    ///
+    /// Only applies the delta (added and removed bases) instead of replacing
+    /// the entire constraint set, which avoids O(N) redb multimap operations
+    /// on growing constraint sets.
+    fn apply_patch_constraint_bases(
+        primary: &mut redb::Table<&[u8], &[u8]>,
+        constraints: &mut redb::MultimapTable<&[u8], &[u8]>,
+        target_hash: Hash,
+        add_bases: &[Hash],
+        remove_bases: &[Hash],
+    ) -> Result<(), CasError> {
+        if target_hash == empty_content_hash() {
+            if add_bases.is_empty() && remove_bases.is_empty() {
+                return Ok(());
+            }
+            return Err(CasError::invalid_constraint(
+                "empty-content root cannot have explicit constraint bases",
+            ));
+        }
+
+        let target_key = index_key_from_hash(target_hash);
+        if primary.get(target_key.as_slice()).map_err(CasError::redb)?.is_none() {
+            return Err(CasError::NotFound(target_hash));
+        }
+
+        for base in remove_bases.iter().copied().filter(|base| *base != empty_content_hash()) {
+            let base_key = index_key_from_hash(base);
+            constraints
+                .remove(target_key.as_slice(), base_key.as_slice())
+                .map_err(CasError::redb)?;
+        }
+        for base in add_bases.iter().copied().filter(|base| *base != empty_content_hash()) {
             let base_key = index_key_from_hash(base);
             constraints
                 .insert(target_key.as_slice(), base_key.as_slice())

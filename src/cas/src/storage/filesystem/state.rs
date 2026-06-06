@@ -1841,8 +1841,12 @@ impl CasApi for FileSystemState {
         target_hash: Hash,
         patch: ConstraintPatch,
     ) -> Result<Option<Constraint>, CasError> {
+        let before;
+        let after_set;
+        let add_bases;
+        let remove_bases;
         {
-            let index = self.lock_index_read("validating constraint patch target and bases");
+            let mut index = self.lock_index_write("applying constraint patch");
             if !index.objects.contains_key(&target_hash) {
                 return Err(CasError::NotFound(target_hash));
             }
@@ -1851,25 +1855,39 @@ impl CasApi for FileSystemState {
                     return Err(CasError::NotFound(*base));
                 }
             }
-        }
 
-        let merged = {
-            let mut index = self.lock_index_write("applying constraint patch");
-
-            let merged = Self::merge_constraint_patch(index.constraints.get(&target_hash), patch);
-
+            before = index.constraints.get(&target_hash).cloned().unwrap_or_default();
+            let merged = Self::merge_constraint_patch(Some(&before), patch);
             validate_constraint_target_not_in_bases(target_hash, &merged)?;
 
-            Self::set_constraint_row_optic(&mut index, target_hash, merged)
-        };
+            let after_optic = Self::set_constraint_row_optic(&mut index, target_hash, merged);
+            after_set = after_optic.clone().unwrap_or_default();
 
-        self.persist_index_batch(vec![BatchOperation::SetConstraintBases {
+            add_bases = after_set.difference(&before).copied().collect::<Vec<_>>();
+            remove_bases = before.difference(&after_set).copied().collect::<Vec<_>>();
+        }
+
+        if add_bases.is_empty() && remove_bases.is_empty() {
+            // Nothing changed — no persistence needed.
+            return Ok(if after_set.is_empty() {
+                None
+            } else {
+                Some(Constraint { target_hash, potential_bases: after_set })
+            });
+        }
+
+        self.persist_index_batch(vec![BatchOperation::PatchConstraintBases {
             target_hash,
-            bases: merged.clone().unwrap_or_default(),
+            add_bases,
+            remove_bases,
         }])
         .await?;
 
-        Ok(merged.map(|potential_bases| Constraint { target_hash, potential_bases }))
+        Ok(if after_set.is_empty() {
+            None
+        } else {
+            Some(Constraint { target_hash, potential_bases: after_set })
+        })
     }
 
     /// Applies a batch of constraint mutations in a single index-write and
@@ -1879,7 +1897,15 @@ impl CasApi for FileSystemState {
     /// committed. If any op fails validation, the entire batch is rejected
     /// and no state is persisted.
     async fn set_constraint_batch(&self, batch: Vec<ConstraintBatchOp>) -> Result<(), CasError> {
-        let mut persisted_rows: Vec<(Hash, BTreeSet<Hash>)> = Vec::with_capacity(batch.len());
+        #[derive(Debug, Clone)]
+        enum PersistRow {
+            /// Replace the entire constraint set (from [`ConstraintBatchOp::Set`]).
+            Set { target_hash: Hash, bases: BTreeSet<Hash> },
+            /// Apply an incremental delta (from [`ConstraintBatchOp::Patch`]).
+            Patch { target_hash: Hash, add_bases: Vec<Hash>, remove_bases: Vec<Hash> },
+        }
+
+        let mut persisted_rows: Vec<PersistRow> = Vec::with_capacity(batch.len());
 
         {
             let mut index = self.lock_index_write("applying batched constraint mutations");
@@ -1903,7 +1929,7 @@ impl CasApi for FileSystemState {
                             potential_bases.clone(),
                         )
                         .unwrap_or_default();
-                        persisted_rows.push((*target_hash, bases));
+                        persisted_rows.push(PersistRow::Set { target_hash: *target_hash, bases });
                     }
                     ConstraintBatchOp::Patch { target_hash, patch } => {
                         if !index.objects.contains_key(target_hash) {
@@ -1915,16 +1941,26 @@ impl CasApi for FileSystemState {
                             }
                         }
 
-                        let merged = Self::merge_constraint_patch(
-                            index.constraints.get(target_hash),
-                            patch.clone(),
-                        );
+                        let before =
+                            index.constraints.get(target_hash).cloned().unwrap_or_default();
+                        let merged = Self::merge_constraint_patch(Some(&before), patch.clone());
                         validate_constraint_target_not_in_bases(*target_hash, &merged)?;
 
-                        let bases =
+                        // Update in-memory state via the full row optic (computes
+                        // reverse-link diffs internally).
+                        let after =
                             Self::set_constraint_row_optic(&mut index, *target_hash, merged)
                                 .unwrap_or_default();
-                        persisted_rows.push((*target_hash, bases));
+
+                        // Compute the delta for persistence — only the changed
+                        // bases need to be written, not the entire set.
+                        let add_bases: Vec<Hash> = after.difference(&before).copied().collect();
+                        let remove_bases: Vec<Hash> = before.difference(&after).copied().collect();
+                        persisted_rows.push(PersistRow::Patch {
+                            target_hash: *target_hash,
+                            add_bases,
+                            remove_bases,
+                        });
                     }
                 }
             }
@@ -1932,7 +1968,14 @@ impl CasApi for FileSystemState {
 
         let operations: Vec<BatchOperation> = persisted_rows
             .into_iter()
-            .map(|(target_hash, bases)| BatchOperation::SetConstraintBases { target_hash, bases })
+            .map(|row| match row {
+                PersistRow::Set { target_hash, bases } => {
+                    BatchOperation::SetConstraintBases { target_hash, bases }
+                }
+                PersistRow::Patch { target_hash, add_bases, remove_bases } => {
+                    BatchOperation::PatchConstraintBases { target_hash, add_bases, remove_bases }
+                }
+            })
             .collect();
 
         self.persist_index_batch(operations).await
