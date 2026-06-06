@@ -323,8 +323,9 @@ verification on first access.
 **Current Spec**: "A value of 0 means never verified"
 
 **Gap**: No guidance on how Stale strategy treats `verify_time = 0`. Stale is
-not part of the default config (`[Modified, Sample { denominator: 100 }]`), but
-when explicitly enabled its behavior with `verify_time = 0` is unspecified.
+part of the default config (`[Modified, Sample { denominator: 100 }, Stale { timeout: 604800s }]`),
+so every object migrated from v1 will be considered stale and verified on first
+access after migration.
 
 **Risk**: Every object migrated from v1 gets verified on first access after
 migration — potentially mass re-verification on next sync.
@@ -342,7 +343,8 @@ migration — potentially mass re-verification on next sync.
 
 **Issue**: When an object is deleted or pruned from storage, its
 `reconstructed_bytes_cache` entry in `FileSystemState` persists until TTL
-expiry, potentially serving stale or dangling references.
+expiry (now configurable via `CasIntegrityConfig::reconstructed_bytes_cache_ttl`),
+potentially serving stale or dangling references.
 
 **Scenarios**:
 

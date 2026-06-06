@@ -305,15 +305,33 @@ matching strategy triggers.
 ```rust
 pub struct CasIntegrityConfig {
     pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    pub reconstructed_bytes_cache_ttl: Duration,
 }
 ```
 
-Default: `[Modified, Sample { denominator: 100 }]`.
+Default `verify_on_read`: `[Modified, Sample { denominator: 100 }, Stale { timeout: 604800s }]`.
+Default `reconstructed_bytes_cache_ttl`: `3600s`.
 
-Reconstructed-object bytes are cached with a TTL of 3600s (1 hour) to reduce
-redundant decoding work. No separate integrity-result cache is maintained;
+Reconstructed-object bytes are cached with a configurable TTL (`reconstructed_bytes_cache_ttl`)
+to reduce redundant decoding work. No separate integrity-result cache is maintained;
 verification decisions are made fresh on every `get()` call against object-file
 metadata and the strategy list.
+
+**Runtime wiring** (`MediaRuntimeStorage`, `RuntimeStorageConfig`):
+
+The CAS integrity configuration is wired through the runtime storage config stack:
+
+- `MediaRuntimeStorage.verify_on_read_sample_denominator: Option<u64>` — overrides the
+  `Sample` strategy denominator (default: 100).
+- `MediaRuntimeStorage.verify_on_read_stale_timeout_secs: Option<u64>` — overrides the
+  `Stale` strategy timeout in seconds (default: 604800, 7 days).
+- `MediaRuntimeStorage.reconstructed_bytes_cache_ttl_secs: Option<u64>` — overrides the
+  reconstructed-bytes cache TTL in seconds (default: 3600, 1 hour).
+
+These three fields are mirrored in `RuntimeStorageConfig` (conductor crate) and
+converted to `CasIntegrityConfig` via `MediaRuntimeStorage::to_cas_integrity_config()`.
+The resulting config is passed through `RunWorkflowOptions.cas_integrity_config` to
+the conductor orchestration layer.
 
 ### Conductor Specification (src/conductor/)
 
