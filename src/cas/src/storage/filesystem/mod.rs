@@ -22,10 +22,10 @@
 //! Writes use staged temp files + rename to preserve atomic update behavior for
 //! both object payloads and index snapshots.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -81,25 +81,54 @@ const FILESYSTEM_TEST_DROP_GRACE_PERIOD: Duration = Duration::from_millis(25);
 /// Read paths execute directly against shared CAS state for concurrency.
 /// A dedicated object actor is retained only for mutation/accounting tasks
 /// that must coordinate with active memory-map leases.
+/// Global registry of open filesystem CAS stores keyed by canonicalized root
+/// path. When the same store path is opened multiple times by one process, the
+/// registry shares the underlying [`FileSystemState`], acquiring the exclusive
+/// `flock` only once.
+static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<FileSystemState>>>> = OnceLock::new();
+
+/// Looks up an existing state handle for `root` in the global registry.
+fn lookup_state(root: &Path) -> Option<Arc<FileSystemState>> {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let map = REGISTRY.get_or_init(|| Mutex::new(HashMap::new())).lock().ok()?;
+    map.get(&canonical).and_then(Weak::upgrade)
+}
+
+/// Inserts a state handle for `root` into the global registry.
+fn register_state(root: &Path, state: &Arc<FileSystemState>) {
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let Ok(mut map) = REGISTRY.get_or_init(|| Mutex::new(HashMap::new())).lock() else {
+        return;
+    };
+    map.insert(canonical, Arc::downgrade(state));
+}
+
 pub struct FileSystemCas {
     root: PathBuf,
     state: Arc<FileSystemState>,
     drop_grace_period: Duration,
 }
 
-/// Stops object actor on drop and escalates to kill on timeout.
+/// Stops object actor on drop (only when this is the last strong reference)
+/// and escalates to kill on timeout.
 impl Drop for FileSystemCas {
     fn drop(&mut self) {
-        self.state.object_actor.stop(Some("filesystem cas dropped".to_string()));
-        let started = Instant::now();
-        while self.state.object_actor.get_status() != ActorStatus::Stopped
-            && started.elapsed() < self.drop_grace_period
-        {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // When multiple [`FileSystemCas`] instances share the same state (via
+        // the registry), only the last drop stops the actor. The shared state
+        // is registered at open time and deregistered implicitly when all
+        // strong references are dropped.
+        if Arc::strong_count(&self.state) == 1 {
+            self.state.object_actor.stop(Some("filesystem cas dropped".to_string()));
+            let started = Instant::now();
+            while self.state.object_actor.get_status() != ActorStatus::Stopped
+                && started.elapsed() < self.drop_grace_period
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
 
-        if self.state.object_actor.get_status() != ActorStatus::Stopped {
-            self.state.object_actor.kill();
+            if self.state.object_actor.get_status() != ActorStatus::Stopped {
+                self.state.object_actor.kill();
+            }
         }
         // After this, fields are dropped: root, state (Arc<FileSystemState>), drop_grace_period
         // When Arc refcount hits 0, FileSystemState is dropped, releasing lock_file
@@ -243,10 +272,26 @@ impl FileSystemCas {
         drop_grace_period: Duration,
     ) -> Result<Self, CasError> {
         let root = root.as_ref().to_path_buf();
+
+        // Fast path: return existing state handle if already open in this process.
+        if let Some(state) = lookup_state(&root) {
+            return Ok(Self { root, state, drop_grace_period });
+        }
+
+        // Create new state (outside the registry lock to avoid holding it
+        // across an await point).
         let state = Arc::new(
             FileSystemState::open_with_alpha_and_recovery(&root, alpha, recovery, integrity)
                 .await?,
         );
+
+        // Double-check registration: another task may have registered the same
+        // path while we were creating the state.
+        if let Some(existing) = lookup_state(&root) {
+            return Ok(Self { root, state: existing, drop_grace_period });
+        }
+
+        register_state(&root, &state);
         Ok(Self { root, state, drop_grace_period })
     }
 
