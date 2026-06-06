@@ -456,15 +456,6 @@ pub(crate) fn merge_runtime_storage(
             .verify_on_read
             .clone()
             .or_else(|| config_value.verify_on_read.clone()),
-        verify_on_read_sample_denominator: override_value
-            .verify_on_read_sample_denominator
-            .or(config_value.verify_on_read_sample_denominator),
-        verify_on_read_stale_timeout_secs: override_value
-            .verify_on_read_stale_timeout_secs
-            .or(config_value.verify_on_read_stale_timeout_secs),
-        verify_on_read_cache_ttl_secs: override_value
-            .verify_on_read_cache_ttl_secs
-            .or(config_value.verify_on_read_cache_ttl_secs),
         path_sanitization: override_value
             .path_sanitization
             .clone()
