@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use mediapm_cas::{
-    CasApi, CasExistenceBitmap, Constraint, ConstraintPatch, Hash, empty_content_hash,
+    CasApi, CasExistenceBitmap, ConstraintBatchOp, ConstraintPatch, Hash, empty_content_hash,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
@@ -550,6 +550,7 @@ where
 
         let persistence_merge_started_at = Instant::now();
         let mut pending_unsaved_hashes = BTreeSet::new();
+        let mut constraint_batch = Vec::new();
         for output_name in &effective_output_names {
             let output_spec = output_specs.get(output_name).ok_or_else(|| {
                 ConductorError::Internal(format!(
@@ -576,12 +577,15 @@ where
                 continue;
             }
             if merged.save.prefers_full() {
-                self.apply_full_save_hint(output_ref.hash).await?;
+                push_full_save_hint(output_ref.hash, &mut constraint_batch);
             }
-            self.apply_reverse_diff_hints(output_ref.hash, &instance.inputs).await?;
+            push_reverse_diff_hints(output_ref.hash, &instance.inputs, &mut constraint_batch);
             if !merged.save.should_persist() {
                 pending_unsaved_hashes.insert(output_ref.hash);
             }
+        }
+        if !constraint_batch.is_empty() {
+            self.cas.set_constraint_batch(constraint_batch).await?;
         }
         phase_timings.persistence_merge_ms =
             persistence_merge_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -1106,6 +1110,7 @@ where
         })?;
 
         let mut plain_content = Vec::new();
+        let mut external_constraint_batch = Vec::new();
 
         for segment in parsed_segments {
             match segment {
@@ -1118,7 +1123,7 @@ where
                     };
                     let bytes = self.cas.get(hash).await?;
                     if reference.save.is_some_and(OutputSaveMode::prefers_full) {
-                        self.apply_full_save_hint(hash).await?;
+                        push_full_save_hint(hash, &mut external_constraint_batch);
                     }
                     plain_content.extend_from_slice(bytes.as_ref());
                 }
@@ -1176,6 +1181,10 @@ where
                     plain_content.extend_from_slice(value.as_bytes());
                 }
             }
+        }
+
+        if !external_constraint_batch.is_empty() {
+            self.cas.set_constraint_batch(external_constraint_batch).await?;
         }
 
         Ok(Bytes::from(plain_content))
@@ -2610,43 +2619,49 @@ where
             .collect::<Vec<_>>()
             .join("/")
     }
+}
 
-    /// Applies the full-save CAS hint for outputs that must keep a complete
-    /// base snapshot.
-    async fn apply_full_save_hint(&self, target_hash: Hash) -> Result<(), ConductorError> {
-        let empty_hash = empty_content_hash();
-        if target_hash == empty_hash {
-            return Ok(());
-        }
-        let bases = BTreeSet::from([empty_hash]);
-        self.cas.set_constraint(Constraint { target_hash, potential_bases: bases }).await?;
-        Ok(())
+/// Applies the full-save CAS hint for outputs that must keep a complete
+/// base snapshot.
+fn push_full_save_hint(target_hash: Hash, batch: &mut Vec<ConstraintBatchOp>) {
+    if target_hash == empty_content_hash() {
+        return;
     }
+    batch.push(ConstraintBatchOp::Set {
+        target_hash,
+        potential_bases: BTreeSet::from([empty_content_hash()]),
+    });
+}
 
-    /// Applies reverse-diff hints from each source input toward the produced output.
-    ///
-    /// The canonical empty-content root hash is intentionally skipped because
-    /// CAS constraint rules do not allow explicit base sets on that root node.
-    async fn apply_reverse_diff_hints(
-        &self,
-        output_hash: Hash,
-        inputs: &BTreeMap<String, ResolvedInputKey>,
-    ) -> Result<(), ConductorError> {
-        let empty_hash = empty_content_hash();
-        for input_hash in inputs.values().map(|input| input.hash) {
-            if input_hash == output_hash || input_hash == empty_hash {
-                continue;
-            }
-            let patch = ConstraintPatch {
+/// Applies reverse-diff hints from each source input toward the produced output.
+///
+/// The canonical empty-content root hash is intentionally skipped because
+/// CAS constraint rules do not allow explicit base sets on that root node.
+fn push_reverse_diff_hints(
+    output_hash: Hash,
+    inputs: &BTreeMap<String, ResolvedInputKey>,
+    batch: &mut Vec<ConstraintBatchOp>,
+) {
+    let empty_hash = empty_content_hash();
+    for input_hash in inputs.values().map(|input| input.hash) {
+        if input_hash == output_hash || input_hash == empty_hash {
+            continue;
+        }
+        batch.push(ConstraintBatchOp::Patch {
+            target_hash: input_hash,
+            patch: ConstraintPatch {
                 add_bases: BTreeSet::from([output_hash]),
                 remove_bases: BTreeSet::new(),
                 clear_existing: false,
-            };
-            self.cas.patch_constraint(input_hash, patch).await?;
-        }
-        Ok(())
+            },
+        });
     }
+}
 
+impl<C> StepWorkerExecutor<C>
+where
+    C: CasApi + Send + Sync + 'static,
+{
     /// Derives the deterministic instance key used for deduplication and
     /// state merge.
     ///
@@ -2814,7 +2829,7 @@ mod tests {
 
     use super::{
         ResolvedOutputCapture, ResolvedOutputSpec, ResolvedProcessExecution, StepWorkerExecutor,
-        ToolExecutionCapture,
+        ToolExecutionCapture, push_reverse_diff_hints,
     };
 
     /// Builds one minimal executable-process descriptor for helper invocations.
@@ -4698,28 +4713,16 @@ mod tests {
     /// empty-content root input hash.
     #[tokio::test]
     async fn reverse_diff_hints_skip_empty_content_root_input_hash() {
-        let cas = Arc::new(InMemoryCas::new());
-        let output_hash = cas.put(Bytes::from_static(b"output")).await.expect("put output payload");
-        let executor =
-            StepWorkerExecutor { cas: cas.clone(), conductor_tmp_dir: std::env::temp_dir() };
-
+        let output_hash = Hash::from_content(b"output");
         let inputs = BTreeMap::from([(
             "empty".to_string(),
             ResolvedInputKey { hash: empty_content_hash() },
         )]);
 
-        executor
-            .apply_reverse_diff_hints(output_hash, &inputs)
-            .await
-            .expect("reverse-diff hinting should skip empty-content root input hash");
+        let mut batch = Vec::new();
+        push_reverse_diff_hints(output_hash, &inputs, &mut batch);
 
-        assert!(
-            cas.get_constraint(empty_content_hash())
-                .await
-                .expect("query empty constraint")
-                .is_none(),
-            "empty-content root should remain unconstrained"
-        );
+        assert!(batch.is_empty(), "should produce no ops for empty-content root input");
     }
 
     /// Protects external-data full-save policy behavior by applying full-save CAS
