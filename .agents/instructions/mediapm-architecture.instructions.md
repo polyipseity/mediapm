@@ -130,8 +130,8 @@ is a narrow, documented reason.
   - media tagger implementation remains under
     `src/mediapm/src/builtins/media_tagger.rs` (do not reintroduce a second
     root-level `src/mediapm/src/media_tagger.rs`),
-  - `config` and `lockfile` stay folder modules rooted at
-    `src/mediapm/src/config/mod.rs` and `src/mediapm/src/lockfile/mod.rs`,
+  - `config` is a folder module rooted at
+    `src/mediapm/src/config/mod.rs`,
   - default runtime root is `.mediapm/`,
   - `mediapm.ncl` `runtime` may optionally override
     `mediapm_dir`, `conductor_config`, `conductor_machine_config`,
@@ -156,7 +156,7 @@ is a narrow, documented reason.
     `src/mediapm/src/config/versions/` with version-specific wire envelopes in
     `vN.rs`,
   - machine-managed state wire-version dispatch and migrations live under
-    `src/mediapm/src/lockfile/versions/` with version-specific wire envelopes
+    `src/mediapm/src/config/versions/` with version-specific wire envelopes
     in `vN.rs`,
   - default materialized output root is the topmost `mediapm.ncl` directory
     itself (no implicit `library/` folder),

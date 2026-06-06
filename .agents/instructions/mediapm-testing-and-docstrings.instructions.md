@@ -37,7 +37,7 @@ applyTo: "tests/**/*.rs, src/**/*.rs"
   - `mediapm-cas`: store/get/constraint/optimize coverage,
   - `mediapm-conductor`: tool import/run/cache/re-exec coverage,
   - `mediapm`: tool lifecycle + media add/add-local + sync/materialize
-    - lockfile/prune/verify coverage.
+    - state doc/prune/verify coverage.
 
 ## Advanced correctness coverage
 

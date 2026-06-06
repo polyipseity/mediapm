@@ -594,7 +594,7 @@ repeated stale-entry warnings on every sync cycle.
 **Key Takeaways**:
 - **Three-Layer Composition**: CAS (identity) + Conductor (orchestration) + MediaPM (policy)
 - **Configuration**: `mediapm.ncl` (user), `state.ncl` (machine), with versioning
-- **Module Hierarchy**: 13 submodules (config, lockfile, paths, conductor_bridge, materializer, tools, etc.)
+- **Module Hierarchy**: 12 submodules (config, paths, conductor_bridge, materializer, tools, etc.)
 - **Public Trait**: `MediaPmApi` with `process_source()` and `sync_library()`
 - **State Management**: Direct materialization; lock records for cache hits
 - **Tool Provisioning**: User-level cache (downloads) vs. workspace cache (extracted binaries)
@@ -750,7 +750,7 @@ repeated stale-entry warnings on every sync cycle.
     track step config identity transitions. Timestamps are withheld during
     workflow synthesis (`None` when `requires_refresh` is true) and written
     after the conductor workflow completes — the
-    `sync_library_with_tag_update_checks()` backfill pass iterates lockfile
+    `sync_library_with_tag_update_checks()` backfill pass iterates state doc
     step states and stamps `fresh_impure_timestamp()` where `impure_timestamp`
     is `None`. A timestamp refresh requires an explicit configuration change
     in `mediapm.ncl` — tool version updates alone do NOT update mediapm
@@ -803,7 +803,7 @@ completion is signaled via `set_message` + `set_position` rather than
 |-------|---|---|---|
 | **CAS** | Object envelope, index schema | Embedded in wire format | `codec/versions/`, `index/versions/` |
 | **Conductor** | User/machine/state documents | Top-level `version: u32` | `model/config/versions/`, `model/state/versions/` |
-| **MediaPM** | `mediapm.ncl`, `state.ncl` | Top-level `version: u32` | `config/versions/`, `lockfile/versions/` |
+| **MediaPM** | `mediapm.ncl`, `state.ncl` | Top-level `version: u32` | `config/versions/` |
 
 **Rules** (all crates):
 1. Each persisted schema carries explicit version marker
@@ -2690,7 +2690,6 @@ mediapm/
 │       │   ├── lib.rs (MediaPmService)
 │       │   ├── cli.rs (command-line interface)
 │       │   ├── config/ (mediapm.ncl schema)
-│       │   ├── lockfile/ (lock.ncl persistence)
 │       │   ├── paths.rs (runtime path resolution)
 │       │   ├── conductor_bridge.rs (ConductorApi integration)
 │       │   ├── materializer.rs (materialization)
