@@ -3459,8 +3459,7 @@ async fn prepare_hierarchy_entry(
             progress_bar.set_position(30);
             let mut extracted_entries = BTreeMap::new();
             let mut extracted_entry_variants = BTreeMap::<String, String>::new();
-            let entry_sanitization =
-                document.runtime.media_folder_entry_sanitization_with_defaults()?;
+            let entry_sanitization = document.runtime.path_sanitization_mapping_with_defaults()?;
             for variant in &resolved_variants {
                 let variant_source =
                     resolve_variant_source_bytes(lookup, &entry.media_id, source, variant).await?;

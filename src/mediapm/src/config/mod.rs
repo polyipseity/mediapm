@@ -397,16 +397,6 @@ pub struct MediaRuntimeStorage {
     /// When omitted, each reserved char defaults to `_`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_sanitization: Option<BTreeMap<String, String>>,
-    /// Optional custom reserved-character replacement mapping for `media_folder`
-    /// ZIP entry filenames.
-    ///
-    /// This is separate from `path_sanitization` — it applies only to
-    /// individual filename entries extracted from `media_folder` ZIP variants,
-    /// not to full hierarchy paths.
-    ///
-    /// When omitted, each reserved char defaults to `_`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_folder_entry_sanitization: Option<BTreeMap<String, String>>,
     /// Optional toggle for conductor workflow profiling during managed runs.
     ///
     /// When `Some(true)`, conductor writes a per-step timing profile to
@@ -559,14 +549,9 @@ fn default_path_sanitization_mapping() -> BTreeMap<char, char> {
         ('|', '_'),
         ('?', '_'),
         ('*', '_'),
+        ('/', '_'),
+        ('\\', '_'),
     ])
-}
-
-fn default_media_folder_entry_sanitization_mapping() -> BTreeMap<char, char> {
-    let mut map = default_path_sanitization_mapping();
-    map.insert('/', '_');
-    map.insert('\\', '_');
-    map
 }
 
 fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
@@ -674,56 +659,6 @@ impl MediaRuntimeStorage {
                 if value.chars().count() != 1 {
                     return Err(MediaPmError::Workflow(
                         "runtime.path_sanitization values must be single-character strings"
-                            .to_string(),
-                    ));
-                }
-
-                replacements.insert(key_char, replacement_char);
-            }
-        }
-
-        Ok(replacements)
-    }
-
-    /// Returns one effective reserved-character replacement mapping for
-    /// `media_folder` ZIP entry filenames.
-    ///
-    /// If the config is omitted, this uses the runtime defaults for all
-    /// rejected reserved filename characters.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError::Workflow`] if a custom mapping key or value is
-    /// not a single character.
-    pub fn media_folder_entry_sanitization_with_defaults(
-        &self,
-    ) -> Result<BTreeMap<char, char>, MediaPmError> {
-        let mut replacements = default_media_folder_entry_sanitization_mapping();
-
-        if let Some(custom) = &self.media_folder_entry_sanitization {
-            for (key, value) in custom {
-                let key_char = key.chars().next().ok_or_else(|| {
-                    MediaPmError::Workflow(
-                        "runtime.media_folder_entry_sanitization keys must be single characters"
-                            .to_string(),
-                    )
-                })?;
-                if key.chars().count() != 1 {
-                    return Err(MediaPmError::Workflow(
-                        "runtime.media_folder_entry_sanitization keys must be single-character strings"
-                            .to_string(),
-                    ));
-                }
-
-                let replacement_char = value.chars().next().ok_or_else(|| {
-                    MediaPmError::Workflow(
-                        "runtime.media_folder_entry_sanitization values must be single-character strings"
-                            .to_string(),
-                    )
-                })?;
-                if value.chars().count() != 1 {
-                    return Err(MediaPmError::Workflow(
-                        "runtime.media_folder_entry_sanitization values must be single-character strings"
                             .to_string(),
                     ));
                 }
@@ -2328,6 +2263,8 @@ runtime = {
         assert_eq!(mapping.get(&'|'), Some(&'_'));
         assert_eq!(mapping.get(&'?'), Some(&'_'));
         assert_eq!(mapping.get(&'*'), Some(&'_'));
+        assert_eq!(mapping.get(&'/'), Some(&'_'));
+        assert_eq!(mapping.get(&'\\'), Some(&'_'));
     }
 
     /// Protects runtime path sanitization custom mapping merge semantics.
@@ -2347,44 +2284,6 @@ runtime = {
 
         assert_eq!(mapping.get(&'<'), Some(&'x'));
         assert_eq!(mapping.get(&'*'), Some(&'+'));
-        assert_eq!(mapping.get(&'>'), Some(&'_'));
-    }
-
-    /// Protects `media_folder` entry sanitization defaults.
-    #[test]
-    fn runtime_storage_media_folder_entry_sanitization_defaults() {
-        let mapping = MediaRuntimeStorage::default()
-            .media_folder_entry_sanitization_with_defaults()
-            .expect("default media_folder entry sanitization map");
-
-        assert_eq!(mapping.get(&'<'), Some(&'_'));
-        assert_eq!(mapping.get(&'>'), Some(&'_'));
-        assert_eq!(mapping.get(&':'), Some(&'_'));
-        assert_eq!(mapping.get(&'"'), Some(&'_'));
-        assert_eq!(mapping.get(&'|'), Some(&'_'));
-        assert_eq!(mapping.get(&'?'), Some(&'_'));
-        assert_eq!(mapping.get(&'*'), Some(&'_'));
-        assert_eq!(mapping.get(&'/'), Some(&'_'));
-        assert_eq!(mapping.get(&'\\'), Some(&'_'));
-    }
-
-    /// Protects `media_folder` entry sanitization custom override merge.
-    #[test]
-    fn runtime_storage_media_folder_entry_sanitization_merges_custom_mapping() {
-        let runtime = MediaRuntimeStorage {
-            media_folder_entry_sanitization: Some(BTreeMap::from([
-                ("<".to_string(), "-".to_string()),
-                ("?".to_string(), "!".to_string()),
-            ])),
-            ..MediaRuntimeStorage::default()
-        };
-
-        let mapping = runtime
-            .media_folder_entry_sanitization_with_defaults()
-            .expect("custom media_folder entry sanitization map");
-
-        assert_eq!(mapping.get(&'<'), Some(&'-'));
-        assert_eq!(mapping.get(&'?'), Some(&'!'));
         assert_eq!(mapping.get(&'>'), Some(&'_'));
     }
 

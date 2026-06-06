@@ -267,13 +267,30 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
     Ok(())
 }
 
-/// Applies one reserved-character replacement map to a relative hierarchy path.
+/// Applies a reserved-character replacement map to a relative hierarchy path,
+/// operating per path component to preserve path separators.
 #[must_use]
 pub(super) fn sanitize_hierarchy_path(
     relative_path: &str,
     replacements: &BTreeMap<char, char>,
 ) -> String {
-    relative_path.chars().map(|ch| replacements.get(&ch).copied().unwrap_or(ch)).collect()
+    use std::path::Component;
+    Path::new(relative_path)
+        .components()
+        .map(|component| match component {
+            Component::Normal(seg) => seg
+                .to_string_lossy()
+                .chars()
+                .map(|ch| replacements.get(&ch).copied().unwrap_or(ch))
+                .collect::<String>(),
+            Component::RootDir => std::path::MAIN_SEPARATOR.to_string(),
+            Component::CurDir => ".".to_string(),
+            Component::ParentDir => "..".to_string(),
+            Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().to_string(),
+        })
+        .collect::<std::path::PathBuf>()
+        .to_string_lossy()
+        .to_string()
 }
 
 /// Validates one relative hierarchy path against mediapm invariants.
@@ -313,7 +330,7 @@ pub(super) fn validate_hierarchy_path(relative_path: &str) -> Result<(), MediaPm
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
 fn is_rejected_char(ch: char) -> bool {
-    matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\')
+    matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\')
 }
 
 /// Returns current Unix epoch timestamp in seconds.
