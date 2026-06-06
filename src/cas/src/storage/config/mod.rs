@@ -41,9 +41,8 @@ pub enum VerifyTriggerStrategy {
 /// Default optimizer depth penalty for filesystem backend.
 const DEFAULT_FILESYSTEM_ALPHA: u64 = 4;
 /// Default maximum retained index backup snapshots.
-const DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT: usize = 4;
+const DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT: usize = 2;
 /// Default mutation-batch interval between backup snapshots.
-const DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS: usize = 8;
 
 /// Startup policy to apply when the primary filesystem index is missing or corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -64,11 +63,6 @@ pub struct FileSystemRecoveryOptions {
     ///
     /// Set to `0` to disable backup snapshot creation entirely.
     pub max_backup_snapshots: usize,
-    /// Number of successful incremental index mutation batches between backup snapshots.
-    ///
-    /// Set to `1` to preserve per-mutation backup behavior.
-    /// Values below `1` are normalized to `1` by filesystem runtime code.
-    pub backup_snapshot_interval_ops: usize,
     /// If true, the lock acquisition will block until the lock is available.
     /// If false (default), startup fails immediately with `StoreLocked` if
     /// another process holds the lock.
@@ -81,7 +75,6 @@ impl Default for FileSystemRecoveryOptions {
         Self {
             mode: IndexRecoveryMode::Recover,
             max_backup_snapshots: DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT,
-            backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
             wait_for_lock: false,
         }
     }
@@ -249,7 +242,6 @@ impl CasConfig {
             filesystem_recovery: FileSystemRecoveryOptions {
                 mode: IndexRecoveryMode::Recover,
                 max_backup_snapshots: DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT,
-                backup_snapshot_interval_ops: DEFAULT_INDEX_BACKUP_BATCH_INTERVAL_OPS,
                 wait_for_lock: false,
             },
             integrity: CasIntegrityConfig::default(),
@@ -587,7 +579,6 @@ mod tests {
             FileSystemRecoveryOptions {
                 mode: IndexRecoveryMode::Strict,
                 max_backup_snapshots: 9,
-                backup_snapshot_interval_ops: 3,
                 wait_for_lock: false,
             },
         );
@@ -595,6 +586,5 @@ mod tests {
         assert!(matches!(cfg.backend, CasBackendConfig::FileSystem { alpha: 7, .. }));
         assert_eq!(cfg.filesystem_recovery.mode, IndexRecoveryMode::Strict);
         assert_eq!(cfg.filesystem_recovery.max_backup_snapshots, 9);
-        assert_eq!(cfg.filesystem_recovery.backup_snapshot_interval_ops, 3);
     }
 }

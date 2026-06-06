@@ -650,32 +650,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn filesystem_backup_snapshot_interval_batches_mutation_backups() {
-        let dir = tempdir().expect("tempdir");
-        let recovery = FileSystemRecoveryOptions {
-            mode: IndexRecoveryMode::Recover,
-            max_backup_snapshots: 16,
-            backup_snapshot_interval_ops: 3,
-            wait_for_lock: false,
-        };
-        let cas = FileSystemCas::open_with_alpha_and_recovery_for_tests(dir.path(), 4, recovery)
-            .await
-            .expect("open fs cas with interval recovery settings");
-
-        let initial = count_backup_snapshots(dir.path());
-        assert_eq!(initial, 1, "open should persist one initial backup snapshot");
-
-        cas.put(Bytes::from_static(b"interval-a")).await.expect("put #1");
-        assert_eq!(count_backup_snapshots(dir.path()), initial);
-
-        cas.put(Bytes::from_static(b"interval-b")).await.expect("put #2");
-        assert_eq!(count_backup_snapshots(dir.path()), initial);
-
-        cas.put(Bytes::from_static(b"interval-c")).await.expect("put #3");
-        assert_eq!(count_backup_snapshots(dir.path()), initial + 1);
-    }
-
-    #[tokio::test]
     async fn filesystem_put_get_delete_lifecycle() {
         let (_dir, cas) = open_temp_filesystem_cas().await;
 

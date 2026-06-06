@@ -19,7 +19,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -85,8 +85,6 @@ pub(super) struct FileSystemState {
     /// Integrity verification policy for read-path hash checks.
     integrity: CasIntegrityConfig,
 
-    /// Number of incremental mutation batches persisted since process start.
-    backup_batch_counter: AtomicU64,
     /// In-process observability counters for filesystem CAS operations.
     metrics: FileSystemMetricsState,
     /// Tracks whether an optimize run is currently active.
@@ -236,7 +234,6 @@ impl FileSystemState {
             recovery,
             integrity,
 
-            backup_batch_counter: AtomicU64::new(0),
             metrics: FileSystemMetricsState::default(),
             optimize_in_progress: AtomicBool::new(false),
             active_mmaps,
@@ -678,56 +675,16 @@ impl FileSystemState {
         Ok(())
     }
 
-    /// Returns whether current batch counter requires periodic backup write.
-    fn should_write_backup_after_batch(&self) -> bool {
-        if self.recovery.max_backup_snapshots == 0 {
-            return false;
-        }
-
-        let interval = self.recovery.backup_snapshot_interval_ops.max(1) as u64;
-        let next = self.backup_batch_counter.fetch_add(1, Ordering::AcqRel).saturating_add(1);
-        next.is_multiple_of(interval)
-    }
-
-    /// Writes backup snapshot without mutating primary index tables.
-    async fn write_backup_snapshot_only(&self) -> Result<(), CasError> {
-        if self.recovery.max_backup_snapshots == 0 {
-            return Ok(());
-        }
-
-        let state_snapshot = {
-            let index = self.lock_index_read("snapshotting full index state for backup snapshot");
-            index.clone()
-        };
-        let root = self.root.clone();
-        let max_backup_snapshots = self.recovery.max_backup_snapshots;
-
-        tokio::task::spawn_blocking(move || {
-            recovery::write_backup_snapshot(&root, &state_snapshot, max_backup_snapshots)
-        })
-        .await
-        .map_err(|err| CasError::task_join("persisting periodic index backup snapshot", err))??;
-        Ok(())
-    }
-
-    /// Persists incremental index operations and optional backup snapshots.
+    /// Persists incremental index operations.
     async fn persist_index_batch(&self, operations: Vec<BatchOperation>) -> Result<(), CasError> {
         if operations.is_empty() {
             return Ok(());
         }
 
-        let force_backup_for_constraints = operations
-            .iter()
-            .any(|operation| matches!(operation, BatchOperation::SetConstraintBases { .. }));
-
         let index_db = self.index_db.clone();
         tokio::task::spawn_blocking(move || index_db.persist_batch(operations)).await.map_err(
             |err| CasError::task_join("persisting incremental index batch to redb", err),
         )??;
-
-        if force_backup_for_constraints || self.should_write_backup_after_batch() {
-            self.write_backup_snapshot_only().await?;
-        }
 
         Ok(())
     }
