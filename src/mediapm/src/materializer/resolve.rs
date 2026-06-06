@@ -284,14 +284,34 @@ async fn resolve_variant_hash_from_workflow_state(
         return Ok(None);
     };
 
-    let Some(step_output_hashes) = resolve_workflow_step_output_hashes(
-        lookup.cas.as_ref(),
-        lookup.machine.as_ref(),
-        state,
-        workflow,
-    )
-    .await?
-    else {
+    // Check the step-output-hashes cache: orchestration state is immutable
+    // during sync_hierarchy, so all calls for the same workflow produce the
+    // same result.  This avoids redundant O(steps × instances) scans.
+    // The cache lock is never held across `.await` so tokio::spawn bounds
+    // are satisfied.
+    let step_output_hashes = {
+        let cached = {
+            let cache = lookup.step_output_hashes_cache.lock().unwrap();
+            cache.get(&workflow_id).cloned()
+        };
+        match cached {
+            Some(result) => result,
+            None => {
+                let result = resolve_workflow_step_output_hashes(
+                    lookup.cas.as_ref(),
+                    lookup.machine.as_ref(),
+                    state,
+                    workflow,
+                )
+                .await?;
+                let mut cache = lookup.step_output_hashes_cache.lock().unwrap();
+                cache.insert(workflow_id, result.clone());
+                result
+            }
+        }
+    };
+
+    let Some(ref step_output_hashes) = step_output_hashes else {
         return Ok(None);
     };
 

@@ -4,10 +4,10 @@
 //! temporary directory, and materializes all outputs directly to their final
 //! paths under the resolved library directory.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -2990,6 +2990,13 @@ struct MaterializationLookupContext {
     ffmpeg_max_output_slots: usize,
     /// Host-resolved managed ffprobe path derived from active managed ffmpeg.
     managed_ffprobe_path: Option<PathBuf>,
+    /// Cache of resolved workflow step output hashes keyed by workflow ID.
+    ///
+    /// The orchestration state is immutable during `sync_hierarchy`, so
+    /// repeated resolution for the same workflow yields the same result.
+    /// This avoids O(steps × instances) scans for each hierarchy entry's
+    /// variant resolution when many entries share the same workflow.
+    step_output_hashes_cache: Arc<Mutex<HashMap<String, Option<StepOutputHashes>>>>,
 }
 
 /// Resolved payload bytes for one materialized variant request.
@@ -3517,6 +3524,7 @@ pub async fn sync_hierarchy(
         ffmpeg_max_input_slots,
         ffmpeg_max_output_slots,
         managed_ffprobe_path,
+        step_output_hashes_cache: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let mut report = MaterializeReport::default();
