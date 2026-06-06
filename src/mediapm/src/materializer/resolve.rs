@@ -529,6 +529,11 @@ fn instance_recency_rank(
 ///
 /// This filters out stale instances whose required output hashes no longer
 /// exist in CAS and verifies required ZIP-selector members when present.
+///
+/// For outputs that don't need ZIP member extraction, uses `cas.info()` for
+/// a lightweight existence check (index lookup + stat) instead of loading
+/// full content bytes. ZIP-member outputs still use `cas.get()` for
+/// extraction.
 async fn instance_has_materializable_required_outputs(
     cas: &FileSystemCas,
     instance: &ToolCallInstance,
@@ -540,13 +545,18 @@ async fn instance_has_materializable_required_outputs(
             return false;
         };
 
-        let Ok(output_bytes) = cas.get(output_ref.hash).await else {
-            return false;
-        };
-
         let Some(members) = required_zip_members.and_then(|by_output| by_output.get(output_name))
         else {
+            // No ZIP members needed — lightweight existence check.
+            if cas.info(output_ref.hash).await.is_err() {
+                return false;
+            }
             continue;
+        };
+
+        // ZIP members needed — load full bytes for extraction.
+        let Ok(output_bytes) = cas.get(output_ref.hash).await else {
+            return false;
         };
 
         for member in members {
