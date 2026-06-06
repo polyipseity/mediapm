@@ -106,6 +106,18 @@ impl StateStoreClient {
             |err| ConductorError::Internal(format!("state store run_gc RPC failed: {err}")),
         )?
     }
+
+    /// Returns the last persisted state blob CAS pointer, if any.
+    #[allow(dead_code)]
+    pub(in crate::orchestration) async fn get_state_pointer(
+        &self,
+    ) -> Result<Option<Hash>, ConductorError> {
+        call_t!(self.actor, StateStoreMessage::GetStatePointer, rpc_timeout_ms()).map_err(
+            |err| {
+                ConductorError::Internal(format!("state store get_state_pointer RPC failed: {err}"))
+            },
+        )?
+    }
 }
 
 /// Requests supported by the state-store actor.
@@ -123,6 +135,9 @@ enum StateStoreMessage {
     SetInstanceTtl(Option<u64>),
     /// Runs instance GC with an optional TTL override.
     RunGc(Option<u64>, RpcReplyPort<Result<(), ConductorError>>),
+    /// Returns the last persisted state blob CAS pointer, if any.
+    #[allow(dead_code)]
+    GetStatePointer(RpcReplyPort<Result<Option<Hash>, ConductorError>>),
 }
 
 /// Marker actor for orchestration-state persistence.
@@ -152,6 +167,8 @@ where
     /// Optional instance TTL in seconds for GC pruning.
     /// When `None`, instance GC is disabled.
     instance_ttl_seconds: Option<u64>,
+    /// Last persisted state blob CAS pointer, if any.
+    current_state_pointer: Option<Hash>,
 }
 
 impl<C> StateStoreService<C>
@@ -214,6 +231,7 @@ where
         )
         .await?;
         self.current_state = request.next_state;
+        self.current_state_pointer = Some(current_state_pointer);
         Ok(current_state_pointer)
     }
 
@@ -231,6 +249,7 @@ where
     ) -> Result<Hash, ConductorError> {
         let pointer = self.persist_state_blob(&next_state).await?;
         self.current_state = next_state;
+        self.current_state_pointer = Some(pointer);
         Ok(pointer)
     }
 
@@ -306,6 +325,7 @@ where
             cas: args.0,
             current_state: OrchestrationState::default(),
             instance_ttl_seconds: args.1,
+            current_state_pointer: None,
         })
     }
 
@@ -334,6 +354,9 @@ where
             }
             StateStoreMessage::RunGc(ttl_override, reply) => {
                 let _ = reply.send(state.run_gc(ttl_override).await);
+            }
+            StateStoreMessage::GetStatePointer(reply) => {
+                let _ = reply.send(Ok(state.current_state_pointer));
             }
         }
         Ok(())
