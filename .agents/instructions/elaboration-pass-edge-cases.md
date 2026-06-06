@@ -3386,8 +3386,8 @@ template path but different `media_id` are now allowed. Same path + same
 `media_id` is still correctly rejected as a duplicate.
 
 **Cross-reference**: see `flatten_hierarchy_nodes_for_runtime()` in
-`src/mediapm/src/config/hierarchy_types.rs` and the guard in
-`collect_media_file_hierarchy_templates()` in
+`src/mediapm/src/config/hierarchy_types.rs` and
+`collect_media_entries_by_id()` in
 `src/mediapm/src/materializer/playlist.rs`.
 
 **Rationale**: Template paths are resolved per-media_id during materialization
