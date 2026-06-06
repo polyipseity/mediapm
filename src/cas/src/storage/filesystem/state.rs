@@ -20,7 +20,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -61,10 +61,6 @@ use super::{
     FILESYSTEM_SMALL_INLINE_HASHES, FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
     FILESYSTEM_STREAM_READ_CHUNK_BYTES, FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT, STORAGE_VERSION,
 };
-
-/// TTL for the reconstructed bytes cache. After this duration, cached
-/// object bytes are re-fetched and re-verified from storage.
-const RECONSTRUCTED_BYTES_CACHE_TTL: Duration = Duration::from_secs(3600);
 
 /// Shared filesystem CAS backend state.
 pub(super) struct FileSystemState {
@@ -503,7 +499,7 @@ impl FileSystemState {
         if let Some(cached) = {
             let cache = self.lock_reconstructed_cache("reading reconstructed-bytes cache");
             cache.get(&hash).and_then(|(cached_at, bytes)| {
-                if cached_at.elapsed() < RECONSTRUCTED_BYTES_CACHE_TTL {
+                if cached_at.elapsed() < self.integrity.reconstructed_bytes_cache_ttl {
                     Some(bytes.clone())
                 } else {
                     None

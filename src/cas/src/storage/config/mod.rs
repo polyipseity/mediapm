@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -94,8 +95,11 @@ impl Default for FileSystemRecoveryOptions {
 pub struct CasIntegrityConfig {
     /// Ordered list of strategies that trigger re-verification.
     /// If any strategy matches, full verification runs.
-    /// Default: `[Modified, Sample]`.
+    /// Default: `[Modified, Sample, Stale]`.
     pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    /// TTL for the reconstructed bytes cache. After this duration, cached
+    /// object bytes are re-fetched and re-verified from storage.
+    pub reconstructed_bytes_cache_ttl: Duration,
 }
 
 impl Default for CasIntegrityConfig {
@@ -104,7 +108,9 @@ impl Default for CasIntegrityConfig {
             verify_on_read: vec![
                 VerifyTriggerStrategy::Modified,
                 VerifyTriggerStrategy::Sample { denominator: 100 },
+                VerifyTriggerStrategy::Stale { timeout: Duration::from_secs(604800) },
             ],
+            reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
         }
     }
 }
