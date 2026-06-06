@@ -103,22 +103,22 @@ fn apply_runtime_storage_defaults(
         }
     }
     if runtime_storage.verify_on_read_sample_denominator.is_none() {
-        runtime_storage
-            .verify_on_read_sample_denominator
-            .clone_from(&defaults.verify_on_read_sample_denominator);
-        changed = true;
+        if let Some(val) = defaults.verify_on_read_sample_denominator.as_ref() {
+            runtime_storage.verify_on_read_sample_denominator = Some(val.clone());
+            changed = true;
+        }
     }
     if runtime_storage.verify_on_read_stale_timeout_secs.is_none() {
-        runtime_storage
-            .verify_on_read_stale_timeout_secs
-            .clone_from(&defaults.verify_on_read_stale_timeout_secs);
-        changed = true;
+        if let Some(val) = defaults.verify_on_read_stale_timeout_secs.as_ref() {
+            runtime_storage.verify_on_read_stale_timeout_secs = Some(val.clone());
+            changed = true;
+        }
     }
     if runtime_storage.reconstructed_bytes_cache_ttl_secs.is_none() {
-        runtime_storage
-            .reconstructed_bytes_cache_ttl_secs
-            .clone_from(&defaults.reconstructed_bytes_cache_ttl_secs);
-        changed = true;
+        if let Some(val) = defaults.reconstructed_bytes_cache_ttl_secs.as_ref() {
+            runtime_storage.reconstructed_bytes_cache_ttl_secs = Some(val.clone());
+            changed = true;
+        }
     }
     changed
 }

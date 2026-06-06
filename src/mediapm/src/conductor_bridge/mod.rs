@@ -1061,7 +1061,7 @@ mod tests {
             cas_store_dir: Some(".conductor/store/".to_string()),
             conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
             inherited_env_vars: Some(BTreeMap::new()),
-            instance_ttl_seconds: None,
+            instance_ttl_seconds: Some(604800),
             verify_on_read_sample_denominator: None,
             verify_on_read_stale_timeout_secs: None,
             reconstructed_bytes_cache_ttl_secs: None,
@@ -1076,6 +1076,7 @@ mod tests {
             Some(".conductor/config/conductor")
         );
         assert_eq!(runtime_storage.inherited_env_vars, Some(BTreeMap::new()));
+        assert_eq!(runtime_storage.instance_ttl_seconds, Some(604800));
     }
 
     /// Protects runtime defaulting by materializing inherited env-name defaults
