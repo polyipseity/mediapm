@@ -368,8 +368,8 @@ fn demo_online_configures_playlist_hierarchy_entry() {
     let source = include_str!("../../examples/mediapm_demo_online.rs");
 
     assert!(
-        source.contains("path: \"playlists\".to_string()")
-            && source.contains("path: \"rickroll.m3u8\".to_string()")
+        source.contains("path: HierarchyPath::from(\"playlists\")")
+            && source.contains("path: HierarchyPath::from(\"rickroll.m3u8\")")
             && source.contains("kind: HierarchyNodeKind::Playlist")
             && source.contains("PlaylistItemRef {")
             && source.contains("id: DEMO_TAGGED_HIERARCHY_ID.to_string()")

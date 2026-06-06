@@ -1,7 +1,7 @@
 //! Hierarchy preset builder helpers for media library management.
 
 use crate::config::{
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, PlaylistFormat,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat,
     SanitizeNamesConfig,
 };
 use crate::error::MediaPmError;
@@ -93,7 +93,7 @@ pub(crate) const HIERARCHY_YT_DLP_ROOT_RENAME_PATTERN: &str = "^.*\\.([^.]*)$";
 /// # Errors
 ///
 /// Returns [`MediaPmError`] when the provided folder is empty after trimming.
-pub(crate) fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, MediaPmError> {
+pub(crate) fn normalize_hierarchy_folder_root(folder: &str) -> Result<HierarchyPath, MediaPmError> {
     let normalized = folder.trim().replace('\\', "/").trim_matches('/').to_string();
     if normalized.is_empty() {
         return Err(MediaPmError::Workflow(
@@ -101,17 +101,17 @@ pub(crate) fn normalize_hierarchy_folder_root(folder: &str) -> Result<String, Me
         ));
     }
 
-    Ok(normalized)
+    Ok(HierarchyPath::from(normalized.as_str()))
 }
 
 /// Returns default hierarchy root folder for one preset.
 #[must_use]
 pub(crate) fn default_hierarchy_folder_root_for_preset(
     preset: MediaHierarchyPreset,
-) -> &'static str {
+) -> HierarchyPath {
     match preset {
-        MediaHierarchyPreset::Local => "music videos/local",
-        MediaHierarchyPreset::YtDlp => "music videos/online",
+        MediaHierarchyPreset::Local => HierarchyPath::from("music videos/local"),
+        MediaHierarchyPreset::YtDlp => HierarchyPath::from("music videos/online"),
     }
 }
 
@@ -153,7 +153,7 @@ pub(crate) fn compare_hierarchy_ids(left: Option<&str>, right: Option<&str>) -> 
 pub(crate) fn insert_hierarchy_preset_node(
     hierarchy: &mut Vec<HierarchyNode>,
     node: HierarchyNode,
-    normalized_folder: &str,
+    normalized_folder: &HierarchyPath,
     position: AddInsertPosition,
     overwrite: bool,
 ) {
@@ -183,7 +183,7 @@ pub(crate) fn insert_hierarchy_preset_node(
         .iter()
         .enumerate()
         .filter_map(|(index, existing)| {
-            (existing.kind == HierarchyNodeKind::Folder && existing.path == normalized_folder)
+            (existing.kind == HierarchyNodeKind::Folder && existing.path == *normalized_folder)
                 .then_some(index)
         })
         .collect::<Vec<_>>();
@@ -266,7 +266,7 @@ pub(crate) fn hierarchy_media_file_node(
     variant: &str,
 ) -> HierarchyNode {
     HierarchyNode {
-        path: path.to_string(),
+        path: HierarchyPath::from(path),
         kind: HierarchyNodeKind::Media,
         id: None,
         media_id: Some(media_id.to_string()),
@@ -289,7 +289,7 @@ pub(crate) fn hierarchy_media_folder_node(
     rename_files: Vec<HierarchyFolderRenameRule>,
 ) -> HierarchyNode {
     HierarchyNode {
-        path: path.to_string(),
+        path: HierarchyPath::from(path),
         kind: HierarchyNodeKind::MediaFolder,
         id: None,
         media_id: Some(media_id.to_string()),
@@ -406,7 +406,7 @@ pub(crate) fn yt_dlp_hierarchy_media_children(media_id: &str) -> Vec<HierarchyNo
 pub(crate) fn build_hierarchy_preset_node(
     preset: MediaHierarchyPreset,
     media_id: &str,
-    normalized_folder: &str,
+    normalized_folder: &HierarchyPath,
     hierarchy_id: String,
 ) -> HierarchyNode {
     let (media_root_template, media_children) = match preset {
@@ -420,7 +420,7 @@ pub(crate) fn build_hierarchy_preset_node(
     };
 
     HierarchyNode {
-        path: normalized_folder.to_string(),
+        path: normalized_folder.clone(),
         kind: HierarchyNodeKind::Folder,
         id: None,
         media_id: None,
@@ -431,7 +431,7 @@ pub(crate) fn build_hierarchy_preset_node(
         ids: Vec::new(),
         sanitize_names: SanitizeNamesConfig::Inherit,
         children: vec![HierarchyNode {
-            path: media_root_template,
+            path: HierarchyPath::from(media_root_template.as_str()),
             kind: HierarchyNodeKind::Folder,
             id: Some(hierarchy_id),
             media_id: Some(media_id.to_string()),
@@ -448,7 +448,9 @@ pub(crate) fn build_hierarchy_preset_node(
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{HierarchyNode, HierarchyNodeKind, PlaylistFormat, SanitizeNamesConfig};
+    use crate::config::{
+        HierarchyNode, HierarchyNodeKind, HierarchyPath, PlaylistFormat, SanitizeNamesConfig,
+    };
     use crate::{AddInsertPosition, MediaHierarchyPreset};
 
     use super::{build_hierarchy_preset_node, insert_hierarchy_preset_node};
@@ -458,9 +460,9 @@ mod tests {
     /// sibling.
     #[test]
     fn add_hierarchy_preset_merges_into_existing_nameless_container() {
-        let folder = "music videos";
+        let folder = HierarchyPath::from("music videos");
         let mut hierarchy = vec![HierarchyNode {
-            path: folder.to_string(),
+            path: folder.clone(),
             kind: HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -471,7 +473,7 @@ mod tests {
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
-                path: "existing-media-root".to_string(),
+                path: HierarchyPath::from("existing-media-root"),
                 kind: HierarchyNodeKind::Folder,
                 id: Some("existing-id".to_string()),
                 media_id: Some("existing-media".to_string()),
@@ -488,13 +490,13 @@ mod tests {
         let inserted = build_hierarchy_preset_node(
             MediaHierarchyPreset::Local,
             "new-media",
-            folder,
+            &folder,
             "new-media".to_string(),
         );
         insert_hierarchy_preset_node(
             &mut hierarchy,
             inserted,
-            folder,
+            &folder,
             AddInsertPosition::End,
             false,
         );
@@ -522,10 +524,10 @@ mod tests {
     /// folder.
     #[test]
     fn add_hierarchy_preset_sorted_order_uses_missing_empty_then_id() {
-        let root_folder = "music videos/online";
+        let root_folder = HierarchyPath::from("music videos/online");
         let mut hierarchy = vec![
             HierarchyNode {
-                path: root_folder.to_string(),
+                path: root_folder.clone(),
                 kind: HierarchyNodeKind::Folder,
                 id: None,
                 media_id: None,
@@ -536,7 +538,7 @@ mod tests {
                 ids: Vec::new(),
                 sanitize_names: SanitizeNamesConfig::Inherit,
                 children: vec![HierarchyNode {
-                    path: "missing-id".to_string(),
+                    path: HierarchyPath::from("missing-id"),
                     kind: HierarchyNodeKind::Folder,
                     id: None,
                     media_id: None,
@@ -550,7 +552,7 @@ mod tests {
                 }],
             },
             HierarchyNode {
-                path: root_folder.to_string(),
+                path: root_folder.clone(),
                 kind: HierarchyNodeKind::Folder,
                 id: None,
                 media_id: None,
@@ -561,7 +563,7 @@ mod tests {
                 ids: Vec::new(),
                 sanitize_names: SanitizeNamesConfig::Inherit,
                 children: vec![HierarchyNode {
-                    path: "empty-id".to_string(),
+                    path: HierarchyPath::from("empty-id"),
                     kind: HierarchyNodeKind::Folder,
                     id: Some(String::new()),
                     media_id: None,
@@ -575,7 +577,7 @@ mod tests {
                 }],
             },
             HierarchyNode {
-                path: root_folder.to_string(),
+                path: root_folder.clone(),
                 kind: HierarchyNodeKind::Folder,
                 id: None,
                 media_id: None,
@@ -586,7 +588,7 @@ mod tests {
                 ids: Vec::new(),
                 sanitize_names: SanitizeNamesConfig::Inherit,
                 children: vec![HierarchyNode {
-                    path: "zzz-id".to_string(),
+                    path: HierarchyPath::from("zzz-id"),
                     kind: HierarchyNodeKind::Folder,
                     id: Some("zzz".to_string()),
                     media_id: None,
@@ -604,13 +606,13 @@ mod tests {
         let inserted = build_hierarchy_preset_node(
             MediaHierarchyPreset::YtDlp,
             "aaa",
-            root_folder,
+            &root_folder,
             "aaa".to_string(),
         );
         insert_hierarchy_preset_node(
             &mut hierarchy,
             inserted,
-            root_folder,
+            &root_folder,
             AddInsertPosition::Sorted,
             false,
         );

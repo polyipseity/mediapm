@@ -71,8 +71,8 @@ pub(crate) use self::hierarchy_types::{
 };
 pub use self::hierarchy_types::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    flatten_hierarchy_value, nest_hierarchy_value, regex_variant_selector,
+    HierarchyNodeKind, HierarchyPath, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, flatten_hierarchy_value, nest_hierarchy_value, regex_variant_selector,
 };
 
 pub use self::source_types::{
@@ -1106,7 +1106,9 @@ mod tests {
             .map(|(path, entry)| match entry.kind {
                 HierarchyEntryKind::Media if path.ends_with('/') || path.ends_with('\\') => {
                     super::HierarchyNode {
-                        path: path.trim_end_matches(['/', '\\']).to_string(),
+                        path: super::HierarchyPath::from(
+                            path.trim_end_matches(['/', '\\']).as_ref(),
+                        ),
                         kind: super::HierarchyNodeKind::MediaFolder,
                         id: Some(entry.media_id.clone()),
                         media_id: Some(entry.media_id),
@@ -1120,7 +1122,7 @@ mod tests {
                     }
                 }
                 HierarchyEntryKind::Media => super::HierarchyNode {
-                    path,
+                    path: super::HierarchyPath::from(path.as_str()),
                     kind: super::HierarchyNodeKind::Media,
                     id: Some(entry.media_id.clone()),
                     media_id: Some(entry.media_id),
@@ -1133,7 +1135,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 HierarchyEntryKind::MediaFolder => super::HierarchyNode {
-                    path,
+                    path: super::HierarchyPath::from(path.as_str()),
                     kind: super::HierarchyNodeKind::MediaFolder,
                     id: Some(entry.media_id.clone()),
                     media_id: Some(entry.media_id),
@@ -1146,7 +1148,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 HierarchyEntryKind::Playlist => super::HierarchyNode {
-                    path,
+                    path: super::HierarchyPath::from(path.as_str()),
                     kind: super::HierarchyNodeKind::Playlist,
                     id: None,
                     media_id: None,
@@ -1217,7 +1219,7 @@ mod tests {
 
         let media = nodes
             .iter()
-            .find(|node| node.path == "library/video.mkv")
+            .find(|node| node.path == "library/video.mkv".into())
             .expect("media node should exist");
         assert!(matches!(media.kind, super::HierarchyNodeKind::Media));
         assert_eq!(media.media_id.as_deref(), Some("demo"));
@@ -1225,7 +1227,7 @@ mod tests {
 
         let media_folder = nodes
             .iter()
-            .find(|node| node.path == "library/subtitles")
+            .find(|node| node.path == "library/subtitles".into())
             .expect("media_folder node should exist");
         assert!(matches!(media_folder.kind, super::HierarchyNodeKind::MediaFolder));
         assert_eq!(media_folder.media_id.as_deref(), Some("demo"));
@@ -1233,7 +1235,7 @@ mod tests {
 
         let playlist = nodes
             .iter()
-            .find(|node| node.path == "library/mixed.m3u8")
+            .find(|node| node.path == "library/mixed.m3u8".into())
             .expect("playlist node should exist");
         assert!(matches!(playlist.kind, super::HierarchyNodeKind::Playlist));
         assert!(playlist.media_id.is_none());
@@ -1823,7 +1825,9 @@ hierarchy = [
         let rendered = std::fs::read_to_string(&path).expect("read rendered mediapm.ncl");
 
         assert!(rendered.contains("kind = \"media\""));
-        assert!(rendered.contains("path = \"library/demo.mkv\""));
+        assert!(
+            rendered.contains("path = [\n        \"library\",\n        \"demo.mkv\",\n      ]")
+        );
 
         let decoded = load_mediapm_document(&path).expect("decode rendered hierarchy node-list");
         assert!(hierarchy_flat_map(&decoded).contains_key("library/demo.mkv"));
@@ -2291,7 +2295,7 @@ runtime = {
     #[test]
     fn hierarchy_nodes_inherit_sanitize_names_from_parent() {
         let nodes = vec![super::HierarchyNode {
-            path: "root".to_string(),
+            path: super::HierarchyPath::from("root"),
             kind: super::HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -2302,7 +2306,7 @@ runtime = {
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Enabled,
             children: vec![super::HierarchyNode {
-                path: "child.mp4".to_string(),
+                path: super::HierarchyPath::from("child.mp4"),
                 kind: super::HierarchyNodeKind::Media,
                 id: None,
                 media_id: Some("demo".to_string()),
@@ -3368,7 +3372,7 @@ hierarchy = [
         let document = load_mediapm_document(&path)
             .expect("rename_files replacement placeholders should decode");
         let node = &document.hierarchy[0];
-        assert_eq!(node.path, "demo/subtitles");
+        assert_eq!(node.path, "demo/subtitles".into());
         assert_eq!(node.variants, vec!["subtitles".to_string()]);
         assert_eq!(node.rename_files.len(), 1);
         assert!(node.rename_files[0].replacement.contains("${media.metadata.title}"));

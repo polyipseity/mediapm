@@ -49,10 +49,10 @@ mod tests {
     use crate::config::MediaPmState;
     use crate::config::{
         HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-        HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
-        MediaMetadataVariantBinding, MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool,
-        PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-        TransformInputValue,
+        HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataRegexTransform,
+        MediaMetadataValue, MediaMetadataVariantBinding, MediaPmDocument, MediaSourceSpec,
+        MediaStep, MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+        SanitizeNamesConfig, TransformInputValue,
     };
     use crate::paths::MediaPmPaths;
 
@@ -306,6 +306,7 @@ mod tests {
                     None
                 };
 
+                let path: HierarchyPath = HierarchyPath::from(path.as_str());
                 match entry.kind {
                     HierarchyEntryKind::Media => crate::config::HierarchyNode {
                         path,
@@ -831,7 +832,7 @@ mod tests {
             )]),
             hierarchy: vec![
                 HierarchyNode {
-                    path: "library/${media.id}/sidecars".to_string(),
+                    path: HierarchyPath::from("library/${media.id}/sidecars"),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some("media-a-sidecars".to_string()),
                     media_id: Some("media-a".to_string()),
@@ -844,7 +845,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 HierarchyNode {
-                    path: "library/${media.id}".to_string(),
+                    path: HierarchyPath::from("library/${media.id}"),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some("media-a-root".to_string()),
                     media_id: Some("media-a".to_string()),
@@ -936,7 +937,7 @@ mod tests {
             )]),
             hierarchy: vec![
                 HierarchyNode {
-                    path: "library/${media.id}/sidecars".to_string(),
+                    path: HierarchyPath::from("library/${media.id}/sidecars"),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some("media-a-sidecars".to_string()),
                     media_id: Some("media-a".to_string()),
@@ -949,7 +950,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 HierarchyNode {
-                    path: "library/${media.id}".to_string(),
+                    path: HierarchyPath::from("library/${media.id}"),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some("media-a-root".to_string()),
                     media_id: Some("media-a".to_string()),
@@ -1337,7 +1338,7 @@ mod tests {
             ]),
             hierarchy: vec![
                 crate::config::HierarchyNode {
-                    path: "library/music/alpha.mp3".to_string(),
+                    path: HierarchyPath::from("library/music/alpha.mp3"),
                     kind: HierarchyNodeKind::Media,
                     id: Some("alpha-playlist-id".to_string()),
                     media_id: Some("alpha-source".to_string()),
@@ -1350,7 +1351,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 crate::config::HierarchyNode {
-                    path: "library/music/beta.mp3".to_string(),
+                    path: HierarchyPath::from("library/music/beta.mp3"),
                     kind: HierarchyNodeKind::Media,
                     id: Some("beta-source".to_string()),
                     media_id: Some("beta-source".to_string()),
@@ -1363,7 +1364,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 crate::config::HierarchyNode {
-                    path: "library/playlists/mixed-ids.m3u8".to_string(),
+                    path: HierarchyPath::from("library/playlists/mixed-ids.m3u8"),
                     kind: HierarchyNodeKind::Playlist,
                     id: None,
                     media_id: None,
@@ -1438,7 +1439,7 @@ mod tests {
             )]),
             hierarchy: vec![
                 crate::config::HierarchyNode {
-                    path: "library/playlists/folder-only.m3u8".to_string(),
+                    path: HierarchyPath::from("library/playlists/folder-only.m3u8"),
                     kind: HierarchyNodeKind::Playlist,
                     id: None,
                     media_id: None,
@@ -1454,7 +1455,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 crate::config::HierarchyNode {
-                    path: "library/sidecars".to_string(),
+                    path: HierarchyPath::from("library/sidecars"),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some("folder-only".to_string()),
                     media_id: Some("folder-only".to_string()),
@@ -1537,7 +1538,7 @@ mod tests {
             ]),
             hierarchy: vec![
                 crate::config::HierarchyNode {
-                    path: "${media.id}.bin".to_string(),
+                    path: HierarchyPath::from("${media.id}.bin"),
                     kind: HierarchyNodeKind::Media,
                     id: Some("entry-a".to_string()),
                     media_id: Some("song_a".to_string()),
@@ -1550,7 +1551,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 crate::config::HierarchyNode {
-                    path: "${media.id}.bin".to_string(),
+                    path: HierarchyPath::from("${media.id}.bin"),
                     kind: HierarchyNodeKind::Media,
                     id: Some("entry-b".to_string()),
                     media_id: Some("song_b".to_string()),
@@ -1563,7 +1564,7 @@ mod tests {
                     children: Vec::new(),
                 },
                 crate::config::HierarchyNode {
-                    path: "playlist.m3u8".to_string(),
+                    path: HierarchyPath::from("playlist.m3u8"),
                     kind: HierarchyNodeKind::Playlist,
                     id: None,
                     media_id: None,

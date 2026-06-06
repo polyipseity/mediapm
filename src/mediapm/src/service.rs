@@ -774,8 +774,10 @@ where
             )));
         }
 
-        let folder = folder.unwrap_or_else(|| default_hierarchy_folder_root_for_preset(preset));
-        let normalized_folder = normalize_hierarchy_folder_root(folder)?;
+        let normalized_folder = match folder {
+            Some(f) => normalize_hierarchy_folder_root(f)?,
+            None => default_hierarchy_folder_root_for_preset(preset),
+        };
         let hierarchy_id = hierarchy_preset_node_id(media_id);
         if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
             return Ok(());
@@ -1792,6 +1794,7 @@ mod tests {
     use url::Url;
 
     use crate::HierarchyNodeKind;
+    use crate::HierarchyPath;
     use crate::ToolRequirementDependencies;
     use crate::config::{
         MediaPmState, ToolRegistryRecord, ToolRegistryStatus, save_mediapm_state_document,
@@ -2207,7 +2210,7 @@ mod tests {
             .iter()
             .filter(|node| {
                 node.kind == HierarchyNodeKind::Folder
-                    && node.path == folder
+                    && node.path == HierarchyPath::from(folder)
                     && node.media_id.is_none()
                     && node.children.len() == 1
             })
@@ -2226,7 +2229,8 @@ mod tests {
             "inner media-root folder should use the media id"
         );
         assert_eq!(
-            media_root.path, "${media.metadata.title} [${media.id}]",
+            media_root.path,
+            HierarchyPath::from("${media.metadata.title} [${media.id}]"),
             "local hierarchy preset should keep stable media-root template"
         );
         let variants: Vec<_> =
@@ -2267,7 +2271,7 @@ mod tests {
             .iter()
             .find(|node| {
                 node.kind == HierarchyNodeKind::Folder
-                    && node.path == "music videos"
+                    && node.path == HierarchyPath::from("music videos")
                     && node.media_id.is_none()
             })
             .and_then(|node| node.children.first())
@@ -2349,7 +2353,10 @@ mod tests {
         let document =
             load_mediapm_document(&service.paths().mediapm_ncl).expect("load mediapm document");
         assert!(
-            document.hierarchy.iter().any(|node| node.path == "music videos/online"),
+            document
+                .hierarchy
+                .iter()
+                .any(|node| node.path == HierarchyPath::from("music videos/online")),
             "yt-dlp hierarchy preset should default to music videos/online root"
         );
     }

@@ -46,12 +46,13 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, MaterializationMethod,
-    MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths, MediaPmService,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus,
-    ToolRequirement, ToolRequirementDependencies, TransformInputValue, load_mediapm_document,
-    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
+    HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths,
+    MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
+    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -1160,7 +1161,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     )]);
     let mut media_root_children = vec![
         HierarchyNode {
-            path: DEMO_UNTAGGED_MEDIA_FILE_NAME.to_string(),
+            path: HierarchyPath::from(DEMO_UNTAGGED_MEDIA_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: None,
             media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1173,7 +1174,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             children: Vec::new(),
         },
         HierarchyNode {
-            path: DEMO_TAGGED_MEDIA_FILE_NAME.to_string(),
+            path: HierarchyPath::from(DEMO_TAGGED_MEDIA_FILE_NAME),
             kind: HierarchyNodeKind::Media,
             id: Some(DEMO_TAGGED_HIERARCHY_ID.to_string()),
             media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1201,7 +1202,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
 
         if relative_path.ends_with('/') {
             target_children.push(HierarchyNode {
-                path: hierarchy_path.trim_end_matches('/').to_string(),
+                path: HierarchyPath::from(hierarchy_path.trim_end_matches('/')),
                 kind: HierarchyNodeKind::MediaFolder,
                 id: None,
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1215,7 +1216,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             });
         } else {
             target_children.push(HierarchyNode {
-                path: hierarchy_path,
+                path: HierarchyPath::from(hierarchy_path.as_str()),
                 kind: HierarchyNodeKind::Media,
                 id: None,
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1234,7 +1235,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         media_root_children.insert(
             0,
             HierarchyNode {
-                path: "sidecars".to_string(),
+                path: HierarchyPath::from("sidecars"),
                 kind: HierarchyNodeKind::Folder,
                 id: None,
                 media_id: None,
@@ -1255,7 +1256,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     // This ordering keeps the writable parent available long enough to create
     // the nested `sidecars/` folder before the direct root projections are finalized.
     media_root_children.push(HierarchyNode {
-        path: String::new(),
+        path: HierarchyPath::default(),
         kind: HierarchyNodeKind::MediaFolder,
         id: None,
         media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1274,7 +1275,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     });
 
     media_root_children.push(HierarchyNode {
-        path: String::new(),
+        path: HierarchyPath::default(),
         kind: HierarchyNodeKind::MediaFolder,
         id: None,
         media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1294,7 +1295,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
     // Now instantiate the extra thumbnails folder projection with folder-level
     // rename (same as the yt-dlp preset's `folder.$1` naming).
     media_root_children.push(HierarchyNode {
-        path: String::new(),
+        path: HierarchyPath::default(),
         kind: HierarchyNodeKind::MediaFolder,
         id: Some(format!("{DEMO_MEDIA_ID}.thumbnails.folder")),
         media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -1317,7 +1318,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
 
     document.hierarchy = vec![
         HierarchyNode {
-            path: DEMO_LIBRARY_ROOT.to_string(),
+            path: HierarchyPath::from(DEMO_LIBRARY_ROOT),
             kind: HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -1328,7 +1329,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
-                path: DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE.to_string(),
+                path: HierarchyPath::from(DEMO_HIERARCHY_MEDIA_ROOT_TEMPLATE),
                 kind: HierarchyNodeKind::Folder,
                 id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string()),
                 media_id: None,
@@ -1342,7 +1343,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             }],
         },
         HierarchyNode {
-            path: "playlists".to_string(),
+            path: HierarchyPath::from("playlists"),
             kind: HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -1353,7 +1354,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
-                path: "rickroll.m3u8".to_string(),
+                path: HierarchyPath::from("rickroll.m3u8"),
                 kind: HierarchyNodeKind::Playlist,
                 id: None,
                 media_id: None,

@@ -26,9 +26,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, MaterializationMethod, MediaMetadataValue, MediaPmApi,
-    MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
+    HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
+    MediaPmApi, MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
+    MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
     TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
@@ -766,7 +766,7 @@ fn configure_document_for_local_tool_chain(
     )]);
 
     let media_hierarchy_children = vec![HierarchyNode {
-        path: DEMO_MEDIA_FOLDER_TEMPLATE.to_string(),
+        path: HierarchyPath::from(DEMO_MEDIA_FOLDER_TEMPLATE),
         kind: HierarchyNodeKind::Folder,
         id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string()),
         media_id: None,
@@ -778,7 +778,9 @@ fn configure_document_for_local_tool_chain(
         sanitize_names: SanitizeNamesConfig::Inherit,
         children: vec![
             HierarchyNode {
-                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}".to_string(),
+                path: HierarchyPath::from(
+                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}].untagged${media.metadata.video_ext_untagged}",
+                ),
                 kind: HierarchyNodeKind::Media,
                 id: Some(DEMO_UNTAGGED_HIERARCHY_ID.to_string()),
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -791,7 +793,9 @@ fn configure_document_for_local_tool_chain(
                 children: Vec::new(),
             },
             HierarchyNode {
-                path: "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}".to_string(),
+                path: HierarchyPath::from(
+                    "${media.metadata.artist} - ${media.metadata.title} [${media.id}]${media.metadata.video_ext}",
+                ),
                 kind: HierarchyNodeKind::Media,
                 id: Some(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                 media_id: Some(DEMO_MEDIA_ID.to_string()),
@@ -808,7 +812,7 @@ fn configure_document_for_local_tool_chain(
 
     document.hierarchy = vec![
         HierarchyNode {
-            path: DEMO_LIBRARY_ROOT.to_string(),
+            path: HierarchyPath::from(DEMO_LIBRARY_ROOT),
             kind: HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -821,7 +825,7 @@ fn configure_document_for_local_tool_chain(
             children: media_hierarchy_children,
         },
         HierarchyNode {
-            path: "playlists".to_string(),
+            path: HierarchyPath::from("playlists"),
             kind: HierarchyNodeKind::Folder,
             id: None,
             media_id: None,
@@ -832,7 +836,7 @@ fn configure_document_for_local_tool_chain(
             ids: Vec::new(),
             sanitize_names: SanitizeNamesConfig::Inherit,
             children: vec![HierarchyNode {
-                path: "local-demo.m3u8".to_string(),
+                path: HierarchyPath::from("local-demo.m3u8"),
                 kind: HierarchyNodeKind::Playlist,
                 id: None,
                 media_id: None,

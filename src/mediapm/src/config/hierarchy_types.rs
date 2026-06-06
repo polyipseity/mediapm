@@ -2,6 +2,7 @@
 //! for mediapm configuration.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -161,50 +162,26 @@ pub(crate) struct FlattenedHierarchyEntry {
     pub hierarchy_id: Option<String>,
 }
 
-/// Validates and normalizes one hierarchy node path segment.
+/// Validates one hierarchy path component for invalid content.
 ///
-/// Paths are validated for NFD normalization, no leading slash, no traversal
-/// segments, and no empty interior segments.
-fn normalize_hierarchy_node_path(raw_path: &str, context_label: &str) -> Result<String, String> {
-    let normalized = raw_path.trim().replace('\\', "/");
-    if normalized.is_empty() {
-        return Ok(String::new());
+/// Rules:
+/// - Empty components are rejected.
+/// - `.` and `..` components are rejected.
+/// - Component must be Unicode NFD normalized.
+fn validate_hierarchy_path_component(component: &str, context_label: &str) -> Result<(), String> {
+    if component.is_empty() {
+        return Err(format!("{context_label} path component must not be empty"));
     }
-
-    if normalized.starts_with('/') {
+    if component == "." || component == ".." {
         return Err(format!(
-            "{context_label} path '{raw_path}' must stay relative (no leading '/')"
+            "{context_label} path component must not contain '.' or '..' segments"
         ));
     }
-
-    let trimmed = normalized.trim_matches('/');
-    if trimmed.is_empty() {
-        return Ok(String::new());
+    let component_nfd = component.nfd().collect::<String>();
+    if component_nfd != component {
+        return Err(format!("{context_label} path component must be Unicode NFD normalized"));
     }
-
-    let mut segments = Vec::new();
-    for segment in trimmed.split('/') {
-        let value = segment.trim();
-        if value.is_empty() {
-            return Err(format!(
-                "{context_label} path '{raw_path}' must not contain empty path segments"
-            ));
-        }
-        if value == "." || value == ".." {
-            return Err(format!(
-                "{context_label} path '{raw_path}' must not contain '.' or '..' segments"
-            ));
-        }
-        let value_nfd = value.nfd().collect::<String>();
-        if value_nfd != value {
-            return Err(format!(
-                "{context_label} path '{raw_path}' must be Unicode NFD normalized"
-            ));
-        }
-        segments.push(value.to_string());
-    }
-
-    Ok(segments.join("/"))
+    Ok(())
 }
 
 /// Joins one parent path and one node-local path with slash separators.
@@ -265,7 +242,11 @@ fn flatten_hierarchy_nodes_inner(
             format!("hierarchy node '{parent_path}' children[{node_index}]")
         };
 
-        let node_local_path = normalize_hierarchy_node_path(node.path.as_str(), &context_label)?;
+        // Validate each component of the HierarchyPath.
+        for component in node.path.components() {
+            validate_hierarchy_path_component(component, &context_label)?;
+        }
+        let node_local_path = node.path.join_path();
         let resolved_node_path = join_hierarchy_node_paths(parent_path, node_local_path.as_str());
         let node_path_label =
             if resolved_node_path.is_empty() { "<root>" } else { resolved_node_path.as_str() };
@@ -634,7 +615,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
                 let hierarchy_id = derive_hierarchy_id(path, &entry.media_id);
 
                 nodes.push(HierarchyNode {
-                    path: path.clone(),
+                    path: HierarchyPath::from(path.as_str()),
                     kind: HierarchyNodeKind::Media,
                     id: Some(hierarchy_id),
                     media_id: Some(entry.media_id.clone()),
@@ -650,7 +631,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
             HierarchyEntryKind::MediaFolder => {
                 let hierarchy_id = derive_hierarchy_id(path, &entry.media_id);
                 nodes.push(HierarchyNode {
-                    path: path.trim_end_matches(['/', '\\']).to_string(),
+                    path: HierarchyPath::from(path.trim_end_matches(['/', '\\'])),
                     kind: HierarchyNodeKind::MediaFolder,
                     id: Some(hierarchy_id),
                     media_id: Some(entry.media_id.clone()),
@@ -665,7 +646,7 @@ pub(crate) fn hierarchy_nodes_from_flat_entries(
             }
             HierarchyEntryKind::Playlist => {
                 nodes.push(HierarchyNode {
-                    path: path.clone(),
+                    path: HierarchyPath::from(path.as_str()),
                     kind: HierarchyNodeKind::Playlist,
                     id: None,
                     media_id: None,
@@ -917,6 +898,103 @@ pub(crate) fn expand_variant_selectors(
     Ok(resolved)
 }
 
+/// A path composed of one or more path components (path segments).
+///
+/// Serialization rules:
+/// - Empty component list serializes as `""`
+/// - Single component serializes as `"component"`
+/// - Multiple components serialize as `["component1", "component2"]`
+///
+/// Deserialization accepts both bare string and array forms:
+/// - `""` → `HierarchyPath(vec![])` (zero components)
+/// - `"abc"` → `HierarchyPath(vec!["abc"])` (single component, NOT split by `/`)
+/// - `["a", "b"]` → `HierarchyPath(vec!["a", "b"])` (multi-component)
+///
+/// The `From<&str>` impl DOES split by `/` for convenience in Rust code,
+/// but serde deserialize does NOT split — bare strings are one component.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HierarchyPath(Vec<String>);
+
+impl HierarchyPath {
+    /// Returns an immutable reference to the component list.
+    #[must_use]
+    pub fn components(&self) -> &[String] {
+        &self.0
+    }
+
+    /// Returns the number of path components.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` if there are zero components.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Joins all components with `/` separator.
+    #[must_use]
+    pub fn join_path(&self) -> String {
+        self.0.join("/")
+    }
+}
+
+impl From<&str> for HierarchyPath {
+    fn from(value: &str) -> Self {
+        let trimmed = value.trim_matches('/');
+        if trimmed.is_empty() {
+            return Self(Vec::new());
+        }
+        Self(trimmed.split('/').map(|s| s.to_string()).collect())
+    }
+}
+
+impl Serialize for HierarchyPath {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.len() {
+            0 => serializer.serialize_str(""),
+            1 => serializer.serialize_str(&self.0[0]),
+            _ => self.0.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HierarchyPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct HierarchyPathVisitor;
+        impl<'de> serde::de::Visitor<'de> for HierarchyPathVisitor {
+            type Value = HierarchyPath;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string or array of strings")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<HierarchyPath, E> {
+                let trimmed = value.trim_matches('/');
+                if trimmed.is_empty() {
+                    Ok(HierarchyPath(Vec::new()))
+                } else {
+                    Ok(HierarchyPath(trimmed.split('/').map(|s| s.to_string()).collect()))
+                }
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<HierarchyPath, A::Error> {
+                let mut components = Vec::new();
+                while let Some(elem) = seq.next_element::<String>()? {
+                    components.push(elem);
+                }
+                Ok(HierarchyPath(components))
+            }
+        }
+        deserializer.deserialize_any(HierarchyPathVisitor)
+    }
+}
+
 /// One ordered hierarchy schema node.
 ///
 /// Nodes form one recursive tree via `children`. Top-level `hierarchy` is an
@@ -925,11 +1003,12 @@ pub(crate) fn expand_variant_selectors(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HierarchyNode {
-    /// Relative path segment (or multi-segment relative path) for this node.
+    /// Relative path for this node as a list of path components.
     ///
-    /// Folder nodes may set this to empty string for one root pass-through
-    /// grouping level. Non-folder leaf nodes must resolve to non-empty paths.
-    pub path: String,
+    /// Folder nodes may set this to empty for one root pass-through grouping
+    /// level. Non-folder leaf nodes must resolve to non-empty paths.
+    #[serde(default)]
+    pub path: HierarchyPath,
     /// Node behavior kind.
     #[serde(default, skip_serializing_if = "hierarchy_node_kind_is_folder")]
     pub kind: HierarchyNodeKind,

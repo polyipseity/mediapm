@@ -35,12 +35,12 @@ use url::Url;
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
 pub use config::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, ManagedFileRecord, MaterializationMethod, MediaMetadataRegexTransform,
-    MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
-    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
-    PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
-    SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
+    HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,
+    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
+    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars, PlaylistEntryPathMode,
+    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus,
+    ToolRequirement, ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
     load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
     nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
     save_mediapm_state_document,
