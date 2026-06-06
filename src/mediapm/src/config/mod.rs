@@ -563,7 +563,10 @@ fn default_path_sanitization_mapping() -> BTreeMap<char, char> {
 }
 
 fn default_media_folder_entry_sanitization_mapping() -> BTreeMap<char, char> {
-    default_path_sanitization_mapping()
+    let mut map = default_path_sanitization_mapping();
+    map.insert('/', '_');
+    map.insert('\\', '_');
+    map
 }
 
 fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
@@ -2353,6 +2356,8 @@ runtime = {
         assert_eq!(mapping.get(&'|'), Some(&'_'));
         assert_eq!(mapping.get(&'?'), Some(&'_'));
         assert_eq!(mapping.get(&'*'), Some(&'_'));
+        assert_eq!(mapping.get(&'/'), Some(&'_'));
+        assert_eq!(mapping.get(&'\\'), Some(&'_'));
     }
 
     /// Protects media_folder entry sanitization custom override merge.

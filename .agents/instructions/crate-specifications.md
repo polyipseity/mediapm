@@ -630,7 +630,7 @@ repeated stale-entry warnings on every sync cycle.
     extracted from media_folder ZIP payloads,
   - same format as `path_sanitization`: optional `BTreeMap<String, String>`
     mapping single reserved characters to single replacement characters,
-  - same defaults: `<`, `>`, `:`, `"`, `|`, `?`, `*` → `_`,
+  - same defaults as `path_sanitization` plus path separators: `<`, `>`, `:`, `"`, `|`, `?`, `*`, `/`, `\` → `_`,
   - applied after rename rules but before the single-file path validation:
     if the sanitized result contains `/` or `\`, the entry is rejected as a
     multi-component path,
