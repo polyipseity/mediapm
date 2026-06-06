@@ -252,6 +252,19 @@ round-trip tests pass.
 - Hashes must match; mismatch → failed materialization (no fallback)
 - Platform-independent path resolution (normalized, slash-separated)
 
+### Instance Output Existence Checking
+
+During hierarchy materialization, the materializer checks whether each
+candidate orchestration instance's required step outputs still exist in CAS.
+For step outputs that do not require ZIP member extraction, the check uses
+`cas.info(hash)` — a lightweight existence check that costs one redb index
+lookup + one stat call — instead of `cas.get(hash)` which would load the
+full content bytes (potentially multi-GB video files). ZIP-member outputs
+still use `cas.get(hash)` to extract specific members.
+
+**Implementation**: `instance_has_materializable_required_outputs()` in
+`src/mediapm/src/materializer/resolve.rs`.
+
 ---
 
 ## Detailed Section References
