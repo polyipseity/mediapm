@@ -4,11 +4,13 @@
 //! messages, typed RPC client, actor marker, spawn helper, and the concrete
 //! `ractor::Actor` implementation that delegates to the workflow coordinator.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use mediapm_cas::CasApi;
+use mediapm_cas::CasMaintenanceApi;
 use mediapm_cas::Hash;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use tokio::task::JoinHandle;
@@ -16,6 +18,7 @@ use tokio::task::JoinHandle;
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
+use crate::orchestration::actors::state_store::StateStoreClient;
 use crate::orchestration::config::rpc_timeout_ms;
 use crate::orchestration::coordinator::WorkflowCoordinator;
 
@@ -259,7 +262,7 @@ impl<C> Default for ConductorNodeActor<C> {
 
 impl<C> Actor for ConductorNodeActor<C>
 where
-    C: CasApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
     type Msg = ConductorNodeMessage;
     type State = ConductorActorState<C>;
@@ -304,6 +307,8 @@ where
                     };
 
                 let cas = state.coordinator.cas.clone();
+                let bg_cas = cas.clone();
+                let bg_state_store = main_state_store.clone();
                 let user_ncl2 = user_ncl.clone();
                 let machine_ncl2 = machine_ncl.clone();
                 let join_handle = tokio::spawn(async move {
@@ -311,11 +316,15 @@ where
                     if let Some(store) = main_state_store {
                         coord.set_state_store(store);
                     }
-                    if *options == RunWorkflowOptions::default() {
+                    let workflow_result = if *options == RunWorkflowOptions::default() {
                         coord.run_workflow(&user_ncl2, &machine_ncl2).await
                     } else {
                         coord.run_workflow_with_options(&user_ncl2, &machine_ncl2, *options).await
+                    };
+                    if workflow_result.is_ok() {
+                        spawn_background_gc(bg_cas, bg_state_store);
                     }
+                    workflow_result
                 });
                 state.workflow_handles.insert(handle_id, join_handle);
                 let _ = reply.send(Ok(handle_id));
@@ -380,6 +389,61 @@ where
     }
 }
 
+/// Cooldown before background GC runs after workflow completion: 1 hour.
+const GC_COOLDOWN_SECONDS: u64 = 3600;
+
+/// Spawns a background task that waits [`GC_COOLDOWN_SECONDS`] then runs
+/// `gc_sweep` with roots computed from the committed orchestration state.
+///
+/// This keeps the hot workflow path free of maintenance overhead — the caller
+/// does not block on GC and does not need the maintenance trait bound.  The
+/// spawned task acquires `CasMaintenanceApi` only at the call site in
+/// [`ConductorNodeActor`]'s `handle` method.
+fn spawn_background_gc<C>(cas: Arc<C>, state_store: Option<StateStoreClient>)
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+{
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(GC_COOLDOWN_SECONDS)).await;
+
+        let state = match state_store.as_ref() {
+            Some(store) => match store.current_state().await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("background GC: failed to load current state: {e}");
+                    return;
+                }
+            },
+            None => {
+                tracing::debug!("background GC: no state store available, skipping");
+                return;
+            }
+        };
+
+        let mut roots: BTreeSet<Hash> = BTreeSet::new();
+        for instance in state.instances.values() {
+            roots.extend(instance.outputs.values().map(|output| output.hash));
+            roots.extend(instance.inputs.values().map(|input| input.hash));
+        }
+
+        if roots.is_empty() {
+            tracing::debug!("background GC: no roots to protect, skipping");
+            return;
+        }
+
+        match cas.gc_sweep(&roots).await {
+            Ok(report) => {
+                if report.deleted_count > 0 {
+                    tracing::info!("background GC: deleted {} stale objects", report.deleted_count);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("background GC sweep failed: {e}");
+            }
+        }
+    });
+}
+
 /// Spawns a conductor node actor and returns a typed client.
 ///
 /// # Errors
@@ -387,7 +451,7 @@ where
 /// Returns an error when the node actor cannot be spawned.
 pub async fn spawn_conductor_actor<C>(cas: Arc<C>) -> Result<ConductorActorClient, ConductorError>
 where
-    C: CasApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
     let (actor_ref, _join_handle) =
         Actor::spawn(None, ConductorNodeActor::<C>::default(), cas).await.map_err(|err| {
