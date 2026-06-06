@@ -286,50 +286,34 @@ For comprehensive details, refer to the following specifications collected from 
 
 ### CAS Integrity Verification
 
-**Overview**: CAS objects carry a `verify_time` field in the primary header
-that records when each object's BLAKE3 hash was last confirmed. This enables
-configurable verify-on-read strategies that balance integrity guarantees
-against read-latency overhead.
+The content-addressed storage layer implements configurable integrity verification
+that re-checks BLAKE3 hashes when objects are read. Verification is gated by a
+list of trigger strategies (`VerifyTriggerStrategy`):
 
-**Header change**: `_padding` replaced with `verify_time: u64` (Unix epoch
-seconds, 0 = never verified). `PrimaryHeaderV1` grows from 56 to 64 bytes.
+- `Always` — Re-verify on every `get()`.
+- `Modified` — Re-verify when the object's mtime has changed since the last put
+  or verify (fieldless variant; no per-entity timestamp is tracked).
+- `Sample { denominator }` — Re-verify on a 1-in-N probabilistic basis.
+- `Stale { timeout }` — Re-verify when the elapsed time since the last put or
+  verify exceeds the timeout.
 
-**`INDEX_SCHEMA_VERSION`**: Bumped from 1 to 2. Migration adds `verify_time`
-field, initializing it to 0 for all existing objects.
+All strategies are evaluated on every `get()`; verification runs if *any*
+matching strategy triggers.
 
-**`VerifyTriggerStrategy` enum** (four variants):
+**Configuration** (`CasIntegrityConfig`):
 
-| Variant   | Semantics |
-|-----------|-----------|
-| `Always`  | Recompute hash on every `get()` — maximum integrity, highest overhead |
-| `Modified`| Compare file mtime to `verify_time`; verify only when mtime changed |
-| `Sample`  | Probabilistic check — default 1% sample rate via `sample_rate` |
-| `Stale`   | Verify when `now - verify_time > stale_threshold` (default 7 days) |
+```rust
+pub struct CasIntegrityConfig {
+    pub verify_on_read: Vec<VerifyTriggerStrategy>,
+}
+```
 
-**`CasIntegrityConfig`** (builder pattern):
+Default: `[Modified, Sample { denominator: 100 }]`.
 
-- `strategies: Vec<VerifyTriggerStrategy>` — default `[Modified, Sample]`
-- `stale_threshold: Duration` — default 7 days
-- `sample_rate: f64` — default 0.01
-- `ttl_cache_ttl: Duration` — default 60 seconds
-
-**TTL cache** (`HashMap<Hash, (Instant, Arc<[u8]>)>` in `FileSystemState`):
-Fast path that skips verification for recently accessed objects. Evicted on
-object delete/prune or TTL expiry. Configurable TTL.
-
-**Config keys** (flat under `runtime.*`):
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `verify_on_read_strategies` | `Array<String>` | `["modified", "sample"]` | Ordered list of strategy names |
-| `verify_on_read_stale_threshold_secs` | `Number` | `604800` | Seconds before Stale triggers |
-| `verify_on_read_sample_rate` | `Number` | `0.01` | Fraction for Sample strategy |
-| `verify_on_read_ttl_cache_ttl_secs` | `Number` | `60` | TTL cache seconds |
-
-**Default behavior**: `["modified", "sample"]` means most objects skip
-verification (TTL cache hit), modified files trigger verification, and a
-random 1% sample provides probabilistic coverage. Pure workflows may
-auto-recover on verification failure; impure workflows fail immediately.
+Reconstructed-object bytes are cached with a TTL of 3600s (1 hour) to reduce
+redundant decoding work. No separate integrity-result cache is maintained;
+verification decisions are made fresh on every `get()` call against object-file
+metadata and the strategy list.
 
 ### Conductor Specification (src/conductor/)
 

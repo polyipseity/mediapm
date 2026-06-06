@@ -311,7 +311,7 @@ the lock after the first instance releases it when `wait_for_lock=true`.
 ### 1.10 verify_time = 0 Recovery
 
 **Issue**: Newly stored or migrated objects have `verify_time = 0`. The
-Stale strategy compares `now - 0 > stale_threshold`, which always triggers
+Stale strategy compares `now - 0 > timeout`, which always triggers
 verification on first access.
 
 **Scenarios**:
@@ -322,7 +322,9 @@ verification on first access.
 
 **Current Spec**: "A value of 0 means never verified"
 
-**Gap**: No guidance on how Stale strategy treats `verify_time = 0`.
+**Gap**: No guidance on how Stale strategy treats `verify_time = 0`. Stale is
+not part of the default config (`[Modified, Sample { denominator: 100 }]`), but
+when explicitly enabled its behavior with `verify_time = 0` is unspecified.
 
 **Risk**: Every object migrated from v1 gets verified on first access after
 migration — potentially mass re-verification on next sync.
@@ -336,17 +338,18 @@ migration — potentially mass re-verification on next sync.
 - Document that first sync after v1→v2 migration may be slower due to
   verification catch-up
 
-### 1.11 TTL Cache Invalidation on Delete/Prune
+### 1.11 Reconstructed-Bytes Cache Invalidation on Delete/Prune
 
-**Issue**: When an object is deleted or pruned from storage, its TTL cache
-entry in `FileSystemState` persists until TTL expiry, potentially serving
-stale or dangling references.
+**Issue**: When an object is deleted or pruned from storage, its
+`reconstructed_bytes_cache` entry in `FileSystemState` persists until TTL
+expiry, potentially serving stale or dangling references.
 
 **Scenarios**:
 
-- `delete(hash)` succeeds but TTL cache still holds an entry for that hash
-- `prune()` removes unreferenced objects but TTL cache entries remain
-- Index is rebuilt and some hashes no longer exist; TTL cache not consulted
+- `delete(hash)` succeeds but `reconstructed_bytes_cache` still holds an entry
+  for that hash
+- `prune()` removes unreferenced objects but cache entries remain
+- Index is rebuilt and some hashes no longer exist; cache not consulted
 
 **Current Spec**: "Entries are evicted when the underlying object is deleted
 or pruned"
@@ -354,48 +357,53 @@ or pruned"
 **Gap**: Eviction trigger is specified but not how it is enforced — synchronous
 deletion on write path or lazy check on read?
 
-**Risk**: A concurrent `get(hash)` after `delete(hash)` could hit the TTL
-cache and return stale data as if the object still exists.
+**Risk**: A concurrent `get(hash)` after `delete(hash)` could hit the
+`reconstructed_bytes_cache` and return stale data as if the object still
+exists.
 
 **Recommendations**:
 
-- On `delete()`, synchronously remove the corresponding TTL cache entry
-- On `prune()`, clear all TTL cache entries for pruned hashes (batch removal)
+- On `delete()`, synchronously remove the corresponding
+  `reconstructed_bytes_cache` entry
+- On `prune()`, clear all cache entries for pruned hashes (batch removal)
 - Add a lazily-checked generation counter: each maintenance sweep increments
-  a generation; TTL entries tagged with their creation generation are discarded
-  on access when the generation has advanced
+  a generation; cache entries tagged with their creation generation are
+  discarded on access when the generation has advanced
 - Test: "delete then get returns NotFound rather than cached bytes"
 
-### 1.12 Concurrent get() Race in TTL Cache Fill
+### 1.12 Concurrent get() Race in reconstructed_bytes_cache Fill
 
-**Issue**: Two concurrent `get(hash)` calls both TTL-cache-miss and both
-evaluate strategies as needing verification, duplicating work.
+**Issue**: Two concurrent `get(hash)` calls both miss the
+`reconstructed_bytes_cache` and both reconstruct the same object,
+duplicating work.
 
 **Scenarios**:
 
 - Thread A and Thread B both call `get(X)` simultaneously
-- Both miss the TTL cache
-- Both compute hash, both succeed, both update `verify_time`
-- Both populate the TTL cache with duplicate entries
+- Both miss the `reconstructed_bytes_cache`
+- Both reconstruct bytes from delta chain
+- Both populate the cache with duplicate entries
 
 **Current Spec**: Not specified
 
 **Gap**: No concurrency control for the cache-fill path
 
-**Risk**: Unnecessary double-verification — doubled latency and I/O on the
-same object
+**Risk**: Unnecessary double-reconstruction — doubled latency and I/O on the
+same object. Verification is not duplicated because decisions are made fresh
+on every `get()`, but the byte reconstruction itself is wasted.
 
 **Recommendations**:
 
 - Use a per-hash lock (e.g., `HashMap<Hash, Mutex<()>>`) to serialize
-  verification for the same hash
-- First caller verifies and populates cache; second caller finds cache hit
+  reconstruction for the same hash
+- First caller reconstructs and populates cache; second caller finds cache
+  hit
 - Never hold multiple hash locks simultaneously (deadlock avoidance)
-- Test: "concurrent get() same hash verifies only once"
+- Test: "concurrent get() same hash reconstructs only once"
 
 ### 1.13 Stale Strategy with verify_time = 0
 
-**Issue**: Overlaps with 1.9 but focuses specifically on the Stale strategy's
+**Issue**: Overlaps with 1.10 but focuses specifically on the Stale strategy's
 interaction with `verify_time = 0` in production workloads.
 
 **Scenarios**:
@@ -407,7 +415,7 @@ interaction with `verify_time = 0` in production workloads.
 - After `repair_index()`, all objects reset to `verify_time = 0`
 
 **Current Spec**: Stale triggers when
-`now - verify_time > stale_threshold`; `0` is treated as "infinitely stale"
+`now - verify_time > timeout`; `0` is treated as "infinitely stale"
 
 **Gap**: Stale strategy does not distinguish between "just written with
 `verify_time = 0`" and "verified yesterday but now stale"
@@ -511,39 +519,41 @@ verification on every access
 - Optionally reset `verify_time` to `now` on clock skew detection
 - Test: "clock jumps backward → no mass re-verification"
 
-### 1.17 TTL Cache and content_cache Interaction
+### 1.17 Reconstructed-Bytes Cache Interaction with Verification
 
-**Issue**: CAS has two caching layers — `content_cache` (general read cache)
-and the TTL cache (integrity fast path). Their interaction is underspecified.
+**Issue**: CAS has a single caching layer — `reconstructed_bytes_cache`
+(formerly `content_cache`) that holds fully-reconstructed object bytes with
+a 3600s TTL. No separate integrity-result cache exists. Verification decisions
+are made fresh on every `get()` against object-file metadata and the trigger
+strategy list, independently of the cache.
 
 **Scenarios**:
 
-- Object is in `content_cache` but not in TTL cache — should integrity
-  verification still run on the cached bytes?
-- Object is in TTL cache (verified recently) but not in `content_cache` —
-  should the TTL cache serve the bytes or is it a miss-through to storage?
-- One cache evicts while the other still holds the entry — inconsistency
-  possible?
+- Object is in `reconstructed_bytes_cache` — should integrity verification
+  still run on the cached bytes?
+- Object is not in `reconstructed_bytes_cache` — verification runs on the
+  freshly-read bytes before populating the cache.
+- Cache entry is stale (TTL expired) — next `get()` triggers a fresh
+  reconstruction and verification.
 
-**Current Spec**: "TTL cache supplements content_cache"
+**Current Spec**: "Reconstructed-object bytes are cached with a TTL of 3600s"
 
-**Gap**: No ordering or dependency rules between the two caches
+**Gap**: No ordering rule between cache lookup and verification.
 
-**Risk**: Double caching wastes memory; stale bytes in one cache cause
-verification to be skipped on the other
+**Risk**: Returning cached bytes without re-verifying could mask silent
+corruption that occurred after the cache entry was created.
 
 **Recommendations**:
 
-- On `get()`: check TTL cache first (fastest path). If hit, return bytes
-  directly. If miss, check `content_cache`. If `content_cache` hit, run
-  verification strategies on the cached bytes (if verification triggered,
-  re-read from disk; if not, return cached bytes). If both miss, read from
-  disk, verify, populate both caches.
-- TTL cache stores `Arc<[u8]>` — share the underlying bytes with
-  `content_cache` where possible to avoid duplication.
-- On eviction from either cache, the other is unaffected (independent TTLs).
-- Test: "object in content_cache but not TTL cache → still verified if
-  strategy triggers"
+- On `get()`: check verification strategies first (against file metadata).
+  If verification triggers, re-read from disk and re-verify regardless of
+  cache state. If no strategy triggers, return cached bytes if available.
+- The cache serves only to avoid redundant delta-chain reconstruction, not
+  to skip integrity checks.
+- TTL expiry triggers re-read from disk, which triggers a fresh
+  reconstruction and a fresh verification decision.
+- Test: "object in reconstructed_bytes_cache but stale mtime → re-verified
+  on get"
 
 ---
 
