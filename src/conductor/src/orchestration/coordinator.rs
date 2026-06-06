@@ -79,6 +79,9 @@ where
     state_store: Option<StateStoreClient>,
 }
 
+/// Default TTL for workflow instances: 7 days.
+const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
+
 impl<C> WorkflowCoordinator<C>
 where
     C: CasApi + Send + Sync + 'static,
@@ -259,7 +262,9 @@ where
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
-        state_store.set_instance_ttl(machine_document.runtime.instance_ttl_seconds)?;
+        state_store.set_instance_ttl(
+            machine_document.runtime.instance_ttl_seconds.or(Some(DEFAULT_INSTANCE_TTL_SECONDS)),
+        )?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
@@ -441,7 +446,9 @@ where
                 load_options,
             )
             .await?;
-        state_store.set_instance_ttl(machine_document.runtime.instance_ttl_seconds)?;
+        state_store.set_instance_ttl(
+            machine_document.runtime.instance_ttl_seconds.or(Some(DEFAULT_INSTANCE_TTL_SECONDS)),
+        )?;
 
         Self::validate_state_against_unified(&next_state, &unified)?;
         let next_pointer = state_store.persist_and_publish_state(next_state).await?;
