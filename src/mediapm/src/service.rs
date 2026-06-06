@@ -1367,6 +1367,7 @@ where
         }
 
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
+        let hierarchy_start = std::time::Instant::now();
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
@@ -1377,6 +1378,11 @@ where
                 .unwrap_or_else(|| document.runtime.verify_materialization()),
         )
         .await?;
+        let hierarchy_elapsed = hierarchy_start.elapsed();
+        eprintln!(
+            "[mediapm::sync] hierarchy materialization completed in {:.1}s",
+            hierarchy_elapsed.as_secs_f64()
+        );
         let mut warnings = Vec::new();
         warnings.extend(materialize_report.notices.clone());
         Self::append_tool_sync_hint_warning(&mut warnings, &tools_requiring_sync);
