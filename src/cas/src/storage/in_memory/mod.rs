@@ -22,9 +22,9 @@ use crate::storage::{
     validate_constraint_target_not_in_bases,
 };
 use crate::{
-    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint, ConstraintPatch,
-    DeltaPatch, Hash, HashAlgorithm, ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport,
-    StoredObject, empty_content_hash,
+    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint,
+    ConstraintBatchOp, ConstraintPatch, DeltaPatch, Hash, HashAlgorithm, ObjectInfo,
+    OptimizeOptions, OptimizeReport, PruneReport, StoredObject, empty_content_hash,
 };
 
 mod reconstruction;
@@ -707,6 +707,53 @@ impl CasApi for InMemoryCas {
         Ok(self
             .set_normalized_constraint_row(target_hash, merged)
             .map(|potential_bases| Constraint { target_hash, potential_bases }))
+    }
+
+    async fn set_constraint_batch(&self, batch: Vec<ConstraintBatchOp>) -> Result<(), CasError> {
+        let _gate = self.mutation_gate.lock().await;
+
+        for op in &batch {
+            match op {
+                ConstraintBatchOp::Set { target_hash, potential_bases } => {
+                    validate_constraint_target_not_in_bases(*target_hash, potential_bases)?;
+
+                    if *target_hash != empty_content_hash()
+                        && !self.objects.contains_key(target_hash)
+                    {
+                        return Err(CasError::NotFound(*target_hash));
+                    }
+                    for base in potential_bases {
+                        if *base != empty_content_hash() && !self.objects.contains_key(base) {
+                            return Err(CasError::NotFound(*base));
+                        }
+                    }
+
+                    self.set_normalized_constraint_row(*target_hash, potential_bases.clone());
+                }
+                ConstraintBatchOp::Patch { target_hash, patch } => {
+                    if *target_hash != empty_content_hash()
+                        && !self.objects.contains_key(target_hash)
+                    {
+                        return Err(CasError::NotFound(*target_hash));
+                    }
+                    for base in &patch.add_bases {
+                        if *base != empty_content_hash() && !self.objects.contains_key(base) {
+                            return Err(CasError::NotFound(*base));
+                        }
+                    }
+
+                    let merged = Self::merge_constraint_patch(
+                        self.constraints.get(target_hash).as_deref(),
+                        patch.clone(),
+                    );
+                    validate_constraint_target_not_in_bases(*target_hash, &merged)?;
+
+                    self.set_normalized_constraint_row(*target_hash, merged);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError> {
