@@ -156,12 +156,28 @@ pub(super) fn extract_zip_folder_variant_bytes(
                 variant,
             )?;
 
-            let sanitized = sanitize_hierarchy_path(&renamed, entry_sanitization);
-            if sanitized.contains('/') || sanitized.contains('\\') {
-                return Err(MediaPmError::Workflow(format!(
-                    "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' ZIP entry '{normalized}' after rename/sanitization produced multi-component path '{sanitized}'",
-                )));
-            }
+            // Preserve directory structure from the renamed ZIP entry path,
+            // applying character-level sanitization only to the filename
+            // component (not the directory prefix).  This keeps subdirectory
+            // ZIP entries like `sidecars/links.url` intact instead of
+            // flattening the `/` via `entry_sanitization`.
+            let sanitized = {
+                let (prefix, filename) = renamed
+                    .rsplit_once('/')
+                    .map(|(p, f)| (p.to_string(), f.to_string()))
+                    .unwrap_or((String::new(), renamed.clone()));
+                let sanitized_filename = sanitize_hierarchy_path(&filename, entry_sanitization);
+                if sanitized_filename.is_empty() {
+                    return Err(MediaPmError::Workflow(format!(
+                        "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' ZIP entry '{normalized}' after rename/sanitization produced empty filename",
+                    )));
+                }
+                if prefix.is_empty() {
+                    sanitized_filename
+                } else {
+                    format!("{prefix}/{sanitized_filename}")
+                }
+            };
 
             let should_write_entry =
                 register_zip_file_entry(&sanitized, extracted_entries).map_err(|reason| {
