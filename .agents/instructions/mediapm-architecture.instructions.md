@@ -607,11 +607,11 @@ deleted or pruned, or on maintenance operations.
 
 Four `VerifyTriggerStrategy` variants control verification:
 
-| Strategy   | Trigger condition                                                     |
-|------------|-----------------------------------------------------------------------|
-| `Always`   | Every `get()` call triggers a full hash re-computation.              |
-| `Modified` | Verify only when file mtime changed since last `verify_time`.         |
-| `Sample`   | Verify a random fraction (default 1%) of recently-fetched objects.    |
+| Strategy   | Trigger condition                                                   |
+| ---------- | ------------------------------------------------------------------- |
+| `Always`   | Every `get()` call triggers a full hash re-computation.             |
+| `Modified` | Verify only when file mtime changed since last `verify_time`.       |
+| `Sample`   | Verify a random fraction (default 1%) of recently-fetched objects.  |
 | `Stale`    | Verify when `now - verify_time > stale_threshold` (default 7 days). |
 
 Default strategy list: `[Modified, Sample]`.
