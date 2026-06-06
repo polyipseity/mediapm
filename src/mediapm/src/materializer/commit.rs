@@ -13,6 +13,13 @@ use crate::error::MediaPmError;
 pub(super) fn remove_path(path: &Path) -> Result<(), MediaPmError> {
     clear_path_readonly_recursively(path)?;
 
+    // On Unix, removing a child entry requires write permission on the parent
+    // directory. The parent directory is usually already writable, but may be
+    // read-only when it is itself a managed output that was marked read-only by
+    // `ensure_managed_path_readonly()` during a previous materialization cycle
+    // (e.g. a hierarchy folder node containing stale file entries).
+    clear_directory_writable(path)?;
+
     let metadata = fs::symlink_metadata(path).map_err(|source| MediaPmError::Io {
         operation: "reading path metadata before removal".to_string(),
         path: path.to_path_buf(),
@@ -199,6 +206,68 @@ fn clear_bsd_immutable_flags(path: &Path) -> Result<(), MediaPmError> {
                 source: err,
             });
         }
+    }
+
+    Ok(())
+}
+
+/// Ensures the parent directory of `path` is writable so the child entry can
+/// be removed.
+///
+/// On Unix, unlinking or renaming a child requires write permission on the
+/// containing directory. Managed directory outputs may be read-only when they
+/// are themselves part of a previously materialized hierarchy tree. This
+/// helper clears the readonly bit and BSD immutable flags on the parent
+/// (without recursing into sibling entries).
+fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
+    let parent = match path.parent() {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        clear_bsd_immutable_flags(parent)?;
+    }
+
+    let metadata = match fs::metadata(parent) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    let mut permissions = metadata.permissions();
+    if permissions.readonly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = permissions.mode();
+            let writable_mode = mode | 0o200;
+            if writable_mode != mode {
+                permissions.set_mode(writable_mode);
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            #[expect(
+                clippy::permissions_set_readonly_false,
+                reason = "on non-Unix platforms we must clear the readonly flag before managed delete operations can succeed"
+            )]
+            {
+                permissions.set_readonly(false);
+            }
+        }
+
+        fs::set_permissions(parent, permissions).map_err(|source| MediaPmError::Io {
+            operation: "clearing readonly bit on parent directory before removal".to_string(),
+            path: parent.to_path_buf(),
+            source,
+        })?;
     }
 
     Ok(())
