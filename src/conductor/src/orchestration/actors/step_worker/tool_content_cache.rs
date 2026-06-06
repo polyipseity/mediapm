@@ -20,7 +20,7 @@
 //! - **Miss** — CAS bytes for every entry are fetched concurrently; any
 //!   previous entry directory is removed; all content is extracted into a
 //!   fresh `payload/` tree; `metadata.json` is written atomically.
-//! - **Expiry** — entries not used within 30 days are pruned by
+//! - **Expiry** — entries not used within 1 day are pruned by
 //!   [`prune_expired_tool_content_cache_entries`] on a best-effort basis that
 //!   never blocks workflow execution.
 //!
@@ -733,7 +733,7 @@ fn maybe_prune_expired_tool_content_cache_entries(
     Ok(())
 }
 
-/// Removes tool-content cache entries that have not been used within 30 days.
+/// Removes tool-content cache entries that have not been used within 1 day.
 ///
 /// Skips missing entries, unreadable metadata, or version-mismatched entries
 /// silently so cleanup never blocks workflow execution.
