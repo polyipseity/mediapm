@@ -1739,6 +1739,33 @@ dispatch; tests may assume sequential-like dedup behavior.
 2. If yes, what's the dedup key: full output hash set, tool+args identity, or
    workflow-level step identity?
 
+---
+
+### 4.17 Media Folder Entry Sanitization Edge Cases
+
+**Issue**: The separate `media_folder_entry_sanitization` config field introduces
+new edge cases around ZIP entry name sanitization after rename rules.
+
+**Scenarios**:
+
+| Scenario | Current Spec | Gap |
+|---|---|---|
+| Rename rules produce `/` or `\\` in the result | Rejected as multi-component path | Verify rejection happens after sanitization |
+| Entry sanitization maps a char to `/` or `\\` | Rejected by post-sanitization validation | Replacement chars that introduce path separators are caught |
+| Directory entries contain reserved chars | Not sanitized (created as-is) | Directory paths already normalized by `normalize_zip_entry_relative_path` |
+| Custom mapping overlaps with defaults | Custom wins (same merge semantics as `path_sanitization`) | Consistent behavior maintained |
+| Reserved char appears after rename but before sanitization | Sanitization replaces it, then `/`/`\\` check runs | Order: rename → sanitize → reject multi-component |
+
+**Risk**: Sanitization producing a path separator would bypass the intent of
+single-file entry handling. The post-sanitization rejection of `/` and `\\`
+mitigates this.
+
+**Recommendations**:
+
+- Add integration test: "rename rule introduces path separator → rejected"
+- Add integration test: "sanitization maps char to `/` → rejected"
+- Verify directory entries pass through without sanitization (no spurious errors)
+
 ### 4.18 Scheduler Diagnostics Metrics Fallback
 
 **Issue**: The scheduler's `runtime_diagnostics()` method reports

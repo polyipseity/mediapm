@@ -621,6 +621,26 @@ repeated stale-entry warnings on every sync cycle.
     validation so replaced paths always pass strict validation,
   - resolved `rename_files` replacement strings are also sanitized using the
     same effective replacement map before materialization,
+- **Media_folder entry sanitization**:
+  - `runtime.media_folder_entry_sanitization` controls reserved-character
+    replacement in individual media_folder ZIP entry filenames after rename
+    rules are applied,
+  - separate from `path_sanitization` — the former applies to full hierarchy
+    paths (via `sanitize_names`), while this field applies only to filenames
+    extracted from media_folder ZIP payloads,
+  - same format as `path_sanitization`: optional `BTreeMap<String, String>`
+    mapping single reserved characters to single replacement characters,
+  - same defaults: `<`, `>`, `:`, `"`, `|`, `?`, `*` → `_`,
+  - applied after rename rules but before the single-file path validation:
+    if the sanitized result contains `/` or `\`, the entry is rejected as a
+    multi-component path,
+  - directory entries are not sanitized (they are created as-is from the
+    ZIP layout),
+- **Hierarchy path character rejection**:
+  - `is_rejected_char` forbids `<`, `>`, `:`, `"`, `|`, `?`, `*`, and `\\`
+    in individual hierarchy path components,
+  - backslash (`\\`) is rejected because it is a Windows path separator and
+    is not a valid POSIX filename character,
 - **Hierarchy flattening dedup**:
   - the dedup key during flattening is `(template_path, media_id)`, not
     `template_path` alone,
