@@ -1056,23 +1056,7 @@ where
                                 step.id, output,
                             ))
                         })?;
-                        // Verify the referenced CAS object is still readable, not corrupted.
-                        match self.cas.get(output_hash).await {
-                            Ok(_) => Ok(output_hash),
-                            Err(source) if Self::is_cas_corruption_read_error(&source) => {
-                                Err(ConductorError::CorruptWorkflowOutput(Box::new(
-                                    CorruptWorkflowOutputContext {
-                                        workflow_name: workflow_name.to_string(),
-                                        consumer_step_id: step.id.clone(),
-                                        producer_step_id: step_id.to_string(),
-                                        output_name: output.to_string(),
-                                        output_hash,
-                                        detail: source.to_string(),
-                                    },
-                                )))
-                            }
-                            Err(source) => Err(ConductorError::Cas(source)),
-                        }
+                        Ok(output_hash)
                     }
                     ParsedInputBindingSegment::Literal(content) => {
                         Ok(Hash::from_content(content.as_bytes()))
