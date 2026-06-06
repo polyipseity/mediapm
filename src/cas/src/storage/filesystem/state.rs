@@ -57,9 +57,10 @@ use super::paths::{diff_object_path, object_path};
 use super::recovery;
 use super::util::bootstrap_empty_object;
 use super::{
-    FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY, FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS,
-    FILESYSTEM_SMALL_INLINE_HASHES, FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
-    FILESYSTEM_STREAM_READ_CHUNK_BYTES, FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT, STORAGE_VERSION,
+    FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY, FILESYSTEM_MAX_BASE_SIZE_RATIO,
+    FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS, FILESYSTEM_SMALL_INLINE_HASHES,
+    FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS, FILESYSTEM_STREAM_READ_CHUNK_BYTES,
+    FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT, STORAGE_VERSION,
 };
 
 /// Shared filesystem CAS backend state.
@@ -488,16 +489,30 @@ impl FileSystemState {
     ///
     /// Candidates are ranked by content-length proximity, then depth/payload,
     /// and always include the canonical empty-content base.
+    ///
+    /// Bases whose content length exceeds [`FILESYSTEM_MAX_BASE_SIZE_RATIO`] ×
+    /// the target's content length are excluded — loading such a candidate and
+    /// computing a delta against it costs more memory than any plausible
+    /// compression savings, and the full-object encoding would score at least
+    /// as well. The empty-content fallback is always retained.
     fn unconstrained_candidate_bases_for_target(
         index: &IndexState,
         target_hash: Hash,
         target_content_len: u64,
     ) -> BTreeSet<Hash> {
+        // Only filter over-large bases (over-small bases are cheap to
+        // evaluate and may yield high-value deltas).
+        let max_base_content_len =
+            target_content_len.saturating_mul(FILESYSTEM_MAX_BASE_SIZE_RATIO);
+
         let mut ranked: Vec<(u64, u32, u64, Hash)> = index
             .objects
             .iter()
             .filter_map(|(candidate, meta)| {
                 if *candidate == target_hash || *candidate == empty_content_hash() {
+                    return None;
+                }
+                if meta.content_len > max_base_content_len {
                     return None;
                 }
                 Some((
