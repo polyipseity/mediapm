@@ -1108,10 +1108,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
             tool: MediaStepTool::Rsgain,
             input_variants: vec!["video".to_string()],
             output_variants: BTreeMap::from([("video".to_string(), json!({ "kind": "primary" }))]),
-            options: BTreeMap::from([(
-                "input_extension".to_string(),
-                TransformInputValue::String("m4a".to_string()),
-            )]),
+            options: BTreeMap::new(),
         },
     ];
 
@@ -2729,6 +2726,7 @@ fn ci_mode_detected() -> bool {
 ///
 /// Used when CI environment is detected to validate config generation without
 /// requiring internet access or external tool availability.
+#[expect(clippy::unused_async)]
 async fn run_online_demo_config_only() -> ExampleResult<DemoRunPaths> {
     let root = reset_artifact_root()?;
     let workspace_root = root.clone();

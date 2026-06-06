@@ -683,6 +683,7 @@ mod tests {
 
     /// Protects sync wiring by ensuring folder rename rules rewrite extracted
     /// ZIP member file names before final materialization.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn sync_hierarchy_applies_folder_rename_rules_to_zip_members() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -896,6 +897,7 @@ mod tests {
     /// Protects nested folder-merge semantics by preserving existing children
     /// when a later parent media-folder commit contributes overlapping
     /// directory names.
+    #[allow(clippy::too_many_lines)]
     #[tokio::test]
     async fn sync_hierarchy_preserves_nested_children_on_directory_name_collision() {
         let temp = tempfile::tempdir().expect("tempdir");

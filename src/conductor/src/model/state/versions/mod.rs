@@ -198,13 +198,12 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),
-            last_used: versioned
-                .last_used
-                .map(|timestamp| ImpureTimestamp {
+            last_used: versioned.last_used.map_or_else(ImpureTimestamp::now, |timestamp| {
+                ImpureTimestamp {
                     epoch_seconds: timestamp.epoch_seconds,
                     subsec_nanos: timestamp.subsec_nanos,
-                })
-                .unwrap_or_else(ImpureTimestamp::now),
+                }
+            }),
             inputs: versioned
                 .inputs
                 .into_iter()

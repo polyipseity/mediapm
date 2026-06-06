@@ -47,7 +47,7 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         } else {
             Some(inherited_env_vars)
         },
-        instance_ttl_seconds: Some(604800),
+        instance_ttl_seconds: Some(604_800),
         verify_on_read_sample_denominator: None,
         verify_on_read_stale_timeout_secs: None,
         reconstructed_bytes_cache_ttl_secs: None,
@@ -96,29 +96,29 @@ fn apply_runtime_storage_defaults(
         runtime_storage.inherited_env_vars.clone_from(&defaults.inherited_env_vars);
         changed = true;
     }
-    if runtime_storage.instance_ttl_seconds.is_none() {
-        if let Some(ttl) = defaults.instance_ttl_seconds {
-            runtime_storage.instance_ttl_seconds = Some(ttl);
-            changed = true;
-        }
+    if runtime_storage.instance_ttl_seconds.is_none()
+        && let Some(ttl) = defaults.instance_ttl_seconds
+    {
+        runtime_storage.instance_ttl_seconds = Some(ttl);
+        changed = true;
     }
-    if runtime_storage.verify_on_read_sample_denominator.is_none() {
-        if let Some(val) = defaults.verify_on_read_sample_denominator.as_ref() {
-            runtime_storage.verify_on_read_sample_denominator = Some(val.clone());
-            changed = true;
-        }
+    if runtime_storage.verify_on_read_sample_denominator.is_none()
+        && let Some(val) = defaults.verify_on_read_sample_denominator
+    {
+        runtime_storage.verify_on_read_sample_denominator = Some(val);
+        changed = true;
     }
-    if runtime_storage.verify_on_read_stale_timeout_secs.is_none() {
-        if let Some(val) = defaults.verify_on_read_stale_timeout_secs.as_ref() {
-            runtime_storage.verify_on_read_stale_timeout_secs = Some(val.clone());
-            changed = true;
-        }
+    if runtime_storage.verify_on_read_stale_timeout_secs.is_none()
+        && let Some(val) = defaults.verify_on_read_stale_timeout_secs
+    {
+        runtime_storage.verify_on_read_stale_timeout_secs = Some(val);
+        changed = true;
     }
-    if runtime_storage.reconstructed_bytes_cache_ttl_secs.is_none() {
-        if let Some(val) = defaults.reconstructed_bytes_cache_ttl_secs.as_ref() {
-            runtime_storage.reconstructed_bytes_cache_ttl_secs = Some(val.clone());
-            changed = true;
-        }
+    if runtime_storage.reconstructed_bytes_cache_ttl_secs.is_none()
+        && let Some(val) = defaults.reconstructed_bytes_cache_ttl_secs
+    {
+        runtime_storage.reconstructed_bytes_cache_ttl_secs = Some(val);
+        changed = true;
     }
     changed
 }

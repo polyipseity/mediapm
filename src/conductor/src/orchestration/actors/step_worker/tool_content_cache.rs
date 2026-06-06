@@ -224,14 +224,17 @@ where
         path: entry_dir.clone(),
         source,
     })?;
-    let excl_file =
-        std::fs::OpenOptions::new().create(true).read(true).write(true).open(&lock_path).map_err(
-            |source| ConductorError::Io {
-                operation: "opening tool-content cache lock file".to_string(),
-                path: lock_path.clone(),
-                source,
-            },
-        )?;
+    let excl_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(true)
+        .open(&lock_path)
+        .map_err(|source| ConductorError::Io {
+            operation: "opening tool-content cache lock file".to_string(),
+            path: lock_path.clone(),
+            source,
+        })?;
     excl_file.lock().map_err(|source| ConductorError::Io {
         operation: "acquiring exclusive lock on tool-content cache entry".to_string(),
         path: lock_path.clone(),
@@ -420,6 +423,7 @@ where
             .create(true)
             .read(true)
             .write(true)
+            .truncate(true)
             .open(&lock_path_for_task)
             .map_err(|source| ConductorError::Io {
                 operation: "recreating tool-content cache lock file after extraction".to_string(),
@@ -443,6 +447,7 @@ where
             .create(true)
             .read(true)
             .write(true)
+            .truncate(true)
             .open(&lock_path_for_task)
             .map_err(|source| ConductorError::Io {
                 operation: "opening new tool-content cache lock file for shared lock".to_string(),
@@ -490,9 +495,8 @@ fn try_lock_entry_shared(
         return Ok(None);
     }
 
-    let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(lock_path) {
-        Ok(f) => f,
-        Err(_) => return Ok(None),
+    let Ok(lock_file) = std::fs::OpenOptions::new().read(true).write(true).open(lock_path) else {
+        return Ok(None);
     };
 
     match lock_file.try_lock_shared() {
@@ -781,16 +785,15 @@ pub(super) fn prune_expired_tool_content_cache_entries(
         // is using this entry (shared or exclusive lock held), skip it to
         // avoid the prune-vs-execution race.
         let lock_path = path.join(TOOL_CONTENT_CACHE_LOCK_FILE_NAME);
-        let lock_file = match std::fs::OpenOptions::new().read(true).write(true).open(&lock_path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(lock_file) = std::fs::OpenOptions::new().read(true).write(true).open(&lock_path)
+        else {
+            continue;
         };
         match lock_file.try_lock() {
             Ok(()) => {
                 // Lock acquired — entry is ours to prune.
             }
-            Err(TryLockError::WouldBlock) => continue,
-            Err(TryLockError::Error(_)) => continue,
+            Err(_) => continue,
         }
 
         let _ = fs::remove_dir_all(&path);

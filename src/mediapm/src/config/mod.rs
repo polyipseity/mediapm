@@ -397,11 +397,11 @@ pub struct MediaRuntimeStorage {
     /// When omitted, each reserved char defaults to `_`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_sanitization: Option<BTreeMap<String, String>>,
-    /// Optional custom reserved-character replacement mapping for media_folder
+    /// Optional custom reserved-character replacement mapping for `media_folder`
     /// ZIP entry filenames.
     ///
     /// This is separate from `path_sanitization` — it applies only to
-    /// individual filename entries extracted from media_folder ZIP variants,
+    /// individual filename entries extracted from `media_folder` ZIP variants,
     /// not to full hierarchy paths.
     ///
     /// When omitted, each reserved char defaults to `_`.
@@ -435,7 +435,7 @@ pub struct MediaRuntimeStorage {
 
     /// Ordered list of strategies that trigger CAS integrity re-verification on read.
     /// Accepted values: "always", "modified", "sample", "stale".
-    /// Default: ["modified", "sample"].
+    /// Default: `["modified", "sample"]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_on_read: Option<Vec<String>>,
 
@@ -467,7 +467,7 @@ impl MediaRuntimeStorage {
         self.verify_materialization.unwrap_or(false)
     }
 
-    /// Returns the verify_on_read strategy list or the default.
+    /// Returns the `verify_on_read` strategy list or the default.
     #[must_use]
     pub fn verify_on_read(&self) -> Vec<String> {
         self.verify_on_read.clone().unwrap_or_else(|| vec!["modified".into(), "sample".into()])
@@ -481,10 +481,10 @@ impl MediaRuntimeStorage {
     }
 
     /// Returns the stale timeout in seconds for verify-on-read.
-    /// Default: 604800 (7 days).
+    /// Default: `604_800` (7 days).
     #[must_use]
     pub fn verify_on_read_stale_timeout_secs(&self) -> u64 {
-        self.verify_on_read_stale_timeout_secs.unwrap_or(604800)
+        self.verify_on_read_stale_timeout_secs.unwrap_or(604_800)
     }
 
     /// Returns the reconstructed bytes cache TTL in seconds.
@@ -642,7 +642,11 @@ impl MediaRuntimeStorage {
     ///
     /// If the config is omitted, this uses the runtime defaults for all
     /// rejected reserved filename characters.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if a custom mapping key or value is
+    /// not a single character.
     pub fn path_sanitization_mapping_with_defaults(
         &self,
     ) -> Result<BTreeMap<char, char>, MediaPmError> {
@@ -682,11 +686,15 @@ impl MediaRuntimeStorage {
     }
 
     /// Returns one effective reserved-character replacement mapping for
-    /// media_folder ZIP entry filenames.
+    /// `media_folder` ZIP entry filenames.
     ///
     /// If the config is omitted, this uses the runtime defaults for all
     /// rejected reserved filename characters.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if a custom mapping key or value is
+    /// not a single character.
     pub fn media_folder_entry_sanitization_with_defaults(
         &self,
     ) -> Result<BTreeMap<char, char>, MediaPmError> {
@@ -1539,7 +1547,7 @@ hierarchy = [
         assert!(hierarchy.contains_key("library/artist/subtitles"));
     }
 
-    /// Same template path with different media_ids is allowed — `${media.id}`
+    /// Same template path with different `media_ids` is allowed — `${media.id}`
     /// placeholders resolve to different paths during materialization.
     #[test]
     fn hierarchy_same_path_different_media_id_allowed() {
@@ -1603,7 +1611,7 @@ hierarchy = [
         assert!(hierarchy.contains_key("music/${media.id}.mkv"));
     }
 
-    /// Same template path and same media_id must still be rejected as duplicate.
+    /// Same template path and same `media_id` must still be rejected as duplicate.
     #[test]
     fn hierarchy_same_path_same_media_id_rejected() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2342,7 +2350,7 @@ runtime = {
         assert_eq!(mapping.get(&'>'), Some(&'_'));
     }
 
-    /// Protects media_folder entry sanitization defaults.
+    /// Protects `media_folder` entry sanitization defaults.
     #[test]
     fn runtime_storage_media_folder_entry_sanitization_defaults() {
         let mapping = MediaRuntimeStorage::default()
@@ -2360,7 +2368,7 @@ runtime = {
         assert_eq!(mapping.get(&'\\'), Some(&'_'));
     }
 
-    /// Protects media_folder entry sanitization custom override merge.
+    /// Protects `media_folder` entry sanitization custom override merge.
     #[test]
     fn runtime_storage_media_folder_entry_sanitization_merges_custom_mapping() {
         let runtime = MediaRuntimeStorage {
@@ -2380,7 +2388,7 @@ runtime = {
         assert_eq!(mapping.get(&'>'), Some(&'_'));
     }
 
-    /// Protects hierarchy node sanitize_names inheritance from parent nodes.
+    /// Protects hierarchy node `sanitize_names` inheritance from parent nodes.
     #[test]
     fn hierarchy_nodes_inherit_sanitize_names_from_parent() {
         let nodes = vec![super::HierarchyNode {

@@ -419,12 +419,9 @@ fn spawn_background_gc<C>(
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(GC_COOLDOWN_SECONDS)).await;
 
-        let state_store = match state_store {
-            Some(store) => store,
-            None => {
-                tracing::debug!("background GC: no state store available, skipping");
-                return;
-            }
+        let Some(state_store) = state_store else {
+            tracing::debug!("background GC: no state store available, skipping");
+            return;
         };
 
         let user_doc = match std::fs::read(&user_ncl) {

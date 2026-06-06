@@ -274,11 +274,11 @@ where
         for output_spec in tool.outputs.values() {
             match &output_spec.capture {
                 OutputCaptureSpec::File { path } | OutputCaptureSpec::Folder { path, .. } => {
-                    templates.push(path.clone())
+                    templates.push(path.clone());
                 }
                 OutputCaptureSpec::FileRegex { path_regex }
                 | OutputCaptureSpec::FolderRegex { path_regex } => {
-                    templates.push(path_regex.clone())
+                    templates.push(path_regex.clone());
                 }
                 _ => {}
             }
@@ -361,9 +361,7 @@ where
                 .iter()
                 .filter_map(|n| instance.outputs.get(n).map(|r| r.hash))
                 .collect();
-            if check_hashes.len() != request.required_output_names.len() {
-                needs_execution = true;
-            } else {
+            if check_hashes.len() == request.required_output_names.len() {
                 let bitmap: CasExistenceBitmap = self.cas.exists_many(check_hashes).await?;
                 let _span = tracing::span!(tracing::Level::DEBUG, "cache_probe", output_count = %request.required_output_names.len(), batched = true).entered();
                 for i in 0..bitmap.len() {
@@ -373,6 +371,8 @@ where
                         break;
                     }
                 }
+            } else {
+                needs_execution = true;
             }
         }
         phase_timings.cache_probe_ms = cache_probe_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -761,6 +761,10 @@ where
     ///
     /// The caller must use [`load_inputs_content`] to load content bytes for
     /// inputs that need template rendering.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "this item intentionally handles all input resolution variants inline so ordering invariants remain explicit"
+    )]
     async fn resolve_inputs_hash_only(
         &self,
         unified: &UnifiedNickelDocument,
@@ -1008,7 +1012,7 @@ where
     /// retaining content bytes in memory.
     ///
     /// For single-segment bindings where the hash is directly available
-    /// (ExternalData, StepOutput without `zip_member`, Literal, Env), the
+    /// (`ExternalData`, `StepOutput` without `zip_member`, Literal, Env), the
     /// hash is returned without content loading. Multi-segment bindings and
     /// `zip_member` selectors fall through to content loading and CAS
     /// persistence.
@@ -1610,6 +1614,10 @@ where
     }
 
     /// Executes either an external executable or one builtin implementation.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument represents a distinct dimension of process execution; grouping would create an opaque context struct"
+    )]
     async fn execute_tool(
         &self,
         process: &ResolvedProcessExecution,
@@ -1618,7 +1626,7 @@ where
         tool_cwd: &Path,
         outermost_config_dir: &Path,
         payload_dir: Option<&Path>,
-        _cache_guard: Option<ToolCacheReadGuard>,
+        cache_guard: Option<ToolCacheReadGuard>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         match process {
             ResolvedProcessExecution::Executable { executable, args, env_vars, success_codes } => {
@@ -1630,7 +1638,7 @@ where
                     capture_stdout,
                     tool_cwd,
                     payload_dir,
-                    _cache_guard,
+                    cache_guard,
                 )
                 .await
             }
@@ -1686,6 +1694,10 @@ where
     ///
     /// Runtime timeout uses [`EXECUTABLE_TIMEOUT_SECS_ENV_VAR`] when provided,
     /// otherwise [`DEFAULT_EXECUTABLE_TIMEOUT_SECS`].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument represents a distinct dimension of process execution; grouping would create an opaque context struct"
+    )]
     async fn execute_executable_tool(
         &self,
         executable_name: &str,
@@ -1695,7 +1707,7 @@ where
         capture_stdout: bool,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
-        _cache_guard: Option<ToolCacheReadGuard>,
+        cache_guard: Option<ToolCacheReadGuard>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         let executable_timeout = Self::resolve_executable_timeout_duration()?;
 
@@ -1707,7 +1719,7 @@ where
             capture_stdout,
             tool_cwd,
             payload_dir,
-            _cache_guard,
+            cache_guard,
             executable_timeout,
         )
         .await
@@ -1769,6 +1781,7 @@ where
     /// execution exceeds `executable_timeout`.
     #[expect(
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "flat argument list avoids an ad-hoc parameter struct for a single call site"
     )]
     async fn execute_executable_tool_with_timeout(
@@ -1882,9 +1895,8 @@ where
 
             let mut buf = [0u8; 4096];
             let mut accumulated = Vec::new();
-            let reader = match child_stdout.as_mut() {
-                Some(r) => r,
-                None => return accumulated,
+            let Some(reader) = child_stdout.as_mut() else {
+                return accumulated;
             };
             loop {
                 match reader.read(&mut buf).await {
@@ -1921,9 +1933,8 @@ where
 
             let mut buf = [0u8; 4096];
             let mut accumulated = Vec::new();
-            let reader = match child_stderr.as_mut() {
-                Some(r) => r,
-                None => return accumulated,
+            let Some(reader) = child_stderr.as_mut() else {
+                return accumulated;
             };
             loop {
                 match reader.read(&mut buf).await {
@@ -1952,8 +1963,8 @@ where
         });
 
         // Wait for child exit and pipe readers within the timeout budget.
-        let (process_code, stdout_buf, stderr_buf) =
-            match tokio::time::timeout(executable_timeout, async {
+        let (process_code, stdout_buf, stderr_buf) = if let Ok(result) =
+            tokio::time::timeout(executable_timeout, async {
                 let status = child.wait().await.map_err(|source| ConductorError::Io {
                     operation: format!("waiting on executable process '{executable_name}'"),
                     path: executable_path.clone(),
@@ -1964,25 +1975,22 @@ where
                 Ok::<_, ConductorError>((status, stdout_buf, stderr_buf))
             })
             .await
-            {
-                Ok(result) => {
-                    let (status, stdout_buf, stderr_buf) = result?;
-                    let Some(code) = status.code() else {
-                        return Err(ConductorError::Workflow(format!(
-                            "process '{executable_name}' terminated without an exit code"
-                        )));
-                    };
-                    (code, stdout_buf, stderr_buf)
-                }
-                Err(_) => {
-                    let _ = child.start_kill();
-                    return Err(ConductorError::Workflow(format!(
-                        "process '{executable_name}' exceeded timeout of {} seconds; adjust \
-                     {EXECUTABLE_TIMEOUT_SECS_ENV_VAR} to override",
-                        executable_timeout.as_secs()
-                    )));
-                }
+        {
+            let (status, stdout_buf, stderr_buf) = result?;
+            let Some(code) = status.code() else {
+                return Err(ConductorError::Workflow(format!(
+                    "process '{executable_name}' terminated without an exit code"
+                )));
             };
+            (code, stdout_buf, stderr_buf)
+        } else {
+            let _ = child.start_kill();
+            return Err(ConductorError::Workflow(format!(
+                "process '{executable_name}' exceeded timeout of {} seconds; adjust \
+                     {EXECUTABLE_TIMEOUT_SECS_ENV_VAR} to override",
+                executable_timeout.as_secs()
+            )));
+        };
 
         if !Self::is_success_exit_code(process_code, success_codes) {
             let stderr = Self::format_process_failure_stderr(&stderr_buf);
@@ -2136,8 +2144,7 @@ where
                         ))
                     })?;
                     let bytes = self.cas.get(hash).await?;
-                    resolved_hash_payloads
-                        .insert(hash_text.clone(), bytes.as_ref().to_vec().into());
+                    resolved_hash_payloads.insert(hash_text.clone(), bytes.as_ref().to_vec());
                 }
 
                 let payload = mediapm_conductor_builtin_import::execute_content_map_with_hash_resolver(
@@ -2230,7 +2237,7 @@ where
         resolved_inputs
             .iter()
             .filter(|(key, _)| accepted_keys.contains(&key.as_str()))
-            .map(|(key, input)| (key.clone(), input.plain_content.clone().to_vec().into()))
+            .map(|(key, input)| (key.clone(), input.plain_content.clone().to_vec()))
             .collect()
     }
 

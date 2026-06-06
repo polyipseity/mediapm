@@ -294,20 +294,19 @@ async fn resolve_variant_hash_from_workflow_state(
             let cache = lookup.step_output_hashes_cache.lock().unwrap();
             cache.get(&workflow_id).cloned()
         };
-        match cached {
-            Some(result) => result,
-            None => {
-                let result = resolve_workflow_step_output_hashes(
-                    lookup.cas.as_ref(),
-                    lookup.machine.as_ref(),
-                    state,
-                    workflow,
-                )
-                .await?;
-                let mut cache = lookup.step_output_hashes_cache.lock().unwrap();
-                cache.insert(workflow_id, result.clone());
-                result
-            }
+        if let Some(result) = cached {
+            result
+        } else {
+            let result = resolve_workflow_step_output_hashes(
+                lookup.cas.as_ref(),
+                lookup.machine.as_ref(),
+                state,
+                workflow,
+            )
+            .await?;
+            let mut cache = lookup.step_output_hashes_cache.lock().unwrap();
+            cache.insert(workflow_id, result.clone());
+            result
         }
     };
 

@@ -190,12 +190,12 @@ fn clear_bsd_immutable_flags(path: &Path) -> Result<(), MediaPmError> {
 
     // Read current flags via stat (follows symlinks, matching fs::metadata behavior).
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    if unsafe { libc::stat(c_path.as_ptr(), &mut st) } != 0 {
+    if unsafe { libc::stat(c_path.as_ptr(), &raw mut st) } != 0 {
         // Path may not exist; let the caller's fs::metadata surface the error.
         return Ok(());
     }
 
-    let immutable_mask = (libc::UF_IMMUTABLE | libc::SF_IMMUTABLE) as u32;
+    let immutable_mask = libc::UF_IMMUTABLE | libc::SF_IMMUTABLE;
     if (st.st_flags as u32) & immutable_mask != 0 {
         let new_flags = (st.st_flags as u32) & !immutable_mask;
         if unsafe { libc::chflags(c_path.as_ptr(), new_flags) } != 0 {
@@ -220,10 +220,7 @@ fn clear_bsd_immutable_flags(path: &Path) -> Result<(), MediaPmError> {
 /// helper clears the readonly bit and BSD immutable flags on the parent
 /// (without recursing into sibling entries).
 fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
-    let parent = match path.parent() {
-        Some(p) => p,
-        None => return Ok(()),
-    };
+    let Some(parent) = path.parent() else { return Ok(()) };
 
     #[cfg(any(
         target_os = "macos",
@@ -235,10 +232,7 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
         clear_bsd_immutable_flags(parent)?;
     }
 
-    let metadata = match fs::metadata(parent) {
-        Ok(m) => m,
-        Err(_) => return Ok(()),
-    };
+    let Ok(metadata) = fs::metadata(parent) else { return Ok(()) };
     let mut permissions = metadata.permissions();
     if permissions.readonly() {
         #[cfg(unix)]

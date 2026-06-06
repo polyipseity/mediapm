@@ -196,8 +196,8 @@ pub(crate) fn tool_catalog_entry(tool_name: &str) -> Result<ToolCatalogEntry, Me
     let normalized = tool_name.trim();
     TOOL_CATALOG
         .iter()
+        .find(|&entry| entry.name.eq_ignore_ascii_case(normalized))
         .cloned()
-        .find(|entry| entry.name.eq_ignore_ascii_case(normalized))
         .ok_or_else(|| {
             let names = TOOL_CATALOG
                 .iter()

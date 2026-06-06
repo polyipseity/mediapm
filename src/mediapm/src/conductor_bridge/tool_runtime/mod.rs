@@ -157,7 +157,7 @@ pub(super) const MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV: &str =
 /// Environment variable carrying resolved yt-dlp ffmpeg companion path for
 /// `ffmpeg_location` input default injection.
 pub(super) const YT_DLP_FFMPEG_LOCATION_ENV: &str = "MEDIAPM_YT_DLP_FFMPEG_LOCATION";
-/// Environment variable carrying resolved yt-dlp deno (js_runtimes) companion path for
+/// Environment variable carrying resolved yt-dlp deno (`js_runtimes`) companion path for
 /// `js_runtimes` input default injection.
 pub(super) const YT_DLP_JS_RUNTIMES_ENV: &str = "MEDIAPM_YT_DLP_JS_RUNTIMES";
 

@@ -304,7 +304,7 @@ mod tests {
     }
 
     /// Verifies round-trip preserves `MediaPmState` fields through the typed
-    /// envelope, including managed_files, tool_registry, and workflow_states
+    /// envelope, including `managed_files`, `tool_registry`, and `workflow_states`
     /// with impure timestamps.
     #[test]
     fn populated_mediapm_state_round_trips_through_typed_envelope() {
@@ -406,15 +406,12 @@ mod tests {
 
         let got = decoded.runtime.inherited_env_vars.expect("inherited_env_vars should be present");
         assert_eq!(
-            got.get("windows").map(|v| v.as_slice()),
+            got.get("windows").map(Vec::as_slice),
             Some(&["PATH".to_string(), "TEMP".to_string()][..])
         );
+        assert_eq!(got.get("linux").map(Vec::as_slice), Some(&["LD_LIBRARY_PATH".to_string()][..]));
         assert_eq!(
-            got.get("linux").map(|v| v.as_slice()),
-            Some(&["LD_LIBRARY_PATH".to_string()][..])
-        );
-        assert_eq!(
-            got.get("macos").map(|v| v.as_slice()),
+            got.get("macos").map(Vec::as_slice),
             Some(&["PATH".to_string(), "HOME".to_string(), "SHELL".to_string()][..])
         );
     }

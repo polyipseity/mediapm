@@ -562,7 +562,9 @@ where
     /// to the ready queue. Completion events are recorded through the scheduler
     /// for EWMA runtime estimation.
     #[expect(
+        clippy::similar_names,
         clippy::too_many_arguments,
+        clippy::too_many_lines,
         reason = "each argument represents a distinct runtime context that must be threaded through to the execution pipeline; grouping them would create an ad-hoc context struct with no additional clarity"
     )]
     async fn execute_workflows(

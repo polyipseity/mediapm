@@ -259,7 +259,7 @@ where
     ///
     /// Returns [`MediaPmError`] when source validation fails, config cannot be
     /// loaded/saved, or default source metadata cannot be synthesized.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn add_media_source_with_position(
         &self,
         uri: &Url,
@@ -526,6 +526,15 @@ where
         );
 
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows_for_config_edits(
+            &effective_paths,
+            &document,
+            &mut lock,
+        )?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
+
         Ok(media_id)
     }
 
@@ -574,7 +583,7 @@ where
     /// Returns [`MediaPmError`] when the local source path cannot be
     /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
     /// required conductor runtime documents cannot be prepared.
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn add_local_source_with_position(
         &self,
         local_path: &Path,
@@ -699,6 +708,15 @@ where
             },
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        conductor_bridge::reconcile_media_workflows_for_config_edits(
+            &effective_paths,
+            &document,
+            &mut lock,
+        )?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
+
         Ok(media_id)
     }
 
@@ -1253,10 +1271,11 @@ where
     /// workflow reconciliation/execution fails (including filesystem-CAS
     /// fallback), hierarchy materialization fails, or state cannot be
     /// persisted.
+    #[expect(clippy::too_many_lines)]
     pub async fn sync_library_with_tag_update_checks(
         &self,
         _check_tag_updates: bool,
-        _verify_materialization_override: Option<bool>,
+        verify_materialization_override: Option<bool>,
     ) -> Result<SyncSummary, MediaPmError> {
         // Load the mediapm document once and keep tool reconciliation explicit:
         // this path intentionally does not invoke desired-tool sync.
@@ -1374,7 +1393,7 @@ where
             &machine,
             &conductor_cas_root,
             &mut lock,
-            _verify_materialization_override
+            verify_materialization_override
                 .unwrap_or_else(|| document.runtime.verify_materialization()),
         )
         .await?;

@@ -450,15 +450,15 @@ struct InternalMediaTaggerArgs {
     /// Optional recording MBID override.
     ///
     /// Sentinel values:
-    /// - `auto`/empty => allow AcoustID autodetection,
-    /// - `none` => disable AcoustID autodetection.
+    /// - `auto`/empty => allow `AcoustID` autodetection,
+    /// - `none` => disable `AcoustID` autodetection.
     #[arg(long)]
     recording_mbid: Option<String>,
     /// Optional release MBID override.
     ///
     /// Sentinel values:
     /// - `auto`/empty => treat as unspecified release MBID,
-    /// - `none` => treat as unspecified release MBID and disable AcoustID
+    /// - `none` => treat as unspecified release MBID and disable `AcoustID`
     ///   autodetection.
     #[arg(long)]
     release_mbid: Option<String>,

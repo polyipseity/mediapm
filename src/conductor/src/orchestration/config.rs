@@ -53,8 +53,7 @@ pub fn rpc_timeout_ms() -> u64 {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|&v| v > 0)
-        .map(|v| v * 1000)
-        .unwrap_or(DEFAULT_RPC_TIMEOUT_MS)
+        .map_or(DEFAULT_RPC_TIMEOUT_MS, |v| v * 1000)
 }
 
 /// Returns default step-worker pool size for multi-actor execution.

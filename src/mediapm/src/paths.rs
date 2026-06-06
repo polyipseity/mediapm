@@ -419,7 +419,7 @@ mod tests {
     }
 
     /// Ensures `mediapm_dir = None` preserves the default `.mediapm`
-    /// runtime_root even when other runtime-storage fields are overridden.
+    /// `runtime_root` even when other runtime-storage fields are overridden.
     #[test]
     fn mediapm_dir_none_preserves_default_runtime_root_with_other_overrides() {
         let root = tempfile::tempdir().expect("tempdir");

@@ -1061,7 +1061,7 @@ mod tests {
             cas_store_dir: Some(".conductor/store/".to_string()),
             conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
             inherited_env_vars: Some(BTreeMap::new()),
-            instance_ttl_seconds: Some(604800),
+            instance_ttl_seconds: Some(604_800),
             verify_on_read_sample_denominator: None,
             verify_on_read_stale_timeout_secs: None,
             reconstructed_bytes_cache_ttl_secs: None,
@@ -1076,7 +1076,7 @@ mod tests {
             Some(".conductor/config/conductor")
         );
         assert_eq!(runtime_storage.inherited_env_vars, Some(BTreeMap::new()));
-        assert_eq!(runtime_storage.instance_ttl_seconds, Some(604800));
+        assert_eq!(runtime_storage.instance_ttl_seconds, Some(604_800));
     }
 
     /// Protects runtime defaulting by materializing inherited env-name defaults
@@ -1346,7 +1346,7 @@ pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
 pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 pub(crate) use workflows::{
     fresh_impure_timestamp, managed_workflow_id_for_media, reconcile_media_workflows,
-    resolve_media_variant_output_binding_with_limits,
+    reconcile_media_workflows_for_config_edits, resolve_media_variant_output_binding_with_limits,
 };
 
 #[cfg(test)]

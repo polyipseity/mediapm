@@ -1699,10 +1699,10 @@ fn strip_template_directives(selector: &str) -> Option<String> {
 /// Strips one `:<name>(<argument>)` suffix if present at the end of `s`.
 fn strip_one_directive(s: &str, name: &str) -> Option<String> {
     let pattern = format!(":{name}(");
-    if let Some(pos) = s.rfind(&pattern) {
-        if s.ends_with(')') {
-            return Some(s[..pos].to_string());
-        }
+    if let Some(pos) = s.rfind(&pattern)
+        && s.ends_with(')')
+    {
+        return Some(s[..pos].to_string());
     }
     None
 }

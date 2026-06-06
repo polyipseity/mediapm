@@ -17,8 +17,9 @@ use crate::model::state::OrchestrationState;
 ///
 /// `content_map ⊆ external_data` is enforced at decode time by
 /// `vet_latest_envelope()`, so this function iterates only `external_data`
-/// keys (plus the state pointer and instance I/O) — content_map iteration
+/// keys (plus the state pointer and instance I/O) — `content_map` iteration
 /// is redundant and omitted.
+#[must_use]
 pub fn compute_gc_roots(
     user_external_data: &BTreeMap<Hash, ExternalContentRef>,
     machine_external_data: &BTreeMap<Hash, ExternalContentRef>,

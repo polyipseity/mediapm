@@ -16,24 +16,19 @@ use crate::error::MediaPmError;
 /// - `false` disables sanitization,
 /// - `true` (default) enables replacement using runtime defaults,
 /// - `{ "<": "_", ... }` applies a custom per-character mapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SanitizeNamesConfig {
     /// Explicitly disable reserved-character replacement.
     Disabled,
     /// Inherit the effective setting from the parent hierarchy node.
     ///
     /// The root seed always resolves to [`Enabled`](Self::Enabled).
+    #[default]
     Inherit,
     /// Enable reserved-character replacement using runtime defaults.
     Enabled,
     /// Override runtime defaults with a custom replacement map.
     Custom(BTreeMap<char, char>),
-}
-
-impl Default for SanitizeNamesConfig {
-    fn default() -> Self {
-        Self::Inherit
-    }
 }
 
 impl SanitizeNamesConfig {

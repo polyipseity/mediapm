@@ -100,7 +100,7 @@ fn gc_instances_cutoff_removes_all_tracked() {
     assert!(state.instances.is_empty(), "all tracked instances should be removed");
 }
 
-/// Protects subsec_nanos comparison when epoch_seconds are equal.
+/// Protects `subsec_nanos` comparison when `epoch_seconds` are equal.
 #[test]
 fn gc_instances_respects_subsec_nanos_boundary() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 500_000_000 };
@@ -243,7 +243,7 @@ async fn gc_hook_accepts_ttl_config() {
 }
 
 /// Protects that the GC hook accepts `instance_ttl_seconds = 1` without error
-/// and that the instance survives (last_used falls within the 1-second grace).
+/// and that the instance survives (`last_used` falls within the 1-second grace).
 #[tokio::test]
 async fn gc_hook_accepts_near_zero_ttl() {
     let conductor = SimpleConductor::new(InMemoryCas::new());
