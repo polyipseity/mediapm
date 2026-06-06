@@ -2246,8 +2246,11 @@ mod tests {
         .expect_err("missing local CAS payload must fail materialization");
 
         let error_text = error.to_string();
-        assert!(error_text.contains("variant 'default'"), "unexpected error: {error_text}");
-        assert!(error_text.contains("missing") || error_text.contains("not found"));
+        assert!(
+            error_text.contains("materializing hierarchy file 'demo/local.bin'"),
+            "unexpected error: {error_text}"
+        );
+        assert!(error_text.contains("not found"));
         assert!(!paths.hierarchy_root_dir.join("demo/local.bin").exists());
     }
 
@@ -3166,9 +3169,10 @@ async fn prepare_hierarchy_entry(
                 .first()
                 .expect("checked non-empty and len==1 for hierarchy file path");
 
-            if let Some(hint_hash) =
-                resolve_variant_source_hash(lookup, &entry.media_id, source, variant).await?
-            {
+            let hint_hash =
+                resolve_variant_source_hash(lookup, &entry.media_id, source, variant).await?;
+
+            if let Some(hint_hash) = hint_hash {
                 let hint_hash_str = hint_hash.to_string();
                 if lock.managed_files.get(&relative_path).is_some_and(|r| r.hash == hint_hash_str)
                     && fs::symlink_metadata(&final_path).is_ok()
@@ -3188,50 +3192,87 @@ async fn prepare_hierarchy_entry(
                         skipped_entry: true,
                     });
                 }
-            }
 
-            if let Some(parent) = final_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|source_err| MediaPmError::Io {
-                    operation: "creating final parent directory".to_string(),
-                    path: parent.to_path_buf(),
-                    source: source_err,
-                })?;
-            }
+                // Hash resolvable without loading bytes: materialize
+                // directly from CAS, avoiding potentially large heap
+                // copies (up to ~891 MB per video file).
+                if let Some(parent) = final_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|source_err| {
+                        MediaPmError::Io {
+                            operation: "creating final parent directory".to_string(),
+                            path: parent.to_path_buf(),
+                            source: source_err,
+                        }
+                    })?;
+                }
 
-            progress_bar.set_position(35);
-            let variant_source =
-                resolve_variant_source_bytes(lookup, &entry.media_id, source, variant).await?;
-            if let Some(message) = variant_source.notice.as_deref() {
-                notices.push(message.to_string());
-            }
+                progress_bar.set_position(35);
+                materialize_file_from_cas_with_order(
+                    &lookup.cas,
+                    hint_hash,
+                    &final_path,
+                    relative_path.as_str(),
+                    materialization_methods,
+                    &mut notices,
+                )
+                .await?;
 
-            let file_hash = if let Some(source_hash) = variant_source.source_hash {
-                source_hash
+                progress_bar.set_position(100);
+                (
+                    Some(entry.media_id.clone()),
+                    BTreeMap::from([(relative_path.clone(), variant.clone())]),
+                    BTreeMap::from([(relative_path.clone(), hint_hash)]),
+                    false,
+                )
             } else {
-                lookup.cas.put(variant_source.bytes).await.map_err(|source| {
-                    MediaPmError::Workflow(format!(
-                        "importing materialized file '{relative_path}' into CAS failed: {source}",
-                    ))
-                })?
-            };
+                // Hash not directly resolvable (ZIP member extraction or
+                // no workflow state/variant_hashes): load bytes from CAS
+                // and resolve content.
+                if let Some(parent) = final_path.parent() {
+                    tokio::fs::create_dir_all(parent).await.map_err(|source_err| {
+                        MediaPmError::Io {
+                            operation: "creating final parent directory".to_string(),
+                            path: parent.to_path_buf(),
+                            source: source_err,
+                        }
+                    })?;
+                }
 
-            progress_bar.set_position(70);
-            materialize_file_from_cas_with_order(
-                &lookup.cas,
-                file_hash,
-                &final_path,
-                relative_path.as_str(),
-                materialization_methods,
-                &mut notices,
-            )
-            .await?;
+                progress_bar.set_position(35);
+                let variant_source =
+                    resolve_variant_source_bytes(lookup, &entry.media_id, source, variant).await?;
+                if let Some(message) = variant_source.notice.as_deref() {
+                    notices.push(message.to_string());
+                }
 
-            (
-                Some(entry.media_id.clone()),
-                BTreeMap::from([(relative_path.clone(), variant.clone())]),
-                BTreeMap::from([(relative_path.clone(), file_hash)]),
-                false,
-            )
+                let file_hash = if let Some(source_hash) = variant_source.source_hash {
+                    source_hash
+                } else {
+                    lookup.cas.put(variant_source.bytes).await.map_err(|source| {
+                        MediaPmError::Workflow(format!(
+                            "importing materialized file '{relative_path}' into CAS failed: {source}",
+                        ))
+                    })?
+                };
+
+                progress_bar.set_position(70);
+                materialize_file_from_cas_with_order(
+                    &lookup.cas,
+                    file_hash,
+                    &final_path,
+                    relative_path.as_str(),
+                    materialization_methods,
+                    &mut notices,
+                )
+                .await?;
+
+                (
+                    Some(entry.media_id.clone()),
+                    BTreeMap::from([(relative_path.clone(), variant.clone())]),
+                    BTreeMap::from([(relative_path.clone(), file_hash)]),
+                    false,
+                )
+            }
         }
         HierarchyEntryKind::MediaFolder => {
             let source = resolve_hierarchy_source(document, entry)?;
