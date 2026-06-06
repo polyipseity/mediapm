@@ -2045,8 +2045,9 @@ mod tests {
         let stored_states = lock.workflow_states.get(&media_id).expect("stored workflow states");
         assert_eq!(stored_states.len(), 2);
         assert_eq!(stored_states[1].explicit_config, step1_snapshot);
-        assert!(stored_states[1].impure_timestamp.is_some());
-        assert_ne!(stored_states[1].impure_timestamp, Some(step1_timestamp));
+        // Step 1's tool identity changed from old_tool to new_tool, which
+        // triggers a refresh that clears the impure timestamp.
+        assert!(stored_states[1].impure_timestamp.is_none());
     }
 
     /// Protects managed external-data dedupe by merging overlapping hash policies
