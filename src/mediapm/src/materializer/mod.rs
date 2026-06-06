@@ -2873,7 +2873,7 @@ use self::metadata::{
     resolve_managed_ffprobe_path,
 };
 use self::playlist::{
-    collect_media_file_hierarchy_templates, collect_playlist_media_index, join_relative_paths,
+    collect_media_entries_by_id, collect_playlist_media_index, join_relative_paths,
     normalize_resolved_hierarchy_path_to_nfd, playlist_format_label, render_absolute_playlist_path,
     render_playlist_bytes, render_relative_playlist_path,
     resolve_playlist_media_target_relative_path,
@@ -3095,7 +3095,7 @@ async fn prepare_hierarchy_entry(
     lookup: &MaterializationLookupContext,
     materialization_methods: &[crate::config::MaterializationMethod],
     playlist_media_index: &BTreeMap<String, String>,
-    media_file_templates: &BTreeMap<String, crate::config::HierarchyEntry>,
+    media_entries_by_id: &BTreeMap<String, crate::config::HierarchyEntry>,
     flattened_entry: &FlattenedHierarchyEntry,
     job_index: usize,
     progress_bar: &ProgressBar,
@@ -3449,7 +3449,8 @@ async fn prepare_hierarchy_entry(
                     document,
                     lookup,
                     media_path_template,
-                    media_file_templates,
+                    requested_id,
+                    media_entries_by_id,
                     &mut resolved_playlist_media_targets,
                 )
                 .await?;
@@ -3574,7 +3575,7 @@ pub async fn sync_hierarchy(
     let mut desired_paths = BTreeSet::new();
     let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     let playlist_media_index = collect_playlist_media_index(&flattened_hierarchy)?;
-    let media_file_templates = collect_media_file_hierarchy_templates(&flattened_hierarchy)?;
+    let media_entries_by_id = collect_media_entries_by_id(&flattened_hierarchy);
     let worker_count = hierarchy_worker_count(flattened_hierarchy.len());
 
     let total_entries = flattened_hierarchy.len();
@@ -3606,7 +3607,7 @@ pub async fn sync_hierarchy(
     let shared_lookup = Arc::new(lookup);
     let shared_materialization_methods = Arc::new(materialization_methods);
     let shared_playlist_media_index = Arc::new(playlist_media_index);
-    let shared_media_file_templates = Arc::new(media_file_templates);
+    let shared_media_entries_by_id = Arc::new(media_entries_by_id);
     let shared_lock_snapshot = Arc::new(lock.clone());
 
     let mut worker_handles = Vec::with_capacity(worker_count);
@@ -3618,7 +3619,7 @@ pub async fn sync_hierarchy(
         let worker_lookup = Arc::clone(&shared_lookup);
         let worker_materialization_methods = Arc::clone(&shared_materialization_methods);
         let worker_playlist_media_index = Arc::clone(&shared_playlist_media_index);
-        let worker_media_file_templates = Arc::clone(&shared_media_file_templates);
+        let worker_media_entries_by_id = Arc::clone(&shared_media_entries_by_id);
         let worker_lock_snapshot = Arc::clone(&shared_lock_snapshot);
         let worker_bar = progress_bar.clone();
 
@@ -3646,7 +3647,7 @@ pub async fn sync_hierarchy(
                     worker_lookup.as_ref(),
                     worker_materialization_methods.as_ref(),
                     worker_playlist_media_index.as_ref(),
-                    worker_media_file_templates.as_ref(),
+                    worker_media_entries_by_id.as_ref(),
                     &flattened_entry,
                     job_index,
                     &worker_bar,

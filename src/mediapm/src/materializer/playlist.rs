@@ -42,15 +42,15 @@ pub(super) fn collect_playlist_media_index(
     Ok(index)
 }
 
-/// Collects file-target hierarchy templates keyed by hierarchy path.
+/// Collects hierarchy id → HierarchyEntry mapping for playlist resolution.
 ///
-/// Playlist generation consumes only explicit `kind = "media"` entries.
-/// Folder semantics are owned by explicit `kind = "media_folder"` entries and
-/// must never be inferred from path text.
-pub(super) fn collect_media_file_hierarchy_templates(
+/// Only includes media entries with an explicit hierarchy id and non-empty
+/// media_id. Keyed by hierarchy id so playlist resolution can look up
+/// the correct entry regardless of template path.
+pub(super) fn collect_media_entries_by_id(
     flattened_hierarchy: &[FlattenedHierarchyEntry],
-) -> Result<BTreeMap<String, HierarchyEntry>, MediaPmError> {
-    let mut templates = BTreeMap::new();
+) -> BTreeMap<String, HierarchyEntry> {
+    let mut entries = BTreeMap::new();
 
     for flattened_entry in flattened_hierarchy {
         let entry = &flattened_entry.entry;
@@ -59,35 +59,35 @@ pub(super) fn collect_media_file_hierarchy_templates(
             continue;
         }
 
-        if let Some(previous_entry) = templates.insert(flattened_entry.path.clone(), entry.clone())
-            && previous_entry != *entry
-            && previous_entry.media_id == entry.media_id
-        {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy path '{}' resolves to conflicting media entries",
-                flattened_entry.path
-            )));
-        }
+        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
+            continue;
+        };
+
+        entries.insert(hierarchy_id.to_string(), entry.clone());
     }
 
-    Ok(templates)
+    entries
 }
 
 /// Resolves one media output relative path used by playlist generation.
+///
+/// Keyed by requested hierarchy id to avoid cache collisions when different
+/// media entries share the same template path.
 pub(super) async fn resolve_playlist_media_target_relative_path(
     document: &MediaPmDocument,
     lookup: &MaterializationLookupContext,
     media_path_template: &str,
-    media_file_templates: &BTreeMap<String, HierarchyEntry>,
+    requested_id: &str,
+    media_entries_by_id: &BTreeMap<String, HierarchyEntry>,
     cache: &mut BTreeMap<String, String>,
 ) -> Result<String, MediaPmError> {
-    if let Some(cached) = cache.get(media_path_template) {
+    if let Some(cached) = cache.get(requested_id) {
         return Ok(cached.clone());
     }
 
-    let entry = media_file_templates.get(media_path_template).ok_or_else(|| {
+    let entry = media_entries_by_id.get(requested_id).ok_or_else(|| {
         MediaPmError::Workflow(format!(
-            "playlist resolution references hierarchy path '{media_path_template}' that is not a media file target"
+            "playlist resolution references unknown hierarchy id '{requested_id}'"
         ))
     })?;
     let source = document.media.get(entry.media_id.as_str()).ok_or_else(|| {
@@ -105,7 +105,7 @@ pub(super) async fn resolve_playlist_media_target_relative_path(
         )));
     }
 
-    cache.insert(media_path_template.to_string(), resolved.clone());
+    cache.insert(requested_id.to_string(), resolved.clone());
     Ok(resolved)
 }
 
