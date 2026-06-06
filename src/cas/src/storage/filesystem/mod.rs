@@ -38,8 +38,8 @@ use crate::storage::{
 };
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasMaintenanceApi,
-    Constraint, ConstraintPatch, Hash, IndexRepairReport, ObjectInfo, OptimizeOptions,
-    OptimizeReport, PruneReport,
+    Constraint, ConstraintBatchOp, ConstraintPatch, Hash, IndexRepairReport, ObjectInfo,
+    OptimizeOptions, OptimizeReport, PruneReport,
 };
 
 /// Filesystem object-store layout version segment.
@@ -548,6 +548,10 @@ impl CasApi for FileSystemCas {
         self.state.patch_constraint(target_hash, patch).await
     }
 
+    async fn set_constraint_batch(&self, batch: Vec<ConstraintBatchOp>) -> Result<(), CasError> {
+        self.state.set_constraint_batch(batch).await
+    }
+
     async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError> {
         self.state.get_constraint(hash).await
     }
@@ -596,33 +600,14 @@ mod tests {
 
     use super::*;
     use crate::{
-        CasApi, CasError, CasMaintenanceApi, Constraint, ConstraintPatch,
-        FileSystemRecoveryOptions, Hash, HashAlgorithm, IndexRecoveryMode, OptimizeOptions,
-        empty_content_hash,
+        CasApi, CasError, CasMaintenanceApi, Constraint, ConstraintPatch, Hash, HashAlgorithm,
+        OptimizeOptions, empty_content_hash,
     };
 
     async fn open_temp_filesystem_cas() -> (TempDir, FileSystemCas) {
         let dir = tempdir().expect("tempdir");
         let cas = FileSystemCas::open_for_tests(dir.path()).await.expect("cas should open");
         (dir, cas)
-    }
-
-    fn count_backup_snapshots(root: &std::path::Path) -> usize {
-        let backup_root = root.join("index-backups");
-        let Ok(entries) = std::fs::read_dir(backup_root) else {
-            return 0;
-        };
-
-        entries
-            .flatten()
-            .filter_map(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .map(|name| name.starts_with("index-backup-") && name.ends_with(".postcard"))
-            })
-            .filter(|is_backup| *is_backup)
-            .count()
     }
 
     #[tokio::test]

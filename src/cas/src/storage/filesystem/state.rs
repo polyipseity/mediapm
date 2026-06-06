@@ -42,9 +42,9 @@ use crate::storage::{
 };
 use crate::{
     BatchOperation, CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasIndexDb,
-    Constraint, ConstraintPatch, DeltaPatch, Hash, HashAlgorithm, IndexRepairReport, IndexState,
-    ObjectEncoding, ObjectInfo, ObjectMeta, StoredObject, empty_content_hash, ensure_empty_record,
-    recalculate_depths,
+    Constraint, ConstraintBatchOp, ConstraintPatch, DeltaPatch, Hash, HashAlgorithm,
+    IndexRepairReport, IndexState, ObjectEncoding, ObjectInfo, ObjectMeta, StoredObject,
+    empty_content_hash, ensure_empty_record, recalculate_depths,
 };
 
 use super::actor::{
@@ -1870,6 +1870,72 @@ impl CasApi for FileSystemState {
         .await?;
 
         Ok(merged.map(|potential_bases| Constraint { target_hash, potential_bases }))
+    }
+
+    /// Applies a batch of constraint mutations in a single index-write and
+    /// persistence call.
+    ///
+    /// Each op in the batch is independently validated before the batch is
+    /// committed. If any op fails validation, the entire batch is rejected
+    /// and no state is persisted.
+    async fn set_constraint_batch(&self, batch: Vec<ConstraintBatchOp>) -> Result<(), CasError> {
+        let mut persisted_rows: Vec<(Hash, BTreeSet<Hash>)> = Vec::with_capacity(batch.len());
+
+        {
+            let mut index = self.lock_index_write("applying batched constraint mutations");
+
+            for op in &batch {
+                match op {
+                    ConstraintBatchOp::Set { target_hash, potential_bases } => {
+                        validate_constraint_target_not_in_bases(*target_hash, potential_bases)?;
+                        if !index.objects.contains_key(target_hash) {
+                            return Err(CasError::NotFound(*target_hash));
+                        }
+                        for base in potential_bases {
+                            if *base != empty_content_hash() && !index.objects.contains_key(base) {
+                                return Err(CasError::NotFound(*base));
+                            }
+                        }
+
+                        let bases = Self::set_constraint_row_optic(
+                            &mut index,
+                            *target_hash,
+                            potential_bases.clone(),
+                        )
+                        .unwrap_or_default();
+                        persisted_rows.push((*target_hash, bases));
+                    }
+                    ConstraintBatchOp::Patch { target_hash, patch } => {
+                        if !index.objects.contains_key(target_hash) {
+                            return Err(CasError::NotFound(*target_hash));
+                        }
+                        for base in &patch.add_bases {
+                            if *base != empty_content_hash() && !index.objects.contains_key(base) {
+                                return Err(CasError::NotFound(*base));
+                            }
+                        }
+
+                        let merged = Self::merge_constraint_patch(
+                            index.constraints.get(target_hash),
+                            patch.clone(),
+                        );
+                        validate_constraint_target_not_in_bases(*target_hash, &merged)?;
+
+                        let bases =
+                            Self::set_constraint_row_optic(&mut index, *target_hash, merged)
+                                .unwrap_or_default();
+                        persisted_rows.push((*target_hash, bases));
+                    }
+                }
+            }
+        }
+
+        let operations: Vec<BatchOperation> = persisted_rows
+            .into_iter()
+            .map(|(target_hash, bases)| BatchOperation::SetConstraintBases { target_hash, bases })
+            .collect();
+
+        self.persist_index_batch(operations).await
     }
 
     async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError> {
