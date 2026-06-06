@@ -15,7 +15,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
+use std::time::Duration;
 
+use mediapm_cas::{CasIntegrityConfig, VerifyTriggerStrategy};
 use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -426,6 +428,26 @@ pub struct MediaRuntimeStorage {
     /// Default: ["modified", "sample"].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_on_read: Option<Vec<String>>,
+
+    /// Sampling denominator for the "sample" verify-on-read strategy.
+    /// Controls approximate verification frequency: 1 out of N reads triggers
+    /// a full BLAKE3 re-verification.
+    /// Default: 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_sample_denominator: Option<u64>,
+
+    /// Timeout in seconds after which a "stale" verify-on-read strategy
+    /// triggers re-verification.
+    /// Default: 604800 (7 days).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_stale_timeout_secs: Option<u64>,
+
+    /// TTL in seconds for the CAS reconstructed bytes cache.
+    /// After this duration, cached object bytes are re-fetched and
+    /// re-verified from storage.
+    /// Default: 3600 (1 hour).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconstructed_bytes_cache_ttl_secs: Option<u64>,
 }
 
 impl MediaRuntimeStorage {
@@ -439,6 +461,69 @@ impl MediaRuntimeStorage {
     #[must_use]
     pub fn verify_on_read(&self) -> Vec<String> {
         self.verify_on_read.clone().unwrap_or_else(|| vec!["modified".into(), "sample".into()])
+    }
+
+    /// Returns the verify-on-read sampling denominator.
+    /// Default: 100.
+    #[must_use]
+    pub fn verify_on_read_sample_denominator(&self) -> u64 {
+        self.verify_on_read_sample_denominator.unwrap_or(100)
+    }
+
+    /// Returns the stale timeout in seconds for verify-on-read.
+    /// Default: 604800 (7 days).
+    #[must_use]
+    pub fn verify_on_read_stale_timeout_secs(&self) -> u64 {
+        self.verify_on_read_stale_timeout_secs.unwrap_or(604800)
+    }
+
+    /// Returns the reconstructed bytes cache TTL in seconds.
+    /// Default: 3600 (1 hour).
+    #[must_use]
+    pub fn reconstructed_bytes_cache_ttl_secs(&self) -> u64 {
+        self.reconstructed_bytes_cache_ttl_secs.unwrap_or(3600)
+    }
+
+    /// Converts this runtime storage config into a [`CasIntegrityConfig`]
+    /// for CAS integrity verification settings.
+    ///
+    /// Maps `verify_on_read` strategy name strings to
+    /// [`VerifyTriggerStrategy`] variants:
+    /// - `"always"` → [`VerifyTriggerStrategy::Always`]
+    /// - `"modified"` → [`VerifyTriggerStrategy::Modified`]
+    /// - `"sample"` → [`VerifyTriggerStrategy::Sample`]
+    /// - `"stale"` → [`VerifyTriggerStrategy::Stale`]
+    ///
+    /// Unknown strings are silently skipped. If the resulting list is empty,
+    /// returns [`CasIntegrityConfig::default()`].
+    #[must_use]
+    pub fn to_cas_integrity_config(&self) -> CasIntegrityConfig {
+        let verify_on_read: Vec<VerifyTriggerStrategy> = self
+            .verify_on_read()
+            .into_iter()
+            .filter_map(|strategy| match strategy.as_str() {
+                "always" => Some(VerifyTriggerStrategy::Always),
+                "modified" => Some(VerifyTriggerStrategy::Modified),
+                "sample" => Some(VerifyTriggerStrategy::Sample {
+                    denominator: self.verify_on_read_sample_denominator(),
+                }),
+                "stale" => Some(VerifyTriggerStrategy::Stale {
+                    timeout: Duration::from_secs(self.verify_on_read_stale_timeout_secs()),
+                }),
+                _ => None,
+            })
+            .collect();
+
+        if verify_on_read.is_empty() {
+            return CasIntegrityConfig::default();
+        }
+
+        CasIntegrityConfig {
+            verify_on_read,
+            reconstructed_bytes_cache_ttl: Duration::from_secs(
+                self.reconstructed_bytes_cache_ttl_secs(),
+            ),
+        }
     }
 }
 

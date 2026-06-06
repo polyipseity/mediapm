@@ -48,6 +48,9 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
             Some(inherited_env_vars)
         },
         instance_ttl_seconds: Some(604800),
+        verify_on_read_sample_denominator: None,
+        verify_on_read_stale_timeout_secs: None,
+        reconstructed_bytes_cache_ttl_secs: None,
     }
 }
 
@@ -98,6 +101,24 @@ fn apply_runtime_storage_defaults(
             runtime_storage.instance_ttl_seconds = Some(ttl);
             changed = true;
         }
+    }
+    if runtime_storage.verify_on_read_sample_denominator.is_none() {
+        runtime_storage
+            .verify_on_read_sample_denominator
+            .clone_from(&defaults.verify_on_read_sample_denominator);
+        changed = true;
+    }
+    if runtime_storage.verify_on_read_stale_timeout_secs.is_none() {
+        runtime_storage
+            .verify_on_read_stale_timeout_secs
+            .clone_from(&defaults.verify_on_read_stale_timeout_secs);
+        changed = true;
+    }
+    if runtime_storage.reconstructed_bytes_cache_ttl_secs.is_none() {
+        runtime_storage
+            .reconstructed_bytes_cache_ttl_secs
+            .clone_from(&defaults.reconstructed_bytes_cache_ttl_secs);
+        changed = true;
     }
     changed
 }

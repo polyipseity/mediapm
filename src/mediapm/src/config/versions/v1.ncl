@@ -54,6 +54,15 @@ let RuntimeStorageV1 = {
   # ||| Ordered list of CAS integrity verification strategies on read.
   # ||| Accepted: "always", "modified", "sample", "stale".
   verify_on_read | Dyn | optional,
+  # ||| Sampling denominator for the "sample" verify-on-read strategy.
+  # ||| Default: 100.
+  verify_on_read_sample_denominator | Dyn | optional,
+  # ||| Timeout in seconds for the "stale" verify-on-read strategy.
+  # ||| Default: 604800 (7 days).
+  verify_on_read_stale_timeout_secs | Dyn | optional,
+  # ||| TTL in seconds for the CAS reconstructed bytes cache.
+  # ||| Default: 3600 (1 hour).
+  reconstructed_bytes_cache_ttl_secs | Dyn | optional,
 }
 in
 

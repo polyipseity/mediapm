@@ -99,6 +99,12 @@ pub(crate) struct MediaRuntimeStorageWireV1 {
     pub(crate) verify_materialization: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) verify_on_read: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verify_on_read_sample_denominator: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verify_on_read_stale_timeout_secs: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reconstructed_bytes_cache_ttl_secs: Option<Value>,
 }
 
 // ---------------------------------------------------------------------------

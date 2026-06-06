@@ -460,6 +460,15 @@ pub(crate) fn merge_runtime_storage(
             .path_sanitization
             .clone()
             .or_else(|| config_value.path_sanitization.clone()),
+        verify_on_read_sample_denominator: override_value
+            .verify_on_read_sample_denominator
+            .or(config_value.verify_on_read_sample_denominator),
+        verify_on_read_stale_timeout_secs: override_value
+            .verify_on_read_stale_timeout_secs
+            .or(config_value.verify_on_read_stale_timeout_secs),
+        reconstructed_bytes_cache_ttl_secs: override_value
+            .reconstructed_bytes_cache_ttl_secs
+            .or(config_value.reconstructed_bytes_cache_ttl_secs),
     }
 }
 
@@ -529,6 +538,7 @@ pub(crate) fn conductor_run_workflow_options(
             .profiler_enabled
             .is_some_and(|enabled| enabled)
             .then(|| paths.runtime_root.join("profile.json")),
+        cas_integrity_config: Some(runtime_storage.to_cas_integrity_config()),
         ..RunWorkflowOptions::default()
     }
 }

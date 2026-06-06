@@ -1062,6 +1062,9 @@ mod tests {
             conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
             inherited_env_vars: Some(BTreeMap::new()),
             instance_ttl_seconds: None,
+            verify_on_read_sample_denominator: None,
+            verify_on_read_stale_timeout_secs: None,
+            reconstructed_bytes_cache_ttl_secs: None,
         };
 
         assert!(!normalize_runtime_storage_defaults(&paths, &mut runtime_storage));
@@ -1088,6 +1091,9 @@ mod tests {
             conductor_schema_dir: Some(".conductor/config/conductor".to_string()),
             inherited_env_vars: None,
             instance_ttl_seconds: None,
+            verify_on_read_sample_denominator: None,
+            verify_on_read_stale_timeout_secs: None,
+            reconstructed_bytes_cache_ttl_secs: None,
         };
 
         let changed = normalize_runtime_storage_defaults(&paths, &mut runtime_storage);
