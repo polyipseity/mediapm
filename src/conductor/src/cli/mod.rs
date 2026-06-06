@@ -1839,13 +1839,15 @@ async fn run_gc(
         }
     }
 
-    let roots_vec: Vec<Hash> = roots.into_iter().collect();
+    let roots_vec: Vec<Hash> = roots.iter().copied().collect();
     let optimize = cas.optimize_once(mediapm_cas::OptimizeOptions::default()).await?;
     let pruned = cas.prune_constraints().await?;
+    let gc = cas.gc_sweep(&roots).await?;
 
     println!("gc_roots_computed={}", roots_vec.len());
     println!("optimize_rewritten_objects={}", optimize.rewritten_objects);
     println!("constraints_removed_candidates={}", pruned.removed_candidates);
+    println!("gc_sweep_deleted={}", gc.deleted_count);
     Ok(())
 }
 
