@@ -283,13 +283,12 @@ impl PrimaryHeaderV1 {
         self.verify_time
     }
 
-    /// Sets the verify_time to the current UNIX epoch seconds.
+    /// Sets the `verify_time` to the current UNIX epoch seconds.
     #[expect(dead_code)]
     pub(crate) fn set_verify_time_now(&mut self) {
         self.verify_time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_secs().cast_signed());
     }
 }
 

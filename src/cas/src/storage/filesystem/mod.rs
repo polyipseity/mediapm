@@ -1111,7 +1111,7 @@ mod tests {
             snapshot.nodes.iter().find(|node| node.hash == target).expect("target node must exist");
         match target_node.encoding {
             crate::storage::CasTopologyEncoding::Delta { base_hash } => {
-                assert_eq!(base_hash, base)
+                assert_eq!(base_hash, base);
             }
             crate::storage::CasTopologyEncoding::Full => {
                 panic!("expected optimized target to be encoded as delta")

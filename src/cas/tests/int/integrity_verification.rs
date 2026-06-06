@@ -9,7 +9,11 @@
 //! requires it.
 
 use bytes::Bytes;
-use mediapm_cas::{CasApi, CasIntegrityConfig, FileSystemCas, VerifyTriggerStrategy};
+use mediapm_cas::{
+    CasApi, CasIntegrityConfig, FileSystemCas, FileSystemRecoveryOptions, VerifyTriggerStrategy,
+};
+use mediapm_cas::{CasMaintenanceApi, Constraint, OptimizeOptions};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::time::{Duration, SystemTime};
 use tempfile::tempdir;
@@ -22,9 +26,14 @@ async fn open_cas_with_integrity(
     root: &std::path::Path,
     integrity: CasIntegrityConfig,
 ) -> FileSystemCas {
-    FileSystemCas::open_with_alpha_and_recovery(root, 4, Default::default(), integrity)
-        .await
-        .expect("open CAS")
+    FileSystemCas::open_with_alpha_and_recovery(
+        root,
+        4,
+        FileSystemRecoveryOptions::default(),
+        integrity,
+    )
+    .await
+    .expect("open CAS")
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +124,7 @@ async fn modified_triggers_on_mtime_change() {
     // Advance the object file's mtime into the future so that
     // mtime > verify_time is true on the next get().
     let path = cas.object_path_for_hash(hash);
-    let future = SystemTime::now() + Duration::from_secs(3600);
+    let future = SystemTime::now() + Duration::from_hours(1);
     let times = std::fs::FileTimes::new().set_modified(future).set_accessed(future);
     // Open read-only; `File::set_times()` works when the caller owns the file.
     let f = File::open(&path).expect("open object file");
@@ -130,7 +139,7 @@ async fn modified_triggers_on_mtime_change() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-/// `Stale { timeout: 0s }` means any verify_time > 0 is immediately stale
+/// `Stale { timeout: 0s }` means any `verify_time` > 0 is immediately stale
 /// (`now - verify_time >= 0` is always true), so every get re-verifies.
 async fn stale_zero_timeout_verifies_always() {
     let dir = tempdir().expect("tempdir");
@@ -153,14 +162,14 @@ async fn stale_zero_timeout_verifies_always() {
 
 #[tokio::test]
 /// `Stale` with a long timeout (24h) does NOT trigger verification shortly
-/// after a fresh put because verify_time was just set.
+/// after a fresh put because `verify_time` was just set.
 async fn stale_long_timeout_skips_after_put() {
     let dir = tempdir().expect("tempdir");
     let cas = open_cas_with_integrity(
         dir.path(),
         CasIntegrityConfig {
             verify_on_read: vec![VerifyTriggerStrategy::Stale {
-                timeout: Duration::from_secs(86400),
+                timeout: Duration::from_hours(24),
             }],
             ..Default::default()
         },
@@ -200,7 +209,7 @@ async fn stale_short_timeout_triggers_after_elapsed() {
 
 #[tokio::test]
 /// The default config (`[Modified { 0 }, Sample { 100 }]`) should typically
-/// skip verification after a fresh put because mtime ≈ verify_time, and the
+/// skip verification after a fresh put because mtime ≈ `verify_time`, and the
 /// 1 % sample rate rarely triggers.
 async fn default_config_skips_after_fresh_put() {
     let dir = tempdir().expect("tempdir");
@@ -233,8 +242,6 @@ async fn delta_chain_is_verified_with_always_strategy() {
     let base = cas.put(Bytes::from_static(b"aaaa")).await.expect("put base");
     let target = cas.put(Bytes::from_static(b"aaab")).await.expect("put target");
 
-    use mediapm_cas::{CasMaintenanceApi, Constraint, OptimizeOptions};
-    use std::collections::BTreeSet;
     cas.set_constraint(Constraint { target_hash: target, potential_bases: BTreeSet::from([base]) })
         .await
         .expect("set constraint");

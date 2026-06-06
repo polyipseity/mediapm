@@ -43,7 +43,6 @@ const DEFAULT_FILESYSTEM_ALPHA: u64 = 4;
 /// Default maximum retained index backup snapshots.
 const DEFAULT_INDEX_BACKUP_SNAPSHOT_LIMIT: usize = 2;
 /// Default mutation-batch interval between backup snapshots.
-
 /// Startup policy to apply when the primary filesystem index is missing or corrupt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum IndexRecoveryMode {
@@ -101,9 +100,9 @@ impl Default for CasIntegrityConfig {
             verify_on_read: vec![
                 VerifyTriggerStrategy::Modified,
                 VerifyTriggerStrategy::Sample { denominator: 100 },
-                VerifyTriggerStrategy::Stale { timeout: Duration::from_secs(604800) },
+                VerifyTriggerStrategy::Stale { timeout: Duration::from_hours(168) },
             ],
-            reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
+            reconstructed_bytes_cache_ttl: Duration::from_hours(1),
         }
     }
 }

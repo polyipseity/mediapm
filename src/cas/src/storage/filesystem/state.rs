@@ -116,76 +116,9 @@ impl FileSystemState {
 
         bootstrap_empty_object(&root).await?;
 
-        // Acquire exclusive filesystem lock with stale detection.
-        //
-        // On Unix, flock is released by the kernel when the owning process
-        // exits, so stale locks should not normally occur. However, edge
-        // cases (force-kill, system crash, macOS-specific behavior) can
-        // leave a lock file behind whose flock has been released but whose
-        // content identifies a now-dead PID. We detect this by writing our
-        // PID to the lock file after acquisition and, on subsequent
-        // startup, checking whether the recorded PID is still alive.
         let lock_path = root.join("lock");
-        let lock_file = match std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&lock_path)
-        {
-            Ok(mut file) => {
-                // Check for stale lock — a lock file whose owning PID is
-                // no longer alive.
-                if let Some(stale_pid) = check_stale_lock(&lock_path)? {
-                    warn!(
-                        path = %lock_path.display(),
-                        stale_pid,
-                        "lock file appears stale (owner process no longer \
-                         exists), breaking stale lock"
-                    );
-                    drop(file);
-                    fs::remove_file(&lock_path)
-                        .await
-                        .map_err(|e| CasError::io("removing stale lock file", &lock_path, e))?;
-                    file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .read(true)
-                        .write(true)
-                        .truncate(false)
-                        .open(&lock_path)
-                        .map_err(|e| {
-                            CasError::io("re-opening lock file after stale break", &lock_path, e)
-                        })?;
-                }
-
-                if recovery.wait_for_lock {
-                    file.lock()
-                        .map_err(|e| CasError::io("acquire filesystem lock", &lock_path, e))?;
-                } else {
-                    match file.try_lock() {
-                        Ok(()) => {}
-                        Err(std::fs::TryLockError::WouldBlock) => {
-                            return Err(CasError::StoreLocked { root });
-                        }
-                        Err(std::fs::TryLockError::Error(e)) => {
-                            return Err(CasError::io("acquire filesystem lock", &lock_path, e));
-                        }
-                    }
-                }
-
-                // Write our PID to the lock file so subsequent processes
-                // can detect stale locks on future startups.
-                if let Err(e) = file
-                    .set_len(0)
-                    .and_then(|_| file.write_all(std::process::id().to_string().as_bytes()))
-                {
-                    warn!("failed to write PID to lock file: {e}");
-                }
-
-                Some(file)
-            }
-            Err(e) => return Err(CasError::io("open lock file", &lock_path, e)),
-        };
+        let lock_file =
+            acquire_filesystem_lock(root.clone(), &lock_path, recovery.wait_for_lock).await?;
 
         let (redb_index, mut index, recovery_report) =
             recovery::load_or_recover_primary_index(&root, &recovery)?;
@@ -289,8 +222,7 @@ impl FileSystemState {
     fn now_unix() -> i64 {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_secs().cast_signed())
     }
 
     /// Checks whether a hash can skip full BLAKE3 re-verification based on
@@ -309,18 +241,19 @@ impl FileSystemState {
         for strategy in &config.verify_on_read {
             match strategy {
                 VerifyTriggerStrategy::Always => return false,
-                VerifyTriggerStrategy::Modified { .. } => {
+                VerifyTriggerStrategy::Modified => {
                     // Check mtime of on-disk object file.
                     let path = object_path(&self.root, hash);
-                    if let Ok(metadata) = std::fs::metadata(&path) {
-                        if let Ok(mtime) = metadata.modified().map(|t| {
-                            t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_secs()
-                                as i64
-                        }) {
-                            if mtime > verify_time {
-                                return false;
-                            }
-                        }
+                    if let Ok(metadata) = std::fs::metadata(&path)
+                        && let Ok(mtime) = metadata.modified().map(|t| {
+                            t.duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                .cast_signed()
+                        })
+                        && mtime > verify_time
+                    {
+                        return false;
                     }
                 }
                 VerifyTriggerStrategy::Sample { denominator } => {
@@ -331,7 +264,7 @@ impl FileSystemState {
                 VerifyTriggerStrategy::Stale { timeout } => {
                     let now = Self::now_unix();
                     if verify_time == 0
-                        || now.saturating_sub(verify_time) as u64 >= timeout.as_secs()
+                        || now.saturating_sub(verify_time).cast_unsigned() >= timeout.as_secs()
                     {
                         return false;
                     }
@@ -2163,6 +2096,79 @@ fn ensure_reconstructed_hash(
     Ok(())
 }
 
+/// Acquire an exclusive filesystem lock with stale PID detection.
+///
+/// On Unix, `flock` is released by the kernel when the owning process
+/// exits, so stale locks should not normally occur. However, edge
+/// cases (force-kill, system crash, macOS-specific behavior) can
+/// leave a lock file behind whose `flock` has been released but whose
+/// content identifies a now-dead PID.
+async fn acquire_filesystem_lock(
+    root: PathBuf,
+    lock_path: &Path,
+    wait_for_lock: bool,
+) -> Result<Option<std::fs::File>, CasError> {
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)
+    {
+        Ok(mut file) => {
+            // Check for stale lock — a lock file whose owning PID is
+            // no longer alive.
+            if let Some(stale_pid) = check_stale_lock(lock_path)? {
+                warn!(
+                    path = %lock_path.display(),
+                    stale_pid,
+                    "lock file appears stale (owner process no longer \
+                     exists), breaking stale lock"
+                );
+                drop(file);
+                fs::remove_file(lock_path)
+                    .await
+                    .map_err(|e| CasError::io("removing stale lock file", lock_path, e))?;
+                file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .read(true)
+                    .write(true)
+                    .truncate(false)
+                    .open(lock_path)
+                    .map_err(|e| {
+                        CasError::io("re-opening lock file after stale break", lock_path, e)
+                    })?;
+            }
+
+            if wait_for_lock {
+                file.lock().map_err(|e| CasError::io("acquire filesystem lock", lock_path, e))?;
+            } else {
+                match file.try_lock() {
+                    Ok(()) => {}
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        return Err(CasError::StoreLocked { root });
+                    }
+                    Err(std::fs::TryLockError::Error(e)) => {
+                        return Err(CasError::io("acquire filesystem lock", lock_path, e));
+                    }
+                }
+            }
+
+            // Write our PID to the lock file so subsequent processes
+            // can detect stale locks on future startups.
+            if let Err(e) = file
+                .set_len(0)
+                .and_then(|()| file.write_all(std::process::id().to_string().as_bytes()))
+            {
+                warn!("failed to write PID to lock file: {e}");
+            }
+
+            Ok(Some(file))
+        }
+        Err(e) => Err(CasError::io("open lock file", lock_path, e)),
+    }
+}
+
 /// Checks whether the lock file at `path` contains a PID belonging to a
 /// process that is no longer alive.
 ///
@@ -2206,7 +2212,7 @@ fn is_pid_alive(pid: u32) -> bool {
     // SAFETY: `kill(pid, 0)` is a signal-safe POSIX syscall that probes
     // process existence. It is safe even for invalid PIDs — the kernel
     // returns ESRCH.
-    let result = unsafe { libc::kill(pid as ::std::primitive::i32, 0) };
+    let result = unsafe { libc::kill(pid.cast_signed(), 0) };
     match result {
         0 => true,
         -1 => {
