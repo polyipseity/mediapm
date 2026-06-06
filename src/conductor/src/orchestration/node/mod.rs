@@ -4,7 +4,7 @@
 //! messages, typed RPC client, actor marker, spawn helper, and the concrete
 //! `ractor::Actor` implementation that delegates to the workflow coordinator.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +17,10 @@ use tokio::task::JoinHandle;
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
+use crate::gc::compute_gc_roots;
+use crate::model::config::{
+    MachineNickelDocument, UserNickelDocument, decode_machine_document, decode_user_document,
+};
 use crate::model::state::OrchestrationState;
 use crate::orchestration::actors::state_store::StateStoreClient;
 use crate::orchestration::config::rpc_timeout_ms;
@@ -322,7 +326,12 @@ where
                         coord.run_workflow_with_options(&user_ncl2, &machine_ncl2, *options).await
                     };
                     if workflow_result.is_ok() {
-                        spawn_background_gc(bg_cas, bg_state_store);
+                        spawn_background_gc(
+                            bg_cas,
+                            bg_state_store,
+                            user_ncl2.clone(),
+                            machine_ncl2.clone(),
+                        );
                     }
                     workflow_result
                 });
@@ -399,32 +408,64 @@ const GC_COOLDOWN_SECONDS: u64 = 3600;
 /// does not block on GC and does not need the maintenance trait bound.  The
 /// spawned task acquires `CasMaintenanceApi` only at the call site in
 /// [`ConductorNodeActor`]'s `handle` method.
-fn spawn_background_gc<C>(cas: Arc<C>, state_store: Option<StateStoreClient>)
-where
+fn spawn_background_gc<C>(
+    cas: Arc<C>,
+    state_store: Option<StateStoreClient>,
+    user_ncl: PathBuf,
+    machine_ncl: PathBuf,
+) where
     C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(GC_COOLDOWN_SECONDS)).await;
 
-        let state = match state_store.as_ref() {
-            Some(store) => match store.current_state().await {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("background GC: failed to load current state: {e}");
-                    return;
-                }
-            },
+        let state_store = match state_store {
+            Some(store) => store,
             None => {
                 tracing::debug!("background GC: no state store available, skipping");
                 return;
             }
         };
 
-        let mut roots: BTreeSet<Hash> = BTreeSet::new();
-        for instance in state.instances.values() {
-            roots.extend(instance.outputs.values().map(|output| output.hash));
-            roots.extend(instance.inputs.values().map(|input| input.hash));
-        }
+        let user_doc = match std::fs::read(&user_ncl) {
+            Ok(bytes) => decode_user_document(&bytes).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("background GC: failed to read user document: {e}, using defaults");
+                UserNickelDocument::default()
+            }
+        };
+        let machine_doc = match std::fs::read(&machine_ncl) {
+            Ok(bytes) => decode_machine_document(&bytes).unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(
+                    "background GC: failed to read machine document: {e}, using defaults"
+                );
+                MachineNickelDocument::default()
+            }
+        };
+
+        let current_state = match state_store.current_state().await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("background GC: failed to load current state: {e}");
+                return;
+            }
+        };
+
+        let state_pointer = match state_store.get_state_pointer().await {
+            Ok(sp) => sp,
+            Err(e) => {
+                tracing::warn!("background GC: failed to get state pointer: {e}");
+                return;
+            }
+        };
+
+        let roots = compute_gc_roots(
+            &user_doc.external_data,
+            &machine_doc.external_data,
+            state_pointer,
+            &current_state,
+        );
 
         if roots.is_empty() {
             tracing::debug!("background GC: no roots to protect, skipping");
