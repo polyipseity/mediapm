@@ -340,6 +340,15 @@ pub(crate) struct RuntimeStorageLatest {
     /// Optional instance GC time-to-live in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) instance_ttl_seconds: Option<u64>,
+    /// Optional CAS verify-on-read sample denominator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verify_on_read_sample_denominator: Option<u64>,
+    /// Optional CAS verify-on-read stale timeout in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) verify_on_read_stale_timeout_secs: Option<u64>,
+    /// Optional reconstructed-bytes cache TTL in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reconstructed_bytes_cache_ttl_secs: Option<u64>,
 }
 
 impl RuntimeStorageLatest {
@@ -352,6 +361,9 @@ impl RuntimeStorageLatest {
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
             && self.instance_ttl_seconds.is_none()
+            && self.verify_on_read_sample_denominator.is_none()
+            && self.verify_on_read_stale_timeout_secs.is_none()
+            && self.reconstructed_bytes_cache_ttl_secs.is_none()
     }
 }
 

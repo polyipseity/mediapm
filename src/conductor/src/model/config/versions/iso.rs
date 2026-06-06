@@ -215,6 +215,11 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_schema_dir: state.runtime.conductor_schema_dir,
                 inherited_env_vars: state.runtime.inherited_env_vars,
                 instance_ttl_seconds: state.runtime.instance_ttl_seconds,
+                verify_on_read_sample_denominator: state.runtime.verify_on_read_sample_denominator,
+                verify_on_read_stale_timeout_secs: state.runtime.verify_on_read_stale_timeout_secs,
+                reconstructed_bytes_cache_ttl_secs: state
+                    .runtime
+                    .reconstructed_bytes_cache_ttl_secs,
             },
             external_data: state
                 .external_data
@@ -417,6 +422,15 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 conductor_schema_dir: runtime.runtime.conductor_schema_dir,
                 inherited_env_vars: runtime.runtime.inherited_env_vars,
                 instance_ttl_seconds: runtime.runtime.instance_ttl_seconds,
+                verify_on_read_sample_denominator: runtime
+                    .runtime
+                    .verify_on_read_sample_denominator,
+                verify_on_read_stale_timeout_secs: runtime
+                    .runtime
+                    .verify_on_read_stale_timeout_secs,
+                reconstructed_bytes_cache_ttl_secs: runtime
+                    .runtime
+                    .reconstructed_bytes_cache_ttl_secs,
             },
             external_data: runtime
                 .external_data

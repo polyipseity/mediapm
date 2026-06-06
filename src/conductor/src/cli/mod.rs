@@ -1416,6 +1416,7 @@ async fn run_workflow(
                 profile_output_path,
                 profiler_enabled: enable_profiler,
                 progress_sender: None,
+                cas_integrity_config: None,
             },
         )
         .await?;

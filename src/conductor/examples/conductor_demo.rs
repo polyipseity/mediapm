@@ -441,6 +441,9 @@ fn build_user_document(inputs: &DemoWorkflowBuildInputs) -> UserNickelDocument {
             )),
             inherited_env_vars: None,
             instance_ttl_seconds: None,
+            verify_on_read_sample_denominator: None,
+            verify_on_read_stale_timeout_secs: None,
+            reconstructed_bytes_cache_ttl_secs: None,
         },
         external_data: BTreeMap::from([(
             inputs.banner_hash,

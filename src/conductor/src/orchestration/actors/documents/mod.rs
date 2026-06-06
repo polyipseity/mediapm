@@ -700,6 +700,15 @@ impl DocumentLoaderActor {
                 .or_else(|| machine.conductor_schema_dir.clone()),
             inherited_env_vars,
             instance_ttl_seconds: user.instance_ttl_seconds.or(machine.instance_ttl_seconds),
+            verify_on_read_sample_denominator: user
+                .verify_on_read_sample_denominator
+                .or(machine.verify_on_read_sample_denominator),
+            verify_on_read_stale_timeout_secs: user
+                .verify_on_read_stale_timeout_secs
+                .or(machine.verify_on_read_stale_timeout_secs),
+            reconstructed_bytes_cache_ttl_secs: user
+                .reconstructed_bytes_cache_ttl_secs
+                .or(machine.reconstructed_bytes_cache_ttl_secs),
         })
     }
 
@@ -1716,6 +1725,9 @@ mod tests {
                 conductor_schema_dir: Some(".runtime/config/conductor".to_string()),
                 inherited_env_vars: None,
                 instance_ttl_seconds: None,
+                verify_on_read_sample_denominator: None,
+                verify_on_read_stale_timeout_secs: None,
+                reconstructed_bytes_cache_ttl_secs: None,
             },
             tools: BTreeMap::from([(
                 "echo@1.0.0".to_string(),

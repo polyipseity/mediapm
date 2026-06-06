@@ -143,6 +143,26 @@ pub struct RuntimeStorageConfig {
     /// When `None`, instance GC is disabled (instances persist indefinitely).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,
+    /// Optional denominator for sampling CAS integrity verification on read.
+    ///
+    /// When set, approximately 1 in N reads triggers a full integrity check.
+    /// When `None`, no sampled verification occurs (default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_sample_denominator: Option<u64>,
+    /// Optional stale timeout in seconds for CAS integrity verification on
+    /// read.
+    ///
+    /// When set, content written longer than this many seconds ago is
+    /// considered stale and triggers verification on next read.  When `None`,
+    /// staleness-based verification is disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_on_read_stale_timeout_secs: Option<u64>,
+    /// Optional TTL in seconds for the reconstructed bytes cache.
+    ///
+    /// When set, reconstructed (decoded) content bytes are cached for this
+    /// many seconds.  When `None`, the cache is disabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconstructed_bytes_cache_ttl_secs: Option<u64>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by
@@ -219,6 +239,9 @@ impl RuntimeStorageConfig {
             && self.conductor_schema_dir.is_none()
             && self.inherited_env_vars.is_none()
             && self.instance_ttl_seconds.is_none()
+            && self.verify_on_read_sample_denominator.is_none()
+            && self.verify_on_read_stale_timeout_secs.is_none()
+            && self.reconstructed_bytes_cache_ttl_secs.is_none()
     }
 
     /// Returns inherited runtime environment names merged with host defaults.

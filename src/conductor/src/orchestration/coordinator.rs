@@ -375,6 +375,7 @@ where
             profile_output_path: None,
             profiler_enabled: false,
             progress_sender: None,
+            cas_integrity_config: None,
         };
         let LoadedDocuments { prior_state_pointer, unified, .. } = document_loader
             .load_and_unify(
@@ -430,6 +431,7 @@ where
             profile_output_path: None,
             profiler_enabled: false,
             progress_sender: None,
+            cas_integrity_config: None,
         };
         let LoadedDocuments { mut state_document, unified, machine_document, .. } = document_loader
             .load_and_unify(

@@ -323,6 +323,16 @@ let RuntimeStorageV1 = {
   # ||| Instances older than this value are pruned on state persistence.
   # ||| When omitted, instance GC is disabled.
   instance_ttl_seconds | IntegerNumberV1 | optional,
+  # ||| Optional denominator for sampling CAS integrity verification on read.
+  # ||| When set, approximately 1 in N reads triggers a full integrity check.
+  verify_on_read_sample_denominator | Dyn | optional,
+  # ||| Optional stale timeout in seconds for CAS integrity verification on
+  # ||| read.
+  # ||| When set, content written older than this triggers verification.
+  verify_on_read_stale_timeout_secs | Dyn | optional,
+  # ||| Optional TTL in seconds for the reconstructed bytes cache.
+  # ||| When set, decoded content bytes are cached for this many seconds.
+  reconstructed_bytes_cache_ttl_secs | Dyn | optional,
 }
 in
 

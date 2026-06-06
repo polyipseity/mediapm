@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use mediapm_cas::{FileSystemCas, Hash};
+use mediapm_cas::{CasIntegrityConfig, FileSystemCas, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
@@ -594,6 +594,13 @@ pub struct RunWorkflowOptions {
     /// Optional sender for step-level progress events, allowing callers to
     /// render progress bars during multi-workflow execution.
     pub progress_sender: Option<WorkflowProgressSender>,
+    /// Optional CAS integrity configuration applied to the filesystem store
+    /// used during this workflow invocation.
+    ///
+    /// When set, overrides default CAS integrity behavior for read
+    /// verification sampling, staleness timeouts, and reconstructed-byte
+    /// caching.  When `None`, the CAS store uses its own defaults.
+    pub cas_integrity_config: Option<CasIntegrityConfig>,
 }
 
 impl PartialEq for RunWorkflowOptions {
@@ -604,6 +611,7 @@ impl PartialEq for RunWorkflowOptions {
             && self.profile_output_path == other.profile_output_path
             && self.profiler_enabled == other.profiler_enabled
             && self.progress_sender.is_some() == other.progress_sender.is_some()
+            && self.cas_integrity_config == other.cas_integrity_config
     }
 }
 impl Eq for RunWorkflowOptions {}
@@ -619,6 +627,7 @@ impl RunWorkflowOptions {
             profile_output_path: None,
             profiler_enabled: false,
             progress_sender: None,
+            cas_integrity_config: None,
         }
     }
 }
