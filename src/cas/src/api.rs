@@ -114,6 +114,28 @@ pub struct ConstraintPatch {
     pub clear_existing: bool,
 }
 
+/// One constraint mutation for batched submission via [`CasApi::set_constraint_batch`].
+///
+/// Batching eliminates per-op backup-snapshot serialization overhead
+/// when applying many constraint changes in a single logical operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConstraintBatchOp {
+    /// Replace explicit constraint row for one target with new bases.
+    Set {
+        /// Target content hash.
+        target_hash: Hash,
+        /// Explicit candidate bases (empty set = remove constraint row).
+        potential_bases: BTreeSet<Hash>,
+    },
+    /// Incrementally mutate an existing explicit constraint row.
+    Patch {
+        /// Target content hash.
+        target_hash: Hash,
+        /// Patch to apply.
+        patch: ConstraintPatch,
+    },
+}
+
 /// Cheap metadata for one stored object without payload fetch.
 ///
 /// This is intended for scheduling, preflight checks, and UI/reporting code
@@ -588,6 +610,33 @@ pub trait CasApi: Send + Sync {
                 })
             })
             .collect()
+    }
+
+    /// Applies many constraint mutations atomically in one batch.
+    ///
+    /// Backends override this to coalesce constraint mutations into a single
+    /// persistence transaction, avoiding per-op serialization overhead.
+    ///
+    /// # Errors
+    /// Returns [`CasError::NotFound`] when any target or base is missing.
+    /// Returns [`CasError::InvalidConstraint`] for self-reference.
+    /// Returns [`CasError`] for persistence failures.
+    ///
+    /// # Performance
+    /// Default implementation iterates per-op. Efficient backends use
+    /// a single `persist_batch` call.
+    async fn set_constraint_batch(&self, batch: Vec<ConstraintBatchOp>) -> Result<(), CasError> {
+        for op in batch {
+            match op {
+                ConstraintBatchOp::Set { target_hash, potential_bases } => {
+                    self.set_constraint(Constraint { target_hash, potential_bases }).await?;
+                }
+                ConstraintBatchOp::Patch { target_hash, patch } => {
+                    self.patch_constraint(target_hash, patch).await?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
