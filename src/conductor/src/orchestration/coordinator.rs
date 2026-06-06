@@ -517,7 +517,7 @@ struct WorkflowDepState {
     /// Step definitions keyed by step id.
     steps: BTreeMap<String, WorkflowStepSpec>,
     /// Output hashes produced by completed steps in this workflow.
-    step_outputs: StepOutputs,
+    step_outputs: Arc<StepOutputs>,
     /// Pre-computed required output names per step for worker requests.
     required_outputs: BTreeMap<String, BTreeSet<String>>,
     /// Per-workflow summary accumulated across all step completions.
@@ -720,7 +720,7 @@ where
                     remaining_deps,
                     dependents,
                     steps,
-                    step_outputs: BTreeMap::new(),
+                    step_outputs: Arc::new(BTreeMap::new()),
                     required_outputs,
                     summary: RunSummary::new(),
                     pending_unsaved_hashes: BTreeSet::new(),
@@ -777,7 +777,7 @@ where
 
                 let required_output_names =
                     dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
-                let step_outputs = Arc::new(dep_state.step_outputs.clone());
+                let step_outputs = Arc::clone(&dep_state.step_outputs);
                 let impure_timestamp = all_impure_timestamps
                     .get(&wf_name)
                     .and_then(|ts| ts.get(&step_id))
@@ -853,7 +853,7 @@ where
                                 &mut dep_state.pending_unsaved_hashes,
                             )
                             .await?;
-                            dep_state.step_outputs.remove(&producer);
+                            Arc::make_mut(&mut dep_state.step_outputs).remove(&producer);
                             if dep_state.remaining_deps.get(&producer).copied().unwrap_or(0) == 0 {
                                 global_ready_queue.push_back((event_wf.clone(), producer.clone()));
                             }
@@ -935,7 +935,7 @@ where
                     &mut dep_state.pending_unsaved_hashes,
                     now,
                 )?;
-                dep_state.step_outputs.insert(event_step.clone(), step_hashes);
+                Arc::make_mut(&mut dep_state.step_outputs).insert(event_step.clone(), step_hashes);
 
                 // Decrement remaining_deps for dependents; push newly ready steps.
                 if let Some(dependents_set) = dep_state.dependents.get(&event_step) {
