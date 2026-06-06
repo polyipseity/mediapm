@@ -564,6 +564,26 @@ corruption that occurred after the cache entry was created.
 
 ---
 
+#### 1.19. Concurrent GC During Step Execution
+
+GC sweep runs concurrently with workflow step execution. If a step materializes a new CAS object between `list_all_hashes()` and the actual deletion in `gc_sweep()`, the new object won't be in the initial hash set and won't be deleted (it wasn't in `all_hashes`). However, if an object is concurrently added AND becomes referenced by the root set (e.g., a step materializes an output that becomes a root), it must not be deleted.
+
+**Mitigation**: Sweep computes the set difference `all_hashes - roots` at the start of the sweep. Objects added during sweep execution are not in `all_hashes` and are therefore not deleted. The sweep is eventually consistent: the next sweep pass will catch any orphans missed due to concurrent modification.
+
+#### 1.20. GC vs Active State Pointer
+
+The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
+
+**Mitigation**: Background auto-GC uses a cooldown (3600 seconds) to avoid racing with active workflow commits. The GC roots are captured at the time of the `gc_sweep` call. CLI-invoked GC is an explicit operation where the caller should ensure quiescence.
+
+#### 1.21. Background GC During Workflow
+
+The coordinator spawns background GC after workflow completion. If a new workflow starts before the cooldown expires, the GC task may run while the new workflow is active.
+
+**Behavior**: The GC sweep captures `all_hashes` and `roots` at invocation time. If the new workflow has committed new state, its roots may be missing from the captured root set. This is safe because the new roots are the state pointer and instance outputs — if a sweep deletes a blob that's also referenced by a step from the active workflow, the next `get()` for that blob will produce a `NotFound` error, which propagates to the workflow step.
+
+**Mitigation**: Currently, no cross-GC exclusion is enforced. A future enhancement could use an atomic flag (like `optimize_in_progress`) to prevent concurrent GC and workflow execution.
+
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
 ### 2.1 External Data Retrieval Failure (put_from_uri)

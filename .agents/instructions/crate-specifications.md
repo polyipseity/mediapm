@@ -442,6 +442,25 @@ the conductor orchestration layer.
 - **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
 - **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
+### CAS GC Sweep
+
+The CAS `CasMaintenanceApi` now exposes GC sweep capabilities:
+
+- `list_all_hashes()`: Returns all content hashes tracked in the index. Backend implementations enumerate from their authoritative index (not on-disk directory walk).
+- `gc_sweep(&self, roots: &BTreeSet<Hash>)`: Deletes all objects NOT in the root set. Computes `all_hashes - roots` and deletes orphans via `delete_many()`.
+
+**Root set composition**: The Conductor CLI (`run_gc()`) computes the root set from:
+- `user.external_data` + `machine.external_data` values
+- `user.tool_configs.*.content_map` + `machine.tool_configs.*.content_map` values
+- `state.state_pointer` (the current state document hash)
+- Instance output/input pointers (loaded via `cas.get(pointer)` → `decode_state()`)
+
+**Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
+
+**Background auto-GC**: After workflow completion, the coordinator spawns a tokio task that waits GC_COOLDOWN_SECONDS (3600 seconds = 1 hour) before calling `gc_sweep` with the workflow's computed root set. This ensures foreground workflow operations are not delayed by background GC.
+
+**Instance TTL**: Default instance TTL is 604800 seconds (7 days) when `instance_ttl_seconds` is `None` in the machine document. Configured explicitly via `runtime.instance_ttl_seconds`.
+
 ### §16 Channel-Based Workflow Progress Events
 
 Conductor no longer renders progress bars internally. Instead, it emits
