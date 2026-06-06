@@ -20,7 +20,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
@@ -62,6 +62,10 @@ use super::{
     FILESYSTEM_STREAM_READ_CHUNK_BYTES, FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT, STORAGE_VERSION,
 };
 
+/// TTL for the reconstructed bytes cache. After this duration, cached
+/// object bytes are re-fetched and re-verified from storage.
+const RECONSTRUCTED_BYTES_CACHE_TTL: Duration = Duration::from_secs(3600);
+
 /// Shared filesystem CAS backend state.
 pub(super) struct FileSystemState {
     /// CAS filesystem root used for direct stateless read-path operations.
@@ -72,8 +76,10 @@ pub(super) struct FileSystemState {
     max_compression_mode: AtomicBool,
     /// In-memory index state guarded by a reader/writer lock.
     index: RwLock<IndexState>,
-    /// Best-effort process-local cache of reconstructed object bytes.
-    content_cache: Mutex<HashMap<Hash, Bytes>>,
+    /// Process-local TTL cache of reconstructed object bytes. Entries
+    /// carry a timestamp for TTL expiry; stale entries are re-fetched
+    /// and re-verified from storage.
+    reconstructed_bytes_cache: Mutex<HashMap<Hash, (Instant, Bytes)>>,
     /// Reusable pooled stream buffers for incremental ingestion.
     stream_buffer_pool: Arc<StreamBufferPool>,
     /// Redb persistence handle used for incremental index flushes.
@@ -82,8 +88,7 @@ pub(super) struct FileSystemState {
     recovery: FileSystemRecoveryOptions,
     /// Integrity verification policy for read-path hash checks.
     integrity: CasIntegrityConfig,
-    /// TTL-based in-memory cache of recently verified hashes.
-    integrity_cache: Mutex<HashMap<Hash, i64>>,
+
     /// Number of incremental mutation batches persisted since process start.
     backup_batch_counter: AtomicU64,
     /// In-process observability counters for filesystem CAS operations.
@@ -226,7 +231,7 @@ impl FileSystemState {
             alpha,
             max_compression_mode: AtomicBool::new(false),
             index: RwLock::new(index),
-            content_cache: Mutex::new(HashMap::new()),
+            reconstructed_bytes_cache: Mutex::new(HashMap::new()),
             stream_buffer_pool: StreamBufferPool::new(
                 FILESYSTEM_STREAM_READ_CHUNK_BYTES,
                 FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
@@ -234,7 +239,7 @@ impl FileSystemState {
             index_db: redb_index,
             recovery,
             integrity,
-            integrity_cache: Mutex::new(HashMap::new()),
+
             backup_batch_counter: AtomicU64::new(0),
             metrics: FileSystemMetricsState::default(),
             optimize_in_progress: AtomicBool::new(false),
@@ -268,14 +273,16 @@ impl FileSystemState {
         self.index.write()
     }
 
-    /// Acquires content-byte cache lock for cache mutation/read operations.
-    fn lock_content_cache(&self, _operation: &str) -> MutexGuard<'_, HashMap<Hash, Bytes>> {
-        self.content_cache.lock()
+    fn lock_reconstructed_cache(
+        &self,
+        _operation: &str,
+    ) -> MutexGuard<'_, HashMap<Hash, (Instant, Bytes)>> {
+        self.reconstructed_bytes_cache.lock()
     }
 
     /// Removes one hash from in-process reconstructed-byte cache.
     fn invalidate_cached_object_bytes(&self, hash: Hash) {
-        let mut cache = self.lock_content_cache("invalidating object-byte cache");
+        let mut cache = self.lock_reconstructed_cache("invalidating reconstructed-bytes cache");
         cache.remove(&hash);
     }
 
@@ -283,14 +290,6 @@ impl FileSystemState {
     #[allow(dead_code)]
     pub(super) fn integrity(&self) -> &CasIntegrityConfig {
         &self.integrity
-    }
-
-    /// Acquires the integrity verification cache lock.
-    fn lock_integrity_cache(
-        &self,
-        _operation: &str,
-    ) -> parking_lot::MutexGuard<'_, HashMap<Hash, i64>> {
-        self.integrity_cache.lock()
     }
 
     /// Returns the current unix epoch timestamp in seconds.
@@ -349,44 +348,13 @@ impl FileSystemState {
         true
     }
 
-    /// Looks up the integrity cache for a hash, returning the cached
-    /// verification timestamp if found and not expired.
-    ///
-    /// When `cache_ttl` is zero (cache disabled), always returns `None`.
-    fn integrity_cache_get(&self, hash: Hash) -> Option<i64> {
-        let ttl = self.integrity.cache_ttl.as_secs();
-        if ttl == 0 {
-            return None;
-        }
-        let cache = self.lock_integrity_cache("integrity cache lookup");
-        let now = Self::now_unix();
-        cache.get(&hash).copied().filter(|&ts| (now.saturating_sub(ts) as u64) < ttl)
-    }
-
-    /// Stores a verification timestamp in the integrity cache.
-    fn integrity_cache_put(&self, hash: Hash, ts: i64) {
-        let mut cache = self.lock_integrity_cache("integrity cache update");
-        cache.insert(hash, ts);
-    }
-
-    /// Records a successful verification in both the object metadata and
-    /// the in-memory integrity cache.
+    /// Records a successful verification in the object metadata.
     fn record_verified(&self, hash: Hash) {
         let now = Self::now_unix();
         let mut index = self.index.write();
         if let Some(meta) = index.objects.get_mut(&hash) {
             meta.set_verify_time(now);
         }
-        drop(index);
-        self.integrity_cache_put(hash, now);
-    }
-
-    /// Invalidates the integrity cache entry for a hash, forcing
-    /// re-verification on the next read.
-    #[allow(dead_code)]
-    pub(super) fn invalidate_verified_cache(&self, hash: Hash) {
-        let mut cache = self.lock_integrity_cache("invalidating integrity cache");
-        cache.remove(&hash);
     }
 
     /// Converts ratio inputs to `f64` for observability reporting.
@@ -533,8 +501,14 @@ impl FileSystemState {
         }
 
         if let Some(cached) = {
-            let cache = self.lock_content_cache("reading object-byte cache");
-            cache.get(&hash).cloned()
+            let cache = self.lock_reconstructed_cache("reading reconstructed-bytes cache");
+            cache.get(&hash).and_then(|(cached_at, bytes)| {
+                if cached_at.elapsed() < RECONSTRUCTED_BYTES_CACHE_TTL {
+                    Some(bytes.clone())
+                } else {
+                    None
+                }
+            })
         } {
             self.record_cache_hit();
             return Ok(cached);
@@ -542,8 +516,8 @@ impl FileSystemState {
 
         let bytes = self.get(hash).await?;
         {
-            let mut cache = self.lock_content_cache("writing object-byte cache");
-            cache.insert(hash, bytes.clone());
+            let mut cache = self.lock_reconstructed_cache("writing reconstructed-bytes cache");
+            cache.insert(hash, (Instant::now(), bytes.clone()));
         }
         Ok(bytes)
     }
@@ -1690,8 +1664,7 @@ impl CasApi for FileSystemState {
 
                 if patch_payloads.is_empty() {
                     ensure_reconstructed_size(hash, expected_len, mapped_full.len())?;
-                    if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none()
-                    {
+                    if !self.can_skip_verification(hash) {
                         ensure_reconstructed_hash(
                             hash,
                             mapped_full.as_ref(),
@@ -1704,7 +1677,7 @@ impl CasApi for FileSystemState {
 
                 let data = apply_delta_patch_stack(mapped_full.to_vec(), &mut patch_payloads)?;
                 ensure_reconstructed_size(hash, expected_len, data.len())?;
-                if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none() {
+                if !self.can_skip_verification(hash) {
                     ensure_reconstructed_hash(hash, data.as_slice(), "mmap+delta reconstruction")?;
                     self.record_verified(hash);
                 }
@@ -1720,8 +1693,7 @@ impl CasApi for FileSystemState {
                 StoredObject::Full { payload } => {
                     let data = apply_delta_patch_stack(payload, &mut patch_payloads)?;
                     ensure_reconstructed_size(hash, expected_len, data.len())?;
-                    if !self.can_skip_verification(hash) && self.integrity_cache_get(hash).is_none()
-                    {
+                    if !self.can_skip_verification(hash) {
                         ensure_reconstructed_hash(
                             hash,
                             data.as_slice(),

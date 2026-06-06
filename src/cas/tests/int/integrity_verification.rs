@@ -2,11 +2,11 @@
 //!
 //! Covers the full verification lifecycle: put sets `verify_time`, `get()`
 //! gates BLAKE3 re-verification based on `VerifyTriggerStrategy` and
-//! `stale_timeout`, and the per-entry TTL cache suppresses redundant checks.
+//! `stale_timeout`.
 //!
-//! Each strategy is tested in isolation (empty, Always, Modified, Stale) and
-//! combined with various cache_ttl values to confirm that verification is
-//! triggered only when the configured policy requires it.
+//! Each strategy is tested in isolation (empty, Always, Modified, Stale) to
+//! confirm that verification is triggered only when the configured policy
+//! requires it.
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, CasIntegrityConfig, FileSystemCas, VerifyTriggerStrategy};
@@ -38,11 +38,7 @@ async fn empty_config_skips_all_verification() {
     let dir = tempdir().expect("tempdir");
     let cas = open_cas_with_integrity(
         dir.path(),
-        CasIntegrityConfig {
-            verify_on_read: vec![],
-            cache_ttl: Duration::from_secs(0), // disable in-memory cache
-            ..Default::default()
-        },
+        CasIntegrityConfig { verify_on_read: vec![], ..Default::default() },
     )
     .await;
 
@@ -63,7 +59,6 @@ async fn always_triggers_verification_on_every_get() {
         dir.path(),
         CasIntegrityConfig {
             verify_on_read: vec![VerifyTriggerStrategy::Always],
-            cache_ttl: Duration::from_secs(0), // no caching → always re-verify
             ..Default::default()
         },
     )
@@ -90,8 +85,7 @@ async fn modified_skips_after_fresh_put() {
     let cas = open_cas_with_integrity(
         dir.path(),
         CasIntegrityConfig {
-            verify_on_read: vec![VerifyTriggerStrategy::Modified { last_verified: 0 }],
-            cache_ttl: Duration::from_secs(0),
+            verify_on_read: vec![VerifyTriggerStrategy::Modified],
             ..Default::default()
         },
     )
@@ -110,8 +104,7 @@ async fn modified_triggers_on_mtime_change() {
     let cas = open_cas_with_integrity(
         dir.path(),
         CasIntegrityConfig {
-            verify_on_read: vec![VerifyTriggerStrategy::Modified { last_verified: 0 }],
-            cache_ttl: Duration::from_secs(0),
+            verify_on_read: vec![VerifyTriggerStrategy::Modified],
             ..Default::default()
         },
     )
@@ -145,7 +138,6 @@ async fn stale_zero_timeout_verifies_always() {
         dir.path(),
         CasIntegrityConfig {
             verify_on_read: vec![VerifyTriggerStrategy::Stale { timeout: Duration::from_secs(0) }],
-            cache_ttl: Duration::from_secs(0),
             ..Default::default()
         },
     )
@@ -170,7 +162,6 @@ async fn stale_long_timeout_skips_after_put() {
             verify_on_read: vec![VerifyTriggerStrategy::Stale {
                 timeout: Duration::from_secs(86400),
             }],
-            cache_ttl: Duration::from_secs(0),
             ..Default::default()
         },
     )
@@ -192,7 +183,6 @@ async fn stale_short_timeout_triggers_after_elapsed() {
             verify_on_read: vec![VerifyTriggerStrategy::Stale {
                 timeout: Duration::from_millis(1),
             }],
-            cache_ttl: Duration::from_secs(0),
             ..Default::default()
         },
     )
@@ -202,37 +192,6 @@ async fn stale_short_timeout_triggers_after_elapsed() {
     // A 1ms timeout is almost certainly expired by the time we reach get().
     let retrieved = cas.get(hash).await.expect("get");
     assert_eq!(retrieved, Bytes::from_static(b"stale-short"));
-}
-
-// ---------------------------------------------------------------------------
-// Cache TTL — when cache is enabled it suppresses redundant verification.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-/// With `Always` and a generous cache TTL, the first get() verifies and
-/// caches the result; the second get() within-TTL hits the cache and
-/// skips BLAKE3.
-async fn cache_ttl_suppresses_redundant_verification() {
-    let dir = tempdir().expect("tempdir");
-    let cas = open_cas_with_integrity(
-        dir.path(),
-        CasIntegrityConfig {
-            verify_on_read: vec![VerifyTriggerStrategy::Always],
-            cache_ttl: Duration::from_secs(3600), // 1h — definitely not expired
-            ..Default::default()
-        },
-    )
-    .await;
-
-    let hash = cas.put(Bytes::from_static(b"cache-hit")).await.expect("put");
-
-    // First get: cache miss → must verify.
-    let r1 = cas.get(hash).await.expect("first get (cache miss)");
-    assert_eq!(r1, Bytes::from_static(b"cache-hit"));
-
-    // Second get: cache hit (within TTL) → skip BLAKE3, return fast.
-    let r2 = cas.get(hash).await.expect("second get (cache hit)");
-    assert_eq!(r2, Bytes::from_static(b"cache-hit"));
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +224,6 @@ async fn delta_chain_is_verified_with_always_strategy() {
         dir.path(),
         CasIntegrityConfig {
             verify_on_read: vec![VerifyTriggerStrategy::Always],
-            cache_ttl: Duration::from_secs(0),
             ..Default::default()
         },
     )

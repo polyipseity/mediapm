@@ -28,7 +28,7 @@ pub enum VerifyTriggerStrategy {
     /// Re-verify only when the object file's modification timestamp (mtime)
     /// is newer than the stored `verify_time`. This detects external tampering
     /// between the last verified read and the current read.
-    Modified { last_verified: i64 },
+    Modified,
     /// Re-verify approximately one out of every `denominator` reads
     /// (randomized sampling). `denominator` must be >= 1.
     Sample { denominator: u64 },
@@ -96,30 +96,15 @@ pub struct CasIntegrityConfig {
     /// If any strategy matches, full verification runs.
     /// Default: `[Modified, Sample]`.
     pub verify_on_read: Vec<VerifyTriggerStrategy>,
-    /// Denominator for `Sample` strategy. 1 = verify every read,
-    /// 100 = verify ~1% of reads. Ignored unless `Sample` is in the list.
-    /// Default: 100.
-    pub sample_denominator: u64,
-    /// Timeout duration for `Stale` strategy. Ignored unless `Stale` is in
-    /// the list. Default: 1 hour.
-    pub stale_timeout: std::time::Duration,
-    /// Time-to-live for the in-memory verified-content cache.
-    /// A cached result is used within this duration; after expiry, the
-    /// strategies are re-evaluated. Default: 1 hour. Set to 0 to disable
-    /// the cache entirely.
-    pub cache_ttl: std::time::Duration,
 }
 
 impl Default for CasIntegrityConfig {
     fn default() -> Self {
         Self {
             verify_on_read: vec![
-                VerifyTriggerStrategy::Modified { last_verified: 0 },
+                VerifyTriggerStrategy::Modified,
                 VerifyTriggerStrategy::Sample { denominator: 100 },
             ],
-            sample_denominator: 100,
-            stale_timeout: std::time::Duration::from_secs(3600),
-            cache_ttl: std::time::Duration::from_secs(3600),
         }
     }
 }
