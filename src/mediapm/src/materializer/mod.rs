@@ -419,6 +419,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         sync_hierarchy(
             &paths,
@@ -478,6 +479,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         sync_hierarchy(
             &paths,
@@ -731,6 +733,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -856,6 +859,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -959,6 +963,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1051,6 +1056,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1108,6 +1114,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1134,6 +1141,7 @@ mod tests {
         assert_eq!(record.media_id, "media-a");
         assert_eq!(record.hash, hash.to_string());
 
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
         let source_path = cas.object_path_for_hash(hash);
         let output_path = paths.hierarchy_root_dir.join("library/media-a.bin");
         assert_hardlinked_paths(&source_path, &output_path);
@@ -1240,6 +1248,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1269,6 +1278,7 @@ mod tests {
             lock.managed_files.get("library/playlists/demo.m3u8").expect("playlist lock record");
         assert_eq!(record.media_id, "playlist");
         assert_eq!(record.variant, "playlist:m3u8");
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
         let playlist_hash = record.hash.parse::<Hash>().expect("playlist hash");
         let playlist_bytes_from_cas =
             cas.get(playlist_hash).await.expect("playlist bytes from cas");
@@ -1376,6 +1386,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1457,6 +1468,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let error = sync_hierarchy(
             &paths,
@@ -1583,6 +1595,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1611,6 +1624,7 @@ mod tests {
             lock.managed_files.get("library/playlists/demo.pls").expect("playlist lock record");
         assert_eq!(record.media_id, "playlist");
         assert_eq!(record.variant, "playlist:pls");
+        let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
         let playlist_hash = record.hash.parse::<Hash>().expect("playlist hash");
         let playlist_bytes_from_cas =
             cas.get(playlist_hash).await.expect("playlist bytes from cas");
@@ -1658,6 +1672,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1725,6 +1740,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1784,6 +1800,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1854,6 +1871,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -1923,6 +1941,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(
             &paths,
@@ -2159,6 +2178,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
+        drop(cas);
         let mut lock = MediaLockFile::default();
         let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock, false)
             .await
