@@ -574,7 +574,7 @@ GC sweep runs concurrently with workflow step execution. If a step materializes 
 
 The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
 
-**Mitigation**: Background auto-GC uses a cooldown (3600 seconds) to avoid racing with active workflow commits. The GC roots are captured at the time of the `gc_sweep` call. CLI-invoked GC is an explicit operation where the caller should ensure quiescence.
+**Mitigation**: Background auto-GC uses a cooldown (3600 seconds) to avoid racing with active workflow commits. The GC roots are computed via `compute_gc_roots()` at invocation time from user/machine external_data, state_pointer, and current orchestration state. CLI-invoked GC is an explicit operation where the caller should ensure quiescence.
 
 #### 1.21. Background GC During Workflow
 

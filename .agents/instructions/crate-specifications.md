@@ -449,15 +449,18 @@ The CAS `CasMaintenanceApi` now exposes GC sweep capabilities:
 - `list_all_hashes()`: Returns all content hashes tracked in the index. Backend implementations enumerate from their authoritative index (not on-disk directory walk).
 - `gc_sweep(&self, roots: &BTreeSet<Hash>)`: Deletes all objects NOT in the root set. Computes `all_hashes - roots` and deletes orphans via `delete_many()`.
 
-**Root set composition**: The Conductor CLI (`run_gc()`) computes the root set from:
+**Root set composition**: A shared `compute_gc_roots()` in `gc.rs` computes the root set from:
 - `user.external_data` + `machine.external_data` values
-- `user.tool_configs.*.content_map` + `machine.tool_configs.*.content_map` values
-- `state.state_pointer` (the current state document hash)
-- Instance output/input pointers (loaded via `cas.get(pointer)` → `decode_state()`)
+- `state_pointer` (the current orchestration-state hash)
+- Instance output/input pointers from the `OrchestrationState` pointed to by `state_pointer`
+
+`content_map` entries are not iterated directly — the decode-time invariant (`vet_latest_envelope`) enforces `content_map` ⊆ `external_data`, so all content-map hashes are covered by external_data roots.
+
+Both the CLI (`run_gc()`) and the background GC task use this shared function.
 
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
-**Background auto-GC**: After workflow completion, the coordinator spawns a tokio task that waits GC_COOLDOWN_SECONDS (3600 seconds = 1 hour) before calling `gc_sweep` with the workflow's computed root set. This ensures foreground workflow operations are not delayed by background GC.
+**Background auto-GC**: After workflow completion, the coordinator spawns a tokio task that waits `GC_COOLDOWN_SECONDS` (3600 seconds) before loading user/machine docs from disk, fetching `state_pointer` and `current_state` from the state store, and calling `compute_gc_roots()` to build the full root set before invoking `gc_sweep`. This ensures foreground workflow operations are not delayed by background GC.
 
 **Instance TTL**: Default instance TTL is 604800 seconds (7 days) when `instance_ttl_seconds` is `None` in the machine document. Configured explicitly via `runtime.instance_ttl_seconds`.
 
