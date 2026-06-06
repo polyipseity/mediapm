@@ -95,26 +95,31 @@ The collected specifications establish strong contracts around content identity,
 
 ### 1.3 Constraint Satisfaction Impossibility
 
-**Issue**: `set_constraint(base)` validates base exists, but no check for **circular or impossible constraints**.
+**Issue**: `set_constraint_batch()` validates each op's bases exist, but no check for **circular or impossible constraints**.
 
 **Scenario**:
 
 ```text
 Object A with current base = B
-set_constraint(A, base=C) where C depends on A (direct or transitive)
+set_constraint_batch([Set { target_hash: A, potential_bases: [C] }]) where C depends on A (direct or transitive)
 ```
 
 **Current Spec**: "Optimizer honors constraints"
 
-**Gap**: Constraint-graph DAG validation at `set_constraint()` API not yet implemented; delta-chain cycle detection exists at the storage layer.
+**Gap**: Constraint-graph DAG validation at `set_constraint_batch()` API not yet implemented; delta-chain cycle detection exists at the storage layer.
 
 **Risk**: Optimizer fails at runtime when trying to resolve circular constraint; customer-visible error.
 
-**Status**: Delta-chain cycle detection is implemented via `check_no_cycle()` in `storage/chain.rs` (used by both filesystem and in-memory backends). Constraint-graph-level DAG validation on `set_constraint()` remains as future work.
+**Status**: Delta-chain cycle detection is implemented via `check_no_cycle()` in `storage/chain.rs` (used by both filesystem and in-memory backends). Constraint-graph-level DAG validation on `set_constraint_batch()` remains as future work.
+
+**Changes (Phases 1–3/5)**:
+
+- Per-constraint forced backup snapshots removed — `set_constraint_batch()` persists all ops in a single `persist_index_batch` call instead of forcing a per-op snapshot.
+- Three call sites in `step_worker` now batch into a single `set_constraint_batch()` call.
 
 **Recommendations**:
 
-- **Constraint graph DAG validation** on `set_constraint()`: refuse if introducing cycle
+- **Constraint graph DAG validation** on `set_constraint_batch()`: refuse if introducing cycle
 - Add explicit rule: "Constraints must form a DAG; cycles rejected at set time"
 - Add test: "circular constraint detection"
 

@@ -76,7 +76,7 @@ State Persistence (state.ncl)
 
 | Crate | Enforcement |
 |-------|-------------|
-| **CAS** | `set_constraint()` validates bases exist; optimizer honors constraints |
+| **CAS** | `set_constraint_batch()` validates each op's bases exist; optimizer honors constraints |
 | **Conductor** | External data → CAS → constraint metadata preserved across loads |
 | **Builtins** | N/A (read-only, no constraints) |
 | **MediaPM** | Workflow state persisted in CAS; constraints implicit (content-addressed) |
@@ -279,7 +279,7 @@ For comprehensive details, refer to the following specifications collected from 
 **Key Takeaways**:
 - **Module Structure**: 8 submodules (api, cli, error, hash, codec, index, orchestration, storage)
 - **Public Traits**: `CasApi` (read/write/maintain), `CasMaintenanceApi` (optimize/prune/repair)
-- **Type Model**: `Hash` (Blake3 multihash), `Constraint` (base selection), `ObjectInfo` (metadata)
+- **Type Model**: `Hash` (Blake3 multihash), `Constraint` (base selection), `ConstraintBatchOp` (batch operation), `ObjectInfo` (metadata)
 - **Storage**: `FileSystemCas` (persistent), `InMemoryCas` (ephemeral)
 - **Versioning**: Adjacent-only migrations; optics-based bridging
 - **Performance**: O(1) full objects, O(depth) delta objects; mmap for ≥64KB
@@ -1157,7 +1157,7 @@ during the final verification pass.
 
 ### CAS Reference
 - **Public Traits**: `CasApi`, `CasMaintenanceApi`
-- **Types**: `Hash`, `Constraint`, `ObjectInfo`, `OptimizeReport`
+- **Types**: `Hash`, `Constraint`, `ConstraintBatchOp`, `ObjectInfo`, `OptimizeReport`
 - **Backends**: `FileSystemCas`, `InMemoryCas`
 - **Performance**: O(1) full, O(depth) delta; mmap + buffer pool
 
@@ -2447,6 +2447,7 @@ Output Files + Updated Lock
 | **CAS** | Content-Addressed Storage. Store objects by hash; retrieve by hash. Identity is content, not name. | `put(bytes) → hash:abc123; get(hash:abc123) → bytes` |
 | **Hash** | Blake3-256 multihash. Uniquely identifies bytes. Same bytes → same hash always. | `hash:blake3:abc123def456...` |
 | **Constraint** | CAS metadata indicating which objects can be selected as delta bases. Used to control optimization. | `constraint { bases = [hash1, hash2] }` |
+| **ConstraintBatchOp** | Batch operation for setting and patching constraints — the preferred API for multi-op constraint mutations. `Set` validates target + bases exist; `Patch` merges new bases into existing constraints. | `ConstraintBatchOp::Set { target_hash, potential_bases }` |
 | **Delta Encoding** | Compression technique: store only differences from a base object. Saves space for similar files. | `delta { base: hash1, patch: diff_bytes }` |
 | **Object** | Unit of data in CAS. May be raw bytes (full object) or delta-encoded (delta object). | Full: 10MB video; Delta: 50KB patch from previous version |
 | **Builtin** | Standard tool provided by Conductor. Five builtins: echo, fs, archive, import, export. | `{ tool = "echo", args = { message = "hello" } }` |
