@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use mediapm_cas::{CasApi, CasError, Hash};
+use mediapm_cas::{CasApi, Hash};
 use ractor::{ActorRef, call_t};
 
 use crate::api::{
@@ -835,31 +835,6 @@ where
             let bundle = match result {
                 Ok(bundle) => bundle,
                 Err(err) => {
-                    // Pure workflows auto-recover from CAS integrity failures:
-                    // warn, drop corrupted entries, and retry once.
-                    if let Some((_consumer, producer, output_name, output_hash)) =
-                        Self::recoverable_corrupt_output_context(&event_wf, &err)
-                        && workflow_is_pure_map.get(&event_wf).copied().unwrap_or(false)
-                    {
-                        eprintln!(
-                            "warning: corrupt output '{output_name}' from step \
-                                 '{producer}' in pure workflow '{event_wf}', \
-                                 attempting recovery"
-                        );
-                        if let Some(dep_state) = dep_states.get_mut(&event_wf) {
-                            self.recover_from_corrupt_output_hash(
-                                state,
-                                output_hash,
-                                &mut dep_state.pending_unsaved_hashes,
-                            )
-                            .await?;
-                            Arc::make_mut(&mut dep_state.step_outputs).remove(&producer);
-                            if dep_state.remaining_deps.get(&producer).copied().unwrap_or(0) == 0 {
-                                global_ready_queue.push_back((event_wf.clone(), producer.clone()));
-                            }
-                            continue;
-                        }
-                    }
                     return Err(err);
                 }
             };
@@ -1057,61 +1032,6 @@ where
         }
 
         Ok(true)
-    }
-
-    /// Extracts structured corruption context when one workflow output read failed integrity checks.
-    fn recoverable_corrupt_output_context(
-        workflow_name: &str,
-        error: &ConductorError,
-    ) -> Option<(String, String, String, Hash)> {
-        let ConductorError::CorruptWorkflowOutput(context) = error else {
-            return None;
-        };
-
-        let error_workflow = &context.workflow_name;
-
-        if error_workflow != workflow_name {
-            return None;
-        }
-
-        Some((
-            context.consumer_step_id.clone(),
-            context.producer_step_id.clone(),
-            context.output_name.clone(),
-            context.output_hash,
-        ))
-    }
-
-    /// Drops cached instances that reference one corrupt output hash and removes that object from CAS.
-    async fn recover_from_corrupt_output_hash(
-        &self,
-        state: &mut OrchestrationState,
-        output_hash: Hash,
-        pending_unsaved_hashes: &mut BTreeSet<Hash>,
-    ) -> Result<usize, ConductorError> {
-        let affected_keys = state
-            .instances
-            .iter()
-            .filter_map(|(key, instance)| {
-                instance
-                    .outputs
-                    .values()
-                    .any(|output| output.hash == output_hash)
-                    .then_some(key.clone())
-            })
-            .collect::<Vec<_>>();
-
-        for key in &affected_keys {
-            state.instances.remove(key);
-        }
-
-        pending_unsaved_hashes.insert(output_hash);
-        match self.cas.delete(output_hash).await {
-            Ok(()) | Err(CasError::NotFound(_)) => {}
-            Err(source) => return Err(ConductorError::Cas(source)),
-        }
-
-        Ok(affected_keys.len())
     }
 
     /// Returns the user-facing workflow label used by progress UI rendering.

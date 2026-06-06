@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use mediapm_cas::{
-    CasApi, CasError, CasExistenceBitmap, Constraint, ConstraintPatch, Hash, empty_content_hash,
+    CasApi, CasExistenceBitmap, Constraint, ConstraintPatch, Hash, empty_content_hash,
 };
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
 
-use crate::error::{ConductorError, CorruptWorkflowOutputContext};
+use crate::error::ConductorError;
 use crate::model::config::{
     ImpureTimestamp, InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec,
     ToolInputKind, ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
@@ -1150,22 +1150,7 @@ where
                             step.id, output, step_id
                         ))
                     })?;
-                    let bytes = match self.cas.get(output_hash).await {
-                        Ok(bytes) => bytes,
-                        Err(source) if Self::is_cas_corruption_read_error(&source) => {
-                            return Err(ConductorError::CorruptWorkflowOutput(Box::new(
-                                CorruptWorkflowOutputContext {
-                                    workflow_name: workflow_name.to_string(),
-                                    consumer_step_id: step.id.clone(),
-                                    producer_step_id: step_id.to_string(),
-                                    output_name: output.to_string(),
-                                    output_hash,
-                                    detail: source.to_string(),
-                                },
-                            )));
-                        }
-                        Err(source) => return Err(ConductorError::Cas(source)),
-                    };
+                    let bytes = self.cas.get(output_hash).await?;
 
                     if let Some(member) = zip_member {
                         let member_bytes = self.extract_zip_member_from_output(
@@ -2750,14 +2735,6 @@ where
     /// Normalizes one success-code list into a deterministic set.
     fn normalize_success_codes(codes: &[i32]) -> BTreeSet<i32> {
         codes.iter().copied().collect()
-    }
-
-    /// Returns whether one CAS read error indicates persistent payload corruption.
-    fn is_cas_corruption_read_error(error: &CasError) -> bool {
-        matches!(
-            error,
-            CasError::CorruptObject(_) | CasError::CorruptIndex(_) | CasError::InvalidDelta(_)
-        )
     }
 
     /// Returns whether one process exit code should be treated as success.
