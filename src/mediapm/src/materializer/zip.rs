@@ -13,6 +13,7 @@ use crate::config::HierarchyFolderRenameRule;
 use crate::error::MediaPmError;
 
 use super::CompiledHierarchyFolderRenameRule;
+use super::commit::sanitize_hierarchy_path;
 
 /// Parsed `${step_output...}` binding reference metadata.
 pub(super) struct StepOutputReference<'a> {
@@ -104,6 +105,7 @@ pub(super) fn extract_zip_folder_variant_bytes(
     media_id: &str,
     variant: &str,
     rename_rules: &[CompiledHierarchyFolderRenameRule],
+    entry_sanitization: &BTreeMap<char, char>,
     extracted_entries: &mut BTreeMap<String, bool>,
     extracted_entry_variants: &mut BTreeMap<String, String>,
 ) -> Result<(), MediaPmError> {
@@ -154,8 +156,15 @@ pub(super) fn extract_zip_folder_variant_bytes(
                 variant,
             )?;
 
+            let sanitized = sanitize_hierarchy_path(&renamed, entry_sanitization);
+            if sanitized.contains('/') || sanitized.contains('\\') {
+                return Err(MediaPmError::Workflow(format!(
+                    "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' ZIP entry '{normalized}' after rename/sanitization produced multi-component path '{sanitized}'",
+                )));
+            }
+
             let should_write_entry =
-                register_zip_file_entry(&renamed, extracted_entries).map_err(|reason| {
+                register_zip_file_entry(&sanitized, extracted_entries).map_err(|reason| {
                     MediaPmError::Workflow(format!(
                         "file merge conflict for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}': {reason}"
                     ))
@@ -165,9 +174,9 @@ pub(super) fn extract_zip_folder_variant_bytes(
                 continue;
             }
 
-            extracted_entry_variants.insert(renamed.clone(), variant.to_string());
+            extracted_entry_variants.insert(sanitized.clone(), variant.to_string());
 
-            let file_path = target_dir.join(&renamed);
+            let file_path = target_dir.join(&sanitized);
             if let Some(parent) = file_path.parent() {
                 fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
                     operation: "creating staged hierarchy file parent from ZIP payload".to_string(),

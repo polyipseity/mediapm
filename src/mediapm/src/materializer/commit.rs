@@ -189,7 +189,7 @@ pub(super) fn validate_hierarchy_path(relative_path: &str) -> Result<(), MediaPm
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
 fn is_rejected_char(ch: char) -> bool {
-    matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*')
+    matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\')
 }
 
 /// Returns current Unix epoch timestamp in seconds.
