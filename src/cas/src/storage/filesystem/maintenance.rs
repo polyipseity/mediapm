@@ -8,10 +8,11 @@ use std::time::Instant;
 use async_trait::async_trait;
 use tracing::{info, instrument};
 
+use crate::api::CasApi;
 use crate::storage::is_unconstrained_constraint_row;
 use crate::{
-    CasError, CasMaintenanceApi, Hash, IndexRepairReport, OptimizeOptions, OptimizeReport,
-    PruneReport, empty_content_hash,
+    CasError, CasMaintenanceApi, GcSweepReport, Hash, IndexRepairReport, OptimizeOptions,
+    OptimizeReport, PruneReport, empty_content_hash,
 };
 
 use super::{FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES, FileSystemState};
@@ -120,6 +121,26 @@ impl CasMaintenanceApi for FileSystemState {
 
         self.persist_index_snapshot().await?;
         Ok(PruneReport { removed_candidates: removed })
+    }
+
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        let index = self.lock_index_read("listing all hashes for GC sweep");
+        let hashes: Vec<Hash> = index.objects.keys().copied().collect();
+        Ok(hashes)
+    }
+
+    async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
+        let all_hashes = self.list_all_hashes().await?;
+        let total_objects = all_hashes.len();
+        let sweep_set: Vec<Hash> =
+            all_hashes.into_iter().filter(|hash| !roots.contains(hash)).collect();
+        let deleted_count = sweep_set.len();
+
+        if !sweep_set.is_empty() {
+            self.delete_many(sweep_set).await?;
+        }
+
+        Ok(GcSweepReport { deleted_count, total_objects })
     }
 
     /// Rebuilds durable index metadata from object-store state.

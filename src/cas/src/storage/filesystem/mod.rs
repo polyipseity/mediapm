@@ -38,8 +38,8 @@ use crate::storage::{
 };
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasMaintenanceApi,
-    Constraint, ConstraintBatchOp, ConstraintPatch, Hash, IndexRepairReport, ObjectInfo,
-    OptimizeOptions, OptimizeReport, PruneReport,
+    Constraint, ConstraintBatchOp, ConstraintPatch, GcSweepReport, Hash, IndexRepairReport,
+    ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport,
 };
 
 /// Filesystem object-store layout version segment.
@@ -577,6 +577,14 @@ impl CasMaintenanceApi for FileSystemCas {
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         self.state.prune_constraints().await
+    }
+
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        self.state.list_all_hashes().await
+    }
+
+    async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
+        self.state.gc_sweep(roots).await
     }
 
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {

@@ -172,6 +172,17 @@ pub struct PruneReport {
     pub removed_candidates: usize,
 }
 
+/// Summary of one GC sweep pass.
+///
+/// Reports how many objects were deleted versus retained in the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcSweepReport {
+    /// Number of objects deleted during the sweep.
+    pub deleted_count: usize,
+    /// Total number of objects in the store before the sweep.
+    pub total_objects: usize,
+}
+
 /// Source used to restore explicit constraint rows during an index repair.
 ///
 /// Object metadata is always reconstructed from the object store itself. This
@@ -682,6 +693,26 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// # Performance
     /// O(total number of explicit constraint candidates).
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
+
+    /// Returns all content hashes currently tracked in the index.
+    ///
+    /// # Errors
+    /// Returns [`CasError`] when index enumeration fails.
+    ///
+    /// # Performance
+    /// O(number of tracked objects) — returns a snapshot of all known hashes.
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
+
+    /// Deletes all objects not in the root set.
+    ///
+    /// The sweep computes `all_hashes - roots` and deletes each orphan.
+    /// Roots are preserved even if the backend considers them deletable by
+    /// other policies.
+    ///
+    /// # Errors
+    /// Returns the first [`CasError`] produced by [`list_all_hashes`] or
+    /// [`delete`](crate::CasApi::delete).
+    async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError>;
 
     /// Rebuilds durable index metadata from persisted object files.
     ///

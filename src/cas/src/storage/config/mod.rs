@@ -13,8 +13,8 @@ use locator::{expand_locator_env, normalize_locator_path, validate_filesystem_ro
 
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint, ConstraintPatch,
-    FileSystemCas, Hash, InMemoryCas, IndexRepairReport, ObjectInfo, OptimizeOptions,
-    OptimizeReport, PruneReport,
+    FileSystemCas, GcSweepReport, Hash, InMemoryCas, IndexRepairReport, ObjectInfo,
+    OptimizeOptions, OptimizeReport, PruneReport,
 };
 
 /// Strategy that controls when `get()` re-verifies the reconstructed content
@@ -472,6 +472,14 @@ impl CasMaintenanceApi for ConfiguredCas {
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         delegate_configured_backend!(self, |cas| cas.prune_constraints().await)
+    }
+
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        delegate_configured_backend!(self, |cas| cas.list_all_hashes().await)
+    }
+
+    async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
+        delegate_configured_backend!(self, |cas| cas.gc_sweep(roots).await)
     }
 
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {

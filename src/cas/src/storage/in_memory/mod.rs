@@ -23,7 +23,7 @@ use crate::storage::{
 };
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint,
-    ConstraintBatchOp, ConstraintPatch, DeltaPatch, Hash, HashAlgorithm, ObjectInfo,
+    ConstraintBatchOp, ConstraintPatch, DeltaPatch, GcSweepReport, Hash, HashAlgorithm, ObjectInfo,
     OptimizeOptions, OptimizeReport, PruneReport, StoredObject, empty_content_hash,
 };
 
@@ -773,6 +773,25 @@ impl CasApi for InMemoryCas {
 impl CasMaintenanceApi for InMemoryCas {
     async fn optimize_once(&self, _options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
         Ok(OptimizeReport { rewritten_objects: 0 })
+    }
+
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        let hashes: Vec<Hash> = self.objects.iter().map(|entry| *entry.key()).collect();
+        Ok(hashes)
+    }
+
+    async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
+        let all_hashes = self.list_all_hashes().await?;
+        let total_objects = all_hashes.len();
+        let sweep_set: Vec<Hash> =
+            all_hashes.into_iter().filter(|hash| !roots.contains(hash)).collect();
+        let deleted_count = sweep_set.len();
+
+        if !sweep_set.is_empty() {
+            self.delete_many(sweep_set).await?;
+        }
+
+        Ok(GcSweepReport { deleted_count, total_objects })
     }
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
