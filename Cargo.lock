@@ -2087,6 +2087,7 @@ dependencies = [
  "ffmetadata",
  "flate2",
  "fp-library",
+ "libc",
  "mediapm-cas",
  "mediapm-conductor",
  "musicbrainz_rs",

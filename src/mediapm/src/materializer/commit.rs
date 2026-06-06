@@ -81,6 +81,10 @@ pub(super) fn ensure_managed_path_readonly(path: &Path) -> Result<(), MediaPmErr
 }
 
 /// Clears read-only bit recursively so stale managed paths can be removed.
+///
+/// On BSD platforms (macOS, FreeBSD, etc.) this also clears the user/system
+/// immutable flags (`UF_IMMUTABLE` / `SF_IMMUTABLE` / `uchg` / `schg`) which
+/// prevent file deletion independently of Unix permission bits.
 fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| MediaPmError::Io {
         operation: "reading path metadata before readonly clear".to_string(),
@@ -101,6 +105,20 @@ fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
             })?;
             clear_path_readonly_recursively(&entry.path())?;
         }
+    }
+
+    // On BSD platforms (macOS, FreeBSD, etc.), clear immutable file flags
+    // that prevent deletion independently of Unix permission bits.
+    // These flags can be inherited from tool outputs, set by backup software,
+    // or applied manually by the user.
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    {
+        clear_bsd_immutable_flags(path)?;
     }
 
     let mut permissions = fs::metadata(path)
@@ -138,6 +156,49 @@ fn clear_path_readonly_recursively(path: &Path) -> Result<(), MediaPmError> {
             path: path.to_path_buf(),
             source,
         })?;
+    }
+
+    Ok(())
+}
+
+/// Clears BSD immutable flags (`UF_IMMUTABLE` / `SF_IMMUTABLE`) on the given
+/// path so the file can be removed.
+///
+/// Uses `stat` + `chflags` (both following symlinks) for consistency with the
+/// `fs::metadata` / `fs::set_permissions` calls elsewhere in this function.
+/// If `stat` fails (e.g. the path no longer exists), this is treated as a
+/// no-op and the subsequent permission check will surface any relevant error.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+fn clear_bsd_immutable_flags(path: &Path) -> Result<(), MediaPmError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| MediaPmError::Workflow("path contains null byte for chflags".to_string()))?;
+
+    // Read current flags via stat (follows symlinks, matching fs::metadata behavior).
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    if unsafe { libc::stat(c_path.as_ptr(), &mut st) } != 0 {
+        // Path may not exist; let the caller's fs::metadata surface the error.
+        return Ok(());
+    }
+
+    let immutable_mask = (libc::UF_IMMUTABLE | libc::SF_IMMUTABLE) as u32;
+    if (st.st_flags as u32) & immutable_mask != 0 {
+        let new_flags = (st.st_flags as u32) & !immutable_mask;
+        if unsafe { libc::chflags(c_path.as_ptr(), new_flags) } != 0 {
+            let err = std::io::Error::last_os_error();
+            return Err(MediaPmError::Io {
+                operation: "clearing immutable flags before managed-path removal".to_string(),
+                path: path.to_path_buf(),
+                source: err,
+            });
+        }
     }
 
     Ok(())
