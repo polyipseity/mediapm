@@ -1275,10 +1275,23 @@ mediapm.ncl:
 
 **Risk**: Sync works on Linux, fails on macOS with "file already exists"; or vice versa.
 
+**Additional gap — `HierarchyPath` dual serialization**: `HierarchyPath` accepts
+both bare strings (`"a/b"`) and arrays (`["a", "b"]`) during deserialization.
+Both desugar to the same `HierarchyPath(vec!["a", "b"])` — but the array form
+prevents the `From<&str>` split behavior that maps bare strings through
+`trim_matches('/').split('/')`. However, if a config file serializes
+`"a/b"` and `["a", "b"]` in two different hierarchy nodes, they may look
+equivalent to a reader but could be treated as different values depending on
+whether the dedup key uses `HierarchyPath` equality (component-wise) or the
+serialized form. Thus the dual representation introduces a potential source
+of confusion: equivalent paths should be dedup-identical regardless of which
+serialization form was used.
+
 **Recommendations**:
 
 - Case policy: **internally normalize to lowercase for path comparison; warn if multiple files differ only in case**
 - Add test: "case sensitivity mismatch detection"
+- **`HierarchyPath` equality is component-wise (`Vec<String>`), so `"a/b"` and `["a", "b"]` compare equal — verify dedup treats them as identical**
 - Document: "Recommendation: keep paths lowercase for cross-platform compatibility"
 
 **Questions for Clarification**:
@@ -1412,7 +1425,10 @@ mediapm.ncl:
 **Issue**: `sanitize_names` on hierarchy nodes introduces several edge cases around
 replacement character safety, NFD interaction, and inheritance. The default value
 is now `Inherit`, inheriting `Enabled` from the root seed (was `Disabled` during
-initial implementation).
+initial implementation). Additional edge cases arise from the `HierarchyPath`
+newtype: `From<&str>` splits bare strings by `/` at Rust construction time
+(before sanitization), while serde deserialize also splits bare strings by `/`
+(at config load time).
 
 **Scenarios**:
 
@@ -1424,10 +1440,15 @@ initial implementation).
 | `sanitize_names` on media node | Inherited by children | Verify propagation |
 | Custom map with overlapping runtime default keys | Custom wins | Verify merge order |
 | `Inherit` is default, serialized as `"inherit"` | `skip_serializing_if = "is_inherit"` omits it from hierarchy output | Verify round-trip `Inherit` → omitted → deserialize → same behavior |
+| `HierarchyPath` built via `From<&str>` with embedded `/` (e.g. `"a/b"`) | Split into two components at construction time | Sanitization iterates `HierarchyPath::components()` — the `/` is already a component boundary, not a character to be replaced |
+| `HierarchyPath` deserialized from array form `["a/b"]` | Single component containing literal `/` | Validated at flattening time — `/` is forbidden within a single component by `validate_hierarchy_path_component` |
+| `HierarchyPath` round-trip: config loads `"a/b"` → stored as `["a","b"]` → saved | Two-component array | Re-loaded array form `["a","b"]` deserializes identically; no information lost |
 
 **Risk**: Replacement that produces another reserved character would bypass
 reserved-char validation; multi-byte replacement chars create inconsistent path
-encoding.
+encoding. The `HierarchyPath` split-on-`/` behavior means that sanitizing `/`
+to `_` is only relevant within a single component — `/` between components is
+never a candidate for replacement.
 
 **Recommendations**:
 
@@ -1435,6 +1456,10 @@ encoding.
 - Add test: "NFD normalization runs before replacement replacement"
 - Add test: "inheritance propagates `sanitize_names` to child nodes"
 - Add test: "custom map overrides runtime defaults per key"
+- Add test: "`From<&str>` with `/` splits early; sanitization sees already-split components"
+- Document: `HierarchyPath` component boundary is the definitive delimiter — `/`
+  replacement in sanitization only targets literal `/` characters that appear
+  within a single component (e.g. from deserialized array form)
 
 **Questions for Clarification**:
 

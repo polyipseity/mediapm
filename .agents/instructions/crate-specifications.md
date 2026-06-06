@@ -250,7 +250,9 @@ round-trip tests pass.
 **Contract**:
 - All materialized files are read-only after commit
 - Hashes must match; mismatch → failed materialization (no fallback)
-- Platform-independent path resolution (normalized, slash-separated)
+- Platform-independent path resolution (normalized, slash-separated); enforced
+  by `HierarchyPath` which stores path components as a `Vec<String>`, joined
+  by `/` at materialization time
 
 ### Instance Output Existence Checking
 
@@ -634,6 +636,18 @@ repeated stale-entry warnings on every sync cycle.
 - **State Management**: Direct materialization; lock records for cache hits
 - **Tool Provisioning**: User-level cache (downloads) vs. workspace cache (extracted binaries)
 - **Materialization**: Link order preference (hardlink → symlink → reflink → copy)
+- **HierarchyPath type**: `HierarchyNode.path` is a `HierarchyPath(Vec<String>)`
+  newtype, not a raw `String`,
+  - empty path (`vec![]`) is valid for root pass-through folder nodes,
+  - serde serializes zero components as `""`, one component as `"abc"`, multiple
+    components as `["a", "b"]`,
+  - deserialize splits bare strings by `/` (consistent with `From<&str>`),
+    rejecting empty components between delimiters via `trim_matches('/')`,
+  - array form deserializes each element as one component (no further splitting),
+  - `From<&str>` splits by `/` for ergonomic Rust construction; `Default` yields
+    an empty path,
+  - path components are validated at flattening time (non-empty, no `.`/`..`,
+    NFD normalized),
 - **Hierarchy path sanitization**:
   - `hierarchy[*].sanitize_names` controls reserved-character replacement in
     materialized hierarchy paths,
@@ -659,12 +673,17 @@ repeated stale-entry warnings on every sync cycle.
   - the default sanitization mapping replaces `<` `>` `:` `"` `|` `?` `*` `/` `\\`
     with `_`; `/` and `\\` are included because they are path separators on
     Unix/Windows and must not appear within a single path component,
-  - `sanitize_hierarchy_path` applies the replacement map per path component
-    (using `Path::components()`) rather than to the raw string, preserving
-    legitimate `/` separators that delimit hierarchy components,
+  - sanitization iterates `HierarchyPath::components()` (the individual path
+    components of the `HierarchyPath` newtype) rather than operating on the raw
+    string, preserving legitimate `/` separators that delimit hierarchy components,
 - **Hierarchy path character rejection**:
-  - `is_rejected_char` forbids `<`, `>`, `:`, `"`, `|`, `?`, `*`, `/`, and `\\`
-    in individual hierarchy path components,
+  - validation (via `validate_hierarchy_path_component()`) runs at flattening
+    time over each component of `HierarchyPath::components()`,
+  - `validate_hierarchy_path_component` forbids empty components, `.`/`..`
+    segments, and non-NFD-normalized content,
+  - at sanitization time, an `is_rejected_char`-style check forbids `<`, `>`,
+    `:`, `"`, `|`, `?`, `*`, `/`, and `\\` in individual hierarchy path
+    components,
   - backslash (`\\`) is rejected because it is a Windows path separator and
     is not a valid POSIX filename character,
 - **Hierarchy flattening dedup**:
