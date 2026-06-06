@@ -32,6 +32,7 @@ use crate::config::{
     MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
     load_mediapm_document, load_mediapm_document_without_validation, save_mediapm_document,
 };
+use crate::config::{MediaPmState, load_mediapm_state_document, save_mediapm_state_document};
 use crate::error::MediaPmError;
 use crate::hierarchy::{
     build_hierarchy_preset_node, default_hierarchy_folder_root_for_preset,
@@ -39,7 +40,6 @@ use crate::hierarchy::{
     normalize_hierarchy_folder_root, remove_hierarchy_nodes_by_id,
     remove_hierarchy_nodes_by_media_id,
 };
-use crate::lockfile::{MediaLockFile, load_lockfile, save_lockfile};
 use crate::paths::MediaPmPaths;
 use crate::source_metadata::{
     fetch_local_source_metadata, fetch_online_source_metadata, resolve_conductor_cas_root,
@@ -137,7 +137,7 @@ where
     fn logical_tool_requires_sync(
         tool_name: &str,
         requirement: &ToolRequirement,
-        lock: &MediaLockFile,
+        lock: &MediaPmState,
         machine: &mediapm_conductor::MachineNickelDocument,
     ) -> bool {
         if tools::catalog::tool_catalog_entry(tool_name).is_err() {
@@ -153,7 +153,7 @@ where
         };
 
         if !registry_entry.name.eq_ignore_ascii_case(tool_name)
-            || !matches!(registry_entry.status, crate::lockfile::ToolRegistryStatus::Active)
+            || !matches!(registry_entry.status, crate::config::ToolRegistryStatus::Active)
         {
             return true;
         }
@@ -187,7 +187,7 @@ where
     /// `mediapm tool sync` reconciliation.
     fn collect_tools_requiring_sync(
         document: &MediaPmDocument,
-        lock: &MediaLockFile,
+        lock: &MediaPmState,
         machine: &mediapm_conductor::MachineNickelDocument,
     ) -> Vec<String> {
         let mut names = document
@@ -865,7 +865,7 @@ where
         ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
 
-        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
 
         if regenerate_step {
@@ -935,7 +935,7 @@ where
                 .await?;
         }
 
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
 
         let mut targeted_step_ids =
             step_targets.into_iter().map(|target| target.step_id).collect::<Vec<_>>();
@@ -984,7 +984,7 @@ where
     pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::list_tools(&effective_paths, &lock)
     }
 
@@ -1064,7 +1064,7 @@ where
     ) -> Result<usize, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         let removed_hashes = conductor_bridge::prune_tool_binary(
             &effective_paths,
             &mut lock,
@@ -1072,7 +1072,7 @@ where
             remove_metadata,
         )
         .await?;
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(removed_hashes)
     }
 
@@ -1193,7 +1193,7 @@ where
         let (summary, mut lock, effective_paths) =
             self.sync_tools_from_document(&document, check_tag_updates).await?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(summary)
     }
 
@@ -1209,7 +1209,7 @@ where
         &self,
         document: &MediaPmDocument,
         check_tag_updates: bool,
-    ) -> Result<(ToolsSyncSummary, MediaLockFile, MediaPmPaths), MediaPmError> {
+    ) -> Result<(ToolsSyncSummary, MediaPmState, MediaPmPaths), MediaPmError> {
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
         let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
         load_runtime_dotenv(&effective_paths)?;
@@ -1217,7 +1217,7 @@ where
         export_mediapm_nickel_config_schemas(&effective_paths)?;
         mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
 
-        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         let resolved_inherited_env_vars =
             effective_runtime_storage.inherited_env_vars_with_defaults();
         let report = conductor_bridge::reconcile_desired_tools(
@@ -1269,7 +1269,7 @@ where
         export_mediapm_nickel_config_schemas(&effective_paths)?;
         mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
 
-        let mut lock = load_lockfile(&effective_paths.mediapm_state_ncl)?;
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
@@ -1385,7 +1385,7 @@ where
         // during this sync are immediately rooted in machine external_data.
         eprintln!("[mediapm::sync] finalizing machine-state reconciliation...");
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        save_lockfile(&effective_paths.mediapm_state_ncl, &lock)?;
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
 
         Ok(SyncSummary {
             executed_instances: conductor_summary.executed_instances,
@@ -1614,7 +1614,7 @@ fn collect_workflow_step_targets_for_media_step(
 
 /// Clears one mediapm step refresh timestamp to force regeneration.
 fn mark_media_step_for_regeneration(
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     media_id: &str,
     step_index: usize,
 ) -> Result<(), MediaPmError> {
@@ -1768,7 +1768,9 @@ mod tests {
 
     use crate::HierarchyNodeKind;
     use crate::ToolRequirementDependencies;
-    use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus, save_lockfile};
+    use crate::config::{
+        MediaPmState, ToolRegistryRecord, ToolRegistryStatus, save_mediapm_state_document,
+    };
 
     use super::{
         AddInsertPosition, ManagedWorkflowStepTarget, MediaHierarchyPreset, MediaPmApi,
@@ -2062,7 +2064,7 @@ mod tests {
         )
         .expect("write machine doc");
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.active_tools.insert("ffmpeg".to_string(), tool_id.clone());
         lock.tool_registry.insert(
             tool_id,
@@ -2075,7 +2077,8 @@ mod tests {
                 status: ToolRegistryStatus::Active,
             },
         );
-        save_lockfile(&service.paths().mediapm_state_ncl, &lock).expect("write lockfile");
+        save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)
+            .expect("write lockfile");
 
         let summary = service.sync_library().await.expect("sync library");
         let warning = "tool state appears outdated for [";

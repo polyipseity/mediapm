@@ -31,8 +31,8 @@ use mediapm_conductor::{AddToolOptions, InputBinding, ToolKindSpec};
 
 use crate::builtins::media_tagger::MEDIA_TAGGER_FFMPEG_BIN_ENV;
 use crate::config::MediaPmDocument;
+use crate::config::{MediaPmState, ToolRegistryRecord, ToolRegistryStatus};
 use crate::error::MediaPmError;
-use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::{ToolDownloadCache, default_global_tool_cache_root};
 
@@ -56,7 +56,7 @@ pub(crate) async fn reconcile_desired_tools(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
     inherited_env_vars: &[String],
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     check_tag_updates: bool,
 ) -> Result<ToolSyncReport, MediaPmError> {
     ensure_conductor_documents(paths)?;
@@ -409,7 +409,7 @@ pub(crate) async fn reconcile_desired_tools(
 /// no trace of the tool remains in conductor machine state.
 pub(crate) async fn prune_tool_binary(
     paths: &MediaPmPaths,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     tool_id: &str,
     remove_metadata: bool,
 ) -> Result<usize, MediaPmError> {
@@ -481,7 +481,7 @@ mod tests {
     };
 
     use crate::config::{MediaPmDocument, ToolRequirement};
-    use crate::lockfile::{MediaLockFile, ToolRegistryRecord, ToolRegistryStatus};
+    use crate::config::{MediaPmState, ToolRegistryRecord, ToolRegistryStatus};
     use crate::paths::MediaPmPaths;
     use crate::tools::catalog::{
         DownloadPayloadMode, PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor,
@@ -800,12 +800,12 @@ mod tests {
             max_output_slots: None,
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "media-tagger".to_string(),
                 "mediapm.tools.media-tagger+mediapm-internal@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = MachineNickelDocument {
@@ -839,9 +839,9 @@ mod tests {
         };
 
         let active_tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp@latest".to_string();
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), active_tool_id.clone())]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = MachineNickelDocument {
@@ -935,9 +935,9 @@ mod tests {
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
         let command_selector = "${context.os == \"windows\" ? windows/ffmpeg.exe | ''}${context.os == \"linux\" ? linux/ffmpeg | ''}${context.os == \"macos\" ? macos/ffmpeg | ''}".to_string();
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), active_tool_id.clone())]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = MachineNickelDocument {
@@ -984,9 +984,9 @@ mod tests {
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string();
         let command_selector = "${context.os == \"windows\" ? windows/ffmpeg.exe | ''}${context.os == \"linux\" ? linux/ffmpeg | ''}${context.os == \"macos\" ? macos/ffmpeg | ''}".to_string();
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), active_tool_id.clone())]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = MachineNickelDocument {
@@ -1111,7 +1111,7 @@ mod tests {
     /// falls back to immutable tool-id suffixes when registry rows are absent.
     #[test]
     fn ffmpeg_selector_resolution_uses_registry_then_tool_id_suffix() {
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.tool_registry.insert(
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
             ToolRegistryRecord {
@@ -1132,7 +1132,7 @@ mod tests {
 
         let from_suffix = ffmpeg_selector_from_registry_or_tool_id(
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@blake3-abcdef1234",
-            &MediaLockFile::default(),
+            &MediaPmState::default(),
         );
         assert_eq!(from_suffix.as_deref(), Some("blake3-abcdef1234"));
     }
@@ -1330,7 +1330,7 @@ mod tests {
             max_output_slots: None,
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.tool_registry.insert(
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
             ToolRegistryRecord {
@@ -1408,7 +1408,7 @@ mod tests {
             max_output_slots: None,
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.active_tools.insert("ffmpeg".to_string(), tool_id.to_string());
 
         let mut machine = MachineNickelDocument::default();
@@ -1473,7 +1473,7 @@ mod tests {
             max_output_slots: None,
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.tool_registry.insert(
             "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
             ToolRegistryRecord {
@@ -1540,7 +1540,7 @@ mod tests {
             max_output_slots: None,
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.tool_registry.insert(
             "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
             ToolRegistryRecord {
@@ -1601,7 +1601,7 @@ mod tests {
             "yt-dlp",
             &requirement,
             &BTreeMap::new(),
-            &MediaLockFile::default(),
+            &MediaPmState::default(),
             &MachineNickelDocument::default(),
         )
         .expect_err("unknown deno selector should fail");
@@ -1689,7 +1689,7 @@ mod tests {
             "yt-dlp",
             &requirement,
             &BTreeMap::new(),
-            &MediaLockFile::default(),
+            &MediaPmState::default(),
             &MachineNickelDocument::default(),
         )
         .expect_err("unknown selector should fail");
@@ -1775,7 +1775,7 @@ mod tests {
 
             let document = MediaPmDocument::default();
 
-            let mut lock = MediaLockFile {
+            let mut lock = MediaPmState {
                 tool_registry: BTreeMap::from([(
                     tool_id.clone(),
                     ToolRegistryRecord {
@@ -1787,7 +1787,7 @@ mod tests {
                         status: ToolRegistryStatus::Active,
                     },
                 )]),
-                ..MediaLockFile::default()
+                ..MediaPmState::default()
             };
 
             let mut machine = MachineNickelDocument::default();
@@ -1858,7 +1858,7 @@ mod tests {
 
     /// Verifies that a stale tool entry not in the desired set and not referenced
     /// by any workflow step is pruned from the machine document and marked as
-    /// Pruned in the lockfile registry.
+    /// Pruned in the state registry.
     #[test]
     fn prune_unmanaged_tool_artifacts_prunes_stale_non_referenced_tools() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1879,7 +1879,7 @@ mod tests {
 
             let document = MediaPmDocument::default();
 
-            let mut lock = MediaLockFile {
+            let mut lock = MediaPmState {
                 tool_registry: BTreeMap::from([(
                     tool_id.clone(),
                     ToolRegistryRecord {
@@ -1891,7 +1891,7 @@ mod tests {
                         status: ToolRegistryStatus::Active,
                     },
                 )]),
-                ..MediaLockFile::default()
+                ..MediaPmState::default()
             };
 
             let mut machine = MachineNickelDocument::default();

@@ -17,6 +17,7 @@ use mediapm_conductor::{
 };
 use serde_json::Value;
 
+use crate::config::MediaPmState;
 use crate::config::{
     ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp, MediaSourceSpec, MediaStep,
     MediaStepTool, OutputSaveConfig, ResolvedStepVariantFlow, ToolRequirement, TransformInputValue,
@@ -24,7 +25,6 @@ use crate::config::{
     resolve_step_variant_flow,
 };
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
@@ -212,7 +212,7 @@ pub(super) fn resolved_ffmpeg_family_output_extension(extension: Option<&str>) -
 pub(crate) fn reconcile_media_workflows(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
 ) -> Result<(), MediaPmError> {
     reconcile_media_workflows_with_mode(paths, document, lock, false)
 }
@@ -228,7 +228,7 @@ pub(crate) fn reconcile_media_workflows(
 pub(crate) fn reconcile_media_workflows_for_config_edits(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
 ) -> Result<(), MediaPmError> {
     reconcile_media_workflows_with_mode(paths, document, lock, true)
 }
@@ -238,7 +238,7 @@ pub(crate) fn reconcile_media_workflows_for_config_edits(
 fn reconcile_media_workflows_with_mode(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     allow_unresolved_tool_placeholders: bool,
 ) -> Result<(), MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
@@ -291,7 +291,7 @@ fn ensure_active_tool_placeholders_for_media_steps(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
     machine: &mut MachineNickelDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
     for logical_tool_name in required_logical_tool_names_for_media_steps(document) {
@@ -344,7 +344,7 @@ fn required_logical_tool_names_for_media_steps(
 fn ensure_active_tool_placeholder(
     paths: &MediaPmPaths,
     machine: &mut MachineNickelDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     logical_tool_name: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
@@ -422,7 +422,7 @@ fn unresolved_placeholder_payload(
 ///   dominates `Saved`).
 fn collect_managed_external_data_from_machine_and_lock(
     machine: &MachineNickelDocument,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     managed_external_data: &mut BTreeMap<Hash, ExternalContentRef>,
 ) -> Result<(), MediaPmError> {
     for (tool_id, tool_config) in &machine.tool_configs {
@@ -601,7 +601,7 @@ impl VariantProducer {
 #[cfg(test)]
 fn build_media_workflow_plan(
     document: &MediaPmDocument,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     let mut working_lock = lock.clone();
@@ -618,7 +618,7 @@ fn build_media_workflow_plan(
 #[cfg(test)]
 fn build_media_workflow_plan_and_update_state(
     document: &MediaPmDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     build_media_workflow_plan_with_limits(document, lock, machine, FfmpegSlotLimits::default())
@@ -627,7 +627,7 @@ fn build_media_workflow_plan_and_update_state(
 /// Builds the full managed workflow/external-data plan from `mediapm` config.
 fn build_media_workflow_plan_with_limits(
     document: &MediaPmDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     machine: &MachineNickelDocument,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
@@ -1055,7 +1055,7 @@ fn resolve_selected_dependency_tool_id(
     logical_tool_name: &str,
     dependency_tool_name: &str,
     requested_selector: Option<String>,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<String, MediaPmError> {
     if requested_selector.is_none()
@@ -1187,7 +1187,7 @@ pub(super) fn map_step_option_input_binding(
 
 /// Resolves active immutable tool id for one logical tool name.
 fn resolve_step_tool_id(
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     step_tool: MediaStepTool,
 ) -> Result<String, MediaPmError> {
@@ -1201,7 +1201,7 @@ fn resolve_step_tool_id(
 /// Resolves one active immutable tool id for a logical tool name and validates
 /// machine-config presence.
 fn resolve_active_logical_tool_id(
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     logical_tool_name: &str,
 ) -> Result<String, MediaPmError> {
@@ -1342,12 +1342,12 @@ mod tests {
     };
     use serde_json::{Value, json};
 
+    use crate::config::MediaPmState;
     use crate::config::{
         ManagedFileRecord, ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp,
         MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, ToolRequirementDependencies,
         TransformInputValue,
     };
-    use crate::lockfile::MediaLockFile;
 
     use crate::conductor_bridge::workflows::{
         MANAGED_EXTERNAL_DESCRIPTION_PREFIX, MANAGED_WORKFLOW_PREFIX, build_media_workflow_plan,
@@ -1389,7 +1389,7 @@ mod tests {
         }
     }
 
-    fn machine_with_active_tool_specs(lock: &MediaLockFile) -> MachineNickelDocument {
+    fn machine_with_active_tool_specs(lock: &MediaPmState) -> MachineNickelDocument {
         let mut machine = MachineNickelDocument::default();
 
         for (logical_name, tool_id) in &lock.active_tools {
@@ -1485,7 +1485,7 @@ mod tests {
         ..MediaPmDocument::default()
     };
 
-        let lock = MediaLockFile::default();
+        let lock = MediaPmState::default();
         let machine = machine_with_active_tool_specs(&lock);
         let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
 
@@ -1568,7 +1568,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -1577,7 +1577,7 @@ mod tests {
                     impure_timestamp: Some(preserved_timestamp),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -1642,7 +1642,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -1654,7 +1654,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -1716,7 +1716,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -1728,7 +1728,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -1793,7 +1793,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -1802,7 +1802,7 @@ mod tests {
                     impure_timestamp: None,
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -1882,7 +1882,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -1894,7 +1894,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -1982,7 +1982,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -2000,7 +2000,7 @@ mod tests {
                     },
                 ],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -2080,7 +2080,7 @@ mod tests {
     #[test]
     fn managed_external_data_collection_roots_lock_managed_file_hashes() {
         let hash = Hash::from_content(b"managed-file-hash");
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             managed_files: BTreeMap::from([(
                 "music videos/demo.mkv".to_string(),
                 ManagedFileRecord {
@@ -2090,7 +2090,7 @@ mod tests {
                     last_synced_unix_millis: 1,
                 },
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = MachineNickelDocument::default();
         let mut external_data = BTreeMap::new();
@@ -2125,7 +2125,7 @@ mod tests {
             )]),
             ..MachineNickelDocument::default()
         };
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             managed_files: BTreeMap::from([(
                 "sidecars/demo.info.json".to_string(),
                 ManagedFileRecord {
@@ -2135,7 +2135,7 @@ mod tests {
                     last_synced_unix_millis: 1,
                 },
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let mut external_data = BTreeMap::new();
 
@@ -2207,7 +2207,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "yt-dlp".to_string(),
@@ -2223,7 +2223,7 @@ mod tests {
                 ),
                 ("sd".to_string(), "mediapm.tools.sd+conductor-common@latest".to_string()),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -2314,7 +2314,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -2330,7 +2330,7 @@ mod tests {
                 ),
                 ("sd".to_string(), "mediapm.tools.sd+conductor-common@latest".to_string()),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -2413,7 +2413,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -2424,7 +2424,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let mut machine = machine_with_active_tool_specs(&lock);
         machine.tools.insert(
@@ -2538,7 +2538,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -2549,7 +2549,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -2618,12 +2618,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "media-tagger".to_string(),
                 "mediapm.tools.media-tagger+mediapm-internal@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -2675,7 +2675,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -2686,7 +2686,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -2764,7 +2764,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -2775,7 +2775,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -2838,7 +2838,7 @@ mod tests {
         ..MediaPmDocument::default()
     };
 
-        let lock = MediaLockFile::default();
+        let lock = MediaPmState::default();
         let mut machine = MachineNickelDocument::default();
         machine.tools.insert(
             "import@1.0.0".to_string(),
@@ -2938,12 +2938,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -2990,12 +2990,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3053,12 +3053,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3107,12 +3107,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3131,12 +3131,12 @@ mod tests {
     /// to ffmpeg-accepted muxer names.
     #[test]
     fn ffmpeg_infers_canonical_container_from_extension_aliases() {
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -3195,12 +3195,12 @@ mod tests {
     /// values (e.g. `mkv`) to valid muxer names.
     #[test]
     fn ffmpeg_explicit_container_aliases_are_canonicalized() {
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "ffmpeg".to_string(),
                 "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -3294,12 +3294,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -3346,12 +3346,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
         let machine = machine_with_active_tool_specs(&lock);
 
@@ -3586,7 +3586,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "media-tagger".to_string(),
@@ -3602,7 +3602,7 @@ mod tests {
                 ),
                 ("sd".to_string(), "mediapm.tools.sd+conductor-common@latest".to_string()),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3824,12 +3824,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3898,12 +3898,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -3953,12 +3953,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -4026,7 +4026,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "yt-dlp".to_string(),
@@ -4037,7 +4037,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -4100,7 +4100,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([
                 (
                     "yt-dlp".to_string(),
@@ -4111,7 +4111,7 @@ mod tests {
                     "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
                 ),
             ]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -4173,12 +4173,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -4227,12 +4227,12 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([(
                 "yt-dlp".to_string(),
                 "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string(),
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let machine = machine_with_active_tool_specs(&lock);
@@ -4286,7 +4286,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -4298,7 +4298,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -4381,7 +4381,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile {
+        let mut lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -4393,7 +4393,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
@@ -4462,7 +4462,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let lock = MediaLockFile {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([("ffmpeg".to_string(), same_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -4474,7 +4474,7 @@ mod tests {
                     }),
                 }],
             )]),
-            ..MediaLockFile::default()
+            ..MediaPmState::default()
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);

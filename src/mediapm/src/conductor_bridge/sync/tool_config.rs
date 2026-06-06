@@ -7,9 +7,9 @@ use std::fs;
 use mediapm_cas::Hash;
 use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
 
+use crate::config::MediaPmState;
 use crate::config::{ToolRequirement, normalize_selector_compare_value, normalize_selector_value};
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::{ContentMapSource, ProvisionedToolPayload, ResolvedToolIdentity};
 
@@ -546,7 +546,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
     paths: &MediaPmPaths,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<MediaTaggerFfmpegSelection, MediaPmError> {
     let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
@@ -684,7 +684,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<CompanionFfmpegSelection, MediaPmError> {
     resolve_companion_dependency_selection(
@@ -705,7 +705,7 @@ pub(super) fn resolve_companion_deno_selection(
     logical_tool_name: &str,
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<CompanionDenoSelection, MediaPmError> {
     resolve_companion_dependency_selection(
@@ -727,7 +727,7 @@ fn resolve_companion_dependency_selection(
     dependency_name: &str,
     requested_selector: Option<String>,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
 ) -> Result<CompanionFfmpegSelection, MediaPmError> {
     let requested_selector = requested_selector.filter(|selector| {
@@ -921,14 +921,14 @@ fn ffmpeg_identity_matches_selector(
 #[must_use]
 pub(super) fn ffmpeg_selector_from_registry_or_tool_id(
     tool_id: &str,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
 ) -> Option<String> {
     selector_from_registry_or_tool_id(tool_id, lock, "ffmpeg")
 }
 
 fn selector_from_registry_or_tool_id(
     tool_id: &str,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     dependency_name: &str,
 ) -> Option<String> {
     if let Some(registry_entry) = lock.tool_registry.get(tool_id)

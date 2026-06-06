@@ -8,8 +8,8 @@ use mediapm_conductor::{
     decode_machine_document, decode_user_document, encode_machine_document, encode_user_document,
 };
 
+use crate::config::{MediaPmState, ToolRegistryStatus};
 use crate::error::MediaPmError;
-use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::registered_builtin_ids;
 
@@ -167,7 +167,7 @@ fn load_user_document(path: &Path) -> Result<UserNickelDocument, MediaPmError> {
 /// Lists conductor tools visible in machine config with lockfile status overlay.
 pub(crate) fn list_tools(
     paths: &MediaPmPaths,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
 ) -> Result<Vec<ConductorToolRow>, MediaPmError> {
     let machine = load_machine_document(&paths.conductor_machine_ncl)?;
     let mut rows = machine

@@ -8,12 +8,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_conductor::{InputBinding, MachineNickelDocument, WorkflowSpec, WorkflowStepSpec};
 
+use crate::config::MediaPmState;
 use crate::config::{
     ManagedWorkflowStepState, MediaSourceSpec, MediaStep, MediaStepTool, ResolvedStepVariantFlow,
     ToolRequirement, expand_variant_selectors, media_source_uri, resolve_step_variant_flow,
 };
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 
 use super::yt_dlp_inputs::{resolve_step_output_binding, step_output_policy_overrides};
 use super::{
@@ -47,7 +47,7 @@ pub(super) fn synthesize_media_steps(
     workflow: &mut WorkflowSpec,
     media_id: &str,
     source: &MediaSourceSpec,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     machine: &MachineNickelDocument,
     tool_requirements: &BTreeMap<String, ToolRequirement>,
     existing_workflow: Option<&WorkflowSpec>,
@@ -363,7 +363,7 @@ fn synthesize_rsgain_step_chain(
     step_index: usize,
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     logical_tool_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
@@ -396,7 +396,7 @@ fn synthesize_media_tagger_step_pair(
     step_index: usize,
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     media_tagger_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,

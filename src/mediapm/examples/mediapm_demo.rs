@@ -30,8 +30,8 @@ use mediapm::{
     MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
     PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
     ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_lockfile, load_mediapm_document, save_lockfile,
-    save_mediapm_document,
+    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -501,7 +501,7 @@ fn output_is_hardlinked_to_cas_object(
 fn assert_materialized_output_hardlinked_to_cas(
     cas_root: &Path,
     hierarchy_root: &Path,
-    lock: &mediapm::MediaLockFile,
+    lock: &mediapm::MediaPmState,
     output_path: &Path,
 ) -> ExampleResult<bool> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
@@ -1013,7 +1013,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
     let mut machine: MachineNickelDocument =
         decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
-    let mut lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in local_demo_tool_requirements().into_keys() {
         if logical_tool_name.eq_ignore_ascii_case("import") {
@@ -1068,7 +1068,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     }
 
     fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
-    save_lockfile(&service.paths().mediapm_state_ncl, &lock)?;
+    save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
 }
@@ -1196,7 +1196,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
             "{DEMO_METADATA_ARTIST} - {DEMO_METADATA_TITLE} [{DEMO_MEDIA_ID}].untagged.mp4"
         ));
 
-    let lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+    let lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
     let (materialized_primary_hardlinked_to_cas, materialized_secondary_hardlinked_to_cas) =
         if maybe_summary.is_some() {
             let hierarchy_root = &effective_paths.hierarchy_root_dir;

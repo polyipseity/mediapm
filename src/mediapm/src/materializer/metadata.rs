@@ -13,12 +13,12 @@ use regex::Regex;
 
 use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
 
+use crate::config::MediaPmState;
 use crate::config::{
     HierarchyEntry, HierarchyFolderRenameRule, MediaMetadataRegexTransform, MediaMetadataValue,
     MediaMetadataValueCandidate, MediaSourceSpec, hierarchy_metadata_placeholder_keys,
 };
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 use crate::paths::MediaPmPaths;
 
 use super::MaterializationLookupContext;
@@ -457,7 +457,7 @@ fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmE
 pub(super) fn resolve_managed_ffprobe_path(
     paths: &MediaPmPaths,
     machine: &MachineNickelDocument,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
 ) -> Option<PathBuf> {
     let ffmpeg_tool_id = lock.active_tools.get("ffmpeg")?;
     let ffmpeg_tool = machine.tools.get(ffmpeg_tool_id)?;

@@ -50,8 +50,8 @@ use mediapm::{
     MediaMetadataValue, MediaMetadataVariantBinding, MediaPmPaths, MediaPmService,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlaylistEntryPathMode,
     PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus,
-    ToolRequirement, ToolRequirementDependencies, TransformInputValue, load_lockfile,
-    load_mediapm_document, save_lockfile, save_mediapm_document,
+    ToolRequirement, ToolRequirementDependencies, TransformInputValue, load_mediapm_document,
+    load_mediapm_state_document, save_mediapm_document, save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
@@ -878,7 +878,7 @@ fn output_is_hardlinked_to_cas_object(
 fn assert_materialized_output_hardlinked_to_cas(
     cas_root: &Path,
     hierarchy_root: &Path,
-    lock: &mediapm::MediaLockFile,
+    lock: &mediapm::MediaPmState,
     output_path: &Path,
 ) -> ExampleResult<bool> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
@@ -1468,7 +1468,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
     let mut machine: MachineNickelDocument =
         decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
-    let mut lock = load_lockfile(&service.paths().mediapm_state_ncl)?;
+    let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in logical_tool_ids {
         let stale_tool_id =
@@ -1519,7 +1519,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     }
 
     fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
-    save_lockfile(&service.paths().mediapm_state_ncl, &lock)?;
+    save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
 }
@@ -2601,7 +2601,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         resolve_demo_output_paths(&hierarchy_root)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
     let cas_root = sync_service.paths().runtime_root.join("store");
-    let lock = load_lockfile(&sync_service.paths().mediapm_state_ncl)?;
+    let lock = load_mediapm_state_document(&sync_service.paths().mediapm_state_ncl)?;
     let materialized_demo_video_hardlinked_to_cas = assert_materialized_output_hardlinked_to_cas(
         &cas_root,
         &hierarchy_root,

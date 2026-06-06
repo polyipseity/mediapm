@@ -18,7 +18,6 @@ mod error;
 mod global;
 mod hierarchy;
 mod http_client;
-mod lockfile;
 mod materializer;
 mod paths;
 mod service;
@@ -36,10 +35,11 @@ use url::Url;
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
 pub use config::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
-    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars,
-    PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRequirement,
+    HierarchyNodeKind, ManagedFileRecord, MaterializationMethod, MediaMetadataRegexTransform,
+    MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
+    MediaPmState, MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool,
+    PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, ToolRegistryRecord, ToolRegistryStatus, ToolRequirement,
     ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
     load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
     nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
@@ -47,10 +47,6 @@ pub use config::{
 };
 pub use error::MediaPmError;
 pub use global::MediaPmGlobalPaths;
-pub use lockfile::{
-    MEDIAPM_LOCK_VERSION, ManagedFileRecord, MediaLockFile, ToolRegistryRecord, ToolRegistryStatus,
-    load_lockfile, save_lockfile,
-};
 pub use materializer::MaterializeReport;
 pub use paths::MediaPmPaths;
 

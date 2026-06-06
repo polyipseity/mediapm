@@ -6,8 +6,8 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
 
 use crate::config::{MediaPmDocument, ToolRequirement};
+use crate::config::{MediaPmState, ToolRegistryStatus};
 use crate::error::MediaPmError;
-use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
 use crate::paths::MediaPmPaths;
 use crate::tools::catalog::{ToolDownloadDescriptor, tool_catalog_entry};
 use crate::tools::downloader::{ContentMapSource, ProvisionedToolPayload};
@@ -22,7 +22,7 @@ use super::super::util::now_unix_seconds;
 pub(super) fn should_skip_tag_update_check(
     requirement: &ToolRequirement,
     tool_name: &str,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     check_tag_updates: bool,
 ) -> bool {
@@ -99,7 +99,7 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
     document: &MediaPmDocument,
     cas: &FileSystemCas,
     machine: &mut MachineNickelDocument,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     desired_tool_ids: &BTreeSet<String>,
     report: &mut ToolSyncReport,
 ) -> Result<(), MediaPmError> {

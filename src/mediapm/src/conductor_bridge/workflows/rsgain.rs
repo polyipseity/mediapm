@@ -7,12 +7,12 @@ use mediapm_conductor::{
 };
 
 use crate::conductor_bridge::tool_runtime::SUPPORTED_RSGAIN_INPUT_EXTENSIONS;
+use crate::config::MediaPmState;
 use crate::config::{
     DecodedOutputVariantConfig, MediaStep, MediaStepTool, ResolvedStepVariantFlow, ToolRequirement,
     decode_output_variant_config, decode_output_variant_policy,
 };
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 
 use super::{
     FfmpegSlotLimits, INPUT_CONTENT, INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS,
@@ -105,7 +105,7 @@ pub(super) fn synthesize_rsgain_step_chain(
     step_index: usize,
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     logical_tool_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,

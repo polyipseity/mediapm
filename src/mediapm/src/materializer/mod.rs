@@ -20,8 +20,8 @@ use crate::config::{
     FlattenedHierarchyEntry, HierarchyEntryKind, MediaPmDocument, PlaylistEntryPathMode,
     expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
+use crate::config::{ManagedFileRecord, MediaPmState};
 use crate::error::MediaPmError;
-use crate::lockfile::{ManagedFileRecord, MediaLockFile};
 use crate::paths::MediaPmPaths;
 
 mod commit;
@@ -46,6 +46,7 @@ mod tests {
     };
     use unicode_normalization::UnicodeNormalization;
 
+    use crate::config::MediaPmState;
     use crate::config::{
         HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
         HierarchyNodeKind, MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
@@ -53,7 +54,6 @@ mod tests {
         PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
         TransformInputValue,
     };
-    use crate::lockfile::MediaLockFile;
     use crate::paths::MediaPmPaths;
 
     use crate::materializer::{
@@ -94,7 +94,7 @@ mod tests {
             .expect("create managed ffprobe parent directory");
         fs::write(&managed_ffprobe_path, b"stub").expect("write managed ffprobe stub");
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.active_tools.insert("ffmpeg".to_string(), ffmpeg_tool_id.clone());
 
         let resolved = resolve_managed_ffprobe_path(&paths, &machine, &lock)
@@ -141,7 +141,7 @@ mod tests {
             .expect("create payload managed ffprobe parent directory");
         fs::write(&payload_ffprobe_path, b"stub").expect("write payload managed ffprobe stub");
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         lock.active_tools.insert("ffmpeg".to_string(), ffmpeg_tool_id.clone());
 
         let resolved = resolve_managed_ffprobe_path(&paths, &machine, &lock)
@@ -420,7 +420,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         sync_hierarchy(
             &paths,
             &document,
@@ -480,7 +480,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         sync_hierarchy(
             &paths,
             &document,
@@ -734,7 +734,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -860,7 +860,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -964,7 +964,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1057,7 +1057,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1115,7 +1115,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1249,7 +1249,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1387,7 +1387,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1469,7 +1469,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let error = sync_hierarchy(
             &paths,
             &document,
@@ -1596,7 +1596,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1673,7 +1673,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1741,7 +1741,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1801,7 +1801,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1872,7 +1872,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -1942,7 +1942,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(
             &paths,
             &document,
@@ -2179,7 +2179,7 @@ mod tests {
         };
 
         drop(cas);
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock, false)
             .await
             .expect("sync hierarchy");
@@ -2233,7 +2233,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let error = sync_hierarchy(
             &paths,
             &document,
@@ -2300,7 +2300,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         let error = sync_hierarchy(
             &paths,
             &document,
@@ -3079,7 +3079,7 @@ fn truncate_progress_label(value: &str, max_chars: usize) -> String {
 async fn prepare_hierarchy_entry(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     lookup: &MaterializationLookupContext,
     materialization_methods: &[crate::config::MaterializationMethod],
     playlist_media_index: &BTreeMap<String, String>,
@@ -3478,7 +3478,7 @@ pub async fn sync_hierarchy(
     document: &MediaPmDocument,
     machine: &MachineNickelDocument,
     conductor_cas_root: &Path,
-    lock: &mut MediaLockFile,
+    lock: &mut MediaPmState,
     _verify_materialization: bool,
 ) -> Result<MaterializeReport, MediaPmError> {
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;

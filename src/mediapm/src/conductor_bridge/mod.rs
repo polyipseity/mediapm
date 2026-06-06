@@ -30,7 +30,7 @@ mod tests {
     use crate::config::{
         MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
     };
-    use crate::lockfile::{MediaLockFile, ToolRegistryStatus};
+    use crate::config::{MediaPmState, ToolRegistryStatus};
     use crate::paths::MediaPmPaths;
     use crate::tools::catalog::tool_catalog_entry;
     use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
@@ -186,7 +186,7 @@ mod tests {
 
         save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-        let lock = MediaLockFile::default();
+        let lock = MediaPmState::default();
         let rows = list_tools(&paths, &lock).expect("list tools");
 
         assert_eq!(rows.len(), 1);
@@ -1310,7 +1310,7 @@ mod tests {
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaLockFile::default();
+        let mut lock = MediaPmState::default();
         super::workflows::reconcile_media_workflows_for_config_edits(&paths, &document, &mut lock)
             .expect("config-edit workflow reconciliation");
 
@@ -1375,5 +1375,5 @@ pub struct ConductorToolRow {
     /// Whether binary content-map entries are currently present.
     pub has_binary: bool,
     /// Current lifecycle status tracked by lock state.
-    pub status: crate::lockfile::ToolRegistryStatus,
+    pub status: crate::config::ToolRegistryStatus,
 }

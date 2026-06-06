@@ -9,12 +9,12 @@ use mediapm_conductor::{
 use crate::builtins::media_tagger::{
     cover_art_slot_flag_member_name, cover_art_slot_image_member_name,
 };
+use crate::config::MediaPmState;
 use crate::config::{
     DecodedOutputVariantConfig, MediaStep, MediaStepTool, ResolvedStepVariantFlow, ToolRequirement,
     decode_output_variant_config, decode_output_variant_policy,
 };
 use crate::error::MediaPmError;
-use crate::lockfile::MediaLockFile;
 
 use super::{
     FfmpegSlotLimits, INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
@@ -136,7 +136,7 @@ pub(super) fn synthesize_media_tagger_step_pair(
     step_index: usize,
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
-    lock: &MediaLockFile,
+    lock: &MediaPmState,
     machine: &MachineNickelDocument,
     media_tagger_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
