@@ -84,7 +84,7 @@ pub struct OutputPolicy {
 /// This timestamp uses Unix epoch UTC split into integral components to
 /// preserve nanosecond precision without relying on large floating-point
 /// numbers in Nickel serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 pub struct ImpureTimestamp {
     /// Whole seconds since Unix epoch (UTC).
     pub epoch_seconds: u64,
