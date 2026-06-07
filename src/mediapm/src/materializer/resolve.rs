@@ -61,11 +61,7 @@ pub(super) async fn load_runtime_orchestration_state(
         return Ok(None);
     };
 
-    let Ok(state_blob) = cas.get(state_pointer).await else {
-        return Ok(None);
-    };
-
-    let orchestration_state = decode_state(&state_blob).map_err(|error| {
+    let orchestration_state = decode_state(cas, state_pointer).await.map_err(|error| {
         MediaPmError::Serialization(format!(
             "decoding persisted orchestration-state blob '{state_pointer}' failed: {error}"
         ))
