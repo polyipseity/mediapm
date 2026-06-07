@@ -38,7 +38,8 @@ use crate::model::config::{
 use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
 use crate::tool_cache::ToolContentCache;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::{Duration, sleep};
 
 use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor};
 use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
@@ -870,6 +871,13 @@ where
                         None => None, // unlimited concurrency
                     };
 
+                    // Look up per-tool max_retries from the unified config.
+                    let max_retries = unified_shared
+                        .tools
+                        .get(&step_spec.tool)
+                        .map(|spec| spec.max_retries)
+                        .unwrap_or(0);
+
                     let required_output_names =
                         dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
                     let step_outputs = Arc::clone(&dep_state.step_outputs);
@@ -902,7 +910,6 @@ where
                     })?;
 
                     in_flight.push(Box::pin(async move {
-                        let _permit = permit; // held until future completes
                         Self::dispatch_step_rpc_with_fallback(
                             worker,
                             cas,
@@ -911,6 +918,8 @@ where
                             wf_name,
                             step_id,
                             worker_index,
+                            max_retries,
+                            permit,
                         )
                         .await
                     }));
@@ -1073,7 +1082,9 @@ where
     }
 
     /// Dispatches one step to a worker actor via RPC, falling back to direct
-    /// local execution on RPC failure.
+    /// local execution on RPC failure. Retries up to `max_retries` times on
+    /// failure, with the semaphore permit held across all attempts so the
+    /// concurrency slot stays occupied.
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_step_rpc_with_fallback(
         worker: ActorRef<StepWorkerMessage>,
@@ -1083,48 +1094,62 @@ where
         workflow_name: String,
         step_id: String,
         worker_index: usize,
+        max_retries: i32,
+        _permit: Option<OwnedSemaphorePermit>,
     ) -> StepCompletionEvent {
-        // Attempt worker RPC.
-        let call_result: Result<StepExecutionBundle, ConductorError> = match call_t!(
-            worker,
-            StepWorkerMessage::ExecuteStep,
-            rpc_timeout_ms(),
-            Box::new(request.clone())
-        ) {
-            Ok(Ok(bundle)) => {
+        let max_attempts = max_retries.max(0) as u32 + 1;
+        for attempt in 0..max_attempts {
+            // Attempt worker RPC.
+            let call_result: Result<StepExecutionBundle, ConductorError> = match call_t!(
+                worker.clone(),
+                StepWorkerMessage::ExecuteStep,
+                rpc_timeout_ms(),
+                Box::new(request.clone())
+            ) {
+                Ok(Ok(bundle)) => {
+                    return StepCompletionEvent {
+                        workflow_name: workflow_name.clone(),
+                        step_id: step_id.clone(),
+                        worker_index,
+                        result: Ok(bundle),
+                        rpc_failed: false,
+                        rpc_failure_reason: None,
+                    };
+                }
+                Ok(Err(err)) => Err(err),
+                Err(rpc_err) => Err(ConductorError::Internal(format!(
+                    "worker RPC failed for step '{}': {rpc_err}",
+                    step_id
+                ))),
+            };
+
+            let rpc_failure_reason = match &call_result {
+                Ok(_) => None,
+                Err(err) => Some(err.to_string()),
+            };
+
+            let fallback_result =
+                execute_step_direct(cas.clone(), tool_cache.clone(), request.clone()).await;
+
+            // If we have retries remaining and both paths failed, wait and retry.
+            let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
+            if fallback_result.is_ok() || is_last_attempt {
                 return StepCompletionEvent {
                     workflow_name,
                     step_id,
                     worker_index,
-                    result: Ok(bundle),
-                    rpc_failed: false,
-                    rpc_failure_reason: None,
+                    result: fallback_result.map(|mut bundle| {
+                        bundle.fallback_used = true;
+                        bundle
+                    }),
+                    rpc_failed: true,
+                    rpc_failure_reason,
                 };
             }
-            Ok(Err(err)) => Err(err),
-            Err(rpc_err) => Err(ConductorError::Internal(format!(
-                "worker RPC failed for step '{step_id}': {rpc_err}"
-            ))),
-        };
 
-        // RPC failed — fall back to direct local execution.
-        let rpc_failure_reason = match &call_result {
-            Ok(_) => None,
-            Err(err) => Some(err.to_string()),
-        };
-
-        let fallback_result = execute_step_direct(cas, tool_cache, request).await;
-        StepCompletionEvent {
-            workflow_name,
-            step_id,
-            worker_index,
-            result: fallback_result.map(|mut bundle| {
-                bundle.fallback_used = true;
-                bundle
-            }),
-            rpc_failed: true,
-            rpc_failure_reason,
+            sleep(Duration::from_millis(500)).await;
         }
+        unreachable!()
     }
 
     /// Returns whether every step tool in one workflow is pure.
