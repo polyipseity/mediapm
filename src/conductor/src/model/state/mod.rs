@@ -261,8 +261,48 @@ impl Default for OrchestrationState {
 }
 
 impl OrchestrationState {
-    /// Placeholder — GC is temporarily a no-op after `last_used` removal.
-    pub fn gc_instances(&mut self, _cutoff: ImpureTimestamp) {}
+    /// Garbage-collects instances not referenced by the current planning pass.
+    ///
+    /// ## Semantics
+    ///
+    /// 1. **Reachability is primary**: instances in `referenced_instance_keys`
+    ///    are never evicted regardless of their `last_reachable` value.
+    /// 2. **Unreferenced instances** without `last_reachable` get it initialised
+    ///    to `now` (TTL clock starts when GC first notices them).
+    /// 3. **Unreferenced instances** whose `last_reachable < cutoff` are evicted,
+    ///    along with their `aux` metadata.
+    /// 4. **Unreferenced instances** with `last_reachable >= cutoff` (or `None`
+    ///    before this pass runs) are preserved until a subsequent pass.
+    pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
+        let now = ImpureTimestamp::now();
+        // Phase 1: initialise last_reachable for unreferenced instances that
+        // lack it, so the TTL clock starts ticking from this GC pass onward.
+        for key in self.instances.keys() {
+            if self.referenced_instance_keys.contains(key) {
+                continue;
+            }
+            let aux = self.aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
+            if aux.last_reachable.is_none() {
+                aux.last_reachable = Some(now);
+            }
+        }
+        // Phase 2: evict unreferenced instances past the cutoff.
+        let evict_keys: Vec<String> = self
+            .instances
+            .keys()
+            .filter(|key| {
+                if self.referenced_instance_keys.contains(*key) {
+                    return false;
+                }
+                self.aux.get(*key).and_then(|a| a.last_reachable).is_some_and(|t| t < cutoff)
+            })
+            .cloned()
+            .collect();
+        for key in &evict_keys {
+            self.instances.remove(key);
+            self.aux.remove(key);
+        }
+    }
 }
 
 /// Converts runtime orchestration state into V2 wire-envelope JSON without CAS.
