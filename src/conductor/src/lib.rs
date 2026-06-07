@@ -41,8 +41,8 @@ pub use model::config::{
 };
 pub use model::state::{
     OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
-    ResolvedInputKey, ToolCallInstance, decode_state, encode_state, merge_persistence_flags,
-    persisted_state_json_pretty, persisted_state_json_value,
+    ResolvedInputKey, ToolCallInstance, decode_state, decode_state_from_slice, encode_state,
+    merge_persistence_flags, persisted_state_json_pretty, persisted_state_json_value,
 };
 pub use orchestration::SimpleConductor;
 pub use orchestration::config::ENV_PROFILE_OUTPUT_PATH;

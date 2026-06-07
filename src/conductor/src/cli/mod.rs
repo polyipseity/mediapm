@@ -31,7 +31,7 @@ mod tests {
     };
     use crate::model::state::{OrchestrationState, ToolCallInstance, encode_state};
     use clap::Parser;
-    use mediapm_cas::{CasApi, ConfiguredCas, Hash, InMemoryCas};
+    use mediapm_cas::{ConfiguredCas, Hash, InMemoryCas};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -479,10 +479,9 @@ mod tests {
             )]),
             ..OrchestrationState::default()
         };
-        let state_blob = encode_state(state).expect("encode state");
 
         let cas: ConfiguredCas = ConfiguredCas::InMemory(InMemoryCas::new());
-        let state_hash = cas.put(state_blob).await.expect("put state blob");
+        let state_hash = encode_state(&cas, state).await.expect("encode state");
 
         let state_doc = StateNickelDocument {
             state_pointer: Some(state_hash),
@@ -530,7 +529,9 @@ use crate::api::{
 use crate::error::ConductorError;
 use crate::gc::compute_gc_roots;
 use crate::model::config::{AddExternalDataOptions, ExternalContentRef};
-use crate::model::state::{OrchestrationState, decode_state, persisted_state_json_pretty};
+use crate::model::state::{
+    OrchestrationState, decode_state, decode_state_from_slice, persisted_state_json_pretty,
+};
 use crate::orchestration::SimpleConductor;
 use crate::runtime_env::load_runtime_env_files;
 
@@ -1468,7 +1469,7 @@ async fn edit_state_via_editor(
             source,
         })?;
 
-        match decode_state(&edited) {
+        match decode_state_from_slice(&edited) {
             Ok(state) => match conductor
                 .replace_resolved_state(user_ncl, machine_ncl, state, options.clone())
                 .await
@@ -1813,10 +1814,10 @@ async fn run_gc(
 
     // Load orchestration state from CAS if a pointer exists.
     let state = if let Some(sp) = &state_pointer {
-        match cas.get(*sp).await {
-            Ok(bytes) => decode_state(&bytes).unwrap_or_default(),
-            Err(CasError::NotFound(_)) => OrchestrationState::default(),
-            Err(e) => return Err(ConductorError::Cas(e)),
+        match decode_state(&cas, *sp).await {
+            Ok(state) => state,
+            Err(ConductorError::Cas(CasError::NotFound(_))) => OrchestrationState::default(),
+            Err(e) => return Err(e),
         }
     } else {
         OrchestrationState::default()

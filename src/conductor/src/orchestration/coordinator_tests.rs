@@ -405,8 +405,7 @@ async fn failure_checkpoint_persists_partial_state_and_rerun_reuses_it() {
     let state_pointer =
         state_document.state_pointer.expect("failed run should persist checkpoint pointer");
     let persisted_state =
-        decode_state(&cas.get(state_pointer).await.expect("load checkpoint bytes"))
-            .expect("decode checkpoint state");
+        decode_state(&*cas, state_pointer).await.expect("decode checkpoint state");
     assert_eq!(
         persisted_state.instances.len(),
         1,
@@ -447,7 +446,9 @@ async fn failure_checkpoint_persists_partial_state_and_rerun_reuses_it() {
     assert_eq!(summary.rematerialized_instances, 0);
 }
 
-/// Protects state-schema validation when machine state pointers reference unsupported blobs.
+/// Protects that a state with a non-current version marker is still loadable
+/// when its shape is V2-compatible (the version field is a documentation
+/// marker only in V2-only mode).
 #[tokio::test]
 async fn unsupported_state_schema_is_rejected() {
     let cas = Arc::new(InMemoryCas::new());
@@ -456,6 +457,7 @@ async fn unsupported_state_schema_is_rejected() {
     let user_path = dir.path().join("conductor.ncl");
     let machine_path = dir.path().join("conductor.machine.ncl");
 
+    // Version 0 with V2-compatible structure — accepted in V2-only mode.
     let unsupported_state = serde_json::json!({
         "version": 0,
         "instances": {}
@@ -476,12 +478,9 @@ async fn unsupported_state_schema_is_rejected() {
     .expect("write user");
 
     let result = coordinator.run_workflow(&user_path, &machine_path).await;
-    match result {
-        Err(ConductorError::Workflow(message)) => {
-            assert!(message.contains("unsupported orchestration state schema version"));
-        }
-        other => panic!("expected schema rejection, got {other:?}"),
-    }
+    let summary = result.expect("state with version 0 and V2 shape should be accepted");
+    assert_eq!(summary.executed_instances, 0);
+    assert_eq!(summary.cached_instances, 0);
 }
 
 /// Protects recovery when machine state pointers reference missing CAS blobs.

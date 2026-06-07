@@ -282,6 +282,7 @@ pub struct OrchestrationStateEnvelopeV2 {
 
 /// Isomorphism between `InstanceRefV2` and `Hash`.
 #[must_use]
+#[expect(dead_code, reason = "Available for V2 optics consumers")]
 pub fn instance_ref_v2_iso() -> IsoPrime<'static, RcBrand, InstanceRefV2, Hash> {
     IsoPrime::new(|ref_: InstanceRefV2| ref_.hash, |hash: Hash| InstanceRefV2 { hash })
 }
@@ -420,6 +421,7 @@ pub fn tool_call_instance_v2_iso()
 /// constructed with [`tool_call_instance_v2_iso`]; callers needing lazy
 /// loading must handle instance blob fetch + decode themselves.
 #[must_use]
+#[expect(dead_code, reason = "Available for V2 optics consumers")]
 pub fn orchestration_state_v2_iso() -> IsoPrime<
     'static,
     RcBrand,
@@ -475,6 +477,7 @@ pub fn decode_instance_v2(bytes: &[u8]) -> Result<ToolCallInstanceV2, ConductorE
 /// This is equivalent to `Hash::from_content(encode_instance_v2(instance)?)` but
 /// avoids a clone.
 #[must_use]
+#[allow(dead_code)]
 pub fn instance_v2_hash(instance: &ToolCallInstanceV2) -> Hash {
     // SAFETY: encoding an in-memory struct should never fail; unwrap is safe.
     let bytes = serde_json::to_vec(instance)

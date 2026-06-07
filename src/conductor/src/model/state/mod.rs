@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use mediapm_cas::Hash;
+use mediapm_cas::{CasApi, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
@@ -239,28 +239,61 @@ impl OrchestrationState {
     pub fn gc_instances(&mut self, _cutoff: ImpureTimestamp) {}
 }
 
-/// Converts runtime orchestration state into persisted wire-envelope JSON.
+/// Converts runtime orchestration state into V2 wire-envelope JSON without CAS.
 ///
-/// This helper centralizes projection into persistence shape so callers can
-/// inspect or serialize state exactly as it is stored:
-/// - top-level explicit numeric `version`,
-/// - deterministic `instances` table,
-/// - builtin metadata normalized to identity-only
-///   (`kind`/`name`/`version`),
-/// - resolved inputs persisted as hash identities only.
-///
-/// The runtime state is cloned to preserve ownership expectations for callers
-/// that still need the original value after serialization.
+/// Uses V2 types directly via optics to serialize inline instance data.
+/// This is the non-CAS path used by CLI export (state files with inline
+/// instance payloads).
 ///
 /// # Errors
 ///
-/// Returns an error when state envelope encoding fails or when the encoded
-/// payload cannot be parsed back into JSON.
+/// Returns an error when V2 type conversion or JSON serialization fails.
 pub fn persisted_state_json_value(
     state: &OrchestrationState,
 ) -> Result<serde_json::Value, ConductorError> {
-    let encoded = encode_state(state.clone())?;
-    serde_json::from_slice(&encoded).map_err(|err| ConductorError::Serialization(err.to_string()))
+    let mut instances_json = BTreeMap::new();
+    for (key, instance) in &state.instances {
+        let v2_instance = versions::v2::tool_call_instance_v2_iso().to(instance.clone());
+        let instance_value = serde_json::to_value(&v2_instance)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        instances_json.insert(key.clone(), instance_value);
+    }
+    Ok(serde_json::json!({
+        "version": versions::latest_state_version(),
+        "instances": instances_json,
+    }))
+}
+
+/// Parses a V2 inline orchestration-state JSON slice into a runtime state.
+///
+/// The input must be in the V2 inline format (instances serialized as full
+/// `ToolCallInstanceV2` values, not CAS refs). This is the non-CAS file
+/// format produced by [`persisted_state_json_value`].
+///
+/// # Errors
+///
+/// Returns an error when JSON deserialization or V2 instance conversion
+/// fails.
+pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
+    let json: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))?;
+    let instances_json =
+        json.get("instances").and_then(serde_json::Value::as_object).ok_or_else(|| {
+            ConductorError::Serialization("missing 'instances' field in state JSON".to_string())
+        })?;
+    let mut instances = BTreeMap::new();
+    for (key, instance_value) in instances_json {
+        let v2_instance: versions::v2::ToolCallInstanceV2 =
+            serde_json::from_value(instance_value.clone())
+                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        let runtime_instance = versions::v2::tool_call_instance_v2_iso().from(v2_instance);
+        instances.insert(key.clone(), runtime_instance);
+    }
+    let version = json
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(versions::latest_state_version() as u64) as u32;
+    Ok(OrchestrationState { version, instances })
 }
 
 /// Renders runtime orchestration state as pretty persisted wire-envelope JSON.
@@ -278,22 +311,32 @@ pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String,
         .map_err(|err| ConductorError::Serialization(err.to_string()))
 }
 
-/// Encodes orchestration state with latest persistence version envelope.
+/// Encodes orchestration state using V2 CAS-backed persistence.
+///
+/// Each instance is individually CAS-stored; the envelope hash is returned.
 ///
 /// # Errors
 ///
-/// Returns an error when the runtime state cannot be converted into or
-/// serialized as the latest persistence envelope.
-pub fn encode_state(state: OrchestrationState) -> Result<Vec<u8>, ConductorError> {
-    versions::encode_state(state)
+/// Returns an error when instance encoding, CAS put, or envelope
+/// serialization fails.
+pub async fn encode_state<C: CasApi>(
+    cas: &C,
+    state: OrchestrationState,
+) -> Result<Hash, ConductorError> {
+    versions::encode_state(cas, state).await
 }
 
-/// Decodes orchestration state from versioned persistence bytes.
+/// Decodes orchestration state from a CAS-backed V2 envelope pointer.
+///
+/// Reads envelope and individual instance blobs from CAS.
 ///
 /// # Errors
 ///
-/// Returns an error when version dispatch, migration, or envelope
-/// deserialization fails.
-pub fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
-    versions::decode_state(bytes)
+/// Returns an error when CAS get, envelope deserialization, or instance
+/// decode fails.
+pub async fn decode_state<C: CasApi>(
+    cas: &C,
+    pointer: Hash,
+) -> Result<OrchestrationState, ConductorError> {
+    versions::decode_state(cas, pointer).await
 }

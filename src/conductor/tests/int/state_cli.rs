@@ -10,8 +10,8 @@ use mediapm_cas::Hash;
 use mediapm_conductor::cli::run_from_argv;
 use mediapm_conductor::{
     MachineNickelDocument, OutputCaptureSpec, ResolvedInputKey, ToolKindSpec, ToolOutputSpec,
-    ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec, decode_state,
-    encode_machine_document, encode_state, encode_user_document,
+    ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec, decode_state_from_slice,
+    encode_machine_document, encode_user_document, persisted_state_json_pretty,
 };
 use tempfile::tempdir;
 
@@ -163,7 +163,7 @@ async fn state_export_writes_decodable_state_json() {
     .expect("state export should succeed");
 
     let exported_bytes = std::fs::read(&export_path).expect("read exported state");
-    let exported = decode_state(&exported_bytes).expect("decode exported state json");
+    let exported = decode_state_from_slice(&exported_bytes).expect("decode exported state json");
     assert_eq!(exported.instances.len(), 1);
 }
 
@@ -199,8 +199,9 @@ async fn state_import_rejects_unknown_tool_reference() {
     .await
     .expect("state export should succeed");
 
-    let mut invalid_state = decode_state(&std::fs::read(&state_path).expect("read exported state"))
-        .expect("decode exported state");
+    let mut invalid_state =
+        decode_state_from_slice(&std::fs::read(&state_path).expect("read exported state"))
+            .expect("decode exported state");
     let first_key = invalid_state
         .instances
         .keys()
@@ -209,8 +210,11 @@ async fn state_import_rejects_unknown_tool_reference() {
         .expect("exported state should contain one instance");
     invalid_state.instances.get_mut(&first_key).expect("instance should exist").tool_name =
         "missing@1.0.0".to_string();
-    std::fs::write(&state_path, encode_state(invalid_state).expect("encode invalid state"))
-        .expect("write invalid state");
+    std::fs::write(
+        &state_path,
+        persisted_state_json_pretty(&invalid_state).expect("encode invalid state"),
+    )
+    .expect("write invalid state");
 
     let error = run_from_argv(cli_argv_with_paths(
         &user_path,
@@ -258,11 +262,15 @@ async fn state_import_accepts_valid_modified_state_snapshot() {
     .await
     .expect("state export should succeed");
 
-    let mut imported = decode_state(&std::fs::read(&export_path).expect("read exported state"))
-        .expect("decode exported state");
+    let mut imported =
+        decode_state_from_slice(&std::fs::read(&export_path).expect("read exported state"))
+            .expect("decode exported state");
     imported.instances.clear();
-    std::fs::write(&import_path, encode_state(imported).expect("encode modified state"))
-        .expect("write modified import state");
+    std::fs::write(
+        &import_path,
+        persisted_state_json_pretty(&imported).expect("encode modified state"),
+    )
+    .expect("write modified import state");
 
     run_from_argv(cli_argv_with_paths(
         &user_path,
@@ -284,8 +292,9 @@ async fn state_import_accepts_valid_modified_state_snapshot() {
     .await
     .expect("state re-export should succeed after import");
 
-    let reexported = decode_state(&std::fs::read(&reexport_path).expect("read re-exported state"))
-        .expect("decode re-exported state");
+    let reexported =
+        decode_state_from_slice(&std::fs::read(&reexport_path).expect("read re-exported state"))
+            .expect("decode re-exported state");
     assert!(reexported.instances.is_empty());
 }
 
@@ -381,8 +390,9 @@ async fn state_import_rejects_unknown_output_reference() {
     .await
     .expect("state export should succeed");
 
-    let mut invalid_state = decode_state(&std::fs::read(&state_path).expect("read exported state"))
-        .expect("decode exported state");
+    let mut invalid_state =
+        decode_state_from_slice(&std::fs::read(&state_path).expect("read exported state"))
+            .expect("decode exported state");
     let first_key = invalid_state
         .instances
         .keys()
@@ -404,8 +414,11 @@ async fn state_import_rejects_unknown_output_reference() {
             allow_empty_capture: false,
         },
     );
-    std::fs::write(&state_path, encode_state(invalid_state).expect("encode invalid state"))
-        .expect("write invalid state");
+    std::fs::write(
+        &state_path,
+        persisted_state_json_pretty(&invalid_state).expect("encode invalid state"),
+    )
+    .expect("write invalid state");
 
     let error = run_from_argv(cli_argv_with_paths(
         &user_path,
@@ -451,8 +464,9 @@ async fn state_import_rejects_unknown_input_reference() {
     .await
     .expect("state export should succeed");
 
-    let mut invalid_state = decode_state(&std::fs::read(&state_path).expect("read exported state"))
-        .expect("decode exported state");
+    let mut invalid_state =
+        decode_state_from_slice(&std::fs::read(&state_path).expect("read exported state"))
+            .expect("decode exported state");
     let first_key = invalid_state
         .instances
         .keys()
@@ -463,8 +477,11 @@ async fn state_import_rejects_unknown_input_reference() {
         "rogue_input".to_string(),
         ResolvedInputKey { hash: Hash::from_content(b"rogue-input") },
     );
-    std::fs::write(&state_path, encode_state(invalid_state).expect("encode invalid state"))
-        .expect("write invalid state");
+    std::fs::write(
+        &state_path,
+        persisted_state_json_pretty(&invalid_state).expect("encode invalid state"),
+    )
+    .expect("write invalid state");
 
     let error = run_from_argv(cli_argv_with_paths(
         &user_path,
@@ -545,9 +562,10 @@ async fn state_invalidate_tool_call_removes_existing_instance() {
     .await
     .expect("state export before invalidation should succeed");
 
-    let exported_before =
-        decode_state(&std::fs::read(&export_before_path).expect("read pre-invalidation export"))
-            .expect("decode pre-invalidation export");
+    let exported_before = decode_state_from_slice(
+        &std::fs::read(&export_before_path).expect("read pre-invalidation export"),
+    )
+    .expect("decode pre-invalidation export");
     let instance_id = exported_before
         .instances
         .keys()
@@ -575,9 +593,10 @@ async fn state_invalidate_tool_call_removes_existing_instance() {
     .await
     .expect("state export after invalidation should succeed");
 
-    let exported_after =
-        decode_state(&std::fs::read(&export_after_path).expect("read post-invalidation export"))
-            .expect("decode post-invalidation export");
+    let exported_after = decode_state_from_slice(
+        &std::fs::read(&export_after_path).expect("read post-invalidation export"),
+    )
+    .expect("decode post-invalidation export");
     assert!(
         !exported_after.instances.contains_key(&instance_id),
         "invalidated instance id should no longer exist in state"

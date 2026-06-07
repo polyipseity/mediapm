@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConductorError;
 use crate::model::config::{MachineNickelDocument, ToolKindSpec};
 use crate::model::state::{
-    OrchestrationState, decode_state, encode_state, persisted_state_json_pretty,
+    OrchestrationState, decode_state_from_slice, persisted_state_json_pretty,
 };
 #[cfg(feature = "tool-presets")]
 pub use crate::tools::{
@@ -800,8 +800,7 @@ pub trait ConductorApi: Send + Sync {
             source,
         })?;
 
-        let encoded = encode_state(state)?;
-        Ok(Hash::from_content(&encoded))
+        Ok(Hash::from_content(rendered.as_bytes()))
     }
 
     /// Imports orchestration state from one JSON file and publishes it through
@@ -824,7 +823,7 @@ pub trait ConductorApi: Send + Sync {
             path: input_path.to_path_buf(),
             source,
         })?;
-        let state = decode_state(&bytes)?;
+        let state = decode_state_from_slice(&bytes)?;
         self.replace_resolved_state(user_ncl, machine_ncl, state, options).await
     }
 

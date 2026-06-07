@@ -202,10 +202,10 @@ where
             return Ok(self.current_state.clone());
         }
         if let Some(pointer) = state_pointer {
-            match self.cas.get(pointer).await {
-                Ok(bytes) => decode_state(&bytes),
-                Err(CasError::NotFound(_)) => Ok(self.current_state.clone()),
-                Err(other) => Err(ConductorError::Cas(other)),
+            match decode_state(&*self.cas, pointer).await {
+                Ok(state) => Ok(state),
+                Err(ConductorError::Cas(CasError::NotFound(_))) => Ok(self.current_state.clone()),
+                Err(other) => Err(other),
             }
         } else {
             Ok(self.current_state.clone())
@@ -264,10 +264,9 @@ where
         Ok(pointer)
     }
 
-    /// Serializes one orchestration state snapshot into CAS.
+    /// Serializes one orchestration state snapshot into CAS using V2 format.
     async fn persist_state_blob(&self, state: &OrchestrationState) -> Result<Hash, ConductorError> {
-        let encoded = encode_state(state.clone())?;
-        self.cas.put(encoded).await.map_err(ConductorError::from)
+        encode_state(&*self.cas, state.clone()).await
     }
 
     /// Deletes unsaved outputs that are no longer referenced by state or merged config.
