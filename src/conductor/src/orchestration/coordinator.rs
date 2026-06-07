@@ -1116,16 +1116,14 @@ where
             fallback_used: _,
         } = result;
 
-        // Mark the instance as referenced from GC roots and refresh its
-        // last_reachable timestamp so GC will not evict it.
+        // Mark the instance as referenced from GC roots and initialise its
+        // last_unreachable timestamp on first creation so GC will not evict
+        // it immediately if it becomes unreferenced.
         state.referenced_instance_keys.insert(instance_key.clone());
-        {
-            let aux_data = state
-                .aux
-                .entry(instance_key.clone())
-                .or_insert(AuxData { last_reachable: ImpureTimestamp::now() });
-            aux_data.last_reachable = ImpureTimestamp::now();
-        }
+        state
+            .aux
+            .entry(instance_key.clone())
+            .or_insert(AuxData { last_unreachable: ImpureTimestamp::now() });
 
         let entry = state.instances.entry(instance_key.clone());
         let final_instance = match entry {

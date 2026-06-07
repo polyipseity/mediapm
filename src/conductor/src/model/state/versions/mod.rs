@@ -156,11 +156,11 @@ pub(crate) async fn decode_state<C: CasApi>(
 
             // Ensure every instance has an aux entry. Old state predating
             // the aux envelope may lack entries entirely. The bridge above
-            // already injects now() for any last_reachable: None, so only
+            // already injects now() for any last_unreachable: None, so only
             // completely missing entries need handling here.
             let now = ImpureTimestamp::now();
             for key in instances.keys() {
-                aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
+                aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
             }
 
             Ok(OrchestrationState {
@@ -201,7 +201,7 @@ pub(crate) async fn decode_state<C: CasApi>(
             // None). Completely missing entries are initialized here.
             let now = ImpureTimestamp::now();
             for key in instances.keys() {
-                aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
+                aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
             }
 
             // Return with latest version marker — re-persisting will

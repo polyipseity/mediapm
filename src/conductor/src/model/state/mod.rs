@@ -217,14 +217,16 @@ pub struct ToolCallInstance {
 
 /// Runtime auxiliary metadata for one tool-call instance.
 ///
-/// `last_reachable` is guaranteed non-null at the type level — the decode
+/// `last_unreachable` is guaranteed non-null at the type level — the decode
 /// path injects `now()` for any instance that lacks a value, and all
 /// runtime construction paths provide a value directly. This eliminates
 /// `None`-checking from GC and other runtime logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuxData {
-    /// When this instance was last confirmed reachable from GC roots.
-    pub last_reachable: ImpureTimestamp,
+    /// When this instance was determined unreachable (start of its TTL clock
+    /// for GC eviction). Set at creation time or when GC first notices an
+    /// unreferenced instance without an aux entry.
+    pub last_unreachable: ImpureTimestamp,
 }
 
 /// Immutable orchestration-state value stored as a CAS blob.
@@ -244,7 +246,7 @@ pub struct OrchestrationState {
     /// Instance keys referenced by the current planning pass.
     ///
     /// Populated during planning by the coordinator. Instances in this set
-    /// are never evicted by GC regardless of `last_reachable`.
+    /// are never evicted by GC regardless of `last_unreachable`.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub referenced_instance_keys: HashSet<String>,
 }
@@ -266,12 +268,12 @@ impl OrchestrationState {
     /// ## Semantics
     ///
     /// 1. **Reachability is primary**: instances in `referenced_instance_keys`
-    ///    are never evicted regardless of their `last_reachable` value.
-    /// 2. **Unreferenced instances** without `last_reachable` get it initialised
+    ///    are never evicted regardless of their `last_unreachable` value.
+    /// 2. **Unreferenced instances** without `last_unreachable` get it initialised
     ///    to `now` (TTL clock starts when GC first notices them).
-    /// 3. **Unreferenced instances** whose `last_reachable < cutoff` are evicted,
+    /// 3. **Unreferenced instances** whose `last_unreachable < cutoff` are evicted,
     ///    along with their `aux` metadata.
-    /// 4. **Unreferenced instances** with `last_reachable >= cutoff` (or `None`
+    /// 4. **Unreferenced instances** with `last_unreachable >= cutoff` (or `None`
     ///    before this pass runs) are preserved until a subsequent pass.
     pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
         let now = ImpureTimestamp::now();
@@ -281,7 +283,7 @@ impl OrchestrationState {
             if self.referenced_instance_keys.contains(key) {
                 continue;
             }
-            self.aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
+            self.aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
         }
         // Phase 2: evict unreferenced instances past the cutoff.
         let evict_keys: Vec<String> = self
@@ -291,7 +293,7 @@ impl OrchestrationState {
                 if self.referenced_instance_keys.contains(*key) {
                     return false;
                 }
-                self.aux.get(*key).is_some_and(|a| a.last_reachable < cutoff)
+                self.aux.get(*key).is_some_and(|a| a.last_unreachable < cutoff)
             })
             .cloned()
             .collect();
@@ -385,11 +387,11 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         .unwrap_or_default();
 
     // Ensure every instance has an aux entry. The bridge above injects
-    // now() for any last_reachable: None in the input, so only completely
+    // now() for any last_unreachable: None in the input, so only completely
     // missing entries need handling here.
     let now = ImpureTimestamp::now();
     for key in instances.keys() {
-        aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
+        aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
     }
 
     Ok(OrchestrationState { version, instances, aux, referenced_instance_keys: HashSet::new() })

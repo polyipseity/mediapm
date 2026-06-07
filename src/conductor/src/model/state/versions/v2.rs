@@ -307,7 +307,7 @@ pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::
             // or instances created before the non-null guarantee may carry
             // last_reachable: None on the wire. Decode is the only boundary
             // where None is handled; the runtime type is non-optional.
-            last_reachable: match versioned.last_reachable {
+            last_unreachable: match versioned.last_reachable {
                 Some(ts) => crate::model::config::ImpureTimestamp {
                     epoch_seconds: ts.epoch_seconds,
                     subsec_nanos: ts.subsec_nanos,
@@ -317,8 +317,8 @@ pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::
         },
         |runtime: crate::model::state::AuxData| AuxDataV2 {
             last_reachable: Some(ImpureTimestampV2 {
-                epoch_seconds: runtime.last_reachable.epoch_seconds,
-                subsec_nanos: runtime.last_reachable.subsec_nanos,
+                epoch_seconds: runtime.last_unreachable.epoch_seconds,
+                subsec_nanos: runtime.last_unreachable.subsec_nanos,
             }),
         },
     )
