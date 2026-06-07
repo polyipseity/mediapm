@@ -2,8 +2,6 @@
 
 use std::collections::BTreeMap;
 
-use unicode_normalization::UnicodeNormalization;
-
 use crate::config::{
     FlattenedHierarchyEntry, HierarchyEntry, HierarchyEntryKind, MediaPmDocument, PlaylistFormat,
 };
@@ -16,7 +14,7 @@ use super::{MaterializationLookupContext, RenderedPlaylistItem};
 /// Collects effective hierarchy-id -> hierarchy media-path mappings.
 pub(super) fn collect_playlist_media_index(
     flattened_hierarchy: &[FlattenedHierarchyEntry],
-) -> Result<BTreeMap<String, String>, MediaPmError> {
+) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
     let mut index = BTreeMap::new();
 
     for flattened_entry in flattened_hierarchy {
@@ -28,13 +26,15 @@ pub(super) fn collect_playlist_media_index(
             continue;
         };
 
-        if let Some(previous_path) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path.clone())
-            && previous_path != flattened_entry.path
+        if let Some(previous_path_components) =
+            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
+            && previous_path_components != flattened_entry.path_components
         {
             return Err(MediaPmError::Workflow(format!(
                 "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
-                hierarchy_id, previous_path, flattened_entry.path
+                hierarchy_id,
+                previous_path_components.join("/"),
+                flattened_entry.path_str()
             )));
         }
     }
@@ -76,7 +76,7 @@ pub(super) fn collect_media_entries_by_id(
 pub(super) async fn resolve_playlist_media_target_relative_path(
     document: &MediaPmDocument,
     lookup: &MaterializationLookupContext,
-    media_path_template: &str,
+    path_components: &[String],
     requested_id: &str,
     media_entries_by_id: &BTreeMap<String, HierarchyEntry>,
     cache: &mut BTreeMap<String, String>,
@@ -97,13 +97,9 @@ pub(super) async fn resolve_playlist_media_target_relative_path(
         ))
     })?;
 
-    let resolved =
-        resolve_hierarchy_relative_path(media_path_template, entry, source, lookup).await?;
-    if resolved.ends_with('/') || resolved.ends_with('\\') {
-        return Err(MediaPmError::Workflow(format!(
-            "playlist resolution for hierarchy path '{media_path_template}' requires file hierarchy target, but '{resolved}' is a directory path"
-        )));
-    }
+    let resolved_components =
+        resolve_hierarchy_relative_path(path_components, entry, source, lookup).await?;
+    let resolved = resolved_components.join("/");
 
     cache.insert(requested_id.to_string(), resolved.clone());
     Ok(resolved)
@@ -153,16 +149,6 @@ pub(super) fn join_relative_paths(base: &str, child: &str) -> String {
     } else {
         format!("{normalized_base}/{normalized_child}")
     }
-}
-
-/// Normalizes one resolved hierarchy relative path to Unicode NFD form.
-///
-/// This is applied after full placeholder/template expansion so runtime path
-/// materialization remains macOS-compatible even when metadata/media-id values
-/// contain NFC-composed characters.
-#[must_use]
-pub(super) fn normalize_resolved_hierarchy_path_to_nfd(relative_path: &str) -> String {
-    relative_path.nfd().collect::<String>()
 }
 
 /// Renders absolute playlist path text from one library-relative target path.
