@@ -38,6 +38,7 @@ use crate::model::config::{
 use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
 use crate::tool_cache::ToolContentCache;
+use tokio::sync::Semaphore;
 
 use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor};
 use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
@@ -808,6 +809,20 @@ where
             Pin<Box<dyn Future<Output = StepCompletionEvent> + Send>>,
         > = FuturesUnordered::new();
 
+        // Build per-tool semaphores from max_concurrent_calls config.
+        let tool_semaphores: BTreeMap<&str, Option<Arc<Semaphore>>> = unified
+            .tools
+            .iter()
+            .map(|(name, spec)| {
+                let sem = if spec.max_concurrent_calls > 0 {
+                    Some(Arc::new(Semaphore::new(spec.max_concurrent_calls as usize)))
+                } else {
+                    None // -1 means unlimited
+                };
+                (name.as_str(), sem)
+            })
+            .collect();
+
         // Seed ready queue with zero-indegree steps from all workflows.
         for (wf_name, dep_state) in &dep_states {
             for (step_id, count) in &dep_state.remaining_deps {
@@ -820,58 +835,95 @@ where
         loop {
             // Submit ready steps to workers with available capacity.
             let max_submit = worker_count.saturating_sub(in_flight.len());
+
+            // Track whether any step was dispatched during this submit window.
+            let mut dispatched = false;
             for _ in 0..max_submit {
-                let Some((wf_name, step_id)) = global_ready_queue.pop_front() else {
+                // Scan the ready queue for a step whose tool has capacity.
+                let mut dispatched_this_scan = false;
+                let scan_len = global_ready_queue.len();
+                for _ in 0..scan_len {
+                    let Some((wf_name, step_id)) = global_ready_queue.pop_front() else {
+                        break;
+                    };
+
+                    let Some(dep_state) = dep_states.get(&wf_name) else {
+                        continue;
+                    };
+                    let Some(step_spec) = dep_state.steps.get(&step_id) else {
+                        continue;
+                    };
+
+                    // Check tool concurrency: acquire a semaphore permit if the tool
+                    // has a max_concurrent_calls limit. Re-queue the step if at capacity.
+                    let sem_for_tool =
+                        tool_semaphores.get(step_spec.tool.as_str()).and_then(|s| s.as_ref());
+                    let permit = match sem_for_tool {
+                        Some(sem) => match sem.clone().try_acquire_owned() {
+                            Ok(p) => Some(p),
+                            Err(_) => {
+                                // Tool at capacity — re-queue and try next step.
+                                global_ready_queue.push_back((wf_name, step_id));
+                                continue;
+                            }
+                        },
+                        None => None, // unlimited concurrency
+                    };
+
+                    let required_output_names =
+                        dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
+                    let step_outputs = Arc::clone(&dep_state.step_outputs);
+                    let impure_timestamp = all_impure_timestamps
+                        .get(&wf_name)
+                        .and_then(|ts| ts.get(&step_id))
+                        .copied()
+                        .flatten();
+
+                    let request = StepExecutionRequest {
+                        unified: unified_shared.clone(),
+                        step: step_spec.clone(),
+                        impure_timestamp,
+                        workflow_name: wf_name.clone(),
+                        state_snapshot: state_snapshot.clone(),
+                        outermost_config_dir: outermost_config_dir.to_path_buf(),
+                        conductor_tmp_dir: conductor_tmp_dir.to_path_buf(),
+                        step_outputs,
+                        required_output_names,
+                    };
+
+                    let worker_index = next_worker % worker_count;
+                    next_worker = next_worker.saturating_add(1);
+                    let worker = self.workers[worker_index].clone();
+                    let cas = self.cas.clone();
+                    let tool_cache = self.tool_cache.clone().ok_or_else(|| {
+                        ConductorError::Internal(
+                            "tool cache must be initialized before executing steps".to_string(),
+                        )
+                    })?;
+
+                    in_flight.push(Box::pin(async move {
+                        let _permit = permit; // held until future completes
+                        Self::dispatch_step_rpc_with_fallback(
+                            worker,
+                            cas,
+                            tool_cache,
+                            request,
+                            wf_name,
+                            step_id,
+                            worker_index,
+                        )
+                        .await
+                    }));
+                    dispatched = true;
+                    dispatched_this_scan = true;
                     break;
-                };
-
-                let Some(dep_state) = dep_states.get(&wf_name) else {
-                    continue;
-                };
-                let Some(step_spec) = dep_state.steps.get(&step_id) else {
-                    continue;
-                };
-
-                let required_output_names =
-                    dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
-                let step_outputs = Arc::clone(&dep_state.step_outputs);
-                let impure_timestamp = all_impure_timestamps
-                    .get(&wf_name)
-                    .and_then(|ts| ts.get(&step_id))
-                    .copied()
-                    .flatten();
-
-                let request = StepExecutionRequest {
-                    unified: unified_shared.clone(),
-                    step: step_spec.clone(),
-                    impure_timestamp,
-                    workflow_name: wf_name.clone(),
-                    state_snapshot: state_snapshot.clone(),
-                    outermost_config_dir: outermost_config_dir.to_path_buf(),
-                    conductor_tmp_dir: conductor_tmp_dir.to_path_buf(),
-                    step_outputs,
-                    required_output_names,
-                };
-
-                let worker_index = next_worker % worker_count;
-                next_worker = next_worker.saturating_add(1);
-                let worker = self.workers[worker_index].clone();
-                let cas = self.cas.clone();
-                let tool_cache = self.tool_cache.clone().ok_or_else(|| {
-                    ConductorError::Internal(
-                        "tool cache must be initialized before executing steps".to_string(),
-                    )
-                })?;
-
-                in_flight.push(Box::pin(Self::dispatch_step_rpc_with_fallback(
-                    worker,
-                    cas,
-                    tool_cache,
-                    request,
-                    wf_name,
-                    step_id,
-                    worker_index,
-                )));
+                }
+                if !dispatched_this_scan {
+                    break;
+                }
+            }
+            if !dispatched && in_flight.is_empty() {
+                break;
             }
 
             if in_flight.is_empty() {
