@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, HashSet};
 use mediapm_cas::{CasApi, Hash};
 
 use crate::error::ConductorError;
-use crate::model::state::OrchestrationState;
+use crate::model::config::ImpureTimestamp;
+use crate::model::state::{AuxData, OrchestrationState};
 
 #[expect(dead_code, reason = "Preserved V1 wire format with ISO bridges for migration/audit")]
 pub(crate) mod v1;
@@ -147,11 +148,24 @@ pub(crate) async fn decode_state<C: CasApi>(
                 instances.insert(key, instance);
             }
 
-            let aux = envelope
+            let mut aux: BTreeMap<String, AuxData> = envelope
                 .aux
                 .into_iter()
                 .map(|(key, aux_data)| (key, v2::aux_data_v2_iso().from(aux_data)))
                 .collect();
+
+            // Ensure every instance has an aux entry with a non-None
+            // last_reachable. Old state predating the aux envelope may lack
+            // entries entirely; newer state may carry last_reachable=None on
+            // instances added before the deserialization guarantee was
+            // established.
+            let now = ImpureTimestamp::now();
+            for key in instances.keys() {
+                let entry = aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
+                if entry.last_reachable.is_none() {
+                    entry.last_reachable = Some(now);
+                }
+            }
 
             Ok(OrchestrationState {
                 version: envelope.version,
@@ -169,7 +183,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                     .map_err(|e| ConductorError::Serialization(e.to_string()))?;
 
             let mut instances = BTreeMap::new();
-            let mut aux = BTreeMap::new();
+            let mut aux: BTreeMap<String, AuxData> = BTreeMap::new();
             for (key, v1_instance) in envelope.instances {
                 // Bridge last_used from V1 into aux before the instance is
                 // consumed by the ISO bridge.
@@ -184,6 +198,17 @@ pub(crate) async fn decode_state<C: CasApi>(
                 let v2_instance = v1::tool_call_instance_v1_v2_iso().from(v1_instance);
                 let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
                 instances.insert(key, instance);
+            }
+
+            // Ensure every instance — including V1 instances without
+            // last_used — gets a non-None last_reachable timestamp so GC
+            // never encounters a bare None entry.
+            let now = ImpureTimestamp::now();
+            for key in instances.keys() {
+                let entry = aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
+                if entry.last_reachable.is_none() {
+                    entry.last_reachable = Some(now);
+                }
             }
 
             // Return with latest version marker — re-persisting will

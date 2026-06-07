@@ -211,11 +211,14 @@ where
 
     /// Lazily spawns the CAS-backed orchestration state-store actor.
     ///
-    /// Instance GC TTL starts as `None` (disabled) until the first config
-    /// load sets it via `StateStoreClient::set_instance_ttl`.
+    /// Instance GC TTL starts at the 7-day default until the first config
+    /// load potentially overrides it via `StateStoreClient::set_instance_ttl`.
     async fn ensure_state_store(&mut self) -> Result<(), ConductorError> {
         if self.state_store.is_none() {
-            self.state_store = Some(spawn_state_store_actor(self.cas.clone(), None).await?);
+            self.state_store = Some(
+                spawn_state_store_actor(self.cas.clone(), Some(DEFAULT_INSTANCE_TTL_SECONDS))
+                    .await?,
+            );
         }
         Ok(())
     }

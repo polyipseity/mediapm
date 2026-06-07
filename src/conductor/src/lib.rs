@@ -41,7 +41,7 @@ pub use model::config::{
     encode_user_document, evaluate_total_configuration_sources,
 };
 pub use model::state::{
-    OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
+    AuxData, OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
     ResolvedInputKey, ToolCallInstance, decode_state, decode_state_from_slice, encode_state,
     merge_persistence_flags, persisted_state_json_pretty, persisted_state_json_value,
 };

@@ -220,9 +220,10 @@ pub struct ToolCallInstance {
 pub struct AuxData {
     /// When this instance was last confirmed reachable from GC roots.
     ///
-    /// `None` means the instance has not been tracked yet (pre-GC state from
-    /// older versions). Such instances are preserved as a safety net until
-    /// the next GC cycle marks them.
+    /// At rest after deserialization this is always `Some(…)` — the decode
+    /// path inserts `now()` for any instance that lacks an entry. `None`
+    /// values still exist at the type level for the brief window during
+    /// construction and as a safety net in `gc_instances()`.
     #[serde(default)]
     pub last_reachable: Option<ImpureTimestamp>,
 }
