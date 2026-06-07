@@ -162,7 +162,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
 
     use mediapm_cas::InMemoryCas;
     use tempfile::tempdir;
@@ -261,6 +261,8 @@ mod tests {
                     )]),
                 },
             )]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let pointer = conductor
@@ -308,6 +310,8 @@ mod tests {
                     outputs: BTreeMap::new(),
                 },
             )]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let error = conductor

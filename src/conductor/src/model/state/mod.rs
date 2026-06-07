@@ -3,7 +3,7 @@
 //! Runtime structs in this module are version-agnostic. Persisted representation
 //! is handled by `versions/` modules and bridged through fp-library optics.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, Hash};
@@ -215,6 +215,18 @@ pub struct ToolCallInstance {
     pub outputs: BTreeMap<String, OutputRef>,
 }
 
+/// Runtime auxiliary metadata for one tool-call instance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuxData {
+    /// When this instance was last confirmed reachable from GC roots.
+    ///
+    /// `None` means the instance has not been tracked yet (pre-GC state from
+    /// older versions). Such instances are preserved as a safety net until
+    /// the next GC cycle marks them.
+    #[serde(default)]
+    pub last_reachable: Option<ImpureTimestamp>,
+}
+
 /// Immutable orchestration-state value stored as a CAS blob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchestrationState {
@@ -226,11 +238,25 @@ pub struct OrchestrationState {
     /// Deterministic instance table keyed by derived instance key.
     #[serde(default)]
     pub instances: BTreeMap<String, ToolCallInstance>,
+    /// Envelope-level auxiliary metadata keyed by instance key.
+    #[serde(default)]
+    pub aux: BTreeMap<String, AuxData>,
+    /// Instance keys referenced by the current planning pass.
+    ///
+    /// Populated during planning by the coordinator. Instances in this set
+    /// are never evicted by GC regardless of `last_reachable`.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub referenced_instance_keys: HashSet<String>,
 }
 
 impl Default for OrchestrationState {
     fn default() -> Self {
-        Self { version: versions::latest_state_version(), instances: BTreeMap::new() }
+        Self {
+            version: versions::latest_state_version(),
+            instances: BTreeMap::new(),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
+        }
     }
 }
 
@@ -258,9 +284,20 @@ pub fn persisted_state_json_value(
             .map_err(|e| ConductorError::Serialization(e.to_string()))?;
         instances_json.insert(key.clone(), instance_value);
     }
+    let aux_json = state
+        .aux
+        .iter()
+        .map(|(key, aux)| {
+            let v2_aux = versions::v2::aux_data_v2_iso().to(aux.clone());
+            let value = serde_json::to_value(&v2_aux)
+                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+            Ok((key.clone(), value))
+        })
+        .collect::<Result<BTreeMap<_, _>, ConductorError>>()?;
     Ok(serde_json::json!({
         "version": versions::latest_state_version(),
         "instances": instances_json,
+        "aux": aux_json,
     }))
 }
 
@@ -293,7 +330,23 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(versions::latest_state_version() as u64) as u32;
-    Ok(OrchestrationState { version, instances })
+    let aux = json
+        .get("aux")
+        .and_then(serde_json::Value::as_object)
+        .map(|aux_obj| {
+            aux_obj
+                .iter()
+                .map(|(key, aux_value)| {
+                    let v2_aux: versions::v2::AuxDataV2 = serde_json::from_value(aux_value.clone())
+                        .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+                    let runtime_aux = versions::v2::aux_data_v2_iso().from(v2_aux);
+                    Ok((key.clone(), runtime_aux))
+                })
+                .collect::<Result<BTreeMap<_, _>, ConductorError>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    Ok(OrchestrationState { version, instances, aux, referenced_instance_keys: HashSet::new() })
 }
 
 /// Renders runtime orchestration state as pretty persisted wire-envelope JSON.

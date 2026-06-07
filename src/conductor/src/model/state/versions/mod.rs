@@ -13,7 +13,7 @@
 //!   never `versions::vX` directly.
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use mediapm_cas::{CasApi, Hash};
 
@@ -48,6 +48,8 @@ mod latest {
     pub(super) type ImpureTimestamp = super::v2::ImpureTimestampV2;
     #[expect(dead_code)]
     pub(super) type BuiltinMetadataKind = super::v2::BuiltinMetadataKindV2;
+    #[expect(dead_code)]
+    pub(super) type AuxData = super::v2::AuxDataV2;
 
     #[expect(dead_code)]
     pub(super) const fn is_version(marker: u32) -> bool {
@@ -81,7 +83,16 @@ pub(crate) async fn encode_state<C: CasApi>(
         instance_refs.insert(key, v2::InstanceRefV2 { hash });
     }
 
-    let envelope = latest::Envelope { version: latest::VERSION, instances: instance_refs };
+    let aux = state
+        .aux
+        .into_iter()
+        .map(|(key, aux_data)| {
+            let v2_aux = v2::aux_data_v2_iso().to(aux_data);
+            (key, v2_aux)
+        })
+        .collect();
+
+    let envelope = latest::Envelope { version: latest::VERSION, instances: instance_refs, aux };
 
     let envelope_bytes =
         serde_json::to_vec(&envelope).map_err(|e| ConductorError::Serialization(e.to_string()))?;
@@ -136,7 +147,18 @@ pub(crate) async fn decode_state<C: CasApi>(
                 instances.insert(key, instance);
             }
 
-            Ok(OrchestrationState { version: envelope.version, instances })
+            let aux = envelope
+                .aux
+                .into_iter()
+                .map(|(key, aux_data)| (key, v2::aux_data_v2_iso().from(aux_data)))
+                .collect();
+
+            Ok(OrchestrationState {
+                version: envelope.version,
+                instances,
+                aux,
+                referenced_instance_keys: HashSet::new(),
+            })
         }
         v1::ORCHESTRATION_STATE_VERSION_V1 => {
             // V1 path: envelope stores inline instances. Each V1 instance
@@ -147,7 +169,18 @@ pub(crate) async fn decode_state<C: CasApi>(
                     .map_err(|e| ConductorError::Serialization(e.to_string()))?;
 
             let mut instances = BTreeMap::new();
+            let mut aux = BTreeMap::new();
             for (key, v1_instance) in envelope.instances {
+                // Bridge last_used from V1 into aux before the instance is
+                // consumed by the ISO bridge.
+                let last_used = v1_instance.last_used;
+                if let Some(ts) = last_used {
+                    let v2_ts = v1::impure_timestamp_v1_v2_iso().from(ts);
+                    aux.insert(
+                        key.clone(),
+                        v2::aux_data_v2_iso().from(v2::AuxDataV2 { last_reachable: Some(v2_ts) }),
+                    );
+                }
                 let v2_instance = v1::tool_call_instance_v1_v2_iso().from(v1_instance);
                 let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
                 instances.insert(key, instance);
@@ -155,7 +188,12 @@ pub(crate) async fn decode_state<C: CasApi>(
 
             // Return with latest version marker — re-persisting will
             // produce a V2 envelope, self-healing the migration.
-            Ok(OrchestrationState { version: latest::VERSION, instances })
+            Ok(OrchestrationState {
+                version: latest::VERSION,
+                instances,
+                aux,
+                referenced_instance_keys: HashSet::new(),
+            })
         }
         other => Err(ConductorError::Workflow(format!(
             "unsupported orchestration-state version: {other}"
@@ -220,6 +258,7 @@ mod tests {
                 "instance-a".to_string(),
                 v2::InstanceRefV2 { hash: hash_a },
             )]),
+            aux: BTreeMap::new(),
         };
 
         let encoded = serde_json::to_vec(&envelope).expect("envelope should serialize");
@@ -236,6 +275,7 @@ mod tests {
         let envelope = v2::OrchestrationStateEnvelopeV2 {
             version: v2::ORCHESTRATION_STATE_VERSION_V2,
             instances: BTreeMap::new(),
+            aux: BTreeMap::new(),
         };
 
         let encoded = serde_json::to_vec(&envelope).expect("empty envelope should serialize");

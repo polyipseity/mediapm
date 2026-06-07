@@ -152,6 +152,14 @@ pub struct InstanceRefV2 {
     pub hash: Hash,
 }
 
+/// V2 envelope-level auxiliary metadata for one tool-call instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuxDataV2 {
+    /// When this instance was last confirmed reachable from GC roots.
+    #[serde(default)]
+    pub last_reachable: Option<ImpureTimestampV2>,
+}
+
 /// Builtin metadata kind marker used by orchestration-state V2 wire format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -274,6 +282,9 @@ pub struct OrchestrationStateEnvelopeV2 {
     /// Deterministic instance table of CAS refs.
     #[serde(default)]
     pub instances: BTreeMap<String, InstanceRefV2>,
+    /// Envelope-level auxiliary metadata keyed by instance key.
+    #[serde(default)]
+    pub aux: BTreeMap<String, AuxDataV2>,
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +296,27 @@ pub struct OrchestrationStateEnvelopeV2 {
 #[expect(dead_code, reason = "Available for V2 optics consumers")]
 pub fn instance_ref_v2_iso() -> IsoPrime<'static, RcBrand, InstanceRefV2, Hash> {
     IsoPrime::new(|ref_: InstanceRefV2| ref_.hash, |hash: Hash| InstanceRefV2 { hash })
+}
+
+/// Isomorphism between `AuxDataV2` and runtime `crate::model::state::AuxData`.
+#[must_use]
+pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::state::AuxData> {
+    IsoPrime::new(
+        |versioned: AuxDataV2| crate::model::state::AuxData {
+            last_reachable: versioned.last_reachable.map(|ts| {
+                crate::model::config::ImpureTimestamp {
+                    epoch_seconds: ts.epoch_seconds,
+                    subsec_nanos: ts.subsec_nanos,
+                }
+            }),
+        },
+        |runtime: crate::model::state::AuxData| AuxDataV2 {
+            last_reachable: runtime.last_reachable.map(|ts| ImpureTimestampV2 {
+                epoch_seconds: ts.epoch_seconds,
+                subsec_nanos: ts.subsec_nanos,
+            }),
+        },
+    )
 }
 
 /// Isomorphism between `ResolvedInputV2` and runtime `crate::model::state::ResolvedInputKey`.
@@ -435,6 +467,12 @@ pub fn orchestration_state_v2_iso() -> IsoPrime<
             let runtime_state = crate::model::state::OrchestrationState {
                 version: envelope.version,
                 instances: BTreeMap::new(),
+                aux: envelope
+                    .aux
+                    .into_iter()
+                    .map(|(k, v)| (k, aux_data_v2_iso().from(v)))
+                    .collect(),
+                referenced_instance_keys: std::collections::HashSet::new(),
             };
             (refs, runtime_state)
         },
@@ -444,7 +482,15 @@ pub fn orchestration_state_v2_iso() -> IsoPrime<
         )| {
             let instances: BTreeMap<String, InstanceRefV2> =
                 refs.into_iter().map(|(key, hash)| (key, InstanceRefV2 { hash })).collect();
-            OrchestrationStateEnvelopeV2 { version: runtime_state.version, instances }
+            OrchestrationStateEnvelopeV2 {
+                version: runtime_state.version,
+                instances,
+                aux: runtime_state
+                    .aux
+                    .into_iter()
+                    .map(|(k, v)| (k, aux_data_v2_iso().to(v)))
+                    .collect(),
+            }
         },
     )
 }

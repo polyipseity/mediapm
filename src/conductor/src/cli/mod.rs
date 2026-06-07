@@ -32,7 +32,7 @@ mod tests {
     use crate::model::state::{OrchestrationState, ToolCallInstance, encode_state};
     use clap::Parser;
     use mediapm_cas::{ConfiguredCas, Hash, InMemoryCas};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -373,6 +373,8 @@ mod tests {
                     outputs: BTreeMap::new(),
                 },
             )]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let rendered = persisted_state_json_pretty(&state)

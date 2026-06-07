@@ -4,7 +4,7 @@
 //! document loader, execution hub, scheduler, state store, and step workers
 //! continue to agree on the same workflow semantics.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, InMemoryCas};
@@ -571,6 +571,8 @@ async fn replace_and_load_resolved_state_roundtrip() {
                 )]),
             },
         )]),
+        aux: BTreeMap::new(),
+        referenced_instance_keys: HashSet::new(),
     };
 
     let pointer = coordinator
@@ -631,6 +633,8 @@ async fn replace_resolved_state_rejects_unknown_tool_instances() {
                 outputs: BTreeMap::new(),
             },
         )]),
+        aux: BTreeMap::new(),
+        referenced_instance_keys: HashSet::new(),
     };
 
     let result = coordinator
