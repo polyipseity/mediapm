@@ -568,62 +568,71 @@ workflow step completion events through an optional channel. The consumer
     completes and the handle awaited.
 
 
-### §17 Tool Content Cache Locking Protocol
+### §17 Tool Content Cache (`src/conductor/src/tool_cache/mod.rs`)
 
-The tool content cache at
-`src/conductor/src/orchestration/actors/step_worker/tool_content_cache.rs`
-uses per-entry `flock` advisory locking to prevent three classes of race
-conditions when multiple workers concurrently access the same tool content
-directory.
+The `ToolContentCache<C>` struct at
+`src/conductor/src/tool_cache/mod.rs`
+is the sole authority over the `tools_dir/` directory tree. No external code
+creates, reads, writes, or deletes anything inside cache directories — all
+TTL checking, metadata management, locking, extraction, and pruning is
+internal to this module.
 
-**Lock file location**: `tools/<sanitized_tool_id>/.lock`
+**Public API**:
+- `PAYLOAD_DIR_NAME` — literal `"payload"`, the subdirectory name inside
+  each tool cache entry where extracted content lives.
+- `sanitize_tool_id(name) -> String` — replaces reserved filesystem
+  characters with `_`. Used by all callers to derive cache directory names.
+- `ToolContentCache<C: CasApi + Send + Sync>` — shared mutable cache root.
+  - `new(tools_dir, cas)` — construct with a shared CAS backend.
+  - `materialize(tool_id, content_map, ...) -> ToolCacheEntry` — core
+    API: returns a RAII-guarded path to the cached tool payload.
+  - `link_to_sandbox(entry, sandbox_dir)` — associated fn that hard-links
+    the cache entry's payload into a per-step sandbox.
+  - `prune()` — remove expired TTL entries.
+  - `retain_only(active_ids)` — remove cache directories not in the
+    provided set. Used by mediapm lifecycle for sync-time cleanup.
 
-**Lock type**: Advisory `flock` via `fs4::FileExt`. Lock mode mapping:
-- **Cache-hit reader (fast path)**: non-blocking `try_lock_shared()` on
-  `.lock` file. If the lock file does not exist or the lock is already held
-  exclusively, fall through to the exclusive path.
-- **Cache-miss writer (slow path)**: blocking `lock()` exclusive. After
-  acquisition, double-check that the cache entry is still missing (another
-  worker may have completed extraction while we waited). Extraction happens
-  in `spawn_blocking` with the exclusive fd held alive throughout.
-- **Prune**: non-blocking `try_lock()` exclusive per entry. Skip entries
-  that return `WouldBlock`.
+**Lock protocol**: Per-entry `flock` advisory locking via `fs4::FileExt`.
+- **Fast path (cache hit)**: non-blocking `try_lock_shared()` on
+  `tools/<sanitized_id>/.lock`. Returns `ToolCacheEntry` on success.
+- **Slow path (cache miss)**: DashMap + `OnceCell` prevents redundant
+  extraction: the first caller acquires the entry, subsequent callers wait.
+  Extraction acquires an exclusive `flock` via blocking `lock()` inside
+  `spawn_blocking`. After extraction the `.lock` file is recreated and a
+  shared-lock fd replaces the exclusive fd (downgrade, no unlock gap).
+  A semaphore limits concurrent extractions across different tool IDs.
+- **Prune**: non-blocking `try_lock()` exclusive. Skip entries that return
+  `WouldBlock`.
 
-**Guard lifecycle**: `ToolCacheReadGuard` is an RAII guard returned from
-`prepare_tool_cache()`. For direct-execution paths, the guard is held across
-the entire process spawn so the cache entry cannot be evicted mid-use.
+**Guard lifecycle**: `ToolCacheEntry` (the return type of `materialize()`)
+holds a shared-lock fd in an RAII guard. For direct-execution paths, the
+entry is held across the entire process spawn so the cache entry cannot be
+evicted mid-use. For one-shot callers (`resolve_managed_tool_executable`,
+`run_managed_tool`), the entry is dropped immediately after use.
 
 **Safety**: Locks are per-open-file-description (standard `flock` semantics).
-They are automatically released when the fd is closed — no manual unlock
-needed, even if the holding task panics.
-
-**Downgrade pattern**: During extraction, the exclusive lock fd is held inside
-`spawn_blocking`. After extraction completes, the `.lock` file is recreated,
-a new fd is opened with a shared lock acquired, and then the exclusive fd is
-dropped. This eliminates the lock-upgrade gap: there is no moment where the
-entry is unlocked between exclusive (write) and shared (read) access.
+Automatically released when the fd is closed — no manual unlock needed, even
+if the holding task panics.
 
 **Platform guard**: Locking is gated behind `cfg(unix)`. On non-Unix
-platforms, `ToolCacheReadGuard` is a no-op that always succeeds — no
-cross-process race protection is provided.
+platforms, `ToolCacheEntry` holds no fd and locking is a no-op.
+
+**Cache ownership boundary**: `ToolContentCache` owns `tools_dir/*`
+exclusively. External callers:
+- Only receive `ToolCacheEntry` (path + RAII guard) from `materialize()`.
+- Use `retain_only()` for bulk cleanup — never call `remove_dir_all` on
+  cache directories.
+- Never read/write `metadata.json` or check TTL externally.
 
 **Sync-time stale-entry pruning**: When `mediapm sync` reconciles desired
-tools and replaces a tool (e.g. due to companion dependency changes), the
-old tool ID is captured in `ToolSyncReport.replaced_tool_ids`. The
-`prune_unmanaged_tool_artifacts` function in `lifecycle.rs` iterates these
-replaced IDs, sanitizes each via `sanitize_dir_name()` (mirroring the
-conductor's `sanitize_tool_id` rules), and removes the corresponding
-`<tools_dir>/<sanitized_id>/` directory via `std::fs::remove_dir_all`. This
-ensures stale tool content cache entries do not persist after a tool
-identity change, so subsequent `sync` invocations (with incomplete steps
-that now have `impure_timestamp = None`) re-materialize from fresh cache
-entries.
+tools, `prune_unmanaged_tool_artifacts` in `lifecycle.rs` computes the set
+of stale tool IDs and passes them to `ToolContentCache::retain_only()`.
+The cache module handles all filesystem cleanup. Prior to this design,
+`lifecycle.rs` directly called `remove_dir_all` on cache directories;
+this is now delegated to the cache module.
 
-**Pruned entry filtering**: In addition to the directory-pruning logic,
-`compute_stale_entry_report` in `lifecycle.rs` filters out entries whose
-`status == ToolRegistryStatus::Pruned`. The filter short-circuits the
-per-record scan so pruned IDs never reach the sync report, preventing
-repeated stale-entry warnings on every sync cycle.
+**Pruned entry filtering**: `compute_stale_entry_report` in `lifecycle.rs`
+filters out entries whose `status == ToolRegistryStatus::Pruned`.
 
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)

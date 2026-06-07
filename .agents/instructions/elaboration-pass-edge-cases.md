@@ -842,7 +842,7 @@ WorkflowSpec {
 **Issue**: The tool content cache lacked inter-worker locking, allowing three
 race conditions when multiple workers concurrently access the same tool
 content directory. These races are now prevented by per-entry `flock` advisory
-locks.
+locks inside `ToolContentCache` (`src/conductor/src/tool_cache/mod.rs`).
 
 #### Race Scenario 1 — ENOENT on cache path spawn
 
@@ -877,7 +877,8 @@ conflicts.
 workers. The first worker to acquire the exclusive lock proceeds with
 extraction. Subsequent workers block on `lock()` until the first finishes,
 then double-check: since the cache entry is now populated, they switch to the
-shared-lock (cache-hit) path.
+shared-lock (cache-hit) path. The `ToolContentCache` uses a DashMap + OnceCell
+so redundant extraction is eliminated at the task level as well.
 
 #### Race Scenario 3 — ENOENT on sandbox path spawn
 
@@ -891,11 +892,11 @@ Worker B.
 **Root cause**: No read-side lock held across the tool execution lifetime —
 the cache-hit guard was not held past the spawn call.
 
-**How locking prevents it**: `ToolCacheReadGuard` (holding a shared-lock fd)
-is returned from `prepare_tool_cache()` and kept alive for the duration of
-the process (direct-execution paths). This prevents cache-miss writers from
-acquiring the exclusive lock and modifying `payload_dir` until all readers
-have finished.
+**How locking prevents it**: `ToolCacheEntry` (the return type of
+`ToolContentCache::materialize()`) holds a shared-lock fd in its RAII guard
+and is kept alive for the duration of the process (direct-execution paths).
+This prevents cache-miss writers from acquiring the exclusive lock and
+modifying `payload_dir` until all readers have finished.
 
 #### Residual Risk Notes
 
@@ -911,8 +912,8 @@ or multi-instance deployments sharing a networked filesystem (if `flock` is
 supported by the filesystem driver).
 
 **Non-Unix platforms**: Locking is gated behind `cfg(unix)`. On platforms
-without `flock` support, `ToolCacheReadGuard` is a no-op (always succeeds).
-No cross-process race protection is available on those platforms.
+without `flock` support, `ToolCacheEntry` holds no fd (no-op). No
+cross-process race protection is available on those platforms.
 
 ---
 
