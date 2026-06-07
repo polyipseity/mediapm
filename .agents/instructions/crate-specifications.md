@@ -578,8 +578,10 @@ The CLI `run_gc()` command (in `src/conductor/src/cli/mod.rs`) is the primary co
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
 **Background GC loop**: The conductor node actor spawns a background task in `pre_start` that:
-1. Immediately sends `RunGc(None, …)` to itself, which performs a full cycle: instance GC (TTL-based), then CAS sweep via `run_cas_gc_sweep()`, then index compaction.
-2. Every `GC_INTERVAL_SECONDS` (3600) repeats from step 1.
+1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots. This prevents premature GC from sweeping all unprotected objects before state is loaded.
+2. Enters a periodic loop: sends `RunGc(None, …)` to itself for a full GC cycle (instance GC → CAS sweep via `run_cas_gc_sweep()` → index compaction), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats.
+
+The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shared with the background task. It is also set as a backstop after any successful `RunGc` handler execution.
 
 The index compaction (`compact_index()`) persists the in-memory `IndexState` to a temporary redb, atomically replaces the active index file, then re-persists to catch any concurrent writes during the file-rename window.
 
