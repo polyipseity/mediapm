@@ -267,65 +267,69 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
     Ok(())
 }
 
-/// Applies a reserved-character replacement map to a relative hierarchy path,
-/// operating per path component to preserve path separators.
+/// Applies a reserved-character replacement map to a single path component.
+///
+/// This operates on individual characters within one path component, not on
+/// a joined path string, so `/` and `\` within a component are properly
+/// replaced rather than consumed as structural separators.
 #[must_use]
-pub(super) fn sanitize_hierarchy_path(
-    relative_path: &str,
+pub(super) fn sanitize_path_component(
+    component: &str,
     replacements: &BTreeMap<char, char>,
 ) -> String {
-    use std::path::Component;
-    Path::new(relative_path)
-        .components()
-        .map(|component| match component {
-            Component::Normal(seg) => seg
-                .to_string_lossy()
-                .chars()
-                .map(|ch| replacements.get(&ch).copied().unwrap_or(ch))
-                .collect::<String>(),
-            Component::RootDir => std::path::MAIN_SEPARATOR.to_string(),
-            Component::CurDir => ".".to_string(),
-            Component::ParentDir => "..".to_string(),
-            Component::Prefix(prefix) => prefix.as_os_str().to_string_lossy().to_string(),
-        })
-        .collect::<std::path::PathBuf>()
-        .to_string_lossy()
-        .to_string()
+    component.chars().map(|ch| replacements.get(&ch).copied().unwrap_or(ch)).collect()
 }
 
-/// Validates one relative hierarchy path against mediapm invariants.
-pub(super) fn validate_hierarchy_path(relative_path: &str) -> Result<(), MediaPmError> {
-    let path = Path::new(relative_path);
-
-    if path.is_absolute() {
-        return Err(MediaPmError::Workflow(format!(
-            "hierarchy path '{relative_path}' must be relative"
-        )));
-    }
-
-    for component in path.components() {
-        let segment = component.as_os_str().to_string_lossy();
-        if segment == "." || segment == ".." {
+/// Checks that source path components are NFD-normalized before resolution.
+///
+/// This is the first NFD check — applied at the config level before any
+/// template placeholders are resolved.
+pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError> {
+    for component in components {
+        let component_nfd = component.nfd().collect::<String>();
+        if component_nfd != *component {
             return Err(MediaPmError::Workflow(format!(
-                "hierarchy path '{relative_path}' must not contain '.' or '..' components"
-            )));
-        }
-
-        if segment.chars().any(is_rejected_char) {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy path '{relative_path}' contains forbidden characters"
-            )));
-        }
-
-        let nfd = segment.nfd().collect::<String>();
-        if nfd != segment {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy path '{relative_path}' is not Unicode NFD normalized"
+                "source path component '{component}' must be NFD-normalized"
             )));
         }
     }
-
     Ok(())
+}
+
+/// Validates resolved and sanitized path components against mediapm invariants.
+///
+/// Rules per component:
+/// - Must not be empty
+/// - Must not be `.` or `..`
+/// - Must not contain forbidden characters (`<`, `>`, `:`, `"`, `|`, `?`, `*`, `/`, `\`)
+/// - Must be Unicode NFD normalized (with a distinct message from the source check)
+///
+/// Returns the validated components (consume-then-return for pipeline chaining).
+pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, MediaPmError> {
+    for component in components {
+        if component.is_empty() {
+            return Err(MediaPmError::Workflow(
+                "hierarchy path component must not be empty".to_string(),
+            ));
+        }
+        if component == "." || component == ".." {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy path component '{component}' must not be '.' or '..'"
+            )));
+        }
+        if component.chars().any(is_rejected_char) {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy path component '{component}' contains forbidden characters"
+            )));
+        }
+        let component_nfd = component.nfd().collect::<String>();
+        if component_nfd != *component {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy path component '{component}' is not NFD-normalized"
+            )));
+        }
+    }
+    Ok(components.to_vec())
 }
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
