@@ -841,6 +841,10 @@ impl CasMaintenanceApi for InMemoryCas {
     async fn migrate_index_to_version(&self, _target_version: u32) -> Result<(), CasError> {
         Ok(())
     }
+
+    async fn compact_index(&self) -> Result<crate::CompactReport, CasError> {
+        Ok(crate::CompactReport { size_before: 0, size_after: 0 })
+    }
 }
 
 #[cfg(test)]

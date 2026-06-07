@@ -11,8 +11,8 @@ use tracing::{info, instrument};
 use crate::api::CasApi;
 use crate::storage::is_unconstrained_constraint_row;
 use crate::{
-    CasError, CasMaintenanceApi, GcSweepReport, Hash, IndexRepairReport, OptimizeOptions,
-    OptimizeReport, PruneReport, empty_content_hash,
+    CasError, CasMaintenanceApi, CompactReport, GcSweepReport, Hash, IndexRepairReport,
+    OptimizeOptions, OptimizeReport, PruneReport, empty_content_hash,
 };
 
 use super::{FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES, FileSystemState};
@@ -157,5 +157,9 @@ impl CasMaintenanceApi for FileSystemState {
     /// published back into runtime index state.
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         self.migrate_index_to_version(target_version).await
+    }
+
+    async fn compact_index(&self) -> Result<CompactReport, CasError> {
+        self.compact_index().await
     }
 }

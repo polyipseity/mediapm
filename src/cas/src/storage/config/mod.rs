@@ -12,9 +12,9 @@ mod locator;
 use locator::{expand_locator_env, normalize_locator_path, validate_filesystem_root_writable};
 
 use crate::{
-    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint, ConstraintPatch,
-    FileSystemCas, GcSweepReport, Hash, InMemoryCas, IndexRepairReport, ObjectInfo,
-    OptimizeOptions, OptimizeReport, PruneReport,
+    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, CompactReport, Constraint,
+    ConstraintPatch, FileSystemCas, GcSweepReport, Hash, InMemoryCas, IndexRepairReport,
+    ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport,
 };
 
 /// Strategy that controls when `get()` re-verifies the reconstructed content
@@ -487,6 +487,10 @@ impl CasMaintenanceApi for ConfiguredCas {
 
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         delegate_configured_backend!(self, |cas| cas.migrate_index_to_version(target_version).await)
+    }
+
+    async fn compact_index(&self) -> Result<CompactReport, CasError> {
+        delegate_configured_backend!(self, |cas| cas.compact_index().await)
     }
 }
 

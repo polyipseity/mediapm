@@ -80,7 +80,9 @@ pub(super) struct FileSystemState {
     /// Reusable pooled stream buffers for incremental ingestion.
     stream_buffer_pool: Arc<StreamBufferPool>,
     /// Redb persistence handle used for incremental index flushes.
-    index_db: CasIndexDb,
+    /// Protected by a RwLock so compaction can swap the underlying database
+    /// without rebuilding the whole backend.
+    index_db: parking_lot::RwLock<CasIndexDb>,
     /// Startup recovery and backup retention settings.
     recovery: FileSystemRecoveryOptions,
     /// Integrity verification policy for read-path hash checks.
@@ -164,7 +166,7 @@ impl FileSystemState {
                 FILESYSTEM_STREAM_READ_CHUNK_BYTES,
                 FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
             ),
-            index_db: redb_index,
+            index_db: parking_lot::RwLock::new(redb_index),
             recovery,
             integrity,
 
@@ -610,7 +612,7 @@ impl FileSystemState {
             let index = self.lock_index_read("snapshotting full index state for redb persistence");
             index.clone()
         };
-        let index_db = self.index_db.clone();
+        let index_db = self.index_db.read().clone();
         let root = self.root.clone();
         let max_backup_snapshots = self.recovery.max_backup_snapshots;
 
@@ -629,7 +631,7 @@ impl FileSystemState {
             return Ok(());
         }
 
-        let index_db = self.index_db.clone();
+        let index_db = self.index_db.read().clone();
         tokio::task::spawn_blocking(move || index_db.persist_batch(operations)).await.map_err(
             |err| CasError::task_join("persisting incremental index batch to redb", err),
         )??;
@@ -662,7 +664,7 @@ impl FileSystemState {
         &self,
         target_version: u32,
     ) -> Result<(), CasError> {
-        let index_db = self.index_db.clone();
+        let index_db = self.index_db.read().clone();
         let mut migrated_state = tokio::task::spawn_blocking(move || {
             index_db.migrate_to_version(target_version)?;
             index_db.load_state()
@@ -677,6 +679,64 @@ impl FileSystemState {
         }
 
         Ok(())
+    }
+
+    /// Compacts the redb index by rewriting it to a temporary file, then
+    /// atomically replacing the original.
+    ///
+    /// The implementation:
+    /// 1. Records `size_before` from the existing `<root>/index.redb`.
+    /// 2. Opens a temporary `CasIndexDb` at `<root>/index.compact_temp/`.
+    /// 3. Loads state from the old db, persists to the temp db.
+    /// 4. Renames the old `index.redb` to `index.redb.bak`, renames the temp
+    ///    to `index.redb`, removes the backup.
+    /// 5. Opens a fresh `CasIndexDb` at the canonical path and replaces
+    ///    `self.index_db` (write lock).
+    /// 6. Returns `CompactReport`.
+    pub(super) async fn compact_index(&self) -> Result<crate::CompactReport, CasError> {
+        use std::fs;
+        use tokio::task::spawn_blocking;
+
+        let root = self.root.clone();
+        let index_path = root.join("index.redb");
+        let temp_dir = root.join("index.compact_temp");
+        let backup_path = root.join("index.redb.bak");
+
+        let size_before = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+
+        // Load state from existing db.
+        let old_index_db = self.index_db.read().clone();
+        let state = spawn_blocking(move || old_index_db.load_state())
+            .await
+            .map_err(|e| CasError::task_join("loading index state for compaction", e))??;
+
+        // Open temporary db and persist.
+        let temp_cas = CasIndexDb::open(&temp_dir)?;
+        spawn_blocking(move || temp_cas.persist_state(&state))
+            .await
+            .map_err(|e| CasError::task_join("persisting index to temp db for compaction", e))??;
+
+        // Atomically replace the index file.
+        if backup_path.exists() {
+            fs::remove_file(&backup_path).map_err(|source| {
+                CasError::io("removing stale backup index", backup_path.clone(), source)
+            })?;
+        }
+        fs::rename(&index_path, &backup_path).map_err(|source| {
+            CasError::io("renaming old index to backup", index_path.clone(), source)
+        })?;
+        fs::rename(temp_dir.join("index.redb"), &index_path).map_err(|source| {
+            CasError::io("renaming compacted index into place", index_path.clone(), source)
+        })?;
+        let _ = fs::remove_dir(&temp_dir);
+        let _ = fs::remove_file(&backup_path);
+
+        // Open fresh db and swap.
+        let new_index_db = CasIndexDb::open(&root)?;
+        *self.index_db.write() = new_index_db;
+
+        let size_after = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+        Ok(crate::CompactReport { size_before, size_after })
     }
 
     /// Loads and decodes one stored object file by hash.
@@ -1453,7 +1513,7 @@ impl CasApi for FileSystemState {
             return Ok(CasExistenceBitmap::new());
         }
 
-        let index_db = self.index_db.clone();
+        let index_db = self.index_db.read().clone();
         let flags = tokio::task::spawn_blocking(move || index_db.contains_hashes_fast(&hashes))
             .await
             .map_err(|err| {
