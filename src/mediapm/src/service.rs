@@ -232,6 +232,7 @@ where
         title: Option<&str>,
         artist: Option<&str>,
         description: Option<&str>,
+        album: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
@@ -240,6 +241,7 @@ where
             title,
             artist,
             description,
+            album,
             recording_mbid,
             release_mbid,
             AddInsertPosition::Sorted,
@@ -266,6 +268,7 @@ where
         title: Option<&str>,
         artist: Option<&str>,
         description: Option<&str>,
+        album: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
         _position: AddInsertPosition,
@@ -364,63 +367,84 @@ where
                 title: Some(source_title.clone()),
                 artist: source_artist_literal.clone(),
                 workflow_id: None,
-                metadata: Some(BTreeMap::from([
-                    (
+                metadata: {
+                    let mut metadata_map = BTreeMap::new();
+                    let mut title_candidates = Vec::new();
+                    if let Some(explicit) = title {
+                        title_candidates
+                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
+                    }
+                    title_candidates.extend([
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: "title".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: "track".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: "title".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(source_title.clone()),
+                    ]);
+                    metadata_map.insert(
                         "title".to_string(),
-                        MediaMetadataValue::Fallback(vec![
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video".to_string(),
-                                metadata_key: "title".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video".to_string(),
-                                metadata_key: "track".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "infojson".to_string(),
-                                metadata_key: "title".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Literal(source_title.clone()),
-                        ]),
-                    ),
-                    (
+                        MediaMetadataValue::Fallback(title_candidates),
+                    );
+                    let mut artist_candidates = Vec::new();
+                    if let Some(explicit) = artist {
+                        artist_candidates
+                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
+                    }
+                    artist_candidates.extend([
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: "artist".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "video".to_string(),
+                            metadata_key: "album_artist".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "infojson".to_string(),
+                            metadata_key: "uploader".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(
+                            source_artist_literal.as_deref().unwrap_or("unknown").to_string(),
+                        ),
+                    ]);
+                    metadata_map.insert(
                         "artist".to_string(),
-                        MediaMetadataValue::Fallback(vec![
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video".to_string(),
-                                metadata_key: "artist".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "video".to_string(),
-                                metadata_key: "album_artist".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "infojson".to_string(),
-                                metadata_key: "uploader".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Literal(
-                                source_artist_literal
-                                    .clone()
-                                    .unwrap_or_else(|| "unknown".to_string()),
-                            ),
-                        ]),
-                    ),
-                    (
+                        MediaMetadataValue::Fallback(artist_candidates),
+                    );
+                    if let Some(album_value) = album {
+                        metadata_map.insert(
+                            "album".to_string(),
+                            MediaMetadataValue::Literal(album_value.to_string()),
+                        );
+                    }
+                    metadata_map.insert(
                         "video_id".to_string(),
                         MediaMetadataValue::Variant(MediaMetadataVariantBinding {
                             variant: "infojson".to_string(),
                             metadata_key: "id".to_string(),
                             transform: None,
                         }),
-                    ),
-                    ("video_ext".to_string(), MediaMetadataValue::Literal(".mkv".to_string())),
-                ])),
+                    );
+                    metadata_map.insert(
+                        "video_ext".to_string(),
+                        MediaMetadataValue::Literal(".mkv".to_string()),
+                    );
+                    Some(metadata_map)
+                },
                 variant_hashes: BTreeMap::new(),
                 steps: vec![
                     MediaStep {
@@ -555,6 +579,7 @@ where
         title: Option<&str>,
         artist: Option<&str>,
         description: Option<&str>,
+        album: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
     ) -> Result<String, MediaPmError> {
@@ -563,6 +588,7 @@ where
             title,
             artist,
             description,
+            album,
             recording_mbid,
             release_mbid,
             AddInsertPosition::Sorted,
@@ -590,6 +616,7 @@ where
         title: Option<&str>,
         artist: Option<&str>,
         description: Option<&str>,
+        album: Option<&str>,
         recording_mbid: Option<&str>,
         release_mbid: Option<&str>,
         _position: AddInsertPosition,
@@ -678,46 +705,66 @@ where
                 title: Some(source_title.clone()),
                 artist: source_artist_literal.clone(),
                 workflow_id: None,
-                metadata: Some(BTreeMap::from([
-                    (
+                metadata: {
+                    let mut metadata_map = BTreeMap::new();
+                    let mut title_candidates = Vec::new();
+                    if let Some(explicit) = title {
+                        title_candidates
+                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
+                    }
+                    title_candidates.extend([
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "media".to_string(),
+                            metadata_key: "title".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "media".to_string(),
+                            metadata_key: "track".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(source_title.clone()),
+                    ]);
+                    metadata_map.insert(
                         "title".to_string(),
-                        MediaMetadataValue::Fallback(vec![
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "media".to_string(),
-                                metadata_key: "title".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "media".to_string(),
-                                metadata_key: "track".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Literal(source_title.clone()),
-                        ]),
-                    ),
-                    (
+                        MediaMetadataValue::Fallback(title_candidates),
+                    );
+                    let mut artist_candidates = Vec::new();
+                    if let Some(explicit) = artist {
+                        artist_candidates
+                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
+                    }
+                    artist_candidates.extend([
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "media".to_string(),
+                            metadata_key: "artist".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
+                            variant: "media".to_string(),
+                            metadata_key: "album_artist".to_string(),
+                            transform: None,
+                        }),
+                        MediaMetadataValueCandidate::Literal(
+                            source_artist_literal.as_deref().unwrap_or("unknown").to_string(),
+                        ),
+                    ]);
+                    metadata_map.insert(
                         "artist".to_string(),
-                        MediaMetadataValue::Fallback(vec![
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "media".to_string(),
-                                metadata_key: "artist".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                                variant: "media".to_string(),
-                                metadata_key: "album_artist".to_string(),
-                                transform: None,
-                            }),
-                            MediaMetadataValueCandidate::Literal(
-                                source_artist_literal.unwrap_or_else(|| "unknown".to_string()),
-                            ),
-                        ]),
-                    ),
-                    (
+                        MediaMetadataValue::Fallback(artist_candidates),
+                    );
+                    if let Some(album_value) = album {
+                        metadata_map.insert(
+                            "album".to_string(),
+                            MediaMetadataValue::Literal(album_value.to_string()),
+                        );
+                    }
+                    metadata_map.insert(
                         "video_ext".to_string(),
                         MediaMetadataValue::Literal(source_extension_with_dot),
-                    ),
-                ])),
+                    );
+                    Some(metadata_map)
+                },
                 variant_hashes: BTreeMap::new(),
                 steps: local_source_default_steps(&hash_text, recording_mbid, release_mbid),
             },
@@ -2209,7 +2256,7 @@ mod tests {
         let folder = "music videos";
 
         let media_id = service
-            .add_local_source(&local_file, None, None, None, None, None)
+            .add_local_source(&local_file, None, None, None, None, None, None)
             .await
             .expect("add local source");
 
@@ -2269,6 +2316,7 @@ mod tests {
         let media_id = service
             .add_media_source(
                 &Url::parse("https://example.com/video").expect("url"),
+                None,
                 None,
                 None,
                 None,
@@ -2354,6 +2402,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .expect("add media source");
@@ -2411,7 +2460,7 @@ mod tests {
         let folder = "music videos";
 
         let media_id = service
-            .add_local_source(&local_file, None, None, None, None, None)
+            .add_local_source(&local_file, None, None, None, None, None, None)
             .await
             .expect("add local source");
         service
@@ -2438,7 +2487,7 @@ mod tests {
         fs::write(&local_file, b"local-bytes").expect("write local source");
 
         let media_id = service
-            .add_local_source(&local_file, None, None, None, None, None)
+            .add_local_source(&local_file, None, None, None, None, None, None)
             .await
             .expect("add local source");
         service
@@ -2488,6 +2537,7 @@ mod tests {
         let media_id = service
             .add_media_source(
                 &Url::parse("https://www.youtube.com/watch?v=mbid-defaults").expect("url"),
+                None,
                 None,
                 None,
                 None,
