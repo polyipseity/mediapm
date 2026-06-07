@@ -447,6 +447,21 @@ the conductor orchestration layer.
 - Step-worker cache probe still uses `cas.exists_many(check_hashes)` →
   `CasExistenceBitmap` (backed by `BitVec`) for O(1) batch existence checks.
 
+**Per-tool concurrency enforcement**:
+- `UnifiedToolSpec::max_concurrent_calls` (previously `#[expect(dead_code)]`) is now
+  enforced at dispatch time. Before the dispatch loop, the coordinator builds a map
+  of per-tool `tokio::sync::Semaphore` instances from the config value (values > 0
+  create a capacity-limited semaphore; -1 means unlimited, no semaphore created).
+- The dispatch inner loop scans the `global_ready_queue` for a step whose tool has
+  available capacity instead of unconditionally popping the front element. Steps
+  for tools at their concurrent-call limit are re-queued (fairness: re-queued at
+  back, so they don't starve behind a continuously-filling queue of other steps).
+- The acquired `OwnedSemaphorePermit` is held inside the in_flight `Future` for
+  the entire step duration, automatically releasing capacity on completion (or
+  worker failure).
+- This applies to all tools, not only managed tools; builtin tools with
+  `max_concurrent_calls = -1` (the default) are unbounded as before.
+
 **Dedup and trace semantics**:
 - Steps from multiple workflows started simultaneously do not see each other's
   in-flight cache entries, so naturally-identical steps across workflows may

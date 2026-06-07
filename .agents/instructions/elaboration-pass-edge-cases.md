@@ -972,6 +972,40 @@ supported by the filesystem driver).
 without `flock` support, `ToolCacheEntry` holds no fd (no-op). No
 cross-process race protection is available on those platforms.
 
+### 2.10 Tool Max Concurrency Enforcement
+
+**Issue**: The `max_concurrent_calls` field on `UnifiedToolSpec` was plumbed through
+config and validated but never read at runtime (`#[expect(dead_code)]`). The
+coordinator's dispatch loop used a single `FuturesUnordered` gated only by
+`worker_count`, ignoring per-tool concurrency limits (e.g. yt-dlp default = 1).
+
+**Fix** (coordinator.rs): The field is now read before the dispatch loop to build
+per-tool `tokio::sync::Semaphore` instances. The dispatch inner loop scans the
+ready queue for a step whose tool has available capacity; steps for saturated
+tools are re-queued. The `OwnedSemaphorePermit` is held across the entire step
+future, releasing capacity on completion.
+
+**Scenarios**:
+
+| Scenario | Behavior |
+|----------|----------|
+| Tool not in `unified.tools` | No semaphore → unbounded (same as -1) |
+| `max_concurrent_calls = -1` | No semaphore → dispatch unchanged |
+| All ready steps for saturated tools | Full scan finds nothing → outer loop waits for `in_flight` completions |
+| Worker failure | Permit dropped → capacity released |
+| Tool config reload | Fresh `execute_workflows()` call with new semaphore map |
+
+**Risk**: Low. Semaphore acquisition is non-blocking (`try_acquire_owned`), so
+the dispatch loop never stalls on a saturated tool — it simply skips to the
+next ready step.
+
+**Verification**:
+
+- Unit test: queue with one step for a capped tool and N-1 steps for unbounded
+  tools → verify order respects concurrency limit
+- Integration test: yt-dlp with `max_concurrent_calls = 1` and N simultaneous
+  yt-dlp steps → verify only one executes concurrently
+
 ---
 
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
