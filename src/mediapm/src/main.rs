@@ -213,18 +213,22 @@ struct MediaAddArgs {
     /// - `yt-dlp`: online URI (`http` or `https`)
     /// - `local`: filesystem path
     source: String,
-    /// Optional title override. Takes precedence over metadata fetched from
-    /// the source.
+    /// Optional title override. Prepended as a Literal candidate in the
+    /// metadata fallback chain; does not replace source-derived values.
     #[arg(long)]
     title: Option<String>,
-    /// Optional artist override. Takes precedence over metadata fetched from
-    /// the source.
+    /// Optional artist override. Prepended as a Literal candidate in the
+    /// metadata fallback chain; does not replace source-derived values.
     #[arg(long)]
     artist: Option<String>,
     /// Optional description override. Takes precedence over metadata fetched
     /// from the source.
     #[arg(long)]
     description: Option<String>,
+    /// Optional album value. Populates `metadata["album"]` as a Literal
+    /// only when explicitly passed.
+    #[arg(long)]
+    album: Option<String>,
     /// Optional `MusicBrainz` recording MBID UUID passed through to the
     /// media-tagger step.
     #[arg(long)]
@@ -707,6 +711,7 @@ async fn main() -> anyhow::Result<()> {
                                     args.title.as_deref(),
                                     args.artist.as_deref(),
                                     args.description.as_deref(),
+                                    args.album.as_deref(),
                                     args.recording_mbid.as_deref(),
                                     args.release_mbid.as_deref(),
                                     map_insert_position(args.insert_position),
@@ -722,6 +727,7 @@ async fn main() -> anyhow::Result<()> {
                                     args.title.as_deref(),
                                     args.artist.as_deref(),
                                     args.description.as_deref(),
+                                    args.album.as_deref(),
                                     args.recording_mbid.as_deref(),
                                     args.release_mbid.as_deref(),
                                     map_insert_position(args.insert_position),
