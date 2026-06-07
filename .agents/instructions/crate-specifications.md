@@ -550,9 +550,17 @@ The CLI `run_gc()` command (in `src/conductor/src/cli/mod.rs`) is the primary co
 
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
-**Startup compact_index**: The conductor node actor spawns a one-shot `compact_index()` task on the first `SubmitWorkflow` call (no delay). This replaces the previous 1-hour-delayed background GC sweep loop, which was removed. The `compute_gc_roots`-based sweep is no longer invoked automatically; it remains available only through the explicit CLI `run_gc` command. CAS objects unreferenced by the current orchestration state are eventually reclaimed when a user invokes the explicit GC command.
+**Background GC loop**: The conductor node actor spawns a background task in `pre_start` that:
+1. Runs `compact_index()` once at startup (no delay).
+2. Every `GC_INTERVAL_SECONDS` (3600) sends a `RunGc(None, …)` message to itself, which performs a full cycle: instance GC (TTL-based), then CAS sweep via `run_cas_gc_sweep()`, then index compaction.
+
+The single-loop design replaces the previous approach (one-shot compact_index on first SubmitWorkflow with no automatic sweep). CAS objects unreferenced by current orchestration state are reclaimed every ~hour without user intervention.
+
+> **⚠️ Agent policy — do NOT disable the background GC loop**: The `None` TTL passed to `RunGc` means "use configured/default" — this is correct. Agents must NEVER alter `GC_INTERVAL_SECONDS` to an absurdly large value or make the loop a no-op to avoid implementing GC properly. If the GC loop causes issues, fix the GC implementation — do not disable it.
 
 **Instance TTL**: The config field `instance_ttl_seconds` is `Option<u64>`; `None` means "use the default". The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604 800 — 7 days) before passing to the state store; the actor also starts with the 7-day default at spawn time. Instance GC is never truly disabled — at worst it runs with a very generous TTL. When an explicit value is set, cutoff = `now - ttl`. Configured via `runtime.instance_ttl_seconds`.
+
+> **⚠️ Agent policy — do NOT disable GC**: `None` means "use configured/default" — this is the correct semantic. Automatic coding agents (including GitHub Copilot, Cursor, Claude Code, Aider, and OpenCode) must NEVER set `instance_ttl_seconds` to an absurdly large value or otherwise disable GC out of laziness. Doing so causes unbounded state growth and degrades runtime performance over time. If a task seems easier with GC disabled, the correct fix is to improve the GC design, not to disable it.
 
 **Deserialization guarantee**: After `decode_state()` runs, every instance
 key has a corresponding `aux` entry with a non-optional `last_unreachable`.
