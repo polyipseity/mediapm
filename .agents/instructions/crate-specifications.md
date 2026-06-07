@@ -577,9 +577,12 @@ The CLI `run_gc()` command (in `src/conductor/src/cli/mod.rs`) is the primary co
 
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
+**Early progress event**: `execute_workflows()` emits a synthetic `WorkflowStepEvent` with `total_steps: 1, completed_steps: 0` at the top of the method body, before dep-graph construction. This ensures the mediapm progress bar renders immediately even when the first real step event is delayed by cold-start overhead (Nickel eval, actor spawning).
+
 **Background GC loop**: The conductor node actor spawns a background task in `pre_start` that:
 1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots. This prevents premature GC from sweeping all unprotected objects before state is loaded.
-2. Enters a periodic loop: sends `RunGc(None, …)` to itself for a full GC cycle (instance GC → CAS sweep via `run_cas_gc_sweep()` → index compaction), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats.
+2. **Shared state**: The actor state holds `shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>>` (updated after each successful LoadResolvedState / ReplaceResolvedState / RunGc handler) and `shared_state_store: Arc<OnceLock<StateStoreClient>>` (populated by the SubmitWorkflow handler after `ensure_runtime_support()`).
+3. **Enters a periodic loop**: reads the shared external_data snapshot and calls `run_cas_gc_sweep()` directly via the shared state store client (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
 
 The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shared with the background task. It is also set as a backstop after any successful `RunGc` handler execution.
 

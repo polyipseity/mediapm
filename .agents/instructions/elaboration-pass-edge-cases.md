@@ -608,18 +608,36 @@ GC sweep runs concurrently with workflow step execution. If a step materializes 
 
 The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
 
-**Mitigation**: The background GC loop (single loop in `pre_start`: sends `RunGc` immediately on startup, then periodic RunGc every 3600s) serializes via actor message delivery — each cycle is a synchronous handler invocation, so no concurrent GC can race with itself. Workflow commits happen in separate background tasks that send messages to the same actor; the GC cycle runs between commits as a natural consequence of single-threaded message processing. The state pointer read happens inside the RunGc handler after instance GC has completed, so it always sees a consistent snapshot.
+**Mitigation**: The background GC loop bypasses the actor mailbox and reads the state pointer + current state directly from the shared `StateStoreClient`. The state store actor processes these reads sequentially with workflow commits (same single-threaded mailbox), so each read returns a consistent snapshot. The shared `shared_external_data` snapshot is updated atomically under a write lock after each successful LoadResolvedState / ReplaceResolvedState / RunGc handler. The background task acquires a read lock on external_data, then reads the state pointer and current state — the combination is eventually consistent across cycles rather than strictly atomic, which is acceptable because the next sweep pass catches any orphans missed due to concurrent modification.
+
+**Remaining risk (accepted)**: If a workflow commit advances the state pointer between the external_data lock release and the next GC cycle, the next sweep uses the old external_data roots. This is bounded: the state store actor serializes state pointer updates, and the next GC cycle will use the latest snapshot. The risk of deleting reachable objects is limited to the delta between snapshots — all instance outputs from previous runs remain rooted by the old external_data.
 
 #### 1.22. Background GC loop
 
 The conductor node actor spawns a single background GC loop in `pre_start`. The loop:
 
 1. **Phase 1 — Wait for initialization**: Spin-waits on the `gc_initialized` flag (`Arc<AtomicBool>`, Acquire load with 1-second polling). This flag is set after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots. It is also set as a backstop after any successful `RunGc` handler execution.
-2. **Phase 2 — Periodic GC**: Enters a loop that sends `RunGc(None, …)` to itself (full cycle: instance GC → CAS sweep → index compaction), sleeps for `GC_INTERVAL_SECONDS` (3600), and repeats.
+2. **Phase 2 — Periodic GC**: Enters a loop that:
+   a. Acquires the `shared_external_data` read lock to snapshot the current `external_data` roots.
+   b. Reads the `shared_state_store` OnceLock — if no state store is available yet (SubmitWorkflow hasn't run), sleeps 1s and retries.
+   c. Reads `state_pointer` and `current_state` from the state store actor (RPC via shared `StateStoreClient`).
+   d. Calls `run_cas_gc_sweep()` directly with the snapshot data (no `RunGc` message sent).
+   e. Sleeps `GC_INTERVAL_SECONDS` (3600) and repeats.
 
-**Safety**: Because the `RunGc` handler runs synchronously inside the actor's `handle` method, each cycle completes before the next starts. Workflow commits are separate background tasks that communicate via actor messages, so GC naturally interleaves between commits — no additional cooldown is needed. The `None` TTL means "use configured/default", ensuring GC is never accidentally disabled. The `compact_index()` implementation persists the in-memory `IndexState` to a temporary redb, atomically replaces the active index file, then calls `persist_index_snapshot()` to capture any writes that landed in-memory during the rename window — closing the durability race between concurrent batch persists and index file replacement.
+**Mailbox bypass**: Unlike the original design (which sent `RunGc` to the actor mailbox, blocking SubmitWorkflow and other messages behind the full GC cycle), the revised loop calls `run_cas_gc_sweep()` directly from the background task. The `RunGc` handler is preserved for CLI `conductor gc` use. The `SubmitWorkflow` message is no longer queued behind GC.
+
+**Safety (shared-state reads)**:
+
+- `shared_external_data` is an `Arc<RwLock<…>>` updated under a write lock by handlers after each successful LoadResolvedState / ReplaceResolvedState / RunGc. The background task acquires a read lock. Writes are infrequent and short (one `clone()` + assignment), so read lock contention is negligible.
+- `shared_state_store` is an `Arc<OnceLock<StateStoreClient>>` populated once by the first SubmitWorkflow handler. After initialization it is immutable — no locking needed.
+- `state_pointer` and `current_state` are read from the state store actor via standard RPC messages. The state store actor processes them sequentially with concurrent workflow commits, so each read returns a consistent snapshot.
+- The combination (external_data at time T1, state at time T2) is not strictly atomic, but the next sweep pass catches any orphans missed. This is acceptable because CAS backends handle rebasing automatically during deletion (see "Sweep contract" above).
+
+**Safety (no concurrent sweep)**: The loop is a single sequential task — each cycle completes before the next starts. CLI-initiated `RunGc` runs inside the actor handler and can overlap with the background loop. This is safe because `CasMaintenanceApi::gc_sweep()` is a standard read-diff-delete operation (not an exclusive lock), and the CAS backend handles concurrent deletions via its normal conflict-resolution path.
 
 **Race fixed (2026-06-07)**: Previously, the loop fired `RunGc` immediately in Phase 1 before any state was loaded. With empty `external_data`, the CAS sweep computed an empty root set and deleted all objects not protected by `recently_written` (an in-memory set lost at process exit). Tool content imported by a prior `mediapm tool sync` session was swept before workflows could reference it, causing `CasError::NotFound` at `${external_data.<hash>}` binding resolution. The two-phase approach eliminates this race by deferring the first GC until after external_data roots are populated.
+
+**Race fixed (2026-06-07) — progress bar blocked by GC**: Previously, the background loop sent `RunGc` through the actor mailbox. Because ractor uses FIFO message ordering and the background loop fired immediately after `gc_initialized` was set, `RunGc` was queued ahead of `SubmitWorkflow`. The full GC cycle (instance GC → CAS sweep → index compaction) ran before any workflow could start, blocking the progress bar until GC finished. The mailbox bypass eliminates this ordering hazard entirely.
 
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
