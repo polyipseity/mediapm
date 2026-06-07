@@ -28,20 +28,28 @@ pub(crate) mod v2;
 ///
 /// Keep explicit latest-version references centralized for safe schema bumps.
 // BEGIN latest-version bindings
-#[expect(dead_code)]
 mod latest {
     pub(super) const VERSION: u32 = super::v2::ORCHESTRATION_STATE_VERSION_V2;
 
     pub(super) type Envelope = super::v2::OrchestrationStateEnvelopeV2;
+    #[expect(dead_code)]
     pub(super) type PersistenceFlags = super::v2::PersistenceFlagsV2;
+    #[expect(dead_code)]
     pub(super) type OutputSaveMode = super::v2::OutputSaveModeV2;
+    #[expect(dead_code)]
     pub(super) type ResolvedInputKey = super::v2::ResolvedInputV2;
+    #[expect(dead_code)]
     pub(super) type OutputRef = super::v2::OutputRefV2;
+    #[expect(dead_code)]
     pub(super) type ToolMetadata = super::v2::ToolMetadataV2;
+    #[expect(dead_code)]
     pub(super) type ToolCallInstance = super::v2::ToolCallInstanceV2;
+    #[expect(dead_code)]
     pub(super) type ImpureTimestamp = super::v2::ImpureTimestampV2;
+    #[expect(dead_code)]
     pub(super) type BuiltinMetadataKind = super::v2::BuiltinMetadataKindV2;
 
+    #[expect(dead_code)]
     pub(super) const fn is_version(marker: u32) -> bool {
         super::v2::is_orchestration_state_version_v2(marker)
     }
@@ -81,27 +89,78 @@ pub(crate) async fn encode_state<C: CasApi>(
     Ok(envelope_hash)
 }
 
-/// Decodes runtime orchestration state from a CAS-backed V2 envelope pointer.
+/// Extracts the numeric `version` field from a JSON blob.
+fn decode_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))?;
+    let marker = value.get("version").and_then(serde_json::Value::as_u64).ok_or_else(|| {
+        ConductorError::Workflow(
+            "orchestration-state envelope is missing numeric 'version' field".to_string(),
+        )
+    })?;
+    u32::try_from(marker).map_err(|_| {
+        ConductorError::Workflow(format!("orchestration-state version {marker} exceeds u32 range"))
+    })
+}
+
+/// Decodes runtime orchestration state from a CAS-backed envelope pointer.
 ///
-/// Reads the envelope from CAS, then loads and decodes each instance from
-/// its individual CAS ref.
+/// Supports both V1 (inline instances) and V2 (CAS-backed instance refs)
+/// envelope formats. V1 instances are migrated to V2 on read, and the
+/// returned state always carries the latest version marker. Re-persisting
+/// after decode will produce a V2 envelope, making V1→V2 migration a
+/// self-healing one-time cost.
 pub(crate) async fn decode_state<C: CasApi>(
     cas: &C,
     pointer: Hash,
 ) -> Result<OrchestrationState, ConductorError> {
     let envelope_bytes = cas.get(pointer).await?;
-    let envelope: latest::Envelope = serde_json::from_slice(&envelope_bytes)
-        .map_err(|e| ConductorError::Serialization(e.to_string()))?;
 
-    let mut instances = BTreeMap::new();
-    for (key, instance_ref) in envelope.instances {
-        let instance_bytes = cas.get(instance_ref.hash).await?;
-        let v2_instance = v2::decode_instance_v2(&instance_bytes)?;
-        let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
-        instances.insert(key, instance);
+    // Extract version marker from raw JSON to dispatch format-specific
+    // deserialization. Using a typed V2 envelope unconditionally would
+    // reject V1 data (missing `hash` field on inline instances).
+    let version = decode_version_marker(&envelope_bytes)?;
+
+    match version {
+        v2::ORCHESTRATION_STATE_VERSION_V2 => {
+            // V2 path: envelope stores CAS refs, instance blobs loaded
+            // individually from CAS.
+            let envelope: latest::Envelope = serde_json::from_slice(&envelope_bytes)
+                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+
+            let mut instances = BTreeMap::new();
+            for (key, instance_ref) in envelope.instances {
+                let instance_bytes = cas.get(instance_ref.hash).await?;
+                let v2_instance = v2::decode_instance_v2(&instance_bytes)?;
+                let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
+                instances.insert(key, instance);
+            }
+
+            Ok(OrchestrationState { version: envelope.version, instances })
+        }
+        v1::ORCHESTRATION_STATE_VERSION_V1 => {
+            // V1 path: envelope stores inline instances. Each V1 instance
+            // is migrated to V2 via the existing ISO bridge, then to
+            // runtime state.
+            let envelope: v1::OrchestrationStateEnvelopeV1 =
+                serde_json::from_slice(&envelope_bytes)
+                    .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+
+            let mut instances = BTreeMap::new();
+            for (key, v1_instance) in envelope.instances {
+                let v2_instance = v1::tool_call_instance_v1_v2_iso().from(v1_instance);
+                let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
+                instances.insert(key, instance);
+            }
+
+            // Return with latest version marker — re-persisting will
+            // produce a V2 envelope, self-healing the migration.
+            Ok(OrchestrationState { version: latest::VERSION, instances })
+        }
+        other => Err(ConductorError::Workflow(format!(
+            "unsupported orchestration-state version: {other}"
+        ))),
     }
-
-    Ok(OrchestrationState { version: envelope.version, instances })
 }
 
 #[cfg(test)]

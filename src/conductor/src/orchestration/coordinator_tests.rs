@@ -457,9 +457,9 @@ async fn unsupported_state_schema_is_rejected() {
     let user_path = dir.path().join("conductor.ncl");
     let machine_path = dir.path().join("conductor.machine.ncl");
 
-    // Version 0 with V2-compatible structure — accepted in V2-only mode.
+    // Version 2 with V2-compatible structure — accepted by version dispatch.
     let unsupported_state = serde_json::json!({
-        "version": 0,
+        "version": 2,
         "instances": {}
     });
 
