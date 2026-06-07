@@ -169,8 +169,8 @@ mod tests {
 
     use crate::api::{ConductorApi, StateMutationOptions};
     use crate::model::config::{
-        ImpureTimestamp, OutputCaptureSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
-        UserNickelDocument, encode_state_document, encode_user_document,
+        OutputCaptureSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
+        encode_state_document, encode_user_document,
     };
     use crate::model::state::{OrchestrationState, OutputRef, PersistenceFlags, ToolCallInstance};
 
@@ -250,7 +250,6 @@ mod tests {
                         outputs: BTreeMap::new(),
                     },
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp { epoch_seconds: 42, subsec_nanos: 0 },
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::from([(
                         "result".to_string(),
@@ -305,7 +304,6 @@ mod tests {
                     tool_name: "missing@1.0.0".to_string(),
                     metadata: ToolSpec::default(),
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

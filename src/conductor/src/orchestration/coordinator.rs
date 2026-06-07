@@ -831,7 +831,6 @@ where
             };
 
             // Process completion.
-            let now = Self::fresh_timestamp();
             let StepCompletionEvent {
                 workflow_name: event_wf,
                 step_id: event_step,
@@ -917,7 +916,6 @@ where
                     state,
                     bundle,
                     &mut dep_state.pending_unsaved_hashes,
-                    now,
                 )?;
                 Arc::make_mut(&mut dep_state.step_outputs).insert(event_step.clone(), step_hashes);
 
@@ -1066,13 +1064,10 @@ where
     /// still centralized in the state-store commit path, so displaced hashes
     /// are never deleted if workflow execution fails before commit.
     ///
-    /// `now` is the impure timestamp assigned to the merged instance so GC can
-    /// eventually prune unused instances by their `last_used` age.
     fn merge_step_result_into_state(
         state: &mut OrchestrationState,
         result: StepExecutionBundle,
         pending_unsaved_hashes: &mut BTreeSet<Hash>,
-        now: ImpureTimestamp,
     ) -> Result<BTreeMap<String, Option<Hash>>, ConductorError> {
         let StepExecutionBundle {
             step_id: _,
@@ -1120,8 +1115,6 @@ where
                 occupied.into_mut()
             }
         };
-
-        final_instance.last_used = now;
 
         requested_output_names
             .into_iter()

@@ -138,8 +138,9 @@ pub struct RuntimeStorageConfig {
     pub inherited_env_vars: Option<PlatformInheritedEnvVars>,
     /// Optional instance GC time-to-live in seconds.
     ///
-    /// When set, orchestration instances whose `last_used` timestamp is older
-    /// than this many seconds are removed on every state persistence cycle.
+    /// When set, orchestration instances older than this many seconds are
+    /// removed on every state persistence cycle (currently a no-op after
+    /// `last_used` removal; will be replaced by content-addressed eviction).
     /// When `None`, instance GC is disabled (instances persist indefinitely).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance_ttl_seconds: Option<u64>,

@@ -381,7 +381,6 @@ pub fn tool_call_instance_v2_iso()
                 tool_name: versioned.tool_name,
                 metadata,
                 impure_timestamp,
-                last_used: crate::model::config::ImpureTimestamp::now(),
                 inputs,
                 outputs,
             }

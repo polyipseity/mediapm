@@ -25,8 +25,8 @@ mod tests {
         persisted_state_json_pretty, register_or_merge_imported_tool,
     };
     use crate::model::config::{
-        ExternalContentRef, ImpureTimestamp, MachineNickelDocument, StateNickelDocument,
-        ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
+        ExternalContentRef, MachineNickelDocument, StateNickelDocument, ToolConfigSpec,
+        ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument,
         encode_machine_document, encode_state_document, encode_user_document,
     };
     use crate::model::state::{OrchestrationState, ToolCallInstance, encode_state};
@@ -369,7 +369,6 @@ mod tests {
                         )]),
                     },
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },
@@ -474,7 +473,6 @@ mod tests {
                     tool_name: "echo".to_string(),
                     metadata: ToolSpec::default(),
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

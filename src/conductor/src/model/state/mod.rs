@@ -204,13 +204,6 @@ pub struct ToolCallInstance {
     /// config declarations.
     #[serde(default)]
     pub impure_timestamp: Option<ImpureTimestamp>,
-    /// Timestamp of last use for GC ordering.
-    ///
-    /// Runtime sets this on every instance insert or update so stale instances
-    /// can be reclaimed by the configurable TTL GC sweep. Decode fills missing
-    /// persisted timestamps with [`ImpureTimestamp::now()`].
-    #[serde(default)]
-    pub last_used: ImpureTimestamp,
     /// Resolved inputs participating in cache identity.
     ///
     /// Uses [`ResolvedInputKey`] (hash-only) so that runtime content bytes
@@ -242,14 +235,8 @@ impl Default for OrchestrationState {
 }
 
 impl OrchestrationState {
-    /// Removes instances whose `last_used` is before `cutoff`.
-    pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
-        self.instances.retain(|_, instance| {
-            instance.last_used.epoch_seconds > cutoff.epoch_seconds
-                || (instance.last_used.epoch_seconds == cutoff.epoch_seconds
-                    && instance.last_used.subsec_nanos >= cutoff.subsec_nanos)
-        });
-    }
+    /// Placeholder — GC is temporarily a no-op after `last_used` removal.
+    pub fn gc_instances(&mut self, _cutoff: ImpureTimestamp) {}
 }
 
 /// Converts runtime orchestration state into persisted wire-envelope JSON.

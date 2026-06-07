@@ -198,11 +198,7 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
         |versioned: latest::ToolCallInstance| ToolCallInstance {
             tool_name: versioned.tool_name,
             metadata: tool_metadata_iso().from(versioned.metadata),
-            impure_timestamp: versioned.impure_timestamp.map(|timestamp| ImpureTimestamp {
-                epoch_seconds: timestamp.epoch_seconds,
-                subsec_nanos: timestamp.subsec_nanos,
-            }),
-            last_used: versioned.last_used.map_or_else(ImpureTimestamp::now, |timestamp| {
+            impure_timestamp: versioned.impure_timestamp.or(versioned.last_used).map(|timestamp| {
                 ImpureTimestamp {
                     epoch_seconds: timestamp.epoch_seconds,
                     subsec_nanos: timestamp.subsec_nanos,
@@ -226,9 +222,9 @@ fn tool_call_instance_iso() -> IsoPrime<'static, RcBrand, latest::ToolCallInstan
                 epoch_seconds: timestamp.epoch_seconds,
                 subsec_nanos: timestamp.subsec_nanos,
             }),
-            last_used: Some(latest::ImpureTimestamp {
-                epoch_seconds: runtime.last_used.epoch_seconds,
-                subsec_nanos: runtime.last_used.subsec_nanos,
+            last_used: runtime.impure_timestamp.map(|timestamp| latest::ImpureTimestamp {
+                epoch_seconds: timestamp.epoch_seconds,
+                subsec_nanos: timestamp.subsec_nanos,
             }),
             inputs: runtime
                 .inputs
@@ -322,9 +318,7 @@ pub(crate) fn decode_state(bytes: &[u8]) -> Result<OrchestrationState, Conductor
 mod tests {
     use std::collections::BTreeMap;
 
-    use crate::model::config::{
-        ImpureTimestamp, ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec,
-    };
+    use crate::model::config::{ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec};
     use crate::model::state::{OrchestrationState, OutputSaveMode};
 
     /// Verifies encoded state uses flattened top-level `instances` shape.
@@ -344,7 +338,6 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },
@@ -411,7 +404,6 @@ mod tests {
                         ..ToolSpec::default()
                     },
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::from([(
                         "text".to_string(),
                         crate::model::state::ResolvedInputKey { hash: expected_hash },
@@ -484,7 +476,6 @@ mod tests {
                         )]),
                     },
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                 },

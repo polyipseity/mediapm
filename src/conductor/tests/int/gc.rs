@@ -1,7 +1,7 @@
 //! Integration coverage for instance GC with configurable TTL.
 //!
 //! These tests validate:
-//! - `gc_instances()` unit semantics (cutoff comparison, None preservation)
+//! - `gc_instances()` no-op semantics after `last_used` removal
 //! - `RuntimeStorageConfig` round-trip for `instance_ttl_seconds`
 //! - GC hook plumbing through `SimpleConductor` + state store
 
@@ -19,39 +19,17 @@ use tempfile::tempdir;
 // Test 1 — gc_instances unit semantics
 // ---------------------------------------------------------------------------
 
-/// Protects that `gc_instances` removes instances whose `last_used` is strictly
-/// before the cutoff while preserving `>= cutoff` entries.
+/// Protects that `gc_instances` is a no-op after `last_used` removal.
 #[test]
 fn gc_instances_removes_stale_instances() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 0 };
 
     let mut state = OrchestrationState {
         instances: BTreeMap::from([
-            (
-                "fresh".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 200, subsec_nanos: 0 },
-                    ..sample_instance("fresh")
-                },
-            ),
-            (
-                "exact_cutoff".to_string(),
-                ToolCallInstance { last_used: cutoff, ..sample_instance("exact_cutoff") },
-            ),
-            (
-                "stale".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 },
-                    ..sample_instance("stale")
-                },
-            ),
-            (
-                "epoch_zero".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 0, subsec_nanos: 0 },
-                    ..sample_instance("epoch_zero")
-                },
-            ),
+            ("fresh".to_string(), sample_instance("fresh")),
+            ("exact_cutoff".to_string(), sample_instance("exact_cutoff")),
+            ("stale".to_string(), sample_instance("stale")),
+            ("epoch_zero".to_string(), sample_instance("epoch_zero")),
         ]),
         ..OrchestrationState::default()
     };
@@ -60,8 +38,8 @@ fn gc_instances_removes_stale_instances() {
 
     assert!(state.instances.contains_key("fresh"), "fresh instance should survive");
     assert!(state.instances.contains_key("exact_cutoff"), "cutoff-instance should survive");
-    assert!(!state.instances.contains_key("epoch_zero"), "epoch-zero instance should be removed");
-    assert!(!state.instances.contains_key("stale"), "stale instance should be removed");
+    assert!(state.instances.contains_key("epoch_zero"), "epoch-zero instance survives (no-op GC)");
+    assert!(state.instances.contains_key("stale"), "stale instance survives (no-op GC)");
 }
 
 /// Protects that `gc_instances` is a no-op on an empty state.
@@ -72,66 +50,39 @@ fn gc_instances_empty_state_is_noop() {
     assert!(state.instances.is_empty());
 }
 
-/// Protects that `gc_instances` removes all instances when cutoff is very high.
+/// Protects that `gc_instances` does not remove instances when cutoff is very high (no-op).
 #[test]
 fn gc_instances_cutoff_removes_all_tracked() {
     let mut state = OrchestrationState {
         instances: BTreeMap::from([
-            (
-                "a".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 0, subsec_nanos: 0 },
-                    ..sample_instance("a")
-                },
-            ),
-            (
-                "b".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 999, subsec_nanos: 999_999_999 },
-                    ..sample_instance("b")
-                },
-            ),
+            ("a".to_string(), sample_instance("a")),
+            ("b".to_string(), sample_instance("b")),
         ]),
         ..OrchestrationState::default()
     };
 
     state.gc_instances(ImpureTimestamp { epoch_seconds: 1000, subsec_nanos: 0 });
 
-    assert!(state.instances.is_empty(), "all tracked instances should be removed");
+    assert_eq!(state.instances.len(), 2, "all instances survive (no-op GC)");
 }
 
-/// Protects `subsec_nanos` comparison when `epoch_seconds` are equal.
+/// Protects that `gc_instances` is a no-op regardless of subsec_nanos comparison.
 #[test]
 fn gc_instances_respects_subsec_nanos_boundary() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 500_000_000 };
 
     let mut state = OrchestrationState {
         instances: BTreeMap::from([
-            (
-                "nanos_below".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 499_999_999 },
-                    ..sample_instance("nanos_below")
-                },
-            ),
-            (
-                "nanos_equal".to_string(),
-                ToolCallInstance { last_used: cutoff, ..sample_instance("nanos_equal") },
-            ),
-            (
-                "nanos_above".to_string(),
-                ToolCallInstance {
-                    last_used: ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 500_000_001 },
-                    ..sample_instance("nanos_above")
-                },
-            ),
+            ("nanos_below".to_string(), sample_instance("nanos_below")),
+            ("nanos_equal".to_string(), sample_instance("nanos_equal")),
+            ("nanos_above".to_string(), sample_instance("nanos_above")),
         ]),
         ..OrchestrationState::default()
     };
 
     state.gc_instances(cutoff);
 
-    assert!(!state.instances.contains_key("nanos_below"), "nanos below cutoff should be removed");
+    assert!(state.instances.contains_key("nanos_below"), "nanos below cutoff survives (no-op GC)");
     assert!(state.instances.contains_key("nanos_equal"), "nanos at cutoff should survive");
     assert!(state.instances.contains_key("nanos_above"), "nanos above cutoff should survive");
 }
@@ -243,7 +194,7 @@ async fn gc_hook_accepts_ttl_config() {
 }
 
 /// Protects that the GC hook accepts `instance_ttl_seconds = 1` without error
-/// and that the instance survives (`last_used` falls within the 1-second grace).
+/// and that the instance survives (GC is a no-op, always keeps instances).
 #[tokio::test]
 async fn gc_hook_accepts_near_zero_ttl() {
     let conductor = SimpleConductor::new(InMemoryCas::new());
@@ -297,7 +248,7 @@ async fn gc_hook_accepts_near_zero_ttl() {
     assert_eq!(summary.executed_instances, 1);
 
     let state = conductor.get_state().await.expect("state snapshot should load");
-    // With TTL=1, cutoff ≈ now - 1s, instance last_used ≈ now, so instance survives.
+    // With TTL=1, cutoff ≈ now - 1s; GC is a no-op, so instance always survives.
     assert_eq!(state.instances.len(), 1, "instance survives near-zero TTL");
 }
 
@@ -440,7 +391,6 @@ fn sample_instance(tool_name: &str) -> ToolCallInstance {
         tool_name: tool_name.to_string(),
         metadata: ToolSpec::default(),
         impure_timestamp: None,
-        last_used: ImpureTimestamp::default(),
         inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),
     }

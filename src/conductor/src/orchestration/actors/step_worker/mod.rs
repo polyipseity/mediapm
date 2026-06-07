@@ -36,8 +36,8 @@ use regex::Regex;
 
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec,
-    ToolInputKind, ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
+    InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
+    ToolKindSpec, ToolSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{
     OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ResolvedInputKey, ToolCallInstance,
@@ -393,7 +393,6 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: hash_only_inputs.clone(),
                 outputs,
-                last_used: ImpureTimestamp::default(),
             }
         } else {
             ToolCallInstance {
@@ -402,7 +401,6 @@ where
                 impure_timestamp: request.impure_timestamp,
                 inputs: hash_only_inputs,
                 outputs: BTreeMap::new(),
-                last_used: ImpureTimestamp::default(),
             }
         };
 
