@@ -221,6 +221,13 @@ where
             };
             request.next_state.gc_instances(cutoff);
         }
+        // Quick skip: if no mutations occurred after GC, return existing pointer
+        // without re-persisting or cleaning up unsaved outputs.
+        if request.next_state == self.current_state {
+            if let Some(pointer) = self.current_state_pointer {
+                return Ok(pointer);
+            }
+        }
         let current_state_pointer = self.persist_state_blob(&request.next_state).await?;
         self.delete_unsaved_outputs(
             &request.next_state,
