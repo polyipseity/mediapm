@@ -81,7 +81,7 @@ fn validate_runtime_materialization_preference_order(
 /// Collects effective hierarchy-id -> media-path mappings for playlist entries.
 fn collect_playlist_media_index(
     document: &MediaPmDocument,
-) -> Result<BTreeMap<String, String>, MediaPmError> {
+) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
     let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
     let mut index = BTreeMap::new();
 
@@ -95,12 +95,13 @@ fn collect_playlist_media_index(
         };
 
         if let Some(previous_path) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path.clone())
-            && previous_path != flattened_entry.path
+            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
+            && previous_path != flattened_entry.path_components
         {
             return Err(MediaPmError::Workflow(format!(
-                "hierarchy id '{hierarchy_id}' resolves to multiple media paths ('{previous_path}' and '{}')",
-                flattened_entry.path
+                "hierarchy id '{hierarchy_id}' resolves to multiple media paths ('{}' and '{}')",
+                previous_path.join("/"),
+                flattened_entry.path_components.join("/")
             )));
         }
     }

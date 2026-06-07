@@ -97,12 +97,12 @@ fn collect_variant_producer_validation_meta(
 )]
 pub(super) fn validate_hierarchy_entries(
     document: &MediaPmDocument,
-    playlist_media_index: &BTreeMap<String, String>,
+    playlist_media_index: &BTreeMap<String, Vec<String>>,
 ) -> Result<(), MediaPmError> {
     let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
 
     for flattened_entry in &flattened_hierarchy {
-        let hierarchy_path = flattened_entry.path.as_str();
+        let hierarchy_path = flattened_entry.path_str();
         let entry = &flattened_entry.entry;
 
         if !matches!(entry.kind, HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder) {
@@ -135,7 +135,7 @@ pub(super) fn validate_hierarchy_entries(
         })?;
 
         let metadata_placeholders =
-            super::hierarchy_metadata_placeholder_keys(hierarchy_path).map_err(|reason| {
+            super::hierarchy_metadata_placeholder_keys(&hierarchy_path).map_err(|reason| {
                 MediaPmError::Workflow(format!(
                     "hierarchy path '{hierarchy_path}' has invalid metadata placeholder syntax: {reason}"
                 ))
@@ -270,7 +270,7 @@ pub(super) fn validate_hierarchy_entries(
     }
 
     for flattened_entry in &flattened_hierarchy {
-        let hierarchy_path = flattened_entry.path.as_str();
+        let hierarchy_path = flattened_entry.path_str();
         let entry = &flattened_entry.entry;
 
         if !matches!(entry.kind, HierarchyEntryKind::Playlist) {
@@ -315,11 +315,12 @@ pub(super) fn validate_hierarchy_entries(
                 )));
             }
 
-            let media_path = playlist_media_index.get(hierarchy_id).ok_or_else(|| {
+            let media_path_components = playlist_media_index.get(hierarchy_id).ok_or_else(|| {
                 MediaPmError::Workflow(format!(
                     "hierarchy playlist path '{hierarchy_path}' ids[{item_index}] references unknown hierarchy id '{hierarchy_id}'"
                 ))
             })?;
+            let media_path = media_path_components.join("/");
 
             if media_path.ends_with('/') || media_path.ends_with('\\') {
                 return Err(MediaPmError::Workflow(format!(
