@@ -155,9 +155,9 @@ pub struct InstanceRefV2 {
 /// V2 envelope-level auxiliary metadata for one tool-call instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuxDataV2 {
-    /// When this instance was last confirmed reachable from GC roots.
+    /// When this instance was last confirmed unreachable from GC roots.
     #[serde(default)]
-    pub last_reachable: Option<ImpureTimestampV2>,
+    pub last_unreachable: Option<ImpureTimestampV2>,
 }
 
 /// Builtin metadata kind marker used by orchestration-state V2 wire format.
@@ -305,9 +305,9 @@ pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::
         |versioned: AuxDataV2| crate::model::state::AuxData {
             // Inject now() for None — old state predating the aux envelope
             // or instances created before the non-null guarantee may carry
-            // last_reachable: None on the wire. Decode is the only boundary
+            // last_unreachable: None on the wire. Decode is the only boundary
             // where None is handled; the runtime type is non-optional.
-            last_unreachable: match versioned.last_reachable {
+            last_unreachable: match versioned.last_unreachable {
                 Some(ts) => crate::model::config::ImpureTimestamp {
                     epoch_seconds: ts.epoch_seconds,
                     subsec_nanos: ts.subsec_nanos,
@@ -316,7 +316,7 @@ pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::
             },
         },
         |runtime: crate::model::state::AuxData| AuxDataV2 {
-            last_reachable: Some(ImpureTimestampV2 {
+            last_unreachable: Some(ImpureTimestampV2 {
                 epoch_seconds: runtime.last_unreachable.epoch_seconds,
                 subsec_nanos: runtime.last_unreachable.subsec_nanos,
             }),

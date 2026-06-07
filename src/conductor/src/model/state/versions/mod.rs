@@ -188,7 +188,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                     let v2_ts = v1::impure_timestamp_v1_v2_iso().from(ts);
                     aux.insert(
                         key.clone(),
-                        v2::aux_data_v2_iso().from(v2::AuxDataV2 { last_reachable: Some(v2_ts) }),
+                        v2::aux_data_v2_iso().from(v2::AuxDataV2 { last_unreachable: Some(v2_ts) }),
                     );
                 }
                 let v2_instance = v1::tool_call_instance_v1_v2_iso().from(v1_instance);
