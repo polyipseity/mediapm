@@ -203,7 +203,13 @@ impl FileObjectActorState {
         Ok(total)
     }
 
+    #[cfg(target_os = "windows")]
     /// Waits until no active mmap lease remains for `hash`.
+    ///
+    /// On Unix, atomic rename(2) / unlink(2) keeps the old inode alive for
+    /// existing mmap holders — no wait is needed, and the whole method is
+    /// compiled out. On Windows, file locks may prevent rename/unlink while
+    /// handles are held, so the wait is preserved.
     async fn wait_for_no_active_mmap(&self, hash: Hash) {
         loop {
             let wait = {
@@ -339,8 +345,6 @@ impl FileObjectActorState {
         hash: Hash,
         object: &StoredObject,
     ) -> Result<(), CasError> {
-        self.wait_for_no_active_mmap(hash).await;
-
         let full_path = self.object_path_for_hash(hash);
         let diff_path = self.diff_path_for_hash(hash);
 
@@ -393,8 +397,6 @@ impl FileObjectActorState {
 
     /// Deletes both full/delta file variants for `hash` and updates counters.
     async fn delete_object_files(&mut self, hash: Hash) -> Result<(), CasError> {
-        self.wait_for_no_active_mmap(hash).await;
-
         let full_path = self.object_path_for_hash(hash);
         let diff_path = self.diff_path_for_hash(hash);
 
