@@ -344,7 +344,41 @@ migration — potentially mass re-verification on next sync.
 - Document that first sync after v1→v2 migration may be slower due to
   verification catch-up
 
-### 1.11 Reconstructed-Bytes Cache Invalidation on Delete/Prune
+### 1.11 Orchestration State V1→V2 Decode Migration
+
+**Issue**: `decode_state()` in the conductor state model only handled V2
+envelope format after the V2 persistence migration, breaking backward
+compatibility with persisted V1 orchestration state envelopes.
+
+**Scenarios**:
+
+- State persisted by a pre-V2 binary contains `OrchestrationStateEnvelopeV1`
+  with inline `ToolCallInstanceV1` objects (each with `last_used`, `inputs`,
+  `outputs` as full objects)
+- Binary upgrade to V2-only format → decode attempts to deserialize V1 inline
+  data as V2 `InstanceRefV2 { hash }` → `missing field 'hash'` serde error
+
+**Current Spec**: `decode_state()` supported only V2 format via unconditional
+`latest::Envelope` deserialization.
+
+**Fix**: Version dispatch added to `decode_state()`:
+
+1. Parse raw JSON `version` field
+2. V2 → existing CAS-ref path (load envelope, load each instance blob from CAS)
+3. V1 → inline-instance path (deserialize V1 envelope, convert each instance
+   via `tool_call_instance_v1_v2_iso` then `tool_call_instance_v2_iso`, return
+   with `latest::VERSION`)
+4. Unknown version → error
+
+**Self-healing**: After V1→V2 decode, the state is re-persisted via
+`persist_and_publish_state()` which calls `encode_state()` (always V2).
+Subsequent loads use the V2 path.
+
+**Risk**: Low. V1→V2 migration is a one-time decode cost per stale state blob.
+No data loss — the ISO bridges preserve all V1 fields (dropping only
+`last_used`, which was already unused by the V2 runtime).
+
+### 1.12 Reconstructed-Bytes Cache Invalidation on Delete/Prune
 
 **Issue**: When an object is deleted or pruned from storage, its
 `reconstructed_bytes_cache` entry in `FileSystemState` persists until TTL
@@ -378,7 +412,7 @@ exists.
   discarded on access when the generation has advanced
 - Test: "delete then get returns NotFound rather than cached bytes"
 
-### 1.12 Concurrent get() Race in reconstructed_bytes_cache Fill
+### 1.13 Concurrent get() Race in reconstructed_bytes_cache Fill
 
 **Issue**: Two concurrent `get(hash)` calls both miss the
 `reconstructed_bytes_cache` and both reconstruct the same object,
@@ -408,7 +442,7 @@ on every `get()`, but the byte reconstruction itself is wasted.
 - Never hold multiple hash locks simultaneously (deadlock avoidance)
 - Test: "concurrent get() same hash reconstructs only once"
 
-### 1.13 Stale Strategy with verify_time = 0
+### 1.14 Stale Strategy with verify_time = 0
 
 **Issue**: Overlaps with 1.10 but focuses specifically on the Stale strategy's
 interaction with `verify_time = 0` in production workloads.
@@ -438,7 +472,7 @@ interaction with `verify_time = 0` in production workloads.
   (file mtime) < grace period, skip Stale verification (object is freshly
   written)
 
-### 1.14 Sample Strategy Determinism Across Restarts
+### 1.15 Sample Strategy Determinism Across Restarts
 
 **Issue**: The Sample strategy uses randomness to select which objects to
 verify. Non-deterministic sampling means the same object may be sampled
@@ -467,7 +501,7 @@ objects"
 - Provide `sample_seed` config option to override the derivation
 - Test: "same hash sampled consistently across runs"
 
-### 1.15 verify_time Interaction with Delta Chain Reconstruction
+### 1.16 verify_time Interaction with Delta Chain Reconstruction
 
 **Issue**: Delta chain reconstruction produces a full object from base +
 deltas. The reconstructed object's `verify_time` is ambiguous — should it
@@ -499,7 +533,7 @@ depending on how reconstruction populates `verify_time`
   objects; in-memory reconstructed objects derive a transient `verify_time`
   for strategy evaluation but do not write it back
 
-### 1.16 System Clock Jump (verify_time > now)
+### 1.17 System Clock Jump (verify_time > now)
 
 **Issue**: If the system clock jumps backward, `verify_time` may be greater
 than `now`, causing nonsensical duration calculations.
@@ -526,7 +560,7 @@ verification on every access
 - Optionally reset `verify_time` to `now` on clock skew detection
 - Test: "clock jumps backward → no mass re-verification"
 
-### 1.17 Reconstructed-Bytes Cache Interaction with Verification
+### 1.18 Reconstructed-Bytes Cache Interaction with Verification
 
 **Issue**: CAS has a single caching layer — `reconstructed_bytes_cache`
 (formerly `content_cache`) that holds fully-reconstructed object bytes with
@@ -564,19 +598,19 @@ corruption that occurred after the cache entry was created.
 
 ---
 
-#### 1.19. Concurrent GC During Step Execution
+#### 1.20. Concurrent GC During Step Execution
 
 GC sweep runs concurrently with workflow step execution. If a step materializes a new CAS object between `list_all_hashes()` and the actual deletion in `gc_sweep()`, the new object won't be in the initial hash set and won't be deleted (it wasn't in `all_hashes`). However, if an object is concurrently added AND becomes referenced by the root set (e.g., a step materializes an output that becomes a root), it must not be deleted.
 
 **Mitigation**: Sweep computes the set difference `all_hashes - roots` at the start of the sweep. Objects added during sweep execution are not in `all_hashes` and are therefore not deleted. The sweep is eventually consistent: the next sweep pass will catch any orphans missed due to concurrent modification.
 
-#### 1.20. GC vs Active State Pointer
+#### 1.21. GC vs Active State Pointer
 
 The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
 
 **Mitigation**: Background auto-GC uses a cooldown (3600 seconds) to avoid racing with active workflow commits. The GC roots are computed via `compute_gc_roots()` at invocation time from user/machine external_data, state_pointer, and current orchestration state. CLI-invoked GC is an explicit operation where the caller should ensure quiescence.
 
-#### 1.21. Background GC During Workflow
+#### 1.22. Background GC During Workflow
 
 The coordinator spawns background GC after workflow completion. If a new workflow starts before the cooldown expires, the GC task may run while the new workflow is active.
 

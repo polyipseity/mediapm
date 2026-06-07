@@ -267,6 +267,17 @@ still use `cas.get(hash)` to extract specific members.
 **Implementation**: `instance_has_materializable_required_outputs()` in
 `src/mediapm/src/materializer/resolve.rs`.
 
+### Orchestration State Decode Migration
+
+**`decode_state()`** in `src/conductor/src/model/state/versions/mod.rs`
+automatically detects V1 envelope format (inline instance objects) and V2
+format (CAS-backed instance refs) by parsing the `version` field from raw
+JSON. V1 instances are migrated through the V1→V2 ISO bridge
+(`tool_call_instance_v1_v2_iso`) then V2→runtime bridge
+(`tool_call_instance_v2_iso`). The returned state always carries the latest
+version marker, making re-persistence produce a V2 envelope — a self-healing
+one-time migration cost per state blob.
+
 ### Metadata Cache
 
 **File**: `src/mediapm/src/metadata_cache.rs`
