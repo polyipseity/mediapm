@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Monotonically increasing counter used to generate unique workspace names.
@@ -15,34 +16,15 @@ use serde_json::Value;
 
 use crate::error::MediaPmError;
 
-/// Creates a temporary Nickel workspace that is cleaned up on drop.
-#[derive(Debug)]
-struct TempNickelWorkspace {
-    /// Temporary workspace root.
-    path: PathBuf,
-}
-
-impl TempNickelWorkspace {
-    /// Allocates one unique temporary Nickel workspace directory.
-    fn new() -> Result<Self, MediaPmError> {
-        let pid = std::process::id();
-        let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("mediapm-nickel-{pid}-{seq}"));
-
-        fs::create_dir_all(&path).map_err(|source| MediaPmError::Io {
-            operation: "creating temporary Nickel workspace".to_string(),
-            path: path.clone(),
-            source,
-        })?;
-
-        Ok(Self { path })
-    }
-}
-
-impl Drop for TempNickelWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
+/// Returns a reference to the shared temporary Nickel workspace directory,
+/// creating it on first access.
+fn nickel_workspace_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("mediapm-nickel-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    })
 }
 
 /// Evaluates one Nickel source string into exported JSON value.
@@ -50,8 +32,9 @@ pub(super) fn evaluate_nickel_source_to_json(
     path: &Path,
     source: &str,
 ) -> Result<Value, MediaPmError> {
-    let workspace = TempNickelWorkspace::new()?;
-    let source_path = workspace.path.join("mediapm.ncl");
+    let workspace_dir = nickel_workspace_dir();
+    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let source_path = workspace_dir.join(format!("mediapm-{seq}.ncl"));
 
     fs::write(&source_path, source).map_err(|source_err| MediaPmError::Io {
         operation: "writing temporary mediapm.ncl source".to_string(),
@@ -76,6 +59,9 @@ pub(super) fn evaluate_nickel_source_to_json(
             render_nickel_error(&mut program, err)
         ))
     })?;
+
+    // Clean up the source file after evaluation completes.
+    let _ = fs::remove_file(&source_path);
 
     Value::deserialize(exported).map_err(|err| {
         MediaPmError::Serialization(format!("deserializing exported Nickel value: {err}"))
