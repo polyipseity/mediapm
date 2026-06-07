@@ -183,6 +183,17 @@ pub struct GcSweepReport {
     pub total_objects: usize,
 }
 
+/// Summary of one redb index compaction pass.
+///
+/// Reports how many bytes were freed by rewriting the durable index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactReport {
+    /// File size of the durable index before compaction, in bytes.
+    pub size_before: u64,
+    /// File size of the durable index after compaction, in bytes.
+    pub size_after: u64,
+}
+
 /// Source used to restore explicit constraint rows during an index repair.
 ///
 /// Object metadata is always reconstructed from the object store itself. This
@@ -737,6 +748,17 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// Returns [`CasError`] when target version is unsupported or migration
     /// read/write flow fails.
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError>;
+
+    /// Compacts the durable index storage, reclaiming space from deleted
+    /// or rewritten entries.
+    ///
+    /// The default implementation returns a zeroed report (no-op).
+    ///
+    /// # Errors
+    /// Returns [`CasError`] when index read/write or filesystem operations fail.
+    async fn compact_index(&self) -> Result<CompactReport, CasError> {
+        Ok(CompactReport { size_before: 0, size_after: 0 })
+    }
 }
 
 #[cfg(test)]
@@ -746,7 +768,8 @@ mod tests {
     use crate::Hash;
 
     use super::{
-        Constraint, IndexRepairConstraintSource, IndexRepairReport, OptimizeReport, PruneReport,
+        CompactReport, Constraint, IndexRepairConstraintSource, IndexRepairReport, OptimizeReport,
+        PruneReport,
     };
 
     #[test]
