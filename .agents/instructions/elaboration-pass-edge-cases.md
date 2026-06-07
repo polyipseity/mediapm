@@ -1460,6 +1460,12 @@ never a candidate for replacement.
 - Document: `HierarchyPath` component boundary is the definitive delimiter — `/`
   replacement in sanitization only targets literal `/` characters that appear
   within a single component (e.g. from deserialized array form)
+- Document: The materialization pipeline uses 5 component-level stages —
+  `check_nfd_source` (pre-resolve), template resolution (per-component),
+  forced `.nfd()` (post-resolve), `sanitize_path_component` (per-component),
+  `validate_components` (all constraints + join). The three NFD stages are:
+  (1) source-component NFD check, (2) forced NFD normalization after template
+  expansion, (3) NFD validation in `validate_components` as the final gate.
 
 **Questions for Clarification**:
 

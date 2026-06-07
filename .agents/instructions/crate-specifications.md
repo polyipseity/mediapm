@@ -673,19 +673,33 @@ repeated stale-entry warnings on every sync cycle.
   - the default sanitization mapping replaces `<` `>` `:` `"` `|` `?` `*` `/` `\\`
     with `_`; `/` and `\\` are included because they are path separators on
     Unix/Windows and must not appear within a single path component,
-  - sanitization iterates `HierarchyPath::components()` (the individual path
-    components of the `HierarchyPath` newtype) rather than operating on the raw
-    string, preserving legitimate `/` separators that delimit hierarchy components,
-- **Hierarchy path character rejection**:
-  - validation (via `validate_hierarchy_path_component()`) runs at flattening
-    time over each component of `HierarchyPath::components()`,
+  - sanitization and validation operate per-component on the `Vec<String>`
+    component pipeline (preserving legitimate `/` separators that delimit
+    hierarchy components) rather than on the raw joined path string,
+  - the materialization pipeline uses five stages on a `Vec<String>` component
+    list:
+    1. `check_nfd_source()` — rejects source components that are not NFD
+       normalized,
+    2. template resolution — resolves `${...}` placeholders per component
+       (via `resolve_hierarchy_relative_path`),
+    3. forced NFD normalization — each resolved component is normalized with
+       `.nfd().collect::<String>()` to catch non-NFD output from template
+       expansion,
+    4. per-component sanitization — `sanitize_path_component()` replaces
+       reserved characters (`<` `>` `:` `"` `|` `?` `*` `/` `\\`) using the
+       effective replacement map,
+    5. `validate_components()` — ensures all components are NFD, non-empty,
+       and free of `.`/`..`/reserved chars, then joins with `"/"` into the
+       final relative path,
+  - `sanitize_path_component` is the per-component replacement function: it
+    applies the effective replacement map to a single component string,
+  - `validate_components` is the post-resolution validation function that checks
+    NFD normalization, forbidden characters, and empty/`.`/`..` segments,
+- **Hierarchy path flattening-time validation**:
+  - `validate_hierarchy_path_component()` runs at flattening time (in
+    `hierarchy_types.rs`) over each component of `HierarchyPath::components()`,
   - `validate_hierarchy_path_component` forbids empty components, `.`/`..`
     segments, and non-NFD-normalized content,
-  - at sanitization time, an `is_rejected_char`-style check forbids `<`, `>`,
-    `:`, `"`, `|`, `?`, `*`, `/`, and `\\` in individual hierarchy path
-    components,
-  - backslash (`\\`) is rejected because it is a Windows path separator and
-    is not a valid POSIX filename character,
 - **Hierarchy flattening dedup**:
   - the dedup key during flattening is `(template_path, media_id)`, not
     `template_path` alone,
