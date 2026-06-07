@@ -800,21 +800,28 @@ filters out entries whose `status == ToolRegistryStatus::Pruned`.
   when `true`, the existing entry is replaced unconditionally. The CLI exposes
   this as `mediapm media add --overwrite`.
 - **Media metadata resolution policy**: When adding a media source, metadata
-  is resolved through independent fallback chains for 5 persisted slots.
-  The `--title`, `--artist`, `--description` CLI flags override all other
-  sources. MBID (recording/release) is restricted to the media-tagger step
-  options — it never feeds into `MediaSourceSpec.title`, `MediaSourceSpec.artist`,
-  `MediaSourceSpec.description`, `metadata["title"]`, or `metadata["artist"]`.
-  The final fallback for every slot is the literal string `"unknown"`.
-  The five slots and their chains are:
+  is resolved through independent fallback chains for 6 persisted slots.
+  MBID (recording/release) is restricted to the media-tagger step options — it
+  never feeds into `MediaSourceSpec.title`, `MediaSourceSpec.artist`,
+  `MediaSourceSpec.description`, `metadata["title"]`, `metadata["artist"]`, or
+  `metadata["album"]`. The final fallback for every slot is the literal string
+  `"unknown"`. The six slots and their chains are:
 
   | Slot | CLI | Remote (yt-dlp) | Local (ffprobe) | Fallback |
   |---|---|---|---|---|
   | `MediaSourceSpec.title` | `--title` | metadata.title | format.tags.title/track | `"unknown"` |
   | `MediaSourceSpec.artist` | `--artist` | uploader/channel/artist/creator | format.tags.artist/album_artist | `"unknown"` |
   | `MediaSourceSpec.description` | `--description` | metadata.description | format.tags.description/comment/synopsis | auto-build → `"unknown"` |
-  | `metadata["title"]` | `--title` literal | `Video:title` → `Video:track` → `Infojson:title` | `media:title` | resolved `MediaSourceSpec.title` → `"unknown"` |
-  | `metadata["artist"]` | `--artist` literal | `Video:artist` → `Video:album_artist` → `Infojson:uploader` | `media:artist` → `media:album_artist` | resolved `MediaSourceSpec.artist` → `"unknown"` |
+  | `metadata["title"]` | `--title` literal (prepended) | `Video:title` → `Video:track` → `Infojson:title` / `media:title` | resolved `MediaSourceSpec.title` → `"unknown"` |
+  | `metadata["artist"]` | `--artist` literal (prepended) | `Video:artist` → `Video:album_artist` → `Infojson:uploader` / `media:artist` → `media:album_artist` | resolved `MediaSourceSpec.artist` → `"unknown"` |
+  | `metadata["album"]` | `--album` literal | — | — | absent (not inserted) |
+
+  The metadata map uses a `Fallback` chain for `title` and `artist` where
+  explicit CLI values are **prepended** as `Literal` candidates before the
+  Variant sources, keeping the source-derived literal as the final fallback.
+  The `album` entry is a single-entry `Literal` that is only present when the
+  `--album` flag is explicitly passed; it has no fallback chain and no
+  source-derived behavior.
 
   The auto-built description template differs between flows:
   - Remote: `"title: {title}\nartist: {artist}"`
