@@ -38,7 +38,6 @@ pub(crate) struct UnifiedToolSpec {
     /// Maximum concurrent calls allowed for this tool.
     ///
     /// `-1` means unlimited.
-    #[expect(dead_code)]
     pub max_concurrent_calls: i32,
     /// Maximum retry count after the initial failed call.
     ///
