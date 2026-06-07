@@ -207,6 +207,18 @@ set_constraint_batch([Set { target_hash: A, potential_bases: [C] }]) where C dep
 
 **Risk**: If mmap fails, entire read fails instead of gracefully degrading to buffer-based read.
 
+**Mmap lease deadlock** (resolved):
+
+- `optimize_target_if_beneficial` could deadlock with `FileObjectActor` when a
+  caller held an `ActiveMmapLease` for hash H while sending a `PersistObjectVariant(H)`
+  RPC — the actor would block on `wait_for_no_active_mmap(H)` waiting for the caller's
+  lease to release.
+- **Fix**: Drop mmap lease before actor RPC in the caller (`drop(target_bytes)`);
+  `wait_for_no_active_mmap` is now a no-op on Unix where POSIX rename/unlink semantics
+  keep the old inode alive; preserved as a real wait on Windows.
+- A batch `PersistObjectVariants` message variant was added to reduce RPC count in
+  `persist_rewritten_dependents` (N individual RPCs → 1 batch RPC with scaled timeout).
+
 **Recommendations**:
 
 - **Fallback to buffer-pool read on mmap failure** (not hard error)

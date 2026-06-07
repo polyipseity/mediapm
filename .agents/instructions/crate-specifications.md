@@ -1246,6 +1246,34 @@ tests/
 | Optimizer concurrency | 8 | `FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY` |
 | Materialization workers | CPU cores | Derived from hardware |
 
+### Mmap Lease & Actor RPC Deadlock Prevention
+
+The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize
+all file mutations per store. Large objects (≥64 KB) are served via mmap with
+reference-counted `ActiveMmapLease` entries tracked in an `ActiveMmapRegistry`.
+
+**Deadlock scenario** (observed in `optimize_target_if_beneficial`):
+1. Caller obtains `target_bytes` via `get()` → mmap → acquires an `ActiveMmapLease`.
+2. Caller sends `PersistObjectVariant(target, ...)` RPC to the `FileObjectActor`.
+3. Actor handler calls `wait_for_no_active_mmap(target)` → blocks waiting for the
+   lease held by the caller.
+4. Neither side can proceed until the 8-second `FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS`
+   fires, causing a spurious timeout error.
+
+**Mitigation**:
+- **Fix A** — Drop the mmap lease (`drop(target_bytes)`) before any actor RPC for
+  the same hash (applied in `optimize_target_if_beneficial`).
+- **Fix C** — `wait_for_no_active_mmap` is compiled out on Unix (`#[cfg(not(target_os = "windows"))]` no-op) because POSIX `rename(2)`/`unlink(2)` keep the old inode
+  alive for existing mmap holders. The method is preserved on Windows where file
+  locks may prevent rename/unlink while handles are held.
+- **Fix D** — A batch message variant `PersistObjectVariants(Vec<(Hash, StoredObject)>)`
+  processes multiple variants in a single actor message loop, avoiding N sequential
+  RPC round-trips in `persist_rewritten_dependents`. Timeout scales linearly with
+  plan count: `8s × count`.
+
+These fixes together ensure that no mmap lease is held across an actor RPC boundary
+for the same hash, eliminating the deadlock while preserving Windows compatibility.
+
 **pulsebar rendering:**
 - terminal-width contract: all progress messages must fit within the terminal
   width; detected via `terminal_size` crate; defaults to 80 cols,
