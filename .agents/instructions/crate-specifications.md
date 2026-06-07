@@ -464,9 +464,10 @@ the conductor orchestration layer.
 
 **Per-tool retry enforcement**:
 - `UnifiedToolSpec.max_retries` is enforced in the coordinator's dispatch loop.
-- `dispatch_step_rpc_with_fallback` wraps the full RPC+fallback pair in a retry
-  loop: on every attempt, it tries the worker RPC first, then falls back to direct
-  local execution if the RPC fails.
+- `dispatch_step_rpc` wraps a single RPC dispatch in a retry loop. On every
+  attempt, it calls the worker RPC. If the RPC fails and retries are exhausted,
+  the error propagates directly to the caller. There is no local-execution
+  fallback — the actor system is the sole execution path.
 - The semaphore permit (concurrency slot) is held across all retry attempts so the
   tool's concurrency capacity is fully occupied during retries.
 - Between retries there is a fixed 500 ms `sleep`.

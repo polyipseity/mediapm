@@ -972,6 +972,25 @@ supported by the filesystem driver).
 without `flock` support, `ToolCacheEntry` holds no fd (no-op). No
 cross-process race protection is available on those platforms.
 
+#### macOS flock Self-Deadlock Fix
+
+**Issue**: On macOS, `flock` locks are per-inode per-process (unlike Linux where
+each open-file description maintains independent lock state). The original code in
+`double_check_hit()` opened a second independent file descriptor to `.lock` while
+`extract_sync()` held `LOCK_EX` on the first fd. On macOS, trying `LOCK_SH` on a
+second fd to the same inode from the same process blocked indefinitely because
+the process already held `LOCK_EX` on that inode.
+
+**Fix**: `double_check_hit()` now uses `excl_file.try_clone()` (`dup(2)`) to
+duplicate the existing exclusive-lock fd instead of opening a separate fd. A
+duplicated fd shares the same open-file description (Linux) / process-inode lock
+state (macOS), so calling `flock(LOCK_SH)` on the cloned fd becomes a downgrade
+of the existing lock rather than an attempt to acquire a conflicting one.
+
+**Platform safety**: The post-extraction downgrade path (after `remove_dir_all`
+recreates the lock file on a new inode) was already correct on both platforms
+because it operates on a different inode — no change was needed there.
+
 ### 2.10 Tool Max Concurrency Enforcement
 
 **Issue**: The `max_concurrent_calls` field on `UnifiedToolSpec` was plumbed through
