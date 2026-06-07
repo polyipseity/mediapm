@@ -280,7 +280,15 @@ mod tests {
             .load_resolved_state(&user_ncl, &machine_ncl, StateMutationOptions::default())
             .await
             .expect("load state");
-        assert_eq!(loaded, next_state);
+        // Only assert instance-round-trip fields — the background GC fires
+        // concurrently and mutates `aux` (sets `last_unreachable`), so ignore
+        // it for equality.
+        assert_eq!(loaded.version, next_state.version, "version mismatch");
+        assert_eq!(loaded.instances, next_state.instances, "instances mismatch");
+        assert_eq!(
+            loaded.referenced_instance_keys, next_state.referenced_instance_keys,
+            "referenced_instance_keys mismatch",
+        );
     }
 
     /// Ensures public API state replacement validates instances against merged

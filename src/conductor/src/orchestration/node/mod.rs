@@ -271,25 +271,19 @@ where
 
     /// Initializes the node actor with a workflow coordinator bound to the shared CAS handle.
     ///
-    /// Also spawns the background GC loop: compacts the CAS index immediately,
-    /// then every [`GC_INTERVAL_SECONDS`] submits a `RunGc(None, …)` message
-    /// to itself for full-cycle GC (instance sweep + CAS sweep + compaction).
+    /// Also spawns the background GC loop: immediately runs a full GC cycle
+    /// (instance sweep + CAS sweep + compaction), then waits
+    /// [`GC_INTERVAL_SECONDS`] between subsequent cycles.
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        // Spawn background GC loop: compact on startup, then periodic GC.
-        let bg_cas = args.clone();
+        // Spawn background GC loop: fires immediately on startup, then
+        // sleeps [`GC_INTERVAL_SECONDS`] after each completed cycle.
         let bg_self = _myself.clone();
         tokio::spawn(async move {
-            // Startup: compact index immediately.
-            if let Err(e) = bg_cas.compact_index().await {
-                tracing::warn!("background index compaction at startup failed: {e}");
-            }
-            // Periodic full GC sweep loop.
             loop {
-                tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_port = RpcReplyPort::from(tx);
                 if bg_self.send_message(ConductorNodeMessage::RunGc(None, reply_port)).is_err() {
@@ -306,6 +300,7 @@ where
                         break;
                     }
                 }
+                tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
             }
         });
 
