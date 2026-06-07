@@ -1522,6 +1522,10 @@ impl FileSystemState {
             return Ok(false);
         }
 
+        // Drop mmap lease before actor RPC to prevent deadlock:
+        // the actor's persist handler waits for all mmaps on this hash to close.
+        drop(target_bytes);
+
         self.persist_object_variant(target, &best.object).await?;
 
         let resolved_depth = {
