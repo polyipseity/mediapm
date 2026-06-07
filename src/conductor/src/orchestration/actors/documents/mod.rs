@@ -1217,7 +1217,7 @@ pub(in crate::orchestration) async fn spawn_document_loader_actor()
 mod tests {
     //! Integration tests for `DocumentLoaderActor` merge and validation invariants.
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use mediapm_cas::Hash;
     use tempfile::tempdir;
@@ -1444,8 +1444,8 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
-            &mut HashMap::new(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {

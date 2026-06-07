@@ -135,8 +135,15 @@ fn evaluate_document_source_value(
     let workspace_dir = nickel_workspace_dir();
     let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let input_path = workspace_dir.join(format!("{seq}-document_input.ncl"));
-    let wrapper_path = workspace_dir.join(format!("{seq}-inspect_document.ncl"));
+    let subdir = workspace_dir.join(format!("inspect-{seq}"));
+    fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
+        operation: "creating Nickel workspace subdirectory for source value evaluation".to_string(),
+        path: subdir.clone(),
+        source,
+    })?;
+
+    let input_path = subdir.join("document_input.ncl");
+    let wrapper_path = subdir.join("inspect_document.ncl");
 
     write_nickel_file(
         &input_path,
@@ -144,7 +151,7 @@ fn evaluate_document_source_value(
         "writing temporary Nickel input document for metadata inspection",
     )?;
 
-    let wrapper_source = format!("import \"{seq}-document_input.ncl\"\n");
+    let wrapper_source = "import \"document_input.ncl\"\n".to_string();
     write_nickel_file(
         &wrapper_path,
         &wrapper_source,
@@ -156,9 +163,8 @@ fn evaluate_document_source_value(
         &format!("evaluating {document_kind} source metadata"),
     )?;
 
-    // Clean up temporary files after evaluation completes.
-    let _ = fs::remove_file(&input_path);
-    let _ = fs::remove_file(&wrapper_path);
+    // Clean up temporary directory after evaluation completes.
+    let _ = fs::remove_dir_all(&subdir);
 
     let cache = eval_source_value_cache();
     let mut guard = cache.lock().unwrap();
@@ -406,10 +412,17 @@ where
     let workspace_dir = nickel_workspace_dir();
     let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let mod_path = workspace_dir.join(format!("{seq}-mod.ncl"));
-    let version_path = workspace_dir.join(format!("{seq}-{version_file_name}"));
-    let input_path = workspace_dir.join(format!("{seq}-document_input.ncl"));
-    let wrapper_path = workspace_dir.join(format!("{seq}-decode_document.ncl"));
+    let subdir = workspace_dir.join(format!("decode-{seq}"));
+    fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
+        operation: "creating Nickel workspace subdirectory for document migration".to_string(),
+        path: subdir.clone(),
+        source,
+    })?;
+
+    let mod_path = subdir.join("mod.ncl");
+    let version_path = subdir.join(&version_file_name);
+    let input_path = subdir.join("document_input.ncl");
+    let wrapper_path = subdir.join("decode_document.ncl");
 
     write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(
@@ -421,9 +434,9 @@ where
 
     let wrapper_source = format!(
         r#"
-let migration = import "{seq}-mod.ncl" in
-let version = import "{seq}-{version_file_name}" in
-let document = import "{seq}-document_input.ncl" in
+let migration = import "mod.ncl" in
+let version = import "{version_file_name}" in
+let document = import "document_input.ncl" in
 version.{validator_name} (migration.migrate_to {requested_version} document)
 "#
     );
@@ -434,11 +447,8 @@ version.{validator_name} (migration.migrate_to {requested_version} document)
         &format!("evaluating {document_kind} via Nickel migration wrapper"),
     )?;
 
-    // Clean up temporary files after evaluation completes.
-    let _ = fs::remove_file(&mod_path);
-    let _ = fs::remove_file(&version_path);
-    let _ = fs::remove_file(&input_path);
-    let _ = fs::remove_file(&wrapper_path);
+    // Clean up temporary directory after evaluation completes.
+    let _ = fs::remove_dir_all(&subdir);
 
     let json_value = serde_json::to_value(&result).map_err(|err| {
         ConductorError::Serialization(format!("failed caching evaluated {document_kind}: {err}"))

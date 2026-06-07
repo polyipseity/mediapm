@@ -99,8 +99,8 @@ mod tests {
     //! update these tests alongside `v_latest.rs` and the latest `vX.ncl`.
 
     use super::nickel_io::{
-        TempNickelWorkspace, evaluate_main_file_as, migrate_document_source_to_version,
-        render_document_as_nickel, write_nickel_file,
+        NICKEL_WORKSPACE_COUNTER, evaluate_main_file_as, migrate_document_source_to_version,
+        nickel_workspace_dir, render_document_as_nickel, write_nickel_file,
     };
     use super::{ConductorError, MOD_NCL_SOURCE};
     use super::{
@@ -137,14 +137,22 @@ mod tests {
 
     /// Reads migration metadata from `mod.ncl` through Nickel evaluation.
     fn read_migration_metadata() -> Result<MigrationMetadata, ConductorError> {
-        let workspace = TempNickelWorkspace::new()?;
+        let workspace_dir = nickel_workspace_dir();
+        let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let subdir = workspace_dir.join(format!("migration_metadata-{seq}"));
+        std::fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
+            operation: "creating Nickel workspace subdirectory for migration metadata".to_string(),
+            path: subdir.clone(),
+            source,
+        })?;
+
         write_nickel_file(
-            &workspace.path().join("mod.ncl"),
+            &subdir.join("mod.ncl"),
             MOD_NCL_SOURCE,
             "writing temporary Nickel migration helper for metadata test",
         )?;
         write_nickel_file(
-            &workspace.path().join(latest::NCL_FILE_NAME),
+            &subdir.join(latest::NCL_FILE_NAME),
             latest::NCL_SOURCE,
             "writing temporary latest Nickel contract for migration metadata test",
         )?;
@@ -157,14 +165,17 @@ mod tests {
       atomic_migration_pairs = migration.atomic_migration_pairs,
     }
     "#;
-        let wrapper_path = workspace.path().join("migration_metadata.ncl");
+        let wrapper_path = subdir.join("migration_metadata.ncl");
         write_nickel_file(
             &wrapper_path,
             wrapper_source,
             "writing temporary Nickel migration metadata wrapper",
         )?;
 
-        evaluate_main_file_as(&wrapper_path, "evaluating Nickel migration metadata")
+        let result = evaluate_main_file_as(&wrapper_path, "evaluating Nickel migration metadata");
+        // Clean up temporary directory
+        let _ = std::fs::remove_dir_all(&subdir);
+        result
     }
 
     /// Evaluates one document source through exactly one declared atomic
@@ -180,20 +191,28 @@ mod tests {
     {
         let (_, version_contract_source) = resolve_version_contract(to_version, document_kind)?;
         let validator_name = format!("validate_document_v{to_version}");
-        let workspace = TempNickelWorkspace::new()?;
+
+        let workspace_dir = nickel_workspace_dir();
+        let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let subdir = workspace_dir.join(format!("atomic_migrate-{seq}"));
+        std::fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
+            operation: "creating Nickel workspace subdirectory for atomic migration".to_string(),
+            path: subdir.clone(),
+            source,
+        })?;
 
         write_nickel_file(
-            &workspace.path().join("mod.ncl"),
+            &subdir.join("mod.ncl"),
             MOD_NCL_SOURCE,
             "writing temporary Nickel migration helper for atomic migration test",
         )?;
         write_nickel_file(
-            &workspace.path().join(latest::NCL_FILE_NAME),
+            &subdir.join(latest::NCL_FILE_NAME),
             version_contract_source,
             "writing temporary latest Nickel contract for atomic migration test",
         )?;
         write_nickel_file(
-            &workspace.path().join("document_input.ncl"),
+            &subdir.join("document_input.ncl"),
             source,
             "writing temporary Nickel input document for atomic migration test",
         )?;
@@ -209,19 +228,22 @@ mod tests {
             from_version,
             to_version,
         );
-        let wrapper_path = workspace.path().join("atomic_migrate_document.ncl");
+        let wrapper_path = subdir.join("atomic_migrate_document.ncl");
         write_nickel_file(
             &wrapper_path,
             &wrapper_source,
             "writing temporary Nickel atomic migration wrapper",
         )?;
 
-        evaluate_main_file_as(
+        let result = evaluate_main_file_as(
             &wrapper_path,
             &format!(
                 "evaluating atomic Nickel migration {from_version}->{to_version} for {document_kind}"
             ),
-        )
+        );
+        // Clean up temporary directory
+        let _ = std::fs::remove_dir_all(&subdir);
+        result
     }
 
     /// Verifies that one Rust-authored latest envelope survives Nickel migration

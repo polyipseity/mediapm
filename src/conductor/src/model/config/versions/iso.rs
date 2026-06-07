@@ -140,12 +140,20 @@ pub(crate) fn compile_total_configuration_sources(
     let workspace_dir = nickel_workspace_dir();
     let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    let mod_path = workspace_dir.join(format!("{seq}-mod.ncl"));
-    let target_file_path = workspace_dir.join(format!("{seq}-{target_file_name}"));
-    let user_path = workspace_dir.join(format!("{seq}-user_input.ncl"));
-    let machine_path = workspace_dir.join(format!("{seq}-machine_input.ncl"));
-    let state_path = workspace_dir.join(format!("{seq}-state_input.ncl"));
-    let validate_path = workspace_dir.join(format!("{seq}-validate_total.ncl"));
+    let subdir = workspace_dir.join(format!("total-{seq}"));
+    std::fs::create_dir_all(&subdir).map_err(|source| ConductorError::Io {
+        operation: "creating Nickel workspace subdirectory for total configuration compilation"
+            .to_string(),
+        path: subdir.clone(),
+        source,
+    })?;
+
+    let mod_path = subdir.join("mod.ncl");
+    let target_file_path = subdir.join(&target_file_name);
+    let user_path = subdir.join("user_input.ncl");
+    let machine_path = subdir.join("machine_input.ncl");
+    let state_path = subdir.join("state_input.ncl");
+    let validate_path = subdir.join("validate_total.ncl");
 
     write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(
@@ -159,11 +167,11 @@ pub(crate) fn compile_total_configuration_sources(
 
     let validate_source = format!(
         r#"
-let migration = import "{seq}-mod.ncl" in
-let version = import "{seq}-{target_file_name}" in
-let user = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-user_input.ncl")) in
-let machine = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-machine_input.ncl")) in
-let state = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-state_input.ncl")) in
+let migration = import "mod.ncl" in
+let version = import "{target_file_name}" in
+let user = version.{validator_name} (migration.migrate_to {target_version} (import "user_input.ncl")) in
+let machine = version.{validator_name} (migration.migrate_to {target_version} (import "machine_input.ncl")) in
+let state = version.{validator_name} (migration.migrate_to {target_version} (import "state_input.ncl")) in
 {{
     validated_user = user,
     validated_machine = machine,
@@ -180,13 +188,8 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
 
     let result = evaluate_main_file_as(&validate_path, "evaluating full Nickel configuration");
 
-    // Clean up temporary files after evaluation completes.
-    let _ = std::fs::remove_file(&mod_path);
-    let _ = std::fs::remove_file(&target_file_path);
-    let _ = std::fs::remove_file(&user_path);
-    let _ = std::fs::remove_file(&machine_path);
-    let _ = std::fs::remove_file(&state_path);
-    let _ = std::fs::remove_file(&validate_path);
+    // Clean up temporary directory after evaluation completes.
+    let _ = std::fs::remove_dir_all(&subdir);
 
     result
 }
