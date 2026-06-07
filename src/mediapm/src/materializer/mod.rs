@@ -14,6 +14,7 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{MachineNickelDocument, OrchestrationState};
 use pulsebar::{MultiProgress, ProgressBar};
 use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::conductor_bridge::resolve_ffmpeg_slot_limits;
 use crate::config::{
@@ -57,8 +58,8 @@ mod tests {
     use crate::paths::MediaPmPaths;
 
     use crate::materializer::{
-        instance_matches_expected_inputs, resolve_managed_ffprobe_path, sanitize_hierarchy_path,
-        sync_hierarchy, validate_hierarchy_path,
+        instance_matches_expected_inputs, resolve_managed_ffprobe_path, sanitize_path_component,
+        sync_hierarchy, validate_components,
     };
 
     /// Protects managed ffprobe metadata lookup by resolving relative command
@@ -355,25 +356,24 @@ mod tests {
     /// Protects strict forbidden-character enforcement in hierarchy paths.
     #[test]
     fn hierarchy_path_rejects_forbidden_characters() {
-        let err = validate_hierarchy_path("movies/Star:Wars.mkv").expect_err("path should fail");
+        let components = vec!["movies".to_string(), "Star:Wars.mkv".to_string()];
+        let err = validate_components(&components).expect_err("path should fail");
         assert!(err.to_string().contains("forbidden characters"));
     }
 
     /// Protects NFD-only normalization policy for hierarchy path segments.
     #[test]
     fn hierarchy_path_rejects_non_nfd_segments() {
-        let err = validate_hierarchy_path("movies/épisode.mkv").expect_err("NFD should fail");
+        let components = vec!["movies".to_string(), "épisode".to_string()];
+        let err = validate_components(&components).expect_err("NFD should fail");
         assert!(err.to_string().contains("NFD"));
     }
 
     #[test]
-    fn sanitize_hierarchy_path_replaces_reserved_characters() {
+    fn sanitize_path_component_replaces_reserved_characters() {
         let replacements = BTreeMap::from([(':', '_'), ('<', '_'), ('?', '_')]);
 
-        assert_eq!(
-            sanitize_hierarchy_path("movies/Star:Wars?.mkv", &replacements),
-            "movies/Star_Wars_.mkv"
-        );
+        assert_eq!(sanitize_path_component("Star:Wars?.mkv", &replacements), "Star_Wars_.mkv");
     }
 
     /// Ensures media metadata placeholder expansion is normalized to NFD
@@ -3005,8 +3005,8 @@ mod tests {
 mod zip;
 
 use self::commit::{
-    ensure_managed_path_readonly, now_unix_seconds, remove_path, sanitize_hierarchy_path,
-    unix_epoch_millis, validate_hierarchy_path,
+    check_nfd_source, ensure_managed_path_readonly, now_unix_seconds, remove_path,
+    sanitize_path_component, unix_epoch_millis, validate_components,
 };
 use self::file_ops::materialize_file_from_cas_with_order;
 use self::metadata::{
@@ -3015,9 +3015,8 @@ use self::metadata::{
 };
 use self::playlist::{
     collect_media_entries_by_id, collect_playlist_media_index, join_relative_paths,
-    normalize_resolved_hierarchy_path_to_nfd, playlist_format_label, render_absolute_playlist_path,
-    render_playlist_bytes, render_relative_playlist_path,
-    resolve_playlist_media_target_relative_path,
+    playlist_format_label, render_absolute_playlist_path, render_playlist_bytes,
+    render_relative_playlist_path, resolve_playlist_media_target_relative_path,
 };
 use self::resolve::{
     collect_media_source_available_variants, load_runtime_orchestration_state,
@@ -3235,34 +3234,41 @@ async fn prepare_hierarchy_entry(
     lock: &MediaPmState,
     lookup: &MaterializationLookupContext,
     materialization_methods: &[crate::config::MaterializationMethod],
-    playlist_media_index: &BTreeMap<String, String>,
+    playlist_media_index: &BTreeMap<String, Vec<String>>,
     media_entries_by_id: &BTreeMap<String, crate::config::HierarchyEntry>,
     flattened_entry: &FlattenedHierarchyEntry,
     job_index: usize,
     progress_bar: &ProgressBar,
 ) -> Result<PreparedHierarchyEntryResult, MediaPmError> {
-    let relative_path_template = flattened_entry.path.as_str();
+    let path_components = flattened_entry.path_components.as_slice();
     let entry = &flattened_entry.entry;
 
     progress_bar.set_position(0);
     progress_bar
         .set_message(&format!("{}: resolving filename", hierarchy_entry_kind_label(entry.kind)));
 
-    let relative_path =
+    // Pipeline: check NFD → resolve templates per component → force NFD →
+    // sanitize per component → validate → join once at the end.
+    check_nfd_source(path_components)?;
+    let mut resolved_components =
         if matches!(entry.kind, HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder) {
             let source = resolve_hierarchy_source(document, entry)?;
-            resolve_hierarchy_relative_path(relative_path_template, entry, source, lookup).await?
+            resolve_hierarchy_relative_path(path_components, entry, source, lookup).await?
         } else {
-            relative_path_template.to_string()
+            path_components.to_vec()
         };
-    let mut relative_path = normalize_resolved_hierarchy_path_to_nfd(&relative_path);
+    for component in &mut resolved_components {
+        *component = component.nfd().collect::<String>();
+    }
     if entry.sanitize_names.is_enabled() {
         let runtime_replacements = document.runtime.path_sanitization_mapping_with_defaults()?;
         let effective_replacements =
             entry.sanitize_names.replacement_map_with_defaults(&runtime_replacements);
-        relative_path = sanitize_hierarchy_path(&relative_path, &effective_replacements);
+        for component in &mut resolved_components {
+            *component = sanitize_path_component(component, &effective_replacements);
+        }
     }
-    validate_hierarchy_path(&relative_path)?;
+    let relative_path = validate_components(&resolved_components)?.join("/");
     progress_bar.set_message(&format!(
         "{}: {}",
         hierarchy_entry_kind_label(entry.kind),
@@ -3579,7 +3585,7 @@ async fn prepare_hierarchy_entry(
                     )));
                 }
 
-                let media_path_template = playlist_media_index.get(requested_id).ok_or_else(|| {
+                let media_path_components = playlist_media_index.get(requested_id).ok_or_else(|| {
                         MediaPmError::Workflow(format!(
                             "hierarchy playlist path '{relative_path}' ids[{item_index}] references unknown hierarchy id '{requested_id}'"
                         ))
@@ -3588,7 +3594,7 @@ async fn prepare_hierarchy_entry(
                 let target_relative = resolve_playlist_media_target_relative_path(
                     document,
                     lookup,
-                    media_path_template,
+                    media_path_components.as_slice(),
                     requested_id,
                     media_entries_by_id,
                     &mut resolved_playlist_media_targets,
