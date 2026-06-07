@@ -2158,6 +2158,7 @@ dependencies = [
  "bytes",
  "clap",
  "clap_complete",
+ "dashmap",
  "dirs",
  "dotenvy",
  "flate2",

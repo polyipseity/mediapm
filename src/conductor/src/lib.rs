@@ -15,6 +15,7 @@ pub mod gc;
 pub mod model;
 pub mod orchestration;
 pub mod runtime_env;
+pub mod tool_cache;
 pub mod tools;
 
 #[cfg(feature = "tool-presets")]
