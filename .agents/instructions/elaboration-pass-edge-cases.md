@@ -818,18 +818,18 @@ WorkflowSpec {
 
 GC now uses a two-phase reachability-first strategy. `referenced_instance_keys`
 (GC-root reachability) takes priority: referenced instances are NEVER evicted.
-Unreferenced instances get a `last_reachable` marker on first encounter (phase 1
-mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
+Unreferenced instances get a `last_unreachable` marker on first encounter (phase 1
+mark), then may be evicted on a subsequent GC cycle if `last_unreachable < cutoff`
 (phase 2 evict).
 
 **Scenario 1 — `instance_ttl_seconds = 0`**:
 
 | Aspect | Behavior |
 |---|---|
-| Cutoff computation | `now - 0 = now` → every unreferenced instance with `last_reachable ≤ now` is removed |
-| Effective result | GC runs on every persist, immediately pruning all unreferenced instances with any `last_reachable` value |
+| Cutoff computation | `now - 0 = now` → every unreferenced instance with `last_unreachable ≤ now` is removed |
+| Effective result | GC runs on every persist, immediately pruning all unreferenced instances with any `last_unreachable` value |
 | Referenced instances | Survive regardless of age because `referenced_instance_keys` takes priority |
-| Unmarked instances (no aux entry) | Phase 1 sets `last_reachable = now`, then phase 2 checks `now < now` (false) → preserved for one cycle |
+| Unmarked instances (no aux entry) | Phase 1 sets `last_unreachable = now`, then phase 2 checks `now < now` (false) → preserved for one cycle |
 | Risk | Users expecting "keep nothing" may be surprised that referenced instances survive; only unreferenced, marked instances are pruned |
 
 **Scenario 2 — `instance_ttl_seconds = None` (default)** (coordinator resolves to 7 days):
@@ -841,7 +841,7 @@ mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
 | Default value | `DEFAULT_INSTANCE_TTL_SECONDS = 604_800` (7 days) at `coordinator.rs:86` |
 | Spawn default | `ensure_state_store()` passes `Some(DEFAULT_INSTANCE_TTL_SECONDS)` to `spawn_state_store_actor` — the actor never starts with `None` |
 | Effective result | Instance GC runs with a 7-day TTL by default; unreferenced instances older than 7 days are evicted on the next persist |
-| Migration safety | State written before this field existed (with empty `aux` and no `referenced_instance_keys`) is handled by the deserialization guarantee: every instance gets `last_reachable = now` during decode |
+| Migration safety | State written before this field existed (with empty `aux` and no `referenced_instance_keys`) is handled by the deserialization guarantee: every instance gets `last_unreachable = now` during decode |
 | Risk | Users who explicitly set `None` expecting "no GC" will still get 7-day GC. To effectively disable GC, set a very large value (e.g., `u64::MAX`) |
 
 **Scenario 3 — `instance_ttl_seconds` near `u64::MAX`**:
@@ -849,7 +849,7 @@ mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
 | Aspect | Behavior |
 |---|---|
 | Cutoff computation | `now - u64::MAX` saturates to 0 via `saturating_sub` |
-| Effective result | Cutoff is epoch 0 — unreferenced instances with `last_reachable.epoch_seconds >= 0` are preserved (all of them) |
+| Effective result | Cutoff is epoch 0 — unreferenced instances with `last_unreachable.epoch_seconds >= 0` are preserved (all of them) |
 | Practical effect | Identical to `None` — no GC ever fires |
 | Risk | User may expect garbage collection but configured a value so large it never triggers. Document that extreme values are effectively "never GC" |
 
@@ -863,21 +863,21 @@ mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
 | `unwrap_or_default` fallback | If `duration_since` fails (system clock before UNIX_EPOCH), defaults to zero-offset, which sets cutoff at `0 - ttl = 0` (saturated) — no GC on that persist cycle |
 | Risk | Clock jumps are rare but destructive. The fallback is safe (skips aggressive GC) but may cause an unexpected bloat cycle |
 
-**Scenario 5 — `last_reachable` non-null guarantee (type-enforced)**:
+**Scenario 5 — `last_unreachable` non-null guarantee (type-enforced)**:
 
-The runtime type `AuxData.last_reachable` is non-optional `ImpureTimestamp`.
+The runtime type `AuxData.last_unreachable` is non-optional `ImpureTimestamp`.
 `None` only exists on the wire (`Option<ImpureTimestampV2>` for backward
 compatibility with old state files). The ISO bridge resolves `None` to `now()`
 during deserialization, making the runtime type always populated.
 
 | Aspect | Behavior |
 |---|---|
-| Runtime type | `last_reachable: ImpureTimestamp` — non-optional, enforced by the type system |
-| Wire type | `last_reachable: Option<ImpureTimestampV2>` with `#[serde(default)]` — backward compat |
+| Runtime type | `last_unreachable: ImpureTimestamp` — non-optional, enforced by the type system |
+| Wire type | `last_unreachable: Option<ImpureTimestampV2>` with `#[serde(default)]` — backward compat |
 | `None` → `now()` | The ISO bridge `from` direction injects `now()` when the wire value is `None` |
-| Missing aux entries | Post-processing loop inserts `AuxData { last_reachable: now }` for any instance without an aux record |
-| GC phase 1 | Sets `last_reachable = now` only for instances lacking an aux entry — no `None` branch needed |
-| GC phase 2 predicate | `aux[key].last_reachable < cutoff` — direct comparison, no `is_some_and` wrapper |
+| Missing aux entries | Post-processing loop inserts `AuxData { last_unreachable: now }` for any instance without an aux record |
+| GC phase 1 | Sets `last_unreachable = now` only for instances lacking an aux entry — no `None` branch needed |
+| GC phase 2 predicate | `aux[key].last_unreachable < cutoff` — direct comparison, no `is_some_and` wrapper |
 | `None` survival | Not applicable — runtime type disallows `None` |
 | Risk | The deserialization guarantee eliminates the backward-compatibility hazard. Type-enforcement makes GC code simpler and safer |
 
