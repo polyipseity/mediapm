@@ -608,15 +608,11 @@ GC sweep runs concurrently with workflow step execution. If a step materializes 
 
 The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
 
-**Mitigation**: Background auto-GC uses a cooldown (3600 seconds) to avoid racing with active workflow commits. The GC roots are computed via `compute_gc_roots()` at invocation time from user/machine external_data, state_pointer, and current orchestration state. CLI-invoked GC is an explicit operation where the caller should ensure quiescence.
+**Mitigation**: CLI-invoked GC (the only remaining automatic sweep path) is an explicit operation where the caller should ensure quiescence. The removed background auto-GC previously used a cooldown to avoid racing with workflow commits; now only `compact_index()` runs automatically at startup (no sweep involved), which is safe because compaction does not modify the content set — it only defragments the index database.
 
-#### 1.22. Background GC During Workflow
+#### 1.22. Background GC (removed)
 
-The coordinator spawns background GC after workflow completion. If a new workflow starts before the cooldown expires, the GC task may run while the new workflow is active.
-
-**Behavior**: The GC sweep captures `all_hashes` and `roots` at invocation time. If the new workflow has committed new state, its roots may be missing from the captured root set. This is safe because the new roots are the state pointer and instance outputs — if a sweep deletes a blob that's also referenced by a step from the active workflow, the next `get()` for that blob will produce a `NotFound` error, which propagates to the workflow step.
-
-**Mitigation**: Currently, no cross-GC exclusion is enforced. A future enhancement could use an atomic flag (like `optimize_in_progress`) to prevent concurrent GC and workflow execution.
+The previous 1-hour-delayed background GC sweep loop has been removed. The conductor now spawns a one-shot `compact_index()` on the first `SubmitWorkflow` instead. No automatic CAS object sweep runs in the background; explicit GC via the CLI `run_gc` command is the only sweep path.
 
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 

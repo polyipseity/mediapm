@@ -546,11 +546,11 @@ The CAS `CasMaintenanceApi` now exposes GC sweep capabilities:
 
 `content_map` entries are not iterated directly — the decode-time invariant (`vet_latest_envelope`) enforces `content_map` ⊆ `external_data`, so all content-map hashes are covered by external_data roots.
 
-Both the CLI (`run_gc()`) and the background GC task use this shared function.
+The CLI `run_gc()` command (in `src/conductor/src/cli/mod.rs`) is the primary consumer of this shared function.
 
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
-**Background auto-GC**: After workflow completion, the coordinator spawns a tokio task that waits `GC_COOLDOWN_SECONDS` (3600 seconds) before loading user/machine docs from disk, fetching `state_pointer` and `current_state` from the state store, and calling `compute_gc_roots()` to build the full root set before invoking `gc_sweep`. This ensures foreground workflow operations are not delayed by background GC.
+**Startup compact_index**: The conductor node actor spawns a one-shot `compact_index()` task on the first `SubmitWorkflow` call (no delay). This replaces the previous 1-hour-delayed background GC sweep loop, which was removed. The `compute_gc_roots`-based sweep is no longer invoked automatically; it remains available only through the explicit CLI `run_gc` command. CAS objects unreferenced by the current orchestration state are eventually reclaimed when a user invokes the explicit GC command.
 
 **Instance TTL**: The config field `instance_ttl_seconds` is `Option<u64>`; `None` means "use the default". The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604 800 — 7 days) before passing to the state store; the actor also starts with the 7-day default at spawn time. Instance GC is never truly disabled — at worst it runs with a very generous TTL. When an explicit value is set, cutoff = `now - ttl`. Configured via `runtime.instance_ttl_seconds`.
 
