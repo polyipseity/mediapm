@@ -4,14 +4,15 @@
 //! messages, typed RPC client, actor marker, spawn helper, and the concrete
 //! `ractor::Actor` implementation that delegates to the workflow coordinator.
 
-use mediapm_cas::CasApi;
-use mediapm_cas::CasMaintenanceApi;
-use mediapm_cas::Hash;
+use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
+
+use crate::gc::run_cas_gc_sweep;
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
@@ -241,9 +242,10 @@ struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
     workflow_handles: HashMap<u64, JoinHandle<Result<RunSummary, ConductorError>>>,
     /// Monotonically increasing handle ID counter.
     next_handle_id: u64,
-    /// Whether GC+compact has been fired this session.
-    gc_spawned: bool,
 }
+
+/// Interval in seconds between background GC sweep cycles.
+const GC_INTERVAL_SECONDS: u64 = 3600;
 
 /// Marker actor for top-level conductor node command dispatch.
 #[derive(Debug, Clone, Copy)]
@@ -268,16 +270,49 @@ where
     type Arguments = Arc<C>;
 
     /// Initializes the node actor with a workflow coordinator bound to the shared CAS handle.
+    ///
+    /// Also spawns the background GC loop: compacts the CAS index immediately,
+    /// then every [`GC_INTERVAL_SECONDS`] submits a `RunGc(None, …)` message
+    /// to itself for full-cycle GC (instance sweep + CAS sweep + compaction).
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        // Spawn background GC loop: compact on startup, then periodic GC.
+        let bg_cas = args.clone();
+        let bg_self = _myself.clone();
+        tokio::spawn(async move {
+            // Startup: compact index immediately.
+            if let Err(e) = bg_cas.compact_index().await {
+                tracing::warn!("background index compaction at startup failed: {e}");
+            }
+            // Periodic full GC sweep loop.
+            loop {
+                tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let reply_port = RpcReplyPort::from(tx);
+                if bg_self.send_message(ConductorNodeMessage::RunGc(None, reply_port)).is_err() {
+                    tracing::warn!("background GC send failed — actor may have stopped");
+                    break;
+                }
+                match rx.await {
+                    Ok(Ok(())) => tracing::debug!("background GC completed successfully"),
+                    Ok(Err(e)) => tracing::warn!("background GC failed: {e}"),
+                    Err(_) => {
+                        tracing::warn!(
+                            "background GC reply channel closed — actor may have stopped"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+
         Ok(ConductorActorState {
             coordinator: WorkflowCoordinator::new(args),
             workflow_handles: HashMap::new(),
             next_handle_id: 0,
-            gc_spawned: false,
         })
     }
 
@@ -292,18 +327,6 @@ where
             ConductorNodeMessage::SubmitWorkflow(user_ncl, machine_ncl, options, reply) => {
                 let handle_id = state.next_handle_id;
                 state.next_handle_id += 1;
-
-                // Fire GC+compact on the first workflow submission (replaces
-                // the old 1-hour-delayed background GC loop).
-                if !state.gc_spawned {
-                    state.gc_spawned = true;
-                    let early_cas = state.coordinator.cas.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = early_cas.compact_index().await {
-                            tracing::warn!("background index compaction at startup failed: {e}");
-                        }
-                    });
-                }
 
                 // Pre-ensure runtime support so the main coordinator has a
                 // state_store that the background task can share.  When the bg
@@ -387,7 +410,25 @@ where
                 );
             }
             ConductorNodeMessage::RunGc(ttl_override, reply) => {
-                let _ = reply.send(state.coordinator.run_gc(ttl_override).await);
+                let result = async {
+                    // 1. Instance GC (TTL-based pruning of stale instances).
+                    state.coordinator.run_gc(ttl_override).await?;
+
+                    // 2. CAS sweep using coordinator's accumulated external_data.
+                    let cas = state.coordinator.cas.clone();
+                    let external_data = state.coordinator.external_data().clone();
+                    let state_pointer = match state.coordinator.state_store() {
+                        Some(store) => store.get_state_pointer().await?,
+                        None => None,
+                    };
+                    let current_state = state.coordinator.current_state().await?;
+                    run_cas_gc_sweep(cas.as_ref(), &external_data, state_pointer, &current_state)
+                        .await?;
+
+                    Ok::<_, ConductorError>(())
+                }
+                .await;
+                let _ = reply.send(result);
             }
         }
         Ok(())

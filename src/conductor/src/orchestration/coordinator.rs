@@ -32,8 +32,8 @@ use crate::api::{
 };
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec,
-    parse_input_binding,
+    ExternalContentRef, ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec,
+    WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
@@ -80,6 +80,13 @@ where
     workers: Vec<ActorRef<StepWorkerMessage>>,
     /// Typed client for the orchestration state-store actor.
     state_store: Option<StateStoreClient>,
+    /// Accumulated external-data hashes across all workflow runs.
+    ///
+    /// Populated from `UnifiedNickelDocument.external_data` after every
+    /// workflow submission and used as GC roots in the background sweep.
+    /// New entries are merged on each run so they survive until the next
+    /// GC cycle.
+    external_data: BTreeMap<Hash, ExternalContentRef>,
 }
 
 /// Default TTL for workflow instances: 7 days.
@@ -99,6 +106,7 @@ where
             scheduler: None,
             workers: Vec::new(),
             state_store: None,
+            external_data: BTreeMap::new(),
         }
     }
 
@@ -130,6 +138,20 @@ where
         }
 
         Ok(Self::empty_runtime_diagnostics())
+    }
+
+    /// Returns a reference to the accumulated external-data map.
+    #[must_use]
+    pub(super) fn external_data(&self) -> &BTreeMap<Hash, ExternalContentRef> {
+        &self.external_data
+    }
+
+    /// Merges new external data entries into the accumulated set.
+    ///
+    /// New entries from a freshly loaded unified document extend the set so
+    /// the background GC eventually sees them as roots.
+    pub(super) fn merge_external_data(&mut self, new_entries: &BTreeMap<Hash, ExternalContentRef>) {
+        self.external_data.extend(new_entries.iter().map(|(k, v)| (*k, v.clone())));
     }
 
     /// Runs instance GC on the state-store's in-memory state with an optional
@@ -287,6 +309,7 @@ where
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
+        self.merge_external_data(&unified.external_data);
         state_store.set_instance_ttl(
             machine_document.runtime.instance_ttl_seconds.or(Some(DEFAULT_INSTANCE_TTL_SECONDS)),
         )?;
