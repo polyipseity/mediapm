@@ -462,6 +462,17 @@ the conductor orchestration layer.
 - This applies to all tools, not only managed tools; builtin tools with
   `max_concurrent_calls = -1` (the default) are unbounded as before.
 
+**Per-tool retry enforcement**:
+- `UnifiedToolSpec.max_retries` is enforced in the coordinator's dispatch loop.
+- `dispatch_step_rpc_with_fallback` wraps the full RPC+fallback pair in a retry
+  loop: on every attempt, it tries the worker RPC first, then falls back to direct
+  local execution if the RPC fails.
+- The semaphore permit (concurrency slot) is held across all retry attempts so the
+  tool's concurrency capacity is fully occupied during retries.
+- Between retries there is a fixed 500 ms `sleep`.
+- Conductor normalizes `-1` (omitted by config author) to `3` at document-merge
+  time. Mediapm may override this per tool (e.g. yt-dlp defaults to 1).
+
 **Dedup and trace semantics**:
 - Steps from multiple workflows started simultaneously do not see each other's
   in-flight cache entries, so naturally-identical steps across workflows may

@@ -1006,6 +1006,27 @@ next ready step.
 - Integration test: yt-dlp with `max_concurrent_calls = 1` and N simultaneous
   yt-dlp steps → verify only one executes concurrently
 
+### 2.11 Tool Max Retries Enforcement
+
+New enforcement field: `UnifiedToolSpec.max_retries` (formerly dead code) is now
+read by the coordinator's dispatch loop.
+
+1. **Retry scope**: Each retry attempt re-executes the full RPC+fallback pair.
+   If the RPC succeeds on a retry, the fallback is skipped and `rpc_failed` is
+   `false`.
+2. **Concurrency interaction**: The per-tool semaphore permit is held across all
+   retries, so retrying a step still counts against `max_concurrent_calls`. This
+   prevents tool queue inversion where a retrying step loses its slot to a later
+   step and never completes.
+3. **Failure mode on exhaustion**: After the last retry, the final fallback error
+   is surfaced as a `StepCompletionEvent` with `rpc_failed: true` — same
+   semantics as the original single-shot path.
+4. **Quiet backoff**: 500 ms fixed delay between retries; no exponential backoff
+   or jitter to keep the loop predictable.
+5. **Default signal**: Conductor normalizes `max_retries == -1` (omitted) → `3`
+   at document-merge time. Mediapm may override defaults per tool (e.g. yt-dlp
+   `max_retries = 1`).
+
 ---
 
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
