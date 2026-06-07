@@ -19,6 +19,7 @@ mod global;
 mod hierarchy;
 mod http_client;
 mod materializer;
+mod metadata_cache;
 mod paths;
 mod service;
 mod source_metadata;

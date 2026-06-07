@@ -112,6 +112,15 @@ impl MediaPmPaths {
         self.workspace_cache_dir()
     }
 
+    /// Returns the mediapm metadata cache root (`<runtime>/cache/mediapm`).
+    ///
+    /// This is the root directory for the [`MetadataCache`] which stores
+    /// resolved metadata keyed by BLAKE3 hex strings with 1-day TTL.
+    #[must_use]
+    pub fn workspace_mediapm_cache_dir(&self) -> PathBuf {
+        self.workspace_cache_dir().join("mediapm")
+    }
+
     /// Resolves runtime storage overrides from `mediapm.ncl`.
     ///
     /// Resolution rules:
