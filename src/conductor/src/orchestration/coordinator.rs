@@ -623,6 +623,21 @@ where
         outermost_config_dir: &Path,
         progress_sender: Option<WorkflowProgressSender>,
     ) -> Result<ExecutionOutcome, ConductorError> {
+        // Emit early progress event so the caller's progress bar renders
+        // immediately, even before dep-graph construction and step execution.
+        if let Some(ref tx) = progress_sender {
+            let _ = tx.send(WorkflowStepEvent {
+                total_steps: 1,
+                completed_steps: 0,
+                workflow_name: String::new(),
+                step_id: "initializing".into(),
+                workflow_display_name: "Initializing".into(),
+                executed: false,
+                worker_index: 0,
+                worker_count: 1,
+            });
+        }
+
         let unified_shared = Arc::new(unified.clone());
         let mut summary = RunSummary::new();
         let mut pending_unsaved_hashes = BTreeSet::new();
