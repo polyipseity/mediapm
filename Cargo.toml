@@ -43,7 +43,7 @@ clap = { version = "4.6.1", default-features = false, features = [
 	"std",
 ] }
 clap_complete = { version = "4", default-features = false }
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 dirs = "6.0.0"
 dotenvy = "0.15.7"
 ffmetadata = "0.1.2"
@@ -57,14 +57,14 @@ miette = { version = "7.6.0", features = ["derive"] }
 multihash = "0.19"
 multihash-derive = "0.9"
 musicbrainz_rs = { version = "0.13.0", default-features = false }
-nickel-lang-core = "0.17.0"
+nickel-lang-core = "0.18.0"
 oxidelta = { version = "0.1.4", default-features = false }
 parking_lot = "0.12.5"
 postcard = { version = "1.1.3", features = ["alloc"] }
 proptest = "1.6.0"
 pulsebar = { version = "0.2.1", features = ["tokio"] }
-ractor = { version = "0.15.12", features = ["tokio_runtime"] }
-rand = { version = "0.9", features = ["std_rng"] }
+ractor = { version = "0.15.13", features = ["tokio_runtime"] }
+rand = { version = "0.10", features = ["std_rng"] }
 redb = "4.1.0"
 regex = "1.11"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -73,12 +73,12 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 same-file = "1.0.6"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
+serde_json = "1.0.150"
 smallvec = { version = "1.15.1", features = ["serde"] }
-tar = "0.4.44"
+tar = "0.4.46"
 tempfile = "3.23.0"
 thiserror = "2.0.17"
-tokio = { version = "1.52.2", features = [
+tokio = { version = "1.52.3", features = [
 	"fs",
 	"io-util",
 	"macros",
