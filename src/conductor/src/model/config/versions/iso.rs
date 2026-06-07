@@ -28,14 +28,15 @@ use crate::model::config::{
 use crate::model::state::OutputSaveMode;
 
 use super::nickel_io::{
-    TempNickelWorkspace, evaluate_document_source, evaluate_main_file_as,
-    latest_version_among_sources, read_document_version_marker, render_document_as_nickel,
-    validate_state_document_source_shape, write_nickel_file,
+    NICKEL_WORKSPACE_COUNTER, evaluate_document_source, evaluate_main_file_as,
+    latest_version_among_sources, nickel_workspace_dir, read_document_version_marker,
+    render_document_as_nickel, validate_state_document_source_shape, write_nickel_file,
 };
 use super::{
     MACHINE_NICKEL_VERSION, MOD_NCL_SOURCE, USER_NICKEL_VERSION, latest, resolve_version_contract,
     v_latest,
 };
+use std::sync::atomic::Ordering;
 
 /// Converts persisted latest-schema impure timestamps into runtime shape.
 fn impure_timestamps_from_latest(
@@ -136,40 +137,33 @@ pub(crate) fn compile_total_configuration_sources(
         resolve_version_contract(target_version, "Nickel configuration")?;
     let validator_name = format!("validate_document_v{target_version}");
 
-    let workspace = TempNickelWorkspace::new()?;
+    let workspace_dir = nickel_workspace_dir();
+    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let mod_path = workspace_dir.join(format!("{seq}-mod.ncl"));
+    let target_file_path = workspace_dir.join(format!("{seq}-{target_file_name}"));
+    let user_path = workspace_dir.join(format!("{seq}-user_input.ncl"));
+    let machine_path = workspace_dir.join(format!("{seq}-machine_input.ncl"));
+    let state_path = workspace_dir.join(format!("{seq}-state_input.ncl"));
+    let validate_path = workspace_dir.join(format!("{seq}-validate_total.ncl"));
+
+    write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(
-        &workspace.path().join("mod.ncl"),
-        MOD_NCL_SOURCE,
-        "writing temporary Nickel migration helper",
-    )?;
-    write_nickel_file(
-        &workspace.path().join(target_file_name),
+        &target_file_path,
         target_contract_source,
         &format!("writing temporary Nickel {target_file_name} helper"),
     )?;
-    write_nickel_file(
-        &workspace.path().join("user_input.ncl"),
-        user_source,
-        "writing temporary user Nickel input",
-    )?;
-    write_nickel_file(
-        &workspace.path().join("machine_input.ncl"),
-        machine_source,
-        "writing temporary machine Nickel input",
-    )?;
-    write_nickel_file(
-        &workspace.path().join("state_input.ncl"),
-        state_source,
-        "writing temporary state Nickel input",
-    )?;
+    write_nickel_file(&user_path, user_source, "writing temporary user Nickel input")?;
+    write_nickel_file(&machine_path, machine_source, "writing temporary machine Nickel input")?;
+    write_nickel_file(&state_path, state_source, "writing temporary state Nickel input")?;
 
     let validate_source = format!(
         r#"
-let migration = import "mod.ncl" in
-let version = import "{target_file_name}" in
-let user = version.{validator_name} (migration.migrate_to {target_version} (import "user_input.ncl")) in
-let machine = version.{validator_name} (migration.migrate_to {target_version} (import "machine_input.ncl")) in
-let state = version.{validator_name} (migration.migrate_to {target_version} (import "state_input.ncl")) in
+let migration = import "{seq}-mod.ncl" in
+let version = import "{seq}-{target_file_name}" in
+let user = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-user_input.ncl")) in
+let machine = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-machine_input.ncl")) in
+let state = version.{validator_name} (migration.migrate_to {target_version} (import "{seq}-state_input.ncl")) in
 {{
     validated_user = user,
     validated_machine = machine,
@@ -178,14 +172,23 @@ let state = version.{validator_name} (migration.migrate_to {target_version} (imp
 }}
 "#,
     );
-    let validate_path = workspace.path().join("validate_total.ncl");
     write_nickel_file(
         &validate_path,
         &validate_source,
         "writing temporary total Nickel validation wrapper",
     )?;
 
-    evaluate_main_file_as(&validate_path, "evaluating full Nickel configuration")
+    let result = evaluate_main_file_as(&validate_path, "evaluating full Nickel configuration");
+
+    // Clean up temporary files after evaluation completes.
+    let _ = std::fs::remove_file(&mod_path);
+    let _ = std::fs::remove_file(&target_file_path);
+    let _ = std::fs::remove_file(&user_path);
+    let _ = std::fs::remove_file(&machine_path);
+    let _ = std::fs::remove_file(&state_path);
+    let _ = std::fs::remove_file(&validate_path);
+
+    result
 }
 
 /// Evaluates fixed Nickel migrations/contracts plus user and machine

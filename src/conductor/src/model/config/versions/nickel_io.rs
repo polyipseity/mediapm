@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use blake3;
@@ -39,31 +40,19 @@ fn eval_source_value_cache() -> &'static Mutex<HashMap<blake3::Hash, serde_json:
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Temporary Nickel workspace used to evaluate conductor-generated wrappers.
-#[derive(Debug)]
-pub(super) struct TempNickelWorkspace {
-    /// Root directory that hosts temporary `.ncl` files.
-    dir: tempfile::TempDir,
-}
+/// Monotonically increasing counter used to generate unique workspace filenames.
+pub(super) static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-impl TempNickelWorkspace {
-    /// Creates a unique temporary Nickel workspace root.
-    pub(super) fn new() -> Result<Self, ConductorError> {
-        let dir = tempfile::Builder::new().prefix("mediapm-conductor-nickel-").tempdir().map_err(
-            |source| ConductorError::Io {
-                operation: "creating temporary Nickel workspace".to_string(),
-                path: std::env::temp_dir(),
-                source,
-            },
-        )?;
-
-        Ok(Self { dir })
-    }
-
-    /// Returns the workspace root path.
-    pub(super) fn path(&self) -> &Path {
-        self.dir.path()
-    }
+/// Returns a reference to the shared temporary Nickel workspace directory,
+/// creating it on first access.
+pub(super) fn nickel_workspace_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("mediapm-conductor-nickel-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    })
 }
 
 /// Writes one Nickel source file into the temporary workspace.
@@ -143,18 +132,22 @@ fn evaluate_document_source_value(
         }
     }
 
-    let workspace = TempNickelWorkspace::new()?;
+    let workspace_dir = nickel_workspace_dir();
+    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let input_path = workspace_dir.join(format!("{seq}-document_input.ncl"));
+    let wrapper_path = workspace_dir.join(format!("{seq}-inspect_document.ncl"));
+
     write_nickel_file(
-        &workspace.path().join("document_input.ncl"),
+        &input_path,
         source,
         "writing temporary Nickel input document for metadata inspection",
     )?;
 
-    let wrapper_source = "import \"document_input.ncl\"\n";
-    let wrapper_path = workspace.path().join("inspect_document.ncl");
+    let wrapper_source = format!("import \"{seq}-document_input.ncl\"\n");
     write_nickel_file(
         &wrapper_path,
-        wrapper_source,
+        &wrapper_source,
         "writing temporary Nickel metadata inspection wrapper",
     )?;
 
@@ -162,6 +155,10 @@ fn evaluate_document_source_value(
         &wrapper_path,
         &format!("evaluating {document_kind} source metadata"),
     )?;
+
+    // Clean up temporary files after evaluation completes.
+    let _ = fs::remove_file(&input_path);
+    let _ = fs::remove_file(&wrapper_path);
 
     let cache = eval_source_value_cache();
     let mut guard = cache.lock().unwrap();
@@ -406,38 +403,42 @@ where
         resolve_version_contract(requested_version, document_kind)?;
     let validator_name = format!("validate_document_v{requested_version}");
 
-    let workspace = TempNickelWorkspace::new()?;
+    let workspace_dir = nickel_workspace_dir();
+    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let mod_path = workspace_dir.join(format!("{seq}-mod.ncl"));
+    let version_path = workspace_dir.join(format!("{seq}-{version_file_name}"));
+    let input_path = workspace_dir.join(format!("{seq}-document_input.ncl"));
+    let wrapper_path = workspace_dir.join(format!("{seq}-decode_document.ncl"));
+
+    write_nickel_file(&mod_path, MOD_NCL_SOURCE, "writing temporary Nickel migration helper")?;
     write_nickel_file(
-        &workspace.path().join("mod.ncl"),
-        MOD_NCL_SOURCE,
-        "writing temporary Nickel migration helper",
-    )?;
-    write_nickel_file(
-        &workspace.path().join(version_file_name),
+        &version_path,
         version_contract_source,
         &format!("writing temporary Nickel {version_file_name} helper"),
     )?;
-    write_nickel_file(
-        &workspace.path().join("document_input.ncl"),
-        source,
-        "writing temporary Nickel input document",
-    )?;
+    write_nickel_file(&input_path, source, "writing temporary Nickel input document")?;
 
     let wrapper_source = format!(
         r#"
-let migration = import "mod.ncl" in
-let version = import "{version_file_name}" in
-let document = import "document_input.ncl" in
+let migration = import "{seq}-mod.ncl" in
+let version = import "{seq}-{version_file_name}" in
+let document = import "{seq}-document_input.ncl" in
 version.{validator_name} (migration.migrate_to {requested_version} document)
 "#
     );
-    let wrapper_path = workspace.path().join("decode_document.ncl");
     write_nickel_file(&wrapper_path, &wrapper_source, "writing temporary Nickel decode wrapper")?;
 
     let result: T = evaluate_main_file_as(
         &wrapper_path,
         &format!("evaluating {document_kind} via Nickel migration wrapper"),
     )?;
+
+    // Clean up temporary files after evaluation completes.
+    let _ = fs::remove_file(&mod_path);
+    let _ = fs::remove_file(&version_path);
+    let _ = fs::remove_file(&input_path);
+    let _ = fs::remove_file(&wrapper_path);
 
     let json_value = serde_json::to_value(&result).map_err(|err| {
         ConductorError::Serialization(format!("failed caching evaluated {document_kind}: {err}"))
