@@ -608,18 +608,17 @@ GC sweep runs concurrently with workflow step execution. If a step materializes 
 
 The root set includes `state.state_pointer` and all instance output pointers. If the state pointer changes during GC (e.g., a concurrent workflow commit), the sweep might delete objects referenced by the old state pointer but not the new one.
 
-**Mitigation**: The background GC loop (single loop in `pre_start`: compact_index on startup, then periodic RunGc every 3600s) serializes via actor message delivery — each cycle is a synchronous handler invocation, so no concurrent GC can race with itself. Workflow commits happen in separate background tasks that send messages to the same actor; the GC cycle runs between commits as a natural consequence of single-threaded message processing. The state pointer read happens inside the RunGc handler after instance GC has completed, so it always sees a consistent snapshot.
+**Mitigation**: The background GC loop (single loop in `pre_start`: sends `RunGc` immediately on startup, then periodic RunGc every 3600s) serializes via actor message delivery — each cycle is a synchronous handler invocation, so no concurrent GC can race with itself. Workflow commits happen in separate background tasks that send messages to the same actor; the GC cycle runs between commits as a natural consequence of single-threaded message processing. The state pointer read happens inside the RunGc handler after instance GC has completed, so it always sees a consistent snapshot.
 
 #### 1.22. Background GC loop
 
 The conductor node actor spawns a single background GC loop in `pre_start`. The loop:
 
-1. Runs `compact_index()` immediately at startup.
+1. Immediately sends `RunGc(None, …)` to itself (full cycle: instance GC → CAS sweep → index compaction).
 2. Sleeps for `GC_INTERVAL_SECONDS` (3600).
-3. Sends `RunGc(None, …)` to itself, which performs a full cycle: instance GC (TTL-based pruning), then `run_cas_gc_sweep()` (root computation from unified external_data + state_pointer + current state), then index compaction.
-4. Repeats from step 2.
+3. Repeats from step 1.
 
-**Safety**: Because the `RunGc` handler runs synchronously inside the actor's `handle` method, each cycle completes before the next starts. Workflow commits are separate background tasks that communicate via actor messages, so GC naturally interleaves between commits — no additional cooldown is needed. The `None` TTL means "use configured/default", ensuring GC is never accidentally disabled.
+**Safety**: Because the `RunGc` handler runs synchronously inside the actor's `handle` method, each cycle completes before the next starts. Workflow commits are separate background tasks that communicate via actor messages, so GC naturally interleaves between commits — no additional cooldown is needed. The `None` TTL means "use configured/default", ensuring GC is never accidentally disabled. The `compact_index()` implementation persists the in-memory `IndexState` to a temporary redb, atomically replaces the active index file, then calls `persist_index_snapshot()` to capture any writes that landed in-memory during the rename window — closing the durability race between concurrent batch persists and index file replacement.
 
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
