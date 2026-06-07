@@ -428,6 +428,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -488,6 +489,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -743,6 +745,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -869,6 +872,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -974,6 +978,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1067,6 +1072,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1125,6 +1131,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1259,6 +1266,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1397,6 +1405,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1479,6 +1488,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1597,6 +1607,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1727,6 +1738,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1804,6 +1816,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1872,6 +1885,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -1932,6 +1946,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -2003,6 +2018,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -2073,6 +2089,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -2304,7 +2321,7 @@ mod tests {
 
         drop(cas);
         let mut lock = MediaPmState::default();
-        let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock, false)
+        let report = sync_hierarchy(&paths, &document, &machine, &cas_root, &mut lock, None, false)
             .await
             .expect("sync hierarchy");
 
@@ -2364,6 +2381,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -2434,6 +2452,7 @@ mod tests {
             &MachineNickelDocument::default(),
             &cas_root,
             &mut lock,
+            None,
             false,
         )
         .await
@@ -3654,8 +3673,15 @@ pub async fn sync_hierarchy(
     machine: &MachineNickelDocument,
     conductor_cas_root: &Path,
     lock: &mut MediaPmState,
+    current_materialized_hash: Option<Hash>,
     _verify_materialization: bool,
 ) -> Result<MaterializeReport, MediaPmError> {
+    // Fast path: skip materialization when the orchestration state hash
+    // hasn't changed since the last sync.
+    if current_materialized_hash == lock.last_materialized_state_hash {
+        return Ok(MaterializeReport::default());
+    }
+
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
     let ffmpeg_max_input_slots = ffmpeg_slot_limits.max_input_slots;
     let ffmpeg_max_output_slots = ffmpeg_slot_limits.max_output_slots;
@@ -3959,5 +3985,6 @@ pub async fn sync_hierarchy(
     hierarchy_progress.set_message("done");
     tokio::time::sleep(Duration::from_millis(75)).await;
 
+    lock.last_materialized_state_hash = current_materialized_hash;
     Ok(report)
 }

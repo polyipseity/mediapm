@@ -22,6 +22,7 @@ workspace = true
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
+blake3.workspace = true
 chromaprint-next.workspace = true
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }

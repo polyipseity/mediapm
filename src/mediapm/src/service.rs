@@ -886,10 +886,10 @@ where
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
 
         let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-
         if regenerate_step {
             mark_media_step_for_regeneration(&mut lock, media_id, step_index)?;
+            conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        } else {
             conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
         }
 
@@ -1389,12 +1389,16 @@ where
 
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let hierarchy_start = std::time::Instant::now();
+        let state_json =
+            serde_json::to_vec(&lock).map_err(|e| MediaPmError::Serialization(e.to_string()))?;
+        let state_hash = mediapm_cas::Hash::from_bytes(*blake3::hash(&state_json).as_bytes());
         let materialize_report = materializer::sync_hierarchy(
             &effective_paths,
             &document,
             &machine,
             &conductor_cas_root,
             &mut lock,
+            Some(state_hash),
             verify_materialization_override
                 .unwrap_or_else(|| document.runtime.verify_materialization()),
         )

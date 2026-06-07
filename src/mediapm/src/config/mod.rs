@@ -17,7 +17,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use mediapm_cas::{CasIntegrityConfig, VerifyTriggerStrategy};
+use mediapm_cas::{CasIntegrityConfig, Hash, VerifyTriggerStrategy};
 use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -158,6 +158,10 @@ pub struct MediaPmState {
     ///   `impure_timestamp` is missing.
     #[serde(default)]
     pub workflow_states: BTreeMap<String, Vec<ManagedWorkflowStepState>>,
+    /// Materialization-skip gate hash: when the latest orchestration state
+    /// hash equals this value, materialization is a no-op.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_materialized_state_hash: Option<Hash>,
 }
 
 /// Timezone-independent mediapm step-refresh timestamp.
@@ -200,6 +204,7 @@ fn mediapm_state_is_empty(value: &MediaPmState) -> bool {
         && value.tool_registry.is_empty()
         && value.active_tools.is_empty()
         && value.workflow_states.is_empty()
+        && value.last_materialized_state_hash.is_none()
 }
 
 /// Materialized file ledger entry.
