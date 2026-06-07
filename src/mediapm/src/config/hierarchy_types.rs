@@ -154,12 +154,20 @@ const REGEX_VARIANT_SELECTOR_PREFIX: &str = "__mediapm_regex__:";
 /// leaf payloads, so node decoding expands into this intermediate model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FlattenedHierarchyEntry {
-    /// Flat relative path template for one materialization leaf.
-    pub path: String,
+    /// Path components for one materialization leaf.
+    pub path_components: Vec<String>,
     /// Leaf entry payload consumed by runtime validation/materializer logic.
     pub entry: HierarchyEntry,
     /// Optional explicit hierarchy id declared on the source hierarchy node.
     pub hierarchy_id: Option<String>,
+}
+
+impl FlattenedHierarchyEntry {
+    /// Returns the path joined by "/".
+    #[must_use]
+    pub fn path_str(&self) -> String {
+        self.path_components.join("/")
+    }
 }
 
 /// Validates one hierarchy path component for invalid content.
@@ -182,18 +190,6 @@ fn validate_hierarchy_path_component(component: &str, context_label: &str) -> Re
         return Err(format!("{context_label} path component must be Unicode NFD normalized"));
     }
     Ok(())
-}
-
-/// Joins one parent path and one node-local path with slash separators.
-#[must_use]
-fn join_hierarchy_node_paths(parent: &str, child: &str) -> String {
-    if parent.is_empty() {
-        child.to_string()
-    } else if child.is_empty() {
-        parent.to_string()
-    } else {
-        format!("{parent}/{child}")
-    }
 }
 
 /// Returns one normalized optional non-empty string field.
@@ -230,24 +226,35 @@ fn normalize_required_non_empty_field(
 #[allow(clippy::too_many_lines)]
 fn flatten_hierarchy_nodes_inner(
     nodes: &[HierarchyNode],
-    parent_path: &str,
+    parent_components: &[String],
     inherited_media_id: Option<&str>,
     inherited_sanitize_names: &SanitizeNamesConfig,
     flattened: &mut Vec<FlattenedHierarchyEntry>,
 ) -> Result<(), String> {
     for (node_index, node) in nodes.iter().enumerate() {
-        let context_label = if parent_path.is_empty() {
+        let parent_path_str =
+            if parent_components.is_empty() { String::new() } else { parent_components.join("/") };
+        let context_label = if parent_components.is_empty() {
             format!("hierarchy[{node_index}]")
         } else {
-            format!("hierarchy node '{parent_path}' children[{node_index}]")
+            format!("hierarchy node '{parent_path_str}' children[{node_index}]")
         };
 
         // Validate each component of the HierarchyPath.
         for component in node.path.components() {
             validate_hierarchy_path_component(component, &context_label)?;
         }
-        let node_local_path = node.path.join_path();
-        let resolved_node_path = join_hierarchy_node_paths(parent_path, node_local_path.as_str());
+        let node_local_components: Vec<String> = node.path.components().to_vec();
+        let resolved_node_components: Vec<String> = if parent_components.is_empty() {
+            node_local_components.clone()
+        } else if node_local_components.is_empty() {
+            parent_components.to_vec()
+        } else {
+            let mut components = parent_components.to_vec();
+            components.extend(node_local_components);
+            components
+        };
+        let resolved_node_path = resolved_node_components.join("/");
         let node_path_label =
             if resolved_node_path.is_empty() { "<root>" } else { resolved_node_path.as_str() };
 
@@ -296,7 +303,7 @@ fn flatten_hierarchy_nodes_inner(
 
                 flatten_hierarchy_nodes_inner(
                     &node.children,
-                    resolved_node_path.as_str(),
+                    &resolved_node_components,
                     folder_media_id.as_deref(),
                     &sanitize_names,
                     flattened,
@@ -355,7 +362,7 @@ fn flatten_hierarchy_nodes_inner(
                 }
 
                 flattened.push(FlattenedHierarchyEntry {
-                    path: resolved_node_path,
+                    path_components: resolved_node_components.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::Media,
                         media_id,
@@ -415,7 +422,7 @@ fn flatten_hierarchy_nodes_inner(
                 // and allows same path with different variants.
 
                 flattened.push(FlattenedHierarchyEntry {
-                    path: resolved_node_path,
+                    path_components: resolved_node_components.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::MediaFolder,
                         media_id,
@@ -469,7 +476,7 @@ fn flatten_hierarchy_nodes_inner(
                 )?;
 
                 flattened.push(FlattenedHierarchyEntry {
-                    path: resolved_node_path,
+                    path_components: resolved_node_components.clone(),
                     entry: HierarchyEntry {
                         kind: HierarchyEntryKind::Playlist,
                         media_id: playlist_media_id.unwrap_or_default(),
@@ -501,7 +508,7 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     let mut flattened = Vec::new();
     flatten_hierarchy_nodes_inner(
         hierarchy,
-        "",
+        &[],
         None,
         &SanitizeNamesConfig::Enabled,
         &mut flattened,
@@ -511,7 +518,7 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     let mut seen_paths = BTreeMap::<(String, String), Vec<usize>>::new();
     let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
     for (index, entry) in flattened.iter().enumerate() {
-        let path_key = (entry.path.clone(), entry.entry.media_id.clone());
+        let path_key = (entry.path_str(), entry.entry.media_id.clone());
         seen_paths.entry(path_key.clone()).or_default().push(index);
 
         // Check for true duplicate paths: same path AND same variants (or both lack variants).
@@ -533,7 +540,7 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
             if current_variants.is_empty() && previous_variants.is_empty() {
                 return Err(MediaPmError::Workflow(format!(
                     "hierarchy flattening produced duplicate path '{}' with no differentiating variants (entries #{previous_index} and #{index})",
-                    entry.path
+                    entry.path_str()
                 )));
             }
 
@@ -549,7 +556,8 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
                 if current_rename == previous_rename {
                     return Err(MediaPmError::Workflow(format!(
                         "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} and identical rename_files (entries #{previous_index} and #{index})",
-                        entry.path, overlap
+                        entry.path_str(),
+                        overlap
                     )));
                 }
             }
@@ -557,11 +565,11 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
 
         if let Some(hierarchy_id) = entry.hierarchy_id.as_deref()
             && let Some(previous_path) =
-                seen_hierarchy_ids.insert(hierarchy_id.to_string(), entry.path.clone())
+                seen_hierarchy_ids.insert(hierarchy_id.to_string(), entry.path_str())
         {
             return Err(MediaPmError::Workflow(format!(
                 "hierarchy id '{hierarchy_id}' is duplicated by paths '{previous_path}' and '{}'",
-                entry.path
+                entry.path_str()
             )));
         }
     }
