@@ -19,7 +19,7 @@ use tempfile::tempdir;
 // Test 1 — gc_instances unit semantics
 // ---------------------------------------------------------------------------
 
-/// Protects that unreferenced instances with `last_reachable < cutoff` are evicted.
+/// Protects that unreferenced instances with `last_unreachable < cutoff` are evicted.
 #[test]
 fn gc_instances_evicts_stale_unreferenced() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 0 };
@@ -33,11 +33,15 @@ fn gc_instances_evicts_stale_unreferenced() {
         aux: BTreeMap::from([
             (
                 "fresh".to_string(),
-                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 200, subsec_nanos: 0 } },
+                AuxData {
+                    last_unreachable: ImpureTimestamp { epoch_seconds: 200, subsec_nanos: 0 },
+                },
             ),
             (
                 "stale".to_string(),
-                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
+                AuxData {
+                    last_unreachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 },
+                },
             ),
             // "unmarked" has no aux entry → GC injects now() → preserved
         ]),
@@ -48,11 +52,11 @@ fn gc_instances_evicts_stale_unreferenced() {
 
     assert!(
         state.instances.contains_key("fresh"),
-        "fresh instance (last_reachable > cutoff) should survive"
+        "fresh instance (last_unreachable > cutoff) should survive"
     );
     assert!(
         !state.instances.contains_key("stale"),
-        "stale instance (last_reachable < cutoff) should be evicted"
+        "stale instance (last_unreachable < cutoff) should be evicted"
     );
     assert!(
         state.instances.contains_key("unmarked"),
@@ -61,7 +65,7 @@ fn gc_instances_evicts_stale_unreferenced() {
 }
 
 /// Protects that instances in `referenced_instance_keys` survive even when
-/// `last_reachable < cutoff`.
+/// `last_unreachable < cutoff`.
 #[test]
 fn gc_instances_preserves_referenced() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 0 };
@@ -74,11 +78,15 @@ fn gc_instances_preserves_referenced() {
         aux: BTreeMap::from([
             (
                 "referenced_stale".to_string(),
-                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
+                AuxData {
+                    last_unreachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 },
+                },
             ),
             (
                 "unreferenced_stale".to_string(),
-                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
+                AuxData {
+                    last_unreachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 },
+                },
             ),
         ]),
         referenced_instance_keys: HashSet::from(["referenced_stale".to_string()]),
@@ -89,7 +97,7 @@ fn gc_instances_preserves_referenced() {
 
     assert!(
         state.instances.contains_key("referenced_stale"),
-        "referenced instance should survive despite stale last_reachable"
+        "referenced instance should survive despite stale last_unreachable"
     );
     assert!(
         !state.instances.contains_key("unreferenced_stale"),
@@ -125,7 +133,7 @@ fn gc_instances_empty_state_is_noop() {
     assert!(state.instances.is_empty());
 }
 
-/// Protects that unreferenced instances without aux entries get `last_reachable`
+/// Protects that unreferenced instances without aux entries get `last_unreachable`
 /// set to `now` during phase 1, preventing immediate eviction in phase 2.
 #[test]
 fn gc_instances_marks_unreferenced_with_now() {
@@ -136,7 +144,7 @@ fn gc_instances_marks_unreferenced_with_now() {
             ("a".to_string(), sample_instance("a")),
             ("b".to_string(), sample_instance("b")),
         ]),
-        // No aux entries → phase 1 sets last_reachable = now for both
+        // No aux entries → phase 1 sets last_unreachable = now for both
         ..OrchestrationState::default()
     };
 
@@ -164,7 +172,7 @@ fn gc_instances_respects_subsec_nanos_boundary() {
             (
                 "nanos_below".to_string(),
                 AuxData {
-                    last_reachable: ImpureTimestamp {
+                    last_unreachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 400_000_000,
                     },
@@ -173,7 +181,7 @@ fn gc_instances_respects_subsec_nanos_boundary() {
             (
                 "nanos_equal".to_string(),
                 AuxData {
-                    last_reachable: ImpureTimestamp {
+                    last_unreachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 500_000_000,
                     },
@@ -182,7 +190,7 @@ fn gc_instances_respects_subsec_nanos_boundary() {
             (
                 "nanos_above".to_string(),
                 AuxData {
-                    last_reachable: ImpureTimestamp {
+                    last_unreachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 600_000_000,
                     },
