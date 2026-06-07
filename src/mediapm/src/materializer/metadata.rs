@@ -23,25 +23,30 @@ use crate::paths::MediaPmPaths;
 
 use super::MaterializationLookupContext;
 use super::resolve::resolve_variant_source_bytes;
-use super::sanitize_hierarchy_path;
+use super::sanitize_path_component;
 
-/// Resolves `${media.id}` and `${media.metadata.*}` placeholders for one
-/// hierarchy key template.
+/// Resolves `${media.id}` and `${media.metadata.*}` placeholders for each
+/// hierarchy path component independently.
 pub(super) async fn resolve_hierarchy_relative_path(
-    relative_path_template: &str,
+    path_components: &[String],
     entry: &HierarchyEntry,
     source: &MediaSourceSpec,
     lookup: &MaterializationLookupContext,
-) -> Result<String, MediaPmError> {
-    let context_label = format!("hierarchy path '{relative_path_template}'");
-    resolve_media_placeholder_template(
-        relative_path_template,
-        entry,
-        source,
-        lookup,
-        context_label.as_str(),
-    )
-    .await
+) -> Result<Vec<String>, MediaPmError> {
+    let mut resolved = Vec::with_capacity(path_components.len());
+    for component in path_components {
+        let context_label = format!("hierarchy path component '{component}'");
+        let resolved_component = resolve_media_placeholder_template(
+            component,
+            entry,
+            source,
+            lookup,
+            context_label.as_str(),
+        )
+        .await?;
+        resolved.push(resolved_component);
+    }
+    Ok(resolved)
 }
 
 /// Resolves supported media placeholder forms in one arbitrary template.
@@ -139,7 +144,7 @@ pub(super) async fn resolve_hierarchy_folder_rename_rule_replacements(
         )
         .await?;
 
-        let sanitized_replacement = sanitize_hierarchy_path(&resolved_replacement, replacements);
+        let sanitized_replacement = sanitize_path_component(&resolved_replacement, replacements);
         resolved_rules.push(HierarchyFolderRenameRule {
             pattern: rule.pattern.clone(),
             replacement: sanitized_replacement,
