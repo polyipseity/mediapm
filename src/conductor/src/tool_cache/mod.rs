@@ -646,7 +646,8 @@ fn extract_sync(
 
     // Double-check: another process may have populated the entry while we
     // were waiting for the exclusive lock.
-    if let Some(guard) = double_check_hit(payload_dir, metadata_path, lock_path, content_map, now)?
+    if let Some(guard) =
+        double_check_hit(payload_dir, metadata_path, lock_path, &excl_file, content_map, now)?
     {
         drop(excl_file);
         return Ok(guard);
@@ -806,6 +807,7 @@ fn double_check_hit(
     payload_dir: &Path,
     metadata_path: &Path,
     lock_path: &Path,
+    excl_file: &std::fs::File,
     content_map: &BTreeMap<String, Hash>,
     now: u64,
 ) -> Result<Option<ToolCacheEntry>, ConductorError> {
@@ -837,18 +839,15 @@ fn double_check_hit(
             execute_bits_verified: true,
         },
     );
-    // Open a second fd and acquire shared lock while still holding the
-    // exclusive lock (different open-file descriptions → independent locks).
-    let shared_file =
-        std::fs::OpenOptions::new().read(true).write(true).open(lock_path).map_err(|source| {
-            ConductorError::Io {
-                operation: "opening tool-content cache lock file for shared downgrade".to_string(),
-                path: lock_path.to_path_buf(),
-                source,
-            }
-        })?;
+    // Clone the exclusive-lock fd and downgrade to shared (avoids
+    // per-inode per-process self-deadlock on macOS).
+    let shared_file = excl_file.try_clone().map_err(|source| ConductorError::Io {
+        operation: "duplicating lock fd for shared downgrade".to_string(),
+        path: lock_path.to_path_buf(),
+        source,
+    })?;
     shared_file.lock_shared().map_err(|source| ConductorError::Io {
-        operation: "acquiring shared lock after double-check hit".to_string(),
+        operation: "downgrading exclusive lock to shared after double-check hit".to_string(),
         path: lock_path.to_path_buf(),
         source,
     })?;
