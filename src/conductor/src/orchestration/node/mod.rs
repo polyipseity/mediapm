@@ -9,6 +9,7 @@ use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::task::JoinHandle;
 
@@ -242,6 +243,9 @@ struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
     workflow_handles: HashMap<u64, JoinHandle<Result<RunSummary, ConductorError>>>,
     /// Monotonically increasing handle ID counter.
     next_handle_id: u64,
+    /// Whether the first GC cycle (with loaded external_data roots) has been
+    /// performed. Used by the background GC loop to defer startup GC.
+    gc_initialized: Arc<AtomicBool>,
 }
 
 /// Interval in seconds between background GC sweep cycles.
@@ -271,18 +275,31 @@ where
 
     /// Initializes the node actor with a workflow coordinator bound to the shared CAS handle.
     ///
-    /// Also spawns the background GC loop: immediately runs a full GC cycle
-    /// (instance sweep + CAS sweep + compaction), then waits
-    /// [`GC_INTERVAL_SECONDS`] between subsequent cycles.
+    /// Also spawns the background GC loop: waits until the first successful
+    /// [`LoadResolvedState`] or [`ReplaceResolvedState`] populates
+    /// `external_data` roots, then enters the periodic cycle at
+    /// [`GC_INTERVAL_SECONDS`] between cycles.
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        // Spawn background GC loop: fires immediately on startup, then
-        // sleeps [`GC_INTERVAL_SECONDS`] after each completed cycle.
+        // Spawn background GC loop: spin-waits on gc_initialized (set after
+        // first successful LoadResolvedState / ReplaceResolvedState), then
+        // enters periodic cycle at [`GC_INTERVAL_SECONDS`].
+        let state_gc_initialized = Arc::new(AtomicBool::new(false));
         let bg_self = _myself.clone();
+        let bg_initialized = state_gc_initialized.clone();
         tokio::spawn(async move {
+            // Phase 1: Wait for initial state load before first GC.
+            // Without loaded external_data roots, GC would sweep all
+            // unprotected objects, deleting tool content imported by prior
+            // sessions.
+            while !bg_initialized.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+
+            // Phase 2: Periodic GC at fixed interval.
             loop {
                 let (tx, rx) = tokio::sync::oneshot::channel();
                 let reply_port = RpcReplyPort::from(tx);
@@ -308,6 +325,7 @@ where
             coordinator: WorkflowCoordinator::new(args),
             workflow_handles: HashMap::new(),
             next_handle_id: 0,
+            gc_initialized: state_gc_initialized,
         })
     }
 
@@ -378,12 +396,14 @@ where
                 let _ = reply.send(state.coordinator.runtime_diagnostics().await);
             }
             ConductorNodeMessage::LoadResolvedState(user_ncl, machine_ncl, options, reply) => {
-                let _ = reply.send(
-                    state
-                        .coordinator
-                        .load_resolved_state_with_options(&user_ncl, &machine_ncl, *options)
-                        .await,
-                );
+                let result = state
+                    .coordinator
+                    .load_resolved_state_with_options(&user_ncl, &machine_ncl, *options)
+                    .await;
+                if result.is_ok() {
+                    state.gc_initialized.store(true, Ordering::Release);
+                }
+                let _ = reply.send(result);
             }
             ConductorNodeMessage::ReplaceResolvedState(
                 user_ncl,
@@ -392,17 +412,19 @@ where
                 options,
                 reply,
             ) => {
-                let _ = reply.send(
-                    state
-                        .coordinator
-                        .replace_resolved_state_with_options(
-                            &user_ncl,
-                            &machine_ncl,
-                            *next_state,
-                            *options,
-                        )
-                        .await,
-                );
+                let result = state
+                    .coordinator
+                    .replace_resolved_state_with_options(
+                        &user_ncl,
+                        &machine_ncl,
+                        *next_state,
+                        *options,
+                    )
+                    .await;
+                if result.is_ok() {
+                    state.gc_initialized.store(true, Ordering::Release);
+                }
+                let _ = reply.send(result);
             }
             ConductorNodeMessage::RunGc(ttl_override, reply) => {
                 let result = async {
@@ -423,6 +445,9 @@ where
                     Ok::<_, ConductorError>(())
                 }
                 .await;
+                if result.is_ok() {
+                    state.gc_initialized.store(true, Ordering::Release);
+                }
                 let _ = reply.send(result);
             }
         }
