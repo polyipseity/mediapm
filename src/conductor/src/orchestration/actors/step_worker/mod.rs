@@ -1288,45 +1288,87 @@ where
         self.persist_resolved_list_input(resolved_values).await
     }
 
-    /// Resolves one string-list input binding into a hash-only key without
-    /// retaining content bytes in memory.
+    /// Resolves one string-list input binding into a hash-only key by
+    /// deriving a deterministic composite hash from the binding structure
+    /// without loading content bytes from CAS.
     ///
-    /// Each list item is resolved through
-    /// [`resolve_input_binding_plain_content`] (which may load content for
-    /// ExternalData/StepOutput segments), then the full list is serialized to
-    /// JSON and persisted to CAS. Only the hash identity is returned.
+    /// Each list item is parsed into segments and hashed directly
+    /// (ExternalData hashes, Literal content bytes, StepOutput slot hashes,
+    /// Env variable values). Item ordering is incorporated so
+    /// reordered lists produce different instance keys. The resulting hash is
+    /// a pure function of the binding declarations and current step-output
+    /// state — no content is fetched or persisted.
     async fn resolve_list_input_binding_hash_only(
         &self,
-        unified: &UnifiedNickelDocument,
+        _unified: &UnifiedNickelDocument,
         workflow_name: &str,
         step: &WorkflowStepSpec,
-        input_name: &str,
+        _input_name: &str,
         binding_list: &[String],
         step_outputs: &StepOutputs,
     ) -> Result<ResolvedInputKey, ConductorError> {
-        let mut resolved_values = Vec::with_capacity(binding_list.len());
+        let mut hasher = blake3::Hasher::new();
         for (item_index, binding_item) in binding_list.iter().enumerate() {
-            let plain_content = self
-                .resolve_input_binding_plain_content(
-                    unified,
-                    workflow_name,
-                    step,
-                    binding_item,
-                    step_outputs,
-                )
-                .await
-                .map_err(|error| match error {
-                    ConductorError::Workflow(message) => ConductorError::Workflow(format!(
-                        "{message} (while resolving list item {item_index} for input '{input_name}')"
-                    )),
-                    other => other,
-                })?;
-            resolved_values.push(String::from_utf8_lossy(&plain_content).to_string());
+            let parsed = parse_input_binding(binding_item).map_err(|err| {
+                ConductorError::Workflow(format!(
+                    "workflow '{workflow_name}' step '{}' has invalid input binding \
+                     '{binding_item}': {err}",
+                    step.id
+                ))
+            })?;
+            for segment in &parsed {
+                match segment {
+                    ParsedInputBindingSegment::ExternalData { hash } => {
+                        hasher.update(hash.as_bytes());
+                    }
+                    ParsedInputBindingSegment::Literal(content) => {
+                        hasher.update(content.as_bytes());
+                    }
+                    ParsedInputBindingSegment::StepOutput { step_id, output, zip_member } => {
+                        let producer = step_outputs.get(*step_id).ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references output \
+                                 '{}' from step '{step_id}' before it is available",
+                                step.id, output,
+                            ))
+                        })?;
+                        let output_slot = producer.get(*output).ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references missing \
+                                 output '{}' on step '{step_id}'",
+                                step.id, output,
+                            ))
+                        })?;
+                        let output_hash = output_slot.ok_or_else(|| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references output \
+                                 '{}' from step '{step_id}', but that output was captured \
+                                 as empty",
+                                step.id, output,
+                            ))
+                        })?;
+                        hasher.update(output_hash.as_bytes());
+                        if let Some(member) = zip_member {
+                            hasher.update(member.as_bytes());
+                        }
+                    }
+                    ParsedInputBindingSegment::Env { name } => {
+                        let value = std::env::var(*name).map_err(|error| {
+                            ConductorError::Workflow(format!(
+                                "workflow '{workflow_name}' step '{}' references env var \
+                                 '{name}' in input binding '{binding_item}': {error}",
+                                step.id
+                            ))
+                        })?;
+                        hasher.update(value.as_bytes());
+                    }
+                }
+            }
+            // Incorporate item position so reordered bindings produce
+            // different composite hashes.
+            hasher.update(&item_index.to_le_bytes());
         }
-
-        let plain_content_vec = serde_json::to_vec(&resolved_values)
-            .map_err(|err| ConductorError::Serialization(err.to_string()))?;
-        let hash = self.cas.put(plain_content_vec).await?;
+        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         Ok(ResolvedInputKey { hash })
     }
 
