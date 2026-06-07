@@ -472,7 +472,7 @@ or `RuntimeStoragePaths.conductor_tools_dir` in the API).
 (`mediapm`, etc.) may read from or write to it.
 
 Design invariants (implemented in
-`src/conductor/src/orchestration/actors/step_worker/tool_content_cache.rs`):
+`src/conductor/src/tool_cache/mod.rs`):
 
 - **Cache key**: the tool id from the conductor config (the map key in
   `tool_configs`), sanitized to a filesystem-safe name. One cache entry per
@@ -501,18 +501,18 @@ Design invariants (implemented in
   runtime source of truth.
 
 - **TTL**: cache entries expire after 24 hours of non-use. Last-used time is
-  refreshed on every cache hit. `prune_expired_tool_content_cache_entries` is
-  called best-effort at the start of each `prepare_tool_content_cache` call;
-  prune errors are logged and ignored.
+  refreshed on every cache hit. `ToolContentCache::prune` is called
+  best-effort at the start of each `ToolContentCache::materialize` call; prune
+  errors are logged and ignored.
 
 - **Sandbox materialization**: step workers hard-link (with copy fallback)
   files from `<entry>/payload/` into the per-step sandbox cwd via
-  `link_payload_to_sandbox`.
+  `ToolContentCache::link_to_sandbox`.
 
-When modifying the cache implementation, keep all three exported functions
-(`prepare_tool_content_cache`, `link_payload_to_sandbox`,
-`prune_expired_tool_content_cache_entries`) in
-`tool_content_cache.rs` and their callers in `step_worker/mod.rs`.
+When modifying the cache implementation, keep all three public API methods
+(`materialize`, `link_to_sandbox`, `prune`) in
+`src/conductor/src/tool_cache/mod.rs` and their callers in
+`step_worker/mod.rs`.
 
 ## Versioned Schema Editing Policy
 
