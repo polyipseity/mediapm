@@ -619,7 +619,6 @@ where
             pending_unsaved_hashes,
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
             phase_timings,
-            fallback_used: false,
         })
     }
 
@@ -2851,20 +2850,6 @@ where
         workers.push(worker_ref);
     }
     Ok(workers)
-}
-
-/// Executes one step directly without going through worker RPC, used for fallback handling.
-pub(crate) async fn execute_step_direct<C>(
-    cas: Arc<C>,
-    tool_cache: Arc<ToolContentCache<C>>,
-    request: StepExecutionRequest,
-) -> Result<StepExecutionBundle, ConductorError>
-where
-    C: CasApi + Send + Sync + 'static,
-{
-    StepWorkerExecutor { cas, conductor_tmp_dir: request.conductor_tmp_dir.clone() }
-        .execute_step(&*tool_cache, request)
-        .await
 }
 
 #[cfg(test)]

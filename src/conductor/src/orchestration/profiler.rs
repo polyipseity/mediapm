@@ -119,8 +119,6 @@ pub(super) struct StepExecutionProfile {
     pub executed: bool,
     /// Whether this execution was a cache rematerialization.
     pub rematerialized: bool,
-    /// Whether fallback local execution was used after worker RPC failure.
-    pub fallback_used: bool,
     /// Observed per-step elapsed duration in milliseconds.
     pub elapsed_ms: f64,
     /// Number of output names requested from this step.
@@ -198,8 +196,6 @@ struct ToolTimingAggregate {
     cached_samples: usize,
     /// Number of rematerialized executions.
     rematerialized_samples: usize,
-    /// Number of fallback-path executions.
-    fallback_samples: usize,
 }
 
 impl ToolTimingAggregate {
@@ -214,7 +210,6 @@ impl ToolTimingAggregate {
             executed_samples: 0,
             cached_samples: 0,
             rematerialized_samples: 0,
-            fallback_samples: 0,
         }
     }
 
@@ -231,9 +226,6 @@ impl ToolTimingAggregate {
         }
         if sample.rematerialized {
             self.rematerialized_samples = self.rematerialized_samples.saturating_add(1);
-        }
-        if sample.fallback_used {
-            self.fallback_samples = self.fallback_samples.saturating_add(1);
         }
     }
 }
@@ -375,11 +367,10 @@ fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
             format_duration_ms(orchestration_overhead_ms)
         ),
         format!(
-            "Summary: executed={}  cached={}  rematerialized={}  rpc_fallbacks={}",
+            "Summary: executed={}  cached={}  rematerialized={}",
             profile.summary.executed_instances,
             profile.summary.cached_instances,
             profile.summary.rematerialized_instances,
-            profile.runtime_diagnostics.scheduler.rpc_fallbacks_total,
         ),
         "Scope note: this profile covers conductor workflow runtime only; mediapm post-sync checks and manifest generation are outside this timing scope.".to_string(),
         String::new(),
@@ -436,7 +427,7 @@ fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
             aggregate.total_ms / aggregate.samples as f64
         };
         lines.push(format!(
-            "  {tool_name}\n    total={} ({:.1}% wall)  samples={}  mean={}  min={}  max={}\n    executed={}  cached={}  rematerialized={}  fallback={}",
+            "  {tool_name}\n    total={} ({:.1}% wall)  samples={}  mean={}  min={}  max={}\n    executed={}  cached={}  rematerialized={}",
             format_duration_ms(aggregate.total_ms),
             percent(aggregate.total_ms, wall_total_ms),
             aggregate.samples,
@@ -446,7 +437,6 @@ fn render_profile_timing(profile: &WorkflowRunProfile) -> Vec<String> {
             aggregate.executed_samples,
             aggregate.cached_samples,
             aggregate.rematerialized_samples,
-            aggregate.fallback_samples,
         ));
     }
 
@@ -533,7 +523,6 @@ mod tests {
                 worker_index: 0,
                 executed: true,
                 rematerialized: false,
-                fallback_used: false,
                 elapsed_ms: 123.0,
                 requested_output_count: 1,
                 pending_unsaved_hashes_count: 0,
@@ -553,7 +542,6 @@ mod tests {
                     ewma_alpha: 0.35,
                     unknown_cost_ms: 10.0,
                     tool_estimates: Vec::new(),
-                    rpc_fallbacks_total: 0,
                 },
                 workers: Vec::new(),
                 recent_traces: Vec::new(),
@@ -597,7 +585,6 @@ mod tests {
                     worker_index: 0,
                     executed: true,
                     rematerialized: false,
-                    fallback_used: false,
                     elapsed_ms: 4000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
@@ -621,7 +608,6 @@ mod tests {
                     worker_index: 0,
                     executed: true,
                     rematerialized: false,
-                    fallback_used: false,
                     elapsed_ms: 3000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
@@ -642,7 +628,6 @@ mod tests {
                     ewma_alpha: 0.35,
                     unknown_cost_ms: 10.0,
                     tool_estimates: Vec::new(),
-                    rpc_fallbacks_total: 0,
                 },
                 workers: Vec::new(),
                 recent_traces: Vec::new(),

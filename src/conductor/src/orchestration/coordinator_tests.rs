@@ -733,7 +733,6 @@ async fn diagnostics_include_worker_queue_metrics_and_trace_events() {
             SchedulerTraceKind::StepCompleted { .. } => saw_step_completed = true,
             SchedulerTraceKind::LevelPlanned { .. }
             | SchedulerTraceKind::StepAssigned { .. }
-            | SchedulerTraceKind::RpcFallback { .. }
             | SchedulerTraceKind::EwmaUpdated { .. } => {}
         }
     }

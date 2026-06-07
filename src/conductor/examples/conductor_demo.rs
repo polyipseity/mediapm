@@ -80,8 +80,6 @@ struct DiagnosticsSnapshot {
     worker_pool_size: usize,
     /// Number of recent scheduler traces retained in memory.
     trace_event_count: usize,
-    /// Total scheduler RPC fallback events observed.
-    rpc_fallbacks_total: u64,
 }
 
 impl From<RuntimeDiagnostics> for DiagnosticsSnapshot {
@@ -90,7 +88,6 @@ impl From<RuntimeDiagnostics> for DiagnosticsSnapshot {
         Self {
             worker_pool_size: value.worker_pool_size,
             trace_event_count: value.recent_traces.len(),
-            rpc_fallbacks_total: value.scheduler.rpc_fallbacks_total,
         }
     }
 }

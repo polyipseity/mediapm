@@ -100,24 +100,14 @@ struct WorkerQueueMetricsState {
     cumulative_estimated_load_ms: f64,
     /// Cumulative observed load completed by the worker.
     cumulative_observed_load_ms: f64,
-    /// Number of worker-RPC failures that forced fallback execution.
-    rpc_failures_total: u64,
-    /// Number of times the worker's assigned step completed via fallback.
-    fallback_executions_total: u64,
 }
 
 impl WorkerQueueMetricsState {
-    /// Records one step completion and its fallback/RPC-failure status.
-    fn record_completion(&mut self, observed_ms: f64, rpc_failed: bool, fallback_used: bool) {
+    /// Records one step completion.
+    fn record_completion(&mut self, observed_ms: f64) {
         self.completed_steps_total = self.completed_steps_total.saturating_add(1);
         self.cumulative_observed_load_ms += observed_ms;
         self.in_flight = self.in_flight.saturating_sub(1);
-        if rpc_failed {
-            self.rpc_failures_total = self.rpc_failures_total.saturating_add(1);
-        }
-        if fallback_used {
-            self.fallback_executions_total = self.fallback_executions_total.saturating_add(1);
-        }
     }
 }
 
@@ -132,8 +122,6 @@ struct RuntimeInstrumentation {
     trace_capacity: usize,
     /// Monotonic event sequence number.
     trace_sequence: u64,
-    /// Total fallback executions caused by worker RPC failures.
-    rpc_fallbacks_total: u64,
 }
 
 impl Default for RuntimeInstrumentation {
@@ -144,7 +132,6 @@ impl Default for RuntimeInstrumentation {
             traces: VecDeque::new(),
             trace_capacity: scheduler_trace_capacity(),
             trace_sequence: 0,
-            rpc_fallbacks_total: 0,
         }
     }
 }
@@ -197,20 +184,10 @@ impl SchedulerService {
     }
 
     /// Records completion-side metrics for one worker.
-    fn record_completion_metrics(
-        &mut self,
-        worker_index: usize,
-        observed_ms: f64,
-        rpc_failed: bool,
-        fallback_used: bool,
-    ) {
+    fn record_completion_metrics(&mut self, worker_index: usize, observed_ms: f64) {
         self.ensure_worker_metrics(worker_index + 1);
         if let Some(metric) = self.instrumentation.worker_metrics.get_mut(worker_index) {
-            metric.record_completion(observed_ms.max(0.001), rpc_failed, fallback_used);
-        }
-        if fallback_used {
-            self.instrumentation.rpc_fallbacks_total =
-                self.instrumentation.rpc_fallbacks_total.saturating_add(1);
+            metric.record_completion(observed_ms.max(0.001));
         }
     }
 
@@ -251,22 +228,7 @@ impl SchedulerService {
             });
         }
 
-        if record.rpc_failed {
-            self.push_trace(SchedulerTraceKind::RpcFallback {
-                step_id: record.step_id.clone(),
-                worker_index: record.worker_index,
-                reason: record
-                    .rpc_failure_reason
-                    .unwrap_or_else(|| "worker_rpc_failed".to_string()),
-            });
-        }
-
-        self.record_completion_metrics(
-            record.worker_index,
-            record.observed_ms,
-            record.rpc_failed,
-            record.fallback_used,
-        );
+        self.record_completion_metrics(record.worker_index, record.observed_ms);
 
         // Step-stream dispatch assigns steps implicitly (the execution hub
         // round-robins without calling plan_level), so record assignment-side
@@ -280,7 +242,6 @@ impl SchedulerService {
             tool_name: record.tool_name,
             worker_index: record.worker_index,
             executed: record.executed,
-            fallback_used: record.fallback_used,
             observed_ms: record.observed_ms,
         });
     }
@@ -312,8 +273,6 @@ impl SchedulerService {
                 last_level_estimated_load_ms: metric.last_level_estimated_load_ms,
                 cumulative_estimated_load_ms: metric.cumulative_estimated_load_ms,
                 cumulative_observed_load_ms: metric.cumulative_observed_load_ms,
-                rpc_failures_total: metric.rpc_failures_total,
-                fallback_executions_total: metric.fallback_executions_total,
             })
             .collect();
 
@@ -328,7 +287,6 @@ impl SchedulerService {
                 ewma_alpha: self.scheduler.ewma_alpha,
                 unknown_cost_ms: self.scheduler.unknown_cost_ms,
                 tool_estimates,
-                rpc_fallbacks_total: self.instrumentation.rpc_fallbacks_total,
             },
             workers,
             recent_traces: self.instrumentation.traces.iter().cloned().collect(),

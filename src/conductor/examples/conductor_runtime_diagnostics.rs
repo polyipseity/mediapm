@@ -301,8 +301,6 @@ struct SchedulerDiagnosticsSnapshot {
     unknown_cost_ms: f64,
     /// Per-tool runtime estimates.
     tool_estimates: Vec<ToolRuntimeEstimateSnapshot>,
-    /// Number of scheduler RPC fallback events observed.
-    rpc_fallbacks_total: u64,
 }
 
 impl From<mediapm_conductor::SchedulerDiagnostics> for SchedulerDiagnosticsSnapshot {
@@ -312,7 +310,6 @@ impl From<mediapm_conductor::SchedulerDiagnostics> for SchedulerDiagnosticsSnaps
             ewma_alpha: value.ewma_alpha,
             unknown_cost_ms: value.unknown_cost_ms,
             tool_estimates: value.tool_estimates.into_iter().map(Into::into).collect(),
-            rpc_fallbacks_total: value.rpc_fallbacks_total,
         }
     }
 }
@@ -354,10 +351,6 @@ struct WorkerQueueDiagnosticsSnapshot {
     cumulative_estimated_load_ms: f64,
     /// Cumulative observed runtime completed by this worker.
     cumulative_observed_load_ms: f64,
-    /// Number of RPC dispatch failures seen by this worker.
-    rpc_failures_total: u64,
-    /// Number of fallback local executions used by this worker.
-    fallback_executions_total: u64,
 }
 
 impl From<mediapm_conductor::WorkerQueueDiagnostics> for WorkerQueueDiagnosticsSnapshot {
@@ -373,8 +366,6 @@ impl From<mediapm_conductor::WorkerQueueDiagnostics> for WorkerQueueDiagnosticsS
             last_level_estimated_load_ms: value.last_level_estimated_load_ms,
             cumulative_estimated_load_ms: value.cumulative_estimated_load_ms,
             cumulative_observed_load_ms: value.cumulative_observed_load_ms,
-            rpc_failures_total: value.rpc_failures_total,
-            fallback_executions_total: value.fallback_executions_total,
         }
     }
 }
@@ -441,19 +432,8 @@ enum SchedulerTraceKindSnapshot {
         worker_index: usize,
         /// Whether the step executed instead of hitting cache.
         executed: bool,
-        /// Whether fallback local execution was used.
-        fallback_used: bool,
         /// Observed runtime in milliseconds.
         observed_ms: f64,
-    },
-    /// RPC fallback event.
-    RpcFallback {
-        /// Step identifier.
-        step_id: String,
-        /// Worker index.
-        worker_index: usize,
-        /// Human-readable fallback reason.
-        reason: String,
     },
     /// EWMA estimate update event.
     EwmaUpdated {
@@ -498,19 +478,8 @@ impl From<SchedulerTraceKind> for SchedulerTraceKindSnapshot {
                 tool_name,
                 worker_index,
                 executed,
-                fallback_used,
                 observed_ms,
-            } => Self::StepCompleted {
-                step_id,
-                tool_name,
-                worker_index,
-                executed,
-                fallback_used,
-                observed_ms,
-            },
-            SchedulerTraceKind::RpcFallback { step_id, worker_index, reason } => {
-                Self::RpcFallback { step_id, worker_index, reason }
-            }
+            } => Self::StepCompleted { step_id, tool_name, worker_index, executed, observed_ms },
             SchedulerTraceKind::EwmaUpdated {
                 tool_name,
                 previous_estimate_ms,
@@ -528,7 +497,6 @@ fn render_trace_summary(diagnostics: &RuntimeDiagnosticsSnapshot) -> String {
     let mut level_planned = 0usize;
     let mut step_assigned = 0usize;
     let mut step_completed = 0usize;
-    let mut rpc_fallback = 0usize;
     let mut ewma_updated = 0usize;
 
     for trace in &diagnostics.recent_traces {
@@ -536,19 +504,13 @@ fn render_trace_summary(diagnostics: &RuntimeDiagnosticsSnapshot) -> String {
             SchedulerTraceKindSnapshot::LevelPlanned { .. } => level_planned += 1,
             SchedulerTraceKindSnapshot::StepAssigned { .. } => step_assigned += 1,
             SchedulerTraceKindSnapshot::StepCompleted { .. } => step_completed += 1,
-            SchedulerTraceKindSnapshot::RpcFallback { .. } => rpc_fallback += 1,
             SchedulerTraceKindSnapshot::EwmaUpdated { .. } => ewma_updated += 1,
         }
     }
 
     format!(
-        "worker_pool_size={}\nlevel_planned={}\nstep_assigned={}\nstep_completed={}\nrpc_fallback={}\newma_updated={}\n",
-        diagnostics.worker_pool_size,
-        level_planned,
-        step_assigned,
-        step_completed,
-        rpc_fallback,
-        ewma_updated,
+        "worker_pool_size={}\nlevel_planned={}\nstep_assigned={}\nstep_completed={}\newma_updated={}\n",
+        diagnostics.worker_pool_size, level_planned, step_assigned, step_completed, ewma_updated,
     )
 }
 

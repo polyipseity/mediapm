@@ -181,8 +181,6 @@ pub(crate) struct StepExecutionBundle {
     pub elapsed_ms: f64,
     /// Fine-grained timing breakdown for internal execution phases.
     pub phase_timings: StepExecutionPhaseTimings,
-    /// Whether execution happened via local fallback after worker RPC failure.
-    pub fallback_used: bool,
 }
 
 /// Scheduler-facing completion facts derived from one finished step.
@@ -196,14 +194,8 @@ pub(crate) struct StepCompletionRecord {
     pub worker_index: usize,
     /// Whether the step performed real execution work.
     pub executed: bool,
-    /// Whether fallback local execution was used.
-    pub fallback_used: bool,
     /// Observed runtime in milliseconds.
     pub observed_ms: f64,
-    /// Whether the worker RPC itself failed before fallback.
-    pub rpc_failed: bool,
-    /// Human-readable RPC failure reason when fallback was required.
-    pub rpc_failure_reason: Option<String>,
 }
 
 /// Request sent to the state-store actor after one workflow run finishes.

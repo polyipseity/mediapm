@@ -44,7 +44,7 @@ use tokio::time::{Duration, sleep};
 use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor};
 use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
 use super::actors::state_store::{StateStoreClient, spawn_state_store_actor};
-use super::actors::step_worker::{StepWorkerMessage, execute_step_direct, spawn_step_worker_pool};
+use super::actors::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 use super::config::{default_worker_pool_size, profile_output_path_from_env, rpc_timeout_ms};
 use super::profiler::{
     StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, write_profile_json,
@@ -175,7 +175,6 @@ where
                 ewma_alpha: super::config::scheduler_ewma_alpha(),
                 unknown_cost_ms: super::config::unknown_step_cost_ms(),
                 tool_estimates: Vec::new(),
-                rpc_fallbacks_total: 0,
             },
             workers: Vec::new(),
             recent_traces: Vec::new(),
@@ -594,10 +593,6 @@ struct StepCompletionEvent {
     worker_index: usize,
     /// Execution result.
     result: Result<StepExecutionBundle, ConductorError>,
-    /// Whether the RPC call to the worker failed.
-    rpc_failed: bool,
-    /// Human-readable reason for RPC failure, if any.
-    rpc_failure_reason: Option<String>,
 }
 
 impl<C> WorkflowCoordinator<C>
@@ -902,18 +897,9 @@ where
                     let worker_index = next_worker % worker_count;
                     next_worker = next_worker.saturating_add(1);
                     let worker = self.workers[worker_index].clone();
-                    let cas = self.cas.clone();
-                    let tool_cache = self.tool_cache.clone().ok_or_else(|| {
-                        ConductorError::Internal(
-                            "tool cache must be initialized before executing steps".to_string(),
-                        )
-                    })?;
-
                     in_flight.push(Box::pin(async move {
-                        Self::dispatch_step_rpc_with_fallback(
+                        Self::dispatch_step_rpc(
                             worker,
-                            cas,
-                            tool_cache,
                             request,
                             wf_name,
                             step_id,
@@ -950,8 +936,6 @@ where
                 step_id: event_step,
                 worker_index: event_wi,
                 result,
-                rpc_failed,
-                rpc_failure_reason,
             } = event;
 
             let bundle = match result {
@@ -977,7 +961,6 @@ where
                 worker_index: event_wi,
                 executed: bundle.executed,
                 rematerialized: bundle.rematerialized,
-                fallback_used: bundle.fallback_used,
                 elapsed_ms: bundle.elapsed_ms,
                 requested_output_count: bundle.requested_output_names.len(),
                 pending_unsaved_hashes_count: bundle.pending_unsaved_hashes.len(),
@@ -998,10 +981,7 @@ where
                 tool_name: bundle.tool_name.clone(),
                 worker_index: event_wi,
                 executed: bundle.executed,
-                fallback_used: bundle.fallback_used,
                 observed_ms: bundle.elapsed_ms,
-                rpc_failed,
-                rpc_failure_reason,
             };
             if let Err(err) = scheduler.record_completion(record).await {
                 eprintln!("warning: failed to record step completion: {err}");
@@ -1081,15 +1061,12 @@ where
         Ok(ExecutionOutcome { summary, pending_unsaved_hashes, step_executions })
     }
 
-    /// Dispatches one step to a worker actor via RPC, falling back to direct
-    /// local execution on RPC failure. Retries up to `max_retries` times on
-    /// failure, with the semaphore permit held across all attempts so the
-    /// concurrency slot stays occupied.
+    /// Routes one step execution to a worker via RPC. Retries up to
+    /// `max_retries` times on failure, with the semaphore permit held across
+    /// all attempts so the concurrency slot stays occupied.
     #[allow(clippy::too_many_arguments)]
-    async fn dispatch_step_rpc_with_fallback(
+    async fn dispatch_step_rpc(
         worker: ActorRef<StepWorkerMessage>,
-        cas: Arc<C>,
-        tool_cache: Arc<ToolContentCache<C>>,
         request: StepExecutionRequest,
         workflow_name: String,
         step_id: String,
@@ -1099,8 +1076,7 @@ where
     ) -> StepCompletionEvent {
         let max_attempts = max_retries.max(0) as u32 + 1;
         for attempt in 0..max_attempts {
-            // Attempt worker RPC.
-            let call_result: Result<StepExecutionBundle, ConductorError> = match call_t!(
+            let call_result = match call_t!(
                 worker.clone(),
                 StepWorkerMessage::ExecuteStep,
                 rpc_timeout_ms(),
@@ -1112,8 +1088,6 @@ where
                         step_id: step_id.clone(),
                         worker_index,
                         result: Ok(bundle),
-                        rpc_failed: false,
-                        rpc_failure_reason: None,
                     };
                 }
                 Ok(Err(err)) => Err(err),
@@ -1123,27 +1097,13 @@ where
                 ))),
             };
 
-            let rpc_failure_reason = match &call_result {
-                Ok(_) => None,
-                Err(err) => Some(err.to_string()),
-            };
-
-            let fallback_result =
-                execute_step_direct(cas.clone(), tool_cache.clone(), request.clone()).await;
-
-            // If we have retries remaining and both paths failed, wait and retry.
             let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
-            if fallback_result.is_ok() || is_last_attempt {
+            if is_last_attempt {
                 return StepCompletionEvent {
                     workflow_name,
                     step_id,
                     worker_index,
-                    result: fallback_result.map(|mut bundle| {
-                        bundle.fallback_used = true;
-                        bundle
-                    }),
-                    rpc_failed: true,
-                    rpc_failure_reason,
+                    result: call_result,
                 };
             }
 
@@ -1213,7 +1173,6 @@ where
             pending_unsaved_hashes: _,
             elapsed_ms: _,
             phase_timings: _,
-            fallback_used: _,
         } = result;
 
         // Mark the instance as referenced from GC roots and initialise its

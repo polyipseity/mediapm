@@ -907,8 +907,6 @@ pub struct SchedulerDiagnostics {
     pub unknown_cost_ms: f64,
     /// Current per-tool runtime estimates.
     pub tool_estimates: Vec<ToolRuntimeEstimate>,
-    /// Number of step dispatches that required fallback execution.
-    pub rpc_fallbacks_total: u64,
 }
 
 /// One tool runtime estimate entry.
@@ -941,10 +939,6 @@ pub struct WorkerQueueDiagnostics {
     pub cumulative_estimated_load_ms: f64,
     /// Cumulative observed runtime load completed by this worker.
     pub cumulative_observed_load_ms: f64,
-    /// Number of RPC dispatch failures encountered for this worker.
-    pub rpc_failures_total: u64,
-    /// Number of fallback local executions used for this worker.
-    pub fallback_executions_total: u64,
 }
 
 /// Scheduler trace event.
@@ -997,20 +991,10 @@ pub enum SchedulerTraceKind {
         worker_index: usize,
         /// Whether this step executed (vs cache hit).
         executed: bool,
-        /// Whether this completion used fallback local execution.
-        fallback_used: bool,
         /// Observed latency.
         observed_ms: f64,
     },
-    /// A worker RPC dispatch failed and fallback path was used.
-    RpcFallback {
-        /// Step id.
-        step_id: String,
-        /// Worker index where RPC failed.
-        worker_index: usize,
-        /// Error message from actor RPC layer.
-        reason: String,
-    },
+
     /// Scheduler EWMA estimate updated for one tool.
     EwmaUpdated {
         /// Tool name.
