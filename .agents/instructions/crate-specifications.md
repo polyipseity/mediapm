@@ -551,10 +551,10 @@ The CLI `run_gc()` command (in `src/conductor/src/cli/mod.rs`) is the primary co
 **Sweep contract**: Deleting a non-root object that is a delta base of a root object is safe — the CAS backend handles rebasing automatically during deletion. Sweep does not consider constraint metadata for root-set computation; constraints are orthogonal to reachability.
 
 **Background GC loop**: The conductor node actor spawns a background task in `pre_start` that:
-1. Runs `compact_index()` once at startup (no delay).
-2. Every `GC_INTERVAL_SECONDS` (3600) sends a `RunGc(None, …)` message to itself, which performs a full cycle: instance GC (TTL-based), then CAS sweep via `run_cas_gc_sweep()`, then index compaction.
+1. Immediately sends `RunGc(None, …)` to itself, which performs a full cycle: instance GC (TTL-based), then CAS sweep via `run_cas_gc_sweep()`, then index compaction.
+2. Every `GC_INTERVAL_SECONDS` (3600) repeats from step 1.
 
-The single-loop design replaces the previous approach (one-shot compact_index on first SubmitWorkflow with no automatic sweep). CAS objects unreferenced by current orchestration state are reclaimed every ~hour without user intervention.
+The index compaction (`compact_index()`) persists the in-memory `IndexState` to a temporary redb, atomically replaces the active index file, then re-persists to catch any concurrent writes during the file-rename window.
 
 > **⚠️ Agent policy — do NOT disable the background GC loop**: The `None` TTL passed to `RunGc` means "use configured/default" — this is correct. Agents must NEVER alter `GC_INTERVAL_SECONDS` to an absurdly large value or make the loop a no-op to avoid implementing GC properly. If the GC loop causes issues, fix the GC implementation — do not disable it.
 
