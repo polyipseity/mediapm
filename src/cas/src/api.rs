@@ -768,8 +768,7 @@ mod tests {
     use crate::Hash;
 
     use super::{
-        CompactReport, Constraint, IndexRepairConstraintSource, IndexRepairReport, OptimizeReport,
-        PruneReport,
+        Constraint, IndexRepairConstraintSource, IndexRepairReport, OptimizeReport, PruneReport,
     };
 
     #[test]

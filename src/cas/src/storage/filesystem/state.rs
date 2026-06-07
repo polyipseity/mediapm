@@ -1819,12 +1819,20 @@ impl CasApi for FileSystemState {
             let mut index = self.lock_index_write("publishing projected index after delete");
             // Merge concurrent entries that arrived while the snapshot was held
             // to avoid overwriting them with a stale projection (Race B).
+            // The deleted hash must not be resurrected, and any constraint
+            // references to it that the merge brought back must be re-cleaned.
             for (h, obj) in &index.objects {
-                projected.objects.entry(*h).or_insert_with(|| obj.clone());
+                if *h != hash {
+                    projected.objects.entry(*h).or_insert_with(|| obj.clone());
+                }
             }
             for (h, bases) in &index.constraints {
                 projected.constraints.entry(*h).or_insert_with(|| bases.clone());
             }
+            for (base, targets) in &index.constraint_reverse {
+                projected.constraint_reverse.entry(*base).or_insert_with(|| targets.clone());
+            }
+            Self::remove_constraint_references(&mut projected, hash);
             *index = projected;
         }
 
