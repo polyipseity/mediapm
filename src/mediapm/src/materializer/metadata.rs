@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use blake3;
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -245,26 +247,51 @@ fn extract_metadata_value_from_variant_payload(
     metadata_key: &str,
     variant_bytes: &[u8],
 ) -> Result<String, MediaPmError> {
-    if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(variant_bytes)
-        && let Some(extracted) = extract_metadata_key_from_json(&parsed, metadata_key)
-    {
-        return Ok(extracted);
+    // Compute cache key from media_id for persistent metadata cache.
+    let cache_key = blake3::hash(media_id.as_bytes()).to_hex().to_string();
+
+    // Check persistent cache first.
+    if let Some(ref metadata_cache) = lookup.metadata_cache {
+        if let Some(cached_value) = metadata_cache.get(&cache_key) {
+            if let Some(cached_map) = cached_value.as_object() {
+                if let Some(cached) = lookup_json_string_key(cached_map, metadata_key) {
+                    return Ok(cached);
+                }
+            }
+        }
     }
 
-    let ffprobe_path = lookup.managed_ffprobe_path.as_deref().ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "media '{media_id}' metadata '{metadata_name}' bound to variant '{variant_name}' requires ffprobe lookup for key '{metadata_key}', but active managed ffmpeg is not configured"
-        ))
-    })?;
+    // Cache miss — resolve via JSON lookup or ffprobe.
+    let extracted = if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(variant_bytes)
+        && let Some(found) = extract_metadata_key_from_json(&parsed, metadata_key)
+    {
+        found
+    } else {
+        let ffprobe_path = lookup.managed_ffprobe_path.as_deref().ok_or_else(|| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' metadata '{metadata_name}' bound to variant '{variant_name}' requires ffprobe lookup for key '{metadata_key}', but active managed ffmpeg is not configured"
+            ))
+        })?;
 
-    extract_metadata_key_with_ffprobe(
-        ffprobe_path,
-        media_id,
-        metadata_name,
-        variant_name,
-        metadata_key,
-        variant_bytes,
-    )
+        extract_metadata_key_with_ffprobe(
+            ffprobe_path,
+            media_id,
+            metadata_name,
+            variant_name,
+            metadata_key,
+            variant_bytes,
+        )?
+    };
+
+    // Store in cache for future lookups (entire map so other keys hit too).
+    if let Some(ref metadata_cache) = lookup.metadata_cache {
+        let mut cached_map =
+            metadata_cache.get(&cache_key).and_then(|v| v.as_object().cloned()).unwrap_or_default();
+        cached_map.insert(metadata_key.to_string(), serde_json::Value::String(extracted.clone()));
+        metadata_cache.set(cache_key, serde_json::Value::Object(cached_map));
+    }
+
+    Ok(extracted)
 }
 
 /// Applies optional regex transform to one extracted metadata value.
@@ -459,7 +486,7 @@ fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmE
 /// layout, which is the only supported runtime location for managed tool
 /// content.
 #[must_use]
-pub(super) fn resolve_managed_ffprobe_path(
+pub(crate) fn resolve_managed_ffprobe_path(
     paths: &MediaPmPaths,
     machine: &MachineNickelDocument,
     lock: &MediaPmState,

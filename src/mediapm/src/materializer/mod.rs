@@ -27,7 +27,7 @@ use crate::paths::MediaPmPaths;
 
 mod commit;
 mod file_ops;
-mod metadata;
+pub(crate) mod metadata;
 mod playlist;
 mod resolve;
 #[cfg(test)]
@@ -3142,6 +3142,10 @@ struct MaterializationLookupContext {
     /// This avoids O(steps × instances) scans for each hierarchy entry's
     /// variant resolution when many entries share the same workflow.
     step_output_hashes_cache: Arc<Mutex<HashMap<String, Option<StepOutputHashes>>>>,
+    /// Persistent metadata cache keyed by BLAKE3 hex of media_id for resolved
+    /// ffprobe/JSON metadata values. Cache is opened by `sync_hierarchy()` and
+    /// shared across workers.
+    metadata_cache: Option<Arc<crate::metadata_cache::MetadataCache>>,
 }
 
 /// Resolved payload bytes for one materialized variant request.
@@ -3714,6 +3718,11 @@ pub async fn sync_hierarchy(
     })?);
     let orchestration_state = load_runtime_orchestration_state(paths, &cas).await?.map(Arc::new);
     let managed_ffprobe_path = resolve_managed_ffprobe_path(paths, machine, lock);
+    let metadata_cache =
+        crate::metadata_cache::MetadataCache::open(&paths.workspace_mediapm_cache_dir())
+            .map_err(|e| tracing::warn!("failed to open metadata cache: {e}"))
+            .ok()
+            .map(Arc::new);
     let lookup = MaterializationLookupContext {
         cas: Arc::clone(&cas),
         machine: Arc::new(machine.clone()),
@@ -3722,6 +3731,7 @@ pub async fn sync_hierarchy(
         ffmpeg_max_output_slots,
         managed_ffprobe_path,
         step_output_hashes_cache: Arc::new(Mutex::new(HashMap::new())),
+        metadata_cache,
     };
 
     let mut report = MaterializeReport::default();
