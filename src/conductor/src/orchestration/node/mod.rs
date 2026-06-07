@@ -6,14 +6,19 @@
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::gc::run_cas_gc_sweep;
+use crate::model::config::ExternalContentRef;
+use crate::orchestration::actors::state_store::StateStoreClient;
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
 use crate::error::ConductorError;
@@ -246,6 +251,15 @@ struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
     /// Whether the first GC cycle (with loaded external_data roots) has been
     /// performed. Used by the background GC loop to defer startup GC.
     gc_initialized: Arc<AtomicBool>,
+    /// Shared external_data snapshot, updated after each successful
+    /// LoadResolvedState / ReplaceResolvedState / RunGc. Read by the
+    /// background GC task to compute CAS sweep roots without going
+    /// through the actor mailbox.
+    shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>>,
+    /// Shared OnceLock for the state store client, populated by
+    /// ensure_runtime_support in the SubmitWorkflow handler. Read by the
+    /// background GC task.
+    shared_state_store: Arc<OnceLock<StateStoreClient>>,
 }
 
 /// Interval in seconds between background GC sweep cycles.
@@ -284,38 +298,48 @@ where
         _myself: ActorRef<Self::Msg>,
         args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        // Spawn background GC loop: spin-waits on gc_initialized (set after
-        // first successful LoadResolvedState / ReplaceResolvedState), then
-        // enters periodic cycle at [`GC_INTERVAL_SECONDS`].
+        // Shared state for the background GC task — populated by handlers.
         let state_gc_initialized = Arc::new(AtomicBool::new(false));
-        let bg_self = _myself.clone();
+        let state_shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>> =
+            Arc::new(RwLock::new(BTreeMap::new()));
+        let state_shared_state_store: Arc<OnceLock<StateStoreClient>> = Arc::new(OnceLock::new());
+
+        let bg_cas = args.clone();
         let bg_initialized = state_gc_initialized.clone();
+        let bg_external_data = state_shared_external_data.clone();
+        let bg_state_store = state_shared_state_store.clone();
         tokio::spawn(async move {
             // Phase 1: Wait for initial state load before first GC.
-            // Without loaded external_data roots, GC would sweep all
-            // unprotected objects, deleting tool content imported by prior
-            // sessions.
             while !bg_initialized.load(Ordering::Acquire) {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
 
-            // Phase 2: Periodic GC at fixed interval.
+            // Phase 2: Periodic GC at fixed interval, directly calling
+            // run_cas_gc_sweep with shared state rather than sending RunGc
+            // through the actor mailbox.
             loop {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let reply_port = RpcReplyPort::from(tx);
-                if bg_self.send_message(ConductorNodeMessage::RunGc(None, reply_port)).is_err() {
-                    tracing::warn!("background GC send failed — actor may have stopped");
-                    break;
-                }
-                match rx.await {
-                    Ok(Ok(())) => tracing::debug!("background GC completed successfully"),
-                    Ok(Err(e)) => tracing::warn!("background GC failed: {e}"),
-                    Err(_) => {
-                        tracing::warn!(
-                            "background GC reply channel closed — actor may have stopped"
-                        );
-                        break;
+                let external_data = bg_external_data.read().await;
+                let state_store = match bg_state_store.get() {
+                    Some(store) => store,
+                    None => {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
                     }
+                };
+                let state_pointer = state_store.get_state_pointer().await.unwrap_or(None);
+                let current_state = match state_store.current_state().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("background GC: failed to get current state: {e}");
+                        tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
+                        continue;
+                    }
+                };
+                if let Err(e) =
+                    run_cas_gc_sweep(bg_cas.as_ref(), &external_data, state_pointer, &current_state)
+                        .await
+                {
+                    tracing::warn!("background GC failed: {e}");
                 }
                 tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
             }
@@ -326,6 +350,8 @@ where
             workflow_handles: HashMap::new(),
             next_handle_id: 0,
             gc_initialized: state_gc_initialized,
+            shared_external_data: state_shared_external_data,
+            shared_state_store: state_shared_state_store,
         })
     }
 
@@ -353,6 +379,12 @@ where
                     } else {
                         state.coordinator.state_store()
                     };
+
+                // Populate the shared state store OnceLock so the background
+                // GC task can access the state store independently.
+                if let Some(ref store) = main_state_store {
+                    let _ = state.shared_state_store.set(store.clone());
+                }
 
                 let cas = state.coordinator.cas.clone();
                 let join_handle = tokio::spawn(async move {
@@ -402,6 +434,8 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
+                    *state.shared_external_data.write().await =
+                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }
@@ -423,6 +457,8 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
+                    *state.shared_external_data.write().await =
+                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }
@@ -447,6 +483,8 @@ where
                 .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
+                    *state.shared_external_data.write().await =
+                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }
