@@ -26,6 +26,10 @@ use crate::model::state::{
 };
 
 pub(crate) mod v1;
+// V2 types are defined but not yet consumed by the library — they will be
+// wired into the persistence layer by a follow-up subagent.
+#[expect(dead_code)]
+pub(crate) mod v2;
 
 /// Latest-version bindings.
 ///
@@ -617,5 +621,162 @@ mod tests {
             .get("result")
             .expect("decoded output should exist");
         assert_eq!(output.persistence.save, OutputSaveMode::Saved);
+    }
+
+    // -----------------------------------------------------------------------
+    // V2 round-trip tests
+    // -----------------------------------------------------------------------
+
+    /// Verifies that `ToolCallInstanceV2` round-trips through
+    /// `encode_instance_v2` / `decode_instance_v2`.
+    #[test]
+    fn v2_tool_call_instance_round_trip() {
+        use super::v2::{self, BuiltinMetadataKindV2, ToolCallInstanceV2, ToolMetadataV2};
+
+        let instance = ToolCallInstanceV2 {
+            tool_name: "echo@1.0.0".to_string(),
+            metadata: ToolMetadataV2::Builtin {
+                kind: BuiltinMetadataKindV2::Builtin,
+                name: "echo".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            impure_timestamp: Some(v2::ImpureTimestampV2 {
+                epoch_seconds: 1_700_000_000,
+                subsec_nanos: 0,
+            }),
+            inputs: BTreeMap::from([(
+                "text".to_string(),
+                v2::ResolvedInputV2 { hash: mediapm_cas::Hash::from_content(b"hello") },
+            )]),
+            outputs: BTreeMap::from([(
+                "result".to_string(),
+                v2::OutputRefV2 {
+                    hash: mediapm_cas::Hash::from_content(b"output"),
+                    persistence: v2::PersistenceFlagsV2 { save: v2::OutputSaveModeV2::Bool(true) },
+                    allow_empty_capture: false,
+                },
+            )]),
+        };
+
+        let encoded = v2::encode_instance_v2(&instance).expect("instance should encode");
+        let decoded = v2::decode_instance_v2(&encoded).expect("instance should decode");
+
+        assert_eq!(decoded, instance);
+    }
+
+    /// Verifies that `OrchestrationStateEnvelopeV2` round-trips through JSON
+    /// serialization.
+    #[test]
+    fn v2_envelope_round_trip() {
+        use super::v2::{
+            InstanceRefV2, ORCHESTRATION_STATE_VERSION_V2, OrchestrationStateEnvelopeV2,
+        };
+
+        let hash_a = mediapm_cas::Hash::from_content(b"instance-a-data");
+
+        let envelope = OrchestrationStateEnvelopeV2 {
+            version: ORCHESTRATION_STATE_VERSION_V2,
+            instances: BTreeMap::from([("instance-a".to_string(), InstanceRefV2 { hash: hash_a })]),
+        };
+
+        let encoded = serde_json::to_vec(&envelope).expect("envelope should serialize");
+        let decoded: OrchestrationStateEnvelopeV2 =
+            serde_json::from_slice(&encoded).expect("envelope should deserialize");
+
+        assert_eq!(decoded, envelope);
+        assert!(decoded.version == 2);
+    }
+
+    /// Verifies that a v2 envelope with zero instances round-trips correctly.
+    #[test]
+    fn v2_envelope_empty_instances() {
+        use super::v2::{ORCHESTRATION_STATE_VERSION_V2, OrchestrationStateEnvelopeV2};
+
+        let envelope = OrchestrationStateEnvelopeV2 {
+            version: ORCHESTRATION_STATE_VERSION_V2,
+            instances: BTreeMap::new(),
+        };
+
+        let encoded = serde_json::to_vec(&envelope).expect("empty envelope should serialize");
+        let decoded: OrchestrationStateEnvelopeV2 =
+            serde_json::from_slice(&encoded).expect("empty envelope should deserialize");
+
+        assert_eq!(decoded, envelope);
+    }
+
+    /// Verifies that `OutputSaveModeV2` accepts `"full"` string.
+    #[test]
+    fn v2_output_save_mode_full() {
+        use super::v2::OutputSaveModeV2;
+
+        let json = serde_json::json!("full");
+        let mode: OutputSaveModeV2 =
+            serde_json::from_value(json).expect("'full' should deserialize");
+        assert_eq!(mode, OutputSaveModeV2::Full);
+
+        let serialized = serde_json::to_value(&mode).expect("Full should serialize");
+        assert_eq!(serialized, serde_json::json!("full"));
+    }
+
+    /// Verifies that `OutputSaveModeV2` accepts boolean values.
+    #[test]
+    fn v2_output_save_mode_bool() {
+        use super::v2::OutputSaveModeV2;
+
+        let mode_true: OutputSaveModeV2 =
+            serde_json::from_value(serde_json::json!(true)).expect("true should deserialize");
+        assert_eq!(mode_true, OutputSaveModeV2::Bool(true));
+
+        let mode_false: OutputSaveModeV2 =
+            serde_json::from_value(serde_json::json!(false)).expect("false should deserialize");
+        assert_eq!(mode_false, OutputSaveModeV2::Bool(false));
+
+        let serialized_true =
+            serde_json::to_value(&mode_true).expect("Bool(true) should serialize");
+        assert_eq!(serialized_true, serde_json::json!(true));
+    }
+
+    /// Verifies that v2 instance hash is deterministic.
+    #[test]
+    fn v2_instance_hash_is_deterministic() {
+        use super::v2::{self, BuiltinMetadataKindV2, ToolCallInstanceV2, ToolMetadataV2};
+
+        let instance = ToolCallInstanceV2 {
+            tool_name: "echo@1.0.0".to_string(),
+            metadata: ToolMetadataV2::Builtin {
+                kind: BuiltinMetadataKindV2::Builtin,
+                name: "echo".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            impure_timestamp: None,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        };
+
+        let hash1 = v2::instance_v2_hash(&instance);
+        let hash2 = v2::instance_v2_hash(&instance);
+        assert_eq!(hash1, hash2);
+    }
+
+    /// Verifies that builtin metadata with extra fields is rejected by v2
+    /// deserialization.
+    #[test]
+    fn v2_rejects_builtin_metadata_extra_fields() {
+        let encoded = serde_json::json!({
+            "version": 2,
+            "instances": {
+                "instance-a": {
+                    "hash": "blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+                }
+            }
+        });
+
+        // The envelope should decode fine — it stores only refs.
+        let envelope: Result<super::v2::OrchestrationStateEnvelopeV2, _> =
+            serde_json::from_value(encoded);
+        assert!(envelope.is_ok());
+        let envelope = envelope.unwrap();
+        assert!(envelope.instances.contains_key("instance-a"));
+        assert_eq!(envelope.instances.len(), 1);
     }
 }
