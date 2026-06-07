@@ -1029,14 +1029,10 @@ async fn run_managed_tool(
         })?;
 
     let cas = Arc::new(cas);
-    let (payload_dir, _cache_guard) =
-        crate::orchestration::actors::step_worker::tool_content_cache::prepare_tool_content_cache(
-            conductor_tools_dir,
-            &tool_id,
-            content_map,
-            &cas,
-        )
-        .await?;
+    let tool_cache =
+        crate::tool_cache::ToolContentCache::new(conductor_tools_dir.to_path_buf(), cas, None);
+    let cache_entry = tool_cache.materialize(&tool_id, content_map).await?;
+    let payload_dir = cache_entry.payload_dir().to_path_buf();
 
     let host_relative = resolve_host_command_selector_path(command_selector)?.ok_or_else(|| {
         ConductorError::Workflow(format!(

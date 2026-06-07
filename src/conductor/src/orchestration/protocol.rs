@@ -114,14 +114,6 @@ pub(crate) struct StepExecutionRequest {
     pub workflow_name: String,
     /// State snapshot used for cache-key and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
-    /// Resolved root for the tool-content cache.
-    ///
-    /// Each tool id occupies one subdirectory here; entries are keyed on the
-    /// full `content_map` and expire after 24 hours of non-use.
-    ///
-    /// Derived from `RuntimeStoragePaths.conductor_tools_dir`, defaulting to
-    /// `<conductor_dir>/tools`.
-    pub runtime_tools_dir: PathBuf,
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     ///

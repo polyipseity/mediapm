@@ -48,8 +48,8 @@ use crate::orchestration::protocol::{
     UnifiedNickelDocument, UnifiedToolSpec,
 };
 mod template;
-pub(crate) mod tool_content_cache;
-use tool_content_cache::ToolCacheReadGuard;
+
+use crate::tool_cache::{ToolCacheEntry, ToolContentCache};
 
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
@@ -82,6 +82,21 @@ impl<C> Default for StepWorkerActor<C> {
     /// Builds one worker marker with no local mutable fields.
     fn default() -> Self {
         Self { _phantom: PhantomData }
+    }
+}
+
+/// Runtime state for one worker actor, carrying the CAS handle and tool cache.
+#[derive(Debug)]
+struct StepWorkerState<C: CasApi + Send + Sync + 'static> {
+    /// Shared CAS handle for content I/O.
+    cas: Arc<C>,
+    /// Shared tool-content cache for managed-tool materialization.
+    tool_cache: Arc<ToolContentCache<C>>,
+}
+
+impl<C: CasApi + Send + Sync + 'static> Clone for StepWorkerState<C> {
+    fn clone(&self) -> Self {
+        Self { cas: Arc::clone(&self.cas), tool_cache: Arc::clone(&self.tool_cache) }
     }
 }
 
@@ -214,10 +229,10 @@ where
     C: CasApi + Send + Sync + 'static,
 {
     type Msg = StepWorkerMessage;
-    type State = Arc<C>;
-    type Arguments = Arc<C>;
+    type State = StepWorkerState<C>;
+    type Arguments = StepWorkerState<C>;
 
-    /// Initializes the worker with the shared CAS handle it will use for all execution.
+    /// Initializes the worker with runtime state (CAS handle and tool cache).
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -236,10 +251,10 @@ where
         match message {
             StepWorkerMessage::ExecuteStep(request, reply) => {
                 let executor = StepWorkerExecutor {
-                    cas: state.clone(),
+                    cas: state.cas.clone(),
                     conductor_tmp_dir: request.conductor_tmp_dir.clone(),
                 };
-                let _ = reply.send(executor.execute_step(*request).await);
+                let _ = reply.send(executor.execute_step(&*state.tool_cache, *request).await);
             }
         }
         Ok(())
@@ -294,6 +309,7 @@ where
     )]
     async fn execute_step(
         &self,
+        tool_cache: &ToolContentCache<C>,
         request: StepExecutionRequest,
     ) -> Result<StepExecutionBundle, ConductorError> {
         let started_at = Instant::now();
@@ -459,11 +475,11 @@ where
             // Gatekeeper/XProtect per-path security scans on every step.
             let (payload_dir, cache_guard) = self
                 .materialize_tool_content_map(
+                    tool_cache,
                     &request.step.tool,
                     &tool.tool_content_map,
                     &resolved_process,
                     execution_cwd,
-                    &request.runtime_tools_dir,
                 )
                 .await?;
             self.materialize_template_file_writes(&template_file_writes, execution_cwd).await?;
@@ -1666,7 +1682,7 @@ where
         tool_cwd: &Path,
         outermost_config_dir: &Path,
         payload_dir: Option<&Path>,
-        cache_guard: Option<ToolCacheReadGuard>,
+        cache_guard: Option<ToolCacheEntry>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         match process {
             ResolvedProcessExecution::Executable { executable, args, env_vars, success_codes } => {
@@ -1747,7 +1763,7 @@ where
         capture_stdout: bool,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
-        cache_guard: Option<ToolCacheReadGuard>,
+        cache_guard: Option<ToolCacheEntry>,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         let executable_timeout = Self::resolve_executable_timeout_duration()?;
 
@@ -1833,7 +1849,7 @@ where
         capture_stdout: bool,
         tool_cwd: &Path,
         payload_dir: Option<&Path>,
-        _cache_guard: Option<ToolCacheReadGuard>,
+        _cache_guard: Option<ToolCacheEntry>,
         executable_timeout: Duration,
     ) -> Result<ToolExecutionCapture, ConductorError> {
         if executable_name.trim().is_empty() {
@@ -2060,22 +2076,17 @@ where
     /// directory (falling back to copies on cross-device setups).
     async fn materialize_tool_content_map(
         &self,
+        tool_cache: &ToolContentCache<C>,
         tool_id: &str,
         tool_content_map: &BTreeMap<String, Hash>,
         resolved_process: &ResolvedProcessExecution,
         tool_cwd: &Path,
-        tools_dir: &Path,
-    ) -> Result<(Option<PathBuf>, Option<ToolCacheReadGuard>), ConductorError> {
+    ) -> Result<(Option<PathBuf>, Option<ToolCacheEntry>), ConductorError> {
         if tool_content_map.is_empty() {
             return Ok((None, None));
         }
-        let (payload_dir, guard) = tool_content_cache::prepare_tool_content_cache(
-            tools_dir,
-            tool_id,
-            tool_content_map,
-            &self.cas,
-        )
-        .await?;
+        let entry = tool_cache.materialize(tool_id, tool_content_map).await?;
+        let payload_dir = entry.payload_dir().to_path_buf();
 
         // Optimization: when command[0] resolves directly inside the persistent
         // payload cache, skip the per-step recursive sandbox linking pass and
@@ -2087,14 +2098,14 @@ where
             let normalized =
                 self.normalized_relative_tool_path(executable, "tool process executable")?;
             if payload_dir.join(&normalized).is_file() {
-                return Ok((Some(payload_dir), Some(guard)));
+                return Ok((Some(payload_dir), Some(entry)));
             }
         }
 
-        tool_content_cache::link_payload_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
+        ToolContentCache::<C>::link_to_sandbox(&payload_dir, tool_cwd).map_err(|err| {
             ConductorError::Workflow(format!("materializing tool content sandbox: {err}"))
         })?;
-        Ok((Some(payload_dir), Some(guard)))
+        Ok((Some(payload_dir), Some(entry)))
     }
 
     /// Executes one builtin implementation and returns synthetic stdout/stderr.
@@ -2820,15 +2831,17 @@ where
 /// Spawns one deterministic worker pool for workflow step execution.
 pub(crate) async fn spawn_step_worker_pool<C>(
     cas: Arc<C>,
+    tool_cache: Arc<ToolContentCache<C>>,
     worker_count: usize,
 ) -> Result<Vec<ActorRef<StepWorkerMessage>>, ConductorError>
 where
     C: CasApi + Send + Sync + 'static,
 {
+    let state = StepWorkerState { cas, tool_cache };
     let mut workers = Vec::with_capacity(worker_count);
     for index in 0..worker_count {
         let (worker_ref, _handle) =
-            Actor::spawn(None, StepWorkerActor::<C>::default(), cas.clone()).await.map_err(
+            Actor::spawn(None, StepWorkerActor::<C>::default(), state.clone()).await.map_err(
                 |err| {
                     ConductorError::Internal(format!(
                         "failed spawning conductor step worker {index}: {err}"
@@ -2843,13 +2856,14 @@ where
 /// Executes one step directly without going through worker RPC, used for fallback handling.
 pub(crate) async fn execute_step_direct<C>(
     cas: Arc<C>,
+    tool_cache: Arc<ToolContentCache<C>>,
     request: StepExecutionRequest,
 ) -> Result<StepExecutionBundle, ConductorError>
 where
     C: CasApi + Send + Sync + 'static,
 {
     StepWorkerExecutor { cas, conductor_tmp_dir: request.conductor_tmp_dir.clone() }
-        .execute_step(request)
+        .execute_step(&*tool_cache, request)
         .await
 }
 
@@ -2876,7 +2890,7 @@ mod tests {
 
     use super::{
         ResolvedOutputCapture, ResolvedOutputSpec, ResolvedProcessExecution, StepWorkerExecutor,
-        ToolExecutionCapture, push_reverse_diff_hints,
+        ToolContentCache, ToolExecutionCapture, push_reverse_diff_hints,
     };
 
     /// Builds one minimal executable-process descriptor for helper invocations.
@@ -4092,15 +4106,17 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let payload = b"#!/usr/bin/env sh\necho from-content-map\n".to_vec();
         let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let (payload_dir, _guard) = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([("bin/run.sh".to_string(), hash)]),
                 &test_executable_process("bin/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4122,18 +4138,20 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let payload = b"#!/usr/bin/env sh\necho tool\n".to_vec();
         let hash = cas.put(payload.clone()).await.expect("store payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
         let runtime_tools_dir = temp.path().join("tools");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(runtime_tools_dir.clone(), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let executable_relative = format!("{}/my-tool", host_payload_platform_dir());
         let (payload_dir, _guard) = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "mediapm.tools.my-tool@1.0.0",
                 &BTreeMap::from([(executable_relative.clone(), hash)]),
                 &test_executable_process(&executable_relative),
                 temp.path(),
-                runtime_tools_dir.as_path(),
             )
             .await
             .expect("managed-tool payload should materialize");
@@ -4159,15 +4177,17 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
         let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let (payload_dir, _guard) = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([("tool/".to_string(), hash)]),
                 &test_executable_process("tool/bin/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4191,15 +4211,17 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let zip_payload = build_test_zip_payload("bin/run.sh", b"echo from zip\n");
         let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let (payload_dir, _guard) = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([("./".to_string(), hash)]),
                 &test_executable_process("bin/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4219,15 +4241,17 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let hash =
             cas.put(Bytes::from_static(b"not-a-zip")).await.expect("store plain payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let error = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([("tool/".to_string(), hash)]),
                 &test_executable_process("tool/bin/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4249,15 +4273,17 @@ mod tests {
         let cas = Arc::new(InMemoryCas::new());
         let zip_payload = build_test_zip_payload("nested/file.txt", b"x");
         let hash = cas.put(zip_payload).await.expect("store zip payload in CAS");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let error = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([("/".to_string(), hash)]),
                 &test_executable_process("bin/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4281,18 +4307,20 @@ mod tests {
             .put(Bytes::from_static(b"#!/usr/bin/env sh\necho from file\n"))
             .await
             .expect("store file payload");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let error = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([
                     ("tool/".to_string(), directory_hash),
                     ("tool/run.sh".to_string(), file_hash),
                 ]),
                 &test_executable_process("tool/run.sh"),
-                temp.path(),
                 temp.path(),
             )
             .await
@@ -4319,18 +4347,20 @@ mod tests {
         let first_hash = cas.put(first_zip).await.expect("store first zip payload");
         let second_zip = build_test_zip_payload("b.txt", b"B");
         let second_hash = cas.put(second_zip).await.expect("store second zip payload");
-        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
         let temp = tempfile::tempdir().expect("tempdir");
+        let tool_cache =
+            Arc::new(ToolContentCache::new(temp.path().join("tools"), Arc::clone(&cas), None));
+        let executor = StepWorkerExecutor { cas, conductor_tmp_dir: std::env::temp_dir() };
 
         let (payload_dir, _guard) = executor
             .materialize_tool_content_map(
+                &*tool_cache,
                 "test-tool",
                 &BTreeMap::from([
                     ("tool/".to_string(), first_hash),
                     ("tool/nested/".to_string(), second_hash),
                 ]),
                 &test_executable_process("tool/a.txt"),
-                temp.path(),
                 temp.path(),
             )
             .await

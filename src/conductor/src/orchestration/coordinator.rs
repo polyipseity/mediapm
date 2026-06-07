@@ -37,6 +37,7 @@ use crate::model::config::{
 };
 use crate::model::state::{OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
+use crate::tool_cache::ToolContentCache;
 
 use super::actors::documents::{DocumentLoaderClient, spawn_document_loader_actor};
 use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
@@ -69,6 +70,8 @@ where
 {
     /// Shared CAS handle passed into child actors.
     pub(super) cas: Arc<C>,
+    /// Lazily-initialized tool-content cache for managed tool extraction.
+    tool_cache: Option<Arc<ToolContentCache<C>>>,
     /// Typed client for the document-loader actor.
     document_loader: Option<DocumentLoaderClient>,
     /// Typed client for the workflow scheduler actor.
@@ -89,7 +92,14 @@ where
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(super) fn new(cas: Arc<C>) -> Self {
-        Self { cas, document_loader: None, scheduler: None, workers: Vec::new(), state_store: None }
+        Self {
+            cas,
+            tool_cache: None,
+            document_loader: None,
+            scheduler: None,
+            workers: Vec::new(),
+            state_store: None,
+        }
     }
 
     /// Returns a clone of the state-store client if one has been initialized.
@@ -155,10 +165,14 @@ where
     }
 
     /// Ensures all supporting actors are spawned before workflow execution.
+    ///
+    /// Note: workers are not initialized here because they require a
+    /// `tools_dir` parameter that is only available after runtime paths are
+    /// resolved. Callers must invoke [`ensure_workers`](Self::ensure_workers)
+    /// separately when the tools directory is known.
     pub(super) async fn ensure_runtime_support(&mut self) -> Result<(), ConductorError> {
         self.ensure_document_loader().await?;
         self.ensure_scheduler().await?;
-        self.ensure_workers().await?;
         self.ensure_state_store().await?;
         Ok(())
     }
@@ -180,10 +194,17 @@ where
     }
 
     /// Lazily spawns the step-worker pool if not already initialized.
-    async fn ensure_workers(&mut self) -> Result<(), ConductorError> {
+    ///
+    /// Creates a [`ToolContentCache`] rooted at `tools_dir` and passes shared
+    /// references to each worker actor for concurrent tool-content extraction.
+    async fn ensure_workers(&mut self, tools_dir: &Path) -> Result<(), ConductorError> {
         if self.workers.is_empty() {
             let pool_size = default_worker_pool_size();
-            self.workers = spawn_step_worker_pool(self.cas.clone(), pool_size).await?;
+            let tool_cache =
+                Arc::new(ToolContentCache::new(tools_dir.to_path_buf(), self.cas.clone(), None));
+            self.workers =
+                spawn_step_worker_pool(self.cas.clone(), tool_cache.clone(), pool_size).await?;
+            self.tool_cache = Some(tool_cache);
         }
         Ok(())
     }
@@ -248,6 +269,7 @@ where
             });
 
         self.ensure_runtime_support().await?;
+        self.ensure_workers(&resolved_runtime_paths.conductor_tools_dir).await?;
         let document_loader = self.document_loader.clone().ok_or_else(|| {
             ConductorError::Internal("document loader actor was not initialized".to_string())
         })?;
@@ -573,7 +595,7 @@ where
         unified: &UnifiedNickelDocument,
         state_document: &mut crate::model::config::StateNickelDocument,
         state: &mut OrchestrationState,
-        tools_dir: &Path,
+        _tools_dir: &Path,
         conductor_tmp_dir: &Path,
         outermost_config_dir: &Path,
         progress_sender: Option<WorkflowProgressSender>,
@@ -799,7 +821,6 @@ where
                     impure_timestamp,
                     workflow_name: wf_name.clone(),
                     state_snapshot: state_snapshot.clone(),
-                    runtime_tools_dir: tools_dir.to_path_buf(),
                     outermost_config_dir: outermost_config_dir.to_path_buf(),
                     conductor_tmp_dir: conductor_tmp_dir.to_path_buf(),
                     step_outputs,
@@ -810,10 +831,16 @@ where
                 next_worker = next_worker.saturating_add(1);
                 let worker = self.workers[worker_index].clone();
                 let cas = self.cas.clone();
+                let tool_cache = self.tool_cache.clone().ok_or_else(|| {
+                    ConductorError::Internal(
+                        "tool cache must be initialized before executing steps".to_string(),
+                    )
+                })?;
 
                 in_flight.push(Box::pin(Self::dispatch_step_rpc_with_fallback(
                     worker,
                     cas,
+                    tool_cache,
                     request,
                     wf_name,
                     step_id,
@@ -969,9 +996,11 @@ where
 
     /// Dispatches one step to a worker actor via RPC, falling back to direct
     /// local execution on RPC failure.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_step_rpc_with_fallback(
         worker: ActorRef<StepWorkerMessage>,
         cas: Arc<C>,
+        tool_cache: Arc<ToolContentCache<C>>,
         request: StepExecutionRequest,
         workflow_name: String,
         step_id: String,
@@ -1006,7 +1035,7 @@ where
             Err(err) => Some(err.to_string()),
         };
 
-        let fallback_result = execute_step_direct(cas, request).await;
+        let fallback_result = execute_step_direct(cas, tool_cache, request).await;
         StepCompletionEvent {
             workflow_name,
             step_id,
