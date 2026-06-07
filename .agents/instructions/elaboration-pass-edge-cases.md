@@ -863,16 +863,23 @@ mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
 | `unwrap_or_default` fallback | If `duration_since` fails (system clock before UNIX_EPOCH), defaults to zero-offset, which sets cutoff at `0 - ttl = 0` (saturated) — no GC on that persist cycle |
 | Risk | Clock jumps are rare but destructive. The fallback is safe (skips aggressive GC) but may cause an unexpected bloat cycle |
 
-**Scenario 5 — `last_reachable = None` instances after GC** (deserialization guarantee makes this impossible in practice):
+**Scenario 5 — `last_reachable` non-null guarantee (type-enforced)**:
+
+The runtime type `AuxData.last_reachable` is non-optional `ImpureTimestamp`.
+`None` only exists on the wire (`Option<ImpureTimestampV2>` for backward
+compatibility with old state files). The ISO bridge resolves `None` to `now()`
+during deserialization, making the runtime type always populated.
 
 | Aspect | Behavior |
 |---|---|
-| Phase 1 mark | For every instance key NOT in `referenced_instance_keys` that lacks an `aux` entry (or whose aux entry has `last_reachable: None`), sets `last_reachable = now` |
-| Phase 2 evict predicate | Instance key NOT in `referenced_instance_keys` AND `aux[key].last_reachable.is_some_and(\|t\| t < cutoff)` |
-| `None` survival | Instances with `last_reachable = None` are never evicted (the `is_some_and` predicate short-circuits on `None`) |
-| Deserialization guarantee | After `decode_state()`, every instance key has a `last_reachable: Some(…)` entry — the decode path injects `now()` for any missing or `None` entry. `None` only arises during in-memory construction or in `gc_instances()` Phase 1's own temporary state |
-| Rationale | The `None` safety net exists at the type level for defensive coding, but is never reached from persisted state. Phase 1 will still handle truly freshly-inserted instances that bypassed `merge_step_result_into_state()` |
-| Risk | None in practice — the deserialization guarantee eliminates the backward-compatibility hazard that motivated the `None` safety net |
+| Runtime type | `last_reachable: ImpureTimestamp` — non-optional, enforced by the type system |
+| Wire type | `last_reachable: Option<ImpureTimestampV2>` with `#[serde(default)]` — backward compat |
+| `None` → `now()` | The ISO bridge `from` direction injects `now()` when the wire value is `None` |
+| Missing aux entries | Post-processing loop inserts `AuxData { last_reachable: now }` for any instance without an aux record |
+| GC phase 1 | Sets `last_reachable = now` only for instances lacking an aux entry — no `None` branch needed |
+| GC phase 2 predicate | `aux[key].last_reachable < cutoff` — direct comparison, no `is_some_and` wrapper |
+| `None` survival | Not applicable — runtime type disallows `None` |
+| Risk | The deserialization guarantee eliminates the backward-compatibility hazard. Type-enforcement makes GC code simpler and safer |
 
 **Scenario 6 — Large instance maps**:
 

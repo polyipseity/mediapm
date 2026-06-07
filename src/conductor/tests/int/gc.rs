@@ -33,17 +33,13 @@ fn gc_instances_evicts_stale_unreferenced() {
         aux: BTreeMap::from([
             (
                 "fresh".to_string(),
-                AuxData {
-                    last_reachable: Some(ImpureTimestamp { epoch_seconds: 200, subsec_nanos: 0 }),
-                },
+                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 200, subsec_nanos: 0 } },
             ),
             (
                 "stale".to_string(),
-                AuxData {
-                    last_reachable: Some(ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 }),
-                },
+                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
             ),
-            // "unmarked" has no aux entry → last_reachable is None → preserved
+            // "unmarked" has no aux entry → GC injects now() → preserved
         ]),
         ..OrchestrationState::default()
     };
@@ -60,7 +56,7 @@ fn gc_instances_evicts_stale_unreferenced() {
     );
     assert!(
         state.instances.contains_key("unmarked"),
-        "unmarked instance (last_reachable None) should survive"
+        "unmarked instance (no aux entry → GC injects now) should survive"
     );
 }
 
@@ -78,15 +74,11 @@ fn gc_instances_preserves_referenced() {
         aux: BTreeMap::from([
             (
                 "referenced_stale".to_string(),
-                AuxData {
-                    last_reachable: Some(ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 }),
-                },
+                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
             ),
             (
                 "unreferenced_stale".to_string(),
-                AuxData {
-                    last_reachable: Some(ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 }),
-                },
+                AuxData { last_reachable: ImpureTimestamp { epoch_seconds: 50, subsec_nanos: 0 } },
             ),
         ]),
         referenced_instance_keys: HashSet::from(["referenced_stale".to_string()]),
@@ -105,8 +97,8 @@ fn gc_instances_preserves_referenced() {
     );
 }
 
-/// Protects that instances with `last_reachable: None` survive regardless of
-/// cutoff (safety net for pre-GC state).
+/// Protects that instances without aux entries survive because phase 1 of
+/// gc_instances injects now() before the eviction check.
 #[test]
 fn gc_instances_preserves_unmarked() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 0 };
@@ -116,13 +108,13 @@ fn gc_instances_preserves_unmarked() {
             ("a".to_string(), sample_instance("a")),
             ("b".to_string(), sample_instance("b")),
         ]),
-        // No aux entries → all instances have last_reachable: None
+        // No aux entries → phase 1 injects now() for both
         ..OrchestrationState::default()
     };
 
     state.gc_instances(cutoff);
 
-    assert_eq!(state.instances.len(), 2, "unmarked instances survive (safety net)");
+    assert_eq!(state.instances.len(), 2, "unmarked instances survive (phase 1 injection)");
 }
 
 /// Protects that `gc_instances` is a no-op on an empty state.
@@ -153,14 +145,8 @@ fn gc_instances_marks_unreferenced_with_now() {
     // Since both were marked with `now` in phase 1, and `now > cutoff`,
     // they should survive phase 2.
     assert_eq!(state.instances.len(), 2, "instances marked with now survive");
-    assert!(
-        state.aux.get("a").and_then(|a| a.last_reachable).is_some(),
-        "instance 'a' gets last_reachable"
-    );
-    assert!(
-        state.aux.get("b").and_then(|a| a.last_reachable).is_some(),
-        "instance 'b' gets last_reachable"
-    );
+    assert!(state.aux.get("a").is_some(), "instance 'a' gets aux entry");
+    assert!(state.aux.get("b").is_some(), "instance 'b' gets aux entry");
 }
 
 /// Protects that `gc_instances` respects the subsec_nanos boundary correctly.
@@ -178,28 +164,28 @@ fn gc_instances_respects_subsec_nanos_boundary() {
             (
                 "nanos_below".to_string(),
                 AuxData {
-                    last_reachable: Some(ImpureTimestamp {
+                    last_reachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 400_000_000,
-                    }),
+                    },
                 },
             ),
             (
                 "nanos_equal".to_string(),
                 AuxData {
-                    last_reachable: Some(ImpureTimestamp {
+                    last_reachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 500_000_000,
-                    }),
+                    },
                 },
             ),
             (
                 "nanos_above".to_string(),
                 AuxData {
-                    last_reachable: Some(ImpureTimestamp {
+                    last_reachable: ImpureTimestamp {
                         epoch_seconds: 100,
                         subsec_nanos: 600_000_000,
-                    }),
+                    },
                 },
             ),
         ]),

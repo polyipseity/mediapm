@@ -502,22 +502,25 @@ GC follows a two-phase reachability-first strategy:
    runtime-only field on `OrchestrationState` (skip-serialized). Populated by
    `merge_step_result_into_state()` — every completed step's instance key is
    added. Referenced instances are NEVER evicted, regardless of age.
-2. **Last-reachable tracking** (`aux.<key>.last_reachable`): an optional
-   `ImpureTimestamp` inside `AuxData` (envelope-level aux map). When a step
-   completes, `merge_step_result_into_state()` sets
-   `aux[instance_key].last_reachable = now` for the merged instance, ensuring
-   its timestamp is fresh.
+2. **Last-reachable tracking** (`aux.<key>.last_reachable`): a non-optional
+   `ImpureTimestamp` inside `AuxData` (envelope-level aux map). The runtime
+   type enforces non-null — `None` is only possible on the wire (in
+   `Option<ImpureTimestampV2>` for backward compat) and is resolved to
+   `now()` by the ISO bridge during deserialization. When a step completes,
+   `merge_step_result_into_state()` sets
+   `aux[instance_key].last_reachable = ImpureTimestamp::now()` directly,
+   ensuring its timestamp is fresh.
 3. **`gc_instances(cutoff)` method** (`OrchestrationState`):
    - Phase 1 — mark: for every instance key NOT in `referenced_instance_keys`
-     that lacks a `last_reachable` entry, set `last_reachable = now`.
+     that lacks an `aux` entry, inject `AuxData { last_reachable: now }`.
      This ensures previously-unmarked instances get one GC cycle of protection
      before becoming eligible for eviction.
    - Phase 2 — evict: remove all instances whose key is NOT in
      `referenced_instance_keys` and whose `last_reachable < cutoff` (epoch-seconds
      comparison with subsec-nanos tiebreaker).
-     Instances with `last_reachable = None` are always preserved (safety net;
-     after deserialization this path is never reached because the decode
-     step fills every instance's aux entry with `Some(now)`).
+     Because `last_reachable` is non-optional in the runtime type, no `None`
+     safety net is needed — the type system guarantees every entry is
+     populated.
 - **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`):
    Config option of type `Option<u64>`. `None` means "use the default".
    The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS`
@@ -553,11 +556,16 @@ Both the CLI (`run_gc()`) and the background GC task use this shared function.
 **Instance TTL**: The config field `instance_ttl_seconds` is `Option<u64>`; `None` means "use the default". The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604 800 — 7 days) before passing to the state store; the actor also starts with the 7-day default at spawn time. Instance GC is never truly disabled — at worst it runs with a very generous TTL. When an explicit value is set, cutoff = `now - ttl`. Configured via `runtime.instance_ttl_seconds`.
 
 **Deserialization guarantee**: After `decode_state()` runs, every instance
-key has a corresponding `aux` entry with `last_reachable: Some(…)`. The decode
-path injects `ImpureTimestamp::now()` for any instance that lacks an aux entry
-or whose entry has `last_reachable: None`. This ensures `gc_instances()` never
-encounters a bare `None` in practice, making the Phase-1 safety net
-reachability-only for in-memory constructed state.
+key has a corresponding `aux` entry with a non-optional `last_reachable`.
+The decode path injects `ImpureTimestamp::now()` at two points:
+1. The V2 ISO bridge maps `Option<ImpureTimestampV2>` (wire) to
+   `ImpureTimestamp` (runtime), converting `None` to `now()`.
+2. A post-processing loop inserts `AuxData { last_reachable: now }` for any
+   instance key that still lacks an entry (no `aux` record at all).
+
+This ensures the runtime `AuxData.last_reachable` is always populated,
+elliminating all `None`-checking from GC and other runtime code paths.
+Type-enforcement replaces defensive validation.
 
 ### §16 Channel-Based Workflow Progress Events
 

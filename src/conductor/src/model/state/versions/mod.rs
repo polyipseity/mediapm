@@ -154,17 +154,13 @@ pub(crate) async fn decode_state<C: CasApi>(
                 .map(|(key, aux_data)| (key, v2::aux_data_v2_iso().from(aux_data)))
                 .collect();
 
-            // Ensure every instance has an aux entry with a non-None
-            // last_reachable. Old state predating the aux envelope may lack
-            // entries entirely; newer state may carry last_reachable=None on
-            // instances added before the deserialization guarantee was
-            // established.
+            // Ensure every instance has an aux entry. Old state predating
+            // the aux envelope may lack entries entirely. The bridge above
+            // already injects now() for any last_reachable: None, so only
+            // completely missing entries need handling here.
             let now = ImpureTimestamp::now();
             for key in instances.keys() {
-                let entry = aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
-                if entry.last_reachable.is_none() {
-                    entry.last_reachable = Some(now);
-                }
+                aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
             }
 
             Ok(OrchestrationState {
@@ -200,15 +196,12 @@ pub(crate) async fn decode_state<C: CasApi>(
                 instances.insert(key, instance);
             }
 
-            // Ensure every instance — including V1 instances without
-            // last_used — gets a non-None last_reachable timestamp so GC
-            // never encounters a bare None entry.
+            // Ensure every instance has an aux entry. V1 instances without
+            // last_used are handled by the bridge above (injects now() for
+            // None). Completely missing entries are initialized here.
             let now = ImpureTimestamp::now();
             for key in instances.keys() {
-                let entry = aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
-                if entry.last_reachable.is_none() {
-                    entry.last_reachable = Some(now);
-                }
+                aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
             }
 
             // Return with latest version marker — re-persisting will

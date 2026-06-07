@@ -48,7 +48,9 @@
   - incremental by default with explicit content-addressed cache keys;
   - async I/O/orchestration with runtime adapters (Tokio default);
   - actor-first concurrency with explicit supervision behavior;
-  - type-system-enforced invariants where practical;
+  - type-system-enforced invariants where practical; prefer typing-enforcement
+    over repeated runtime validation — it simplifies code and eliminates entire
+    classes of defects by making invariants compile-time guaranteed;
   - pragmatic macro usage (reduce boilerplate, do not hide critical flow);
   - documentation is part of the API contract.- Git safety: NEVER run `git reset` (especially `--hard` or `--keep`). It destroys uncommitted work irreversibly. Use `git revert` to undo published changes, or `git restore` to discard working-tree changes.- Technology baseline:
   - actor/orchestration: `ractor`,

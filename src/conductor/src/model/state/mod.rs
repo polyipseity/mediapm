@@ -216,16 +216,15 @@ pub struct ToolCallInstance {
 }
 
 /// Runtime auxiliary metadata for one tool-call instance.
+///
+/// `last_reachable` is guaranteed non-null at the type level — the decode
+/// path injects `now()` for any instance that lacks a value, and all
+/// runtime construction paths provide a value directly. This eliminates
+/// `None`-checking from GC and other runtime logic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuxData {
     /// When this instance was last confirmed reachable from GC roots.
-    ///
-    /// At rest after deserialization this is always `Some(…)` — the decode
-    /// path inserts `now()` for any instance that lacks an entry. `None`
-    /// values still exist at the type level for the brief window during
-    /// construction and as a safety net in `gc_instances()`.
-    #[serde(default)]
-    pub last_reachable: Option<ImpureTimestamp>,
+    pub last_reachable: ImpureTimestamp,
 }
 
 /// Immutable orchestration-state value stored as a CAS blob.
@@ -276,16 +275,13 @@ impl OrchestrationState {
     ///    before this pass runs) are preserved until a subsequent pass.
     pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
         let now = ImpureTimestamp::now();
-        // Phase 1: initialise last_reachable for unreferenced instances that
-        // lack it, so the TTL clock starts ticking from this GC pass onward.
+        // Phase 1: initialise aux for unreferenced instances that lack an
+        // entry, so the TTL clock starts ticking from this GC pass onward.
         for key in self.instances.keys() {
             if self.referenced_instance_keys.contains(key) {
                 continue;
             }
-            let aux = self.aux.entry(key.clone()).or_insert(AuxData { last_reachable: None });
-            if aux.last_reachable.is_none() {
-                aux.last_reachable = Some(now);
-            }
+            self.aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
         }
         // Phase 2: evict unreferenced instances past the cutoff.
         let evict_keys: Vec<String> = self
@@ -295,7 +291,7 @@ impl OrchestrationState {
                 if self.referenced_instance_keys.contains(*key) {
                     return false;
                 }
-                self.aux.get(*key).and_then(|a| a.last_reachable).is_some_and(|t| t < cutoff)
+                self.aux.get(*key).is_some_and(|a| a.last_reachable < cutoff)
             })
             .cloned()
             .collect();
@@ -371,7 +367,7 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(versions::latest_state_version() as u64) as u32;
-    let aux = json
+    let mut aux = json
         .get("aux")
         .and_then(serde_json::Value::as_object)
         .map(|aux_obj| {
@@ -387,6 +383,15 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         })
         .transpose()?
         .unwrap_or_default();
+
+    // Ensure every instance has an aux entry. The bridge above injects
+    // now() for any last_reachable: None in the input, so only completely
+    // missing entries need handling here.
+    let now = ImpureTimestamp::now();
+    for key in instances.keys() {
+        aux.entry(key.clone()).or_insert(AuxData { last_reachable: now });
+    }
+
     Ok(OrchestrationState { version, instances, aux, referenced_instance_keys: HashSet::new() })
 }
 

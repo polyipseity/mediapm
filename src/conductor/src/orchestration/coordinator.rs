@@ -1120,9 +1120,11 @@ where
         // last_reachable timestamp so GC will not evict it.
         state.referenced_instance_keys.insert(instance_key.clone());
         {
-            let aux_data =
-                state.aux.entry(instance_key.clone()).or_insert(AuxData { last_reachable: None });
-            aux_data.last_reachable = Some(ImpureTimestamp::now());
+            let aux_data = state
+                .aux
+                .entry(instance_key.clone())
+                .or_insert(AuxData { last_reachable: ImpureTimestamp::now() });
+            aux_data.last_reachable = ImpureTimestamp::now();
         }
 
         let entry = state.instances.entry(instance_key.clone());

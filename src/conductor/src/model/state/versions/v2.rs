@@ -303,17 +303,22 @@ pub fn instance_ref_v2_iso() -> IsoPrime<'static, RcBrand, InstanceRefV2, Hash> 
 pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::state::AuxData> {
     IsoPrime::new(
         |versioned: AuxDataV2| crate::model::state::AuxData {
-            last_reachable: versioned.last_reachable.map(|ts| {
-                crate::model::config::ImpureTimestamp {
+            // Inject now() for None — old state predating the aux envelope
+            // or instances created before the non-null guarantee may carry
+            // last_reachable: None on the wire. Decode is the only boundary
+            // where None is handled; the runtime type is non-optional.
+            last_reachable: match versioned.last_reachable {
+                Some(ts) => crate::model::config::ImpureTimestamp {
                     epoch_seconds: ts.epoch_seconds,
                     subsec_nanos: ts.subsec_nanos,
-                }
-            }),
+                },
+                None => crate::model::config::ImpureTimestamp::now(),
+            },
         },
         |runtime: crate::model::state::AuxData| AuxDataV2 {
-            last_reachable: runtime.last_reachable.map(|ts| ImpureTimestampV2 {
-                epoch_seconds: ts.epoch_seconds,
-                subsec_nanos: ts.subsec_nanos,
+            last_reachable: Some(ImpureTimestampV2 {
+                epoch_seconds: runtime.last_reachable.epoch_seconds,
+                subsec_nanos: runtime.last_reachable.subsec_nanos,
             }),
         },
     )
