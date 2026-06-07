@@ -687,18 +687,23 @@ impl FileSystemState {
         Ok(())
     }
 
-    /// Compacts the redb index by rewriting it to a temporary file, then
-    /// atomically replacing the original.
+    /// Compacts the redb index by snapshotting the in-memory state to a
+    /// temporary database, then atomically replacing the original.
     ///
     /// The implementation:
     /// 1. Records `size_before` from the existing `<root>/index.redb`.
-    /// 2. Opens a temporary `CasIndexDb` at `<root>/index.compact_temp/`.
-    /// 3. Loads state from the old db, persists to the temp db.
-    /// 4. Renames the old `index.redb` to `index.redb.bak`, renames the temp
-    ///    to `index.redb`, removes the backup.
-    /// 5. Opens a fresh `CasIndexDb` at the canonical path and replaces
+    /// 2. Clones the in-memory `IndexState` (read lock) to capture all
+    ///    committed writes, avoiding a stale read from the old redb.
+    /// 3. Opens a temporary `CasIndexDb` at `<root>/index.compact_temp/`.
+    /// 4. Persists the in-memory state clone to the temp db.
+    /// 5. Removes stale `.bak` if present, renames `index.redb` → `index.redb.bak`,
+    ///    renames temp → `index.redb`, removes the temp directory.
+    /// 6. Opens a fresh `CasIndexDb` at the canonical path and replaces
     ///    `self.index_db` (write lock).
-    /// 6. Returns `CompactReport`.
+    /// 7. Calls `persist_index_snapshot()` to capture any writes that arrived
+    ///    in-memory during steps 2-6.
+    /// 8. Removes the `.bak` file — only after the re-persist succeeds.
+    /// 9. Records `size_after` and returns `CompactReport`.
     pub(super) async fn compact_index(&self) -> Result<crate::CompactReport, CasError> {
         use std::fs;
         use tokio::task::spawn_blocking;
@@ -710,13 +715,11 @@ impl FileSystemState {
 
         let size_before = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
 
-        // Load state from existing db.
-        let old_index_db = self.index_db.read().clone();
-        let state = spawn_blocking(move || old_index_db.load_state())
-            .await
-            .map_err(|e| CasError::task_join("loading index state for compaction", e))??;
+        // Snapshot in-memory state so late-arriving persist_index_batch writes
+        // are not lost when the old redb is renamed away.
+        let state = self.lock_index_read("snapshotting index state for compaction").clone();
 
-        // Open temporary db and persist.
+        // Open temporary db and persist the in-memory snapshot.
         let temp_cas = CasIndexDb::open(&temp_dir)?;
         spawn_blocking(move || temp_cas.persist_state(&state))
             .await
@@ -735,11 +738,16 @@ impl FileSystemState {
             CasError::io("renaming compacted index into place", index_path.clone(), source)
         })?;
         let _ = fs::remove_dir(&temp_dir);
-        let _ = fs::remove_file(&backup_path);
 
         // Open fresh db and swap.
         let new_index_db = CasIndexDb::open(&root)?;
         *self.index_db.write() = new_index_db;
+
+        // Catch any writes that landed in-memory during the swap sequence.
+        self.persist_index_snapshot().await?;
+
+        // Only remove the backup after the re-persist succeeds.
+        let _ = fs::remove_file(&backup_path);
 
         let size_after = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
         Ok(crate::CompactReport { size_before, size_after })
