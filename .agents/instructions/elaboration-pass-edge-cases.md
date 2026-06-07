@@ -2309,9 +2309,112 @@ positives for missing objects).
 
 ---
 
-## PART 5: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
+## PART 5: METADATA CACHE — EDGE CASES & FAILURE MODES
 
-### 5.1 CAS Versioning vs Conductor Document Versioning Coordination
+### 5.1 Clock Skew Causes Mass Eviction
+
+**Issue**: TTL is computed as `now - last_access_unix_seconds > 86400`. If the
+system clock jumps forward (NTP correction, DST transition, suspended laptop),
+all entries may appear expired and be evicted on the next `open()`.
+
+**Scenarios**:
+
+| Scenario | Effect | Mitigation |
+|---|---|---|
+| Clock jumps forward >86400s | All entries evicted on next `open()` | Acceptable — cache refills over time |
+| Clock jumps backward | Entries appear "future-dated", TTL never expires | Treat `last_access_unix_seconds > now` as just-verified (skip eviction) |
+| DST transition (±1h) | No eviction for 86400s±1h entries | No action needed (within tolerance) |
+| Suspended laptop (days later) | All entries expired on wake-up | Acceptable — warm cache on first access |
+
+**Risk**: Mass eviction after clock jump causes a cold-cache sync; metadata
+probes run again for every entry. Acceptable performance impact; no correctness
+issue.
+
+### 5.2 Concurrent Access to Cache File
+
+**Issue**: Two concurrent `mediapm` processes (e.g., two terminal tabs running
+`media tool sync` and `media media add` simultaneously) both open the same
+cache file. The last writer wins — one process's cache updates may be lost.
+
+**Scenarios**:
+
+- Process A opens cache, reads metadata.jsonc
+- Process B opens cache, reads metadata.jsonc (same content)
+- Process A calls `set("key1", val1)` → dirty, flushes → writes file
+- Process B calls `set("key2", val2)` → dirty, flushes → writes file (overwrites A's write, losing key1)
+
+**Current Spec**: No locking (single-process assumption)
+
+**Risk**: Rare loss of cache entries under concurrent access. Acceptable since
+cache is best-effort and refills on next access.
+
+**Recommendations**:
+
+- Document: "Metadata cache does not support concurrent processes; last writer
+  wins. Cache loss is non-fatal (refills on next probe)."
+- Future work: per-entry lock file or CAS-backed cache for cross-process safety.
+
+### 5.3 Cache file corruption
+
+**Issue**: Partial write (crash during `AtomicFileOp` rename) or filesystem
+corruption produces invalid JSONC.
+
+**Scenarios**:
+
+| Corruption Type | Detection | Recovery |
+|---|---|---|
+| Truncated rename target (crash between write and rename) | Deserialize fails → warn and delete | Next `open()` produces empty cache |
+| Partial overwrite (renamed but incomplete) | Same as above | Same |
+| Filesystem bit rot | `serde_json` fails to parse | Same |
+| Manual edit (user modifies JSONC incorrectly) | Same | Same |
+
+**Resolution**: `open()` catches `serde_json` errors, logs a warning, and
+returns an empty `MetadataCache`. Previous cache is replaced on first flush.
+
+### 5.4 Cache Key Collision (Different Inputs → Same Blake3 Hex)
+
+**Issue**: Blake3 hash collision on hex prefix — two different inputs produce
+the same hex string (theoretical for Blake3, but the hex encoding truncates
+to 64 chars of the 256-bit hash).
+
+**Scenarios**:
+
+- `media_id = "video1"` and `media_id = "video2"` collide via Blake3 → cache
+  returns wrong metadata
+- Local file path `./song.mp3` and `./song2.mp3` collide
+
+**Risk**: Theoretically impossible for truncated Blake3 (64 hex chars = 256
+bits = full output). No collision possible for non-truncated output.
+
+**Resolution**: No action needed — full Blake3 256-bit output used as cache key.
+
+### 5.5 Stale Entry for Deleted Media Source
+
+**Issue**: When a media source or local file is removed, its cache entry
+remains until TTL expiry (up to 86400s later).
+
+**Scenarios**:
+
+- User adds local file `song.mp3` → cache populated
+- User removes `song.mp3` from `mediapm.ncl`
+- File still exists on disk; cache still has entry
+- Later, user adds same file path again → cache hit (valid)
+
+**Risk**: Cache entry has no "delete" operation. Stale entries consume
+negligible disk space (one JSON object per entry). Expiration-driven eviction
+is sufficient.
+
+**Recommendations**:
+
+- Document: "Cache entries are only evicted by TTL expiry. There is no
+  explicit invalidation on media source removal. This is acceptable because
+  entries are small (one JSON object) and expire within 86400s."
+
+---
+
+## PART 6: CROSS-CRATE CONFLICTS & INTEGRATION GAPS
+
+### 6.1 CAS Versioning vs Conductor Document Versioning Coordination
 
 **Issue**: CAS wire format has embedded version; Conductor documents have top-level `version: u32`. **No coordination between them.**
 
@@ -2345,7 +2448,7 @@ positives for missing objects).
 
 ---
 
-### 5.2 Builtin Failure Semantics vs Conductor Error Recovery
+### 6.2 Builtin Failure Semantics vs Conductor Error Recovery
 
 **Issue**: Builtins fail-fast on validation; Conductor has error recovery. **Unclear how retry works.**
 
@@ -2377,7 +2480,7 @@ positives for missing objects).
 
 ---
 
-### 5.3 MediaPM Lock vs CAS Constraint: Consistency Under Deletion
+### 6.3 MediaPM Lock vs CAS Constraint: Consistency Under Deletion
 
 **Issue**: MediaPM lock records CAS hashes; CAS constraints may be modified. **No coordinated invalidation.**
 
@@ -2408,7 +2511,7 @@ positives for missing objects).
 
 ---
 
-### 5.4 Tool ID Collision: Builtin vs Managed Tools
+### 6.4 Tool ID Collision: Builtin vs Managed Tools
 
 **Issue**: Builtin tools (echo@1.0.0, fs@1.0.0) and managed tools (ffmpeg@5.0) share ID space. **No collision detection.**
 
@@ -2437,7 +2540,7 @@ positives for missing objects).
 
 ---
 
-### 5.5 State Persistence Consistency Across Layers
+### 6.5 State Persistence Consistency Across Layers
 
 **Issue**: Conductor persists state to CAS; MediaPM persists lock to state.ncl. **No atomic consistency across both.**
 
@@ -2469,7 +2572,7 @@ positives for missing objects).
 
 ---
 
-### 5.6 Cache Invalidation Across Tool Versions
+### 6.6 Cache Invalidation Across Tool Versions
 
 **Issue**: MediaPM caches tools; Conductor updates tool config. **No cache invalidation policy.**
 
@@ -2516,7 +2619,7 @@ old version stays available until explicitly cleaned up.
 
 ---
 
-### 5.7 Instance Key Immutability and Failure Recovery
+### 6.7 Instance Key Immutability and Failure Recovery
 
 **Concern**: Could a failed workflow step cause previously successful step instances to become unreachable, losing their I/O?
 
@@ -2544,7 +2647,7 @@ old version stays available until explicitly cleaned up.
 
 ---
 
-### 5.8 NCL↔Rust Schema Sync Contract
+### 6.8 NCL↔Rust Schema Sync Contract
 
 **Issue**: With crate-specific NCL configurations (Conductor document, MediaPM
 document, builtin tool configs) each having their own versioned schema, there
@@ -2597,9 +2700,9 @@ versioned Rust struct that maps to an NCL document:
 
 ---
 
-## PART 6: AMBIGUITIES IN STATED CONTRACTS
+## PART 7: AMBIGUITIES IN STATED CONTRACTS
 
-### 6.1 "Fail-Fast Validation": Exact Scope
+### 7.1 "Fail-Fast Validation": Exact Scope
 
 **Issue**: Specification uses "fail-fast validation" but scope is ambiguous.
 
@@ -2628,7 +2731,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.2 "Deterministic Payload": System State Inclusion
+### 7.2 "Deterministic Payload": System State Inclusion
 
 **Issue**: Pure builtin output is "deterministic" but does not specify **system state handling** (e.g., timestamps, permissions).
 
@@ -2647,7 +2750,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.3 "Direct Materialization": Cleanup on Failure
+### 7.3 "Direct Materialization": Cleanup on Failure
 
 **Issue**: Under direct materialization, if a sync fails mid-way, files written to output paths before the failure need cleanup.
 
@@ -2666,7 +2769,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.4 "Deduplicated Tool IDs": Format and Enforcement
+### 7.4 "Deduplicated Tool IDs": Format and Enforcement
 
 **Issue**: Specification uses "deduplicated tool IDs" but does not specify **ID format or deduplication mechanism**.
 
@@ -2688,7 +2791,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.6 "Index Repair": In-Place or Rebuild?
+### 7.6 "Index Repair": In-Place or Rebuild?
 
 **Issue**: `repair_index()` semantics unclear.
 
@@ -2706,7 +2809,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 6.7 "Configuration Document Versioning": Migration Scope
+### 7.7 "Configuration Document Versioning": Migration Scope
 
 **Issue**: Specification mentions migrations but does not specify **what changes require new version** vs. **compatible evolution**.
 
@@ -2727,9 +2830,9 @@ Does "fail-fast" mean:
 
 ---
 
-## PART 7: PERFORMANCE DETAILS REQUIRING SPECIFICATION
+## PART 8: PERFORMANCE DETAILS REQUIRING SPECIFICATION
 
-### 7.1 CAS Optimizer: Algorithm Details
+### 8.1 CAS Optimizer: Algorithm Details
 
 **Issue**: Specification mentions "concurrent candidate scoring (8 tasks)" but algorithm is unspecified.
 
@@ -2748,7 +2851,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 7.2 Conductor Scheduler: EWMA Details
+### 8.2 Conductor Scheduler: EWMA Details
 
 **Issue**: Specification mentions "EWMA cost model; adaptive worker assignment" but EWMA parameters unspecified.
 
@@ -2767,7 +2870,7 @@ Does "fail-fast" mean:
 
 ---
 
-### 7.3 MediaPM Sync: Parallelization Strategy
+### 8.3 MediaPM Sync: Parallelization Strategy
 
 **Issue**: Specification states "parallel workflows; bounded worker pool" but details unspecified.
 
@@ -2802,7 +2905,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 7.4 Lock Reconciliation: Hash Comparison Performance
+### 8.4 Lock Reconciliation: Hash Comparison Performance
 
 **Issue**: Specification mentions "check if hash unchanged" but does not specify **fast-path optimization**.
 
@@ -2822,7 +2925,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 7.5 Delta Reconstruction: Caching and Performance
+### 8.5 Delta Reconstruction: Caching and Performance
 
 **Issue**: Specification mentions "O(depth) reconstruction" but does not specify **caching strategy**.
 
@@ -2841,7 +2944,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 7.6 Builtin Invocation Overhead: Process vs In-Process
+### 8.6 Builtin Invocation Overhead: Process vs In-Process
 
 **Issue**: Specification does not clarify **CLI vs API invocation overhead**.
 
@@ -2859,9 +2962,9 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-## PART 8: TESTING GAPS
+## PART 9: TESTING GAPS
 
-### 8.1 CAS Crate: Delta Chain Robustness
+### 9.1 CAS Crate: Delta Chain Robustness
 
 **Missing Tests**:
 
@@ -2875,7 +2978,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 8.2 Conductor Crate: External Data Error Handling
+### 9.2 Conductor Crate: External Data Error Handling
 
 **Missing Tests**:
 
@@ -2890,7 +2993,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 8.3 Conductor-Builtins: Path Safety and Security
+### 9.3 Conductor-Builtins: Path Safety and Security
 
 **Missing Tests**:
 
@@ -2906,7 +3009,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 8.4 MediaPM Crate: Sync Atomicity and Idempotency
+### 9.4 MediaPM Crate: Sync Atomicity and Idempotency
 
 **Missing Tests**:
 
@@ -2923,7 +3026,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 8.5 Cross-Crate Integration Tests
+### 9.5 Cross-Crate Integration Tests
 
 **Missing Tests**:
 
@@ -2938,7 +3041,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-## PART 9: SUMMARY & RISK ASSESSMENT
+## PART 10: SUMMARY & RISK ASSESSMENT
 
 ### Issue Triage by Risk Level
 
@@ -3037,9 +3140,9 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-## PART 6: Memory & Streaming Edge Cases
+## PART 11: Memory & Streaming Edge Cases
 
-### 6.1 CAS Streaming (`get_stream`) Edge Cases
+### 11.1 CAS Streaming (`get_stream`) Edge Cases
 
 #### 6.1.1 File Deleted Mid-Stream
 
@@ -3077,7 +3180,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 6.2 `materialize_to_path` Edge Cases
+### 11.2 `materialize_to_path` Edge Cases
 
 #### 6.2.1 Destination Already Exists
 
@@ -3121,7 +3224,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 6.3 Template Materialization (`TemplateFileWrite.cas_hash`) Edge Cases
+### 11.3 Template Materialization (`TemplateFileWrite.cas_hash`) Edge Cases
 
 #### 6.3.1 Hash Mismatch on Materialization
 
@@ -3149,7 +3252,7 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-### 6.4 Memory Lifecycle (`Bytes` vs `Vec<u8>`) Edge Cases
+### 11.4 Memory Lifecycle (`Bytes` vs `Vec<u8>`) Edge Cases
 
 #### 6.4.1 Large Object Clone Cost
 
@@ -3177,9 +3280,9 @@ workflows in parallel. The parallelization strategy operates at two levels:
 
 ---
 
-## PART 7: Two-Phase Input Resolution Edge Cases
+## PART 12: Two-Phase Input Resolution Edge Cases
 
-### 7.1 Binding Resolved to Hash but Content Never Requested
+### 12.1 Binding Resolved to Hash but Content Never Requested
 
 **Issue**: With two-phase resolution, a binding resolves to a hash in Pass 1
 but if no template `${input_name}` reference exists, Pass 2 never loads its
@@ -3207,7 +3310,7 @@ hash for instance identity and cache-key derivation.
 **Test**: "step with no template input refs → inputs resolved to hashes only,
 content never loaded, instance key derived correctly"
 
-### 7.2 Template References a Binding Not in First-Pass Hash Resolution
+### 12.2 Template References a Binding Not in First-Pass Hash Resolution
 
 **Issue**: A template `${undefined_input}` references a binding name that was
 not resolved in Pass 1. Since Pass 1 resolves ALL declared bindings (every
@@ -3242,7 +3345,7 @@ This is not a silent ignore — it catches template bugs.
 **Test**: "template ref to undeclared input → clear error listing declared
 inputs"
 
-### 7.3 List Inputs Spanning Multiple Bindings
+### 12.3 List Inputs Spanning Multiple Bindings
 
 **Issue**: Some step inputs are list-valued (`args.inputs = [ "id1", "id2" ]`)
 that resolve to multiple bindings. Pass 1 must resolve each list element to
@@ -3276,7 +3379,7 @@ when the list-binding name appears in a template.
 **Test**: "list input with multiple binding refs → all resolved in Pass 1,
 all loaded in Pass 2, content available"
 
-### 7.4 ZIP Member Selectors During Hash Resolution
+### 12.4 ZIP Member Selectors During Hash Resolution
 
 **Issue**: A ZIP member selector (`hash#member_path`) in a `content_map` value
 requires loading the parent archive, extracting the member, and hashing the
@@ -3323,7 +3426,7 @@ transient memory during Pass 1, which is then freed before Pass 2 begins.
 **Test**: "ZIP member selector → archive loaded, member extracted, hash
 computed, archive Bytes dropped, member hash stored in ResolvedInputKey"
 
-### 7.5 Builtins vs Executables — Builtins Always Load All Content
+### 12.5 Builtins vs Executables — Builtins Always Load All Content
 
 **Issue**: Builtin tools receive their inputs as `BTreeMap<String, String>`
 in the API path, or as CLI `--arg KEY VALUE` pairs. Since builtins do not

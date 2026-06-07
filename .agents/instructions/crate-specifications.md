@@ -267,6 +267,53 @@ still use `cas.get(hash)` to extract specific members.
 **Implementation**: `instance_has_materializable_required_outputs()` in
 `src/mediapm/src/materializer/resolve.rs`.
 
+### Metadata Cache
+
+**File**: `src/mediapm/src/metadata_cache.rs`
+
+**Purpose**: Persistent on-disk cache for metadata resolution during hierarchy
+instantiation and add-path workflows, with 1-day TTL based on non-usage.
+
+**Backend**: Single JSONC file (`metadata.jsonc`) stored at
+`<runtime_root>/cache/mediapm/`. NOT CAS-backed — cache is a simple
+`BTreeMap<String, MetadataCacheEntry>` serialized with `serde_json`. Each entry
+contains a `serde_json::Value` payload and `last_access_unix_seconds` timestamp.
+
+**Key Derivation**:
+- Hierarchy metadata: `blake3::hash(media_id.as_bytes()).to_hex().to_string()`
+- Add-path metadata: `blake3::hash(canonicalized_path.to_string_lossy().as_bytes()).to_hex().to_string()`
+
+**TTL Policy**: 86400 seconds from `last_access_unix_seconds`. Entries are
+evicted on load (not on set). Access via `get()` updates `last_access_unix_seconds`
+to current time (in-memory dirty flag only).
+
+**Persistence**:
+- `set()` is in-memory dirty flag only; no immediate write.
+- Timer-based batch flush: ~300s cooldown after last `set()` or `get()`.
+- `flush()` writes to temp file via `AtomicFileOp` then renames.
+- `Drop` impl triggers one final synchronous flush.
+- Load on `open()`: read file, deserialize, filter stale entries, write back
+  atomically if any were removed.
+
+**Integration Points**:
+- `MaterializationLookupContext` in `materializer/mod.rs` carries
+  `metadata_cache: Option<Arc<MetadataCache>>`.
+- `extract_metadata_value_from_variant_payload()` in `materializer/metadata.rs`
+  checks cache before ffprobe invocation, stores on success.
+- `try_fetch_local_source_metadata_with_ffprobe()` in `source_metadata.rs`
+  checks cache before ffprobe invocation, stores on success.
+- `service.rs` opens cache for add-local-source flow.
+
+**Contract**:
+- Cache miss → probe tool → store in cache → return.
+- Cache hit (TTL valid) → return cached value, skip probe.
+- TTL expired → treat as miss, re-probe, update cache.
+- Serialization failure → treat as miss (log warning, continue).
+- File open/read/write failure → graceful degradation (cache unavailable,
+  proceed without caching, no crash).
+- Clock skew: if `last_access_unix_seconds > now`, treat as just-verified
+  (do not spuriously evict).
+
 ---
 
 ## Detailed Section References
