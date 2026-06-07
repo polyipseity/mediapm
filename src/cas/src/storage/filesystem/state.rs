@@ -1815,12 +1815,20 @@ impl CasApi for FileSystemState {
 
         self.persist_rewritten_dependents(&rewritten_plans).await?;
 
-        self.delete_object_files(hash).await?;
-
         {
             let mut index = self.lock_index_write("publishing projected index after delete");
+            // Merge concurrent entries that arrived while the snapshot was held
+            // to avoid overwriting them with a stale projection (Race B).
+            for (h, obj) in &index.objects {
+                projected.objects.entry(*h).or_insert_with(|| obj.clone());
+            }
+            for (h, bases) in &index.constraints {
+                projected.constraints.entry(*h).or_insert_with(|| bases.clone());
+            }
             *index = projected;
         }
+
+        self.delete_object_files(hash).await?;
 
         self.persist_index_batch(index_operations).await
     }
