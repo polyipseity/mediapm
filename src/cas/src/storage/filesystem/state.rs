@@ -24,6 +24,7 @@ use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
+use dashmap::DashSet;
 use futures_util::{StreamExt, stream};
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use ractor::{Actor, ActorRef, call_t};
@@ -83,6 +84,10 @@ pub(super) struct FileSystemState {
     /// Protected by a RwLock so compaction can swap the underlying database
     /// without rebuilding the whole backend.
     index_db: parking_lot::RwLock<CasIndexDb>,
+    /// Hashes written since the last GC sweep. Used by GC to avoid pruning
+    /// objects that were committed by a concurrent writer but whose hash
+    /// may not have reached the durable index yet.
+    pub(super) recently_written: Arc<DashSet<Hash>>,
     /// Startup recovery and backup retention settings.
     recovery: FileSystemRecoveryOptions,
     /// Integrity verification policy for read-path hash checks.
@@ -167,6 +172,7 @@ impl FileSystemState {
                 FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
             ),
             index_db: parking_lot::RwLock::new(redb_index),
+            recently_written: Arc::new(DashSet::new()),
             recovery,
             integrity,
 
@@ -1222,6 +1228,7 @@ impl FileSystemState {
 
         let full = StoredObject::full(data.to_vec());
         self.persist_object_variant(target_hash, &full).await?;
+        self.recently_written.insert(target_hash);
 
         let resolved_depth = {
             let mut index = self.lock_index_write("updating index after hot full put");
@@ -1583,6 +1590,7 @@ impl CasApi for FileSystemState {
             return Ok(target_hash);
         }
 
+        self.recently_written.insert(target_hash);
         self.put_new_full_object(target_hash, data.freeze()).await
     }
 

@@ -132,8 +132,15 @@ impl CasMaintenanceApi for FileSystemState {
     async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
         let all_hashes = self.list_all_hashes().await?;
         let total_objects = all_hashes.len();
-        let sweep_set: Vec<Hash> =
-            all_hashes.into_iter().filter(|hash| !roots.contains(hash)).collect();
+        // Exclude recently-written hashes from the sweep set to avoid
+        // pruning objects that were committed by a concurrent writer but
+        // whose hash may not have reached the durable index yet.
+        let recently_written: Vec<Hash> = self.recently_written.iter().map(|e| *e).collect();
+        self.recently_written.clear();
+        let sweep_set: Vec<Hash> = all_hashes
+            .into_iter()
+            .filter(|hash| !roots.contains(hash) && !recently_written.contains(hash))
+            .collect();
         let deleted_count = sweep_set.len();
 
         if !sweep_set.is_empty() {
