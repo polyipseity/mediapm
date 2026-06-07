@@ -13,7 +13,7 @@ use crate::config::HierarchyFolderRenameRule;
 use crate::error::MediaPmError;
 
 use super::CompiledHierarchyFolderRenameRule;
-use super::commit::sanitize_hierarchy_path;
+use super::commit::sanitize_path_component;
 
 /// Parsed `${step_output...}` binding reference metadata.
 pub(super) struct StepOutputReference<'a> {
@@ -166,7 +166,7 @@ pub(super) fn extract_zip_folder_variant_bytes(
                     .rsplit_once('/')
                     .map(|(p, f)| (p.to_string(), f.to_string()))
                     .unwrap_or((String::new(), renamed.clone()));
-                let sanitized_filename = sanitize_hierarchy_path(&filename, entry_sanitization);
+                let sanitized_filename = sanitize_path_component(&filename, entry_sanitization);
                 if sanitized_filename.is_empty() {
                     return Err(MediaPmError::Workflow(format!(
                         "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' ZIP entry '{normalized}' after rename/sanitization produced empty filename",
