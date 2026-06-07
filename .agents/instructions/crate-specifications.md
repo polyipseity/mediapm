@@ -496,9 +496,37 @@ the conductor orchestration layer.
 
 **Instance Garbage Collection**:
 
-- **`last_used` field** (`ToolCallInstance`): optional timestamp set to the current time by `merge_step_result_into_state()` when a step completes successfully. Instances with `last_used = None` are treated as timeless (pre-GC state or freshly-inserted entries not yet tracked).
-- **`gc_instances(cutoff)` method** (`OrchestrationState`): removes all instances where `last_used < cutoff` using epoch-seconds comparison (with subsec-nanos tiebreaker). Instances with `last_used = None` are always preserved.
-- **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`): optional integer seconds. When `None`, instance GC is disabled. When set, cutoff is computed as `SystemTime::now() - Duration::from_secs(ttl)` before each persistence call.
+GC follows a two-phase reachability-first strategy:
+
+1. **GC root reachability** (`referenced_instance_keys: HashSet<String>`): a
+   runtime-only field on `OrchestrationState` (skip-serialized). Populated by
+   `merge_step_result_into_state()` — every completed step's instance key is
+   added. Referenced instances are NEVER evicted, regardless of age.
+2. **Last-reachable tracking** (`aux.<key>.last_reachable`): an optional
+   `ImpureTimestamp` inside `AuxData` (envelope-level aux map). When a step
+   completes, `merge_step_result_into_state()` sets
+   `aux[instance_key].last_reachable = now` for the merged instance, ensuring
+   its timestamp is fresh.
+3. **`gc_instances(cutoff)` method** (`OrchestrationState`):
+   - Phase 1 — mark: for every instance key NOT in `referenced_instance_keys`
+     that lacks a `last_reachable` entry, set `last_reachable = now`.
+     This ensures previously-unmarked instances get one GC cycle of protection
+     before becoming eligible for eviction.
+   - Phase 2 — evict: remove all instances whose key is NOT in
+     `referenced_instance_keys` and whose `last_reachable < cutoff` (epoch-seconds
+     comparison with subsec-nanos tiebreaker).
+     Instances with `last_reachable = None` are always preserved (safety net;
+     after deserialization this path is never reached because the decode
+     step fills every instance's aux entry with `Some(now)`).
+- **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`):
+   Config option of type `Option<u64>`. `None` means "use the default".
+   The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS`
+   (604 800 — 7 days) via `set_instance_ttl` before passing the value to
+   the state-store actor. The state store never sees `None` after config
+   processing; the actor is also spawned with the 7-day default at
+   creation time.
+   Cutoff is computed as `SystemTime::now() - Duration::from_secs(ttl)`
+   before each persistence call.
 - **GC trigger points**: `commit_run()` and `persist_and_publish_state()` in `StateStoreService` compute the cutoff and call `gc_instances()` before persisting the state blob to CAS. `SetInstanceTtl` cast message loads the TTL from runtime config into the state-store actor at startup.
 - **MediaPM delegation**: `MediaRuntimeStorage.instance_ttl_seconds` is propagated through `apply_runtime_storage_defaults()` → `RuntimeStorageConfig.instance_ttl_seconds`, then into the conductor machine doc's runtime config.
 
@@ -522,7 +550,14 @@ Both the CLI (`run_gc()`) and the background GC task use this shared function.
 
 **Background auto-GC**: After workflow completion, the coordinator spawns a tokio task that waits `GC_COOLDOWN_SECONDS` (3600 seconds) before loading user/machine docs from disk, fetching `state_pointer` and `current_state` from the state store, and calling `compute_gc_roots()` to build the full root set before invoking `gc_sweep`. This ensures foreground workflow operations are not delayed by background GC.
 
-**Instance TTL**: Default instance TTL is 604800 seconds (7 days) when `instance_ttl_seconds` is `None` in the machine document. Configured explicitly via `runtime.instance_ttl_seconds`.
+**Instance TTL**: The config field `instance_ttl_seconds` is `Option<u64>`; `None` means "use the default". The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS` (604 800 — 7 days) before passing to the state store; the actor also starts with the 7-day default at spawn time. Instance GC is never truly disabled — at worst it runs with a very generous TTL. When an explicit value is set, cutoff = `now - ttl`. Configured via `runtime.instance_ttl_seconds`.
+
+**Deserialization guarantee**: After `decode_state()` runs, every instance
+key has a corresponding `aux` entry with `last_reachable: Some(…)`. The decode
+path injects `ImpureTimestamp::now()` for any instance that lacks an aux entry
+or whose entry has `last_reachable: None`. This ensures `gc_instances()` never
+encounters a bare `None` in practice, making the Phase-1 safety net
+reachability-only for in-memory constructed state.
 
 ### §16 Channel-Based Workflow Progress Events
 

@@ -816,30 +816,40 @@ WorkflowSpec {
 
 ### 2.8 Instance GC Edge Cases
 
+GC now uses a two-phase reachability-first strategy. `referenced_instance_keys`
+(GC-root reachability) takes priority: referenced instances are NEVER evicted.
+Unreferenced instances get a `last_reachable` marker on first encounter (phase 1
+mark), then may be evicted on a subsequent GC cycle if `last_reachable < cutoff`
+(phase 2 evict).
+
 **Scenario 1 — `instance_ttl_seconds = 0`**:
 
 | Aspect | Behavior |
 |---|---|
-| Cutoff computation | `now - 0 = now` → every instance with `last_used ≤ now` is removed |
-| Effective result | GC runs on every persist, immediately pruning all instances with any `last_used` value |
-| `last_used = None` instances | Preserved (treated as timeless) |
-| Risk | Users expecting "keep nothing" may be surprised that `None` instances survive; only explicit timestamps are pruned |
+| Cutoff computation | `now - 0 = now` → every unreferenced instance with `last_reachable ≤ now` is removed |
+| Effective result | GC runs on every persist, immediately pruning all unreferenced instances with any `last_reachable` value |
+| Referenced instances | Survive regardless of age because `referenced_instance_keys` takes priority |
+| Unmarked instances (no aux entry) | Phase 1 sets `last_reachable = now`, then phase 2 checks `now < now` (false) → preserved for one cycle |
+| Risk | Users expecting "keep nothing" may be surprised that referenced instances survive; only unreferenced, marked instances are pruned |
 
-**Scenario 2 — `instance_ttl_seconds = None` (default)**:
+**Scenario 2 — `instance_ttl_seconds = None` (default)** (coordinator resolves to 7 days):
 
 | Aspect | Behavior |
 |---|---|
-| GC guard | `if let Some(ttl_seconds)` short-circuits — no cutoff computed, no `gc_instances()` call |
-| Effective result | Instance map is purely append-mostly; old entries remain forever |
-| Migration safety | State written before this field existed (with `last_used = None` on all instances) is fully preserved |
-| Risk | None; this is the backward-compatible default |
+| Config field | `Option<u64>` — `None` means "use default" |
+| Coordinator resolution | `machine_document.runtime.instance_ttl_seconds.or(Some(DEFAULT_INSTANCE_TTL_SECONDS))` → effective TTL is always a concrete value |
+| Default value | `DEFAULT_INSTANCE_TTL_SECONDS = 604_800` (7 days) at `coordinator.rs:86` |
+| Spawn default | `ensure_state_store()` passes `Some(DEFAULT_INSTANCE_TTL_SECONDS)` to `spawn_state_store_actor` — the actor never starts with `None` |
+| Effective result | Instance GC runs with a 7-day TTL by default; unreferenced instances older than 7 days are evicted on the next persist |
+| Migration safety | State written before this field existed (with empty `aux` and no `referenced_instance_keys`) is handled by the deserialization guarantee: every instance gets `last_reachable = now` during decode |
+| Risk | Users who explicitly set `None` expecting "no GC" will still get 7-day GC. To effectively disable GC, set a very large value (e.g., `u64::MAX`) |
 
 **Scenario 3 — `instance_ttl_seconds` near `u64::MAX`**:
 
 | Aspect | Behavior |
 |---|---|
 | Cutoff computation | `now - u64::MAX` saturates to 0 via `saturating_sub` |
-| Effective result | Cutoff is epoch 0 — all instances with `last_used.epoch_seconds >= 0` are preserved (all of them) |
+| Effective result | Cutoff is epoch 0 — unreferenced instances with `last_reachable.epoch_seconds >= 0` are preserved (all of them) |
 | Practical effect | Identical to `None` — no GC ever fires |
 | Risk | User may expect garbage collection but configured a value so large it never triggers. Document that extreme values are effectively "never GC" |
 
@@ -848,23 +858,27 @@ WorkflowSpec {
 | Aspect | Behavior |
 |---|---|
 | Source of truth | `SystemTime::now().duration_since(UNIX_EPOCH)` — system monotonic clock, not CAS timestamps |
-| Clock skew | If system clock jumps forward, cutoff moves forward, prematurely GC-ing recent instances. If clock jumps backward, cutoff moves backward, delaying GC |
+| Clock skew | If system clock jumps forward, cutoff moves forward, prematurely GC-ing recent unreferenced instances. If clock jumps backward, cutoff moves backward, delaying GC |
+| Referenced-instance immunity | Referenced instances are immune to clock-skew-induced early eviction — only unreferenced instances can be affected |
 | `unwrap_or_default` fallback | If `duration_since` fails (system clock before UNIX_EPOCH), defaults to zero-offset, which sets cutoff at `0 - ttl = 0` (saturated) — no GC on that persist cycle |
 | Risk | Clock jumps are rare but destructive. The fallback is safe (skips aggressive GC) but may cause an unexpected bloat cycle |
 
-**Scenario 5 — `last_used = None` instances after GC**:
+**Scenario 5 — `last_reachable = None` instances after GC** (deserialization guarantee makes this impossible in practice):
 
 | Aspect | Behavior |
 |---|---|
-| GC predicate | `instance.last_used.map_or(true, \|lu\| lu >= cutoff)` — the `map_or(true)` branch preserves `None` entries |
-| Rationale | `None` represents "not yet tracked by GC" — either pre-GC state or freshly inserted entries that haven't been through `merge_step_result_into_state()` |
-| Risk | If a code path inserts instances without setting `last_used`, those instances become immortal. Document that `gc_instances` preserves `None` as a safety net, not as intended long-term behavior |
+| Phase 1 mark | For every instance key NOT in `referenced_instance_keys` that lacks an `aux` entry (or whose aux entry has `last_reachable: None`), sets `last_reachable = now` |
+| Phase 2 evict predicate | Instance key NOT in `referenced_instance_keys` AND `aux[key].last_reachable.is_some_and(\|t\| t < cutoff)` |
+| `None` survival | Instances with `last_reachable = None` are never evicted (the `is_some_and` predicate short-circuits on `None`) |
+| Deserialization guarantee | After `decode_state()`, every instance key has a `last_reachable: Some(…)` entry — the decode path injects `now()` for any missing or `None` entry. `None` only arises during in-memory construction or in `gc_instances()` Phase 1's own temporary state |
+| Rationale | The `None` safety net exists at the type level for defensive coding, but is never reached from persisted state. Phase 1 will still handle truly freshly-inserted instances that bypassed `merge_step_result_into_state()` |
+| Risk | None in practice — the deserialization guarantee eliminates the backward-compatibility hazard that motivated the `None` safety net |
 
 **Scenario 6 — Large instance maps**:
 
 | Aspect | Behavior |
 |---|---|
-| GC complexity | `gc_instances()` calls `BTreeMap::retain()` which visits every entry — O(n) for iteration, O(log n) per removal |
+| GC complexity | `gc_instances()` iterates `self.instances.keys()` (O(n)), checks `referenced_instance_keys` membership (O(1) average), and removes via `BTreeMap::remove` (O(log n) per removal) |
 | Baseline cost | For typical workflows (tens to low thousands of instances), GC is negligible compared to CAS blob serialization |
 | Risk | With millions of instances, a full GC scan before every persist could become expensive. Incremental GC or sampling-based approaches are not implemented |
 | Mitigation | Reduce TTL or batch persist calls. Consider a separate GC actor for very large state if this becomes a bottleneck |
