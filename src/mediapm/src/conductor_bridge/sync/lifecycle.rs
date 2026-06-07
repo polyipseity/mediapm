@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -75,22 +75,6 @@ fn is_tag_only_requirement(requirement: &ToolRequirement) -> bool {
 #[must_use]
 pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("import")
-}
-
-/// Characters forbidden in directory names on common filesystems.
-/// Mirrors the conductor's `sanitize_tool_id` rules so tool content
-/// cache directories are addressable by the same sanitized path.
-#[must_use]
-fn sanitize_dir_name(name: &str) -> String {
-    name.chars()
-        .map(|ch| {
-            if matches!(ch, '/' | '\\' | ':' | '?' | '*' | '<' | '>' | '|' | '"') {
-                '_'
-            } else {
-                ch
-            }
-        })
-        .collect()
 }
 
 /// Removes stale managed tool artifacts that are not declared in `mediapm.ncl`.
@@ -180,22 +164,11 @@ pub(super) async fn prune_unmanaged_tool_artifacts(
         lock.active_tools.remove(&logical_name);
     }
 
-    // Remove tool content cache directories for replaced tool IDs so a
-    // subsequent `sync` after a companion-change does not find stale
-    // payload and skip re-materialization.
-    for replaced_id in &report.replaced_tool_ids {
-        let sanitized = sanitize_dir_name(replaced_id);
-        let dir = paths.tools_dir.join(&sanitized);
-        if dir.exists() {
-            if let Err(e) = fs::remove_dir_all(&dir) {
-                report
-                    .warnings
-                    .push(format!("failed to remove stale tool content cache '{sanitized}': {e}"));
-            } else {
-                report.warnings.push(format!("pruned stale tool content cache '{sanitized}'"));
-            }
-        }
-    }
+    // Remove tool content cache directories not in the active set.
+    let active_tool_ids: HashSet<String> =
+        desired_tool_ids.iter().chain(referenced_by_workflow.iter()).cloned().collect();
+    mediapm_conductor::tool_cache::retain_only_tool_dirs(paths.tools_dir.clone(), active_tool_ids)
+        .await?;
 
     Ok(())
 }

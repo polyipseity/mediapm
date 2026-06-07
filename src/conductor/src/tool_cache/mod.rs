@@ -196,6 +196,28 @@ impl<C> std::fmt::Debug for ToolContentCache<C> {
     }
 }
 
+/// Removes all tool cache directories under `tools_dir` whose sanitized names
+/// are not present in `active_tool_ids`.
+///
+/// This is the free-function counterpart of [`ToolContentCache::retain_only`],
+/// usable without constructing a [`ToolContentCache`].  Only entries without
+/// active locks are removed; in-use entries are preserved even if they are not
+/// in the active set.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] on I/O errors.
+pub async fn retain_only_tool_dirs(
+    tools_dir: PathBuf,
+    active_tool_ids: HashSet<String>,
+) -> Result<(), ConductorError> {
+    let active: HashSet<String> =
+        active_tool_ids.into_iter().map(|id| sanitize_tool_id(&id)).collect();
+    tokio::task::spawn_blocking(move || do_retain_only(&tools_dir, &active)).await.map_err(
+        |join_err| ConductorError::Internal(format!("retain-only task panicked: {join_err}")),
+    )?
+}
+
 impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
     /// Creates a new tool-content cache rooted at `tools_dir`.
     ///
@@ -423,13 +445,7 @@ impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
         &self,
         active_tool_ids: &HashSet<String>,
     ) -> Result<(), ConductorError> {
-        let active: HashSet<String> =
-            active_tool_ids.iter().map(|id| sanitize_tool_id(id)).collect();
-        let tools_dir = self.tools_dir.clone();
-
-        tokio::task::spawn_blocking(move || do_retain_only(&tools_dir, &active)).await.map_err(
-            |join_err| ConductorError::Internal(format!("retain-only task panicked: {join_err}")),
-        )?
+        retain_only_tool_dirs(self.tools_dir.clone(), active_tool_ids.clone()).await
     }
 
     // -----------------------------------------------------------------------

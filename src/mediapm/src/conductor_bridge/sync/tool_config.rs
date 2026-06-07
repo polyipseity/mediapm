@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 use mediapm_cas::Hash;
+use mediapm_conductor::tool_cache::PAYLOAD_DIR_NAME;
 use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
 
 use crate::config::MediaPmState;
@@ -230,12 +231,7 @@ fn resolve_host_ffmpeg_executable_path_from_machine_tool(
     }
 
     absolutize_path_string(
-        &paths
-            .tools_dir
-            .join(tool_id)
-            .join(CONDUCTOR_TOOL_PAYLOAD_DIR)
-            .join(selector)
-            .to_string_lossy(),
+        &paths.tools_dir.join(tool_id).join(PAYLOAD_DIR_NAME).join(selector).to_string_lossy(),
     )
 }
 
@@ -254,7 +250,7 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
 ) -> Option<String> {
     let runtime_file_name = if cfg!(windows) { "deno.exe" } else { "deno" };
     let tool_root = paths.tools_dir.join(tool_id);
-    let payload_root = tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let payload_root = tool_root.join(PAYLOAD_DIR_NAME);
     let payload_os_root = payload_root.join(current_tool_os().as_str());
 
     if let Some(found) = find_file_named_in_tree(&payload_os_root, runtime_file_name)
@@ -269,7 +265,7 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
         .and_then(|found| {
             let relative = found.strip_prefix(&tool_root).ok()?;
             absolutize_path_string(
-                &tool_root.join(CONDUCTOR_TOOL_PAYLOAD_DIR).join(relative).to_string_lossy(),
+                &tool_root.join(PAYLOAD_DIR_NAME).join(relative).to_string_lossy(),
             )
         })
 }
@@ -345,7 +341,7 @@ pub(super) fn resolve_managed_tool_payload_directory_from_selector(
         return absolutize_path_string(&directory.to_string_lossy());
     }
 
-    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(PAYLOAD_DIR_NAME);
     let directory = tool_payload_root
         .join(&selector_path)
         .parent()
@@ -377,7 +373,7 @@ pub(super) fn resolve_managed_tool_payload_command_path_from_selector(
         return absolutize_path_string(&selector_path.to_string_lossy());
     }
 
-    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(CONDUCTOR_TOOL_PAYLOAD_DIR);
+    let tool_payload_root = paths.tools_dir.join(trimmed_tool_id).join(PAYLOAD_DIR_NAME);
     absolutize_path_string(&tool_payload_root.join(selector_path).to_string_lossy())
 }
 
@@ -453,14 +449,6 @@ pub(super) fn prefix_same_step_companion_selector_path(
 /// Stable sandbox prefix where media-tagger mounts selected ffmpeg payloads.
 #[cfg(test)]
 const MEDIA_TAGGER_FFMPEG_CONTENT_PREFIX: &str = "ffmpeg/";
-
-/// Subdirectory name within a tool entry directory where the conductor
-/// tool-content cache stores extracted payload content alongside `metadata.json`.
-///
-/// This mirrors `TOOL_CONTENT_CACHE_PAYLOAD_DIR_NAME` in the conductor crate's
-/// `tool_content_cache` module.  Both values must remain in sync if either is
-/// renamed.
-const CONDUCTOR_TOOL_PAYLOAD_DIR: &str = "payload";
 
 /// Normalizes one managed-tool relative command path for install-root lookup.
 #[must_use]
