@@ -11,7 +11,7 @@
 //! the blake3 hash of the three source texts and skips re-validation on
 //! repeat runs where the content has not changed.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
@@ -158,6 +158,13 @@ struct DocumentLoaderState {
     /// `None` means no successful validation has been recorded in this actor
     /// lifetime (first call always validates).
     last_validated_sources_hash: Option<Blake3Hash>,
+    /// Cache of fully loaded and unified documents keyed by combined source
+    /// hash.
+    ///
+    /// When a `LoadAndUnify` request arrives with a source hash matching a
+    /// cached entry, the cached `LoadedDocuments` is returned directly,
+    /// skipping all Nickel evaluation, decoding, and unification work.
+    loaded_documents_cache: HashMap<Blake3Hash, LoadedDocuments>,
 }
 
 /// Actor that owns document parsing and merge policy.
@@ -202,6 +209,7 @@ impl Actor for DocumentLoaderActor {
                     &conductor_state_config,
                     &options,
                     &mut state.last_validated_sources_hash,
+                    &mut state.loaded_documents_cache,
                 );
                 let _ = reply.send(result);
             }
@@ -217,19 +225,24 @@ impl Actor for DocumentLoaderActor {
 }
 
 impl DocumentLoaderActor {
-    /// Loads both documents, evaluates total configuration, and returns the merged runtime representation.
+    /// Loads both documents, evaluates total configuration, and returns the merged
+    /// runtime representation.
     ///
-    /// The `validated_sources_hash` cache is checked before running the
-    /// expensive Nickel evaluation.  When the combined source hash matches the
-    /// cached value the validation pass is skipped.  The cache is updated on
-    /// every successful validation so the next call with unchanged content
-    /// benefits immediately.
+    /// The `loaded_documents_cache` is checked first: when the combined source
+    /// hash matches a cached entry the result is cloned directly, skipping all
+    /// Nickel evaluation, document decoding, and unification work.  On cache miss
+    /// the full pipeline runs and the result is stored for future hits.
+    ///
+    /// The `validated_sources_hash` provides a secondary cache that skips only
+    /// the Nickel evaluation step when the source texts have not changed since
+    /// the last successful validation.
     fn load_and_unify_documents(
         user_ncl: &Path,
         machine_ncl: &Path,
         conductor_state_config: &Path,
         options: &RunWorkflowOptions,
         validated_sources_hash: &mut Option<Blake3Hash>,
+        loaded_documents_cache: &mut HashMap<Blake3Hash, LoadedDocuments>,
     ) -> Result<LoadedDocuments, ConductorError> {
         let user_source = Self::load_user_source(user_ncl, machine_ncl)?;
         let machine_source = Self::load_machine_source(machine_ncl)?;
@@ -244,6 +257,12 @@ impl DocumentLoaderActor {
             hasher.update(state_source.as_bytes());
             hasher.finalize()
         };
+
+        // Full-cache hit: return the previously loaded+unified result directly,
+        // skipping all validation, decoding, and merge work.
+        if let Some(cached) = loaded_documents_cache.get(&combined_hash) {
+            return Ok(cached.clone());
+        }
 
         // Skip validation when the source content matches the last validated
         // hash.  This avoids re-running the Nickel evaluator on repeat runs
@@ -294,7 +313,10 @@ impl DocumentLoaderActor {
         machine_document.impure_timestamps.clear();
         machine_document.state_pointer = None;
 
-        Ok(LoadedDocuments { machine_document, state_document, prior_state_pointer, unified })
+        let loaded =
+            LoadedDocuments { machine_document, state_document, prior_state_pointer, unified };
+        loaded_documents_cache.insert(combined_hash, loaded.clone());
+        Ok(loaded)
     }
 
     /// Merges two named maps and rejects conflicting duplicate definitions.
@@ -1253,6 +1275,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1314,6 +1337,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1367,6 +1391,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1419,6 +1444,7 @@ mod tests {
             &machine_path,
             &state_path,
             &RunWorkflowOptions::default(),
+            &mut HashMap::new(),
             &mut None,
         );
         match result {
@@ -1474,6 +1500,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1549,6 +1576,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1621,6 +1649,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         );
         match result {
             Err(ConductorError::Workflow(message)) => {
@@ -1693,6 +1722,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions { allow_tool_redefinition: true, ..RunWorkflowOptions::default() },
             &mut None,
+            &mut HashMap::new(),
         )
         .expect("override option should allow redefinition");
 
@@ -1764,6 +1794,7 @@ mod tests {
             &state_path,
             &RunWorkflowOptions::default(),
             &mut None,
+            &mut HashMap::new(),
         )
         .expect("documents should load and unify");
 
