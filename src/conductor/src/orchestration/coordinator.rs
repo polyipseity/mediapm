@@ -35,7 +35,7 @@ use crate::model::config::{
     ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec,
     parse_input_binding,
 };
-use crate::model::state::{OrchestrationState, merge_persistence_flags};
+use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
 use crate::tool_cache::ToolContentCache;
 
@@ -1112,6 +1112,15 @@ where
             phase_timings: _,
             fallback_used: _,
         } = result;
+
+        // Mark the instance as referenced from GC roots and refresh its
+        // last_reachable timestamp so GC will not evict it.
+        state.referenced_instance_keys.insert(instance_key.clone());
+        {
+            let aux_data =
+                state.aux.entry(instance_key.clone()).or_insert(AuxData { last_reachable: None });
+            aux_data.last_reachable = Some(ImpureTimestamp::now());
+        }
 
         let entry = state.instances.entry(instance_key.clone());
         let final_instance = match entry {
