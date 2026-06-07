@@ -197,6 +197,10 @@ where
         &self,
         state_pointer: Option<Hash>,
     ) -> Result<OrchestrationState, ConductorError> {
+        // Fast path: if pointer matches current in-memory state, skip CAS read/deserialize.
+        if state_pointer == self.current_state_pointer {
+            return Ok(self.current_state.clone());
+        }
         if let Some(pointer) = state_pointer {
             match self.cas.get(pointer).await {
                 Ok(bytes) => decode_state(&bytes),
