@@ -633,7 +633,22 @@ where
         })?;
 
         let media_id = media_id_from_local_path(&hash);
-        let local_metadata = fetch_local_source_metadata(&absolute);
+        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        let managed_ffprobe_path = crate::materializer::metadata::resolve_managed_ffprobe_path(
+            &effective_paths,
+            &machine,
+            &lock,
+        );
+        let metadata_cache = crate::metadata_cache::MetadataCache::open(
+            &effective_paths.workspace_mediapm_cache_dir(),
+        )
+        .map_err(|e| tracing::warn!("failed to open metadata cache: {e}"))
+        .ok();
+        let local_metadata = fetch_local_source_metadata(
+            &absolute,
+            managed_ffprobe_path.as_deref(),
+            metadata_cache.as_ref(),
+        );
         let source_title = title
             .map(str::to_string)
             .or(local_metadata.title)
@@ -709,7 +724,6 @@ where
         );
         save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
 
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::reconcile_media_workflows_for_config_edits(
             &effective_paths,
             &document,

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
 use mediapm_conductor::MachineNickelDocument;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::paths::MediaPmPaths;
@@ -37,7 +38,7 @@ pub(crate) struct ResolvedOnlineSourceMetadata {
 }
 
 /// Metadata tuple fetched by local-file probes.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub(crate) struct LocalSourceMetadata {
     /// Best-effort media title.
     pub(crate) title: Option<String>,
@@ -73,9 +74,16 @@ pub(crate) fn resolve_online_source_metadata_for_add(
     }
 }
 
-/// Resolves local metadata using media-probe tooling when available.
-pub(crate) fn fetch_local_source_metadata(path: &Path) -> LocalSourceMetadata {
-    try_fetch_local_source_metadata_with_ffprobe(path).unwrap_or_default()
+/// Resolves local metadata using managed ffprobe when available.
+pub(crate) fn fetch_local_source_metadata(
+    path: &Path,
+    ffprobe_command: Option<&Path>,
+    cache: Option<&crate::metadata_cache::MetadataCache>,
+) -> LocalSourceMetadata {
+    let Some(ffprobe) = ffprobe_command else {
+        return LocalSourceMetadata::default();
+    };
+    try_fetch_local_source_metadata_with_ffprobe(path, ffprobe, cache).unwrap_or_default()
 }
 
 /// Fetches online metadata by invoking `yt-dlp` from one explicit executable path.
@@ -105,11 +113,29 @@ pub(crate) fn try_fetch_online_source_metadata_with_yt_dlp(
     }
 }
 
-/// Fetches local metadata by invoking `ffprobe` when present on PATH.
+/// Fetches local metadata by invoking managed `ffprobe`, with optional
+/// persistent cache.
 pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     path: &Path,
+    ffprobe_command: &Path,
+    cache: Option<&crate::metadata_cache::MetadataCache>,
 ) -> Option<LocalSourceMetadata> {
-    let output = ProcessCommand::new("ffprobe")
+    // Compute cache key from canonicalized path for persistent metadata cache.
+    let cache_key = {
+        let canonical = std::fs::canonicalize(path).ok()?;
+        blake3::hash(canonical.to_string_lossy().as_bytes()).to_hex().to_string()
+    };
+
+    // Check persistent cache first.
+    if let Some(cache) = cache {
+        if let Some(cached) = cache.get(&cache_key) {
+            if let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached) {
+                return Some(metadata);
+            }
+        }
+    }
+
+    let output = ProcessCommand::new(ffprobe_command)
         .arg("-v")
         .arg("error")
         .arg("-print_format")
@@ -126,10 +152,16 @@ pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
     let metadata = parse_local_source_metadata_from_ffprobe_json(&value);
 
-    if metadata.title.is_none() && metadata.artist.is_none() && metadata.description.is_none() {
-        None
-    } else {
+    // Store in cache on success, then return.
+    if metadata.title.is_some() || metadata.artist.is_some() || metadata.description.is_some() {
+        if let Some(cache) = cache {
+            if let Ok(value) = serde_json::to_value(&metadata) {
+                cache.set(cache_key, value);
+            }
+        }
         Some(metadata)
+    } else {
+        None
     }
 }
 
