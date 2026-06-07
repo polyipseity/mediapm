@@ -614,11 +614,12 @@ The root set includes `state.state_pointer` and all instance output pointers. If
 
 The conductor node actor spawns a single background GC loop in `pre_start`. The loop:
 
-1. Immediately sends `RunGc(None, …)` to itself (full cycle: instance GC → CAS sweep → index compaction).
-2. Sleeps for `GC_INTERVAL_SECONDS` (3600).
-3. Repeats from step 1.
+1. **Phase 1 — Wait for initialization**: Spin-waits on the `gc_initialized` flag (`Arc<AtomicBool>`, Acquire load with 1-second polling). This flag is set after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots. It is also set as a backstop after any successful `RunGc` handler execution.
+2. **Phase 2 — Periodic GC**: Enters a loop that sends `RunGc(None, …)` to itself (full cycle: instance GC → CAS sweep → index compaction), sleeps for `GC_INTERVAL_SECONDS` (3600), and repeats.
 
 **Safety**: Because the `RunGc` handler runs synchronously inside the actor's `handle` method, each cycle completes before the next starts. Workflow commits are separate background tasks that communicate via actor messages, so GC naturally interleaves between commits — no additional cooldown is needed. The `None` TTL means "use configured/default", ensuring GC is never accidentally disabled. The `compact_index()` implementation persists the in-memory `IndexState` to a temporary redb, atomically replaces the active index file, then calls `persist_index_snapshot()` to capture any writes that landed in-memory during the rename window — closing the durability race between concurrent batch persists and index file replacement.
+
+**Race fixed (2026-06-07)**: Previously, the loop fired `RunGc` immediately in Phase 1 before any state was loaded. With empty `external_data`, the CAS sweep computed an empty root set and deleted all objects not protected by `recently_written` (an in-memory set lost at process exit). Tool content imported by a prior `mediapm tool sync` session was swept before workflows could reference it, causing `CasError::NotFound` at `${external_data.<hash>}` binding resolution. The two-phase approach eliminates this race by deferring the first GC until after external_data roots are populated.
 
 ## PART 2: CONDUCTOR CRATE — EDGE CASES & FAILURE MODES
 
@@ -702,7 +703,8 @@ WorkflowSpec {
 
 - Workflow references external_data with hash H
 - H was provisioned into CAS in machine config
-- Before execution, CAS prune removes H (user error or race)
+- Before execution, CAS prune removes H (user error or race; a startup race
+  that caused this is now fixed — see §1.22)
 - Workflow execution reaches step that needs H
 - `cas.get(H)` → NotFound
 
