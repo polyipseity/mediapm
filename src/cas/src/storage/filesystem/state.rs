@@ -1020,6 +1020,30 @@ impl FileSystemState {
         Ok(())
     }
 
+    /// Persists multiple object variants in a single actor RPC.
+    async fn persist_object_variants(
+        &self,
+        plans: &[(Hash, StoredObject)],
+    ) -> Result<(), CasError> {
+        let _rpc_scope = self.object_actor_rpc_scope();
+        let timeout =
+            FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS.saturating_mul(plans.len().max(1) as u64);
+        call_t!(
+            self.object_actor,
+            FileObjectActorMessage::PersistObjectVariants,
+            timeout,
+            plans.to_vec()
+        )
+        .map_err(|err| CasError::actor_rpc("persisting object variants via object actor", err))??;
+        for (hash, object) in plans {
+            if let StoredObject::Delta { state } = object {
+                self.record_delta_compression(state.payload.len() as u64, state.content_len);
+            }
+            self.invalidate_cached_object_bytes(*hash);
+        }
+        Ok(())
+    }
+
     /// Derives index metadata from one persisted object plan.
     fn meta_for_object(object: &StoredObject, depth: u32) -> ObjectMeta {
         match object.base_hash() {
@@ -1449,13 +1473,15 @@ impl FileSystemState {
         Ok(rewritten_plans)
     }
 
-    /// Persists rewritten dependent objects to disk.
+    /// Persists rewritten dependent objects to disk in a single batch RPC.
     async fn persist_rewritten_dependents(
         &self,
         rewritten_plans: &[(Hash, CandidatePlan)],
     ) -> Result<(), CasError> {
-        for (dependent, plan) in rewritten_plans {
-            self.persist_object_variant(*dependent, &plan.object).await?;
+        let plans: Vec<(Hash, StoredObject)> =
+            rewritten_plans.iter().map(|(hash, plan)| (*hash, plan.object.clone())).collect();
+        if !plans.is_empty() {
+            self.persist_object_variants(&plans).await?;
         }
 
         Ok(())

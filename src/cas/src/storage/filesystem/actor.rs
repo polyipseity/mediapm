@@ -26,6 +26,10 @@ use super::{FILESYSTEM_MMAP_MIN_BYTES, STORAGE_VERSION, diff_object_path, object
 pub(super) enum FileObjectActorMessage {
     /// Persist one object variant (full or delta) for `Hash`.
     PersistObjectVariant(Hash, StoredObject, RpcReplyPort<Result<(), CasError>>),
+    /// Persist multiple object variants in a single actor message.
+    /// Variants are processed sequentially within the actor (same ordering
+    /// and consistency guarantees as N individual RPCs).
+    PersistObjectVariants(Vec<(Hash, StoredObject)>, RpcReplyPort<Result<(), CasError>>),
     /// Remove all on-disk object variants (`<hash>` and `<hash>.diff`) for a hash.
     DeleteObjectFiles(Hash, RpcReplyPort<Result<(), CasError>>),
     /// Return the actor's tracked total CAS-store byte size.
@@ -438,6 +442,17 @@ impl FileObjectActorState {
     fn cas_store_size_bytes(&self) -> u64 {
         self.total_store_size
     }
+
+    /// Persists multiple object variants sequentially within the actor.
+    async fn handle_persist_object_variants(
+        &mut self,
+        plans: Vec<(Hash, StoredObject)>,
+    ) -> Result<(), CasError> {
+        for (hash, object) in &plans {
+            self.persist_object_variant(*hash, object).await?;
+        }
+        Ok(())
+    }
 }
 
 /// Ractor implementation for serialized filesystem object mutations.
@@ -467,6 +482,7 @@ impl Actor for FileObjectActor {
         let started = Instant::now();
         let operation = match &message {
             FileObjectActorMessage::PersistObjectVariant(_, _, _) => "persist_object_variant",
+            FileObjectActorMessage::PersistObjectVariants(_, _) => "persist_object_variants",
             FileObjectActorMessage::DeleteObjectFiles(_, _) => "delete_object_files",
             FileObjectActorMessage::CasStoreSizeBytes(_) => "cas_store_size_bytes",
         };
@@ -474,6 +490,9 @@ impl Actor for FileObjectActor {
         match message {
             FileObjectActorMessage::PersistObjectVariant(hash, object, reply) => {
                 let _ = reply.send(state.persist_object_variant(hash, &object).await);
+            }
+            FileObjectActorMessage::PersistObjectVariants(plans, reply) => {
+                let _ = reply.send(state.handle_persist_object_variants(plans).await);
             }
             FileObjectActorMessage::DeleteObjectFiles(hash, reply) => {
                 let _ = reply.send(state.delete_object_files(hash).await);
