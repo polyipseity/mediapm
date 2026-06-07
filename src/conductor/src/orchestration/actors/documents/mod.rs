@@ -1139,7 +1139,7 @@ impl DocumentLoaderActor {
                     is_impure: tool_spec.is_impure,
                     max_concurrent_calls: merged_config.max_concurrent_calls,
                     max_retries: if merged_config.max_retries == -1 {
-                        0
+                        3
                     } else {
                         merged_config.max_retries
                     },

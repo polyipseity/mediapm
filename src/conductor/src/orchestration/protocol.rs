@@ -43,7 +43,6 @@ pub(crate) struct UnifiedToolSpec {
     ///
     /// This value is already normalized to a non-negative integer in the
     /// unified runtime view.
-    #[expect(dead_code)]
     pub max_retries: i32,
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
