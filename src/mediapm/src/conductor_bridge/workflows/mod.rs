@@ -6,7 +6,7 @@
 //! bindings plus matching `depends_on` edges, allowing independent branches to
 //! execute as soon as their producer data is ready.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -674,18 +674,41 @@ fn explicit_media_step_config_snapshot(step: &MediaStep) -> Result<Value, MediaP
     })
 }
 
-/// Finds the first exact step-state match after `start_index`.
+/// Builds a hash map index from existing step states keyed by blake3 hash of explicit config.
+#[must_use]
+fn build_explicit_config_index(
+    existing_states: &[ManagedWorkflowStepState],
+) -> HashMap<u64, Vec<usize>> {
+    let mut index: HashMap<u64, Vec<usize>> = HashMap::new();
+    for (idx, state) in existing_states.iter().enumerate() {
+        if let Ok(bytes) = serde_json::to_vec(&state.explicit_config) {
+            let hash = blake3::hash(&bytes);
+            let key = u64::from_le_bytes(*hash.as_bytes().first_chunk::<8>().unwrap());
+            index.entry(key).or_default().push(idx);
+        }
+    }
+    index
+}
+
+/// Finds one matching step state using a pre-built config hash index.
+///
+/// Looks up `explicit_config` by its blake3 hash in the index and removes one
+/// matching position, ensuring each existing state is matched at most once.
 #[must_use]
 fn find_matching_step_state_index(
-    existing_states: &[ManagedWorkflowStepState],
-    start_index: usize,
+    index: &mut HashMap<u64, Vec<usize>>,
     explicit_config: &Value,
 ) -> Option<usize> {
-    existing_states
-        .iter()
-        .enumerate()
-        .skip(start_index)
-        .find_map(|(index, state)| (state.explicit_config == *explicit_config).then_some(index))
+    let Ok(bytes) = serde_json::to_vec(explicit_config) else {
+        return None;
+    };
+    let hash = blake3::hash(&bytes);
+    let key = u64::from_le_bytes(*hash.as_bytes().first_chunk::<8>().unwrap());
+    let positions = index.get_mut(&key)?;
+    if positions.is_empty() {
+        return None;
+    }
+    Some(positions.remove(0))
 }
 
 /// Returns true when one matched step-state still requires refresh.

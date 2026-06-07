@@ -19,10 +19,11 @@ use super::yt_dlp_inputs::{resolve_step_output_binding, step_output_policy_overr
 use super::{
     FfmpegSlotLimits, IMPORT_KIND_CAS_HASH, INPUT_CONTENT, INPUT_IMPORT_HASH, INPUT_IMPORT_KIND,
     INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS, VariantProducer,
-    explicit_media_step_config_snapshot, extract_step_list_args, find_matching_step_state_index,
-    matched_state_requires_refresh, media_step_id, preserve_existing_generated_step_tools,
-    resolve_input_variant_producer, resolve_logical_tool_requirement, resolve_step_tool_id,
-    step_option_input_bindings, step_option_scalar,
+    build_explicit_config_index, explicit_media_step_config_snapshot, extract_step_list_args,
+    find_matching_step_state_index, matched_state_requires_refresh, media_step_id,
+    preserve_existing_generated_step_tools, resolve_input_variant_producer,
+    resolve_logical_tool_requirement, resolve_step_tool_id, step_option_input_bindings,
+    step_option_scalar,
 };
 
 /// Creates ordered workflow steps from unified media-step declarations.
@@ -55,19 +56,13 @@ pub(super) fn synthesize_media_steps(
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
     let existing_media_states = lock.workflow_states.get(media_id).cloned().unwrap_or_default();
+    let mut config_index = build_explicit_config_index(&existing_media_states);
     let mut next_media_states = Vec::with_capacity(source.steps.len());
-    let mut next_match_search_start = 0usize;
 
     for (step_index, step) in source.steps.iter().enumerate() {
         let explicit_step_config = explicit_media_step_config_snapshot(step)?;
-        let matched_state_index = find_matching_step_state_index(
-            &existing_media_states,
-            next_match_search_start,
-            &explicit_step_config,
-        );
-        if let Some(matched_index) = matched_state_index {
-            next_match_search_start = matched_index.saturating_add(1);
-        }
+        let matched_state_index =
+            find_matching_step_state_index(&mut config_index, &explicit_step_config);
         let existing_step_state =
             matched_state_index.and_then(|index| existing_media_states.get(index)).cloned();
         let mut requires_refresh = matched_state_requires_refresh(existing_step_state.as_ref());
