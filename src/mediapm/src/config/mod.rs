@@ -164,11 +164,21 @@ pub struct MediaPmState {
     pub last_materialized_state_hash: Option<Hash>,
 }
 
-/// Timezone-independent mediapm step-refresh timestamp.
+/// Timezone-independent mediapm "step was generated" marker set at synthesis
+/// time, distinct from conductor instance-key timestamps.
 ///
-/// This wire shape is mediapm-local state (separate from conductor runtime
-/// instance timestamps) and accepts integral float values exported by Nickel
-/// during decode.
+/// This value is set unconditionally during workflow synthesis (step
+/// generation, not execution) and persisted in `lock.workflow_states` to track
+/// which steps have been produced by a synthesis pass. A missing timestamp
+/// triggers re-synthesis on the next reconciliation.
+///
+/// In contrast, [`mediapm_conductor::ImpureTimestamp`] is a conductor-level
+/// timestamp used for instance-key derivation during execution planning — it
+/// lives in the conductor state document and drives cache-hit/miss decisions
+/// independently of this mediapm-local synthesis marker.
+///
+/// This wire shape is mediapm-local state and accepts integral float values
+/// exported by Nickel during decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct MediaPmImpureTimestamp {
