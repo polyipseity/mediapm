@@ -56,12 +56,15 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
 
 /// Returns default user-document runtime-storage values used by `mediapm`.
 ///
-/// User config defaults intentionally omit `runtime.inherited_env_vars` so
-/// host defaults are materialized only in machine config unless users opt in.
+/// User config defaults intentionally omit `runtime.inherited_env_vars` and
+/// `runtime.instance_ttl_seconds` so those are materialized only in machine
+/// config (where the conductor coordinator resolves them with its own
+/// fallback of 7 days) unless users opt in.
 #[must_use]
 pub(super) fn default_user_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageConfig {
     let mut defaults = default_runtime_storage(paths);
     defaults.inherited_env_vars = None;
+    defaults.instance_ttl_seconds = None;
     defaults
 }
 

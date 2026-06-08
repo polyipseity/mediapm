@@ -242,6 +242,14 @@ fn reconcile_media_workflows_with_mode(
     allow_unresolved_tool_placeholders: bool,
 ) -> Result<(), MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
+
+    // Propagate instance_ttl_seconds from mediapm document to conductor
+    // machine config so the effective value (CLI override > config file > None)
+    // reaches the conductor coordinator's GC TTL resolution.
+    if let Some(ttl) = document.runtime.instance_ttl_seconds {
+        machine.runtime.instance_ttl_seconds = Some(ttl);
+    }
+
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
     if allow_unresolved_tool_placeholders {
         ensure_active_tool_placeholders_for_media_steps(
