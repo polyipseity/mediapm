@@ -99,6 +99,15 @@ pub struct ResolvedInput {
     /// unpack tokens into multiple argv entries.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub string_list: Option<Vec<String>>,
+    /// Per-element CAS hashes for string-list inputs.
+    ///
+    /// This field is runtime-only and omitted from persisted state snapshots.
+    /// Each element of the original string list is stored as an individual CAS
+    /// object; this vec tracks those hashes so constraint propagation can
+    /// attach reverse-delta constraints per element rather than on the
+    /// non-object composite hash.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub element_hashes: Vec<Hash>,
 }
 
 impl ResolvedInput {
@@ -108,7 +117,12 @@ impl ResolvedInput {
     /// provided content and is intended for tests and transient runtime values.
     #[must_use]
     pub fn from_plain_content(plain_content: Bytes) -> Self {
-        Self { hash: Hash::from_content(plain_content.as_ref()), plain_content, string_list: None }
+        Self {
+            hash: Hash::from_content(plain_content.as_ref()),
+            plain_content,
+            string_list: None,
+            element_hashes: Vec::new(),
+        }
     }
 
     /// Builds one runtime input from an existing CAS hash.
@@ -117,12 +131,15 @@ impl ResolvedInput {
     /// snapshots record only hash identities.
     #[must_use]
     pub fn from_hash(hash: Hash) -> Self {
-        Self { hash, plain_content: Bytes::new(), string_list: None }
+        Self { hash, plain_content: Bytes::new(), string_list: None, element_hashes: Vec::new() }
     }
 
     /// Builds one runtime list input from ordered string values.
     ///
-    /// Hash identity is derived from canonical JSON encoding of the full list.
+    /// Hash identity is a deterministic composite of per-element Blake3
+    /// hashes (concatenated in order). The `plain_content` stores the
+    /// canonical JSON encoding for materialization, but the hash that
+    /// appears in `ResolvedInputKey` is the composite value.
     ///
     /// # Errors
     ///
@@ -131,10 +148,22 @@ impl ResolvedInput {
     pub fn from_string_list(string_list: Vec<String>) -> Result<Self, ConductorError> {
         let plain_content_vec = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
+        // Compute per-element hashes deterministically (same as what
+        // persist_resolved_list_input stores in CAS) so constraint
+        // propagation can reference individual elements.
+        let mut element_hashes = Vec::with_capacity(string_list.len());
+        let mut hasher = blake3::Hasher::new();
+        for element in &string_list {
+            let element_hash = Hash::from_content(element.as_bytes());
+            hasher.update(element_hash.as_bytes());
+            element_hashes.push(element_hash);
+        }
+        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         Ok(Self {
-            hash: Hash::from_content(plain_content_vec.as_slice()),
+            hash,
             plain_content: Bytes::from(plain_content_vec),
             string_list: Some(string_list),
+            element_hashes,
         })
     }
 }
@@ -148,11 +177,23 @@ impl ResolvedInput {
 pub struct ResolvedInputKey {
     /// CAS hash identity for this resolved input payload.
     pub hash: Hash,
+    /// Whether this input is a string list (composite hash, not a CAS object).
+    ///
+    /// When `true`, the hash is a deterministic composite derived from
+    /// individual element hashes and does not correspond to any single CAS
+    /// object. Downstream consumers (e.g. constraint propagation) must use
+    /// per-element hashes instead of the composite hash.
+    ///
+    /// Defaults to `false` for backward-compatibility with persisted state
+    /// written before this field was introduced (all existing persisted
+    /// inputs are scalars).
+    #[serde(default)]
+    pub is_list: bool,
 }
 
 impl From<ResolvedInput> for ResolvedInputKey {
     fn from(input: ResolvedInput) -> Self {
-        Self { hash: input.hash }
+        Self { hash: input.hash, is_list: input.string_list.is_some() }
     }
 }
 

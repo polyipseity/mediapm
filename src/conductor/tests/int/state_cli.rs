@@ -475,7 +475,7 @@ async fn state_import_rejects_unknown_input_reference() {
         .expect("exported state should contain one instance");
     invalid_state.instances.get_mut(&first_key).expect("instance should exist").inputs.insert(
         "rogue_input".to_string(),
-        ResolvedInputKey { hash: Hash::from_content(b"rogue-input") },
+        ResolvedInputKey { hash: Hash::from_content(b"rogue-input"), is_list: false },
     );
     std::fs::write(
         &state_path,

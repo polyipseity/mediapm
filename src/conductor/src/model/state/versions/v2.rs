@@ -329,7 +329,10 @@ pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::
 pub fn resolved_input_v2_iso()
 -> IsoPrime<'static, RcBrand, ResolvedInputV2, crate::model::state::ResolvedInputKey> {
     IsoPrime::new(
-        |versioned: ResolvedInputV2| crate::model::state::ResolvedInputKey { hash: versioned.hash },
+        |versioned: ResolvedInputV2| crate::model::state::ResolvedInputKey {
+            hash: versioned.hash,
+            is_list: false,
+        },
         |runtime: crate::model::state::ResolvedInputKey| ResolvedInputV2 { hash: runtime.hash },
     )
 }

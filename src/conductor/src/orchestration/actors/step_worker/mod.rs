@@ -328,6 +328,7 @@ where
         // 2. Content pass (only for inputs referenced by templates) for
         //    template rendering — deferred until after the cache probe.
         let resolve_inputs_started_at = Instant::now();
+        let mut constraint_batch = Vec::new();
         let hash_only_inputs = self
             .resolve_inputs_hash_only(
                 request.unified.as_ref(),
@@ -335,6 +336,7 @@ where
                 &request.workflow_name,
                 &request.step,
                 request.step_outputs.as_ref(),
+                &mut constraint_batch,
             )
             .await?;
         phase_timings.resolve_inputs_ms =
@@ -420,6 +422,11 @@ where
             }
         };
 
+        // Collect per-element CAS hashes from list inputs so constraint
+        // hints can create reverse-delta Patch ops per element rather than
+        // on the composite hash (which is not a CAS object).
+        let mut element_hashes_for_constraints = BTreeMap::<String, Vec<Hash>>::new();
+
         // Template-heavy resolution (process execution + output specs) runs
         // only when a miss or partial miss forces actual execution.
         //
@@ -448,6 +455,15 @@ where
                     &needed_input_names,
                 )
                 .await?;
+            // Collect per-element CAS hashes from list inputs so constraint
+            // hints can create reverse-delta Patch ops per element rather
+            // than on the composite hash (which is not a CAS object).
+            for (input_name, resolved) in &inputs_with_content {
+                if !resolved.element_hashes.is_empty() {
+                    element_hashes_for_constraints
+                        .insert(input_name.clone(), resolved.element_hashes.clone());
+                }
+            }
 
             let resolve_specs_started_at = Instant::now();
             let mut template_file_writes = Vec::new();
@@ -564,7 +580,6 @@ where
 
         let persistence_merge_started_at = Instant::now();
         let mut pending_unsaved_hashes = BTreeSet::new();
-        let mut constraint_batch = Vec::new();
         for output_name in &effective_output_names {
             let output_spec = output_specs.get(output_name).ok_or_else(|| {
                 ConductorError::Internal(format!(
@@ -593,7 +608,12 @@ where
             if merged.save.prefers_full() {
                 push_full_save_hint(output_ref.hash, &mut constraint_batch);
             }
-            push_reverse_diff_hints(output_ref.hash, &instance.inputs, &mut constraint_batch);
+            push_reverse_diff_hints(
+                output_ref.hash,
+                &instance.inputs,
+                &element_hashes_for_constraints,
+                &mut constraint_batch,
+            );
             if !merged.save.should_persist() {
                 pending_unsaved_hashes.insert(output_ref.hash);
             }
@@ -785,6 +805,7 @@ where
         workflow_name: &str,
         step: &WorkflowStepSpec,
         step_outputs: &StepOutputs,
+        input_constraint_batch: &mut Vec<ConstraintBatchOp>,
     ) -> Result<BTreeMap<String, ResolvedInputKey>, ConductorError> {
         // Builtin tools: pass-through, all step inputs accepted as hash-only.
         if matches!(tool.process, ProcessSpec::Builtin { .. }) {
@@ -806,9 +827,10 @@ where
                         step,
                         binding_text,
                         step_outputs,
+                        input_constraint_batch,
                     )
                     .await?;
-                passthrough.insert(input_name.clone(), ResolvedInputKey { hash });
+                passthrough.insert(input_name.clone(), ResolvedInputKey { hash, is_list: false });
             }
             return Ok(passthrough);
         }
@@ -837,9 +859,10 @@ where
                                 step,
                                 binding_text,
                                 step_outputs,
+                                input_constraint_batch,
                             )
                             .await?;
-                        ResolvedInputKey { hash }
+                        ResolvedInputKey { hash, is_list: false }
                     }
                     (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => self
                         .resolve_list_input_binding_hash_only(
@@ -879,9 +902,10 @@ where
                                 step,
                                 binding_text,
                                 step_outputs,
+                                input_constraint_batch,
                             )
                             .await?;
-                        ResolvedInputKey { hash }
+                        ResolvedInputKey { hash, is_list: false }
                     }
                     (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => self
                         .resolve_list_input_binding_hash_only(
@@ -1012,6 +1036,7 @@ where
                 step,
                 binding,
                 step_outputs,
+                &mut Vec::new(),
             )
             .await?;
         self.persist_resolved_input(plain_content).await
@@ -1032,6 +1057,7 @@ where
         step: &WorkflowStepSpec,
         binding: &str,
         step_outputs: &StepOutputs,
+        input_constraint_batch: &mut Vec<ConstraintBatchOp>,
     ) -> Result<Hash, ConductorError> {
         let parsed_segments = parse_input_binding(binding).map_err(|err| {
             ConductorError::Workflow(format!(
@@ -1076,7 +1102,8 @@ where
                         Ok(output_hash)
                     }
                     ParsedInputBindingSegment::Literal(content) => {
-                        Ok(Hash::from_content(content.as_bytes()))
+                        let hash = self.cas.put(Vec::from(content.as_bytes())).await?;
+                        Ok(hash)
                     }
                     ParsedInputBindingSegment::Env { name } => {
                         let value = std::env::var(name).map_err(|error| {
@@ -1086,13 +1113,15 @@ where
                                 step.id
                             ))
                         })?;
-                        Ok(Hash::from_content(value.as_bytes()))
+                        let hash = self.cas.put(Vec::from(value.as_bytes())).await?;
+                        Ok(hash)
                     }
                 };
             }
         }
 
         // Multi-segment or zip_member: load content and persist to CAS.
+        let mut segment_source_hashes = Vec::new();
         let plain_content = self
             .resolve_input_binding_plain_content(
                 unified,
@@ -1100,9 +1129,19 @@ where
                 step,
                 binding,
                 step_outputs,
+                &mut segment_source_hashes,
             )
             .await?;
         let hash = self.cas.put(plain_content).await?;
+
+        // R2: Track compound-segment source hashes as reverse-diff bases.
+        for source_hash in segment_source_hashes {
+            input_constraint_batch.push(ConstraintBatchOp::Set {
+                target_hash: hash,
+                potential_bases: BTreeSet::from([source_hash]),
+            });
+        }
+
         Ok(hash)
     }
 
@@ -1114,6 +1153,7 @@ where
         step: &WorkflowStepSpec,
         binding: &str,
         step_outputs: &StepOutputs,
+        segment_source_hashes: &mut Vec<Hash>,
     ) -> Result<Bytes, ConductorError> {
         let parsed_segments = parse_input_binding(binding).map_err(|err| {
             ConductorError::Workflow(format!(
@@ -1128,6 +1168,7 @@ where
         for segment in parsed_segments {
             match segment {
                 ParsedInputBindingSegment::ExternalData { hash } => {
+                    segment_source_hashes.push(hash);
                     let Some(reference) = unified.external_data.get(&hash) else {
                         return Err(ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' references unknown external data hash '{hash}'",
@@ -1168,6 +1209,7 @@ where
                             step.id, output, step_id
                         ))
                     })?;
+                    segment_source_hashes.push(output_hash);
                     let bytes = self.cas.get(output_hash).await?;
 
                     if let Some(member) = zip_member {
@@ -1283,6 +1325,7 @@ where
                     step,
                     binding_item,
                     step_outputs,
+                    &mut Vec::new(),
                 )
                 .await
                 .map_err(|error| match error {
@@ -1379,7 +1422,7 @@ where
             hasher.update(&item_index.to_le_bytes());
         }
         let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
-        Ok(ResolvedInputKey { hash })
+        Ok(ResolvedInputKey { hash, is_list: true })
     }
 
     /// Persists one resolved input payload into CAS and returns the runtime
@@ -1389,7 +1432,7 @@ where
         plain_content: Bytes,
     ) -> Result<ResolvedInput, ConductorError> {
         let hash = self.cas.put(plain_content.clone()).await?;
-        Ok(ResolvedInput { hash, plain_content, string_list: None })
+        Ok(ResolvedInput { hash, plain_content, string_list: None, element_hashes: Vec::new() })
     }
 
     /// Persists one resolved list input payload and preserves list values for
@@ -1400,11 +1443,26 @@ where
     ) -> Result<ResolvedInput, ConductorError> {
         let plain_content_vec = serde_json::to_vec(&string_list)
             .map_err(|err| ConductorError::Serialization(err.to_string()))?;
-        let hash = self.cas.put(plain_content_vec.clone()).await?;
+        // Store each list element as a standalone CAS object and collect
+        // hashes for constraint propagation. The composite hash is derived
+        // deterministically from the concatenated element hashes so that the
+        // same list always produces the same identity regardless of storage
+        // order or CAS backend.
+        let mut element_hashes = Vec::with_capacity(string_list.len());
+        for element in &string_list {
+            let element_hash = self.cas.put(Vec::from(element.as_bytes())).await?;
+            element_hashes.push(element_hash);
+        }
+        let mut hasher = blake3::Hasher::new();
+        for eh in &element_hashes {
+            hasher.update(eh.as_bytes());
+        }
+        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         Ok(ResolvedInput {
             hash,
             plain_content: Bytes::from(plain_content_vec),
             string_list: Some(string_list),
+            element_hashes,
         })
     }
 
@@ -2691,14 +2749,41 @@ fn push_full_save_hint(target_hash: Hash, batch: &mut Vec<ConstraintBatchOp>) {
 ///
 /// The canonical empty-content root hash is intentionally skipped because
 /// CAS constraint rules do not allow explicit base sets on that root node.
+/// For string-list inputs (`is_list = true`), per-element Patch ops are
+/// created using the individual element hashes stored in
+/// `element_hashes` rather than the composite list hash (which is not a
+/// CAS object).
 fn push_reverse_diff_hints(
     output_hash: Hash,
     inputs: &BTreeMap<String, ResolvedInputKey>,
+    element_hashes: &BTreeMap<String, Vec<Hash>>,
     batch: &mut Vec<ConstraintBatchOp>,
 ) {
     let empty_hash = empty_content_hash();
-    for input_hash in inputs.values().map(|input| input.hash) {
+    for (input_name, input_key) in inputs {
+        let input_hash = input_key.hash;
         if input_hash == output_hash || input_hash == empty_hash {
+            continue;
+        }
+        // For list inputs, create per-element Patch ops using individual
+        // element hashes rather than the composite list hash (which is not
+        // a CAS object).
+        if input_key.is_list {
+            if let Some(hashes) = element_hashes.get(input_name) {
+                for element_hash in hashes {
+                    if *element_hash == output_hash || *element_hash == empty_hash {
+                        continue;
+                    }
+                    batch.push(ConstraintBatchOp::Patch {
+                        target_hash: *element_hash,
+                        patch: ConstraintPatch {
+                            add_bases: BTreeSet::from([output_hash]),
+                            remove_bases: BTreeSet::new(),
+                            clear_existing: false,
+                        },
+                    });
+                }
+            }
             continue;
         }
         batch.push(ConstraintBatchOp::Patch {
@@ -2936,7 +3021,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "input".to_string(),
-            ResolvedInputKey { hash: Hash::from_content(b"abc") },
+            ResolvedInputKey { hash: Hash::from_content(b"abc"), is_list: false },
         )]);
 
         let impure_timestamp = Some(ImpureTimestamp { epoch_seconds: 12, subsec_nanos: 34 });
@@ -2966,7 +3051,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInputKey { hash: Hash::from_content(b"abc") },
+            ResolvedInputKey { hash: Hash::from_content(b"abc"), is_list: false },
         )]);
 
         let key_a = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -3004,7 +3089,7 @@ mod tests {
         };
         let inputs = BTreeMap::from([(
             "text".to_string(),
-            ResolvedInputKey { hash: Hash::from_content(b"abc") },
+            ResolvedInputKey { hash: Hash::from_content(b"abc"), is_list: false },
         )]);
 
         let minimal_key = StepWorkerExecutor::<InMemoryCas>::derive_instance_key(
@@ -4775,11 +4860,11 @@ mod tests {
         let output_hash = Hash::from_content(b"output");
         let inputs = BTreeMap::from([(
             "empty".to_string(),
-            ResolvedInputKey { hash: empty_content_hash() },
+            ResolvedInputKey { hash: empty_content_hash(), is_list: false },
         )]);
 
         let mut batch = Vec::new();
-        push_reverse_diff_hints(output_hash, &inputs, &mut batch);
+        push_reverse_diff_hints(output_hash, &inputs, &BTreeMap::new(), &mut batch);
 
         assert!(batch.is_empty(), "should produce no ops for empty-content root input");
     }
