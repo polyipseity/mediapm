@@ -1377,6 +1377,11 @@ where
                             .with_message("overall"),
                     );
                 }
+                if event.worker_index >= per_worker_count.len() {
+                    per_worker_count.resize(event.worker_index + 1, 0);
+                    worker_bars
+                        .resize_with(event.worker_index + 1, || mp.add_bar(0).with_format("{msg}"));
+                }
                 per_worker_count[event.worker_index] =
                     per_worker_count[event.worker_index].saturating_add(1);
                 if let Some(ref bar) = overall_bar {
