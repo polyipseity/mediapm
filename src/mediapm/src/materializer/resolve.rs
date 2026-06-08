@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
+use blake3;
 use mediapm_cas::{CasApi, CasError, FileSystemCas, Hash};
 use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::{
@@ -629,7 +630,7 @@ async fn resolve_expected_input_hashes(
 ///
 /// This mirrors conductor runtime semantics:
 /// - scalar values hash raw UTF-8 bytes,
-/// - list values hash canonical JSON encoding,
+/// - list values hash concatenated per-element Blake3 hashes,
 /// - `${external_data.<hash>}` resolves directly to the declared CAS hash,
 /// - `${step_output.<step_id>.<output_name>}` resolves from prior step outputs.
 /// - `${step_output.<step_id>.<output_name>:zip(<member>)}` resolves ZIP
@@ -682,12 +683,16 @@ async fn resolve_input_binding_hash(
             Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
         }
         InputBinding::StringList(values) => {
-            let encoded = serde_json::to_vec(values).map_err(|error| {
-                MediaPmError::Serialization(format!(
-                    "encoding workflow string-list binding for deterministic hash resolution failed: {error}"
-                ))
-            })?;
-            Ok(InputBindingHashResolution::Resolved(Hash::from_content(encoded.as_slice())))
+            // Composite hash from concatenated per-element hashes (must match
+            // conductor runtime's resolve_list_input_binding_hash_only and
+            // persist_resolved_list_input).
+            let mut hasher = blake3::Hasher::new();
+            for element in values {
+                let element_hash = Hash::from_content(element.as_bytes());
+                hasher.update(element_hash.as_bytes());
+            }
+            let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+            Ok(InputBindingHashResolution::Resolved(hash))
         }
     }
 }
