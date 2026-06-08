@@ -734,7 +734,10 @@ impl CasApi for InMemoryCas {
                     if *target_hash != empty_content_hash()
                         && !self.objects.contains_key(target_hash)
                     {
-                        return Err(CasError::NotFound(*target_hash));
+                        // Target hash doesn't exist. This is expected for
+                        // hashes derived from literal or external-data
+                        // bindings — skip silently.
+                        continue;
                     }
                     for base in &patch.add_bases {
                         if *base != empty_content_hash() && !self.objects.contains_key(base) {

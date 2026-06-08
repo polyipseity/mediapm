@@ -2003,7 +2003,13 @@ impl CasApi for FileSystemState {
                     }
                     ConstraintBatchOp::Patch { target_hash, patch } => {
                         if !index.objects.contains_key(target_hash) {
-                            return Err(CasError::NotFound(*target_hash));
+                            // Target hash doesn't exist in the CAS index.
+                            // This is expected for hashes derived from literal
+                            // or external-data bindings, which are computed
+                            // via Hash::from_content() without storing the
+                            // content in the CAS. There is no constraint to
+                            // patch on a non-existent object, so skip silently.
+                            continue;
                         }
                         for base in &patch.add_bases {
                             if *base != empty_content_hash() && !index.objects.contains_key(base) {
