@@ -316,6 +316,37 @@ where
     Err(serde::de::Error::custom("expected one non-negative integral number representable as u32"))
 }
 
+/// Deserializes one optional non-negative integral number into `Option<u64>`.
+///
+/// Accepts:
+/// - `null` → `None`
+/// - JSON integer non-negative numbers within `u64` range
+/// - JSON float numbers that represent integral non-negative values (Nickel
+///   export compatibility)
+fn deserialize_option_u64_from_number<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    if let Some(raw) = value.as_u64() {
+        return Ok(Some(raw));
+    }
+    if let Some(raw) = value.as_f64()
+        && let Some(normalized) = parse_non_negative_integral_u64(raw)
+    {
+        return Ok(Some(normalized));
+    }
+
+    Err(serde::de::Error::custom(
+        "expected null or one non-negative integral number representable as u64",
+    ))
+}
+
 /// Tool registry metadata persisted in `mediapm` state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRegistryRecord {
@@ -423,7 +454,11 @@ pub struct MediaRuntimeStorage {
     /// When set, stale orchestration instances are pruned after this many
     /// seconds of inactivity. Passed through to conductor runtime config.
     /// When `None`, GC is left to conductor defaults (usually disabled).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_u64_from_number"
+    )]
     pub instance_ttl_seconds: Option<u64>,
 
     /// Ordered list of strategies that trigger CAS integrity re-verification on read.
@@ -436,20 +471,32 @@ pub struct MediaRuntimeStorage {
     /// Controls approximate verification frequency: 1 out of N reads triggers
     /// a full BLAKE3 re-verification.
     /// Default: 100.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_u64_from_number"
+    )]
     pub verify_on_read_sample_denominator: Option<u64>,
 
     /// Timeout in seconds after which a "stale" verify-on-read strategy
     /// triggers re-verification.
     /// Default: 604800 (7 days).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_u64_from_number"
+    )]
     pub verify_on_read_stale_timeout_secs: Option<u64>,
 
     /// TTL in seconds for the CAS reconstructed bytes cache.
     /// After this duration, cached object bytes are re-fetched and
     /// re-verified from storage.
     /// Default: 3600 (1 hour).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_u64_from_number"
+    )]
     pub reconstructed_bytes_cache_ttl_secs: Option<u64>,
 }
 

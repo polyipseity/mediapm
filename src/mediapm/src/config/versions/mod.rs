@@ -279,6 +279,9 @@ mod tests {
                 env_file: Some("/custom/.env".into()),
                 mediapm_schema_dir: Some(Some("/custom/schemas/mediapm".into())),
                 instance_ttl_seconds: Some(3600),
+                verify_on_read_sample_denominator: Some(100),
+                verify_on_read_stale_timeout_secs: Some(604800),
+                reconstructed_bytes_cache_ttl_secs: Some(3600),
                 ..Default::default()
             },
             ..MediaPmDocument::default()
@@ -301,6 +304,19 @@ mod tests {
         assert_eq!(decoded.runtime.media_state_config, doc.runtime.media_state_config);
         assert_eq!(decoded.runtime.env_file, doc.runtime.env_file);
         assert_eq!(decoded.runtime.mediapm_schema_dir, doc.runtime.mediapm_schema_dir);
+        assert_eq!(decoded.runtime.instance_ttl_seconds, doc.runtime.instance_ttl_seconds);
+        assert_eq!(
+            decoded.runtime.verify_on_read_sample_denominator,
+            doc.runtime.verify_on_read_sample_denominator
+        );
+        assert_eq!(
+            decoded.runtime.verify_on_read_stale_timeout_secs,
+            doc.runtime.verify_on_read_stale_timeout_secs
+        );
+        assert_eq!(
+            decoded.runtime.reconstructed_bytes_cache_ttl_secs,
+            doc.runtime.reconstructed_bytes_cache_ttl_secs
+        );
     }
 
     /// Verifies round-trip preserves `MediaPmState` fields through the typed
