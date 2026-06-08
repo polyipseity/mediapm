@@ -2247,17 +2247,12 @@ declared (even as a minimal stub) to participate in dependency resolution.
 
 ---
 
-#### §4.25a Pruned status filter in stale-entry detection
+#### §4.25a (Removed) Pruned status filter
 
-| Property | Value |
-|---|---|
-| **Crates** | `mediapm` |
-| **Files** | `src/mediapm/src/conductor_bridge/sync/lifecycle.rs` |
-| **Risk** | Pruned entries produce repeated "stale entry" warnings every sync cycle, confusing users and cluttering logs. |
-| **Pre-fix** | `compute_stale_entry_report` scanned all tool registry records including pruned ones, reporting them as stale every sync. |
-| **Post-fix** | Added `if record.status == ToolRegistryStatus::Pruned { return None; }` filter before per-record stale check. Pruned IDs are silently excluded from the sync report. |
-| **Interaction risk** | If a pruned tool reappears later (e.g. manual registry edit), its entry would have no sync record and might not re-sync automatically. This is acceptable since the operator can re-sync. |
-| **Mitigation** | None needed — this is a best-effort performance filter, not a security boundary. |
+The `ToolRegistryStatus` enum and the `Pruned` variant have been removed
+in the R2 cleanup refactor. All registry entries are implicitly active.
+Stale-entry reporting now uses `last_transition_unix_seconds` as the
+sole freshness indicator.
 
 ---
 

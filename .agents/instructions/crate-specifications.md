@@ -717,15 +717,18 @@ exclusively. External callers:
   cache directories.
 - Never read/write `metadata.json` or check TTL externally.
 
-**Sync-time stale-entry pruning**: When `mediapm sync` reconciles desired
-tools, `prune_unmanaged_tool_artifacts` in `lifecycle.rs` computes the set
-of stale tool IDs and passes them to `ToolContentCache::retain_only()`.
-The cache module handles all filesystem cleanup. Prior to this design,
-`lifecycle.rs` directly called `remove_dir_all` on cache directories;
-this is now delegated to the cache module.
+**Sync-time stale-content pruning**: During `reconcile_desired_tools` in
+`sync/mod.rs`, when an existing active tool is replaced by a newer version,
+the old tool's `content_map` is cleared in `machine.tool_configs`. This
+prevents conductor step-tool preservation from matching stale content
+references against the old tool ID (R1 root-cause fix). The old tool ID's
+registry entry remains in `tool_registry` as a historical record, but without
+content references it will not be materialized.
 
-**Pruned entry filtering**: `compute_stale_entry_report` in `lifecycle.rs`
-filters out entries whose `status == ToolRegistryStatus::Pruned`.
+**Stale-entry reporting**: `compute_stale_entry_report` in `lifecycle.rs`
+reports entries whose `last_transition_unix_seconds` exceeds the staleness
+threshold. The `ToolRegistryStatus` enum has been removed; all registry
+entries are implicitly active.
 
 
 ### Conductor-Builtins Specification (src/conductor-builtins/)

@@ -1335,11 +1335,9 @@ where
     #[expect(clippy::too_many_lines)]
     pub async fn sync_library_with_tag_update_checks(
         &self,
-        _check_tag_updates: bool,
+        check_tag_updates: bool,
         verify_materialization_override: Option<bool>,
     ) -> Result<SyncSummary, MediaPmError> {
-        // Load the mediapm document once and keep tool reconciliation explicit:
-        // this path intentionally does not invoke desired-tool sync.
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
         let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
@@ -1350,6 +1348,16 @@ where
         mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
 
         let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        let resolved_inherited_env_vars =
+            effective_runtime_storage.inherited_env_vars_with_defaults();
+        conductor_bridge::reconcile_desired_tools(
+            &effective_paths,
+            &document,
+            &resolved_inherited_env_vars,
+            &mut lock,
+            check_tag_updates,
+        )
+        .await?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
