@@ -1135,11 +1135,18 @@ where
         let hash = self.cas.put(plain_content).await?;
 
         // R2: Track compound-segment source hashes as reverse-diff bases.
-        for source_hash in segment_source_hashes {
-            input_constraint_batch.push(ConstraintBatchOp::Set {
-                target_hash: hash,
-                potential_bases: BTreeSet::from([source_hash]),
-            });
+        // Each source hash used to construct a compound input is constrained
+        // against the compound hash + empty hash so the source survives as
+        // long as the compound survives.
+        if !segment_source_hashes.is_empty() {
+            let mut potential_bases = BTreeSet::from([hash]);
+            potential_bases.insert(empty_content_hash());
+            for source_hash in segment_source_hashes {
+                input_constraint_batch.push(ConstraintBatchOp::Set {
+                    target_hash: source_hash,
+                    potential_bases: potential_bases.clone(),
+                });
+            }
         }
 
         Ok(hash)
@@ -2777,7 +2784,7 @@ fn push_reverse_diff_hints(
                     batch.push(ConstraintBatchOp::Patch {
                         target_hash: *element_hash,
                         patch: ConstraintPatch {
-                            add_bases: BTreeSet::from([output_hash]),
+                            add_bases: BTreeSet::from([output_hash, empty_hash]),
                             remove_bases: BTreeSet::new(),
                             clear_existing: false,
                         },
@@ -2789,7 +2796,7 @@ fn push_reverse_diff_hints(
         batch.push(ConstraintBatchOp::Patch {
             target_hash: input_hash,
             patch: ConstraintPatch {
-                add_bases: BTreeSet::from([output_hash]),
+                add_bases: BTreeSet::from([output_hash, empty_hash]),
                 remove_bases: BTreeSet::new(),
                 clear_existing: false,
             },
