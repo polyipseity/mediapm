@@ -2620,11 +2620,16 @@ mod tests {
             referenced_instance_keys: HashSet::new(),
         };
 
-        let step_output_hashes =
-            super::resolve_workflow_step_output_hashes(&cas, &machine, &state, &workflow)
-                .await
-                .expect("resolve step outputs")
-                .expect("step outputs should resolve");
+        let step_output_hashes = super::resolve_workflow_step_output_hashes(
+            &cas,
+            &machine,
+            &state,
+            &workflow,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("resolve step outputs")
+        .expect("step outputs should resolve");
 
         let output_hash = step_output_hashes
             .get(&step_id)
@@ -2813,11 +2818,16 @@ mod tests {
             referenced_instance_keys: HashSet::new(),
         };
 
-        let step_output_hashes =
-            super::resolve_workflow_step_output_hashes(&cas, &machine, &state, &workflow)
-                .await
-                .expect("resolve step outputs")
-                .expect("step outputs should resolve");
+        let step_output_hashes = super::resolve_workflow_step_output_hashes(
+            &cas,
+            &machine,
+            &state,
+            &workflow,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("resolve step outputs")
+        .expect("step outputs should resolve");
 
         let tagger_output_hash = step_output_hashes
             .get(&step_tagger_id)
@@ -2986,11 +2996,16 @@ mod tests {
             referenced_instance_keys: HashSet::new(),
         };
 
-        let step_output_hashes =
-            super::resolve_workflow_step_output_hashes(&cas, &machine, &state, &workflow)
-                .await
-                .expect("resolve step outputs")
-                .expect("step outputs should resolve");
+        let step_output_hashes = super::resolve_workflow_step_output_hashes(
+            &cas,
+            &machine,
+            &state,
+            &workflow,
+            &BTreeMap::new(),
+        )
+        .await
+        .expect("resolve step outputs")
+        .expect("step outputs should resolve");
 
         let apply_output_hash = step_output_hashes
             .get(&step_apply_id)

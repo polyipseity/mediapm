@@ -15,7 +15,9 @@ use mediapm_conductor::{
 use crate::conductor_bridge::{
     managed_workflow_id_for_media, resolve_media_variant_output_binding_with_limits,
 };
-use crate::config::{HierarchyEntry, MediaPmDocument, MediaSourceSpec, media_source_uri};
+use crate::config::{
+    HierarchyEntry, MediaPmDocument, MediaSourceSpec, ToolRegistryRecord, media_source_uri,
+};
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
@@ -38,6 +40,10 @@ pub(super) async fn load_runtime_orchestration_state(
     cas: &FileSystemCas,
 ) -> Result<Option<OrchestrationState>, MediaPmError> {
     if !paths.conductor_state_config.exists() {
+        eprintln!(
+            "[TRACE] load_runtime_orchestration_state: state file does not exist: {}",
+            paths.conductor_state_config.display()
+        );
         return Ok(None);
     }
 
@@ -49,6 +55,10 @@ pub(super) async fn load_runtime_orchestration_state(
         })?;
 
     if state_bytes.iter().all(u8::is_ascii_whitespace) {
+        eprintln!(
+            "[TRACE] load_runtime_orchestration_state: state file is all whitespace: {}",
+            paths.conductor_state_config.display()
+        );
         return Ok(None);
     }
 
@@ -59,18 +69,28 @@ pub(super) async fn load_runtime_orchestration_state(
         ))
     })?;
     let Some(state_pointer) = state_document.state_pointer else {
+        eprintln!(
+            "[TRACE] load_runtime_orchestration_state: state_pointer is None in document: {}",
+            paths.conductor_state_config.display()
+        );
         return Ok(None);
     };
 
     let orchestration_state = match decode_state(cas, state_pointer).await {
-        Ok(state) => Some(state),
+        Ok(state) => {
+            eprintln!(
+                "[TRACE] load_runtime_orchestration_state: successfully decoded state from pointer '{}'",
+                state_pointer
+            );
+            Some(state)
+        }
         Err(ConductorError::Cas(CasError::NotFound(missing))) => {
             // Mixed-backend flow: the conductor writes state to a
             // potentially different CAS backend than the materializer
             // reads from (e.g. in-memory conductor with filesystem
             // materializer). Treat unavailable blobs as no state so
             // sync can continue gracefully.
-            tracing::warn!(
+            eprintln!(
                 "orchestration state blob '{missing}' not found in materializer CAS; \
                  skipping persisted-state load (mixed-backend)"
             );
@@ -288,11 +308,19 @@ async fn resolve_variant_hash_from_workflow_state(
         lookup.ffmpeg_max_output_slots,
     )?
     else {
+        eprintln!(
+            "[TRACE] resolve_variant_hash_from_workflow_state: binding is None for variant '{}' media '{}'",
+            variant, media_id
+        );
         return Ok(None);
     };
 
     let workflow_id = managed_workflow_id_for_media(media_id, source);
     let Some(workflow) = lookup.machine.workflows.get(&workflow_id) else {
+        eprintln!(
+            "[TRACE] resolve_variant_hash_from_workflow_state: workflow '{}' not found in machine.workflows for media '{}'",
+            workflow_id, media_id
+        );
         return Ok(None);
     };
 
@@ -314,15 +342,20 @@ async fn resolve_variant_hash_from_workflow_state(
                 lookup.machine.as_ref(),
                 state,
                 workflow,
+                &lookup.tool_registry,
             )
             .await?;
             let mut cache = lookup.step_output_hashes_cache.lock().unwrap();
-            cache.insert(workflow_id, result.clone());
+            cache.insert(workflow_id.clone(), result.clone());
             result
         }
     };
 
     let Some(ref step_output_hashes) = step_output_hashes else {
+        eprintln!(
+            "[TRACE] resolve_variant_hash_from_workflow_state: step_output_hashes is None for workflow '{}' media '{}' variant '{}'",
+            workflow_id, media_id, variant
+        );
         return Ok(None);
     };
 
@@ -332,6 +365,17 @@ async fn resolve_variant_hash_from_workflow_state(
         .copied();
 
     let Some(hash) = output_hash else {
+        eprintln!(
+            "[TRACE] resolve_variant_hash_from_workflow_state: output_hash not found for step '{}' output_name '{}' in resolved step_output_hashes for media '{}' variant '{}'",
+            binding.step_id, binding.output_name, media_id, variant
+        );
+        eprintln!(
+            "[TRACE] step_output_hashes keys: {:?}",
+            step_output_hashes
+                .iter()
+                .map(|(k, v)| (k, v.keys().cloned().collect::<Vec<_>>()))
+                .collect::<Vec<_>>()
+        );
         return Ok(None);
     };
 
@@ -356,6 +400,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
     machine: &MachineNickelDocument,
     state: &OrchestrationState,
     workflow: &mediapm_conductor::WorkflowSpec,
+    tool_registry: &BTreeMap<String, ToolRegistryRecord>,
 ) -> Result<Option<StepOutputHashes>, MediaPmError> {
     let mut step_outputs = StepOutputHashes::new();
     let required_step_output_names = collect_required_step_output_names(workflow);
@@ -365,6 +410,10 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         let expected_inputs =
             resolve_expected_input_hashes(cas, machine, &step.inputs, &step_outputs).await?;
         let Some(expected_inputs) = expected_inputs else {
+            eprintln!(
+                "[TRACE] resolve_workflow_step_output_hashes: expected_inputs is None for step '{}' (tool '{}')",
+                step.id, step.tool
+            );
             return Ok(None);
         };
 
@@ -383,12 +432,22 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             .instances
             .iter()
             .filter_map(|(instance_id, instance)| {
-                (instance.tool_name == step.tool
-                    && tool_metadata_matches(expected_metadata, &instance.metadata)
-                    && instance_matches_expected_inputs(instance, &expected_inputs)
-                    && instance_matches_expected_output_names(instance, &step.outputs)
-                    && instance_matches_required_output_names(instance, &required_output_names))
-                .then_some((instance_id, instance))
+                let exact_tool_ok = instance.tool_name == step.tool;
+                let tool_ok = exact_tool_ok
+                    || tool_registry_logical_name(tool_registry, &instance.tool_name)
+                        .zip(tool_registry_logical_name(tool_registry, &step.tool))
+                        .is_some_and(|(a, b)| a == b);
+                let meta_ok = if exact_tool_ok {
+                    tool_metadata_matches(expected_metadata, &instance.metadata)
+                } else {
+                    tool_metadata_matches_identity(expected_metadata, &instance.metadata)
+                };
+                let inputs_ok = instance_matches_expected_inputs(instance, &expected_inputs);
+                let outputs_ok = instance_matches_expected_output_names(instance, &step.outputs);
+                let required_ok =
+                    instance_matches_required_output_names(instance, &required_output_names);
+                (tool_ok && meta_ok && inputs_ok && outputs_ok && required_ok)
+                    .then_some((instance_id, instance))
             })
             .collect::<Vec<_>>();
 
@@ -416,9 +475,30 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             }
         }
 
+        if matching_instances.is_empty() {
+            eprintln!(
+                "[TRACE] resolve_workflow_step_output_hashes: zero matching instances for step '{}' (tool '{}'). expected_inputs: {:?}, state.instances keys: {:?}",
+                step.id,
+                step.tool,
+                expected_inputs
+                    .resolved_hashes
+                    .iter()
+                    .map(|(k, v)| (k, v.to_string()))
+                    .collect::<Vec<_>>(),
+                state.instances.keys().collect::<Vec<_>>()
+            );
+        }
+
         let Some(instance) =
             selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
         else {
+            eprintln!(
+                "[TRACE] resolve_workflow_step_output_hashes: no instance selected for step '{}' (tool '{}'): matching_instances={}, selected_instance={:?}",
+                step.id,
+                step.tool,
+                matching_instances.len(),
+                selected_instance.is_some()
+            );
             return Ok(None);
         };
 
@@ -588,13 +668,55 @@ async fn instance_has_materializable_required_outputs(
 /// Materializer instance matching must therefore compare builtin identity by
 /// name/version only, while executable tools keep full-struct equality.
 fn tool_metadata_matches(expected: &ToolSpec, actual: &ToolSpec) -> bool {
-    match (&expected.kind, &actual.kind) {
+    let result = match (&expected.kind, &actual.kind) {
         (
             ToolKindSpec::Builtin { name: expected_name, version: expected_version },
             ToolKindSpec::Builtin { name: actual_name, version: actual_version },
         ) => expected_name == actual_name && expected_version == actual_version,
         (ToolKindSpec::Executable { .. }, ToolKindSpec::Executable { .. }) => expected == actual,
         _ => false,
+    };
+    if !result {
+        eprintln!(
+            "[TRACE-META-MISMATCH] expected={:?} actual={:?}",
+            serde_json::to_string(expected).unwrap_or_default(),
+            serde_json::to_string(actual).unwrap_or_default(),
+        );
+    }
+    result
+}
+
+/// Looks up the logical tool name for a tool_id from the tool registry.
+///
+/// Returns `None` when the tool_id is not in the registry (e.g., builtin tools
+/// or legacy instances created before the registry existed).
+fn tool_registry_logical_name<'a>(
+    registry: &'a BTreeMap<String, ToolRegistryRecord>,
+    tool_id: &str,
+) -> Option<&'a str> {
+    Some(registry.get(tool_id)?.name.as_str())
+}
+
+/// Returns true when two executable ToolSpecs share the same identity-relevant
+/// fields, ignoring the provisioning-dependent `command` path.
+///
+/// Fields compared: `is_impure`, `inputs`, `outputs`, `env_vars`, `success_codes`.
+fn tool_metadata_matches_identity(expected: &ToolSpec, actual: &ToolSpec) -> bool {
+    if expected.is_impure != actual.is_impure
+        || expected.inputs != actual.inputs
+        || expected.outputs != actual.outputs
+    {
+        return false;
+    }
+    match (&expected.kind, &actual.kind) {
+        (
+            ToolKindSpec::Executable {
+                env_vars: expected_env, success_codes: expected_codes, ..
+            },
+            ToolKindSpec::Executable { env_vars: actual_env, success_codes: actual_codes, .. },
+        ) => expected_env == actual_env && expected_codes == actual_codes,
+        // Builtins: delegate to existing name/version comparison.
+        _ => tool_metadata_matches(expected, actual),
     }
 }
 
