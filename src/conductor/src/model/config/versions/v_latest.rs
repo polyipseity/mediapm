@@ -307,6 +307,19 @@ where
         .map_err(|_| serde::de::Error::custom(format!("{field} {value} exceeds u32 range")))
 }
 
+fn deserialize_option_integral_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<f64>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(raw) => {
+            parse_integral_u64::<D::Error>(raw, "runtime_storage_option_integral").map(Some)
+        }
+    }
+}
+
 /// Timezone-independent impure execution timestamp in persisted schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub(crate) struct ImpureTimestampLatest {
@@ -338,16 +351,32 @@ pub(crate) struct RuntimeStorageLatest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) inherited_env_vars: Option<BTreeMap<String, Vec<String>>>,
     /// Optional instance GC time-to-live in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_integral_u64"
+    )]
     pub(crate) instance_ttl_seconds: Option<u64>,
     /// Optional CAS verify-on-read sample denominator.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_integral_u64"
+    )]
     pub(crate) verify_on_read_sample_denominator: Option<u64>,
     /// Optional CAS verify-on-read stale timeout in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_integral_u64"
+    )]
     pub(crate) verify_on_read_stale_timeout_secs: Option<u64>,
     /// Optional reconstructed-bytes cache TTL in seconds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_option_integral_u64"
+    )]
     pub(crate) reconstructed_bytes_cache_ttl_secs: Option<u64>,
 }
 
