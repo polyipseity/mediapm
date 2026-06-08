@@ -1266,12 +1266,11 @@ where
     /// cannot be persisted.
     pub async fn sync_tools_with_tag_update_checks(
         &self,
-        check_tag_updates: bool,
+        _check_tag_updates: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let (summary, mut lock, effective_paths) =
-            self.sync_tools_from_document(&document, check_tag_updates).await?;
-        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        let (summary, lock, effective_paths) =
+            self.sync_tools_from_document(&document, _check_tag_updates).await?;
         save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
         Ok(summary)
     }
@@ -1279,11 +1278,10 @@ where
     /// Internal helper: runs tool sync from an already-loaded mediapm document.
     ///
     /// Reconciles desired tool state (`reconcile_desired_tools`) but does NOT
-    /// call `reconcile_media_workflows` or persist the lock file.  Callers are
-    /// responsible for workflow reconciliation and lock persistence so they can
-    /// control *when* those operations happen relative to other sync steps (for
-    /// example, `sync_library_with_tag_update_checks` must reconcile workflows
-    /// only *after* materialization so managed-file hashes are included).
+    /// reconcile workflows.  `sync_library_with_tag_update_checks` is responsible
+    /// for workflow reconciliation, while `sync_tools_with_tag_update_checks`
+    /// intentionally skips it (tool sync should only touch tools).  Callers are
+    /// responsible for lock persistence regardless of path.
     async fn sync_tools_from_document(
         &self,
         document: &MediaPmDocument,
@@ -1335,7 +1333,7 @@ where
     #[expect(clippy::too_many_lines)]
     pub async fn sync_library_with_tag_update_checks(
         &self,
-        check_tag_updates: bool,
+        _check_tag_updates: bool,
         verify_materialization_override: Option<bool>,
     ) -> Result<SyncSummary, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
@@ -1348,17 +1346,11 @@ where
         mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
 
         let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        let resolved_inherited_env_vars =
-            effective_runtime_storage.inherited_env_vars_with_defaults();
-        conductor_bridge::reconcile_desired_tools(
-            &effective_paths,
-            &document,
-            &resolved_inherited_env_vars,
-            &mut lock,
-            check_tag_updates,
-        )
-        .await?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
+        // NOTE: `mediapm sync` intentionally does NOT invoke desired-tool sync
+        // here.  The hint mechanism below (collect_tools_requiring_sync +
+        // append_tool_sync_hint_warning) reminds users to run `mediapm tool sync`
+        // when tool state looks stale.
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let tools_requiring_sync = Self::collect_tools_requiring_sync(&document, &lock, &machine);
