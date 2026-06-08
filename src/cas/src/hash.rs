@@ -413,6 +413,21 @@ impl Hash {
             algorithm.wrap(digest).map_err(|err| HashParseError::Multihash(err.to_string()))?;
         Self::from_multihash(inner)
     }
+
+    /// Deterministic composite: `blake3(h₁.bytes() ‖ h₂.bytes() ‖ …)`.
+    ///
+    /// Produces one hash from an ordered list of hashes by concatenating
+    /// their raw Blake3 digest bytes and hashing the concatenation.
+    /// This matches the StringList composite hash computation used across
+    /// the conductor and materializer.
+    #[must_use]
+    pub fn composite(hashes: &[Hash]) -> Hash {
+        let mut hasher = blake3::Hasher::new();
+        for h in hashes {
+            hasher.update(h.as_bytes());
+        }
+        Hash::from_bytes(*hasher.finalize().as_bytes())
+    }
 }
 
 /// Debug formatter that prints algorithm identity and digest hex.

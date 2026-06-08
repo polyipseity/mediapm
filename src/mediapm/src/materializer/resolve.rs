@@ -4,7 +4,6 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use blake3;
 use mediapm_cas::{CasApi, CasError, FileSystemCas, Hash};
 use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::{
@@ -741,14 +740,10 @@ async fn resolve_input_binding_hash(
         }
         InputBinding::StringList(values) => {
             // Composite hash from concatenated per-element hashes (must match
-            // conductor runtime's resolve_list_input_binding_hash_only and
-            // persist_resolved_list_input).
-            let mut hasher = blake3::Hasher::new();
-            for element in values {
-                let element_hash = Hash::from_content(element.as_bytes());
-                hasher.update(element_hash.as_bytes());
-            }
-            let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+            // conductor runtime's Hash::composite and persist_resolved_list_input).
+            let element_hashes: Vec<Hash> =
+                values.iter().map(|element| Hash::from_content(element.as_bytes())).collect();
+            let hash = Hash::composite(&element_hashes);
             Ok(InputBindingHashResolution::Resolved(hash))
         }
     }

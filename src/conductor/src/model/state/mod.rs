@@ -151,14 +151,9 @@ impl ResolvedInput {
         // Compute per-element hashes deterministically (same as what
         // persist_resolved_list_input stores in CAS) so constraint
         // propagation can reference individual elements.
-        let mut element_hashes = Vec::with_capacity(string_list.len());
-        let mut hasher = blake3::Hasher::new();
-        for element in &string_list {
-            let element_hash = Hash::from_content(element.as_bytes());
-            hasher.update(element_hash.as_bytes());
-            element_hashes.push(element_hash);
-        }
-        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+        let element_hashes: Vec<Hash> =
+            string_list.iter().map(|element| Hash::from_content(element.as_bytes())).collect();
+        let hash = Hash::composite(&element_hashes);
         Ok(Self {
             hash,
             plain_content: Bytes::from(plain_content_vec),

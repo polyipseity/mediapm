@@ -1380,7 +1380,7 @@ where
         binding_list: &[String],
         step_outputs: &StepOutputs,
     ) -> Result<ResolvedInputKey, ConductorError> {
-        let mut hasher = blake3::Hasher::new();
+        let mut element_hashes = Vec::with_capacity(binding_list.len());
         for binding_item in binding_list {
             let parsed = parse_input_binding(binding_item).map_err(|err| {
                 ConductorError::Workflow(format!(
@@ -1495,9 +1495,9 @@ where
                 }
                 Hash::from_bytes(*inner.finalize().as_bytes())
             };
-            hasher.update(element_hash.as_bytes());
+            element_hashes.push(element_hash);
         }
-        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+        let hash = Hash::composite(&element_hashes);
         Ok(ResolvedInputKey { hash, is_list: true })
     }
 
@@ -1529,11 +1529,7 @@ where
             let element_hash = self.cas.put(Vec::from(element.as_bytes())).await?;
             element_hashes.push(element_hash);
         }
-        let mut hasher = blake3::Hasher::new();
-        for eh in &element_hashes {
-            hasher.update(eh.as_bytes());
-        }
-        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+        let hash = Hash::composite(&element_hashes);
         Ok(ResolvedInput {
             hash,
             plain_content: Bytes::from(plain_content_vec),
