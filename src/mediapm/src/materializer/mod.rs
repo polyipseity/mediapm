@@ -21,7 +21,7 @@ use crate::config::{
     FlattenedHierarchyEntry, HierarchyEntryKind, MediaPmDocument, PlaylistEntryPathMode,
     expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
-use crate::config::{ManagedFileRecord, MediaPmState};
+use crate::config::{ManagedFileRecord, MediaPmState, ToolRegistryRecord};
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
@@ -3144,6 +3144,9 @@ struct MaterializationLookupContext {
     /// ffprobe/JSON metadata values. Cache is opened by `sync_hierarchy()` and
     /// shared across workers.
     metadata_cache: Option<Arc<crate::metadata_cache::MetadataCache>>,
+    /// Tool registry for reverse-lookup of logical tool names from tool IDs.
+    /// Populated from `MediaPmState.tool_registry` at context construction time.
+    tool_registry: BTreeMap<String, ToolRegistryRecord>,
 }
 
 /// Resolved payload bytes for one materialized variant request.
@@ -3733,6 +3736,7 @@ pub async fn sync_hierarchy(
         managed_ffprobe_path,
         step_output_hashes_cache: Arc::new(Mutex::new(HashMap::new())),
         metadata_cache,
+        tool_registry: lock.tool_registry.clone(),
     };
 
     let mut report = MaterializeReport::default();
