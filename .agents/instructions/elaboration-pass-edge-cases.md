@@ -1080,6 +1080,58 @@ read by the coordinator's dispatch loop.
 
 ---
 
+### 2.X Cross-Crate StringList Hash Drift (RESOLVED)
+
+**Issue**: Four independent implementations of the same composite hash pattern
+(`blake3(elem₁ ‖ elem₂ ‖ …)` for StringList-to-hash) were spread across the
+codebase — any future edit to one could silently drift from the others.
+
+**Affected sites (pre-fix)**:
+
+| Site | File | Pattern |
+|------|------|---------|
+| `ResolvedInput::from_string_list()` | `src/conductor/src/model/state/mod.rs` | `blake3::Hasher` loop |
+| `resolve_list_input_binding_hash_only()` | `src/conductor/src/orchestration/actors/step_worker/mod.rs` | `blake3::Hasher` loop |
+| `persist_resolved_list_input()` | `src/conductor/src/orchestration/actors/step_worker/mod.rs` | `blake3::Hasher` loop |
+| materializer StringList arm | `src/mediapm/src/materializer/resolve.rs` | `blake3::Hasher` loop |
+
+**Root cause (original sync bug, ca6ff47)**: The conductor's
+`resolve_list_input_binding_hash_only()` previously mixed positional index into
+element hashes (`blake3(raw_bytes ‖ item_index)`), while the materializer used
+plain `blake3(elem)`. Empty lists matched accidentally (both produce
+`blake3("")`), but non-empty lists produced different hashes → "description
+variant" fatal error.
+
+**Resolution (`Hash::composite`)**:
+
+- `refactor(cas): add Hash::composite and deduplicate StringList hash computation`
+  (269465f) — extracted the canonical `Hash::composite(&[Hash]) → Hash` into
+  the CAS crate and updated all 4 sites to use it.
+- `test(cas): add regression tests for Hash::composite` (4ecce2c) — added 5
+  tests validating determinism, order sensitivity, empty-slice, single-element,
+  and manual-construction equivalence.
+
+**Design notes**:
+
+- `Hash::composite` does not accept raw bytes or length prefixes — callers
+  must pre-hash each element with `Hash::from_content`. This ensures domain
+  separation between element-level and composite-level hashing.
+- Empty slices produce a deterministic but distinct hash (`blake3("")`). This
+  matches the pre-existing behavior of all 4 sites and is validated by test.
+- Single-element `Hash::composite(&[h])` wraps the element hash without
+  identity — the output differs from the element hash itself
+  (`blake3(element_hash_bytes) ≠ element_hash`). This is correct: a
+  single-element StringList and the raw element byte content are different
+  semantic domains.
+- The materializer's StringList arm does **not** parse `${...}` interpolation;
+  any workflow with interpolated StringList elements silently produces different
+  hashes than if the literal `${...}` text were resolved. Phase 2 risk was
+  analyzed and explicitly skipped — the materializer lacks env-var context for
+  full interpolation support, and cross-crate coupling risk outweighs benefit
+  given that the deduplication already eliminates future drift risk.
+
+---
+
 ## PART 3: CONDUCTOR-BUILTINS — EDGE CASES & FAILURE MODES
 
 ### 3.1 Path Traversal & Symlink Loops

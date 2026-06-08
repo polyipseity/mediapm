@@ -63,12 +63,17 @@ State Persistence (state.ncl)
 
 | Crate | Implementation |
 |-------|-----------------|
-| **CAS** | Blake3-256 multihash; `from_content()` is deterministic |
-| **Conductor** | CAS hash used for state blob identity; external_data keyed by hash |
+| **CAS** | Blake3-256 multihash; `from_content()` is deterministic; `Hash::composite(&[Hash])` produces deterministic composite hash via `blake3(h₁.bytes() ‖ h₂.bytes() ‖ …)` |
+| **Conductor** | CAS hash used for state blob identity; external_data keyed by hash; StringList input hashing uses `Hash::composite` |
 | **Builtins** | Pure builtins (echo, archive) produce deterministic payloads |
-| **MediaPM** | Lock records keyed by `(media_id, variant)` → CAS hash |
+| **MediaPM** | Lock records keyed by `(media_id, variant)` → CAS hash; materializer StringList hashing uses `Hash::composite` |
 
 **Verification**: If same input produces different hash across runs, it's a bug.
+
+**Composite hash invariant**: All StringList composite hash computations across
+conductor and materializer must use `Hash::composite` to prevent drift. The 4
+independent implementations were unified under `Hash::composite` in
+`refactor(cas): add Hash::composite and deduplicate StringList hash computation`.
 
 ### 2. Constraint Correctness Contract
 
@@ -388,7 +393,7 @@ For comprehensive details, refer to the following specifications collected from 
 **Key Takeaways**:
 - **Module Structure**: 8 submodules (api, cli, error, hash, codec, index, orchestration, storage)
 - **Public Traits**: `CasApi` (read/write/maintain), `CasMaintenanceApi` (optimize/prune/repair)
-- **Type Model**: `Hash` (Blake3 multihash), `Constraint` (base selection), `ConstraintBatchOp` (batch operation), `ObjectInfo` (metadata)
+- **Type Model**: `Hash` (Blake3 multihash; `from_content()` for content, `Hash::composite(&[Hash])` for ordered hash lists), `Constraint` (base selection), `ConstraintBatchOp` (batch operation), `ObjectInfo` (metadata)
 - **Storage**: `FileSystemCas` (persistent), `InMemoryCas` (ephemeral)
 - **Versioning**: Adjacent-only migrations; optics-based bridging
 - **Performance**: O(1) full objects, O(depth) delta objects; mmap for ≥64KB
