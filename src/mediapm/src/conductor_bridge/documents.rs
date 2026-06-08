@@ -8,7 +8,6 @@ use mediapm_conductor::{
     decode_machine_document, decode_user_document, encode_machine_document, encode_user_document,
 };
 
-use crate::config::{MediaPmState, ToolRegistryStatus};
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 use crate::registered_builtin_ids;
@@ -164,11 +163,8 @@ fn load_user_document(path: &Path) -> Result<UserNickelDocument, MediaPmError> {
     decode_user_document(&bytes).map_err(MediaPmError::from)
 }
 
-/// Lists conductor tools visible in machine config with lockfile status overlay.
-pub(crate) fn list_tools(
-    paths: &MediaPmPaths,
-    lock: &MediaPmState,
-) -> Result<Vec<ConductorToolRow>, MediaPmError> {
+/// Lists conductor tools visible in machine config.
+pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, MediaPmError> {
     let machine = load_machine_document(&paths.conductor_machine_ncl)?;
     let mut rows = machine
         .tools
@@ -181,14 +177,8 @@ pub(crate) fn list_tools(
                 .is_some_and(|map| !map.is_empty());
             let has_binary = has_materialized_content
                 || machine.tools.get(tool_id).is_some_and(tool_spec_has_binary);
-            let status = lock.tool_registry.get(tool_id).map_or_else(
-                || {
-                    if has_binary { ToolRegistryStatus::Active } else { ToolRegistryStatus::Pruned }
-                },
-                |record| record.status,
-            );
 
-            ConductorToolRow { tool_id: tool_id.clone(), has_binary, status }
+            ConductorToolRow { tool_id: tool_id.clone(), has_binary }
         })
         .collect::<Vec<_>>();
 

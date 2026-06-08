@@ -771,11 +771,13 @@ fn preserve_existing_generated_step_tools(
     all_matched
 }
 
-/// Returns whether one preserved step tool id is still present and executable
-/// under the current machine configuration.
+/// Returns whether one preserved step tool id is still present in the current
+/// machine configuration.
 ///
-/// A tool id is valid if it exists in `machine.tools` and, for executable
-/// tools, has a non-empty content map. Builtin tools are always valid.
+/// A tool id is valid if it exists in `machine.tools` and — for executable
+/// tools — has a `tool_configs` entry, indicating it was once reconciled and
+/// may have cached conductor outputs (the content map may have been cleared
+/// since then). Builtin tools are always valid.
 #[must_use]
 fn preserved_step_tool_is_valid(machine: &MachineNickelDocument, tool_id: &str) -> bool {
     let Some(tool_spec) = machine.tools.get(tool_id) else {
@@ -784,11 +786,7 @@ fn preserved_step_tool_is_valid(machine: &MachineNickelDocument, tool_id: &str) 
 
     match &tool_spec.kind {
         ToolKindSpec::Builtin { .. } => true,
-        ToolKindSpec::Executable { .. } => machine
-            .tool_configs
-            .get(tool_id)
-            .and_then(|config| config.content_map.as_ref())
-            .is_some_and(|content_map| !content_map.is_empty()),
+        ToolKindSpec::Executable { .. } => machine.tool_configs.contains_key(tool_id),
     }
 }
 

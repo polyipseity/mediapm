@@ -26,7 +26,6 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use crate::conductor_bridge::ConductorToolRow;
-use crate::conductor_bridge::fresh_impure_timestamp;
 use crate::config::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
     MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
@@ -152,9 +151,7 @@ where
             return true;
         };
 
-        if !registry_entry.name.eq_ignore_ascii_case(tool_name)
-            || !matches!(registry_entry.status, crate::config::ToolRegistryStatus::Active)
-        {
+        if !registry_entry.name.eq_ignore_ascii_case(tool_name) {
             return true;
         }
 
@@ -1067,8 +1064,7 @@ where
     pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        conductor_bridge::list_tools(&effective_paths, &lock)
+        conductor_bridge::list_tools(&effective_paths)
     }
 
     /// Adds one tool requirement to `mediapm.ncl` by logical name.
@@ -1431,24 +1427,6 @@ where
         // Drop sender so receiver task can complete.
         drop(tx);
         receiver_handle.await.ok();
-
-        // Backfill impure_timestamp for freshly-synthesized steps after
-        // workflow completion, so the timestamp reflects the time when the
-        // workflow actually ran rather than synthesis.
-        if let Err(e) = self.conductor.get_state().await {
-            eprintln!(
-                "[mediapm::sync] warning: conductor state unavailable after \
-                 workflow run, skipping impure_timestamp backfill: {e}"
-            );
-        } else {
-            for step_states in lock.workflow_states.values_mut() {
-                for step_state in step_states.iter_mut() {
-                    if step_state.impure_timestamp.is_none() {
-                        step_state.impure_timestamp = Some(fresh_impure_timestamp());
-                    }
-                }
-            }
-        }
 
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let hierarchy_start = std::time::Instant::now();
@@ -1863,9 +1841,7 @@ mod tests {
     use crate::HierarchyNodeKind;
     use crate::HierarchyPath;
     use crate::ToolRequirementDependencies;
-    use crate::config::{
-        MediaPmState, ToolRegistryRecord, ToolRegistryStatus, save_mediapm_state_document,
-    };
+    use crate::config::{MediaPmState, ToolRegistryRecord, save_mediapm_state_document};
 
     use super::{
         AddInsertPosition, ManagedWorkflowStepTarget, MediaHierarchyPreset, MediaPmApi,
@@ -2166,7 +2142,6 @@ mod tests {
                 source: "github-releases:btbn/ffmpeg-builds".to_string(),
                 registry_multihash: registry_hash.to_string(),
                 last_transition_unix_seconds: 1,
-                status: ToolRegistryStatus::Active,
             },
         );
         save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)

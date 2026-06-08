@@ -235,7 +235,7 @@ mod tests {
     };
     use crate::config::{
         ManagedFileRecord, ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp,
-        MediaPmState, MediaRuntimeStorage, ToolRegistryRecord, ToolRegistryStatus,
+        MediaPmState, MediaRuntimeStorage, ToolRegistryRecord,
     };
 
     /// Verifies decode rejects unsupported top-level schema markers.
@@ -329,7 +329,6 @@ mod tests {
                         source: "catalog".into(),
                         registry_multihash: "Qm123".into(),
                         last_transition_unix_seconds: 1_700_000_000,
-                        status: ToolRegistryStatus::Active,
                     },
                 )]
                 .into_iter()

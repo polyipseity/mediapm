@@ -1,24 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_cas::Hash;
 use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
 
-use crate::config::{MediaPmDocument, ToolRequirement};
-use crate::config::{MediaPmState, ToolRegistryStatus};
+use crate::config::MediaPmState;
+use crate::config::ToolRequirement;
 use crate::error::MediaPmError;
-use crate::paths::MediaPmPaths;
 use crate::tools::catalog::{ToolDownloadDescriptor, tool_catalog_entry};
 use crate::tools::downloader::{ContentMapSource, ProvisionedToolPayload};
 
-use super::super::ToolSyncReport;
 use super::super::tool_runtime::{
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV, MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
     MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV, validate_tool_command,
 };
-use super::super::util::now_unix_seconds;
-
 pub(super) fn should_skip_tag_update_check(
     requirement: &ToolRequirement,
     tool_name: &str,
@@ -75,102 +71,6 @@ fn is_tag_only_requirement(requirement: &ToolRequirement) -> bool {
 #[must_use]
 pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("import")
-}
-
-/// Removes stale managed tool artifacts that are not declared in `mediapm.ncl`.
-pub(super) async fn prune_unmanaged_tool_artifacts(
-    paths: &MediaPmPaths,
-    document: &MediaPmDocument,
-    cas: &FileSystemCas,
-    machine: &mut MachineNickelDocument,
-    lock: &mut MediaPmState,
-    desired_tool_ids: &BTreeSet<String>,
-    report: &mut ToolSyncReport,
-) -> Result<(), MediaPmError> {
-    let desired_logical_names = document.tools.keys().cloned().collect::<BTreeSet<_>>();
-
-    // Collect tool_ids referenced by existing workflow steps so they are
-    // preserved even when the declaring tool name no longer matches the
-    // current desired tool id (e.g. during a tool version update).
-    let referenced_by_workflow: BTreeSet<String> =
-        machine.workflows.values().flat_map(|wf| wf.steps.iter().map(|s| s.tool.clone())).collect();
-
-    let stale_registry_ids = lock
-        .tool_registry
-        .iter()
-        .filter_map(|(tool_id, record)| {
-            // Skip already-pruned entries so they don't generate repeated warnings.
-            if record.status == ToolRegistryStatus::Pruned {
-                return None;
-            }
-            let still_declared = desired_logical_names.contains(&record.name);
-            let still_active = desired_tool_ids.contains(tool_id);
-            let still_referenced = referenced_by_workflow.contains(tool_id);
-            if (still_declared && still_active) || still_referenced {
-                None
-            } else {
-                Some(tool_id.clone())
-            }
-        })
-        .collect::<BTreeSet<_>>();
-
-    for stale_tool_id in &stale_registry_ids {
-        // Remove the tool spec so conductor logical-name resolution no longer
-        // matches this stale id.  Without this, a companion-change (e.g. adding
-        // a deno requirement to yt-dlp) leaves the old id in `machine.tools`,
-        // causing conductor to find both the old and new ids and fail with an
-        // "matched multiple managed tool ids" ambiguity error.
-        machine.tools.remove(stale_tool_id);
-
-        let removed_hashes = machine
-            .tool_configs
-            .remove(stale_tool_id)
-            .and_then(|config| config.content_map)
-            .map(|map| map.into_values().collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        for hash in removed_hashes {
-            if is_hash_still_referenced_by_tool_configs(machine, hash) {
-                continue;
-            }
-
-            if cas.exists(hash).await.unwrap_or(false) {
-                let _ = cas.delete(hash).await;
-            }
-        }
-
-        if let Some(entry) = lock.tool_registry.get_mut(stale_tool_id) {
-            entry.status = ToolRegistryStatus::Pruned;
-            entry.last_transition_unix_seconds = now_unix_seconds();
-        }
-
-        report.warnings.push(format!("pruned unmanaged tool artifacts for '{stale_tool_id}'"));
-    }
-
-    let stale_active_names = lock
-        .active_tools
-        .iter()
-        .filter_map(|(logical_name, active_tool_id)| {
-            if desired_logical_names.contains(logical_name)
-                && desired_tool_ids.contains(active_tool_id)
-            {
-                None
-            } else {
-                Some(logical_name.clone())
-            }
-        })
-        .collect::<Vec<_>>();
-    for logical_name in stale_active_names {
-        lock.active_tools.remove(&logical_name);
-    }
-
-    // Remove tool content cache directories not in the active set.
-    let active_tool_ids: HashSet<String> =
-        desired_tool_ids.iter().chain(referenced_by_workflow.iter()).cloned().collect();
-    mediapm_conductor::tool_cache::retain_only_tool_dirs(paths.tools_dir.clone(), active_tool_ids)
-        .await?;
-
-    Ok(())
 }
 
 /// Returns whether any current machine tool config still references `hash`.

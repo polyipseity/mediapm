@@ -11,7 +11,6 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
-    ToolRegistryStatus, builtins::media_tagger::InternalMediaTaggerOptions,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
     global_tool_cache_status, load_runtime_dotenv_for_root, resolve_default_global_paths,
     resolve_effective_paths_for_root,
@@ -658,14 +657,7 @@ async fn main() -> anyhow::Result<()> {
                             println!("no tools registered");
                         } else {
                             for row in rows {
-                                let status = match row.status {
-                                    ToolRegistryStatus::Active => "active",
-                                    ToolRegistryStatus::Pruned => "pruned",
-                                };
-                                println!(
-                                    "{}\tstatus={}\tbinary_present={}",
-                                    row.tool_id, status, row.has_binary
-                                );
+                                println!("{}\tbinary_present={}", row.tool_id, row.has_binary);
                             }
                         }
                     }
@@ -893,31 +885,33 @@ async fn main() -> anyhow::Result<()> {
 
 /// Executes builtin media-tagger command invocation.
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
-    mediapm::builtins::media_tagger::run_internal_media_tagger(InternalMediaTaggerOptions {
-        input_path: args.input,
-        output_path: args.output,
-        acoustid_api_key: args.acoustid_api_key,
-        acoustid_endpoint: args.acoustid_endpoint,
-        musicbrainz_endpoint: args.musicbrainz_endpoint,
-        cache_dir: args.cache_dir,
-        cache_expiry_seconds: args.cache_expiry_seconds,
-        strict_identification: args.strict_identification,
-        write_all_tags: args.write_all_tags,
-        write_all_images: args.write_all_images,
-        save_images_to_tags: args.save_images_to_tags,
-        embed_only_one_front_image: args.embed_only_one_front_image,
-        ca_providers: args.ca_providers,
-        caa_image_types: args.caa_image_types,
-        caa_image_size: args.caa_image_size,
-        caa_approved_only: args.caa_approved_only,
-        preserve_images: args.preserve_images,
-        clear_existing_tags: args.clear_existing_tags,
-        enable_tag_saving: args.enable_tag_saving,
-        release_ars: args.release_ars,
-        cover_art_slot_count: args.cover_art_slot_count,
-        recording_mbid: args.recording_mbid,
-        release_mbid: args.release_mbid,
-    })
+    mediapm::builtins::media_tagger::run_internal_media_tagger(
+        mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
+            input_path: args.input,
+            output_path: args.output,
+            acoustid_api_key: args.acoustid_api_key,
+            acoustid_endpoint: args.acoustid_endpoint,
+            musicbrainz_endpoint: args.musicbrainz_endpoint,
+            cache_dir: args.cache_dir,
+            cache_expiry_seconds: args.cache_expiry_seconds,
+            strict_identification: args.strict_identification,
+            write_all_tags: args.write_all_tags,
+            write_all_images: args.write_all_images,
+            save_images_to_tags: args.save_images_to_tags,
+            embed_only_one_front_image: args.embed_only_one_front_image,
+            ca_providers: args.ca_providers,
+            caa_image_types: args.caa_image_types,
+            caa_image_size: args.caa_image_size,
+            caa_approved_only: args.caa_approved_only,
+            preserve_images: args.preserve_images,
+            clear_existing_tags: args.clear_existing_tags,
+            enable_tag_saving: args.enable_tag_saving,
+            release_ars: args.release_ars,
+            cover_art_slot_count: args.cover_art_slot_count,
+            recording_mbid: args.recording_mbid,
+            release_mbid: args.release_mbid,
+        },
+    )
     .await
 }
 

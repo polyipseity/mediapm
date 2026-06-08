@@ -29,8 +29,8 @@ use mediapm::{
     HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
     MediaPmApi, MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
     MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRegistryRecord, ToolRegistryStatus, ToolRequirement, ToolRequirementDependencies,
-    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    ToolRegistryRecord, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -1066,7 +1066,6 @@ fn seed_old_synced_tools_state_for_update_precheck(
                 source: "demo".to_string(),
                 registry_multihash: stale_hash.to_string(),
                 last_transition_unix_seconds: unix_timestamp_seconds(),
-                status: ToolRegistryStatus::Active,
             },
         );
     }

@@ -238,16 +238,6 @@ pub struct ManagedFileRecord {
 }
 
 /// Safety-pinned external-data entry.
-/// Tool lifecycle status tracked by `mediapm` state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolRegistryStatus {
-    /// Tool binary/config is present and expected to be runnable.
-    Active,
-    /// Tool binary was intentionally pruned while metadata remains.
-    Pruned,
-}
-
 /// Materialization method used when writing managed hierarchy files.
 ///
 /// Runtime attempts methods in configured order and stops on the first
@@ -340,8 +330,6 @@ pub struct ToolRegistryRecord {
     /// Last status transition timestamp in Unix seconds.
     #[serde(deserialize_with = "deserialize_u64_from_number")]
     pub last_transition_unix_seconds: u64,
-    /// Current lifecycle state.
-    pub status: ToolRegistryStatus,
 }
 
 /// Runtime path overrides for mediapm local state.

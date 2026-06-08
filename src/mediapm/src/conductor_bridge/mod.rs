@@ -27,10 +27,10 @@ mod tests {
         resolve_managed_tool_executable_with_filesystem_cas,
     };
 
+    use crate::config::MediaPmState;
     use crate::config::{
         MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
     };
-    use crate::config::{MediaPmState, ToolRegistryStatus};
     use crate::paths::MediaPmPaths;
     use crate::tools::catalog::tool_catalog_entry;
     use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
@@ -186,15 +186,14 @@ mod tests {
 
         save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-        let lock = MediaPmState::default();
-        let rows = list_tools(&paths, &lock).expect("list tools");
+        let rows = list_tools(&paths).expect("list tools");
 
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].tool_id,
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest"
         );
-        assert_eq!(rows[0].status, ToolRegistryStatus::Active);
+        assert!(rows[0].has_binary);
     }
 
     /// Protects default description formatting for generated tool configs.
@@ -1345,7 +1344,7 @@ pub(crate) use documents::{ensure_conductor_documents, list_tools, load_machine_
 pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
 pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 pub(crate) use workflows::{
-    fresh_impure_timestamp, managed_workflow_id_for_media, reconcile_media_workflows,
+    managed_workflow_id_for_media, reconcile_media_workflows,
     reconcile_media_workflows_for_config_edits, resolve_media_variant_output_binding_with_limits,
 };
 
@@ -1374,6 +1373,4 @@ pub struct ConductorToolRow {
     pub tool_id: String,
     /// Whether binary content-map entries are currently present.
     pub has_binary: bool,
-    /// Current lifecycle status tracked by lock state.
-    pub status: crate::config::ToolRegistryStatus,
 }
