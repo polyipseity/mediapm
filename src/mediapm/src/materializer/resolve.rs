@@ -40,10 +40,6 @@ pub(super) async fn load_runtime_orchestration_state(
     cas: &FileSystemCas,
 ) -> Result<Option<OrchestrationState>, MediaPmError> {
     if !paths.conductor_state_config.exists() {
-        eprintln!(
-            "[TRACE] load_runtime_orchestration_state: state file does not exist: {}",
-            paths.conductor_state_config.display()
-        );
         return Ok(None);
     }
 
@@ -55,10 +51,6 @@ pub(super) async fn load_runtime_orchestration_state(
         })?;
 
     if state_bytes.iter().all(u8::is_ascii_whitespace) {
-        eprintln!(
-            "[TRACE] load_runtime_orchestration_state: state file is all whitespace: {}",
-            paths.conductor_state_config.display()
-        );
         return Ok(None);
     }
 
@@ -69,21 +61,11 @@ pub(super) async fn load_runtime_orchestration_state(
         ))
     })?;
     let Some(state_pointer) = state_document.state_pointer else {
-        eprintln!(
-            "[TRACE] load_runtime_orchestration_state: state_pointer is None in document: {}",
-            paths.conductor_state_config.display()
-        );
         return Ok(None);
     };
 
     let orchestration_state = match decode_state(cas, state_pointer).await {
-        Ok(state) => {
-            eprintln!(
-                "[TRACE] load_runtime_orchestration_state: successfully decoded state from pointer '{}'",
-                state_pointer
-            );
-            Some(state)
-        }
+        Ok(state) => Some(state),
         Err(ConductorError::Cas(CasError::NotFound(missing))) => {
             // Mixed-backend flow: the conductor writes state to a
             // potentially different CAS backend than the materializer
@@ -308,19 +290,11 @@ async fn resolve_variant_hash_from_workflow_state(
         lookup.ffmpeg_max_output_slots,
     )?
     else {
-        eprintln!(
-            "[TRACE] resolve_variant_hash_from_workflow_state: binding is None for variant '{}' media '{}'",
-            variant, media_id
-        );
         return Ok(None);
     };
 
     let workflow_id = managed_workflow_id_for_media(media_id, source);
     let Some(workflow) = lookup.machine.workflows.get(&workflow_id) else {
-        eprintln!(
-            "[TRACE] resolve_variant_hash_from_workflow_state: workflow '{}' not found in machine.workflows for media '{}'",
-            workflow_id, media_id
-        );
         return Ok(None);
     };
 
@@ -352,10 +326,6 @@ async fn resolve_variant_hash_from_workflow_state(
     };
 
     let Some(ref step_output_hashes) = step_output_hashes else {
-        eprintln!(
-            "[TRACE] resolve_variant_hash_from_workflow_state: step_output_hashes is None for workflow '{}' media '{}' variant '{}'",
-            workflow_id, media_id, variant
-        );
         return Ok(None);
     };
 
@@ -365,17 +335,6 @@ async fn resolve_variant_hash_from_workflow_state(
         .copied();
 
     let Some(hash) = output_hash else {
-        eprintln!(
-            "[TRACE] resolve_variant_hash_from_workflow_state: output_hash not found for step '{}' output_name '{}' in resolved step_output_hashes for media '{}' variant '{}'",
-            binding.step_id, binding.output_name, media_id, variant
-        );
-        eprintln!(
-            "[TRACE] step_output_hashes keys: {:?}",
-            step_output_hashes
-                .iter()
-                .map(|(k, v)| (k, v.keys().cloned().collect::<Vec<_>>()))
-                .collect::<Vec<_>>()
-        );
         return Ok(None);
     };
 
@@ -410,10 +369,6 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         let expected_inputs =
             resolve_expected_input_hashes(cas, machine, &step.inputs, &step_outputs).await?;
         let Some(expected_inputs) = expected_inputs else {
-            eprintln!(
-                "[TRACE] resolve_workflow_step_output_hashes: expected_inputs is None for step '{}' (tool '{}')",
-                step.id, step.tool
-            );
             return Ok(None);
         };
 
@@ -475,30 +430,9 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             }
         }
 
-        if matching_instances.is_empty() {
-            eprintln!(
-                "[TRACE] resolve_workflow_step_output_hashes: zero matching instances for step '{}' (tool '{}'). expected_inputs: {:?}, state.instances keys: {:?}",
-                step.id,
-                step.tool,
-                expected_inputs
-                    .resolved_hashes
-                    .iter()
-                    .map(|(k, v)| (k, v.to_string()))
-                    .collect::<Vec<_>>(),
-                state.instances.keys().collect::<Vec<_>>()
-            );
-        }
-
         let Some(instance) =
             selected_instance.or_else(|| matching_instances.first().map(|(_, instance)| *instance))
         else {
-            eprintln!(
-                "[TRACE] resolve_workflow_step_output_hashes: no instance selected for step '{}' (tool '{}'): matching_instances={}, selected_instance={:?}",
-                step.id,
-                step.tool,
-                matching_instances.len(),
-                selected_instance.is_some()
-            );
             return Ok(None);
         };
 
