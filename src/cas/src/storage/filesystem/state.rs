@@ -81,7 +81,7 @@ pub(super) struct FileSystemState {
     /// Reusable pooled stream buffers for incremental ingestion.
     stream_buffer_pool: Arc<StreamBufferPool>,
     /// Redb persistence handle used for incremental index flushes.
-    /// Protected by a RwLock so compaction can swap the underlying database
+    /// Protected by a `RwLock` so compaction can swap the underlying database
     /// without rebuilding the whole backend.
     index_db: parking_lot::RwLock<CasIndexDb>,
     /// Hashes written since the last GC sweep. Used by GC to avoid pruning
@@ -713,7 +713,7 @@ impl FileSystemState {
         let temp_dir = root.join("index.compact_temp");
         let backup_path = root.join("index.redb.bak");
 
-        let size_before = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+        let size_before = fs::metadata(&index_path).map_or(0, |m| m.len());
 
         // Snapshot in-memory state so late-arriving persist_index_batch writes
         // are not lost when the old redb is renamed away.
@@ -749,7 +749,7 @@ impl FileSystemState {
         // Only remove the backup after the re-persist succeeds.
         let _ = fs::remove_file(&backup_path);
 
-        let size_after = fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
+        let size_after = fs::metadata(&index_path).map_or(0, |m| m.len());
         Ok(crate::CompactReport { size_before, size_after })
     }
 
@@ -1861,7 +1861,7 @@ impl CasApi for FileSystemState {
             // references to it that the merge brought back must be re-cleaned.
             for (h, obj) in &index.objects {
                 if *h != hash {
-                    projected.objects.entry(*h).or_insert_with(|| obj.clone());
+                    projected.objects.entry(*h).or_insert(*obj);
                 }
             }
             for (h, bases) in &index.constraints {

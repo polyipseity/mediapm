@@ -49,7 +49,7 @@ pub(crate) const STORAGE_VERSION: &str = "v1";
 const FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS: u64 = 8_000;
 /// Candidate cap for unconstrained base selection.
 const FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT: usize = 32;
-/// Maximum size ratio (base_len / target_len) for unconstrained delta
+/// Maximum size ratio (`base_len` / `target_len`) for unconstrained delta
 /// candidate evaluation. Bases exceeding this multiple of the target's
 /// content length are excluded — evaluating such a candidate costs more
 /// (memory, cpu) than any plausible savings, since a full-object encoding
