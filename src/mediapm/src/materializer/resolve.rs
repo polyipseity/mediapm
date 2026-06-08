@@ -401,6 +401,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
                 let outputs_ok = instance_matches_expected_output_names(instance, &step.outputs);
                 let required_ok =
                     instance_matches_required_output_names(instance, &required_output_names);
+
                 (tool_ok && meta_ok && inputs_ok && outputs_ok && required_ok)
                     .then_some((instance_id, instance))
             })

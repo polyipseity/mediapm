@@ -1353,15 +1353,23 @@ where
     }
 
     /// Resolves one string-list input binding into a hash-only key by
-    /// deriving a deterministic composite hash from the binding structure
-    /// without loading content bytes from CAS.
+    /// deriving a deterministic composite hash from per-element content
+    /// hashes without loading content bytes from CAS.
     ///
-    /// Each list item is parsed into segments and hashed directly
-    /// (`ExternalData` hashes, Literal content bytes, `StepOutput` slot hashes,
-    /// Env variable values). Item ordering is incorporated so
-    /// reordered lists produce different instance keys. The resulting hash is
-    /// a pure function of the binding declarations and current step-output
-    /// state — no content is fetched or persisted.
+    /// The composite hash is `blake3(blake3(elem₁) ‖ blake3(elem₂) ‖ …)`
+    /// — i.e. the outer hash is built from `blake3` of each element's
+    /// resolved content bytes. This matches both the content-addressed
+    /// persistence path (`persist_resolved_list_input`) and the
+    /// materializer's `InputBinding::StringList` resolution so that
+    /// instances created during execution can be matched during
+    /// materialization.
+    ///
+    /// Single-segment elements are hashed directly with the correct
+    /// per-segment algorithm (literal/ev → `Hash::from_content`,
+    /// step-output/external-data → hash value). Multi-segment elements
+    /// use a inner‑hasher over concatenated segment bytes as a
+    /// best-effort approximation; exact matching for those cases
+    /// requires content loading.
     #[allow(clippy::unused_self)]
     fn resolve_list_input_binding_hash_only(
         &self,
@@ -1373,7 +1381,7 @@ where
         step_outputs: &StepOutputs,
     ) -> Result<ResolvedInputKey, ConductorError> {
         let mut hasher = blake3::Hasher::new();
-        for (item_index, binding_item) in binding_list.iter().enumerate() {
+        for binding_item in binding_list {
             let parsed = parse_input_binding(binding_item).map_err(|err| {
                 ConductorError::Workflow(format!(
                     "workflow '{workflow_name}' step '{}' has invalid input binding \
@@ -1381,14 +1389,15 @@ where
                     step.id
                 ))
             })?;
-            for segment in &parsed {
-                match segment {
-                    ParsedInputBindingSegment::ExternalData { hash } => {
-                        hasher.update(hash.as_bytes());
-                    }
+            // Per-element content hash — must equal
+            // Hash::from_content(resolved_string.as_bytes()) that the
+            // materializer computes for each StringList element.
+            let element_hash = if parsed.len() == 1 {
+                match &parsed[0] {
                     ParsedInputBindingSegment::Literal(content) => {
-                        hasher.update(content.as_bytes());
+                        Hash::from_content(content.as_bytes())
                     }
+                    ParsedInputBindingSegment::ExternalData { hash } => *hash,
                     ParsedInputBindingSegment::StepOutput { step_id, output, zip_member } => {
                         let producer = step_outputs.get(*step_id).ok_or_else(|| {
                             ConductorError::Workflow(format!(
@@ -1412,9 +1421,14 @@ where
                                 step.id, output,
                             ))
                         })?;
-                        hasher.update(output_hash.as_bytes());
                         if let Some(member) = zip_member {
-                            hasher.update(member.as_bytes());
+                            // No content bytes available in hash-only path.
+                            let mut inner = blake3::Hasher::new();
+                            inner.update(output_hash.as_bytes());
+                            inner.update(member.as_bytes());
+                            Hash::from_bytes(*inner.finalize().as_bytes())
+                        } else {
+                            output_hash
                         }
                     }
                     ParsedInputBindingSegment::Env { name } => {
@@ -1425,13 +1439,63 @@ where
                                 step.id
                             ))
                         })?;
-                        hasher.update(value.as_bytes());
+                        Hash::from_content(value.as_bytes())
                     }
                 }
-            }
-            // Incorporate item position so reordered bindings produce
-            // different composite hashes.
-            hasher.update(&item_index.to_le_bytes());
+            } else {
+                // Multi-segment elements: approximate with inner-hasher.
+                let mut inner = blake3::Hasher::new();
+                for segment in &parsed {
+                    match segment {
+                        ParsedInputBindingSegment::Literal(content) => {
+                            inner.update(content.as_bytes());
+                        }
+                        ParsedInputBindingSegment::ExternalData { hash } => {
+                            inner.update(hash.as_bytes());
+                        }
+                        ParsedInputBindingSegment::StepOutput { step_id, output, zip_member } => {
+                            let producer = step_outputs.get(*step_id).ok_or_else(|| {
+                                ConductorError::Workflow(format!(
+                                    "workflow '{workflow_name}' step '{}' references output \
+                                     '{}' from step '{step_id}' before it is available",
+                                    step.id, output,
+                                ))
+                            })?;
+                            let output_slot = producer.get(*output).ok_or_else(|| {
+                                ConductorError::Workflow(format!(
+                                    "workflow '{workflow_name}' step '{}' references missing \
+                                     output '{}' on step '{step_id}'",
+                                    step.id, output,
+                                ))
+                            })?;
+                            let output_hash = output_slot.ok_or_else(|| {
+                                ConductorError::Workflow(format!(
+                                    "workflow '{workflow_name}' step '{}' references output \
+                                     '{}' from step '{step_id}', but that output was captured \
+                                     as empty",
+                                    step.id, output,
+                                ))
+                            })?;
+                            inner.update(output_hash.as_bytes());
+                            if let Some(member) = zip_member {
+                                inner.update(member.as_bytes());
+                            }
+                        }
+                        ParsedInputBindingSegment::Env { name } => {
+                            let value = std::env::var(*name).map_err(|error| {
+                                ConductorError::Workflow(format!(
+                                    "workflow '{workflow_name}' step '{}' references env var \
+                                     '{name}' in input binding '{binding_item}': {error}",
+                                    step.id
+                                ))
+                            })?;
+                            inner.update(value.as_bytes());
+                        }
+                    }
+                }
+                Hash::from_bytes(*inner.finalize().as_bytes())
+            };
+            hasher.update(element_hash.as_bytes());
         }
         let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
         Ok(ResolvedInputKey { hash, is_list: true })
