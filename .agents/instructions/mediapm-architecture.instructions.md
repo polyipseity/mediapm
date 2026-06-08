@@ -109,8 +109,9 @@ is a narrow, documented reason.
     (`save`: AND, `force_full`: OR),
   - instance identity excludes tool content-map payload materialization details
     and excludes merged output-persistence flags,
-  - reverse-diff optimization hints should continue to prefer frequently-read
-    outputs as fast retrieval roots when safe to do so,
+  - reverse-direction constraints (input as target, output as base) narrow
+    each input's base-candidate set to include the output hash, enabling the
+    optimizer to delta-encode inputs against their outputs,
   - executable `tool_configs.<tool>.content_map` is sandbox-relative and uses
     trailing `/` or `\\` keys as directory-from-ZIP unpack targets,
   - `./` (or `.\\`) unpacks ZIP content directly at sandbox root,

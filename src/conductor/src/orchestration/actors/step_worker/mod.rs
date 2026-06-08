@@ -1134,10 +1134,12 @@ where
             .await?;
         let hash = self.cas.put(plain_content).await?;
 
-        // R2: Track compound-segment source hashes as reverse-diff bases.
-        // Each source hash used to construct a compound input is constrained
-        // against the compound hash + empty hash so the source survives as
-        // long as the compound survives.
+        // R2: Constrain compound-segment source hashes to accept the compound
+        // as a delta base. Each source hash used to construct a compound
+        // input gets a Set constraint narrowing its base-candidate set to
+        // [compound_hash, empty_content_hash()], enabling the optimizer to
+        // delta-encode the source against the compound rather than storing a
+        // redundant full copy.
         if !segment_source_hashes.is_empty() {
             let mut potential_bases = BTreeSet::from([hash]);
             potential_bases.insert(empty_content_hash());
@@ -2752,7 +2754,12 @@ fn push_full_save_hint(target_hash: Hash, batch: &mut Vec<ConstraintBatchOp>) {
     });
 }
 
-/// Applies reverse-diff hints from each source input toward the produced output.
+/// Narrows delta-base selection for each input hash against the output hash.
+///
+/// Constraint direction is reverse (input→output): each input (target) is
+/// narrowed to accept the output (or empty_hash) as a delta base, so the
+/// optimizer can store inputs as deltas against the output instead of
+/// redundant full copies.
 ///
 /// The canonical empty-content root hash is intentionally skipped because
 /// CAS constraint rules do not allow explicit base sets on that root node.
