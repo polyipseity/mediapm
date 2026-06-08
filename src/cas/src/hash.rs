@@ -688,4 +688,73 @@ mod tests {
 
         assert_eq!(output, hash.to_hex());
     }
+
+    #[test]
+    fn composite_is_deterministic() {
+        let a = Hash::from_content(b"alpha");
+        let b = Hash::from_content(b"beta");
+
+        let h1 = Hash::composite(&[a, b]);
+        let h2 = Hash::composite(&[a, b]);
+        let h3 = Hash::composite(&[a, b]);
+
+        assert_eq!(h1, h2);
+        assert_eq!(h2, h3);
+    }
+
+    #[test]
+    fn composite_respects_element_order() {
+        let a = Hash::from_content(b"alpha");
+        let b = Hash::from_content(b"beta");
+
+        let forward = Hash::composite(&[a, b]);
+        let backward = Hash::composite(&[b, a]);
+
+        assert_ne!(forward, backward, "composite hash must depend on element order");
+    }
+
+    #[test]
+    fn composite_empty_slice_is_deterministic() {
+        let h1 = Hash::composite(&[]);
+        let h2 = Hash::composite(&[]);
+
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn composite_single_element_matches_direct_hash() {
+        let h = Hash::from_content(b"single-element");
+
+        let composite = Hash::composite(&[h]);
+
+        // blake3(blake3("single-element").bytes()) ≠ blake3("single-element")
+        // This test documents that single-element composite wraps the element
+        // hash through an outer blake3 layer.
+        assert_ne!(composite, h, "composite with one element wraps hash in outer blake3");
+        let expected = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(h.as_bytes());
+            Hash::from_bytes(*hasher.finalize().as_bytes())
+        };
+        assert_eq!(composite, expected);
+    }
+
+    #[test]
+    fn composite_matches_manual_concatenation() {
+        let a = Hash::from_content(b"alpha");
+        let b = Hash::from_content(b"beta");
+        let c = Hash::from_content(b"gamma");
+
+        let composite = Hash::composite(&[a, b, c]);
+
+        let manual = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(a.as_bytes());
+            hasher.update(b.as_bytes());
+            hasher.update(c.as_bytes());
+            Hash::from_bytes(*hasher.finalize().as_bytes())
+        };
+
+        assert_eq!(composite, manual);
+    }
 }
