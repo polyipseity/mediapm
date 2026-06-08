@@ -341,7 +341,10 @@ to current time (in-memory dirty flag only).
 
 **Integration Points**:
 - `MaterializationLookupContext` in `materializer/mod.rs` carries
-  `metadata_cache: Option<Arc<MetadataCache>>`.
+  `metadata_cache: Option<Arc<MetadataCache>>` and
+  `tool_registry: BTreeMap<String, ToolRegistryRecord>` (tool registry for
+  reverse-lookup of logical tool names from tool IDs, populated from
+  `MediaPmState.tool_registry` at context construction time).
 - `extract_metadata_value_from_variant_payload()` in `materializer/metadata.rs`
   checks cache before ffprobe invocation, stores on success.
 - `try_fetch_local_source_metadata_with_ffprobe()` in `source_metadata.rs`
