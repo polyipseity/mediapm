@@ -51,12 +51,12 @@ pub fn compute_gc_roots(
     roots
 }
 
-/// Computes GC roots from a unified external_data map (merged user+machine).
+/// Computes GC roots from a unified `external_data` map (merged user+machine).
 ///
 /// Has the same semantics as [`compute_gc_roots`] but takes a single already-
 /// merged map instead of separate user and machine maps. This is the variant
 /// used by the background GC loop which works from the coordinator's
-/// accumulated external_data set.
+/// accumulated `external_data` set.
 #[must_use]
 pub fn compute_gc_roots_from_unified(
     external_data: &BTreeMap<Hash, ExternalContentRef>,
@@ -82,7 +82,7 @@ pub fn compute_gc_roots_from_unified(
     roots
 }
 
-/// Runs a CAS sweep + index compaction cycle using unified external_data as
+/// Runs a CAS sweep + index compaction cycle using unified `external_data` as
 /// GC roots.
 ///
 /// This is the decoupled function called by the background GC loop (node
@@ -94,7 +94,7 @@ pub fn compute_gc_roots_from_unified(
 /// This function owns only the CAS sweep + compact concern. Callers are
 /// responsible for:
 /// - Instance GC (`state_store.run_gc(…)`)
-/// - Providing the current external_data set, state pointer, and state
+/// - Providing the current `external_data` set, state pointer, and state
 /// - Error handling at the orchestration boundary
 ///
 /// # Errors

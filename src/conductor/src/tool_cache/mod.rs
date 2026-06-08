@@ -113,6 +113,7 @@ impl std::ops::Deref for ToolCacheEntry {
 
 impl ToolCacheEntry {
     /// Returns the payload directory path.
+    #[must_use]
     pub fn payload_dir(&self) -> &Path {
         &self.payload_dir
     }
@@ -187,11 +188,13 @@ pub struct ToolContentCache<C> {
     semaphore: Arc<Semaphore>,
 }
 
-impl<C> std::fmt::Debug for ToolContentCache<C> {
+impl<C: std::fmt::Debug> std::fmt::Debug for ToolContentCache<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContentCache")
             .field("tools_dir", &self.tools_dir)
             .field("pending", &self.pending)
+            .field("cas", &self.cas)
+            .field("semaphore", &self.semaphore)
             .finish()
     }
 }
@@ -207,9 +210,9 @@ impl<C> std::fmt::Debug for ToolContentCache<C> {
 /// # Errors
 ///
 /// Returns [`ConductorError`] on I/O errors.
-pub async fn retain_only_tool_dirs(
+pub async fn retain_only_tool_dirs<S: std::hash::BuildHasher>(
     tools_dir: PathBuf,
-    active_tool_ids: HashSet<String>,
+    active_tool_ids: HashSet<String, S>,
 ) -> Result<(), ConductorError> {
     let active: HashSet<String> =
         active_tool_ids.into_iter().map(|id| sanitize_tool_id(&id)).collect();
@@ -296,7 +299,6 @@ impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
                     let notify = occupied.get().clone();
                     drop(occupied); // Release the DashMap shard lock.
                     notify.notified().await;
-                    continue;
                 }
                 dashmap::mapref::entry::Entry::Vacant(vacant) => {
                     // We are the first caller for this tool.
@@ -458,12 +460,11 @@ impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
 
         // Synchronous cooldown check (single file read — fast enough for an
         // async context).
-        if let Ok(raw) = fs::read_to_string(&marker_path) {
-            if let Ok(last) = raw.trim().parse::<u64>() {
-                if now.saturating_sub(last) < PRUNE_COOLDOWN_SECONDS {
-                    return;
-                }
-            }
+        if let Ok(raw) = fs::read_to_string(&marker_path)
+            && let Ok(last) = raw.trim().parse::<u64>()
+            && now.saturating_sub(last) < PRUNE_COOLDOWN_SECONDS
+        {
+            return;
         }
 
         // Spawn blocking for the full prune sweep.
@@ -607,7 +608,7 @@ impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
 
 /// Synchronous extraction: acquires exclusive lock, extracts payloads, writes
 /// metadata, then downgrades to a shared lock.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value, clippy::too_many_lines)]
 fn extract_sync(
     entry_dir: &Path,
     lock_path: &Path,
@@ -814,13 +815,11 @@ fn double_check_hit(
     if !payload_dir.is_dir() {
         return Ok(None);
     }
-    let raw = match fs::read_to_string(metadata_path) {
-        Ok(r) => r,
-        Err(_) => return Ok(None),
+    let Ok(raw) = fs::read_to_string(metadata_path) else {
+        return Ok(None);
     };
-    let metadata = match serde_json::from_str::<Metadata>(&raw) {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
+    let Ok(metadata) = serde_json::from_str::<Metadata>(&raw) else {
+        return Ok(None);
     };
     if metadata.version != VERSION || metadata.content_map != *content_map {
         return Ok(None);
@@ -905,9 +904,8 @@ fn do_retain_only(
             source,
         })?;
         let path = entry.path();
-        let dir_name = match entry.file_name().into_string() {
-            Ok(name) => name,
-            Err(_) => continue,
+        let Ok(dir_name) = entry.file_name().into_string() else {
+            continue;
         };
         if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
             continue;

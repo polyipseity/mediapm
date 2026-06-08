@@ -149,7 +149,7 @@ pub(crate) fn compile_total_configuration_sources(
     })?;
 
     let mod_path = subdir.join("mod.ncl");
-    let target_file_path = subdir.join(&target_file_name);
+    let target_file_path = subdir.join(target_file_name);
     let user_path = subdir.join("user_input.ncl");
     let machine_path = subdir.join("machine_input.ncl");
     let state_path = subdir.join("state_input.ncl");

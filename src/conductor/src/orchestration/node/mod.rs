@@ -248,16 +248,16 @@ struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
     workflow_handles: HashMap<u64, JoinHandle<Result<RunSummary, ConductorError>>>,
     /// Monotonically increasing handle ID counter.
     next_handle_id: u64,
-    /// Whether the first GC cycle (with loaded external_data roots) has been
+    /// Whether the first GC cycle (with loaded `external_data` roots) has been
     /// performed. Used by the background GC loop to defer startup GC.
     gc_initialized: Arc<AtomicBool>,
-    /// Shared external_data snapshot, updated after each successful
-    /// LoadResolvedState / ReplaceResolvedState / RunGc. Read by the
+    /// Shared `external_data` snapshot, updated after each successful
+    /// `LoadResolvedState` / `ReplaceResolvedState` / `RunGc`. Read by the
     /// background GC task to compute CAS sweep roots without going
     /// through the actor mailbox.
     shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>>,
-    /// Shared OnceLock for the state store client, populated by
-    /// ensure_runtime_support in the SubmitWorkflow handler. Read by the
+    /// Shared `OnceLock` for the state store client, populated by
+    /// `ensure_runtime_support` in the `SubmitWorkflow` handler. Read by the
     /// background GC task.
     shared_state_store: Arc<OnceLock<StateStoreClient>>,
 }
@@ -319,12 +319,9 @@ where
             // through the actor mailbox.
             loop {
                 let external_data = bg_external_data.read().await;
-                let state_store = match bg_state_store.get() {
-                    Some(store) => store,
-                    None => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
+                let Some(state_store) = bg_state_store.get() else {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
                 };
                 let state_pointer = state_store.get_state_pointer().await.unwrap_or(None);
                 let current_state = match state_store.current_state().await {
@@ -356,6 +353,7 @@ where
     }
 
     /// Handles top-level conductor RPC calls by delegating into the workflow coordinator.
+    #[allow(clippy::too_many_lines)]
     async fn handle(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -392,12 +390,11 @@ where
                     if let Some(store) = main_state_store {
                         coord.set_state_store(store);
                     }
-                    let workflow_result = if *options == RunWorkflowOptions::default() {
+                    if *options == RunWorkflowOptions::default() {
                         coord.run_workflow(&user_ncl, &machine_ncl).await
                     } else {
                         coord.run_workflow_with_options(&user_ncl, &machine_ncl, *options).await
-                    };
-                    workflow_result
+                    }
                 });
                 state.workflow_handles.insert(handle_id, join_handle);
                 let _ = reply.send(Ok(handle_id));

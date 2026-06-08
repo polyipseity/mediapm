@@ -420,7 +420,7 @@ where
     })?;
 
     let mod_path = subdir.join("mod.ncl");
-    let version_path = subdir.join(&version_file_name);
+    let version_path = subdir.join(version_file_name);
     let input_path = subdir.join("document_input.ncl");
     let wrapper_path = subdir.join("decode_document.ncl");
 

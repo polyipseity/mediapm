@@ -826,7 +826,9 @@ where
             .iter()
             .map(|(name, spec)| {
                 let sem = if spec.max_concurrent_calls > 0 {
-                    Some(Arc::new(Semaphore::new(spec.max_concurrent_calls as usize)))
+                    #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+                    let permits = spec.max_concurrent_calls as usize;
+                    Some(Arc::new(Semaphore::new(permits)))
                 } else {
                     None // -1 means unlimited
                 };
@@ -869,24 +871,23 @@ where
                     // has a max_concurrent_calls limit. Re-queue the step if at capacity.
                     let sem_for_tool =
                         tool_semaphores.get(step_spec.tool.as_str()).and_then(|s| s.as_ref());
-                    let permit = match sem_for_tool {
-                        Some(sem) => match sem.clone().try_acquire_owned() {
-                            Ok(p) => Some(p),
-                            Err(_) => {
-                                // Tool at capacity — re-queue and try next step.
-                                global_ready_queue.push_back((wf_name, step_id));
-                                continue;
-                            }
-                        },
-                        None => None, // unlimited concurrency
+                    let permit = if let Some(sem) = sem_for_tool {
+                        if let Ok(p) = sem.clone().try_acquire_owned() {
+                            Some(p)
+                        } else {
+                            // Tool at capacity — re-queue and try next step.
+                            global_ready_queue.push_back((wf_name, step_id));
+                            continue;
+                        }
+                    } else {
+                        None // unlimited concurrency
                     };
 
                     // Look up per-tool max_retries from the unified config.
                     let max_retries = unified_shared
                         .tools
                         .get(&step_spec.tool)
-                        .map(|spec| spec.max_retries)
-                        .unwrap_or(0);
+                        .map_or(0, |spec| spec.max_retries);
 
                     let required_output_names =
                         dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
@@ -1079,7 +1080,7 @@ where
     /// Routes one step execution to a worker via RPC. Retries up to
     /// `max_retries` times on failure, with the semaphore permit held across
     /// all attempts so the concurrency slot stays occupied.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::cast_sign_loss)]
     async fn dispatch_step_rpc(
         worker: ActorRef<StepWorkerMessage>,
         request: StepExecutionRequest,
@@ -1107,8 +1108,7 @@ where
                 }
                 Ok(Err(err)) => Err(err),
                 Err(rpc_err) => Err(ConductorError::Internal(format!(
-                    "worker RPC failed for step '{}': {rpc_err}",
-                    step_id
+                    "worker RPC failed for step '{step_id}': {rpc_err}",
                 ))),
             };
 

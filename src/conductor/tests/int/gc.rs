@@ -106,7 +106,7 @@ fn gc_instances_preserves_referenced() {
 }
 
 /// Protects that instances without aux entries survive because phase 1 of
-/// gc_instances injects now() before the eviction check.
+/// `gc_instances` injects `now()` before the eviction check.
 #[test]
 fn gc_instances_preserves_unmarked() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 0 };
@@ -153,11 +153,11 @@ fn gc_instances_marks_unreferenced_with_now() {
     // Since both were marked with `now` in phase 1, and `now > cutoff`,
     // they should survive phase 2.
     assert_eq!(state.instances.len(), 2, "instances marked with now survive");
-    assert!(state.aux.get("a").is_some(), "instance 'a' gets aux entry");
-    assert!(state.aux.get("b").is_some(), "instance 'b' gets aux entry");
+    assert!(state.aux.contains_key("a"), "instance 'a' gets aux entry");
+    assert!(state.aux.contains_key("b"), "instance 'b' gets aux entry");
 }
 
-/// Protects that `gc_instances` respects the subsec_nanos boundary correctly.
+/// Protects that `gc_instances` respects the `subsec_nanos` boundary correctly.
 #[test]
 fn gc_instances_respects_subsec_nanos_boundary() {
     let cutoff = ImpureTimestamp { epoch_seconds: 100, subsec_nanos: 500_000_000 };

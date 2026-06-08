@@ -841,17 +841,15 @@ where
                             .await?;
                         ResolvedInputKey { hash }
                     }
-                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
-                        self.resolve_list_input_binding_hash_only(
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => self
+                        .resolve_list_input_binding_hash_only(
                             unified,
                             workflow_name,
                             step,
                             input_name,
                             binding_list,
                             step_outputs,
-                        )
-                        .await?
-                    }
+                        )?,
                     (ToolInputKind::String, InputBinding::StringList(_)) => {
                         return Err(ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' input '{input_name}' expects \
@@ -885,17 +883,15 @@ where
                             .await?;
                         ResolvedInputKey { hash }
                     }
-                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
-                        self.resolve_list_input_binding_hash_only(
+                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => self
+                        .resolve_list_input_binding_hash_only(
                             unified,
                             workflow_name,
                             step,
                             input_name,
                             binding_list,
                             step_outputs,
-                        )
-                        .await?
-                    }
+                        )?,
                     (ToolInputKind::String, InputBinding::StringList(_)) => {
                         return Err(ConductorError::Workflow(format!(
                             "workflow '{workflow_name}' step '{}' input default '{input_name}' \
@@ -1306,12 +1302,13 @@ where
     /// without loading content bytes from CAS.
     ///
     /// Each list item is parsed into segments and hashed directly
-    /// (ExternalData hashes, Literal content bytes, StepOutput slot hashes,
+    /// (`ExternalData` hashes, Literal content bytes, `StepOutput` slot hashes,
     /// Env variable values). Item ordering is incorporated so
     /// reordered lists produce different instance keys. The resulting hash is
     /// a pure function of the binding declarations and current step-output
     /// state — no content is fetched or persisted.
-    async fn resolve_list_input_binding_hash_only(
+    #[allow(clippy::unused_self)]
+    fn resolve_list_input_binding_hash_only(
         &self,
         _unified: &UnifiedNickelDocument,
         workflow_name: &str,

@@ -313,7 +313,7 @@ mod tests {
             serde_json::from_value(json).expect("'full' should deserialize");
         assert_eq!(mode, OutputSaveModeV2::Full);
 
-        let serialized = serde_json::to_value(&mode).expect("Full should serialize");
+        let serialized = serde_json::to_value(mode).expect("Full should serialize");
         assert_eq!(serialized, serde_json::json!("full"));
     }
 
@@ -330,8 +330,7 @@ mod tests {
             serde_json::from_value(serde_json::json!(false)).expect("false should deserialize");
         assert_eq!(mode_false, OutputSaveModeV2::Bool(false));
 
-        let serialized_true =
-            serde_json::to_value(&mode_true).expect("Bool(true) should serialize");
+        let serialized_true = serde_json::to_value(mode_true).expect("Bool(true) should serialize");
         assert_eq!(serialized_true, serde_json::json!(true));
     }
 

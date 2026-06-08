@@ -328,7 +328,7 @@ pub fn persisted_state_json_value(
         .iter()
         .map(|(key, aux)| {
             let v2_aux = versions::v2::aux_data_v2_iso().to(aux.clone());
-            let value = serde_json::to_value(&v2_aux)
+            let value = serde_json::to_value(v2_aux)
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             Ok((key.clone(), value))
         })
@@ -365,10 +365,11 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         let runtime_instance = versions::v2::tool_call_instance_v2_iso().from(v2_instance);
         instances.insert(key.clone(), runtime_instance);
     }
+    #[allow(clippy::cast_possible_truncation)]
     let version = json
         .get("version")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(versions::latest_state_version() as u64) as u32;
+        .unwrap_or(u64::from(versions::latest_state_version())) as u32;
     let mut aux = json
         .get("aux")
         .and_then(serde_json::Value::as_object)
