@@ -1142,6 +1142,9 @@ where
         // redundant full copy.
         if !segment_source_hashes.is_empty() {
             let mut potential_bases = BTreeSet::from([hash]);
+            // NOTE: The empty-content hash must always be included so the
+            //       optimizer has a safe full-object fallback alongside any
+            //       delta base candidates.
             potential_bases.insert(empty_content_hash());
             for source_hash in segment_source_hashes {
                 input_constraint_batch.push(ConstraintBatchOp::Set {
@@ -2750,7 +2753,7 @@ fn push_full_save_hint(target_hash: Hash, batch: &mut Vec<ConstraintBatchOp>) {
     }
     batch.push(ConstraintBatchOp::Set {
         target_hash,
-        potential_bases: BTreeSet::from([empty_content_hash()]),
+        potential_bases: BTreeSet::from([empty_content_hash()]), // NOTE: empty_hash must always accompany constraints as a safe full-object fallback
     });
 }
 
@@ -2791,7 +2794,7 @@ fn push_reverse_diff_hints(
                     batch.push(ConstraintBatchOp::Patch {
                         target_hash: *element_hash,
                         patch: ConstraintPatch {
-                            add_bases: BTreeSet::from([output_hash, empty_hash]),
+                            add_bases: BTreeSet::from([output_hash, empty_hash]), // NOTE: empty_hash must always accompany delta bases
                             remove_bases: BTreeSet::new(),
                             clear_existing: false,
                         },
@@ -2803,7 +2806,7 @@ fn push_reverse_diff_hints(
         batch.push(ConstraintBatchOp::Patch {
             target_hash: input_hash,
             patch: ConstraintPatch {
-                add_bases: BTreeSet::from([output_hash, empty_hash]),
+                add_bases: BTreeSet::from([output_hash, empty_hash]), // NOTE: empty_hash must always accompany delta bases
                 remove_bases: BTreeSet::new(),
                 clear_existing: false,
             },
