@@ -1794,10 +1794,7 @@ mod tests {
             .and_then(|steps| steps.first())
             .expect("stored step refresh state");
         assert_eq!(stored.explicit_config, new_snapshot);
-        assert!(
-            stored.impure_timestamp.is_none(),
-            "refresh clears impure_timestamp; backfill happens after workflow execution"
-        );
+        assert!(stored.impure_timestamp.is_some(), "refresh sets impure_timestamp unconditionally");
     }
 
     /// Protects refresh gating by forcing refresh when mediapm step impure
@@ -1861,10 +1858,7 @@ mod tests {
             .and_then(|steps| steps.first())
             .expect("stored step refresh state");
         assert_eq!(stored.explicit_config, explicit_snapshot);
-        assert!(
-            stored.impure_timestamp.is_none(),
-            "refresh preserves None impure_timestamp; backfill happens after execution"
-        );
+        assert!(stored.impure_timestamp.is_some(), "refresh sets impure_timestamp unconditionally");
     }
 
     /// Protects unchanged-step reconciliation by refreshing to the current active
@@ -2069,8 +2063,8 @@ mod tests {
         assert_eq!(stored_states.len(), 2);
         assert_eq!(stored_states[1].explicit_config, step1_snapshot);
         // Step 1's tool identity changed from old_tool to new_tool, which
-        // triggers a refresh that clears the impure timestamp.
-        assert!(stored_states[1].impure_timestamp.is_none());
+        // triggers a refresh that sets impure_timestamp unconditionally.
+        assert!(stored_states[1].impure_timestamp.is_some());
     }
 
     /// Protects managed external-data dedupe by merging overlapping hash policies
