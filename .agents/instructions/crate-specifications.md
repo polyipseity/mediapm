@@ -131,7 +131,7 @@ markers must match exactly.
 | Crate | Enforcement |
 |-------|-------------|
 | **Conductor** | Typed Rust bridge (`v_latest.rs`) with exhaustive round-trip tests covering all fields and variant branches. NCL `IntegerNumberV1` contract validated against Rust integer sentinels. |
-| **MediaPM** | Typed envelope (`MediaPmDocumentEnvelopeV1`) wrapping flattened inner struct at the version layer (conductor pattern). `deny_unknown_fields` on parent envelope. Round-trip decode/encode tests for runtime, state, and platform-specific fields. |
+| **MediaPM** | Typed envelope (`MediaPmDocumentEnvelopeV1`) wrapping flattened inner struct at the version layer (conductor pattern). `deny_unknown_fields` on parent envelope. All `Option<u64>` fields use custom deserializers accepting both `N::PosInt` and `N::Float` (Nickel exports all numbers as `f64`). Round-trip decode/encode tests for runtime, state, and platform-specific fields. |
 | **Builtins** | N/A (no NCL schema — CLI/API contracts enforced by builtin validation) |
 
 **Architecture**:
@@ -168,6 +168,39 @@ keys are `"windows"`, `"linux"`, `"macos"` — access via `.get(key)` /
 schema (or vice versa), the round-trip tests will detect the mismatch. Adding
 a field requires: (1) update NCL schema, (2) update Rust struct, (3) verify
 round-trip tests pass.
+
+---
+
+## Nickel Number Export Contract
+
+**Nickel-lang** stores all numbers internally as `f64`. When
+`nickel::export::eval_full_for_export()` serializes NCL to JSON, integer values
+are produced as `serde_json::Number::Float(86400.0)` instead of `N::PosInt(86400)`.
+Any Rust unsigned-integer field deserialized from Nickel-exported JSON must be
+prepared to accept both representations.
+
+**Custom deserializers (mediapm crate)** — `src/mediapm/src/config/mod.rs`:
+- `deserialize_u64_from_number` / `deserialize_option_u64_from_number` — accept
+  both `N::PosInt` and `N::Float`, used on all `Option<u64>` fields in
+  `MediaRuntimeStorage`.
+- `deserialize_u32_from_number` — same pattern for `u32` fields where applicable.
+
+**Custom deserializers (conductor crate)** —
+`src/conductor/src/model/config/versions/v_latest.rs`:
+- `deserialize_integral_u64` / `deserialize_option_integral_u64` — same pattern,
+  used on all `Option<u64>` fields in `RuntimeStorageLatest`.
+- `deserialize_integral_u32` — same pattern for `u32` fields.
+
+**Affected structs and fields** (`Option<u64>`):
+- `MediaRuntimeStorage`: `instance_ttl_seconds`, `verify_on_read_sample_denominator`,
+  `verify_on_read_stale_timeout_secs`, `reconstructed_bytes_cache_ttl_secs`.
+- `RuntimeStorageLatest`: same four fields.
+
+**Contract**: Any Rust struct field that (a) is `u64` or `u32` and (b) receives
+its value from Nickel-exported JSON MUST use a custom deserializer that handles
+both `N::PosInt` and `N::Float`. New unsigned-integer fields added to affected
+structs must include the corresponding `#[serde(deserialize_with = "...")]`
+attribute or risk deserialization failure at runtime.
 
 ---
 
@@ -401,10 +434,16 @@ The CAS integrity configuration is wired through the runtime storage config stac
 - `MediaRuntimeStorage.reconstructed_bytes_cache_ttl_secs: Option<u64>` — overrides the
   reconstructed-bytes cache TTL in seconds (default: 3600, 1 hour).
 
-These three fields are mirrored in `RuntimeStorageConfig` (conductor crate) and
-converted to `CasIntegrityConfig` via `MediaRuntimeStorage::to_cas_integrity_config()`.
-The resulting config is passed through `RunWorkflowOptions.cas_integrity_config` to
-the conductor orchestration layer.
+These three fields (plus `instance_ttl_seconds`) are mirrored in `RuntimeStorageConfig`
+(conductor crate) and converted to `CasIntegrityConfig` via
+`MediaRuntimeStorage::to_cas_integrity_config()`. The resulting config is passed
+through `RunWorkflowOptions.cas_integrity_config` to the conductor orchestration
+layer.
+
+All four `Option<u64>` fields in `MediaRuntimeStorage` use
+`#[serde(deserialize_with = "deserialize_option_u64_from_number")]` to accept
+both `N::PosInt` and `N::Float` representations, because Nickel exports all
+numbers as `f64`.
 
 ### Conductor Specification (src/conductor/)
 
@@ -549,6 +588,11 @@ GC follows a two-phase reachability-first strategy:
      populated.
 - **TTL configuration** (`RuntimeStorageConfig.instance_ttl_seconds`):
    Config option of type `Option<u64>`. `None` means "use the default".
+   In the conductor persistence layer, all four `Option<u64>` fields in
+   `RuntimeStorageLatest` (including `instance_ttl_seconds`) use
+   `#[serde(deserialize_with = "deserialize_option_integral_u64")]` to accept
+   both `N::PosInt` and `N::Float` representations (Nickel exports all numbers
+   as `f64`).
    The coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS`
    (604 800 — 7 days) via `set_instance_ttl` before passing the value to
    the state-store actor. The state store never sees `None` after config

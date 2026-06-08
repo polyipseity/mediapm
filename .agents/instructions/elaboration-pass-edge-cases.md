@@ -2527,6 +2527,57 @@ never modifies tool state.
 - `src/mediapm/src/lib.rs`: `SyncSummary` (added_tools/updated_tools are always 0), `ToolsSyncSummary`
 - `.agents/instructions/crate-specifications.md`: "`media sync` env dependency" and "`media tool sync` workflow isolation" design rules
 
+### 4.31 Nickel Float→Integer Deserialization
+
+**Scenario**: A user sets `instance_ttl_seconds = 86400` in their `media.ncl`
+Nickel configuration. Nickel stores all numbers as `f64` internally; when the
+NCL document is exported to JSON via `eval_full_for_export()`, the value is
+serialized as `serde_json::Number::Float(86400.0)` instead of
+`N::PosInt(86400)`. Serde's default `#[serde(deserialize_with)]` for `u64`
+expects `N::PosInt` and fails with a type error.
+
+**Affected path**: `MediaRuntimeStorage` (mediapm, `config/mod.rs`) and
+`RuntimeStorageLatest` (conductor, `v_latest.rs`) both carry four `Option<u64>`
+fields: `instance_ttl_seconds`, `verify_on_read_sample_denominator`,
+`verify_on_read_stale_timeout_secs`, `reconstructed_bytes_cache_ttl_secs`.
+
+**Mitigation** — Both crates define custom deserializers that accept both
+`N::PosInt` and `N::Float`:
+
+| Crate | Deserializer | Location |
+|-------|-------------|----------|
+| MediaPM | `deserialize_option_u64_from_number` | `src/mediapm/src/config/mod.rs:326` |
+| Conductor | `deserialize_option_integral_u64` | `src/conductor/src/model/config/versions/v_latest.rs:310` |
+
+Both functions attempt `as_u64()` first, then fall back to `as_f64()` with an
+integrality and range check (`parse_non_negative_integral_u64` / `fract() == 0`
+validation). Non-integral floats, negative values, and out-of-range numbers are
+rejected with a deserialization error.
+
+**Non-option counterparts**: `deserialize_u64_from_number`,
+`deserialize_u32_from_number` (mediapm) and `deserialize_integral_u64`,
+`deserialize_integral_u32` (conductor) apply the same pattern to required
+(`Option`-free) fields such as `ImpureTimestampLatest.epoch_seconds` and
+`.subsec_nanos`.
+
+**Risk**: New `u64` or `u32` fields added to any struct deserialized from
+Nickel-exported JSON will silently fail at runtime unless annotated with the
+corresponding custom deserializer. This is easy to miss during review because
+the error surfaces only when a real NCL config is loaded — unit tests that
+construct Rust values directly (bypassing JSON deserialization) do not
+exercise this path.
+
+**Checklist recommendation**:
+
+- When adding a `u64`/`u32` field to `MediaRuntimeStorage` or
+  `RuntimeStorageLatest`, check that `#[serde(deserialize_with =
+  "...")]` points to the crate's custom number deserializer.
+- When adding a new struct that is populated from Nickel-exported JSON,
+  define the corresponding custom deserializer and apply it to all unsigned
+  integer fields.
+- Verify the deserialization path with a test that feeds `N::Float` input
+  through the full `decode()` chain, not just `N::PosInt`.
+
 ---
 
 ## PART 5: METADATA CACHE — EDGE CASES & FAILURE MODES
