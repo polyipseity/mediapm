@@ -2477,6 +2477,58 @@ positives for missing objects).
 
 ---
 
+### 4.30 Sync Boundary: Library Sync vs Tool Sync Design Separation
+
+**Issue**: `sync_library` and `sync_tools` have intentionally disjoint
+responsibilities, but the design rules are implicit. Violating the boundary
+causes two classes of defects:
+
+1. **Library sync calling `reconcile_desired_tools`** — tool reconciliation
+   during media sync couples independent operations, making partial failure
+   recovery harder and exposing library sync to tool-provisioning latency.
+   The R6 revert (commit 25c9a38) removed this after it caused workflow
+   re-synthesis to observe newly-augmented tool IDs, breaking
+   `preserve_existing_generated_step_tools` and cascading to a stale ffmpeg
+   path crash.
+
+2. **Tool sync calling `reconcile_media_workflows`** — workflow
+   reconciliation during tool sync would generate workflow rows in the
+   conductor machine document without synchronizing media-sync state
+   (materialized paths, cache entries, hierarchy output). If tool sync
+   populated workflow rows, a subsequent library sync might double-register
+   or skip incremental execution.
+
+**Design rules**:
+
+| Rule | Enforced at | Violation risk |
+|------|-------------|----------------|
+| `sync_library` must NOT call `reconcile_desired_tools` | `sync_library_with_tag_update_checks` in `service.rs` | Tool IDs change mid-sync → stale step-tool preservation, crash |
+| `sync_tools` must NOT call `reconcile_media_workflows` | `sync_tools_with_tag_update_checks` in `service.rs` | Stale workflow rows in machine doc, double-registration |
+
+**Hint mechanism**: Library sync uses `collect_tools_requiring_sync()` and
+`append_tool_sync_hint_warning()` to emit a warning when a tool requirement
+appears stale. This is a local-only check (no remote release lookups) that
+never modifies tool state.
+
+**Edge cases**:
+
+| Scenario | Behavior | Rationale |
+|----------|----------|-----------|
+| Tool requirement `tag = "latest"` but no `active_tools` entry | Library sync warns about stale tool state; does NOT reconcile | Hint-only; user must run `media tool sync` |
+| Tool requirement `tag = "latest"` with active entry but outdated version | Library sync warns; does NOT reconcile | Same; version skew is a tool-sync concern |
+| Media sources exist during tool sync | Tool sync does NOT generate workflow rows | Workflow reconciliation is library-sync's responsibility |
+| Media sources exist during library sync | Library sync reconciles workflows normally | Correct — library sync owns workflow state |
+| User runs `media tool sync` then `media sync` back-to-back | First command reconciles tools (and may update tool IDs), second reconciles workflows with current tool IDs | Correct separation; order matters |
+| User runs `media sync` without running `media tool sync` first | Library sync completes but may use stale `.env.generated`; hint warns about stale tools | Graceful degradation; user sees hint and re-runs with tool sync |
+
+**Cross-references**:
+
+- `src/mediapm/src/service.rs`: `sync_library_with_tag_update_checks()`, `sync_tools_with_tag_update_checks()`, `collect_tools_requiring_sync()`, `append_tool_sync_hint_warning()`
+- `src/mediapm/src/lib.rs`: `SyncSummary` (added_tools/updated_tools are always 0), `ToolsSyncSummary`
+- `.agents/instructions/crate-specifications.md`: "`media sync` env dependency" and "`media tool sync` workflow isolation" design rules
+
+---
+
 ## PART 5: METADATA CACHE — EDGE CASES & FAILURE MODES
 
 ### 5.1 Clock Skew Causes Mass Eviction

@@ -958,6 +958,12 @@ entries are implicitly active.
   `media tool sync` before `media sync` to ensure `.env.generated` is
   current. This is by design — tool sync provisions companion binaries and
   generates runtime env vars, while library sync consumes them.
+- **`media tool sync` workflow isolation**: `sync_tools_with_tag_update_checks()`
+  (`media tool sync`) does not call `reconcile_media_workflows()`. Tool sync
+  only reconciles tool requirements and lock/runtime metadata — never workflow
+  definitions. `sync_library_with_tag_update_checks()` is responsible for
+  workflow reconciliation. This prevents tool sync from accidentally generating
+  or modifying workflow rows in the conductor machine document or lock state.
 - **mediapm_dir resolution contract**:
   `MediaRuntimeStorage.mediapm_dir` → `MediaPmPaths::with_runtime_storage()`
   → `runtime_root` → all dependent paths (tools, cache, state, env files,
