@@ -1841,12 +1841,14 @@ mod tests {
     use crate::HierarchyNodeKind;
     use crate::HierarchyPath;
     use crate::ToolRequirementDependencies;
-    use crate::config::{MediaPmState, ToolRegistryRecord, save_mediapm_state_document};
+    use crate::config::{
+        MediaPmState, ToolRegistryRecord, load_mediapm_state_document, save_mediapm_state_document,
+    };
 
     use super::{
         AddInsertPosition, ManagedWorkflowStepTarget, MediaHierarchyPreset, MediaPmApi,
-        MediaPmDocument, MediaPmService, MediaRuntimeStorage, MediaStepTool, ToolInvalidationRule,
-        ToolRequirement, TransformInputValue, load_mediapm_document,
+        MediaPmDocument, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool,
+        ToolInvalidationRule, ToolRequirement, TransformInputValue, load_mediapm_document,
         load_mediapm_document_without_validation, remove_target_step_impure_timestamps,
         save_mediapm_document, should_invalidate_instance,
     };
@@ -2571,5 +2573,114 @@ mod tests {
             assert_eq!(dependencies.deno_version.as_deref(), deno_version, "{tool_name}");
             assert_eq!(dependencies.sd_version.as_deref(), sd_version, "{tool_name}");
         }
+    }
+
+    /// Ensures `sync_library` does NOT call `reconcile_desired_tools` even when
+    /// a tool requirement is stale (no active tool registration exists).
+    ///
+    /// The design rule is: library sync may hint about stale tools but must
+    /// never reconcile them.  Tool reconciliation is the exclusive domain of
+    /// `media tool sync`.
+    #[tokio::test]
+    async fn sync_library_does_not_reconcile_tools_when_tool_state_is_stale() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        // Seed a tool requirement with `tag = "latest"` but no active_tool
+        // registration — this simulates a stale tool state that would trigger
+        // reconciliation if `sync_library` called `reconcile_desired_tools`.
+        let mut document = MediaPmDocument::default();
+        document.tools.insert(
+            "ffmpeg".to_string(),
+            ToolRequirement {
+                version: None,
+                tag: Some("latest".to_string()),
+                dependencies: ToolRequirementDependencies::default(),
+                recheck_seconds: None,
+                max_input_slots: None,
+                max_output_slots: None,
+            },
+        );
+        save_mediapm_document(&service.paths().mediapm_ncl, &document).expect("seed mediapm.ncl");
+
+        let summary = service.sync_library().await.expect("sync library");
+
+        // The hint warning should mention ffmpeg
+        assert!(
+            summary
+                .warnings
+                .iter()
+                .any(|w| { w.contains("ffmpeg") && w.contains("tool state appears outdated") }),
+            "sync must hint about stale tool state: {:?}",
+            summary.warnings
+        );
+
+        // added_tools/updated_tools are always 0 for sync (hardcoded),
+        // but verify they are 0 as a secondary check.
+        assert_eq!(summary.added_tools, 0);
+        assert_eq!(summary.updated_tools, 0);
+
+        // Tool state must remain stale — no active_tool entry should have
+        // been created by `reconcile_desired_tools`.
+        let lock =
+            load_mediapm_state_document(&service.paths().mediapm_state_ncl).expect("load lockfile");
+        assert!(
+            lock.active_tools.is_empty(),
+            "sync_library must not populate active_tools \
+             (must not call reconcile_desired_tools): {:?}",
+            lock.active_tools
+        );
+    }
+
+    /// Ensures `sync_tools` does NOT call `reconcile_media_workflows` even
+    /// when media sources exist in the document.
+    ///
+    /// The design rule is: tool sync only reconciles tool requirements and
+    /// lock/runtime metadata — never workflow definitions.  Workflow
+    /// reconciliation is the exclusive domain of `media sync`.
+    ///
+    /// This test seeds a media source directly into the document file
+    /// (bypassing `add_media_source`, which also reconciles workflows) to
+    /// prove that `sync_tools` never calls `reconcile_media_workflows`.
+    #[tokio::test]
+    async fn sync_tools_does_not_populate_workflow_states_when_media_sources_exist() {
+        let root = tempdir().expect("tempdir");
+        let service = MediaPmService::new_in_memory_at(root.path());
+
+        // Manually seed a media source entry in the document file without
+        // going through add_media_source (which internally reconciles
+        // workflows and populates workflow_states).
+        let mut document = MediaPmDocument::default();
+        document.media.insert(
+            "boundary-test".to_string(),
+            MediaSourceSpec {
+                id: None,
+                description: None,
+                title: None,
+                artist: None,
+                workflow_id: None,
+                metadata: None,
+                variant_hashes: BTreeMap::from([("placeholder".to_string(), "00".to_string())]),
+                steps: vec![],
+            },
+        );
+        save_mediapm_document(&service.paths().mediapm_ncl, &document)
+            .expect("seed document with media source");
+
+        let summary = service.sync_tools().await.expect("tool sync");
+
+        assert_eq!(summary.added_tools, 0);
+        assert_eq!(summary.updated_tools, 0);
+        assert_eq!(summary.unchanged_tools, 0);
+
+        // Load the lock and verify no workflow states were created.
+        let lock =
+            load_mediapm_state_document(&service.paths().mediapm_state_ncl).expect("load lockfile");
+        assert!(
+            lock.workflow_states.is_empty(),
+            "tool sync must not populate workflow_states \
+             (must not call reconcile_media_workflows): {:?}",
+            lock.workflow_states
+        );
     }
 }
