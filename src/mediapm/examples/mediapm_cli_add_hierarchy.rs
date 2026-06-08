@@ -259,7 +259,7 @@ mod tests {
                         values
                     })
                     .collect();
-                (node.path.clone(), variants)
+                (node.path.join_path(), variants)
             })
             .collect();
 

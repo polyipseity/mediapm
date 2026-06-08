@@ -955,7 +955,7 @@ impl From<&str> for HierarchyPath {
         if trimmed.is_empty() {
             return Self(Vec::new());
         }
-        Self(trimmed.split('/').map(|s| s.to_string()).collect())
+        Self(trimmed.split('/').map(String::from).collect())
     }
 }
 
@@ -984,7 +984,7 @@ impl<'de> Deserialize<'de> for HierarchyPath {
                 if trimmed.is_empty() {
                     Ok(HierarchyPath(Vec::new()))
                 } else {
-                    Ok(HierarchyPath(trimmed.split('/').map(|s| s.to_string()).collect()))
+                    Ok(HierarchyPath(trimmed.split('/').map(String::from).collect()))
                 }
             }
 

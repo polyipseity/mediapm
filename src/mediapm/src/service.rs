@@ -226,6 +226,7 @@ where
     ///
     /// Returns [`MediaPmError`] when source validation fails, config cannot be
     /// loaded/saved, or default source metadata cannot be synthesized.
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_media_source(
         &self,
         uri: &Url,
@@ -573,6 +574,7 @@ where
     /// Returns [`MediaPmError`] when the local source path cannot be
     /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
     /// required conductor runtime documents cannot be prepared.
+    #[allow(clippy::too_many_arguments)]
     pub async fn add_local_source(
         &self,
         local_path: &Path,
@@ -1909,7 +1911,6 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: Some(timestamp),
-            last_used: super::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "result".to_string(),
@@ -1935,7 +1936,6 @@ mod tests {
             tool_name: "tool-a".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: None,
-            last_used: super::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         };
@@ -1954,7 +1954,6 @@ mod tests {
             tool_name: "tool-b".to_string(),
             metadata: ToolSpec::default(),
             impure_timestamp: None,
-            last_used: mediapm_conductor::ImpureTimestamp::default(),
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
         };

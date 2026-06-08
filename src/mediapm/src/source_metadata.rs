@@ -127,12 +127,11 @@ pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
     };
 
     // Check persistent cache first.
-    if let Some(cache) = cache {
-        if let Some(cached) = cache.get(&cache_key) {
-            if let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached) {
-                return Some(metadata);
-            }
-        }
+    if let Some(cache) = cache
+        && let Some(cached) = cache.get(&cache_key)
+        && let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached)
+    {
+        return Some(metadata);
     }
 
     let output = ProcessCommand::new(ffprobe_command)
@@ -154,10 +153,10 @@ pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
 
     // Store in cache on success, then return.
     if metadata.title.is_some() || metadata.artist.is_some() || metadata.description.is_some() {
-        if let Some(cache) = cache {
-            if let Ok(value) = serde_json::to_value(&metadata) {
-                cache.set(cache_key, value);
-            }
+        if let Some(cache) = cache
+            && let Ok(value) = serde_json::to_value(&metadata)
+        {
+            cache.set(cache_key, value);
         }
         Some(metadata)
     } else {

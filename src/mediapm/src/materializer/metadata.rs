@@ -6,8 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use blake3;
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -251,14 +249,12 @@ fn extract_metadata_value_from_variant_payload(
     let cache_key = blake3::hash(media_id.as_bytes()).to_hex().to_string();
 
     // Check persistent cache first.
-    if let Some(ref metadata_cache) = lookup.metadata_cache {
-        if let Some(cached_value) = metadata_cache.get(&cache_key) {
-            if let Some(cached_map) = cached_value.as_object() {
-                if let Some(cached) = lookup_json_string_key(cached_map, metadata_key) {
-                    return Ok(cached);
-                }
-            }
-        }
+    if let Some(ref metadata_cache) = lookup.metadata_cache
+        && let Some(cached_value) = metadata_cache.get(&cache_key)
+        && let Some(cached_map) = cached_value.as_object()
+        && let Some(cached) = lookup_json_string_key(cached_map, metadata_key)
+    {
+        return Ok(cached);
     }
 
     // Cache miss — resolve via JSON lookup or ffprobe.

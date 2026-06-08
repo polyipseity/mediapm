@@ -349,7 +349,8 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-            },
+            last_materialized_state_hash: None,
+        },
             ..MediaPmDocument::default()
         };
 

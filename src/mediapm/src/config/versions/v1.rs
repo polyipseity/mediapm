@@ -147,6 +147,12 @@ pub(crate) struct MediaPmStateWireV1 {
     pub(crate) active_tools: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) workflow_states: Option<BTreeMap<String, Vec<ManagedWorkflowStepStateWireV1>>>,
+    /// Materialization-skip gate hash.
+    ///
+    /// `String` because NCL serializes the CAS hash as a string value.
+    /// The final decode step converts this to `Option<Hash>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_materialized_state_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

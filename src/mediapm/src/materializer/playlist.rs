@@ -42,10 +42,10 @@ pub(super) fn collect_playlist_media_index(
     Ok(index)
 }
 
-/// Collects hierarchy id → HierarchyEntry mapping for playlist resolution.
+/// Collects hierarchy id → `HierarchyEntry` mapping for playlist resolution.
 ///
 /// Only includes media entries with an explicit hierarchy id and non-empty
-/// media_id. Keyed by hierarchy id so playlist resolution can look up
+/// `media_id`. Keyed by hierarchy id so playlist resolution can look up
 /// the correct entry regardless of template path.
 pub(super) fn collect_media_entries_by_id(
     flattened_hierarchy: &[FlattenedHierarchyEntry],

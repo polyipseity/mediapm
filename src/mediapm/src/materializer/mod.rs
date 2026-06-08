@@ -32,7 +32,7 @@ mod playlist;
 mod resolve;
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
     use std::fs;
     use std::path::Path;
 
@@ -43,7 +43,7 @@ mod tests {
         InputBinding, MachineNickelDocument, OrchestrationState, OutputCaptureSpec, OutputPolicy,
         OutputRef, OutputSaveMode, PersistenceFlags, StateNickelDocument, ToolCallInstance,
         ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-        encode_state_document,
+        encode_state, encode_state_document,
     };
     use unicode_normalization::UnicodeNormalization;
 
@@ -1499,7 +1499,7 @@ mod tests {
     }
 
     /// Protects playlist resolution when two media entries share the same
-    /// template path but reference different media_ids — without the fix,
+    /// template path but reference different `media_ids` — without the fix,
     /// both playlist entries resolve to the same (last-writer-wins) path.
     #[tokio::test]
     #[allow(clippy::too_many_lines)]
@@ -2243,7 +2243,6 @@ mod tests {
                     tool_name: tool_id.clone(),
                     metadata: tool_spec,
                     impure_timestamp: None,
-                    last_used: ImpureTimestamp::default(),
                     inputs: instance_inputs,
                     outputs: BTreeMap::from([(
                         "primary".to_string(),
@@ -2255,10 +2254,11 @@ mod tests {
                     )]),
                 },
             )]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
-        let state_blob = serde_json::to_vec(&state).expect("encode state blob");
-        let state_pointer = cas.put(state_blob).await.expect("put state blob");
+        let state_pointer = encode_state(&cas, state).await.expect("encode state");
         let encoded_state_document = encode_state_document(StateNickelDocument {
             impure_timestamps: BTreeMap::new(),
             state_pointer: Some(state_pointer),
@@ -2484,7 +2484,6 @@ mod tests {
                 ..ToolSpec::default()
             },
             impure_timestamp: None,
-            last_used: ImpureTimestamp::default(),
             inputs: BTreeMap::from([
                 (
                     "text".to_string(),
@@ -2582,7 +2581,6 @@ mod tests {
                         tool_name: tool_id.clone(),
                         metadata: tool_spec.clone(),
                         impure_timestamp: None,
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "source_url".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
@@ -2603,7 +2601,6 @@ mod tests {
                         tool_name: tool_id,
                         metadata: tool_spec,
                         impure_timestamp: None,
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "source_url".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
@@ -2619,6 +2616,8 @@ mod tests {
                     },
                 ),
             ]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let step_output_hashes =
@@ -2749,7 +2748,6 @@ mod tests {
                             epoch_seconds: 1,
                             subsec_nanos: 0,
                         }),
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "input_content".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
@@ -2773,7 +2771,6 @@ mod tests {
                             epoch_seconds: 2,
                             subsec_nanos: 0,
                         }),
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "input_content".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
@@ -2794,7 +2791,6 @@ mod tests {
                         tool_name: apply_tool_id,
                         metadata: apply_tool_spec,
                         impure_timestamp: None,
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "cover_flag".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
@@ -2813,6 +2809,8 @@ mod tests {
                     },
                 ),
             ]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let step_output_hashes =
@@ -2940,7 +2938,6 @@ mod tests {
                             epoch_seconds: 2,
                             subsec_nanos: 0,
                         }),
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "input_content".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
@@ -2967,7 +2964,6 @@ mod tests {
                             epoch_seconds: 3,
                             subsec_nanos: 0,
                         }),
-                        last_used: ImpureTimestamp::default(),
                         inputs: BTreeMap::from([(
                             "cover_flag".to_string(),
                             mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
@@ -2986,6 +2982,8 @@ mod tests {
                     },
                 ),
             ]),
+            aux: BTreeMap::new(),
+            referenced_instance_keys: HashSet::new(),
         };
 
         let step_output_hashes =
@@ -3142,7 +3140,7 @@ struct MaterializationLookupContext {
     /// This avoids O(steps × instances) scans for each hierarchy entry's
     /// variant resolution when many entries share the same workflow.
     step_output_hashes_cache: Arc<Mutex<HashMap<String, Option<StepOutputHashes>>>>,
-    /// Persistent metadata cache keyed by BLAKE3 hex of media_id for resolved
+    /// Persistent metadata cache keyed by BLAKE3 hex of `media_id` for resolved
     /// ffprobe/JSON metadata values. Cache is opened by `sync_hierarchy()` and
     /// shared across workers.
     metadata_cache: Option<Arc<crate::metadata_cache::MetadataCache>>,
@@ -3687,8 +3685,11 @@ pub async fn sync_hierarchy(
     _verify_materialization: bool,
 ) -> Result<MaterializeReport, MediaPmError> {
     // Fast path: skip materialization when the orchestration state hash
-    // hasn't changed since the last sync.
-    if current_materialized_hash == lock.last_materialized_state_hash {
+    // hasn't changed since the last sync. When both are `None` there is no
+    // prior materialization to skip — proceed with full materialization.
+    if let Some(last) = lock.last_materialized_state_hash
+        && current_materialized_hash == Some(last)
+    {
         return Ok(MaterializeReport::default());
     }
 

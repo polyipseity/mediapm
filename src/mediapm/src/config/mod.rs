@@ -1101,7 +1101,7 @@ mod tests {
         flatten_hierarchy_nodes_for_runtime(&document.hierarchy)
             .expect("flatten hierarchy")
             .into_iter()
-            .map(|flattened| (flattened.path, flattened.entry))
+            .map(|flattened| (flattened.path_str(), flattened.entry))
             .collect()
     }
 
@@ -1111,9 +1111,7 @@ mod tests {
             .map(|(path, entry)| match entry.kind {
                 HierarchyEntryKind::Media if path.ends_with('/') || path.ends_with('\\') => {
                     super::HierarchyNode {
-                        path: super::HierarchyPath::from(
-                            path.trim_end_matches(['/', '\\']).as_ref(),
-                        ),
+                        path: super::HierarchyPath::from(path.trim_end_matches(['/', '\\'])),
                         kind: super::HierarchyNodeKind::MediaFolder,
                         id: Some(entry.media_id.clone()),
                         media_id: Some(entry.media_id),

@@ -4,11 +4,11 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_cas::{CasApi, CasError, FileSystemCas, Hash};
 use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::{
-    InputBinding, MachineNickelDocument, OrchestrationState, ToolCallInstance, ToolKindSpec,
-    ToolSpec, decode_state, decode_state_document,
+    ConductorError, InputBinding, MachineNickelDocument, OrchestrationState, ToolCallInstance,
+    ToolKindSpec, ToolSpec, decode_state, decode_state_document,
 };
 
 use crate::conductor_bridge::{
@@ -61,13 +61,28 @@ pub(super) async fn load_runtime_orchestration_state(
         return Ok(None);
     };
 
-    let orchestration_state = decode_state(cas, state_pointer).await.map_err(|error| {
-        MediaPmError::Serialization(format!(
-            "decoding persisted orchestration-state blob '{state_pointer}' failed: {error}"
-        ))
-    })?;
+    let orchestration_state = match decode_state(cas, state_pointer).await {
+        Ok(state) => Some(state),
+        Err(ConductorError::Cas(CasError::NotFound(missing))) => {
+            // Mixed-backend flow: the conductor writes state to a
+            // potentially different CAS backend than the materializer
+            // reads from (e.g. in-memory conductor with filesystem
+            // materializer). Treat unavailable blobs as no state so
+            // sync can continue gracefully.
+            tracing::warn!(
+                "orchestration state blob '{missing}' not found in materializer CAS; \
+                 skipping persisted-state load (mixed-backend)"
+            );
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(MediaPmError::Serialization(format!(
+                "decoding persisted orchestration-state blob '{state_pointer}' failed: {error}"
+            )));
+        }
+    };
 
-    Ok(Some(orchestration_state))
+    Ok(orchestration_state)
 }
 
 /// Resolves one hierarchy source reference.
