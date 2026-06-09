@@ -184,6 +184,7 @@ impl FileSystemState {
         };
 
         cas.repair_index_file_invariant().await?;
+        cas.repair_orphaned_objects_invariant().await?;
         cas.persist_index_snapshot().await?;
         Ok(cas)
     }
@@ -607,6 +608,110 @@ impl FileSystemState {
             });
             index.rebuild_constraint_reverse();
             recalculate_depths(&mut index)?;
+        }
+
+        Ok(())
+    }
+
+    /// Scans object store for orphaned files and heals them into the index.
+    ///
+    /// This is the reverse of [`repair_index_file_invariant`]: instead of
+    /// removing dangling index rows whose files are missing on disk, it finds
+    /// files on disk that have no corresponding index entry and adds them.
+    /// Together these two methods ensure full bidirectional consistency
+    /// between the filesystem store and the in-memory index at startup.
+    ///
+    /// Normal operation: single `persist_index_snapshot` at the end captures
+    /// all healed orphans in one batch.
+    async fn repair_orphaned_objects_invariant(&self) -> Result<(), CasError> {
+        let storage_root = self.root.join(STORAGE_VERSION);
+        if !tokio::fs::try_exists(&storage_root)
+            .await
+            .map_err(|source| CasError::io("checking storage root", &storage_root, source))?
+        {
+            return Ok(());
+        }
+
+        // Collect all hashes present in the filesystem store.
+        let mut disk_hashes = BTreeSet::new();
+        let mut stack = vec![storage_root];
+
+        while let Some(dir) = stack.pop() {
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(entries) => entries,
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => {
+                    return Err(CasError::io("reading object store directory", &dir, source));
+                }
+            };
+
+            loop {
+                let entry = match entries.next_entry().await {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => break,
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(source) => {
+                        return Err(CasError::io("reading object store entry", &dir, source));
+                    }
+                };
+
+                let file_type = match entry.file_type().await {
+                    Ok(file_type) => file_type,
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(source) => {
+                        return Err(CasError::io(
+                            "reading object store entry type",
+                            entry.path(),
+                            source,
+                        ));
+                    }
+                };
+
+                if file_type.is_dir() {
+                    if entry.file_name().to_string_lossy() == "tmp" {
+                        continue;
+                    }
+                    stack.push(entry.path());
+                    continue;
+                }
+                if !file_type.is_file() {
+                    continue;
+                }
+
+                let path = entry.path();
+                if let Some((hash, _kind)) =
+                    super::recovery::parse_hash_from_object_path(&self.root, &path)
+                {
+                    disk_hashes.insert(hash);
+                }
+            }
+        }
+
+        if disk_hashes.is_empty() {
+            return Ok(());
+        }
+
+        // Heal hashes that are on disk but not in the in-memory index.
+        let mut healed_count = 0u64;
+        for hash in &disk_hashes {
+            if *hash == empty_content_hash() {
+                continue;
+            }
+            let already_indexed = {
+                let index = self.lock_index_read("checking index during orphan scan");
+                index.objects.contains_key(hash)
+            };
+            if !already_indexed && self.heal_orphaned_object_unpersisted(*hash).await? {
+                healed_count = healed_count.saturating_add(1);
+            }
+        }
+
+        if healed_count > 0 {
+            info!(
+                healed_objects = healed_count,
+                scanned_files = disk_hashes.len(),
+                "healed orphaned CAS objects into index during startup"
+            );
         }
 
         Ok(())
