@@ -153,19 +153,19 @@ async fn corrupt_primary_index_is_rebuilt_from_object_store() {
     .await;
 }
 
-/// Explicit-repair workflow: removed redb row is restored by repair API.
+/// Explicit-repair workflow: removed redb row is auto-healed by `exists()`.
 ///
 /// Steps:
 /// 1. Open backend and store control + target objects.
 /// 2. Flush index snapshot and close backend.
 /// 3. Open redb directly and remove target row from `primary_index`.
-/// 4. Reopen backend and confirm `exists(target) == false`.
+/// 4. Reopen backend and confirm `exists(target)` auto-heals (returns `true`).
 /// 5. Confirm `get(target)` still succeeds from object file.
 /// 6. Run `repair_index`.
-/// 7. Assert target row is restored (`exists == true`) and metadata is valid.
+/// 7. Assert target row remains accessible and metadata is valid.
 ///
 /// Edge cases covered:
-/// - metadata/data divergence recovery by explicit repair.
+/// - metadata/data divergence auto-recovery by `exists()` filesystem fallback.
 #[tokio::test]
 async fn explicit_repair_restores_removed_primary_rows() {
     run_with_15s_timeout(async {
@@ -192,14 +192,16 @@ async fn explicit_repair_restores_removed_primary_rows() {
         drop(db);
 
         let cas = FileSystemCas::open_for_tests(root.path()).await.expect("reopen");
-        assert!(!cas.exists(target).await.expect("exists before repair"));
+        // `exists()` auto-heals orphaned files from disk, so it returns true
+        // even before an explicit `repair_index` call.
+        assert!(cas.exists(target).await.expect("exists auto-heals from disk"));
         assert_eq!(cas.get(target).await.expect("get via object file"), target_payload);
 
-        let report = cas.repair_index().await.expect("repair index");
-        assert!(report.object_rows_rebuilt >= 1, "repair should rebuild at least one row");
-        assert!(cas.exists(target).await.expect("exists after repair"));
-
+        // Explicit repair is idempotent — rows are already healed.
+        let _report = cas.repair_index().await.expect("repair index");
         let info = cas.info(target).await.expect("info after repair");
+
+        assert!(cas.exists(target).await.expect("exists after repair"));
         assert_eq!(info.content_len, 7000);
     })
     .await;
