@@ -352,6 +352,7 @@ mod tests {
     fn persisted_state_json_pretty_normalizes_builtin_metadata() {
         let state = OrchestrationState {
             version: OrchestrationState::default().version,
+            external_data: BTreeMap::new(),
             instances: BTreeMap::from([(
                 "instance-a".to_string(),
                 ToolCallInstance {

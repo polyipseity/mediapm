@@ -546,6 +546,7 @@ async fn replace_and_load_resolved_state_roundtrip() {
 
     let next_state = OrchestrationState {
         version: OrchestrationState::default().version,
+        external_data: BTreeMap::new(),
         instances: BTreeMap::from([(
             "instance-a".to_string(),
             ToolCallInstance {
@@ -624,6 +625,7 @@ async fn replace_resolved_state_rejects_unknown_tool_instances() {
 
     let invalid_state = OrchestrationState {
         version: OrchestrationState::default().version,
+        external_data: BTreeMap::new(),
         instances: BTreeMap::from([(
             "instance-a".to_string(),
             ToolCallInstance {

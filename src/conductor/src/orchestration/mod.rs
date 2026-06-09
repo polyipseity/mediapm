@@ -236,6 +236,7 @@ mod tests {
 
         let next_state = OrchestrationState {
             version: OrchestrationState::default().version,
+            external_data: BTreeMap::new(),
             instances: BTreeMap::from([(
                 "instance-a".to_string(),
                 ToolCallInstance {
@@ -309,6 +310,7 @@ mod tests {
 
         let invalid = OrchestrationState {
             version: OrchestrationState::default().version,
+            external_data: BTreeMap::new(),
             instances: BTreeMap::from([(
                 "instance-a".to_string(),
                 ToolCallInstance {
