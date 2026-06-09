@@ -15,6 +15,16 @@ use mediapm_conductor::{
 };
 use tempfile::tempdir;
 
+/// Sets a shorter RPC timeout for tests so failures manifest quickly instead
+/// of waiting the default 300s per ractor RPC call.
+fn init_test_rpc_timeout() {
+    static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        // SAFETY: called at most once before any concurrent test activity.
+        unsafe { std::env::set_var("MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS", "10") };
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Test 1 — gc_instances unit semantics
 // ---------------------------------------------------------------------------
@@ -257,8 +267,9 @@ fn instance_ttl_none_round_trip() {
 
 /// Protects that the GC hook runs without error when `instance_ttl_seconds`
 /// is set and that instances survive a generous TTL.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn gc_hook_accepts_ttl_config() {
+    init_test_rpc_timeout();
     let conductor = SimpleConductor::new(InMemoryCas::new());
     let dir = tempdir().expect("tempdir");
     let user_path = dir.path().join("conductor.ncl");
@@ -315,8 +326,9 @@ async fn gc_hook_accepts_ttl_config() {
 
 /// Protects that the GC hook accepts `instance_ttl_seconds = 1` without error
 /// and that the instance survives (GC is a no-op, always keeps instances).
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn gc_hook_accepts_near_zero_ttl() {
+    init_test_rpc_timeout();
     let conductor = SimpleConductor::new(InMemoryCas::new());
     let dir = tempdir().expect("tempdir");
     let user_path = dir.path().join("conductor.ncl");
@@ -379,85 +391,32 @@ async fn gc_hook_accepts_near_zero_ttl() {
 
 /// Protects that `run_gc(None)` succeeds when neither config nor override
 /// supplies a TTL, and that the instance survives.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn run_gc_noop_without_ttl() {
-    let conductor = SimpleConductor::new(InMemoryCas::new());
-    let dir = tempdir().expect("tempdir");
-    let user_path = dir.path().join("conductor.ncl");
-    let machine_path = dir.path().join("conductor.machine.ncl");
-
-    let (user, machine) = echo_doc_pair(None);
-    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
-        .expect("write user");
-    std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
-        .expect("write machine");
-
-    let summary =
-        conductor.run_workflow(&user_path, &machine_path).await.expect("workflow should execute");
-    assert_eq!(summary.executed_instances, 1);
-
-    let result = conductor.run_gc(None).await;
-    assert!(result.is_ok(), "run_gc(None) should succeed when TTL is unset");
-
-    let state = conductor.get_state().await.expect("state snapshot");
-    assert_eq!(state.instances.len(), 1, "instance survives when TTL is unset");
+    init_test_rpc_timeout();
+    run_gc_scenario(None, None).await;
 }
 
 /// Protects that `run_gc(None)` uses the config-supplied TTL so a generous
 /// TTL preserves the referenced instance.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn run_gc_uses_config_ttl() {
-    let conductor = SimpleConductor::new(InMemoryCas::new());
-    let dir = tempdir().expect("tempdir");
-    let user_path = dir.path().join("conductor.ncl");
-    let machine_path = dir.path().join("conductor.machine.ncl");
-
-    let (user, machine) = echo_doc_pair(Some(86400));
-    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
-        .expect("write user");
-    std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
-        .expect("write machine");
-
-    let summary =
-        conductor.run_workflow(&user_path, &machine_path).await.expect("workflow should execute");
-    assert_eq!(summary.executed_instances, 1);
-
-    let result = conductor.run_gc(None).await;
-    assert!(result.is_ok(), "run_gc(None) should succeed with config TTL set");
-
-    let state = conductor.get_state().await.expect("state snapshot");
-    assert_eq!(state.instances.len(), 1, "instance survives generous config TTL");
+    init_test_rpc_timeout();
+    run_gc_scenario(Some(86400), None).await;
 }
 
 /// Protects that `run_gc(Some(...))` overrides the config TTL, and that a
 /// generous override does not cause errors.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn run_gc_override_large_ttl() {
-    let conductor = SimpleConductor::new(InMemoryCas::new());
-    let dir = tempdir().expect("tempdir");
-    let user_path = dir.path().join("conductor.ncl");
-    let machine_path = dir.path().join("conductor.machine.ncl");
-
-    let (user, machine) = echo_doc_pair(None);
-    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
-        .expect("write user");
-    std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
-        .expect("write machine");
-
-    let summary =
-        conductor.run_workflow(&user_path, &machine_path).await.expect("workflow should execute");
-    assert_eq!(summary.executed_instances, 1);
-
-    let result = conductor.run_gc(Some(86400)).await;
-    assert!(result.is_ok(), "run_gc(Some(86400)) should succeed");
-
-    let state = conductor.get_state().await.expect("state snapshot");
-    assert_eq!(state.instances.len(), 1, "instance survives generous override TTL");
+    init_test_rpc_timeout();
+    run_gc_scenario(None, Some(86400)).await;
 }
 
 /// Protects that `run_gc` does not error on an empty (no-workflow-run) state.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn run_gc_empty_state() {
+    init_test_rpc_timeout();
     let conductor = SimpleConductor::new(InMemoryCas::new());
     let result = conductor.run_gc(Some(3600)).await;
     assert!(result.is_ok(), "run_gc should succeed on empty state");
@@ -466,6 +425,35 @@ async fn run_gc_empty_state() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Runs a full workflow, triggers `run_gc(gc_ttl)`, and asserts the instance
+/// survives. The conductor is configured with `instance_ttl` if provided.
+async fn run_gc_scenario(instance_ttl: Option<u64>, gc_ttl: Option<u64>) {
+    let conductor = SimpleConductor::new(InMemoryCas::new());
+    let dir = tempdir().expect("tempdir");
+    let user_path = dir.path().join("conductor.ncl");
+    let machine_path = dir.path().join("conductor.machine.ncl");
+
+    let (user, machine) = echo_doc_pair(instance_ttl);
+    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
+        .expect("write user");
+    std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
+        .expect("write machine");
+
+    let summary =
+        conductor.run_workflow(&user_path, &machine_path).await.expect("workflow should execute");
+    assert_eq!(summary.executed_instances, 1);
+
+    let result = conductor.run_gc(gc_ttl).await;
+    assert!(result.is_ok(), "run_gc({gc_ttl:?}) should succeed with config TTL {instance_ttl:?}");
+
+    let state = conductor.get_state().await.expect("state snapshot");
+    assert_eq!(
+        state.instances.len(),
+        1,
+        "instance survives with config TTL {instance_ttl:?}, override {gc_ttl:?}",
+    );
+}
 
 /// Returns a pair of user + machine documents with an `echo` workflow.
 fn echo_doc_pair(instance_ttl: Option<u64>) -> (UserNickelDocument, MachineNickelDocument) {
