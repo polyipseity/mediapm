@@ -577,6 +577,46 @@ pub(crate) fn flatten_hierarchy_nodes_for_runtime(
     Ok(flattened)
 }
 
+/// Collects effective hierarchy-id → media-path mappings from a flattened
+/// hierarchy.
+///
+/// Each media entry with a non-empty `hierarchy_id` produces one index entry.
+/// Duplicate hierarchy IDs resolve to the same concrete path are rejected.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] when one hierarchy ID maps to multiple
+/// distinct paths.
+pub fn collect_playlist_media_index(
+    flattened_hierarchy: &[FlattenedHierarchyEntry],
+) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
+    let mut index = BTreeMap::new();
+
+    for flattened_entry in flattened_hierarchy {
+        if !matches!(flattened_entry.entry.kind, HierarchyEntryKind::Media) {
+            continue;
+        }
+
+        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
+            continue;
+        };
+
+        if let Some(previous_path_components) =
+            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
+            && previous_path_components != flattened_entry.path_components
+        {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
+                hierarchy_id,
+                previous_path_components.join("/"),
+                flattened_entry.path_str()
+            )));
+        }
+    }
+
+    Ok(index)
+}
+
 /// Converts flat runtime hierarchy entries into node-list schema form.
 ///
 /// This helper exists for Rust-authored callsites/tests that still construct

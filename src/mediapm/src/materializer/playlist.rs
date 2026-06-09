@@ -12,37 +12,6 @@ use super::commit::sanitize_and_validate_components;
 use super::metadata::resolve_hierarchy_relative_path;
 use super::{MaterializationLookupContext, RenderedPlaylistItem};
 
-/// Collects effective hierarchy-id -> hierarchy media-path mappings.
-pub(super) fn collect_playlist_media_index(
-    flattened_hierarchy: &[FlattenedHierarchyEntry],
-) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
-    let mut index = BTreeMap::new();
-
-    for flattened_entry in flattened_hierarchy {
-        if !matches!(flattened_entry.entry.kind, HierarchyEntryKind::Media) {
-            continue;
-        }
-
-        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
-            continue;
-        };
-
-        if let Some(previous_path_components) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
-            && previous_path_components != flattened_entry.path_components
-        {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
-                hierarchy_id,
-                previous_path_components.join("/"),
-                flattened_entry.path_str()
-            )));
-        }
-    }
-
-    Ok(index)
-}
-
 /// Collects hierarchy id → `HierarchyEntry` mapping for playlist resolution.
 ///
 /// Only includes media entries with an explicit hierarchy id and non-empty

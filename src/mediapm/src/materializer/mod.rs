@@ -18,7 +18,7 @@ use regex::Regex;
 use crate::conductor_bridge::resolve_ffmpeg_slot_limits;
 use crate::config::{
     FlattenedHierarchyEntry, HierarchyEntryKind, MediaPmDocument, PlaylistEntryPathMode,
-    expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
+    collect_playlist_media_index, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
 };
 use crate::config::{ManagedFileRecord, MediaPmState, ToolRegistryRecord};
 use crate::error::MediaPmError;
@@ -3027,9 +3027,9 @@ use self::metadata::{
     resolve_managed_ffprobe_path,
 };
 use self::playlist::{
-    collect_media_entries_by_id, collect_playlist_media_index, join_relative_paths,
-    playlist_format_label, render_absolute_playlist_path, render_playlist_bytes,
-    render_relative_playlist_path, resolve_playlist_media_target_relative_path,
+    collect_media_entries_by_id, join_relative_paths, playlist_format_label,
+    render_absolute_playlist_path, render_playlist_bytes, render_relative_playlist_path,
+    resolve_playlist_media_target_relative_path,
 };
 use self::resolve::{
     collect_media_source_available_variants, load_runtime_orchestration_state,

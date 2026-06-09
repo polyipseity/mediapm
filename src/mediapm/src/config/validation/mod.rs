@@ -1,13 +1,12 @@
 //! Schema validation for mediapm configuration documents.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::error::MediaPmError;
 
 use super::{
-    DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, HierarchyEntryKind,
-    MediaPmDocument, MediaRuntimeStorage, MediaSourceSpec, MediaStepTool,
+    DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, MediaPmDocument,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStepTool, collect_playlist_media_index,
     flatten_hierarchy_nodes_for_runtime, normalize_selector_compare_value,
     normalize_selector_value, step_option_scalar,
 };
@@ -46,7 +45,8 @@ pub(super) fn validate_media_document(document: &MediaPmDocument) -> Result<(), 
         validate_media_source(media_id, source)?;
     }
 
-    let playlist_media_index = collect_playlist_media_index(document)?;
+    let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
+    let playlist_media_index = collect_playlist_media_index(&flattened_hierarchy)?;
     validate_hierarchy_entries(document, &playlist_media_index)?;
     Ok(())
 }
@@ -76,37 +76,6 @@ fn validate_runtime_materialization_preference_order(
     }
 
     Ok(())
-}
-
-/// Collects effective hierarchy-id -> media-path mappings for playlist entries.
-fn collect_playlist_media_index(
-    document: &MediaPmDocument,
-) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
-    let flattened_hierarchy = flatten_hierarchy_nodes_for_runtime(&document.hierarchy)?;
-    let mut index = BTreeMap::new();
-
-    for flattened_entry in &flattened_hierarchy {
-        if !matches!(flattened_entry.entry.kind, HierarchyEntryKind::Media) {
-            continue;
-        }
-
-        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
-            continue;
-        };
-
-        if let Some(previous_path) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
-            && previous_path != flattened_entry.path_components
-        {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy id '{hierarchy_id}' resolves to multiple media paths ('{}' and '{}')",
-                previous_path.join("/"),
-                flattened_entry.path_components.join("/")
-            )));
-        }
-    }
-
-    Ok(index)
 }
 
 /// Validates desired tool requirement selector invariants.

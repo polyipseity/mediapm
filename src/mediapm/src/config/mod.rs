@@ -67,7 +67,8 @@ use self::source_types::{has_step_option_scalar, step_option_scalar};
 #[cfg(test)]
 pub(crate) use self::hierarchy_types::hierarchy_nodes_from_flat_entries;
 pub(crate) use self::hierarchy_types::{
-    FlattenedHierarchyEntry, expand_variant_selectors, flatten_hierarchy_nodes_for_runtime,
+    FlattenedHierarchyEntry, collect_playlist_media_index, expand_variant_selectors,
+    flatten_hierarchy_nodes_for_runtime,
 };
 pub use self::hierarchy_types::{
     HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
