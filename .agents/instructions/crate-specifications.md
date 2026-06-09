@@ -2998,13 +2998,27 @@ mediapm/
 │   │       └── int/ (integration)
 │   │
 │   ├── conductor-builtins/
+│   │   ├── AGENTS.md (builtins parent guidance)
 │   │   ├── echo/
+│   │   │   ├── AGENTS.md (builtin-specific guidance)
 │   │   │   ├── src/ (CLI + API)
 │   │   │   └── tests/
 │   │   ├── fs/
+│   │   │   ├── AGENTS.md (builtin-specific guidance)
+│   │   │   ├── src/ (CLI + API)
+│   │   │   └── tests/
 │   │   ├── archive/
+│   │   │   ├── AGENTS.md (builtin-specific guidance)
+│   │   │   ├── src/ (CLI + API)
+│   │   │   └── tests/
 │   │   ├── import/
+│   │   │   ├── AGENTS.md (builtin-specific guidance)
+│   │   │   ├── src/ (CLI + API)
+│   │   │   └── tests/
 │   │   └── export/
+│   │       ├── AGENTS.md (builtin-specific guidance)
+│   │       ├── src/ (CLI + API)
+│   │       └── tests/
 │   │
 │   └── mediapm/
 │       ├── AGENTS.md (crate-specific guidance)

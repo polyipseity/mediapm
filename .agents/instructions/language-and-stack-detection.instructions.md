@@ -1,7 +1,7 @@
 ---
 description: "Use when creating or updating AGENTS.md or instruction files and you need to detect the repository's programming languages, frameworks, runtimes, package managers, and setup from concrete files before writing detailed guidance."
 name: "Language and Stack Detection"
-applyTo: "AGENTS.md, .agents/instructions/**/*.md"
+applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
 ---
 
 # Language and Stack Detection

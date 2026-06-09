@@ -10,10 +10,12 @@
 - Keep this file short and durable. Put file-type and workflow-specific rules
   in `.agents/instructions/*.instructions.md`, reusable workflows in
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
+- Every crate directory ships an `AGENTS.md` with crate-local guidance.
 - `src/` now contains workspace member crates:
   - `src/cas/` (CAS)
   - `src/conductor/` (Conductor)
-  - `src/conductor-builtins/*/` (conductor built-ins)
+  - `src/conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
+  - `src/conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
 - Integration tests currently live with workspace crates (for example,
   `src/mediapm/tests/`).
