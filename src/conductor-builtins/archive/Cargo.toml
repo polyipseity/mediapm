@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "std"], optional = true }
+regex.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

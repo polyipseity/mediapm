@@ -24,6 +24,8 @@ use std::path::Path;
 #[cfg(feature = "cli")]
 use std::path::PathBuf;
 
+use regex::{Regex as TextRegex, bytes::Regex as BytesRegex};
+
 #[cfg(feature = "cli")]
 use clap::{ArgAction, Parser};
 
@@ -93,10 +95,12 @@ pub fn describe_json() -> String {
 /// Supported params:
 /// - `action=pack` with `kind=file|folder` and corresponding input `content`,
 /// - `action=unpack` with input `archive`,
-/// - `action=repack` with input `archive`.
+/// - `action=repack` with input `archive`,
+/// - `action=transform` with input `content`.
 ///
 /// Optional params:
 /// - `entry_name` when `action=pack` and `kind=file`.
+/// - `mode`, `filter`, `find_<N>`, `replace_<N>` when `action=transform`.
 ///
 /// # Errors
 ///
@@ -105,9 +109,9 @@ pub fn describe_json() -> String {
 pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Result<Vec<u8>, String> {
     validate_argument_contract(params, inputs)?;
 
-    let action = params
-        .get("action")
-        .ok_or_else(|| "archive builtin requires 'action' (pack|unpack|repack)".to_string())?;
+    let action = params.get("action").ok_or_else(|| {
+        "archive builtin requires 'action' (pack|unpack|repack|transform)".to_string()
+    })?;
 
     match action.as_str() {
         "pack" => {
@@ -137,6 +141,11 @@ pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Resul
             let archive_payload = payload_bytes_from_maps(inputs, params, "archive")
                 .ok_or_else(|| "archive repack requires input 'archive'".to_string())?;
             normalize_archive_zip_bytes_to_folder_zip_bytes(archive_payload)
+        }
+        "transform" => {
+            let zip_payload = payload_bytes_from_maps(inputs, params, "content")
+                .ok_or_else(|| "archive transform requires input 'content'".to_string())?;
+            transform_zip_bytes(zip_payload, params)
         }
         other => Err(format!("unsupported archive action '{other}'")),
     }
@@ -517,23 +526,34 @@ fn payload_bytes_from_maps<'a>(
 
 /// Validates archive args/inputs for required and recognized keys.
 fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Result<(), String> {
+    let action = params.get("action").ok_or_else(|| {
+        "archive builtin requires 'action' (pack|unpack|repack|transform)".to_string()
+    })?;
+
+    let base_known_keys: &[&str] =
+        &["action", "kind", "entry_name", "content", "archive", "mode", "filter"];
+
     for key in params.keys() {
-        if key != "action"
-            && key != "kind"
-            && key != "entry_name"
-            && key != "content"
-            && key != "archive"
-        {
+        if is_numbered_transform_key(key) {
+            if action != "transform" {
+                return Err(format!("archive action '{action}' does not accept arg '{key}'"));
+            }
+            continue;
+        }
+        if !base_known_keys.contains(&key.as_str()) {
             return Err(format!("archive builtin does not accept arg '{key}'"));
         }
     }
 
-    let action = params
-        .get("action")
-        .ok_or_else(|| "archive builtin requires 'action' (pack|unpack|repack)".to_string())?;
-
     match action.as_str() {
         "pack" => {
+            if params.contains_key("mode") {
+                return Err("archive pack does not accept arg 'mode'".to_string());
+            }
+            if params.contains_key("filter") {
+                return Err("archive pack does not accept arg 'filter'".to_string());
+            }
+
             let kind = params
                 .get("kind")
                 .ok_or_else(|| "archive pack requires 'kind' (file|folder)".to_string())?;
@@ -557,6 +577,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
             if params.contains_key("entry_name") {
                 return Err(format!("archive action '{action}' does not accept arg 'entry_name'"));
             }
+            if params.contains_key("mode") {
+                return Err(format!("archive action '{action}' does not accept arg 'mode'"));
+            }
+            if params.contains_key("filter") {
+                return Err(format!("archive action '{action}' does not accept arg 'filter'"));
+            }
 
             for key in inputs.keys() {
                 if key != "archive" {
@@ -567,14 +593,265 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
                 return Err(format!("archive action '{action}' requires input 'archive'"));
             }
         }
+        "transform" => {
+            if params.contains_key("kind") {
+                return Err("archive transform does not accept arg 'kind'".to_string());
+            }
+            if params.contains_key("entry_name") {
+                return Err("archive transform does not accept arg 'entry_name'".to_string());
+            }
+            if params.contains_key("archive") {
+                return Err("archive transform does not accept arg 'archive'".to_string());
+            }
+
+            if let Some(mode) = params.get("mode") {
+                if mode != "text" && mode != "binary" {
+                    return Err(format!(
+                        "archive transform mode must be 'text' or 'binary', got '{mode}'"
+                    ));
+                }
+            }
+
+            validate_numbered_transforms(params)?;
+
+            for key in inputs.keys() {
+                if key != "content" {
+                    return Err(format!("archive transform does not accept input '{key}'"));
+                }
+            }
+            if payload_bytes_from_maps(inputs, params, "content").is_none() {
+                return Err("archive transform requires input 'content'".to_string());
+            }
+        }
         other => {
             return Err(format!(
-                "archive action must be 'pack', 'unpack', or 'repack', got '{other}'"
+                "archive action must be 'pack', 'unpack', 'repack', or 'transform', got '{other}'"
             ));
         }
     }
 
     Ok(())
+}
+
+/// Checks whether a parameter key has the form `find_<N>`, `replace_<N>`,
+/// `mode_<N>`, or `filter_<N>` where N is a non-negative integer.
+fn is_numbered_transform_key(key: &str) -> bool {
+    for prefix in ["find_", "replace_", "mode_", "filter_"] {
+        if let Some(suffix) = key.strip_prefix(prefix) {
+            return !suffix.is_empty() && suffix.parse::<u64>().is_ok();
+        }
+    }
+    false
+}
+
+/// Validates numbered transform parameters: contiguous from 0, paired, valid modes.
+fn validate_numbered_transforms(params: &StringMap) -> Result<(), String> {
+    let mut max_n: Option<usize> = None;
+    for key in params.keys() {
+        for prefix in ["find_", "replace_", "mode_", "filter_"] {
+            if let Some(suffix) = key.strip_prefix(prefix) {
+                let n: usize = suffix.parse().map_err(|_| {
+                    format!("invalid numbered transform key '{key}': suffix is not a valid integer")
+                })?;
+                max_n = Some(max_n.map_or(n, |m| m.max(n)));
+                break;
+            }
+        }
+    }
+
+    let Some(max_n) = max_n else {
+        return Ok(());
+    };
+
+    for n in 0..=max_n {
+        let find_key = format!("find_{n}");
+        let replace_key = format!("replace_{n}");
+        let has_find = params.contains_key(&find_key);
+        let has_replace = params.contains_key(&replace_key);
+
+        if !has_find && !has_replace {
+            return Err(format!(
+                "transform indices must be contiguous; missing index {n} (found higher indices)"
+            ));
+        }
+        if has_find && !has_replace {
+            return Err(format!("transform {n} has '{find_key}' but no '{replace_key}'"));
+        }
+        if !has_find && has_replace {
+            return Err(format!("transform {n} has '{replace_key}' but no '{find_key}'"));
+        }
+
+        if let Some(mode) = params.get(&format!("mode_{n}")) {
+            if mode != "text" && mode != "binary" {
+                return Err(format!("transform {n} mode must be 'text' or 'binary', got '{mode}'"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// A single numbered find/replace transform with optional per-transform overrides.
+struct Transform {
+    find: String,
+    replace: String,
+    mode: Option<String>,
+    filter: Option<String>,
+}
+
+/// Parses numbered `find_<N>`/`replace_<N>` pairs from params in order.
+fn parse_numbered_transforms(params: &StringMap) -> Result<Vec<Transform>, String> {
+    let mut transforms = Vec::new();
+    let mut n = 0usize;
+    loop {
+        let find_key = format!("find_{n}");
+        let replace_key = format!("replace_{n}");
+
+        match (params.get(&find_key), params.get(&replace_key)) {
+            (Some(find), Some(replace)) => {
+                transforms.push(Transform {
+                    find: find.clone(),
+                    replace: replace.clone(),
+                    mode: params.get(&format!("mode_{n}")).cloned(),
+                    filter: params.get(&format!("filter_{n}")).cloned(),
+                });
+            }
+            (None, None) => break,
+            (Some(_), None) => {
+                return Err(format!("transform {n} has '{find_key}' but no '{replace_key}'"));
+            }
+            (None, Some(_)) => {
+                return Err(format!("transform {n} has '{replace_key}' but no '{find_key}'"));
+            }
+        }
+        n += 1;
+    }
+    Ok(transforms)
+}
+
+/// Converts a glob pattern (supporting `*` and `?` excluding `/`) to a regex.
+fn glob_to_regex(pattern: &str) -> Result<TextRegex, String> {
+    let mut regex_str = String::with_capacity(pattern.len() + 4);
+    regex_str.push('^');
+    for c in pattern.chars() {
+        match c {
+            '*' => regex_str.push_str("[^/]*"),
+            '?' => regex_str.push_str("[^/]"),
+            '.' | '+' | '^' | '$' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '\\' => {
+                regex_str.push('\\');
+                regex_str.push(c);
+            }
+            _ => regex_str.push(c),
+        }
+    }
+    regex_str.push('$');
+    TextRegex::new(&regex_str).map_err(|err| format!("invalid glob pattern '{pattern}': {err}"))
+}
+
+/// Applies all matching numbered transforms to entry content.
+fn apply_transforms_to_content(
+    content: &[u8],
+    entry_name: &str,
+    transforms: &[Transform],
+    global_mode: &str,
+    global_filter: &str,
+) -> Result<Vec<u8>, String> {
+    let mut result = content.to_vec();
+    for (i, transform) in transforms.iter().enumerate() {
+        let mode = transform.mode.as_deref().unwrap_or(global_mode);
+        let filter = transform.filter.as_deref().unwrap_or(global_filter);
+
+        let glob_re = glob_to_regex(filter)?;
+        if !glob_re.is_match(entry_name) {
+            continue;
+        }
+
+        match mode {
+            "text" => {
+                let text = std::str::from_utf8(&result).map_err(|err| {
+                    format!(
+                        "entry '{entry_name}' content is not valid UTF-8 for text mode transform {i}: {err}"
+                    )
+                })?;
+                let re = TextRegex::new(&transform.find)
+                    .map_err(|err| format!("invalid regex for transform {i}: {err}"))?;
+                let replaced = re.replace_all(text, &transform.replace);
+                result = replaced.as_bytes().to_vec();
+            }
+            "binary" => {
+                let re = BytesRegex::new(&transform.find)
+                    .map_err(|err| format!("invalid binary regex for transform {i}: {err}"))?;
+                let replaced = re.replace_all(&result, transform.replace.as_bytes());
+                result = replaced.to_vec();
+            }
+            other => {
+                return Err(format!("transform mode must be 'text' or 'binary', got '{other}'"));
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// Applies numbered find/replace transforms to ZIP entry content.
+///
+/// Returns a new uncompressed ZIP with transformed entry content.
+/// Directory entries are preserved as-is.
+fn transform_zip_bytes(zip_bytes: &[u8], params: &StringMap) -> Result<Vec<u8>, String> {
+    let transforms = parse_numbered_transforms(params)?;
+    let global_mode = params.get("mode").map_or("text", String::as_str);
+    let global_filter = params.get("filter").map_or("*", String::as_str);
+
+    let reader = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|err| format!("reading zip archive bytes failed: {err}"))?;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o644);
+
+    for index in 0..archive.len() {
+        let mut entry =
+            archive.by_index(index).map_err(|err| format!("reading zip entry failed: {err}"))?;
+        let enclosed = entry.enclosed_name().ok_or_else(|| {
+            format!("unsafe zip entry name '{}', escaping destination", entry.name())
+        })?;
+        let normalized_name = enclosed.to_string_lossy().replace('\\', "/");
+
+        if entry.name().ends_with('/') {
+            let mut dir_name = normalized_name.clone();
+            if !dir_name.ends_with('/') {
+                dir_name.push('/');
+            }
+            writer
+                .add_directory(dir_name, options)
+                .map_err(|err| format!("adding directory to zip failed: {err}"))?;
+            continue;
+        }
+
+        let mut content = Vec::new();
+        std::io::copy(&mut entry, &mut content)
+            .map_err(|err| format!("reading zip entry content failed: {err}"))?;
+
+        let transformed = apply_transforms_to_content(
+            &content,
+            &normalized_name,
+            &transforms,
+            global_mode,
+            global_filter,
+        )?;
+
+        writer
+            .start_file(normalized_name, options)
+            .map_err(|err| format!("starting zip file entry failed: {err}"))?;
+        writer
+            .write_all(&transformed)
+            .map_err(|err| format!("writing zip file entry failed: {err}"))?;
+    }
+
+    writer
+        .finish()
+        .map_err(|err| format!("finalizing zip payload failed: {err}"))
+        .map(std::io::Cursor::into_inner)
 }
 
 #[cfg(test)]
@@ -660,5 +937,176 @@ mod tests {
     fn descriptor_json_contains_tool_id() {
         let json = describe_json();
         assert!(json.contains("builtins.archive@1.0.0"));
+    }
+
+    /// Verifies text-mode transform replaces patterns in ZIP entries.
+    #[test]
+    fn execute_transform_strips_text() {
+        let inner_payload = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "pack".to_string()),
+                ("kind".to_string(), "file".to_string()),
+                ("entry_name".to_string(), "test.txt".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), b"hello __mediapm__ world".to_vec())]),
+        )
+        .expect("pack inner should succeed");
+
+        let result = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "transform".to_string()),
+                ("find_0".to_string(), "__mediapm__".to_string()),
+                ("replace_0".to_string(), "".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), inner_payload)]),
+        )
+        .expect("transform should succeed");
+
+        let temp = tempdir().expect("tempdir");
+        unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
+        let content = std::fs::read_to_string(temp.path().join("test.txt")).expect("read");
+        assert_eq!(content, "hello  world");
+    }
+
+    /// Verifies transform with no find/replace pairs returns ZIP unchanged.
+    #[test]
+    fn execute_transform_passthrough_no_transforms() {
+        let inner_payload = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "pack".to_string()),
+                ("kind".to_string(), "file".to_string()),
+                ("entry_name".to_string(), "data.bin".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), b"original".to_vec())]),
+        )
+        .expect("pack inner should succeed");
+
+        let result = execute_content_map(
+            &BTreeMap::from([("action".to_string(), "transform".to_string())]),
+            &BinaryInputMap::from([("content".to_string(), inner_payload)]),
+        )
+        .expect("transform with no transforms should succeed");
+
+        let temp = tempdir().expect("tempdir");
+        unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
+        let content = std::fs::read_to_string(temp.path().join("data.bin")).expect("read");
+        assert_eq!(content, "original");
+    }
+
+    /// Verifies filter pattern only transforms matching ZIP entries.
+    #[test]
+    fn execute_transform_filter_selects_entries() {
+        let temp = tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("keep.txt"), b"hello __mediapm__ world")
+            .expect("write keep");
+        std::fs::write(temp.path().join("skip.dat"), b"other __mediapm__ data")
+            .expect("write skip");
+
+        let folder_payload =
+            pack_directory_to_uncompressed_zip_bytes(temp.path(), false).expect("pack folder");
+
+        let result = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "transform".to_string()),
+                ("find_0".to_string(), "__mediapm__".to_string()),
+                ("replace_0".to_string(), "".to_string()),
+                ("filter".to_string(), "*.txt".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), folder_payload)]),
+        )
+        .expect("transform should succeed");
+
+        let out = tempdir().expect("tempdir");
+        unpack_zip_bytes_to_directory(&result, out.path()).expect("unpack");
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("keep.txt")).ok(),
+            Some("hello  world".to_string()),
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("skip.dat")).ok(),
+            Some("other __mediapm__ data".to_string()),
+        );
+    }
+
+    /// Verifies binary-mode transform replaces raw byte patterns.
+    #[test]
+    fn execute_transform_binary_mode() {
+        let content = b"\x00\x01\x00\x02".to_vec();
+        let folder_payload = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "pack".to_string()),
+                ("kind".to_string(), "file".to_string()),
+                ("entry_name".to_string(), "data.bin".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), content)]),
+        )
+        .expect("pack inner should succeed");
+
+        let result = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "transform".to_string()),
+                ("mode".to_string(), "binary".to_string()),
+                ("find_0".to_string(), "\x00".to_string()),
+                ("replace_0".to_string(), "\x01".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), folder_payload)]),
+        )
+        .expect("transform binary should succeed");
+
+        let temp = tempdir().expect("tempdir");
+        unpack_zip_bytes_to_directory(&result, temp.path()).expect("unpack");
+        assert_eq!(
+            std::fs::read(temp.path().join("data.bin")).ok(),
+            Some(b"\x01\x01\x01\x02".to_vec()),
+        );
+    }
+
+    /// Verifies non-contiguous transform numbering is rejected.
+    #[test]
+    fn execute_transform_rejects_non_contiguous() {
+        let inner_payload = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "pack".to_string()),
+                ("kind".to_string(), "file".to_string()),
+                ("entry_name".to_string(), "dummy.txt".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), b"content".to_vec())]),
+        )
+        .expect("pack inner should succeed");
+
+        let result = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "transform".to_string()),
+                ("find_0".to_string(), "a".to_string()),
+                ("replace_0".to_string(), "b".to_string()),
+                ("find_2".to_string(), "c".to_string()),
+                ("replace_2".to_string(), "d".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), inner_payload)]),
+        );
+        assert!(result.is_err(), "should reject non-contiguous numbering");
+    }
+
+    /// Verifies unpaired find/replace at same index is rejected.
+    #[test]
+    fn execute_transform_rejects_unpaired() {
+        let inner_payload = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "pack".to_string()),
+                ("kind".to_string(), "file".to_string()),
+                ("entry_name".to_string(), "dummy.txt".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), b"content".to_vec())]),
+        )
+        .expect("pack inner should succeed");
+
+        let result = execute_content_map(
+            &BTreeMap::from([
+                ("action".to_string(), "transform".to_string()),
+                ("find_0".to_string(), "a".to_string()),
+            ]),
+            &BinaryInputMap::from([("content".to_string(), inner_payload)]),
+        );
+        assert!(result.is_err(), "should reject unpaired transform");
     }
 }
