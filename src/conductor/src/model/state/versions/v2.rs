@@ -482,6 +482,7 @@ pub fn orchestration_state_v2_iso() -> IsoPrime<
                     .collect(),
                 instance_blob_hashes: BTreeSet::new(),
                 referenced_instance_keys: std::collections::HashSet::new(),
+                external_data: BTreeMap::new(),
             };
             (refs, runtime_state)
         },

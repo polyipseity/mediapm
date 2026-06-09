@@ -171,6 +171,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                 aux,
                 instance_blob_hashes,
                 referenced_instance_keys: HashSet::new(),
+                external_data: BTreeMap::new(),
             })
         }
         v1::ORCHESTRATION_STATE_VERSION_V1 => {
@@ -215,6 +216,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                 aux,
                 instance_blob_hashes: BTreeSet::new(),
                 referenced_instance_keys: HashSet::new(),
+                external_data: BTreeMap::new(),
             })
         }
         other => Err(ConductorError::Workflow(format!(

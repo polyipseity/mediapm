@@ -310,11 +310,12 @@ where
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
-        self.merge_external_data(&unified.external_data);
         state_store.set_instance_ttl(
             machine_document.runtime.instance_ttl_seconds.or(Some(DEFAULT_INSTANCE_TTL_SECONDS)),
         )?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
+        state.external_data = unified.external_data.clone();
+        self.merge_external_data(&unified.external_data);
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
         )?;
@@ -440,7 +441,8 @@ where
             )
             .await?;
 
-        let state = state_store.load_state_from_pointer(prior_state_pointer).await?;
+        let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
+        state.external_data = unified.external_data.clone();
         Self::validate_state_against_unified(&state, &unified)?;
         // Publish the loaded state to the state-store's in-memory snapshot so
         // subsequent current_state() / run_gc() calls reflect persisted state
@@ -500,6 +502,8 @@ where
         )?;
 
         Self::validate_state_against_unified(&next_state, &unified)?;
+        let mut next_state = next_state;
+        next_state.external_data = unified.external_data.clone();
         let next_pointer = state_store.persist_and_publish_state(next_state).await?;
         state_document.state_pointer = Some(next_pointer);
         document_loader

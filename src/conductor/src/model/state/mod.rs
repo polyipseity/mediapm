@@ -10,7 +10,7 @@ use mediapm_cas::{CasApi, Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
-use crate::model::config::{ImpureTimestamp, ToolSpec};
+use crate::model::config::{ExternalContentRef, ImpureTimestamp, ToolSpec};
 
 pub(crate) mod versions;
 
@@ -292,6 +292,14 @@ pub struct OrchestrationState {
     /// are never evicted by GC regardless of `last_unreachable`.
     #[serde(default, skip_serializing, skip_deserializing)]
     pub referenced_instance_keys: HashSet<String>,
+    /// External-data content-blob hashes referenced by the current merged
+    /// config.
+    ///
+    /// Populated from the unified document's `external_data` after every
+    /// state load so that GC root computation can protect these hashes
+    /// from sweep.  Runtime-only — never serialized.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub external_data: BTreeMap<Hash, ExternalContentRef>,
 }
 
 impl Default for OrchestrationState {
@@ -302,6 +310,7 @@ impl Default for OrchestrationState {
             aux: BTreeMap::new(),
             instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
+            external_data: BTreeMap::new(),
         }
     }
 }
@@ -445,6 +454,7 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         aux,
         instance_blob_hashes: BTreeSet::new(),
         referenced_instance_keys: HashSet::new(),
+        external_data: BTreeMap::new(),
     })
 }
 
