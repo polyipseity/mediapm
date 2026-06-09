@@ -15,7 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -101,6 +101,17 @@ pub(super) struct FileSystemState {
     /// access to the filesystem store. Dropped on state drop to release.
     #[expect(dead_code)]
     lock_file: Option<std::fs::File>,
+
+    /// Monotonically increasing counter for detecting concurrent index mutations
+    /// that may invalidate in-flight delta chain reconstructions.
+    reconstruction_version: AtomicU64,
+}
+
+/// A delta chain entry with hash context for error reporting during reconstruction.
+struct DeltaPatchEntry {
+    payload: Cow<'static, [u8]>,
+    delta_hash: Hash,
+    base_hash: Hash,
 }
 
 /// Internal filesystem backend runtime operations and helpers.
@@ -177,6 +188,7 @@ impl FileSystemState {
             active_mmaps,
             object_actor,
             lock_file,
+            reconstruction_version: AtomicU64::new(0),
         };
 
         cas.repair_index_file_invariant().await?;
@@ -1672,11 +1684,167 @@ impl FileSystemState {
             Self::upsert_object_meta(&mut index, target, &best.object)?
         };
 
+        // Bump reconstruction version to signal concurrent get() callers
+        // that their pre-walk plan may be stale.
+        self.reconstruction_version.fetch_add(1, Ordering::Release);
+
         let mut meta = Self::meta_for_object(&best.object, resolved_depth);
         meta.set_verify_time(Self::now_unix());
         self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target, meta }]).await?;
 
         Ok(true)
+    }
+}
+
+/// One link in a reconstruction plan: either a full-object read or a delta
+/// patch that must be applied over a base.
+#[derive(Debug, Clone)]
+enum ChainLink {
+    /// Read the full object identified by this hash.
+    Full(Hash),
+    /// Apply the delta patch identified by `hash` atop `base_hash`.
+    Delta { hash: Hash, base_hash: Hash },
+}
+
+/// Pre-computed reconstruction plan built under a single index read lock.
+///
+/// Holding the index lock during pre-walk prevents concurrent GC/delete from
+/// mutating the delta chain while we collect all necessary hashes. Once the
+/// plan is built, the lock is released and reconstruction proceeds with disk
+/// I/O outside the lock.
+#[derive(Debug, Clone)]
+struct ReconstructionPlan {
+    /// Delta chain from leaf to root (last entry is the base full object).
+    chain: Vec<ChainLink>,
+    /// Expected logical content length, if available from metadata.
+    expected_len: Option<u64>,
+}
+
+impl FileSystemState {
+    /// Pre-walks the delta chain under the index read lock, collecting all
+    /// hashes needed for reconstruction without performing any disk I/O.
+    ///
+    /// Returns [`None`] when the target hash is not yet indexed (caller should
+    /// fall back to a direct filesystem lookup).
+    fn build_reconstruction_plan(
+        &self,
+        hash: Hash,
+    ) -> Result<Option<ReconstructionPlan>, CasError> {
+        let index = self.lock_index_read("building reconstruction plan");
+        let mut chain: Vec<ChainLink> = Vec::new();
+        let mut current = hash;
+        // Local visited set for cycle detection (async read path in `get()` is
+        // separate, so we can't share a helper with `chain.rs`).
+        let mut visited = HashSet::new();
+        let mut expected_len: Option<u64> = None;
+
+        loop {
+            if !visited.insert(current) {
+                return Err(CasError::CycleDetected {
+                    target: hash,
+                    detail: format!("loop encountered at {current}"),
+                });
+            }
+
+            let Some(meta) = index.objects.get(&current) else {
+                // Missing from in-memory index — caller must fall back to
+                // direct filesystem lookup (orphaned or new object).
+                return Ok(None);
+            };
+            if expected_len.is_none() {
+                expected_len = Some(meta.content_len);
+            }
+
+            if meta.is_full() {
+                chain.push(ChainLink::Full(current));
+                return Ok(Some(ReconstructionPlan { chain, expected_len }));
+            }
+
+            let base_hash = meta.base_hash().expect("non-full metadata must carry base hash");
+            chain.push(ChainLink::Delta { hash: current, base_hash });
+            current = base_hash;
+        }
+    }
+
+    /// Executes a pre-computed reconstruction plan: reads objects from disk
+    /// and applies delta patches in reverse order (root → leaf).
+    async fn execute_reconstruction_plan(
+        &self,
+        target: Hash,
+        plan: ReconstructionPlan,
+    ) -> Result<Vec<u8>, CasError> {
+        let mut chain = plan.chain;
+        // Last entry must be the base full object.
+        let Some(base_link) = chain.pop() else {
+            return Err(CasError::corrupt_object(format!(
+                "empty reconstruction plan for {target}"
+            )));
+        };
+
+        let ChainLink::Full(base_hash) = base_link else {
+            return Err(CasError::corrupt_object(format!(
+                "reconstruction plan base is not a full object for {target}"
+            )));
+        };
+
+        // Read the base full object.
+        let base_payload = if let Some(mapped) = self.read_full_object_mmap(base_hash).await? {
+            mapped.to_vec()
+        } else {
+            let object = self.read_stored_object(base_hash).await?;
+            match object {
+                StoredObject::Full { payload } => payload,
+                StoredObject::Delta { .. } => {
+                    return Err(CasError::corrupt_object(format!(
+                        "expected full object at {base_hash} but found delta in chain for {target}"
+                    )));
+                }
+            }
+        };
+
+        // Apply remaining delta patches with hash context.
+        let mut patch_stack: Vec<DeltaPatchEntry> = Vec::with_capacity(chain.len());
+        for link in chain {
+            match link {
+                ChainLink::Delta { hash, base_hash } => {
+                    let stored = self.read_stored_object(hash).await?;
+                    match stored {
+                        StoredObject::Delta { state } => {
+                            patch_stack.push(DeltaPatchEntry {
+                                payload: state.payload,
+                                delta_hash: hash,
+                                base_hash,
+                            });
+                        }
+                        StoredObject::Full { .. } => {
+                            return Err(CasError::corrupt_object(format!(
+                                "expected delta object at {hash} but found full in chain for {target}"
+                            )));
+                        }
+                    }
+                }
+                ChainLink::Full(_) => {
+                    // Only base should be full.
+                    unreachable!("full object in non-base position of plan chain");
+                }
+            }
+        }
+
+        let data = apply_delta_patch_stack(target, base_payload, &mut patch_stack)?;
+        if let Some(expected) = plan.expected_len
+            && data.len() as u64 != expected
+        {
+            return Err(CasError::corrupt_object(format!(
+                "reconstructed size mismatch for {target}: expected {expected}, got {}",
+                data.len(),
+            )));
+        }
+        if !self.can_skip_verification(target) {
+            ensure_reconstructed_hash(target, &data, "plan-based delta reconstruction")?;
+            self.record_verified(target);
+        }
+
+        Ok(data)
     }
 }
 
@@ -1817,71 +1985,49 @@ impl CasApi for FileSystemState {
             return Ok(Bytes::new());
         }
 
-        let mut current = hash;
-        // Cycle detection via local visited set (async reads preclude shared helpers in `chain.rs`).
-        let mut visited = HashSet::new();
-        let mut patch_payloads: Vec<Cow<'static, [u8]>> = Vec::new();
-        let mut expected_len: Option<u64> = None;
+        // Retry loop with reconstruction-version guard: build a
+        // reconstruction plan under the index read lock (pre-walking the
+        // delta chain from metadata only), then check whether a concurrent
+        // delete/optimize bumped the version. If so, retry once.
+        for attempt in 0..2 {
+            let version_before = self.reconstruction_version.load(Ordering::Acquire);
 
-        loop {
-            if !visited.insert(current) {
-                return Err(CasError::CycleDetected {
-                    target: hash,
-                    detail: format!("loop encountered at {current}"),
-                });
+            let Some(plan) = self.build_reconstruction_plan(hash)? else {
+                // Target not in in-memory index — fall through to direct
+                // filesystem lookup below.
+                break;
+            };
+
+            if self.reconstruction_version.load(Ordering::Relaxed) == version_before || attempt == 1
+            {
+                // Version stable (or last attempt) — execute plan.
+                return self.execute_reconstruction_plan(hash, plan).await.map(Bytes::from);
             }
+            // Version changed — concurrent mutation; retry once.
+        }
 
-            if let Some(mapped_full) = self.read_full_object_mmap(current).await? {
-                if expected_len.is_none() {
-                    expected_len = Some(mapped_full.len() as u64);
-                }
+        // Fallback: object not tracked in the in-memory index.  This handles
+        // freshly-written or orphaned objects that haven't been indexed yet.
+        if let Some(mapped_full) = self.read_full_object_mmap(hash).await? {
+            if !self.can_skip_verification(hash) {
+                ensure_reconstructed_hash(hash, mapped_full.as_ref(), "mmap full-object read")?;
+                self.record_verified(hash);
+            }
+            return Ok(mapped_full);
+        }
 
-                if patch_payloads.is_empty() {
-                    ensure_reconstructed_size(hash, expected_len, mapped_full.len())?;
-                    if !self.can_skip_verification(hash) {
-                        ensure_reconstructed_hash(
-                            hash,
-                            mapped_full.as_ref(),
-                            "mmap full-object read",
-                        )?;
-                        self.record_verified(hash);
-                    }
-                    return Ok(mapped_full);
-                }
-
-                let data = apply_delta_patch_stack(mapped_full.to_vec(), &mut patch_payloads)?;
-                ensure_reconstructed_size(hash, expected_len, data.len())?;
+        let object = self.read_stored_object(hash).await?;
+        match object {
+            StoredObject::Full { payload } => {
                 if !self.can_skip_verification(hash) {
-                    ensure_reconstructed_hash(hash, data.as_slice(), "mmap+delta reconstruction")?;
+                    ensure_reconstructed_hash(hash, &payload, "stored full-object read")?;
                     self.record_verified(hash);
                 }
-
-                return Ok(Bytes::from(data));
+                Ok(Bytes::from(payload))
             }
-
-            let object = self.read_stored_object(current).await?;
-            if expected_len.is_none() {
-                expected_len = Some(object.content_len());
-            }
-            match object {
-                StoredObject::Full { payload } => {
-                    let data = apply_delta_patch_stack(payload, &mut patch_payloads)?;
-                    ensure_reconstructed_size(hash, expected_len, data.len())?;
-                    if !self.can_skip_verification(hash) {
-                        ensure_reconstructed_hash(
-                            hash,
-                            data.as_slice(),
-                            "full/delta reconstruction",
-                        )?;
-                        self.record_verified(hash);
-                    }
-                    return Ok(Bytes::from(data));
-                }
-                StoredObject::Delta { state } => {
-                    patch_payloads.push(state.payload);
-                    current = state.base_hash;
-                }
-            }
+            StoredObject::Delta { .. } => Err(CasError::corrupt_object(format!(
+                "unindexed delta object at {hash} without base chain entry"
+            ))),
         }
     }
 
@@ -2040,6 +2186,10 @@ impl CasApi for FileSystemState {
             Self::remove_constraint_references(&mut projected, hash);
             *index = projected;
         }
+
+        // Bump reconstruction version to signal concurrent get() callers
+        // that their pre-walk plan may be stale.
+        self.reconstruction_version.fetch_add(1, Ordering::Release);
 
         self.delete_object_files(hash).await?;
 
@@ -2266,15 +2416,17 @@ const fn ensure_no_length_collision(
 
 /// Applies stacked delta payloads to a full-object base payload.
 ///
-/// `patch_payloads` is consumed from the end so callers can push base-to-leaf
-/// deltas during traversal and replay them in reconstruction order.
+/// `patch_stack` is consumed from the end so callers can push base-to-leaf
+/// deltas during traversal and replay them in reconstruction order. Each
+/// entry carries hash context so decoding failures produce actionable errors.
 fn apply_delta_patch_stack(
+    target: Hash,
     mut base_payload: Vec<u8>,
-    patch_payloads: &mut Vec<Cow<'static, [u8]>>,
+    patch_stack: &mut Vec<DeltaPatchEntry>,
 ) -> Result<Vec<u8>, CasError> {
-    while let Some(patch_payload) = patch_payloads.pop() {
-        let patch = DeltaPatch::decode(patch_payload.as_ref());
-        base_payload = patch.apply(&base_payload)?;
+    while let Some(entry) = patch_stack.pop() {
+        let patch = DeltaPatch::decode(entry.payload.as_ref());
+        base_payload = patch.apply(&base_payload, target, entry.delta_hash, entry.base_hash)?;
     }
 
     Ok(base_payload)
@@ -2360,31 +2512,8 @@ fn chunked_full_object_stream(file: fs::File, file_len: u64, path: &Path) -> Cas
 
 /// Fast O(1) length pre-check before full hash verification.
 ///
-/// Strictly redundant with the subsequent hash check (any corruption that
-/// changes the size also changes the hash), but provides cheap early
-/// rejection before the hash computation.
-fn ensure_reconstructed_size(
-    hash: Hash,
-    expected_len: Option<u64>,
-    actual_len: usize,
-) -> Result<(), CasError> {
-    if let Some(expected) = expected_len
-        && actual_len as u64 != expected
-    {
-        return Err(CasError::corrupt_object(format!(
-            "reconstructed size mismatch for {hash}: expected {expected}, got {actual_len}",
-        )));
-    }
-
-    Ok(())
-}
-
 /// Terminal integrity proof: recomputes `Hash::from_content()` on the
 /// reconstructed payload and compares against the expected hash.
-///
-/// This is the definitive integrity guarantee for reconstructed objects.
-/// The O(1) size check via [`ensure_reconstructed_size`] runs first as a
-/// fast pre-filter but is strictly redundant with this hash check.
 fn ensure_reconstructed_hash(
     expected_hash: Hash,
     content: &[u8],
