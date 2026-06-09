@@ -1,8 +1,7 @@
 //! Startup recovery, explicit repair, and backup helpers for filesystem CAS.
 //!
-//! This module keeps index-loss handling deterministic by treating the object
-//! store as the authoritative source for object metadata while using backup
-//! snapshots only to restore explicit constraint rows when possible.
+//! Treats the object store as the authoritative source for object metadata;
+//! backup snapshots only restore explicit constraint rows when possible.
 //!
 //! ## DO NOT REMOVE: external versions boundary guard
 //!

@@ -2,16 +2,6 @@ use super::*;
 
 /// Recover-mode workflow: missing primary index rebuilds from objects/backups.
 ///
-/// Steps:
-/// 1. Open filesystem backend in recover mode.
-/// 2. Store base and target payloads with explicit constraint.
-/// 3. Run optimize and close backend.
-/// 4. Remove `index.redb`.
-/// 5. Reopen backend in recover mode.
-/// 6. Assert target payload is reconstructable.
-/// 7. Assert explicit constraint row is restored.
-/// 8. Assert `exists`/`info` semantics remain valid.
-///
 /// Edge cases covered:
 /// - missing primary index recovery using backup/object-store reconstruction.
 #[tokio::test]
@@ -79,13 +69,6 @@ async fn recover_mode_rebuilds_missing_primary_index() {
 
 /// Strict-mode workflow: missing primary index is rejected when objects exist.
 ///
-/// Steps:
-/// 1. Open filesystem backend and store one object.
-/// 2. Close backend.
-/// 3. Remove `index.redb` while object files still exist.
-/// 4. Reopen using strict recovery mode.
-/// 5. Assert startup fails with actionable error text.
-///
 /// Edge cases covered:
 /// - strict-mode safety policy for missing durable metadata.
 #[tokio::test]
@@ -123,13 +106,6 @@ async fn strict_mode_rejects_missing_primary_index_when_objects_exist() {
 
 /// Recover-mode workflow: corrupted primary index is rebuilt from object store.
 ///
-/// Steps:
-/// 1. Open backend and store one object.
-/// 2. Close backend.
-/// 3. Corrupt `index.redb` bytes directly.
-/// 4. Reopen in recover mode.
-/// 5. Assert object remains retrievable and exists.
-///
 /// Edge cases covered:
 /// - durable index corruption path and automatic rebuild behavior.
 #[tokio::test]
@@ -154,15 +130,6 @@ async fn corrupt_primary_index_is_rebuilt_from_object_store() {
 }
 
 /// Explicit-repair workflow: removed redb row is auto-healed by `exists()`.
-///
-/// Steps:
-/// 1. Open backend and store control + target objects.
-/// 2. Flush index snapshot and close backend.
-/// 3. Open redb directly and remove target row from `primary_index`.
-/// 4. Reopen backend and confirm `exists(target)` auto-heals (returns `true`).
-/// 5. Confirm `get(target)` still succeeds from object file.
-/// 6. Run `repair_index`.
-/// 7. Assert target row remains accessible and metadata is valid.
 ///
 /// Edge cases covered:
 /// - metadata/data divergence auto-recovery by `exists()` filesystem fallback.
@@ -208,14 +175,6 @@ async fn explicit_repair_restores_removed_primary_rows() {
 }
 
 /// Retention+migration workflow: backup cap and migration idempotency.
-///
-/// Steps:
-/// 1. Open backend with recover mode and strict backup retention (`max=2`).
-/// 2. Perform multiple writes to rotate backups.
-/// 3. Close backend and assert only two backup snapshots remain.
-/// 4. Reopen backend and run migration to schema marker `1`.
-/// 5. Re-run migration to same marker to validate idempotent behavior.
-/// 6. Read sample object and verify bytes unchanged.
 ///
 /// Edge cases covered:
 /// - backup retention limits;
@@ -269,12 +228,6 @@ async fn backup_retention_and_migration_roundtrip() {
 
 /// Migration validation workflow: unsupported target version is rejected.
 ///
-/// Steps:
-/// 1. Open filesystem backend and ingest one object.
-/// 2. Attempt migration to obviously unsupported version marker.
-/// 3. Assert migration fails.
-/// 4. Assert existing object remains readable after failed migration.
-///
 /// Edge cases covered:
 /// - migration guardrails for unsupported schema markers.
 #[tokio::test]
@@ -307,12 +260,6 @@ async fn unsupported_migration_version_is_rejected_without_data_loss() {
 }
 
 /// Repair idempotency workflow: repeated repair calls remain safe and stable.
-///
-/// Steps:
-/// 1. Open backend and ingest one object.
-/// 2. Run `repair_index` twice.
-/// 3. Assert both calls succeed.
-/// 4. Assert object remains retrievable.
 ///
 /// Edge cases covered:
 /// - repair-idempotency and repeated maintenance safety.

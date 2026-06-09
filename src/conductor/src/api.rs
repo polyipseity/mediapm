@@ -200,8 +200,8 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
     conductor_tools_dir: &Path,
     selector: &str,
 ) -> Result<ManagedToolExecutableResolution, ConductorError> {
-    let machine = load_machine_document_for_managed_tool_resolution(machine_ncl)?;
-    let tool_id = resolve_managed_tool_id_for_execution(&machine, selector)?;
+    let machine = load_machine_document(machine_ncl)?;
+    let tool_id = resolve_managed_tool_id(&machine, selector)?;
     let tool_spec = machine.tools.get(&tool_id).ok_or_else(|| {
         ConductorError::Workflow(format!(
             "managed tool '{tool_id}' is missing from conductor machine config"
@@ -243,7 +243,7 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
     let cache_entry = tool_cache.materialize(&tool_id, content_map).await?;
     let payload_dir = cache_entry.payload_dir().to_path_buf();
 
-    let host_relative = resolve_host_command_selector_path_for_execution(command_selector)?
+    let host_relative = resolve_host_command_selector_path(command_selector)?
         .ok_or_else(|| {
             ConductorError::Workflow(format!(
                 "managed tool '{tool_id}' command selector '{command_selector}' does not resolve to a host executable path for os '{}'",
@@ -251,7 +251,7 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
             ))
         })?;
     let relative_path =
-        normalize_managed_tool_relative_command_path_for_execution(&host_relative).ok_or_else(
+        normalize_managed_tool_relative_command_path(&host_relative).ok_or_else(
             || {
                 ConductorError::Workflow(format!(
                     "managed tool '{tool_id}' command selector '{command_selector}' resolved to an invalid relative path"
@@ -270,9 +270,7 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
 }
 
 /// Loads one machine document for managed executable resolution.
-fn load_machine_document_for_managed_tool_resolution(
-    machine_ncl: &Path,
-) -> Result<MachineNickelDocument, ConductorError> {
+fn load_machine_document(machine_ncl: &Path) -> Result<MachineNickelDocument, ConductorError> {
     if !machine_ncl.exists() {
         return Ok(MachineNickelDocument::default());
     }
@@ -291,7 +289,7 @@ fn load_machine_document_for_managed_tool_resolution(
 }
 
 /// Resolves one immutable managed tool id from selector text.
-fn resolve_managed_tool_id_for_execution(
+fn resolve_managed_tool_id(
     machine: &MachineNickelDocument,
     selector: &str,
 ) -> Result<String, ConductorError> {
@@ -310,7 +308,7 @@ fn resolve_managed_tool_id_for_execution(
     let mut matches = machine
         .tools
         .keys()
-        .filter(|tool_id| logical_name_matches_tool_id_for_execution(tool_id, selector))
+        .filter(|tool_id| logical_name_matches_tool_id(tool_id, selector))
         .cloned()
         .collect::<Vec<_>>();
     matches.sort();
@@ -329,7 +327,7 @@ fn resolve_managed_tool_id_for_execution(
 }
 
 /// Returns true when immutable tool id belongs to one logical tool name.
-fn logical_name_matches_tool_id_for_execution(tool_id: &str, logical_name: &str) -> bool {
+fn logical_name_matches_tool_id(tool_id: &str, logical_name: &str) -> bool {
     if tool_id.eq_ignore_ascii_case(logical_name) {
         return true;
     }
@@ -352,11 +350,11 @@ fn logical_name_matches_tool_id_for_execution(tool_id: &str, logical_name: &str)
 }
 
 /// Resolves one host command selector path for the active platform.
-fn resolve_host_command_selector_path_for_execution(
+fn resolve_host_command_selector_path(
     command_selector: &str,
 ) -> Result<Option<String>, ConductorError> {
     if command_selector.contains("context.os") {
-        let selectors = extract_platform_conditional_paths_for_execution(command_selector)?;
+        let selectors = extract_platform_conditional_paths(command_selector)?;
         return Ok(selectors.get(std::env::consts::OS).cloned());
     }
 
@@ -365,7 +363,7 @@ fn resolve_host_command_selector_path_for_execution(
 }
 
 /// Parses `${context.os == "<target>" ? <path> | <fallback>}` selectors.
-fn extract_platform_conditional_paths_for_execution(
+fn extract_platform_conditional_paths(
     template: &str,
 ) -> Result<BTreeMap<String, String>, ConductorError> {
     let mut result = BTreeMap::new();
@@ -381,7 +379,7 @@ fn extract_platform_conditional_paths_for_execution(
         };
         let token = &remainder[..end_rel];
 
-        if let Some((target, value)) = parse_platform_conditional_path_token_for_execution(token)? {
+        if let Some((target, value)) = parse_platform_conditional_path_token(token)? {
             result.insert(target, value);
         }
 
@@ -398,7 +396,7 @@ fn extract_platform_conditional_paths_for_execution(
 }
 
 /// Parses one `${...}` token into a platform target/path selector.
-fn parse_platform_conditional_path_token_for_execution(
+fn parse_platform_conditional_path_token(
     token: &str,
 ) -> Result<Option<(String, String)>, ConductorError> {
     if !token.contains("context.os") {
@@ -428,14 +426,14 @@ fn parse_platform_conditional_path_token_for_execution(
             "invalid platform selector '${{{token}}}' for tool command; condition must use '=='"
         )));
     };
-    let target = parse_quoted_selector_value_for_execution(remainder.trim()).ok_or_else(|| {
+    let target = parse_quoted_selector_value(remainder.trim()).ok_or_else(|| {
         ConductorError::Workflow(format!(
             "invalid platform selector '${{{token}}}' for tool command; target must be quoted"
         ))
     })?;
 
     let true_branch = true_branch.trim();
-    let path = if let Some(decoded) = parse_quoted_selector_value_for_execution(true_branch) {
+    let path = if let Some(decoded) = parse_quoted_selector_value(true_branch) {
         decoded
     } else {
         true_branch.to_string()
@@ -450,7 +448,7 @@ fn parse_platform_conditional_path_token_for_execution(
 }
 
 /// Parses one single- or double-quoted selector value.
-fn parse_quoted_selector_value_for_execution(value: &str) -> Option<String> {
+fn parse_quoted_selector_value(value: &str) -> Option<String> {
     if value.len() < 2 {
         return None;
     }
@@ -464,9 +462,7 @@ fn parse_quoted_selector_value_for_execution(value: &str) -> Option<String> {
 }
 
 /// Normalizes one managed-tool relative command path for payload lookup.
-fn normalize_managed_tool_relative_command_path_for_execution(
-    relative_command_path: &str,
-) -> Option<String> {
+fn normalize_managed_tool_relative_command_path(relative_command_path: &str) -> Option<String> {
     let normalized = relative_command_path
         .trim()
         .replace('\\', "/")

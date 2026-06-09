@@ -158,12 +158,18 @@ pub(crate) struct StepExecutionPhaseTimings {
 #[derive(Debug)]
 pub(crate) struct StepExecutionBundle {
     /// Completed step id.
-    #[expect(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "fields are populated but not yet read by any consumer; kept for observability"
+    )]
     pub step_id: String,
     /// Immutable tool name used by the step.
     pub tool_name: String,
     /// Worker index that produced the result.
-    #[expect(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "fields are populated but not yet read by any consumer; kept for observability"
+    )]
     pub worker_index: usize,
     /// Deterministic instance key for deduplication and cache lookup.
     pub instance_key: String,

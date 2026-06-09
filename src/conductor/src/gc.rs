@@ -31,24 +31,11 @@ pub fn compute_gc_roots(
     state_pointer: Option<Hash>,
     state: &OrchestrationState,
 ) -> BTreeSet<Hash> {
-    let mut roots = BTreeSet::new();
-
-    // All external-data keys (covers content_map per the invariant above).
-    roots.extend(user_external_data.keys().copied());
-    roots.extend(machine_external_data.keys().copied());
-
-    // State pointer hash, if one exists.
-    if let Some(hash) = state_pointer {
-        roots.insert(hash);
-    }
-
-    // Input and output hashes from every tool-call instance.
-    for instance in state.instances.values() {
-        roots.extend(instance.outputs.values().map(|o| o.hash));
-        roots.extend(instance.inputs.values().map(|i| i.hash));
-    }
-
-    roots
+    compute_gc_roots_from_keys(
+        user_external_data.keys().copied().chain(machine_external_data.keys().copied()),
+        state_pointer,
+        state,
+    )
 }
 
 /// Computes GC roots from a unified `external_data` map (merged user+machine).
@@ -63,10 +50,19 @@ pub fn compute_gc_roots_from_unified(
     state_pointer: Option<Hash>,
     state: &OrchestrationState,
 ) -> BTreeSet<Hash> {
+    compute_gc_roots_from_keys(external_data.keys().copied(), state_pointer, state)
+}
+
+/// Shared GC-root-computation body used by both public entry points.
+fn compute_gc_roots_from_keys(
+    external_data_keys: impl Iterator<Item = Hash>,
+    state_pointer: Option<Hash>,
+    state: &OrchestrationState,
+) -> BTreeSet<Hash> {
     let mut roots = BTreeSet::new();
 
     // All external-data keys (covers content_map per the invariant above).
-    roots.extend(external_data.keys().copied());
+    roots.extend(external_data_keys);
 
     // State pointer hash, if one exists.
     if let Some(hash) = state_pointer {

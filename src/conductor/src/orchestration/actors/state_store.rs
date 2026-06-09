@@ -108,7 +108,6 @@ impl StateStoreClient {
     }
 
     /// Returns the last persisted state blob CAS pointer, if any.
-    #[allow(dead_code)]
     pub(in crate::orchestration) async fn get_state_pointer(
         &self,
     ) -> Result<Option<Hash>, ConductorError> {
@@ -136,7 +135,6 @@ enum StateStoreMessage {
     /// Runs instance GC with an optional TTL override.
     RunGc(Option<u64>, RpcReplyPort<Result<(), ConductorError>>),
     /// Returns the last persisted state blob CAS pointer, if any.
-    #[allow(dead_code)]
     GetStatePointer(RpcReplyPort<Result<Option<Hash>, ConductorError>>),
 }
 

@@ -6,13 +6,9 @@
 //!
 //! # Module structure note
 //!
-//! This file intentionally remains as a single module despite exceeding 1 700
-//! lines. The entire public surface is the `impl FileSystemState` block (plus
-//! the `impl CasApi for FileSystemState` trait implementation), every method
-//! of which takes `&self` or `&mut self`. Rust does not allow `impl` blocks
-//! to span multiple files without the non-idiomatic `include!()` macro, and
-//! the handful of standalone helper functions at the bottom (< 80 lines) are
-//! too small to justify a separate sibling file. Keep this file whole.
+//! This file is intentionally a single module (~1 700+ lines). All public
+//! methods are in `impl FileSystemState` blocks; standalone helper functions
+//! at the bottom are too few and small to justify a separate file.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -222,12 +218,6 @@ impl FileSystemState {
         cache.remove(&hash);
     }
 
-    /// Returns the integrity verification policy for read-path hash checks.
-    #[allow(dead_code)]
-    pub(super) fn integrity(&self) -> &CasIntegrityConfig {
-        &self.integrity
-    }
-
     /// Returns the current unix epoch timestamp in seconds.
     fn now_unix() -> i64 {
         SystemTime::now()
@@ -293,19 +283,6 @@ impl FileSystemState {
         }
     }
 
-    /// Converts ratio inputs to `f64` for observability reporting.
-    ///
-    /// The metrics API intentionally exposes a floating-point compression ratio.
-    /// Precision loss for very large counters is acceptable in this diagnostic
-    /// view and does not affect correctness-critical planning/state logic.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "this ratio is diagnostic-only telemetry; minor floating-point precision loss does not affect correctness"
-    )]
-    fn ratio_as_f64(numerator: u64, denominator: u64) -> f64 {
-        numerator as f64 / denominator as f64
-    }
-
     /// Increments cache-hit metric counter.
     fn record_cache_hit(&self) {
         self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -354,8 +331,16 @@ impl FileSystemState {
         let object_actor_rpc_wait_ms =
             self.metrics.object_actor_rpc_wait_ms.load(Ordering::Relaxed);
 
-        let delta_compression_ratio =
-            if delta_content == 0 { 1.0 } else { Self::ratio_as_f64(delta_payload, delta_content) };
+        let delta_compression_ratio = if delta_content == 0 {
+            1.0
+        } else {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "diagnostic-only telemetry; precision loss is acceptable"
+            )]
+            let ratio = delta_payload as f64 / delta_content as f64;
+            ratio
+        };
 
         FileSystemMetrics {
             cache_hits,
@@ -1037,12 +1022,7 @@ impl FileSystemState {
 
         {
             let mut index = self.lock_index_write("healing index row from existing disk object");
-            let seeded = match object.base_hash() {
-                Some(base_hash) => {
-                    ObjectMeta::delta(object.payload_len(), object.content_len(), 0, base_hash)
-                }
-                None => ObjectMeta::full(object.payload_len(), object.content_len(), 0),
-            };
+            let seeded = Self::meta_for_object(&object, 0);
             index.objects.entry(hash).or_insert(seeded);
             recalculate_depths(&mut index)?;
         }
@@ -1068,12 +1048,7 @@ impl FileSystemState {
             if index.objects.contains_key(&hash) {
                 return Ok(true);
             }
-            let seeded = match object.base_hash() {
-                Some(base_hash) => {
-                    ObjectMeta::delta(object.payload_len(), object.content_len(), 0, base_hash)
-                }
-                None => ObjectMeta::full(object.payload_len(), object.content_len(), 0),
-            };
+            let seeded = Self::meta_for_object(&object, 0);
             index.objects.entry(hash).or_insert(seeded);
             recalculate_depths(&mut index)?;
         }
