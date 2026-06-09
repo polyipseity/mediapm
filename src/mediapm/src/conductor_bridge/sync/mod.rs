@@ -75,11 +75,13 @@ pub(crate) async fn reconcile_desired_tools(
 
     let mut requirements_to_provision = BTreeMap::new();
     let mut skipped_tag_update_tool_ids = BTreeMap::new();
+    let mut non_builtin_names: Vec<String> = Vec::new();
 
     for (tool_name, requirement) in &document.tools {
         if is_builtin_source_ingest_requirement(tool_name) {
             continue;
         }
+        non_builtin_names.push(tool_name.clone());
 
         if should_skip_tag_update_check(requirement, tool_name, lock, &machine, check_tag_updates)
             && let Some(active_tool_id) = lock.active_tools.get(tool_name).cloned()
@@ -117,10 +119,8 @@ pub(crate) async fn reconcile_desired_tools(
     let mut desired_tool_ids = BTreeSet::new();
     let mut generated_runtime_env_vars = BTreeMap::<String, String>::new();
 
-    for (name, requirement) in &document.tools {
-        if is_builtin_source_ingest_requirement(name) {
-            continue;
-        }
+    for name in &non_builtin_names {
+        let requirement = &document.tools[name.as_str()];
 
         if let Some(active_tool_id) = skipped_tag_update_tool_ids.get(name) {
             desired_tool_ids.insert(active_tool_id.clone());
@@ -139,16 +139,7 @@ pub(crate) async fn reconcile_desired_tools(
             crate::tools::downloader::ContentMapSource,
         > = provisioned.content_entries.clone();
         let mut desired_tool_id = provisioned.tool_id.clone();
-        #[allow(unused_assignments)]
-        let mut media_tagger_ffmpeg_host_command_path: Option<String> = None;
-        let mut yt_dlp_resolved_ffmpeg_path: Option<String> = None;
-        let mut yt_dlp_resolved_js_runtimes_path: Option<String> = None;
-        let mut companion_ffmpeg_content_map = BTreeMap::new();
-        let mut companion_ffmpeg_host_command_path: Option<String> = None;
-        let mut companion_deno_content_map = BTreeMap::new();
-        let mut companion_deno_host_command_path: Option<String> = None;
-
-        if name.eq_ignore_ascii_case("media-tagger") {
+        let media_tagger_ffmpeg_host_command_path = if name.eq_ignore_ascii_case("media-tagger") {
             let ffmpeg_selection = resolve_media_tagger_ffmpeg_selection(
                 paths,
                 requirement,
@@ -156,9 +147,16 @@ pub(crate) async fn reconcile_desired_tools(
                 lock,
                 &machine,
             )?;
-
-            media_tagger_ffmpeg_host_command_path = ffmpeg_selection.host_command_path;
-        }
+            ffmpeg_selection.host_command_path
+        } else {
+            None
+        };
+        let mut yt_dlp_resolved_ffmpeg_path: Option<String> = None;
+        let mut yt_dlp_resolved_js_runtimes_path: Option<String> = None;
+        let mut companion_ffmpeg_content_map = BTreeMap::new();
+        let mut companion_ffmpeg_host_command_path: Option<String> = None;
+        let mut companion_deno_content_map = BTreeMap::new();
+        let mut companion_deno_host_command_path: Option<String> = None;
 
         if name.eq_ignore_ascii_case("yt-dlp") {
             let companion_selection = resolve_companion_ffmpeg_selection(
@@ -343,16 +341,10 @@ pub(crate) async fn reconcile_desired_tools(
             generated_runtime_env_vars.insert(MEDIA_TAGGER_FFMPEG_BIN_ENV.to_string(), ffmpeg_path);
         }
 
-        if existing_active.as_deref() == Some(desired_tool_id.as_str())
-            && machine.tools.contains_key(&desired_tool_id)
-        {
-            machine.tools.insert(desired_tool_id.clone(), spec);
-
-            machine.tool_configs.insert(desired_tool_id.clone(), desired_config);
-            report.unchanged_tool_ids.push(desired_tool_id);
-            continue;
-        }
-
+        // Route all tools through machine.add_tool(), which handles
+        // spec/config insertion and external_data sync internally.
+        // The self-wipe below is guarded so rolling-release tools
+        // (same tool_id, different bytes) keep their content_map.
         machine.add_tool(
             desired_tool_id.clone(),
             AddToolOptions::new(spec).overwrite_existing(true).with_tool_config(desired_config),
@@ -372,13 +364,17 @@ pub(crate) async fn reconcile_desired_tools(
         lock.active_tools.insert(name.clone(), desired_tool_id.clone());
 
         if let Some(old_tool_id) = existing_active {
-            report.updated_tool_ids.push(desired_tool_id);
-            report.replaced_tool_ids.push(old_tool_id.clone());
-            // Clear the old tool's content_map in machine.tool_configs so
-            // conductor step-tool preservation never matches stale content
-            // references against the old tool_id (R1 root-cause fix).
-            if let Some(old_config) = machine.tool_configs.get_mut(&old_tool_id) {
-                old_config.content_map = None;
+            if old_tool_id != desired_tool_id {
+                report.updated_tool_ids.push(desired_tool_id);
+                report.replaced_tool_ids.push(old_tool_id.clone());
+                // Clear the old tool's content_map so conductor step-tool
+                // preservation never matches stale content references
+                // against the old tool_id (R1 root-cause fix).
+                if let Some(old_config) = machine.tool_configs.get_mut(&old_tool_id) {
+                    old_config.content_map = None;
+                }
+            } else {
+                report.unchanged_tool_ids.push(desired_tool_id);
             }
         } else {
             report.added_tool_ids.push(desired_tool_id);
