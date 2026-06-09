@@ -3,7 +3,7 @@
 //! Runtime structs in this module are version-agnostic. Persisted representation
 //! is handled by `versions/` modules and bridged through fp-library optics.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use bytes::Bytes;
 use mediapm_cas::{CasApi, Hash};
@@ -279,6 +279,13 @@ pub struct OrchestrationState {
     /// Envelope-level auxiliary metadata keyed by instance key.
     #[serde(default)]
     pub aux: BTreeMap<String, AuxData>,
+    /// CAS hashes of V2-encoded instance blobs referenced by the envelope.
+    ///
+    /// Populated during V2 `decode_state` so GC root computation can protect
+    /// these blobs from sweep. Empty for inline-only state (V1, slice decode,
+    /// synthetic state). Not serialized.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub instance_blob_hashes: BTreeSet<Hash>,
     /// Instance keys referenced by the current planning pass.
     ///
     /// Populated during planning by the coordinator. Instances in this set
@@ -293,6 +300,7 @@ impl Default for OrchestrationState {
             version: versions::latest_state_version(),
             instances: BTreeMap::new(),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         }
     }
@@ -431,7 +439,13 @@ pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, Condu
         aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
     }
 
-    Ok(OrchestrationState { version, instances, aux, referenced_instance_keys: HashSet::new() })
+    Ok(OrchestrationState {
+        version,
+        instances,
+        aux,
+        instance_blob_hashes: BTreeSet::new(),
+        referenced_instance_keys: HashSet::new(),
+    })
 }
 
 /// Renders runtime orchestration state as pretty persisted wire-envelope JSON.

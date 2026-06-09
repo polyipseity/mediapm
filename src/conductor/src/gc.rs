@@ -75,6 +75,11 @@ fn compute_gc_roots_from_keys(
         roots.extend(instance.inputs.values().map(|i| i.hash));
     }
 
+    // Instance blob CAS hashes (V2 envelope refs) — these are the hashes of
+    // the encoded per-instance blobs stored in CAS, separate from the
+    // instance I/O payload hashes already covered above.
+    roots.extend(state.instance_blob_hashes.iter().copied());
+
     roots
 }
 

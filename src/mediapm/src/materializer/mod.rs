@@ -2261,6 +2261,7 @@ mod tests {
                 },
             )]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 
@@ -2623,6 +2624,7 @@ mod tests {
                 ),
             ]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 
@@ -2821,6 +2823,7 @@ mod tests {
                 ),
             ]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 
@@ -2999,6 +3002,7 @@ mod tests {
                 ),
             ]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 

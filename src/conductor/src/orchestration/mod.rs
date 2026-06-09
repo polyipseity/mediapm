@@ -162,7 +162,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
 
     use mediapm_cas::InMemoryCas;
     use tempfile::tempdir;
@@ -262,6 +262,7 @@ mod tests {
                 },
             )]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 
@@ -319,6 +320,7 @@ mod tests {
                 },
             )]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 

@@ -32,7 +32,7 @@ mod tests {
     use crate::model::state::{OrchestrationState, ToolCallInstance, encode_state};
     use clap::Parser;
     use mediapm_cas::{ConfiguredCas, Hash, InMemoryCas};
-    use std::collections::{BTreeMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -374,6 +374,7 @@ mod tests {
                 },
             )]),
             aux: BTreeMap::new(),
+            instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
         };
 

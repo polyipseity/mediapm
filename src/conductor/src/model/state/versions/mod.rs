@@ -13,7 +13,7 @@
 //!   never `versions::vX` directly.
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use mediapm_cas::{CasApi, Hash};
 
@@ -140,8 +140,10 @@ pub(crate) async fn decode_state<C: CasApi>(
             let envelope: latest::Envelope = serde_json::from_slice(&envelope_bytes)
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
 
+            let mut instance_blob_hashes = BTreeSet::new();
             let mut instances = BTreeMap::new();
             for (key, instance_ref) in envelope.instances {
+                instance_blob_hashes.insert(instance_ref.hash);
                 let instance_bytes = cas.get(instance_ref.hash).await?;
                 let v2_instance = v2::decode_instance_v2(&instance_bytes)?;
                 let instance = v2::tool_call_instance_v2_iso().from(v2_instance);
@@ -167,6 +169,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                 version: envelope.version,
                 instances,
                 aux,
+                instance_blob_hashes,
                 referenced_instance_keys: HashSet::new(),
             })
         }
@@ -210,6 +213,7 @@ pub(crate) async fn decode_state<C: CasApi>(
                 version: latest::VERSION,
                 instances,
                 aux,
+                instance_blob_hashes: BTreeSet::new(),
                 referenced_instance_keys: HashSet::new(),
             })
         }

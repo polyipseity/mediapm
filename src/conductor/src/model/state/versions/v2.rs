@@ -7,7 +7,7 @@
 //! - Cross-version migration (when added) may only reference adjacent versions
 //!   via optic composition.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fp_library::brands::RcBrand;
@@ -480,6 +480,7 @@ pub fn orchestration_state_v2_iso() -> IsoPrime<
                     .into_iter()
                     .map(|(k, v)| (k, aux_data_v2_iso().from(v)))
                     .collect(),
+                instance_blob_hashes: BTreeSet::new(),
                 referenced_instance_keys: std::collections::HashSet::new(),
             };
             (refs, runtime_state)
