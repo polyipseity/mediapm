@@ -85,7 +85,7 @@ struct IndexBackupSnapshot {
 
 #[derive(Debug, Clone)]
 /// Object-store scan catalog used as recovery input.
-struct ScannedObjectCatalog {
+pub(super) struct ScannedObjectCatalog {
     /// Full objects: metadata only, no content bytes stored.
     full_objects: BTreeMap<Hash, ObjectMeta>,
     /// Delta objects: full `StoredObject` kept for chain reconstruction.
@@ -98,7 +98,7 @@ struct ScannedObjectCatalog {
 
 #[derive(Debug, Clone, Copy)]
 /// Parsed object-file kind derived from file-name extension.
-enum ParsedObjectKind {
+pub(super) enum ParsedObjectKind {
     /// Raw full-payload object file (`<hash>`).
     Full,
     /// Delta-envelope object file (`<hash>.diff`).
@@ -752,7 +752,10 @@ fn write_backup_file_atomic(
 }
 
 /// Parses one object file path into `(hash, kind)` when layout is recognized.
-fn parse_hash_from_object_path(root: &Path, path: &Path) -> Option<(Hash, ParsedObjectKind)> {
+pub(super) fn parse_hash_from_object_path(
+    root: &Path,
+    path: &Path,
+) -> Option<(Hash, ParsedObjectKind)> {
     let storage_root = root.join(STORAGE_VERSION);
     let relative = path.strip_prefix(storage_root).ok()?;
     let components = relative

@@ -946,6 +946,48 @@ impl FileSystemState {
         Ok(true)
     }
 
+    /// Heals the index for an orphaned file found on disk (in-memory only).
+    ///
+    /// Adds the object's metadata to the in-memory index without persisting.
+    /// Caller is responsible for calling [`persist_index_snapshot`] later.
+    /// Returns `true` when a file was found and the index was healed,
+    /// `false` when no file exists for the hash.
+    async fn heal_orphaned_object_unpersisted(&self, hash: Hash) -> Result<bool, CasError> {
+        let object = match self.read_stored_object(hash).await {
+            Ok(obj) => obj,
+            Err(CasError::NotFound(_)) => return Ok(false),
+            Err(err) => return Err(err),
+        };
+        {
+            let mut index = self.lock_index_write("healing index row from orphaned disk object");
+            if index.objects.contains_key(&hash) {
+                return Ok(true);
+            }
+            let seeded = match object.base_hash() {
+                Some(base_hash) => {
+                    ObjectMeta::delta(object.payload_len(), object.content_len(), 0, base_hash)
+                }
+                None => ObjectMeta::full(object.payload_len(), object.content_len(), 0),
+            };
+            index.objects.entry(hash).or_insert(seeded);
+            recalculate_depths(&mut index)?;
+        }
+        Ok(true)
+    }
+
+    /// Heals the index for an orphaned file found on disk and persists.
+    ///
+    /// Reads the object from disk, adds its metadata to the in-memory index,
+    /// and persists the index. Returns `true` when a file was found and the
+    /// index was healed, `false` when no file exists for the hash.
+    async fn heal_orphaned_object(&self, hash: Hash) -> Result<bool, CasError> {
+        let healed = self.heal_orphaned_object_unpersisted(hash).await?;
+        if healed {
+            self.persist_index_snapshot().await?;
+        }
+        Ok(healed)
+    }
+
     /// Returns whether `candidate` should replace `current_best`.
     fn candidate_plan_is_better(candidate: &CandidatePlan, current_best: &CandidatePlan) -> bool {
         (
@@ -1549,8 +1591,20 @@ impl CasApi for FileSystemState {
             return Ok(true);
         }
 
-        let index = self.lock_index_read("checking hash existence");
-        Ok(index.objects.contains_key(&hash))
+        {
+            let index = self.lock_index_read("checking hash existence");
+            if index.objects.contains_key(&hash) {
+                return Ok(true);
+            }
+        }
+
+        // Filesystem fallback: the object may exist on disk even when
+        // missing from the index (crash between file write and index
+        // persistence). Heal the index when found.
+        if self.heal_orphaned_object(hash).await? {
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn exists_many(&self, hashes: Vec<Hash>) -> Result<CasExistenceBitmap, CasError> {
@@ -1559,11 +1613,27 @@ impl CasApi for FileSystemState {
         }
 
         let index_db = self.index_db.read().clone();
-        let flags = tokio::task::spawn_blocking(move || index_db.contains_hashes_fast(&hashes))
-            .await
-            .map_err(|err| {
-                CasError::task_join("checking hash batch existence via redb bloom prefilter", err)
-            })??;
+        let hashes_for_bloom = hashes.clone();
+        let mut flags =
+            tokio::task::spawn_blocking(move || index_db.contains_hashes_fast(&hashes_for_bloom))
+                .await
+                .map_err(|err| {
+                    CasError::task_join(
+                        "checking hash batch existence via redb bloom prefilter",
+                        err,
+                    )
+                })??;
+
+        // Filesystem fallback: check orphaned files for hashes the index
+        // reports as missing, and heal the index for subsequent lookups.
+        for (i, hash) in hashes.iter().enumerate() {
+            if !flags[i]
+                && *hash != empty_content_hash()
+                && self.heal_orphaned_object(*hash).await?
+            {
+                flags[i] = true;
+            }
+        }
 
         Ok(flags.into_iter().collect())
     }
