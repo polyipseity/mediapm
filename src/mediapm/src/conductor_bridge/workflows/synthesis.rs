@@ -137,6 +137,7 @@ pub(super) fn synthesize_media_steps(
                 &tool_id,
                 variant_producers,
                 ffmpeg_slot_limits,
+                machine,
             )?;
         } else if matches!(step.tool, MediaStepTool::Ffmpeg) {
             synthesize_ffmpeg_step(
@@ -290,6 +291,7 @@ fn synthesize_yt_dlp_step(
     tool_id: &str,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    machine: &MachineNickelDocument,
 ) -> Result<(), MediaPmError> {
     super::yt_dlp::synthesize_yt_dlp_step(
         workflow,
@@ -301,6 +303,7 @@ fn synthesize_yt_dlp_step(
         tool_id,
         variant_producers,
         ffmpeg_slot_limits,
+        machine,
     )
 }
 

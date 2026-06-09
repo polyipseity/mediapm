@@ -29,7 +29,9 @@ use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
-use super::documents::{load_machine_document, save_machine_document};
+use super::documents::{
+    load_machine_document, register_missing_builtin_tools, save_machine_document,
+};
 use super::tool_runtime::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, FfmpegSlotLimits,
     build_tool_spec, default_tool_config_description, ffmpeg_cover_slot_enabled_input_name,
@@ -242,6 +244,7 @@ fn reconcile_media_workflows_with_mode(
     allow_unresolved_tool_placeholders: bool,
 ) -> Result<(), MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
+    register_missing_builtin_tools(&mut machine);
 
     // Propagate instance_ttl_seconds from mediapm document to conductor
     // machine config so the effective value (CLI override > config file > None)

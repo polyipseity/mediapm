@@ -5,10 +5,13 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{InputBinding, OutputPolicy, WorkflowSpec, WorkflowStepSpec};
+use mediapm_conductor::{
+    InputBinding, MachineNickelDocument, OutputPolicy, WorkflowSpec, WorkflowStepSpec,
+};
 
 use crate::config::{
-    MediaSourceSpec, MediaStep, ResolvedStepVariantFlow, decode_output_variant_policy,
+    MediaSourceSpec, MediaStep, ResolvedStepVariantFlow, YtDlpOutputKind,
+    decode_output_variant_policy,
 };
 use crate::error::MediaPmError;
 
@@ -17,9 +20,10 @@ use super::yt_dlp_inputs::{
     yt_dlp_inputs_for_output_variants,
 };
 use super::{
-    FfmpegSlotLimits, INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS, VariantProducer,
-    conductor_output_save_mode, extract_step_list_args, media_source_uri,
-    step_option_input_bindings, step_option_scalar, yt_dlp_step_id,
+    FfmpegSlotLimits, INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS,
+    OUTPUT_YT_DLP_LINK_ARTIFACTS, VariantProducer, conductor_output_save_mode,
+    extract_step_list_args, media_source_uri, resolve_builtin_tool_id, step_option_input_bindings,
+    step_option_scalar, yt_dlp_step_id,
 };
 
 /// Expands one yt-dlp step into one multi-output workflow step.
@@ -37,6 +41,7 @@ pub(super) fn synthesize_yt_dlp_step(
     tool_id: &str,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
     ffmpeg_slot_limits: FfmpegSlotLimits,
+    machine: &MachineNickelDocument,
 ) -> Result<(), MediaPmError> {
     let step_id = yt_dlp_step_id(step_index);
     let source_uri = step_option_scalar(step, "uri")
@@ -52,6 +57,7 @@ pub(super) fn synthesize_yt_dlp_step(
     let mut outputs = BTreeMap::new();
     let mut pending_variant_updates = Vec::new();
     let mut output_configs = Vec::new();
+    let mut link_variants: BTreeMap<String, Option<String>> = BTreeMap::new();
 
     for mapping in mappings {
         let output_variant_config =
@@ -80,6 +86,10 @@ pub(super) fn synthesize_yt_dlp_step(
         let output_name = output_binding.output_name;
         let policy = OutputPolicy { save: conductor_output_save_mode(output_policy.save) };
 
+        if output_variant_config.kind == YtDlpOutputKind::Links {
+            link_variants.insert(mapping.output.clone(), output_binding.zip_member.clone());
+        }
+
         if let Some(existing_policy) = outputs.get(&output_name)
             && existing_policy != &policy
         {
@@ -102,6 +112,7 @@ pub(super) fn synthesize_yt_dlp_step(
 
     inputs.extend(yt_dlp_inputs_for_output_variants(&output_configs)?);
 
+    let step_id_for_link_cleanup = step_id.clone();
     workflow.steps.push(WorkflowStepSpec {
         id: step_id,
         tool: tool_id.to_string(),
@@ -110,8 +121,57 @@ pub(super) fn synthesize_yt_dlp_step(
         outputs,
     });
 
-    for (output_variant, producer) in pending_variant_updates {
-        variant_producers.insert(output_variant, producer);
+    if !link_variants.is_empty() {
+        let archive_tool_id = resolve_builtin_tool_id(machine, "archive", "1.0.0")?;
+        let transform_step_id = format!("{}.links.cleanup", step_id_for_link_cleanup);
+
+        let mut transform_inputs = BTreeMap::new();
+        transform_inputs.insert(
+            "content".to_string(),
+            InputBinding::String(format!(
+                "${{step_output.{}.{}}}",
+                step_id_for_link_cleanup, OUTPUT_YT_DLP_LINK_ARTIFACTS,
+            )),
+        );
+        transform_inputs
+            .insert("action".to_string(), InputBinding::String("transform".to_string()));
+        transform_inputs
+            .insert("filter".to_string(), InputBinding::String("*.desktop".to_string()));
+        transform_inputs.insert("mode".to_string(), InputBinding::String("text".to_string()));
+        transform_inputs
+            .insert("find_0".to_string(), InputBinding::String("__mediapm__".to_string()));
+        transform_inputs.insert("replace_0".to_string(), InputBinding::String(String::new()));
+
+        let mut transform_outputs = BTreeMap::new();
+        transform_outputs.insert("result".to_string(), OutputPolicy::default());
+
+        workflow.steps.push(WorkflowStepSpec {
+            id: transform_step_id.clone(),
+            tool: archive_tool_id,
+            inputs: transform_inputs,
+            depends_on: vec![step_id_for_link_cleanup],
+            outputs: transform_outputs,
+        });
+
+        for (output_variant, producer) in pending_variant_updates {
+            if let Some(zip_member) = link_variants.get(&output_variant) {
+                variant_producers.insert(
+                    output_variant,
+                    VariantProducer::StepOutput {
+                        step_id: transform_step_id.clone(),
+                        output_name: "result".to_string(),
+                        zip_member: zip_member.clone(),
+                        extension: None,
+                    },
+                );
+            } else {
+                variant_producers.insert(output_variant, producer);
+            }
+        }
+    } else {
+        for (output_variant, producer) in pending_variant_updates {
+            variant_producers.insert(output_variant, producer);
+        }
     }
 
     Ok(())
