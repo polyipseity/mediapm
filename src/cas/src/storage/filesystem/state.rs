@@ -1311,8 +1311,25 @@ impl FileSystemState {
 
         let mut meta = Self::meta_for_object(&full, resolved_depth);
         meta.set_verify_time(Self::now_unix());
-        self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target_hash, meta }])
-            .await?;
+        if let Err(err) = self
+            .persist_index_batch(vec![BatchOperation::UpsertObject { hash: target_hash, meta }])
+            .await
+        {
+            // Rollback in-memory index and delete the orphaned file to
+            // prevent index/filesystem desync.
+            {
+                let mut index =
+                    self.lock_index_write("rolling back index after persistence failure");
+                index.objects.remove(&target_hash);
+            }
+            if let Err(remove_err) = self.delete_object_files(target_hash).await {
+                error!(
+                    "failed to delete object file after index persistence failure: \
+                     {remove_err}; hash={target_hash}"
+                );
+            }
+            return Err(err);
+        }
         Ok(target_hash)
     }
 
