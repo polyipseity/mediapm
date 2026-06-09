@@ -40,11 +40,80 @@ async fn create_file_symlink_async(source_path: &Path, destination_path: &Path) 
     tokio::fs::symlink_file(source_path, destination_path).await
 }
 
-/// Attempts reflink/clone materialization for one file.
+/// Attempts reflink/clone (copy-on-write) materialization for one file.
 ///
-/// Current implementation reports unsupported on this build/runtime and lets
-/// ordered fallback proceed to subsequent configured methods.
-fn attempt_reflink_materialization(
+/// On Linux, uses the `FICLONE` ioctl (supported on btrfs, XFS, and other
+/// copy-on-write-capable filesystems). On macOS, uses `clonefile()` (APFS).
+/// On other platforms, reports unsupported and lets ordered fallback proceed.
+async fn attempt_reflink_materialization(
+    source_path: &Path,
+    destination_path: &Path,
+) -> io::Result<()> {
+    let owned_src = source_path.to_path_buf();
+    let owned_dst = destination_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        attempt_reflink_materialization_sync(&owned_src, &owned_dst)
+    })
+    .await
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+}
+
+/// Platform-specific reflink implementation for Linux using `FICLONE` ioctl.
+#[cfg(target_os = "linux")]
+fn attempt_reflink_materialization_sync(
+    source_path: &Path,
+    destination_path: &Path,
+) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let src = std::fs::File::open(source_path)?;
+    let dest = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(destination_path)?;
+
+    // SAFETY: FICLONE operates on open file descriptors — the kernel validates
+    // both are regular files on a compatible COW filesystem.
+    let ret =
+        unsafe { libc::ioctl(dest.as_raw_fd(), libc::FICLONE as libc::c_ulong, src.as_raw_fd()) };
+
+    if ret == 0 {
+        Ok(())
+    } else {
+        let err = io::Error::last_os_error();
+        // Clean up destination so fallback doesn't see a stale file.
+        let _ = std::fs::remove_file(destination_path);
+        Err(err)
+    }
+}
+
+/// Platform-specific reflink implementation for macOS using `clonefile`.
+#[cfg(target_os = "macos")]
+fn attempt_reflink_materialization_sync(
+    source_path: &Path,
+    destination_path: &Path,
+) -> io::Result<()> {
+    use std::ffi::CString;
+
+    let src_c = CString::new(source_path.as_os_str().as_encoded_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "source path contains null byte")
+    })?;
+    let dst_c = CString::new(destination_path.as_os_str().as_encoded_bytes()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "destination path contains null byte")
+    })?;
+
+    // SAFETY: clonefile is a standard macOS syscall with no memory-safety
+    // implications when passed valid C strings.
+    let ret = unsafe { libc::clonefile(src_c.as_ptr(), dst_c.as_ptr(), 0) };
+
+    if ret == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
+}
+
+/// Stub for platforms without native reflink support.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn attempt_reflink_materialization_sync(
     _source_path: &Path,
     _destination_path: &Path,
 ) -> io::Result<()> {
@@ -91,7 +160,7 @@ async fn attempt_materialization_method(
                     "CAS object file is unavailable for reflink materialization",
                 )
             })?;
-            attempt_reflink_materialization(source, destination_path)
+            attempt_reflink_materialization(source, destination_path).await
         }
         MaterializationMethod::Copy => {
             if let Some(source) = source_path {
