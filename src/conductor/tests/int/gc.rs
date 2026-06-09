@@ -262,131 +262,48 @@ fn instance_ttl_none_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — GC hook plumbing through SimpleConductor
+// Test 3 — GC hook plumbing through SimpleConductor
 // ---------------------------------------------------------------------------
 
-/// Protects that the GC hook runs without error when `instance_ttl_seconds`
-/// is set and that instances survive a generous TTL.
-#[tokio::test(flavor = "current_thread")]
-async fn gc_hook_accepts_ttl_config() {
+/// Runs a workflow, asserts the GC hook preserves the instance, and returns
+/// the state snapshot.
+async fn gc_hook_scenario(instance_ttl: u64) -> OrchestrationState {
     init_test_rpc_timeout();
     let conductor = SimpleConductor::new(InMemoryCas::new());
     let dir = tempdir().expect("tempdir");
     let user_path = dir.path().join("conductor.ncl");
     let machine_path = dir.path().join("conductor.machine.ncl");
 
-    let user = UserNickelDocument {
-        tools: BTreeMap::from([(
-            "echo@1.0.0".to_string(),
-            ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
-                },
-                ..ToolSpec::default()
-            },
-        )]),
-        workflows: BTreeMap::from([(
-            "default".to_string(),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "s1".to_string(),
-                    tool: "echo@1.0.0".to_string(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::new(),
-                }],
-                ..WorkflowSpec::default()
-            },
-        )]),
-        ..UserNickelDocument::default()
-    };
-    let machine = MachineNickelDocument {
-        runtime: mediapm_conductor::RuntimeStorageConfig {
-            instance_ttl_seconds: Some(86400), // 24h — generous TTL
-            ..mediapm_conductor::RuntimeStorageConfig::default()
-        },
-        ..MachineNickelDocument::default()
-    };
-
+    let (user, machine) = echo_doc_pair(Some(instance_ttl));
     std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
         .expect("write user");
     std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
         .expect("write machine");
 
-    let summary = conductor
-        .run_workflow(&user_path, &machine_path)
-        .await
-        .expect("workflow should execute with TTL config");
+    let summary =
+        conductor.run_workflow(&user_path, &machine_path).await.expect("workflow should execute");
     assert_eq!(summary.executed_instances, 1);
 
     let state = conductor.get_state().await.expect("state snapshot should load");
-    assert_eq!(state.instances.len(), 1, "instance should survive generous TTL");
+    assert_eq!(state.instances.len(), 1, "referenced instance survives TTL {instance_ttl}");
+    state
+}
+
+/// Protects that the GC hook runs without error with a generous TTL.
+#[tokio::test(flavor = "current_thread")]
+async fn gc_hook_accepts_ttl_config() {
+    gc_hook_scenario(86400).await;
 }
 
 /// Protects that the GC hook accepts `instance_ttl_seconds = 1` without error
-/// and that the instance survives (GC is a no-op, always keeps instances).
+/// and that the instance survives.
 #[tokio::test(flavor = "current_thread")]
 async fn gc_hook_accepts_near_zero_ttl() {
-    init_test_rpc_timeout();
-    let conductor = SimpleConductor::new(InMemoryCas::new());
-    let dir = tempdir().expect("tempdir");
-    let user_path = dir.path().join("conductor.ncl");
-    let machine_path = dir.path().join("conductor.machine.ncl");
-
-    let user = UserNickelDocument {
-        tools: BTreeMap::from([(
-            "echo@1.0.0".to_string(),
-            ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
-                },
-                ..ToolSpec::default()
-            },
-        )]),
-        workflows: BTreeMap::from([(
-            "default".to_string(),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "s1".to_string(),
-                    tool: "echo@1.0.0".to_string(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::new(),
-                }],
-                ..WorkflowSpec::default()
-            },
-        )]),
-        ..UserNickelDocument::default()
-    };
-    let machine = MachineNickelDocument {
-        runtime: mediapm_conductor::RuntimeStorageConfig {
-            instance_ttl_seconds: Some(1),
-            ..mediapm_conductor::RuntimeStorageConfig::default()
-        },
-        ..MachineNickelDocument::default()
-    };
-
-    std::fs::write(&user_path, encode_user_document(user).expect("encode user"))
-        .expect("write user");
-    std::fs::write(&machine_path, encode_machine_document(machine).expect("encode machine"))
-        .expect("write machine");
-
-    let summary = conductor
-        .run_workflow(&user_path, &machine_path)
-        .await
-        .expect("workflow should execute with near-zero TTL");
-    assert_eq!(summary.executed_instances, 1);
-
-    let state = conductor.get_state().await.expect("state snapshot should load");
-    // With TTL=1, cutoff ≈ now - 1s; the executed instance is referenced,
-    // so it survives GC despite the aggressive TTL.
-    assert_eq!(state.instances.len(), 1, "referenced instance survives near-zero TTL");
+    gc_hook_scenario(1).await;
 }
 
 // ---------------------------------------------------------------------------
-// Test 5 — Explicit RunGc trigger API
+// Test 4 — Explicit RunGc trigger API
 // ---------------------------------------------------------------------------
 
 /// Protects that `run_gc(None)` succeeds when neither config nor override
