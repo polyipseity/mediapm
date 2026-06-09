@@ -162,6 +162,9 @@ Permanent-transcode policy:
 - Keep machine-managed state wire-version dispatch and migration logic in
   `src/mediapm/src/lockfile/versions/` (`mod.rs` + `vN.rs`).
 - Preserve sequential, explicit migration behavior across schema versions.
+- Configuration document versioning rules:
+  - Version bump REQUIRED: removing a field, renaming a field, changing field type or semantics.
+  - Version bump NOT REQUIRED: adding an optional field with default, adding a new optional top-level section.
 
 ## Media schema and managed workflow reconciliation
 
@@ -225,6 +228,9 @@ For `media.<id>` semantics and runtime reconciliation:
   must stay file leaves.
 - Media-source entries must not define `media.<id>.id` overrides; playlist
   membership is owned by hierarchy-node ids only.
+- Hierarchy flattening deduplication key is `(template_path, media_id)`. Same
+  template path + different `media_id` is allowed; same path + same
+  `media_id` is rejected as duplicate.
 - Example/demo hierarchy should remain Jellyfin-compatible for media files:
   `music videos/<artist> - <title> [<media.id>]/<artist> - <title> [<media.id>](<ext>)`,
   with non-media sidecars grouped under `sidecars/`.
@@ -465,6 +471,13 @@ Before finalizing tool registration, keep validation deterministic:
 - resolved tool identity must serialize to deterministic CAS-hashable metadata,
 - executable validation should include a successful version probe (for example
   `--version`) where applicable.
+- Tool cache version-invalidation policy:
+  - Cache key includes `(tool_id, version, platform)`.
+  - On version change: `preserve_existing_generated_step_tools()` rewrites
+    generated step's tool id to the previous valid one, keeping impure
+    timestamps stable.
+  - New binary provisions separately; old binary remains until pruning removes
+    it.
 
 ## Conductor integration boundary
 
@@ -504,6 +517,131 @@ Effective grouped defaults:
 - Link/write materialization order follows
   `runtime.materialization_preference_order` (must be non-empty and
   duplicate-free); default order is hardlink -> symlink -> reflink -> copy.
+
+## Cross-crate consistency invariants
+
+### Lock vs CAS hash referential integrity
+
+- Pre-prune validation: maintain reachable hashes from lock records; prune must
+  not remove hashes referenced by locks.
+- If a lock references a deleted CAS hash, sync must re-download or fail with
+  a clear error.
+- `state.ncl` lock records must reference the CAS state-blob hash. On startup
+  verify this reference; mismatch fails with explicit error requiring manual
+  recovery.
+
+### Direct materialization cleanup semantics
+
+- If sync fails mid-materialization, cleanup of partially written files is
+  automatic and unconditional. No manual cleanup needed; the API returns an
+  error and partial files are removed.
+
+### NCL↔Rust schema sync (typed envelope pattern)
+
+- `MediaPmDocumentEnvelopeV1` wraps `MediaPmDocumentStateV1` via
+  `#[serde(flatten)]`. Parent envelope carries `deny_unknown_fields`; child
+  struct does NOT carry it (ignored under `flatten`).
+- `PlatformInheritedEnvVars` is a `BTreeMap<String, Vec<String>>` type alias.
+  Platform keys: `"windows"`, `"linux"`, `"macos"`.
+- When adding a field to a versioned Rust struct: add to Rust struct + NCL
+  schema + verify envelope catches stray keys + add round-trip test.
+
+## Metadata cache behavior
+
+Media probe metadata caches as JSONC for TTL-based reuse (86400s default).
+
+- **Clock skew**: backward jump → treat as just-verified (skip eviction).
+  Forward jump >86400s → mass eviction (acceptable, cache refills).
+- **Concurrent access**: no cross-process support; last writer wins. Cache loss
+  is non-fatal.
+- **Corruption**: `open()` catches `serde_json` errors, warns, returns empty
+  cache; replaced on next flush.
+- **Key collision**: full Blake3 256-bit output used as key — no collision
+  possible.
+- **Stale entries**: no explicit invalidation on media-source removal. Entries
+  are small (~one JSON object) and expire within 86400s.
+
+## Design rationale
+
+- **Why Nickel for config**: Orchestration needs parameterization and
+  conditionals. YAML/TOML/JSON are static. Nickel evaluates to JSON for
+  conductor consumption.
+- **Why direct materialization**: Staged-and-commit adds complexity and disk
+  overhead. Direct CAS→output-path writes are simpler and faster. Partial
+  failures clean up; re-run resumes from lock records. `mediapm_tmp_dir` is
+  for zip/sandbox only.
+- **Why three-document pattern**: Clear ownership separation: user edits
+  `mediapm.ncl`; machine generates `state.ncl`; lock file tracks processed
+  media. Each independently versioned.
+
+## Troubleshooting
+
+| Problem | Cause | Resolution |
+|---------|-------|------------|
+| Sync partially succeeds; lock inconsistent | Crash during materialization (files written, lock write failed); disk full; permission error | Delete orphaned lock entries or re-run with `--force-resync`; clean orphaned output files; verify disk space and write permissions |
+
+## Implementation checklists
+
+### Adding a new managed tool
+
+- [ ] Add tool spec to `mediapm.ncl` schema (name, version, selectors)
+- [ ] Add tool provisioner (download, extract, verify hash)
+- [ ] Add to tool registry (`src/mediapm/src/tools/`)
+- [ ] Implement CLI/API wrapper if needed for execution
+- [ ] Add provisioning + verification tests
+- [ ] Document OS/dependency requirements
+- [ ] Add example workflow
+
+### Adding a new media source type
+
+- [ ] Define source kind (URL, local file, CAS hash, etc.)
+- [ ] Add to `mediapm.ncl` schema (version increment if incompatible)
+- [ ] Implement source reader (retrieve bytes)
+- [ ] Add to `src/mediapm/src/config.rs` (parse from config)
+- [ ] Add to sync logic
+- [ ] Write test with example config
+
+### Adding a test feature
+
+- [ ] Determine category: happy path, edge case, error, concurrency, performance
+- [ ] Choose test module: `tests/e2e/`, `tests/int/`, `tests/prop/`
+- [ ] Name: `test_<component>_<scenario>`
+- [ ] Verify test fails without the feature (not trivially passing)
+- [ ] Determinism-sensitive → fixed seeds; performance-sensitive → benchmark comment
+- [ ] Verify passes in release; run 5× for flakiness check
+- [ ] Add to CI (`.github/workflows/ci.yml`)
+
+## Missing test coverage (mediapm-specific)
+
+- [ ] Partial materialization failure (file 50 of 100) → rollback, lock unchanged
+- [ ] Lock file partial write → detected on load, inconsistency error
+- [ ] Invalid hierarchy `media_id` → error at config load
+- [ ] Read-only file re-materialization → succeeds (clears read-only bit)
+- [ ] Media ID reused with new content → new download, new lock
+- [ ] Concurrent sync operations → serialized or isolated correctly
+- [ ] Tool version change → new version downloaded
+- [ ] Sync idempotency: sync twice → second sync is no-op
+- [ ] CAS version + Conductor version mismatch → error with hint
+- [ ] CAS prune removes hash in MediaPM lock → error or re-download
+- [ ] State blob persisted but lock not updated → detected on startup
+
+## Future extension points
+
+- **New managed tools**: add to downloader catalog, define tool spec in
+  `mediapm.ncl`, tool sync provisions.
+- **New output variant kinds**: add to `OutputVariantKind` enum, update hierarchy
+  materialization, extend CLI/API output handling.
+
+## Sync performance expectations
+
+- Two-level dispatch: cross-workflow dependency-stream dispatch in coordinator
+  - per-workflow step execution with batch cache probe
+  (`exists_many`/`CasExistenceBitmap`).
+- Per-file hashing and materialization parallelized across available workers.
+  No hash tree; flat per-file comparison.
+- Lock reconciliation compares stored hash (in lock) with current file hash.
+  Computed once per file (not incremental). Matching hashes → no
+  re-materialization.
 
 ## Testing, validation, and docs bar
 
@@ -1410,3 +1548,43 @@ outputs are unprotected on error (must be re-executed).
 Typed envelope pattern, dual decode path, `deny_unknown_fields` on parent
 envelope. All `Option<u64>` fields use custom deserializers. Verification:
 round-trip tests detect field mismatches.
+
+## P — Visual Diagrams
+
+### Materialization state machine
+
+```mermaid
+stateDiagram-v2
+    state "SYNC INITIATED" as sync_start
+    state "CHECK LOCK" as check_lock
+    state "FOUND IN LOCK→SKIP" as skip
+    state "NOT IN LOCK→PROCEED" as proceed
+    state "MATERIALIZE PHASE" as materialize
+    state "PERSIST PHASE" as persist
+    state "CLEANUP PHASE" as cleanup
+    state "LOCKED & MATERIALIZED" as done
+    state "FAILED" as failed
+
+    sync_start --> check_lock
+    check_lock --> skip: hash matches
+    check_lock --> proceed: no entry
+    proceed --> materialize
+    materialize --> persist: success
+    materialize --> cleanup: failure
+    persist --> done
+    cleanup --> failed
+```
+
+### End-to-end sync data flow
+
+```mermaid
+flowchart TD
+    A["mediapm.ncl"] --> B["MediaPM: parse + schemas"]
+    B --> C["Read lock file"]
+    C --> D["Identify new/changed media"]
+    D --> E["Synthesize Conductor workflow per entry"]
+    E --> F["Conductor: execute, CAS store"]
+    F --> G["Materialize: CAS → output paths"]
+    G --> H["Set permissions, update lock"]
+    H --> I["Output files + consistent lock"]
+```

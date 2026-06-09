@@ -1,5 +1,9 @@
 # Conductor Builtins Crate Instructions
 
+> **Conductor-Builtins** provides five standard tools (`echo`, `fs`, `archive`, `import`, `export`)
+> sharing a common CLI/API contract: `BTreeMap<String, String>` args, fail-fast validation,
+> deterministic payloads for pure tools, clean side effects for impure ones.
+
 This file defines crate-local guidance for `src/conductor-builtins/`.
 Follow this together with workspace-wide policy in `AGENTS.md` and focused
 instruction files in `.agents/instructions/`.
@@ -272,3 +276,71 @@ Content below is sourced from the deleted `elaboration-pass-edge-cases.md` (Part
 
 - Explicit parsing rules: CLI parser unquotes; API passes strings as-is.
 - Add test: "same args → CLI and API produce identical output" (parametrized over all builtins).
+
+## H. Additional Builtins Specifications
+
+### H.1 Decision Rationale
+
+#### Why Fail-Fast Validation?
+
+Builtins run inside Conductor workflows — invalid input must be rejected before any side effects occur. Undeclared `--arg` keys, missing required keys, and invalid combinations are all rejected before I/O. This ensures predictable, auditable behavior: a validation error means nothing was started, so retry is safe.
+
+### H.2 Performance: Builtin Invocation Overhead (§8.6)
+
+Builtins provide both CLI (spawned process) and library API (in-process). Conductor uses library API for performance. CLI is available for external tools or manual invocation. Benchmark: API invocation overhead is ~µs; CLI spawn is ~ms.
+
+### H.3 Testing Requirements
+
+**Path Safety and Security** — Add `tests/e2e/path_safety_and_security.rs`:
+
+- [ ] Symlink escape (`../../etc`) → rejected
+- [ ] Symlink loop → depth limit prevents hang
+- [ ] Windows reserved names (CON, PRN) → rejected
+- [ ] Special characters (`:`, `*`, `?`) → rejected or escaped
+- [ ] ZIP bomb (10GB from 1MB) → size limit prevents extraction
+- [ ] Archive symlink escape → symlinks rejected in extracted files
+- [ ] CLI vs API with same args → identical output (parametrized over all builtins)
+
+### H.4 Troubleshooting
+
+#### Builtin Reports "Unknown Argument"
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `Error: Unknown argument: typo_in_key` | Typo in `--arg` name | Check `--help` for valid names |
+| Same error | Wrong builtin for operation | Use correct builtin (fs for files, archive for ZIP, etc.) |
+| Same error | Outdated builtin version | Upgrade to version with the argument |
+
+#### Deterministic Builtin Produces Different Output
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Same input, different output | Hidden environment dependency (system time, random seed) | Verify builtin source for env dependencies |
+| Same input, different output | Non-deterministic compression (ZIP timestamps) | Use `--reproducible` flag if available; verify byte-for-byte determinism |
+| Same input, different output | Floating-point precision variation by platform | Pin platform or use fixed-point arithmetic |
+
+### H.5 Implementation Checklist: New Builtin Tool
+
+- [ ] Create `src/conductor-builtins/<name>/` with `Cargo.toml` (package + binary target)
+- [ ] Implement `lib.rs`: `async fn(BTreeMap<String, String>, Option<&[u8]>) -> Result<String, String>`
+- [ ] Implement `main.rs` with CLI `--arg KEY VALUE` parsing
+- [ ] Reject undeclared `--arg` keys immediately
+- [ ] If pure: verify byte-for-byte determinism across multiple runs
+- [ ] If impure: verify idempotent side effects (safe to retry)
+- [ ] Register in `registered_builtin_ids()` in conductor
+- [ ] Write integration tests (CLI + API parity)
+- [ ] Document argument names, types, and examples
+
+### H.6 Extension Points
+
+- **New builtin tools**: Follow the checklist above. Create crate, implement API, register in `registered_builtin_ids()`.
+
+### H.7 Ambiguities Resolved
+
+#### Fail-Fast Validation Scope (§7.1)
+
+Validation errors are raised **before any processing or side effects** (interpretation (a)). Validation is a separate pass before execution. A validation error means nothing was started — retry is always safe. Test: "validation error → zero output, zero side effects."
+
+#### Deterministic Payload: System State (§7.2)
+
+Deterministic payload means byte-for-byte identical output for identical input. This includes file metadata (timestamps, permissions, ownership) — all metadata must be deterministic or omitted. Archive timestamps should be set to a fixed value (epoch or input mtime).

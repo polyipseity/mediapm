@@ -1,5 +1,11 @@
 # Conductor Crate Instructions
 
+> **Conductor** is the deterministic workflow engine. Steps defined in Nickel config are
+> planned via topological sort, dispatched to workers, and outputs captured to CAS.
+> Pure workflows are deterministic; impure ones may vary on retries. Uses a three-document
+> config model (user/machine/state) with fail-fast validation, actor-based orchestration,
+> and template-expanded step inputs.
+
 This file defines crate-local guidance for `src/conductor/`.
 Follow this together with the workspace root `AGENTS.md` and relevant
 `.agents/instructions/*.instructions.md` files.
@@ -1220,3 +1226,160 @@ Input resolution is split into two passes so the state-stored `ToolCallInstance`
 - Pass 2 content loading is lazy: only inputs whose name appears in a template expression are loaded.
 - `ResolvedInputKey` is comparable and hashable — instance key derivation uses input hashes directly without loading content.
 - `ToolCallInstance.inputs` stores `ResolvedInputKey` exclusively.
+
+### N.21 Two-Phase Input Resolution Edge Cases
+
+#### N.21.1 Hash-Only Input (Content Never Requested)
+
+If no template `${input_name}` reference exists for a binding, Pass 2 never loads its content. Memory impact: zero for that input — even GB-scale files cost nothing in memory. Content is still available via `content_map` → filesystem materialization.
+
+#### N.21.2 Template References Undeclared Binding
+
+A template `${typo_input}` referencing a name not in Pass 1 bindings MUST fail with a clear error listing declared inputs. Dot-path refs (`${audio.field}`) check base name; env refs (`${env.PATH}`) are handled separately.
+
+#### N.21.3 List Inputs Spanning Multiple Bindings
+
+`args.inputs = ["id1", "id2"]` — Pass 1 resolves each element to a hash independently. Pass 2 loads content for all list elements when the list appears in a template. Mixed lists (binding name + literal hash) distinguish by checking against declared names.
+
+#### N.21.4 ZIP Member Selectors During Hash Resolution
+
+`content_map."key" = "H(archive)#member"` requires loading the parent archive in Pass 1, extracting the member, and hashing the extracted content for instance key derivation. The archive `Bytes` is dropped immediately after extraction — only the member hash is retained. Nested ZIPs resolve iteratively.
+
+#### N.21.5 Builtins Always Load All Content
+
+Builtin steps have no template `command` to scan — ALL declared inputs have content loaded in Pass 2 (O(total input size) memory). Executable steps only load template-referenced inputs (O(referenced size) memory). The tool type (builtin vs executable) is known at step-synthesis time.
+
+## O. Additional Conductor Specifications
+
+### O.1 Decision Rationale
+
+#### Why Nickel for Configuration?
+
+Nickel provides parameterization, conditionals, and reusable templates that static formats (YAML/TOML/JSON) cannot express. Example: OS-conditional tool paths via `if context.os == "linux" then ...`. Trade-off: learning Nickel syntax; benefit: expressive, type-checked, reusable configs.
+
+#### Why Three-Document Pattern?
+
+Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`), runtime state (lock file). Each document has independent versioning and ownership. Clear ownership prevents merge conflicts.
+
+### O.2 Performance: EWMA Scheduler Details (§8.2)
+
+- **Alpha** (decay rate): 0.3
+- **First-task initialization**: default estimate of 5 seconds
+- **Worker pool size**: CPU cores, configurable via `CONDUCTOR_MAX_WORKERS`
+- **Assignment**: round-robin across ready steps with per-tool `Semaphore` concurrency gating
+
+### O.3 Testing Requirements
+
+**External Data Error Handling** — Add `tests/e2e/external_data_and_validation.rs`:
+
+- [ ] `put_from_uri(404)` → `NotFound` error
+- [ ] `put_from_uri(timeout)` → `Timeout` error, retries N times
+- [ ] `put_from_uri(partial download)` → cleanup + error
+- [ ] Missing `external_data` during workflow → validation error at planning time
+- [ ] Workflow DAG with cycle → cycle detection error at graph-build time
+- [ ] Document version missing → parse error with actionable message
+
+### O.4 Troubleshooting
+
+#### Conductor Workflow Hangs
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| Steps not advancing past timeout | Builtin crash without output | Add `timeout_ms` to step config; check builtin stderr |
+| Same | Network timeout with no timeout configured | Set tool-level timeout in `tool_configs` |
+| Same | DAG cycle (validation bug) | Run `conductor.validate_workflow()` to detect cycles |
+| Same | Resource exhaustion | Reduce concurrent workers; check I/O pressure |
+
+### O.5 Implementation Checklist: New Workflow Execution Backend
+
+- [ ] Implement `ConductorApi` trait
+- [ ] Implement state serialization (to CAS or other store)
+- [ ] Implement builtin registration and invocation
+- [ ] Write integration test: define → execute → inspect state
+- [ ] Write concurrency test: parallel workflow execution
+- [ ] Document failure modes (step failure, retry semantics)
+- [ ] Verify determinism: pure workflows produce same output
+- [ ] Benchmark planning time: <10ms for typical workflows
+
+### O.6 Extension Points
+
+- **New execution backends**: Implement `ConductorApi` trait, pass to `MediaPmService::new(...)`, swap without changing caller code.
+
+### O.7 Cross-Crate References
+
+| § | Issue | Contract |
+|---|---|---|
+| 6.2 | Builtin failure vs conductor error recovery | Validation errors → no retry. Transient errors → retry N times (`max_retries`). Persistent errors → no retry. CAS errors propagate via `?` regardless of purity. |
+| 6.4 | Tool ID collision (builtin vs managed) | Builtin IDs are reserved; managed tools cannot use them. Check on config load via `registered_builtin_ids()`. |
+| 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
+| 6.7 | Instance key immutability | Instance key = `hash(tool_id + sorted_inputs + impure_timestamp)`. Immutable after first derivation. Changing tool_id or inputs produces a new key (no in-place mutation). |
+| 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via fp-library optics. All `Option<u64>` fields use `deserialize_option_integral_u64`. |
+
+### O.8 Ambiguities Resolved
+
+#### Tool ID Format (§7.4)
+
+Tool IDs are arbitrary strings; deduplication is exact string match (case-sensitive). No semver requirement on the ID format itself — version is tracked separately in `tool_configs.<id>.version`.
+
+#### Config Document Versioning (§7.7)
+
+Version bump required for: removing a field, renaming a field, changing a field type, changing semantics. Version bump NOT required for: adding an optional field with default, adding a new optional top-level section. Sequential migrations only (N → N+1).
+
+### O.9 Architecture Diagrams
+
+```mermaid
+graph TD
+    subgraph "Conductor Crate"
+        API[Public API<br/>ConductorApi, SimpleConductor]
+        CLI[cli module]
+        CONFIG[model::config<br/>Three-document schema]
+        STATE[model::state<br/>OrchestrationState]
+        ORCH[orchestration module<br/>Actor-based execution]
+        TOOLS[tools module<br/>Builtin registry]
+        ERROR[error module]
+        TCC[tool-cache module<br/>ToolContentCache]
+    end
+
+    API --> CLI
+    API --> CONFIG
+    API --> STATE
+    API --> ORCH
+    ORCH --> TOOLS
+    ORCH --> STATE
+    ORCH --> TCC
+
+    subgraph "External Dependencies"
+        CAS[CasApi from mediapm-cas]
+        BUILTINS[conductor-builtins]
+        NICKEL[nickel]
+        SERDE[serde]
+        TOKIO[tokio]
+        RACTOR[ractor]
+    end
+
+    ORCH --> CAS
+    TOOLS --> BUILTINS
+    CONFIG --> NICKEL
+    STATE --> SERDE
+    API --> TOKIO
+    ORCH --> RACTOR
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> PENDING: workflow submitted
+    PENDING --> VALIDATING: schedule
+    VALIDATING --> PLANNING: schema ok
+    PLANNING --> DISPATCHING: topological sort
+    DISPATCHING --> STEP_EXECUTING: per level
+    STEP_EXECUTING --> STEP_DONE: tool completes
+    STEP_EXECUTING --> STEP_ERROR: tool fails
+    STEP_DONE --> DISPATCHING: more levels remain
+    STEP_DONE --> FINALIZING: all levels done
+    STEP_ERROR --> DISPATCHING: retry available
+    STEP_ERROR --> FAILED: retries exhausted
+    FINALIZING --> COMPLETED: state persisted to CAS
+    FINALIZING --> FAILED: persistence error
+    COMPLETED --> [*]
+    FAILED --> [*]
+```

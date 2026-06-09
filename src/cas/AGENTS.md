@@ -1,5 +1,9 @@
 # CAS Agent Guide
 
+> **CAS** is the content-identified object store. `put(bytes)` → hash; `get(hash)` → bytes.
+> Deduplicates identical content via Blake3-256. Foundation for deterministic workflows.
+> Used by Conductor (state), MediaPM (materialization), and CAS internally.
+
 This guide captures implementation context that is easy to miss from signatures
 alone.
 
@@ -816,3 +820,127 @@ The conductor node actor spawns a single background GC loop in `pre_start`. The 
 #### 1.23 Composite Hash Across Conductor/Materializer
 
 The materializer's StringList arm does **not** parse `${...}` interpolation; any workflow with interpolated StringList elements silently produces different hashes than if the literal `${...}` text were resolved. This was analyzed and explicitly skipped — the materializer lacks env-var context for full interpolation support, and cross-crate coupling risk outweighs benefit given that the deduplication via `Hash::composite` already eliminates future drift risk.
+
+#### 1.24 Streaming (`get_stream`) Edge Cases
+
+- **File deleted mid-stream**: Lazy stream fails on next chunk read with `CasError::Io`. Caller can retry after confirming hash via `contains()`.
+- **Truncated file**: `read_exact` on last chunk yields `UnexpectedEof` → `CasError::Io`. Treat as integrity failure; fall back to `contains()` or repair.
+- **Zero-length file**: Small-object fast path (≤256 KiB) handles cleanly; large-object path must check length before chunked loop, yield empty `Bytes` on zero length.
+- **Concurrent writes during stream**: Immutable CAS objects by convention; concurrent writes represent integrity violation regardless of streaming.
+
+#### 1.25 `materialize_to_path` Edge Cases
+
+- **Destination exists**: `fs::copy` overwrites atomically. Caller should verify intent — accidental overwrite loses user edits.
+- **Read-only parent**: Returns `CasError::Io` with `EACCES`. Validate write permissions before materialization.
+- **Cross-device copy**: `fs::copy` falls back to read+write via VFS (no kernel fast-path).
+- **Delta object fallback**: If requested hash is delta-only (no full object file), falls back to `get()` + `tokio::fs::write`. Fast path only applies to full objects.
+
+#### 1.26 Memory Lifecycle (`Bytes` vs `Vec<u8>`) Edge Cases
+
+- **Large object clone**: `Vec<u8>` clone is O(content_size); `Bytes` is O(1) ref-count increment. Use `Bytes` for all CAS data paths.
+- **Zero-copy fast path**: `fs::copy(object_path, dest)` avoids `Bytes` allocation entirely for large materialization.
+- **Stream vs full buffer**: Use `get()` for objects ≤256 KiB; `get_stream()` for larger or unknown-size objects.
+- **`Bytes`→`Vec<u8>`**: Avoid conversion. Keep as `Bytes` as long as possible; convert only at API boundaries requiring `Vec<u8>`.
+
+## Part 2: Additional CAS Specifications
+
+### 2.1 Decision Rationale
+
+#### Why CAS Instead of Named Files?
+
+Every piece of data hashes to a Blake3-256 hash; store once, reference many. Identical content deduplicates automatically. Verification is hash recomputation. Trade-off: human-readable names are replaced by hashes — lock files map `(media_id, variant) → hash` to bridge this.
+
+#### Why Actor-Based Orchestration for CAS?
+
+Actors (ractor) serialize access to mutable storage/index state, guaranteeing no race conditions on index mutations without lock deadlocks. Slight message-round-trip latency trade-off for thread safety and bounded concurrency.
+
+### 2.2 Performance Constraints
+
+| Path | Constraint | Technique |
+|---|---|---|
+| CAS optimizer algorithm | Greedy scoring | Score all objects as delta candidates; cost = `delta_size + base_access_time`; top N=8 selected (configurable). Goal: balance encoding size vs reconstruction time. |
+| Delta reconstruction cache | LRU, 1 GB max, 1h TTL | Reconstructed full objects cached in memory. Repeated delta-chain reads hit cache instead of re-reconstructing. |
+
+### 2.3 Testing Requirements
+
+**Delta Chain Robustness** — Add `tests/e2e/delta_chain_robustness.rs`:
+
+- [ ] Corrupted delta → recovery path
+- [ ] Orphaned deltas (deleted base) → integrity check detects
+- [ ] Chain exceeding `MAX_DEPTH` after config change → pruning triggered
+- [ ] Concurrent optimization + delete → no race condition
+- [ ] Out-of-space + prune + retry → succeeds
+
+### 2.4 Troubleshooting
+
+#### CAS returns NotFound for a Hash I Just Stored
+
+| Symptom | Cause | Resolution |
+|---|---|---|
+| `CAS NotFound(hash)` after `put()` | Hash computation mismatch | `assert_eq!(Hash::from_bytes(&data)?, cas.put(data).await?)` |
+| Same error | Wrong CAS instance (e.g., `InMemoryCas` vs `FileSystemCas`) | Use same instance for put + get |
+| Same error | Index corruption (rare) | Run `repair_index()` |
+
+### 2.5 Implementation Checklist: New CAS Backend
+
+- [ ] Implement `CasApi` (put, get, contains, delete)
+- [ ] Implement `CasMaintenanceApi` (optimize, prune, repair, gc_sweep)
+- [ ] Include error types: `NotFound`, `OutOfSpace`
+- [ ] Property tests: `put(x) → get() == x` determinism
+- [ ] Stress tests: concurrent puts, hash collisions
+- [ ] Benchmark against `FileSystemCas`
+- [ ] Document resource limits and O(1)/O(log n) guarantees
+- [ ] Update this file with backend comparison
+
+### 2.6 Extension Points
+
+- **New hash algorithms**: Add variant to `HashAlgorithm` enum, implement multihash trait, update multicodec code table.
+- **Index-backed existence checks**: Design proposal — `IndexState::contains(&self, hash) → bool` with false-negative tolerance (miss falls back to storage), no false positives. Populated lazily on first check, updated incrementally. See `future-extensions.md` for full API spec.
+
+### 2.7 Cross-Crate: CAS Versioning vs Conductor Versioning (cf. §6.1)
+
+CAS internal object format version is independent of Conductor config version. No cross-crate version coupling. Both must carry explicit version markers, but they evolve independently with separate migration bridges.
+
+### 2.8 Ambiguity Resolved: Index Repair Semantics (§7.6)
+
+`repair_index()` updates the on-disk index to the current schema version and removes orphaned entries. It does **not** re-hash objects — only metadata is updated. Original object data is untouched. This is an in-place update, not a full rebuild.
+
+## Architecture Diagram
+
+```mermaid
+graph TD
+    subgraph "CAS Crate"
+        API[Public API<br/>CasApi, CasMaintenanceApi]
+        HASH[hash module<br/>Blake3, multihash]
+        STORE[storage module<br/>FileSystemCas, InMemoryCas]
+        INDEX[index module<br/>Persistence, repair]
+        CODEC[codec module<br/>Versioned encode/decode]
+        ORCH[orchestration module<br/>Actor-based coordination]
+        CLI[cli module]
+        ERROR[error module]
+    end
+
+    API --> HASH
+    API --> STORE
+    API --> INDEX
+    API --> CODEC
+    API --> ORCH
+    API --> CLI
+    API --> ERROR
+    STORE --> INDEX
+    ORCH --> STORE
+    ORCH --> INDEX
+    CODEC --> STORE
+
+    subgraph "External Dependencies"
+        B3[blake3]
+        SERDE[serde]
+        TOKIO[tokio]
+        RACTOR[ractor]
+    end
+
+    HASH --> B3
+    INDEX --> SERDE
+    API --> TOKIO
+    ORCH --> RACTOR
+```
