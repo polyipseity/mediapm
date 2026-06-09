@@ -1274,7 +1274,7 @@ variant" fatal error.
 | ZIP with >1M files | Not mentioned | File limit? |
 | ZIP with nested archives | Not mentioned | Recursion limit? |
 
-**Current Spec**: "Archive: ZIP pack/unpack/repack; pure"
+**Current Spec**: "Archive: ZIP pack/unpack/repack/transform; pure"
 
 **Gap**: No security bounds.
 
@@ -1292,6 +1292,46 @@ variant" fatal error.
 
 1. What is max uncompressed size limit?
 2. Are symlinks allowed in ZIPs? If so, are they sandbox-checked?
+
+---
+
+### 3.4.1 Archive Transform Action: Edge Cases
+
+**Issue**: `archive` builtin `transform` action performs regex-based replacement on zip entries.
+
+**Scenarios**:
+
+| Scenario | Current Spec | Gap |
+|---|---|---|
+| Empty zip (no entries) | Not mentioned | Returns empty zip |
+| No entries matching `filter` | Not mentioned | Zip passes through unchanged |
+| Non-contiguous numbered keys (`find_0`, `find_2` without `find_1`) | Rejected | Validation error |
+| Unpaired keys (`find_0` without `replace_0`) | Rejected | Validation error |
+| Invalid regex in `find_<N>` | Rejected | Parse error |
+| `filter` glob matches nothing | Not mentioned | No changes, zip unchanged |
+| Binary mode (`mode=binary`) | Not mentioned | Bytes replaced literally, no text decoding |
+| Max transform count (47, keys 0-9 + a-z + A-Z) | Not mentioned | Hard limit enforced |
+| Overlapping find/replace (e.g., find replaces text that another find targets) | Unspecified | Each transform runs sequentially on entry bytes in numbered order |
+
+**Current Spec**: "archive: ZIP pack/unpack/repack/transform; pure" — no parameter details.
+
+**Gap**: Transform parameters and edge-case behavior not documented.
+
+**Risk**: Callers may expect overlapping transforms to compose differently, or may pass degenerate regex patterns that cause correctness issues.
+
+**Recommendations**:
+
+- Document that transforms run sequentially in numbered order — each transform operates on the output of the previous one.
+- Validate numbered key contiguity at param parsing time and fail fast.
+- Validate that filter uses glob syntax and `mode` is one of `text` or `binary`.
+- Document that `text` mode decodes entry bytes as UTF-8 before applying regex; non-UTF-8 entries in text mode produce an error.
+- `binary` mode applies regex directly on raw bytes.
+- Add test: "empty zip, no-match filter, non-contiguous keys, invalid regex, binary mode, max transforms".
+
+**Questions for Clarification**:
+
+1. Should text-mode transforms gracefully skip non-UTF-8 entries instead of erroring?
+2. Should there be a `max_file_size` guard to prevent regex on multi-GB entries?
 
 ---
 

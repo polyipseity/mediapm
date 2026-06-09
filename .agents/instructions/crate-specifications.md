@@ -808,7 +808,7 @@ entries are implicitly active.
 **Builtin Specs**:
 1. **echo**: String pass-through to stdout/stderr; pure
 2. **fs**: Directory/file creation; impure
-3. **archive**: ZIP pack/unpack/repack; pure
+3. **archive**: ZIP pack/unpack/repack/transform; pure
 4. **import**: File/folder/URL/CAS ingestion; impure
 5. **export**: Payload materialization to disk; impure
 
@@ -1558,7 +1558,7 @@ This document serves as the integration reference. Refer to crate-specific AGENT
 
 ### Conductor-Builtins: Standard Tools
 
-**In 30 seconds**: Five small, focused tools that Conductor uses as building blocks: **echo** (string passthrough), **fs** (directory/file operations), **archive** (ZIP pack/unpack), **import** (file/URL ingest to CAS), **export** (CAS materialization to disk). Each follows the same CLI and API contract: keyed arguments, fail-fast validation, deterministic output (for pure tools) or clean side effects (for impure). They're the primitives that enable Conductor workflows to compose larger operations.
+**In 30 seconds**: Five small, focused tools that Conductor uses as building blocks: **echo** (string passthrough), **fs** (directory/file operations), **archive** (ZIP pack/unpack/transform), **import** (file/URL ingest to CAS), **export** (CAS materialization to disk). Each follows the same CLI and API contract: keyed arguments, fail-fast validation, deterministic output (for pure tools) or clean side effects (for impure). They're the primitives that enable Conductor workflows to compose larger operations.
 
 **Who uses it**: Conductor (builtin registry), MediaPM (workflow synthesis), advanced users (custom workflows).
 
