@@ -138,9 +138,11 @@ pub(super) fn synthesize_yt_dlp_step(
         transform_inputs
             .insert("filter".to_string(), InputBinding::String("*.desktop".to_string()));
         transform_inputs.insert("mode".to_string(), InputBinding::String("text".to_string()));
-        transform_inputs
-            .insert("find_0".to_string(), InputBinding::String("__mediapm__".to_string()));
-        transform_inputs.insert("replace_0".to_string(), InputBinding::String(String::new()));
+        transform_inputs.insert(
+            "find_0".to_string(),
+            InputBinding::String("downloads/(.+)__mediapm__".to_string()),
+        );
+        transform_inputs.insert("replace_0".to_string(), InputBinding::String("$1".to_string()));
 
         let mut transform_outputs = BTreeMap::new();
         transform_outputs.insert("result".to_string(), OutputPolicy::default());
