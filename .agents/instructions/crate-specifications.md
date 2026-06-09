@@ -107,7 +107,7 @@ independent implementations were unified under `Hash::composite` in
 
 | Crate | Mechanism |
 |-------|-----------|
-| **CAS** | Temp file + atomic rename; index snapshots on mutation |
+| **CAS** | Temp file + atomic rename; index snapshots on mutation; `put_new_full_object()` rolls back in-memory index entry + deletes orphaned file if `persist_index_batch()` fails |
 | **Conductor** | State persisted atomically; workflow fails fast on conflicts; OS-backed per-conductor-dir temp dirs (hash of conductor_dir under `std::env::temp_dir()`) replace global temp for sandboxes, ZIP extractions, and regex captures |
 | **Builtins** | File operations succeed or rollback (no orphaned state) |
 | **MediaPM** | Direct materialization to final output paths; CAS integrity trusted by default; temp extraction dir (hash of workspace root under `std::env::temp_dir()`) used for zip processing only; per-workspace temp dirs are for sandboxes and ZIP extractions |
@@ -395,6 +395,7 @@ For comprehensive details, refer to the following specifications collected from 
 - **Public Traits**: `CasApi` (read/write/maintain), `CasMaintenanceApi` (optimize/prune/repair)
 - **Type Model**: `Hash` (Blake3 multihash; `from_content()` for content, `Hash::composite(&[Hash])` for ordered hash lists), `Constraint` (base selection), `ConstraintBatchOp` (batch operation), `ObjectInfo` (metadata)
 - **Storage**: `FileSystemCas` (persistent), `InMemoryCas` (ephemeral)
+- **Index/filesystem desync protection**: Three-layer defense — (1) startup orphan scan walks storage directory, finds files not in index, and heals them; (2) `exists()`/`exists_many()` fall back to filesystem probe when a hash is missing from index, healing on the fly; (3) `put_new_full_object()` rollback removes orphaned file + index entry on `persist_index_batch()` failure
 - **Versioning**: Adjacent-only migrations; optics-based bridging
 - **Performance**: O(1) full objects, O(depth) delta objects; mmap for ≥64KB
 

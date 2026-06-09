@@ -246,6 +246,10 @@ set_constraint_batch([Set { target_hash: A, potential_bases: [C] }]) where C dep
 
 **Recommendations**:
 
+- ✅ Done: Repair scope documented in `crate-specifications.md` (3-layer defense):
+  - Startup orphan scan heals files-not-in-index into the in-memory index
+  - `exists()`/`exists_many()` filesystem fallback with auto-healing
+  - `put_new_full_object()` rollback on index persistence failure
 - Document repair scope: "Detects orphaned entries, duplicate entries, version mismatches; removes orphaned, de-duplicates, auto-upgrades schema"
 - Make explicit: **Repair never deletes user data** (only index/metadata)
 - Add test: "index corruption scenarios → repair restores consistency"
@@ -254,6 +258,35 @@ set_constraint_batch([Set { target_hash: A, potential_bases: [C] }]) where C dep
 
 1. Does `repair_index()` change on-disk data or only rebuild in-memory structures?
 2. Is repair automatic on startup or only manual invocation?
+
+### 1.8 Index/Filesystem Desync (Resolved)
+
+**Issue**: After a process crash or partial write, the CAS `index.redb` may lack
+entries for blob files that exist on disk. This causes `exists()` (index-only
+before the fix) to return false for orphaned files, making the conductor cache
+probe miss every instance — all steps are re-executed on every `mediapm sync`.
+
+**Root cause**: Race window between `persist_object_variant()` (file write) and
+`persist_index_batch()` (redb write) in `put_new_full_object()`. File write
+succeeds, index write fails or process crashes before index commit.
+
+**Resolution** (3-layer defense):
+
+1. **Startup orphan scan**: `repair_orphaned_objects_invariant()` in
+`open_with_alpha_and_recovery()` walks the storage root, finds files not in the
+index, reads their hashes, and heals them into the in-memory index (single
+`persist_index_snapshot()` at end).
+2. **`exists()`/`exists_many()` filesystem fallback**: When a hash is absent
+from the in-memory index, probe the filesystem directly. If found, heal the
+index entry (`heal_orphaned_object()`) and return true. This prevents all
+future cache-probe misses.
+3. **`put_new_full_object()` rollback**: If `persist_index_batch()` fails after
+a successful file write, remove the in-memory index entry and delete the
+orphaned file to prevent accumulation.
+
+**Verification**: After repair, `mediapm sync` shows cache HITs instead of
+re-executing all steps. The 4-layer fix is validated by CAS unit tests (83 pass,
+4 pre-existing baseline failures unchanged).
 
 ---
 
