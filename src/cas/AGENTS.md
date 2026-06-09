@@ -336,6 +336,40 @@ The `FileSystemCas` backend uses an advisory lock file to coordinate access acro
 
 **Contract**: The lock is advisory — cooperative processes must respect it. Non-cooperative processes (e.g., a direct `cp` or `rsync` into the store) are not prevented but risk corrupting the index or creating inconsistent state.
 
+### Concurrent Mutation Safety (Delta Chain Race)
+
+`get()` for delta-chain objects uses a two-phase plan-then-execute pattern to
+avoid holding the index read lock across disk I/O, which would block concurrent
+writes:
+
+1. **Plan phase** (under index read lock): Walk the delta chain metadata from
+   the index, building a `ReconstructionPlan` with ordered `ChainLink` entries
+   (base hash → ... → leaf hash). No disk I/O occurs in this phase.
+2. **Execute phase** (outside lock): Reconstruct by reading object payloads from
+   disk and applying VCDIFF patches sequentially. The index lock is released
+   before any disk reads.
+
+A version counter guard (`FileSystemState.reconstruction_version: AtomicU64`)
+protects against the plan/execute gap:
+
+- On every index mutation (`delete()`, `optimize_target_if_beneficial()`), the
+  counter is incremented with `Release` ordering after the index write.
+- `get()` snapshots the counter with `Acquire` ordering before the plan phase,
+  then performs a relaxed check after the plan phase.
+- If the version changed between plan and execute, the entire get() is retried
+  once. Repeated version changes indicate sustained concurrent mutation and
+  propagate the error to the caller.
+
+This design ensures concurrent GC/delete/optimize operations cannot cause
+`get()` to decode a VCDIFF patch whose base object has been removed or
+rewritten between reading the chain metadata and reading the payload files.
+
+**Retry-once guarantee**: A single retry covers the common case where a
+concurrent writer finishes one index mutation between plan and execute. If the
+writer is sustained (many rapid mutations), the retry fails and surfaces
+`CasError::CorruptObject` with the reconstruction context — the caller can
+retry at a higher level or fail gracefully.
+
 ### Known Limitations
 
 - **Advisory lock**: The store lock is advisory only. Cooperative processes that attempt `try_lock_exclusive()` will be serialized, but a process that bypasses the lock (direct filesystem manipulation, a CAS client built without locking) can still cause concurrent-access corruption.
