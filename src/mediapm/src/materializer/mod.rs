@@ -2263,6 +2263,7 @@ mod tests {
             aux: BTreeMap::new(),
             instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
+            external_data: BTreeMap::new(),
         };
 
         let state_pointer = encode_state(&cas, state).await.expect("encode state");
@@ -2626,6 +2627,7 @@ mod tests {
             aux: BTreeMap::new(),
             instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
+            external_data: BTreeMap::new(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
@@ -2825,6 +2827,7 @@ mod tests {
             aux: BTreeMap::new(),
             instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
+            external_data: BTreeMap::new(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
@@ -3004,6 +3007,7 @@ mod tests {
             aux: BTreeMap::new(),
             instance_blob_hashes: BTreeSet::new(),
             referenced_instance_keys: HashSet::new(),
+            external_data: BTreeMap::new(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
