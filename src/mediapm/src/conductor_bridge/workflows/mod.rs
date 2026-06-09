@@ -21,7 +21,7 @@ use crate::config::MediaPmState;
 use crate::config::{
     ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp, MediaSourceSpec, MediaStep,
     MediaStepTool, OutputSaveConfig, ResolvedStepVariantFlow, ToolRequirement, TransformInputValue,
-    expand_variant_selectors, media_source_uri, normalize_selector_compare_value,
+    YtDlpOutputKind, expand_variant_selectors, media_source_uri, normalize_selector_compare_value,
     resolve_step_variant_flow,
 };
 use crate::error::MediaPmError;
@@ -47,7 +47,7 @@ mod yt_dlp;
 mod yt_dlp_inputs;
 
 use self::synthesis::synthesize_media_steps;
-use self::yt_dlp_inputs::resolve_step_output_binding;
+use self::yt_dlp_inputs::{decode_yt_dlp_output_variant_config, resolve_step_output_binding};
 
 /// Prefix for default `mediapm`-managed workflow ids in machine documents.
 const MANAGED_WORKFLOW_PREFIX: &str = "mediapm.media.";
@@ -919,14 +919,24 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
 
         if matches!(step.tool, MediaStepTool::YtDlp) {
             let step_id = yt_dlp_step_id(step_index);
+            let mut link_variants: BTreeMap<String, Option<String>> = BTreeMap::new();
 
             for mapping in &mappings {
+                let output_variant_config = decode_yt_dlp_output_variant_config(
+                    &mapping.output,
+                    &resolved_step.output_variants,
+                )?;
                 let output_binding = resolve_step_output_binding(
                     step.tool,
                     &resolved_step.output_variants,
                     &mapping.output,
                     ffmpeg_slot_limits,
                 )?;
+
+                if output_variant_config.kind == YtDlpOutputKind::Links {
+                    link_variants.insert(mapping.output.clone(), output_binding.zip_member.clone());
+                }
+
                 pending_variant_updates.push((
                     mapping.output.clone(),
                     VariantProducer::StepOutput {
@@ -938,8 +948,28 @@ fn resolve_media_variant_output_binding_with_ffmpeg_limits(
                 ));
             }
 
-            for (output_variant, producer) in pending_variant_updates {
-                variant_producers.insert(output_variant, producer);
+            if !link_variants.is_empty() {
+                let transform_step_id = format!("{step_index}-1-archive-links-cleanup");
+
+                for (output_variant, producer) in pending_variant_updates {
+                    if let Some(zip_member) = link_variants.get(&output_variant) {
+                        variant_producers.insert(
+                            output_variant,
+                            VariantProducer::StepOutput {
+                                step_id: transform_step_id.clone(),
+                                output_name: "result".to_string(),
+                                zip_member: zip_member.clone(),
+                                extension: None,
+                            },
+                        );
+                    } else {
+                        variant_producers.insert(output_variant, producer);
+                    }
+                }
+            } else {
+                for (output_variant, producer) in pending_variant_updates {
+                    variant_producers.insert(output_variant, producer);
+                }
             }
 
             continue;

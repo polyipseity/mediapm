@@ -123,7 +123,7 @@ pub(super) fn synthesize_yt_dlp_step(
 
     if !link_variants.is_empty() {
         let archive_tool_id = resolve_builtin_tool_id(machine, "archive", "1.0.0")?;
-        let transform_step_id = format!("{}.links.cleanup", step_id_for_link_cleanup);
+        let transform_step_id = format!("{step_index}-1-archive-links-cleanup");
 
         let mut transform_inputs = BTreeMap::new();
         transform_inputs.insert(
