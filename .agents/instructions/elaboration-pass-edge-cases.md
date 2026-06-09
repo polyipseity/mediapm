@@ -1721,17 +1721,18 @@ newtype: `From<&str>` splits bare strings by `/` at Rust construction time
 
 **Scenarios**:
 
-| Scenario | Current Spec | Gap |
-|---|---|---|
-| Custom replacement maps a char to another reserved char | Not tested | Should fail validation after replacement |
-| NFD normalization + replacement interaction | NFD always enforced first | Should verify NFD normalization before replacement |
-| Replacement char is multi-byte Unicode | Only single char allowed | Rejected at deserialization |
-| `sanitize_names` on media node | Inherited by children | Verify propagation |
-| Custom map with overlapping runtime default keys | Custom wins | Verify merge order |
-| `Inherit` is default, serialized as `"inherit"` | `skip_serializing_if = "is_inherit"` omits it from hierarchy output | Verify round-trip `Inherit` → omitted → deserialize → same behavior |
-| `HierarchyPath` built via `From<&str>` with embedded `/` (e.g. `"a/b"`) | Split into two components at construction time | Sanitization iterates `HierarchyPath::components()` — the `/` is already a component boundary, not a character to be replaced |
-| `HierarchyPath` deserialized from array form `["a/b"]` | Single component containing literal `/` | Validated at flattening time — `/` is forbidden within a single component by `validate_hierarchy_path_component` |
-| `HierarchyPath` round-trip: config loads `"a/b"` → stored as `["a","b"]` → saved | Two-component array | Re-loaded array form `["a","b"]` deserializes identically; no information lost |
+| Scenario                                                                                       | Current Spec                                                        | Gap                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Custom replacement maps a char to another reserved char                                        | Not tested                                                          | Should fail validation after replacement                                                                                                                                                                       |
+| NFD normalization + replacement interaction                                                    | NFD always enforced first                                           | Should verify NFD normalization before replacement                                                                                                                                                             |
+| Replacement char is multi-byte Unicode                                                         | Only single char allowed                                            | Rejected at deserialization                                                                                                                                                                                    |
+| `sanitize_names` on media node                                                                 | Inherited by children                                               | Verify propagation                                                                                                                                                                                             |
+| Custom map with overlapping runtime default keys                                               | Custom wins                                                         | Verify merge order                                                                                                                                                                                             |
+| `Inherit` is default, serialized as `"inherit"`                                                | `skip_serializing_if = "is_inherit"` omits it from hierarchy output | Verify round-trip `Inherit` → omitted → deserialize → same behavior                                                                                                                                            |
+| `HierarchyPath` built via `From<&str>` with embedded `/` (e.g. `"a/b"`)                        | Split into two components at construction time                      | Sanitization iterates `HierarchyPath::components()` — the `/` is already a component boundary, not a character to be replaced                                                                                  |
+| `HierarchyPath` deserialized from array form `["a/b"]`                                         | Single component containing literal `/`                             | Validated at flattening time — `/` is forbidden within a single component by `validate_hierarchy_path_component`                                                                                               |
+| `HierarchyPath` round-trip: config loads `"a/b"` → stored as `["a","b"]` → saved               | Two-component array                                                 | Re-loaded array form `["a","b"]` deserializes identically; no information lost                                                                                                                                 |
+| Playlist path resolution (`resolve_playlist_media_target_relative_path`) bypasses sanitization | Now fixed — uses `sanitize_and_validate_components` shared helper   | Previously joined resolved components directly without NFD normalization, reserved-char replacement, or validation. Media targets with reserved chars or non-NFD names would produce invalid filesystem paths. |
 
 **Risk**: Replacement that produces another reserved character would bypass
 reserved-char validation; multi-byte replacement chars create inconsistent path
@@ -1755,6 +1756,11 @@ never a candidate for replacement.
   `validate_components` (all constraints + join). The three NFD stages are:
   (1) source-component NFD check, (2) forced NFD normalization after template
   expansion, (3) NFD validation in `validate_components` as the final gate.
+  Stages 3–5 are now consolidated into a shared `sanitize_and_validate_components`
+  helper in `commit.rs` used by both `prepare_hierarchy_entry` and
+  `resolve_playlist_media_target_relative_path` — any new call site that needs
+  per-component sanitization should reuse this helper rather than inlining
+  the pipeline.
 
 **Questions for Clarification**:
 

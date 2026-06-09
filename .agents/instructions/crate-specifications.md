@@ -900,6 +900,15 @@ entries are implicitly active.
     applies the effective replacement map to a single component string,
   - `validate_components` is the post-resolution validation function that checks
     NFD normalization, forbidden characters, and empty/`.`/`..` segments,
+  - stages 3–5 are consolidated into a shared `sanitize_and_validate_components`
+    helper in `commit.rs`:
+    * input: component list, `SanitizeNamesConfig`, default replacement map
+    * pipeline: NFD normalize each component → sanitize (if enabled) → validate
+    * returns the cleaned component list (or error),
+  - `sanitize_and_validate_components` is used by both `prepare_hierarchy_entry`
+    in `mod.rs` and `resolve_playlist_media_target_relative_path` in
+    `playlist.rs`, eliminating the previous gap where playlist path resolution
+    bypassed NFD normalization, sanitization, and validation,
 - **Hierarchy path flattening-time validation**:
   - `validate_hierarchy_path_component()` runs at flattening time (in
     `hierarchy_types.rs`) over each component of `HierarchyPath::components()`,
