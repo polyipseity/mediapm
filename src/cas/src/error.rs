@@ -97,8 +97,17 @@ pub enum CasError {
         detail: String,
     },
     /// Persistent object bytes failed structural validation.
-    #[error("corrupt object payload: {0}")]
-    CorruptObject(String),
+    #[error("corrupt object payload: {detail}")]
+    CorruptObject {
+        /// The top-level hash being reconstructed.
+        target: Option<Hash>,
+        /// The hash at which the delta decode failure occurred.
+        current: Option<Hash>,
+        /// The base_hash of the delta object that failed.
+        base: Option<Hash>,
+        /// Detailed error message.
+        detail: String,
+    },
     /// Persistent index file failed structural validation.
     #[error("corrupt index state: {0}")]
     CorruptIndex(String),
@@ -287,7 +296,23 @@ impl CasError {
     /// Converts a displayable object-corruption detail into [`CasError::CorruptObject`].
     #[must_use]
     pub fn corrupt_object(detail: impl Into<String>) -> Self {
-        Self::CorruptObject(detail.into())
+        Self::CorruptObject { target: None, current: None, base: None, detail: detail.into() }
+    }
+
+    /// Builds a [`CasError::CorruptObject`] with reconstruction context.
+    #[must_use]
+    pub fn corrupt_reconstruction(
+        target: Hash,
+        current: Hash,
+        base: Hash,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::CorruptObject {
+            target: Some(target),
+            current: Some(current),
+            base: Some(base),
+            detail: detail.into(),
+        }
     }
 
     /// Converts a displayable index-corruption detail into [`CasError::CorruptIndex`].
@@ -413,8 +438,9 @@ mod tests {
 
     #[test]
     fn corrupt_object_error_includes_detail() {
-        let rendered = CasError::corrupt_object("invalid vcdiff header").to_string();
-
+        let err = CasError::corrupt_object("invalid vcdiff header");
+        assert!(matches!(err, CasError::CorruptObject { .. }));
+        let rendered = err.to_string();
         assert!(rendered.contains("corrupt object payload"));
         assert!(rendered.contains("invalid vcdiff header"));
     }

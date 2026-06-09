@@ -602,7 +602,7 @@ fn validate_delta_content(
             bytes
         };
         let patch = DeltaPatch::decode(state.payload.as_ref());
-        let rebuilt = patch.apply(&base_bytes).ok()?;
+        let rebuilt = patch.apply(&base_bytes, hash, hash, state.base_hash).ok()?;
         if rebuilt.len() as u64 != state.content_len || Hash::from_content(&rebuilt) != hash {
             None
         } else {

@@ -1061,7 +1061,7 @@ mod tests {
         tokio::fs::write(&object_path, b"mutated-bytes").await.expect("mutate object bytes");
 
         let err = cas.get(hash).await.expect_err("corrupt payload must fail verification");
-        assert!(matches!(err, CasError::CorruptObject(_)));
+        assert!(matches!(err, CasError::CorruptObject { .. }));
     }
 
     #[tokio::test]

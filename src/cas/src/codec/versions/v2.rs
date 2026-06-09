@@ -226,7 +226,7 @@ mod tests {
 
         let error =
             V2Envelope::parse(&bytes).expect_err("truncated payload length must fail parsing");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
 
         let error =
             V2Envelope::parse(&bytes).expect_err("truncated multihash bytes must fail parsing");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]
@@ -264,7 +264,7 @@ mod tests {
 
         let error =
             V2Envelope::parse(&bytes).expect_err("trailing bytes after payload must fail parsing");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]
@@ -276,7 +276,7 @@ mod tests {
         envelope.payload_len += 1;
 
         let error = envelope.validate().expect_err("payload_len mismatch must fail validation");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]

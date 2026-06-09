@@ -409,7 +409,7 @@ mod tests {
 
         let error = decode_delta_state_borrowed(&bytes)
             .expect_err("bad magic must fail dispatcher prefix validation");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
 
         let error =
             decode_delta_state(&bytes).expect_err("unknown envelope version must fail dispatcher");
-        assert!(matches!(error, CasError::CorruptObject(_)));
+        assert!(matches!(error, CasError::CorruptObject { .. }));
     }
 
     #[test]

@@ -172,7 +172,7 @@ impl InMemoryCas {
             };
 
             let patch = DeltaPatch::decode(state.payload.as_ref());
-            data = patch.apply(&data)?;
+            data = patch.apply(&data, hash, delta_hash, state.base_hash)?;
         }
 
         if data.len() != plan.final_len {
@@ -377,6 +377,7 @@ impl InMemoryCas {
     /// Applies one projected delta patch in overlay context.
     fn apply_projected_delta(
         &self,
+        target: Hash,
         delta_hash: Hash,
         current: &[u8],
         overlay_updates: &HashMap<Hash, StoredObject>,
@@ -393,7 +394,7 @@ impl InMemoryCas {
                 )));
             };
             let patch = DeltaPatch::decode(state.payload.as_ref());
-            return patch.apply(current);
+            return patch.apply(current, target, delta_hash, state.base_hash);
         }
 
         let object = self.objects.get(&delta_hash).ok_or(CasError::NotFound(delta_hash))?;
@@ -403,7 +404,7 @@ impl InMemoryCas {
             )));
         };
         let patch = DeltaPatch::decode(state.payload.as_ref());
-        patch.apply(current)
+        patch.apply(current, target, delta_hash, state.base_hash)
     }
 
     /// Reconstructs one hash against projected overlay changes.
@@ -460,8 +461,13 @@ impl InMemoryCas {
         let mut data = self.projected_full_payload(base_hash, overlay_updates, overlay_deleted)?;
 
         for delta_hash in delta_chain.into_iter().rev() {
-            data =
-                self.apply_projected_delta(delta_hash, &data, overlay_updates, overlay_deleted)?;
+            data = self.apply_projected_delta(
+                hash,
+                delta_hash,
+                &data,
+                overlay_updates,
+                overlay_deleted,
+            )?;
         }
 
         if data.len() != final_len {
@@ -1002,7 +1008,7 @@ mod tests {
         cas.objects.insert(hash, crate::StoredObject::full(wrong_payload));
 
         let err = cas.get(hash).await.expect_err("corrupt in-memory object should fail");
-        assert!(matches!(err, CasError::CorruptObject(_)));
+        assert!(matches!(err, CasError::CorruptObject { .. }));
     }
 
     #[tokio::test]

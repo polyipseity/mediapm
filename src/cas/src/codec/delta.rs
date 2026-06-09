@@ -8,7 +8,7 @@ use std::borrow::Cow;
 use oxidelta::compress::encoder::{CompressOptions, encode_all};
 use oxidelta::vcdiff::decoder::decode_memory;
 
-use crate::CasError;
+use crate::{CasError, Hash};
 
 /// Encoded VCDIFF patch payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,14 +44,29 @@ impl<'a> DeltaPatch<'a> {
 
     /// Applies this VCDIFF patch to `base` and returns reconstructed target bytes.
     ///
+    /// The `target`, `current`, and `base_hash` parameters provide hash context
+    /// for error reporting when delta decode fails during reconstruction.
+    ///
     /// # Errors
     /// Returns [`CasError::CorruptObject`] when patch decoding/apply fails,
     /// indicating the encoded delta payload is invalid for the provided base.
-    pub(crate) fn apply(&self, base: &[u8]) -> Result<Vec<u8>, CasError> {
+    pub(crate) fn apply(
+        &self,
+        base: &[u8],
+        target: Hash,
+        current: Hash,
+        base_hash: Hash,
+    ) -> Result<Vec<u8>, CasError> {
         // `decode_memory` consumes borrowed input slices; it does not clone `base`
         // before decoding, keeping reads zero-copy on the base buffer.
-        decode_memory(self.vcdiff.as_ref(), base)
-            .map_err(|err| CasError::corrupt_object(format!("vcdiff decode failed: {err}")))
+        decode_memory(self.vcdiff.as_ref(), base).map_err(|err| {
+            CasError::corrupt_reconstruction(
+                target,
+                current,
+                base_hash,
+                format!("vcdiff decode failed: {err}"),
+            )
+        })
     }
 }
 
@@ -62,7 +77,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::DeltaPatch;
-    use crate::{CasApi, CasMaintenanceApi, Constraint, FileSystemCas, OptimizeOptions};
+    use crate::{CasApi, CasMaintenanceApi, Constraint, FileSystemCas, Hash, OptimizeOptions};
 
     #[test]
     fn vcdiff_patch_roundtrip_reconstructs_target() {
@@ -72,7 +87,14 @@ mod tests {
         let patch = DeltaPatch::diff(base, target).expect("diff should encode");
         let encoded = patch.encode();
         let decoded = DeltaPatch::decode(encoded);
-        let restored = decoded.apply(base).expect("apply should reconstruct target");
+        let restored = decoded
+            .apply(
+                base,
+                Hash::from_content(b"target"),
+                Hash::from_content(b"current"),
+                Hash::from_content(b"base"),
+            )
+            .expect("apply should reconstruct target");
 
         assert_eq!(restored, target);
     }
