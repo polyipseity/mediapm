@@ -642,10 +642,10 @@ header and checked at startup.
 
 ## Specification references
 
-- Consolidated technical specification:
-  `.agents/instructions/crate-specifications.md`.
-- Edge-case and ambiguity analysis:
-  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- Deleted monolithic files (`crate-specifications.md`,
+  `elaboration-pass-edge-cases.md`). Use
+  `.agents/instructions/spec-development-index.instructions.md` to locate the
+  relevant per-crate AGENTS.md for any specification or edge-case content.
 
 **Progress message format:**
 
@@ -691,6 +691,7 @@ The only required manual runtime verification before completion is running both 
 
 If you intentionally change behavior, update tests and docs in the same change.
 
-- Update `.agents/instructions/crate-specifications.md` and
-  `.agents/instructions/elaboration-pass-edge-cases.md` when the change
-  affects any contract, invariant, or edge case documented there.
+- Update the relevant per-crate `AGENTS.md` (use
+  `.agents/instructions/spec-development-index.instructions.md` to find the
+  right file) when the change affects any contract, invariant, or edge case
+  documented there.

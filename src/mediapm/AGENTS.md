@@ -562,9 +562,851 @@ Internal module-boundary policy for this crate:
 
 ## Detailed specification cross-reference
 
-- Cross-crate and integration specification:
-  `.agents/instructions/crate-specifications.md`.
-- Second-pass edge-case and ambiguity analysis:
-  `.agents/instructions/elaboration-pass-edge-cases.md`.
-- Treat this crate-local guide as authoritative for mediapm runtime and
-  schema behavior; the cross-crate docs are additive integration references.
+This section consolidates content from the former
+`.agents/instructions/crate-specifications.md` and
+`.agents/instructions/elaboration-pass-edge-cases.md` (both deleted).
+Treat this crate-local guide as authoritative for mediapm runtime and schema
+behavior; the consolidated sections below are additive references.
+
+---
+
+## A — Crate Responsibilities Quick Reference
+
+| Crate | Purpose | Type | Key Exports |
+|-------|---------|------|-------------|
+| **cas** | Content-addressed storage with delta encoding | Library + CLI | `CasApi`, `CasMaintenanceApi`, `Hash`, `FileSystemCas`, `InMemoryCas` |
+| **conductor** | Deterministic workflow orchestration with CAS backing | Library + CLI | `ConductorApi`, `SimpleConductor`, `WorkflowSpec`, `OrchestrationState` |
+| **conductor-builtins** (5 crates) | Standalone tool implementations (echo, fs, archive, import, export) | Library + CLI per crate | Builtin CLI/API executables |
+| **mediapm** | Media library façade composing CAS + Conductor | Library + CLI | `MediaPmService`, `MediaPmApi`, `MediaPmDocument`, `MediaPmPaths` |
+
+## B — Cross-Crate Data Flow
+
+```text
+User Input (mediapm.ncl)
+    ↓
+MediaPm Configuration Parsing
+    ├─→ CAS: Content-address media
+    ├─→ Conductor: Synthesize workflows
+    └─→ Builtins: Tool registration
+    ↓
+Conductor Workflow Execution
+    ├─ Step 1: import (builtin) → CAS store
+    ├─ Step 2: ffmpeg (managed tool) → CAS store
+    ├─ Step 3: media-tagger (managed tool) → CAS store
+    └─ Step N: export (builtin) → Materialized files
+    ↓
+CAS-Backed Materialization
+    └─ Direct materialization to final output paths
+
+Temp extraction directory (mediapm_tmp_dir, for zip processing only)
+    └─ Extract → materialize → cleanup
+    ↓
+State Persistence (state.ncl)
+    └─ Lock records: path → media_id, variant, hash
+```
+
+## C — Shared Invariants Across Crates
+
+### Content Identity Contract
+
+Same bytes → same hash (always). Blake3-256 multihash;
+`Hash::composite(&[Hash])` produces deterministic composite hash via
+`blake3(h₁.bytes() ‖ h₂.bytes() ‖ …)`. All StringList composite hash
+computations across conductor and materializer must use `Hash::composite`.
+
+### Constraint Correctness Contract
+
+Base selection respects explicit constraints.
+`set_constraint_batch()` validates each op's bases exist.
+
+### Reconstructability Contract
+
+Stored bytes are retrievable exactly. `get(hash)` returns exact bytes; delta
+chains reconstructible; state blob round-trips serialize↔deserialize.
+
+### Atomicity Contract
+
+Operations succeed or fail cleanly. Temp file + atomic rename; index
+snapshots on mutation; direct materialization to final output paths; per-
+workspace temp dirs (hash of workspace root under `std::env::temp_dir()`).
+
+### Determinism Contract
+
+Identical inputs → identical outputs (pure paths only). Echo and archive
+are pure; fs, import, export are impure.
+
+### NCL↔Rust Schema Sync Contract
+
+Every versioned NCL document has a corresponding typed Rust struct at the
+version layer, with an envelope struct carrying the explicit `version`
+marker. `decode()`: deserialize JSON → typed envelope → extract inner
+document. `encode()`: serialize inner → wrap in envelope → JSON.
+`deny_unknown_fields` lives on the parent envelope (not the flattened child).
+
+### Nickel Number Export Contract
+
+Nickel stores all numbers as `f64`. When `eval_full_for_export()`
+serializes to JSON, integer values become `N::Float` not `N::PosInt`.
+Custom deserializers (`deserialize_option_u64_from_number` in mediapm,
+`deserialize_option_integral_u64` in conductor) accept both representations.
+All `Option<u64>` fields in `MediaRuntimeStorage` and `RuntimeStorageLatest`
+use these deserializers.
+
+## D — Integration Boundaries
+
+### CAS ↔ Conductor
+
+Conductor requires `CasApi` trait object at startup. Operations: external
+data stored in CAS (`put_from_uri`), workflow state serialized to CAS,
+tool content materialized from CAS, index repair on startup. Conductor may
+call CAS concurrently; CAS doesn't reference Conductor types.
+
+### Conductor ↔ Builtins
+
+Conductor discovers builtins at compile time (`registered_builtin_ids()`).
+CLI and API inputs/outputs must be identical (parity). Fail-fast validation:
+undeclared keys rejected immediately. No encoding of failures in success
+payloads.
+
+### MediaPM ↔ Conductor
+
+MediaPM creates Conductor at service startup, synthesizes `WorkflowSpec`
+from media steps, adds managed-tool `ToolSpec` to machine config, loads/
+merges user + machine + state documents, triggers
+`conductor.run_workflow(...)` per media entry. MediaPM owns media-source
+definitions, hierarchy materialization, tool provisioning. Conductor owns
+workflow execution, step scheduling, state persistence. Conductor documents
+isolated per-workspace. Sync materializes directly to final output paths.
+
+### MediaPM ↔ CAS (Direct)
+
+MediaPM materializes from CAS: content verification (check file hash
+against lock), cache hit detection, link materialization via `cas.get()`.
+All materialized files read-only after commit. Hashes must match;
+mismatch → failed materialization (no fallback). Platform-independent path
+resolution via `HierarchyPath` (normalized, slash-separated).
+
+## E — Instance Output Existence Checking
+
+During hierarchy materialization, the materializer checks whether each
+candidate orchestration instance's required step outputs still exist in CAS.
+For step outputs without ZIP member extraction, uses `cas.info(hash)` —
+lightweight existence check (one redb lookup + one stat) instead of
+`cas.get(hash)` which loads full content bytes. ZIP-member outputs still use
+`cas.get(hash)` for member extraction.
+
+Implementation: `instance_has_materializable_required_outputs()` in
+`src/mediapm/src/materializer/resolve.rs`.
+
+## F — Metadata Cache
+
+**File**: `src/mediapm/src/metadata_cache.rs`
+
+**Purpose**: Persistent on-disk cache for metadata resolution during hierarchy
+instantiation and add-path workflows, with 1-day TTL based on non-usage.
+
+**Backend**: Single JSONC file (`metadata.jsonc`) at
+`<runtime_root>/cache/mediapm/`. Not CAS-backed. `BTreeMap<String, MetadataCacheEntry>`
+with `serde_json::Value` payload and `last_access_unix_seconds` timestamp.
+
+**Key Derivation**: `blake3::hash(media_id.as_bytes() or canonicalized_path.to_string_lossy().as_bytes()).to_hex()`.
+
+**TTL**: 86400 seconds from `last_access_unix_seconds`. Entries evicted on load
+(not on set). `get()` updates timestamp (in-memory dirty flag only).
+
+**Persistence**: `set()` is in-memory dirty flag; timer-based batch flush
+~300s cooldown; `flush()` writes via `AtomicFileOp` then renames; `Drop`
+triggers final sync flush; load filters stale entries and writes back.
+
+**Integration**: `MaterializationLookupContext` carries
+`metadata_cache: Option<Arc<MetadataCache>>` and `tool_registry:
+BTreeMap<String, ToolRegistryRecord>`. `extract_metadata_value_from_variant_payload()`
+and `try_fetch_local_source_metadata_with_ffprobe()` check cache before probe.
+
+**Contract**: Cache miss → probe → store → return. Cache hit (TTL valid) →
+return cached. TTL expired → treat as miss. Serialization failure → miss
+(log warning). File I/O failure → graceful degradation. Clock skew: if
+`last_access_unix_seconds > now`, treat as just-verified no spurious eviction.
+
+## G — CAS Integrity Verification
+
+Configurable integrity verification that re-checks BLAKE3 hashes on `get()`.
+Gated by `VerifyTriggerStrategy`:
+
+- `Always` — re-verify on every `get()`
+- `Modified` — re-verify when object mtime changed since last put/verify
+- `Sample { denominator }` — 1-in-N probabilistic basis
+- `Stale { timeout }` — re-verify when elapsed time exceeds timeout
+
+All strategies evaluated on every `get()`; runs if any triggers.
+
+**Configuration** (`CasIntegrityConfig` in conductor):
+
+```rust
+pub struct CasIntegrityConfig {
+    pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    pub reconstructed_bytes_cache_ttl: Duration,
+}
+```
+
+Default `verify_on_read`: `[Modified, Sample { denominator: 100 }, Stale { timeout: 604800s }]`.
+Default `reconstructed_bytes_cache_ttl`: `3600s`.
+
+**Runtime wiring** (`MediaRuntimeStorage` fields):
+
+- `verify_on_read_sample_denominator: Option<u64>` — overrides Sample
+  denominator (default 100)
+- `verify_on_read_stale_timeout_secs: Option<u64>` — overrides Stale timeout
+  (default 604800)
+- `reconstructed_bytes_cache_ttl_secs: Option<u64>` — overrides cache TTL
+  (default 3600)
+
+These plus `instance_ttl_seconds` are mirrored in `RuntimeStorageConfig`
+(conductor), converted via `MediaRuntimeStorage::to_cas_integrity_config()`,
+and passed through `RunWorkflowOptions.cas_integrity_config`. All four
+`Option<u64>` fields use `#[serde(deserialize_with =
+"deserialize_option_u64_from_number")]`.
+
+## H — Materialization & HierarchyPath
+
+### HierarchyPath Type
+
+`HierarchyNode.path` is a `HierarchyPath(Vec<String>)` newtype:
+
+- Empty path (`vec![]`) is valid for root pass-through folder nodes
+- Serde: zero components → `""`, one → `"abc"`, multiple → `["a", "b"]`
+- Deserialize: splits bare strings by `/`, rejects empty components between
+  delimiters (`trim_matches('/')`)
+- Array form: each element is one component (no further splitting)
+- `From<&str>` splits by `/`; `Default` yields empty path
+- Components validated at flattening time: non-empty, no `.`/`..`, NFD normalized
+
+### Hierarchy Path Sanitization
+
+`hierarchy[*].sanitize_names` controls reserved-character replacement:
+
+- `SanitizeNamesConfig` variants: `Disabled`, `Inherit`, `Enabled`, `Custom(…)`
+- Serialization: `Disabled` → `false`, `Inherit` → `"inherit"`, `Enabled` → `true`,
+  `Custom(…)` → `{ "<": "_", ... }`
+- `Inherit` (default): inherit from parent; root seed is `Enabled`
+- `Enabled`: replace reserved chars using effective mapping
+- `Disabled`: skip replacement (reserved chars still rejected by validation)
+- NFD normalization always enforced regardless of setting
+- Replacement occurs after NFD normalization, before reserved-char validation
+- `rename_files` replacement strings also sanitized
+- Default mapping: `<` `>` `:` `"` `|` `?` `*` `/` `\\` → `_`
+
+### Materialization Pipeline (five stages on `Vec<String>` component list)
+
+1. `check_nfd_source()` — reject non-NFD source components
+2. Template resolution — resolve `${...}` placeholders
+3. Forced NFD normalization — `.nfd().collect::<String>()` after expansion
+4. Per-component sanitization — `sanitize_path_component()` replaces reserved chars
+5. `validate_components()` — ensure NFD, non-empty, no `.`/`..`/reserved chars,
+   then join with `"/"`
+
+### Reflink Materialization
+
+Reflink uses `tokio::task::spawn_blocking` wrapping platform-specific syscalls:
+Linux `FICLONE` ioctl via `libc` (btrfs/XFS), macOS `clonefile` (APFS), and
+unsupported-stub for other platforms. Stubs report `io::ErrorKind::Unsupported`
+to trigger ordered fallback. Linux path cleans up destination file on failure
+so fallback copy doesn't see a stale truncated file. macOS `clonefile` is
+atomic — no cleanup needed.
+
+## I — Conductor Specification (MediaPM-Relvant Details)
+
+### Step Dispatch (Dependency-Stream Model)
+
+Coordinator builds per-workflow dependency graphs (`WorkflowDepState` with
+`remaining_deps` + `dependents` + `step_outputs`) in Phase 1 — deduplicates
+shared dependent steps, detects cycles, validates all referenced steps exist.
+Phase 2 dispatches via `FuturesUnordered` loop across all workflows: seeds
+`global_ready_queue` with zero-dependency steps, assigns workers round-robin,
+processes completions, handles impure timestamp planning inline.
+
+### Per-Tool Concurrency Enforcement
+
+`UnifiedToolSpec::max_concurrent_calls` enforced at dispatch time. Coordinator
+builds per-tool `tokio::sync::Semaphore` instances (values > 0 create
+capacity-limited semaphore; -1 unlimited). Dispatch scans ready queue for
+step whose tool has available capacity. `OwnedSemaphorePermit` held for entire
+step duration. Applies to all tools, not only managed.
+
+### Per-Tool Retry Enforcement
+
+`UnifiedToolSpec.max_retries` enforced in dispatch loop. `dispatch_step_rpc`
+wraps single RPC in retry loop. Semaphore permit held across all retries.
+Fixed 500ms sleep between retries. Conductor normalizes -1 (omitted) to 3.
+Mediapm may override per tool (e.g. yt-dlp defaults to 1).
+
+### Instance Key Lifecycle
+
+**Derivation** (`derive_instance_key()` in `step_worker/mod.rs`):
+`BLAKE3(tool.name tagged + tool.metadata serialized + optional impure_timestamp + each input hash)`.
+Operates on `BTreeMap<String, ResolvedInputKey>` — reads hashes directly
+without loading content bytes. Deterministic for pure steps.
+
+**Failure preservation**: On both success and error, coordinator calls
+`commit_run(state.clone(), ...)` and advances `state_document.state_pointer`.
+On error: `pending_unsaved_hashes` is empty. `state.clone()` preserves ALL
+current instances — no entries discarded.
+
+**Instance GC**: Two-phase reachability-first strategy:
+
+1. GC root reachability: `referenced_instance_keys` (skip-serialized runtime
+   field) — referenced instances NEVER evicted
+2. Last-unreachable tracking: `aux.<key>.last_unreachable` — set when instance
+   becomes unreachable
+3. `gc_instances(cutoff)`: Phase 1 — mark (inject `AuxData` for unmarked
+   instances), Phase 2 — evict (remove instances unreachable before cutoff)
+
+**TTL**: `RuntimeStorageConfig.instance_ttl_seconds` (default 604800).
+Coordinator resolves `None` to `DEFAULT_INSTANCE_TTL_SECONDS`.
+`SetInstanceTtl` cast message loads TTL into state-store actor at startup.
+
+**Deserialization guarantee**: After `decode_state()`, every instance key has
+a non-optional `last_unreachable`. V2 ISO bridge maps `None` to `now()`.
+Post-processing loop inserts `AuxData` for any key still missing an entry.
+
+### CAS GC Sweep
+
+`CasMaintenanceApi` exposes `list_all_hashes()` and
+`gc_sweep(&self, roots: &BTreeSet<Hash>)`. Root set computed by
+`compute_gc_roots()` from: user/machine `external_data`, `state_pointer`,
+instance output/input pointers. `content_map` entries are covered by
+`external_data` roots via decode-time invariance.
+
+**Background GC loop**: Conductor node actor spawns background task that:
+
+1. Waits for `gc_initialized` flag (set after first successful state load)
+2. Reads shared `external_data` snapshot
+3. Calls `run_cas_gc_sweep()` via shared state store client
+4. Sleeps `GC_INTERVAL_SECONDS` (3600) and repeats
+
+### Channel-Based Progress Events
+
+Conductor emits `WorkflowStepEvent` through optional
+`tokio::sync::mpsc::UnboundedSender<WorkflowStepEvent>`.
+
+**Event fields**: `total_steps`, `completed_steps`, `workflow_name`, `step_id`,
+`workflow_display_name`, `executed`, `worker_index`, `worker_count`.
+
+**Consumer** (`src/mediapm/src/service.rs`): `sync_library_with_tag_update_checks`
+creates channel, `MultiProgress`, spawns receiver task. On first event: one
+overall bar + worker_count text-only worker lines. Overall bar format:
+`"{msg}  [{bar:20}]  {pos}/{total}"`. Worker lines: per-worker step counts.
+When channel closes: "all workflows complete", 75ms settle delay.
+
+## J — Tool Content Cache
+
+`ToolContentCache<C>` at `src/conductor/src/tool_cache/mod.rs` is sole
+authority over `tools_dir/` directory tree.
+
+**Public API**: `sanitize_tool_id(name)`, `new(tools_dir, cas)`,
+`materialize(tool_id, content_map, ...) -> ToolCacheEntry`,
+`link_to_sandbox(entry, sandbox_dir)`, `prune()`, `retain_only(active_ids)`.
+
+**Lock protocol**: Per-entry `flock` advisory locking via `fs4::FileExt`.
+Fast path (cache hit): non-blocking `try_lock_shared()`. Slow path (miss):
+DashMap + `OnceCell` prevents redundant extraction; extraction acquires
+exclusive `flock` in `spawn_blocking`; shared-lock fd replaces exclusive
+(downgrade). Prune: non-blocking `try_lock()` exclusive.
+
+**Guard lifecycle**: `ToolCacheEntry` holds shared-lock fd in RAII guard.
+For direct-execution paths: held across entire process spawn. For one-shot
+callers: dropped immediately after use.
+
+**Platform guard**: Locking gated behind `cfg(unix)`. On non-Unix: no-op.
+
+**Cache ownership boundary**: `ToolContentCache` owns `tools_dir/*` exclusively.
+External callers only receive `ToolCacheEntry` from `materialize()`.
+Use `retain_only()` for bulk cleanup — never call `remove_dir_all` on cache
+directories. Never read/write `metadata.json` or check TTL externally.
+
+**Stale-entry reporting**: `compute_stale_entry_report` in `lifecycle.rs`
+reports entries whose `last_transition_unix_seconds` exceeds threshold.
+
+## K — Performance, Versioning, Error Handling, Testing, Patterns
+
+### Materialization Performance
+
+**Reflink**: Platform-specific syscalls via `spawn_blocking`. Linux `FICLONE`
+ioctl (btrfs/XFS), macOS `clonefile` (APFS), unsupported-stub for other
+platforms. Stubs report `Unsupported` to trigger ordered fallback. Linux
+cleans up destination on ioctl failure so fallback copy doesn't see stale
+truncated file.
+
+**Link order**: hardlink → symlink → reflink → copy (configurable via
+`runtime.materialization_preference_order`).
+
+### Versioning Policy
+
+- Persisted documents carry explicit top-level numeric `version` marker
+- Sequential, explicit migration behavior across schema versions
+- CAS codec versions independent from Conductor document versions
+- Read-side backward compatibility: V1 envelopes decoded and migrated to V2
+- Write-side always produces V2
+
+### Error Handling
+
+- Builtins fail-fast on validation; errors propagate via `?`
+- CAS errors propagated as-is (no translation)
+- No auto-retry; explicit retry policy per tool via `max_retries`
+- Direct materialization: automatic cleanup on failure (no orphaned files)
+
+### Testing Strategy
+
+- Public APIs have integration coverage
+- Major features have end-to-end coverage
+- Determinism/idempotency behavior tested
+- Migration behavior documented and auditable
+- Performance claims benchmark-backed
+- Formatting/lint/tests pass in CI
+
+### Common Patterns
+
+1. **Content-addressed memory lifecycle**: `Bytes` type for CAS payloads;
+   `put()` returns hash, `get()` returns `Bytes`
+2. **Three-document config**: user intent (`mediapm.ncl`), machine setup
+   (`conductor.machine.ncl`), volatile state (`state.ncl`)
+3. **Actor-based orchestration**: `ractor` actors for coordinator, step workers,
+   state store
+4. **Type-erased API traits**: `CasApi`, `ConductorApi`, `MediaPmApi` — each
+   with `dyn`-safe method surface
+5. **Optics-based versioning**: versioned structs with ISO bridges;
+   `From<super::v1::X> for X` for adjacent-version migration
+6. **Direct materialization**: CAS → final output path without intermediate
+   staging; temp dirs for zip processing only
+7. **Two-phase input resolution**: hash-first (resolve `ResolvedInputKey` hashes
+   from state), content-on-demand (`cas.get()` when needed)
+8. **Deterministic workflow synthesis**: same config → same workflow → same
+   output hashes (pure path)
+
+## L — Conductor Edge Cases
+
+### 2.1 External Data Retrieval Errors
+
+`put_from_uri` must handle HTTP 404, timeouts, partial downloads. On
+transient errors: retry N times. On persistent errors: fail immediately.
+Missing `external_data` during workflow execution: validation error at
+planning time (before any execution).
+
+### 2.2 DAG Cycles
+
+Circular dependencies between steps must be detected at plan time. The
+dependency-graph builder in Phase 1 runs cycle detection via topological
+sort validation. If a cycle is found, the workflow fails with a
+deterministic error before any step executes.
+
+### 2.3 Missing External Data During Execution
+
+If a step's resolved input references a hash that doesn't exist in CAS,
+execution fails with `CasError::NotFound`. The coordinator records the
+failure, advances state pointer (with empty `pending_unsaved_hashes`), and
+the workflow is marked as failed.
+
+### 2.4 Document Merge Conflicts
+
+The three-document merge (user + machine + state) must handle conflicts
+deterministically. User intent always wins for overlapping keys. Machine
+config defaults fill gaps. State is volatile and never overrides user intent.
+
+### 2.5 Actor Panic
+
+If a step worker actor panics, the `FuturesUnordered` yields the panic as
+a `JoinError`. The coordinator captures it as a step failure, logs the
+panic, and continues workflow execution (remaining steps still dispatched).
+The failed step's tool semaphore permit is released by the dropped future.
+
+### 2.6 Version Marker Absence
+
+When a config document lacks an explicit `version` marker, decoding fails
+with a parse error. No default version assumption.
+
+### 2.7 Progress Event Timing
+
+The first `WorkflowStepEvent` is emitted before dependency-graph construction
+(`total_steps: 1, completed_steps: 0`) so the progress bar renders immediately
+even during cold-start overhead (Nickel eval, actor spawning).
+
+### 2.8 Instance GC Scenarios
+
+- Instance with `referenced_instance_keys` entry → never evicted
+- Instance without reference, `last_unreachable < cutoff` → evicted
+- Instance without reference, no `aux` entry → gets one GC cycle of protection
+- After `decode_state()`, all instances have non-optional `last_unreachable`
+
+### 2.9 Tool Content Cache Race Conditions
+
+Three scenarios resolved:
+
+1. **Concurrent miss on same tool**: DashMap + `OnceCell` ensures only one
+   extraction proceeds; others wait.
+2. **Concurrent miss on different tools**: Semaphore limits concurrent
+   extractions across tool IDs.
+3. **Concurrent prune and materialize**: Non-blocking `try_lock()` on prune;
+   `WouldBlock` → skip that entry. Materialize holds shared lock preventing
+   exclusive prune.
+
+### 2.10 Tool Max Concurrency Enforcement
+
+Per-tool `Semaphore` from `max_concurrent_calls`. The dispatch loop scans the
+ready queue for a step whose tool has available capacity instead of
+unconditionally popping the front element. Steps at their limit are re-queued
+at back (fairness).
+
+### 2.11 Tool Max Retries Enforcement
+
+`dispatch_step_rpc` wraps RPC in retry loop with 500ms sleep between attempts.
+Conductor normalizes -1 to 3. The semaphore permit is held across all retry
+attempts.
+
+## M — Builtins Edge Cases
+
+### 3.1 Path Traversal and Symlink Escape
+
+Archive and fs builtins must reject path traversal (`../../etc`) in relative
+mode. Symlinks in extracted archives must be sandbox-safe (depth limit
+prevents hang; symlinks rejected or resolved against extraction root).
+
+### 3.2 Windows Reserved Names
+
+Names like `CON`, `PRN`, `NUL` must be rejected on Windows when creating
+files/directories. Cross-platform: reserved names are rejected on all
+platforms to prevent silent failure when a config is shared across OS.
+
+### 3.3 Import URL Errors
+
+Import from URL must handle HTTP 404, timeouts, DNS failures, and partial
+downloads. On error: cleanup partial download, return error. No retry
+(conductor owns retry policy).
+
+### 3.4 Archive ZIP Bomb / Security
+
+Extraction must enforce size and entry-count limits to prevent ZIP bomb
+attacks. Symlinks in ZIP entries must be evaluated against the extraction
+root (no escape). Entry timestamps should be deterministic (epoch or input
+mtime) to preserve pure builtin determinism.
+
+### 3.5 Export Disk-Full
+
+Export must handle disk-full conditions gracefully: partial writes are
+cleaned up, error is returned, no orphaned files.
+
+### 3.6 CLI vs API Parity
+
+Builtins must behave identically via CLI and API. Same input → same output.
+CLI error codes and API `Result` types must convey equivalent failure
+semantics.
+
+## N — MediaPM Edge Cases
+
+### 4.1 Partial CAS Sync Failure
+
+If CAS sync (put) fails mid-way, already-synced objects remain in CAS.
+The materializer must skip re-uploading them on retry. Implementation:
+track per-hash completion, retry only failed hashes.
+
+### 4.2 Hierarchy Node ID Suffix Convention
+
+`media.<id>` and hierarchy node `id` are independent. Hierarchy node `id`
+uses string shorthand, not `.id` overrides on media entries. The suffix
+convention (e.g. `-folder`) is a naming hint, not an enforced rule.
+
+### 4.3 Non-Existent Media Reference
+
+If a hierarchy node references a `media_id` that doesn't exist in `media`,
+the sync must fail at config validation time (before any materialization).
+
+### 4.4 Tool Provisioning Failure Mid-Download
+
+If a managed tool download fails mid-stream, partial download is cleaned up.
+On next sync, the download is retried. The tool cache remains in its prior
+state.
+
+### 4.5 Lock File Partial Write / Corruption
+
+Lock file uses `AtomicFileOp` (write to temp, rename). On crash between
+write and rename, the previous lock file is preserved. Corrupted lock file
+on load: deserialize error → warn and fail (no silent reset).
+
+### 4.6 Platform-Independent Path Resolution Conflicts
+
+`HierarchyPath` stores components as `Vec<String>`, joined by `/`. On
+Windows, the materializer converts `/` to `\\` at the final write step.
+Path components must not contain `/` or `\\` (rejected by sanitization).
+
+### 4.7 Read-Only File Replacement
+
+When materializing over an existing read-only file, the materializer clears
+the read-only bit, writes new content, and re-applies read-only. This is
+handled by `remove_existing_destination_path` before write.
+
+### 4.8 Media ID Stability
+
+A media entry's `id` is stable once created. Changing `id` creates a new
+entry (no automatic migration from old ID). Lock records are keyed by
+`(media_id, variant)`.
+
+### 4.9 Concurrent Sync Operations
+
+Concurrent syncs on the same `.mediapm` directory are not supported. Lock
+file and state documents are not designed for concurrent writers. The second
+sync will encounter a locked state and fail.
+
+### 4.10 Managed Tool Configuration Change
+
+When tool config changes (e.g. new version), tool-id preservation
+(`preserve_existing_generated_step_tools`) rewrites the generated step's
+tool id to the previous valid one. Mediapm impure timestamp is NOT refreshed
+(synthesis emits `None` for refreshed steps; unchanged steps carry forward
+prior timestamp). New version binary provisioned separately.
+
+### 4.11 Hierarchy Path Sanitization Edge Cases
+
+Five-stage pipeline (see §H). Key invariants: NFD normalization always
+enforced; replacement after NFD normalization, before char validation;
+`rename_files` replacement strings also sanitized; default mapping replaces
+all reserved chars with `_`.
+
+### 4.12 Hierarchy Flattening with rename_files
+
+`rename_files = [{ pattern, replacement }, ...]` on directory nodes applies
+regex rewrites to extracted folder file members. File nodes must keep
+`rename_files` empty. Resolved replacement strings are sanitized using the
+same effective replacement map.
+
+### 4.13 Env Template Refs for yt-dlp Companion Paths
+
+Generated yt-dlp companion paths use `${ENV.MEDIAPM_YT_DLP_FFMPEG_LOCATION}`
+and `deno:${ENV.MEDIAPM_YT_DLP_JS_RUNTIMES}` in `input_defaults` instead of
+embedding absolute paths. Resolved absolute paths live only in
+`<conductor_dir>/.env.generated`. Machine doc's
+`runtime.inherited_env_vars` augmented with generated variable names.
+
+### 4.14 Stale .env.generated on Re-run
+
+`<conductor_dir>/.env.generated` is regenerated on each sync. Old entries
+are overwritten. If a tool is removed, its env vars are removed from the
+generated file.
+
+### 4.15 mediapm_dir with Custom Root
+
+When `runtime.mediapm_dir` is customized, all default paths resolve relative
+to it: `state.ncl`, `store/`, `tools/`, `tmp/`, `cache/`, `.env`,
+`.env.generated`. Relative paths in runtime config resolve relative to
+topmost `mediapm.ncl` directory.
+
+### 4.16 Hierarchy Preset Do-Not-Overwrite by Node ID
+
+When a hierarchy node with `id` is re-synced, existing materialized outputs
+for that node ID are preserved if CAS hashes match (lock cache hit).
+Different hash → re-materialize.
+
+### 4.17 Hierarchy Preset Overwrite CLI Flag
+
+CLI flag for forced re-sync: clears lock entry for specified
+`(media_id, variant)` before sync, forcing re-materialization.
+
+### 4.18 Dependency-Stream Cache-Probe Race Across Workflows
+
+Steps from multiple workflows started simultaneously do not see each other's
+in-flight cache entries. Naturally identical steps across workflows may both
+execute (N executed instances) instead of one caching off the other.
+
+### 4.19 Scheduler Diagnostics Metrics Fallback
+
+`scheduler.runtime_diagnostics()` falls back to
+`max(self.worker_pool_size, worker_metrics.len())`. Worker pool defaults to 0.
+
+### 4.20 Trace Event Completeness
+
+`LevelPlanned` and `StepAssigned` events no longer exist (removed with
+`plan_level`/`execute_level`). Only `StepCompleted` is emitted.
+
+### 4.21 assigned_steps_total Tracking Gap
+
+`assigned_steps_total` incremented via `record_completion()` using
+`saturating_add(1)` at each step completion.
+
+### 4.22 Empty Directory Cleanup
+
+Directories that become empty after materialization (all files moved or
+deleted) are not automatically removed. Manual cleanup via `mediapm tools
+prune` or similar.
+
+### 4.23 CAS Existence Check vs Full Content Load
+
+Instance output existence check uses `cas.info(hash)` for lightweight
+verification instead of `cas.get(hash)` which loads content bytes. Only
+ZIP-member outputs use `cas.get(hash)`. `cas.info()` may produce false
+positives (index says present, storage missing) — caught downstream by
+`cas.get()` during actual materialization.
+
+### 4.24 Sync Boundary: Library Sync vs Tool Sync
+
+- `sync_library` must NOT call `reconcile_desired_tools` (tool IDs change
+  mid-sync → stale step-tool preservation, crash)
+- `sync_tools` must NOT call `reconcile_media_workflows` (stale workflow
+  rows in machine doc, double-registration)
+- Library sync uses `collect_tools_requiring_sync()` and
+  `append_tool_sync_hint_warning()` for hint-only stale tool detection
+
+### 4.25 Tool Identity Preservation Detail
+
+`preserve_existing_generated_step_tools` rewrites generated step tool IDs
+to previously-valid IDs when config hasn't changed. Six key scenarios:
+
+1. Tool version upgrade → old tool id preserved until next explicit change
+2. Tool version downgrade → old tool id preserved (may point to cached binary)
+3. Tool addition → new tool id generated, no preservation needed
+4. Tool removal → removed from generated steps entirely
+5. Config change (explicit step option changed) → impure timestamp refreshed
+6. Config unchanged, impure timestamp present → prior tool id preserved
+
+### 4.26 Dependency Selector Inheritance
+
+`step.input_variants` and hierarchy `variants` selectors use exact strings
+(`"variant"`) or regex objects (`{ regex = "^variant$" }`). Regex selectors
+match against available variant names and may resolve multiple variants for
+directory targets.
+
+### 4.27 Worker-Based Progress Display
+
+Progress bars are managed by consumer (mediapm service), not by conductor.
+`MultiProgress` receives events via channel and renders: one overall bar +
+per-worker text lines.
+
+### 4.28 Hierarchy Sync Progress Display
+
+Hierarchy materialization does not have per-file progress. The single
+progress bar tracks `completed_steps/total_steps` across the entire
+workflow execution phase.
+
+### 4.29 Media Metadata Resolution Edge Cases
+
+Six independent slots (`MediaSourceSpec.title`, `.artist`, `.description`,
+`metadata["title"]`, `metadata["artist"]`, `metadata["album"]`) with
+independent fallback chains. CLI flags prepended as `Literal` candidates.
+`metadata["album"]` is single-entry `Literal` only present when `--album`
+passed. Auto-built description references resolved slots.
+
+### 4.30 Local Media ID from CAS Hash
+
+When importing a local file, the media ID can be derived from the CAS hash
+of the file content (deterministic). This enables deduplication: same file
+content → same media ID.
+
+### 4.31 Media Source Registration Do-Not-Overwrite
+
+Registering a media source with an existing media ID preserves the existing
+entry. New entries with new IDs are appended. No silent overwrite.
+
+### 4.32 SERIAL_GUARD Removal and Temp Directory Strategy
+
+Cross-process serialization guard has been removed. Temp directories use
+per-workspace paths (hash of workspace root under `std::env::temp_dir()`).
+ZIP extraction, sandbox directories, and regex capture working directories
+are isolated per-workspace.
+
+### 4.33 Nickel Float→Integer Deserialization
+
+Nickel stores numbers as `f64`. `eval_full_for_export()` serializes integers
+as `N::Float`. Custom deserializers (`deserialize_option_u64_from_number`
+in mediapm, `deserialize_option_integral_u64` in conductor) accept both
+representations. Affects `MediaRuntimeStorage` and `RuntimeStorageLatest`
+`Option<u64>` fields. New `u64`/`u32` fields in NCL-deserialized structs
+must include corresponding `#[serde(deserialize_with = "...")]` attributes.
+
+## O — Metadata Cache Edge Cases & Cross-Crate Conflicts
+
+### Metadata Cache Edge Cases
+
+#### 5.1 Clock Skew Causes Mass Eviction
+
+Clock jump forward >86400s: all entries evicted on next `open()` — cache
+refills over time. Clock jump backward: entries appear future-dated; treat
+`last_access_unix_seconds > now` as just-verified (skip eviction). Mass
+eviction is a performance impact, not a correctness issue.
+
+#### 5.2 Concurrent Access to Cache File
+
+Two concurrent `mediapm` processes writing to same cache file: last writer
+wins. No locking (single-process assumption). Cache loss is non-fatal
+(refills on next probe). Documented: "Metadata cache does not support
+concurrent processes."
+
+#### 5.3 Cache File Corruption
+
+Partial write (crash during `AtomicFileOp` rename) or filesystem corruption.
+`open()` catches `serde_json` errors, logs warning, returns empty cache.
+Previous cache replaced on first flush.
+
+#### 5.4 Cache Key Collision
+
+Full Blake3 256-bit hex output used as cache key — no collision possible
+for non-truncated output. No action needed.
+
+#### 5.5 Stale Entry for Deleted Media Source
+
+Cache entries are only evicted by TTL expiry. No explicit invalidation on
+media source removal. Acceptable because entries are small (one JSON object)
+and expire within 86400s.
+
+### Cross-Crate Conflicts
+
+#### 6.1 CAS Versioning vs Conductor Document Versioning
+
+CAS codec versions independent; Conductor document versions independent.
+Read-side backward compatibility: V1 envelopes decoded and migrated to V2.
+Write-side always produces V2. Coordination rule: Conductor must support
+the CAS codec version it reads.
+
+#### 6.2 Builtin Failure Semantics vs Conductor Error Recovery
+
+Validation errors (invalid arg): no retry (user error). Transient errors
+(timeout, network): retry N times (conductor-managed). Persistent errors
+(command not found): no retry. Conductor normalizes `max_retries = -1` to 3.
+
+#### 6.3 MediaPM Lock vs CAS Constraint Consistency
+
+Lock records CAS hashes. CAS prune (explicit operation) can delete objects
+referenced in lock. No coordinated invalidation. If lock references deleted
+hash, next sync: `cas.get(H1)` → NotFound → error. Recommendation:
+pre-prune validation using reachable-hash set from conductor/MediaPM.
+
+#### 6.4 Tool ID Collision (Builtin vs Managed)
+
+Builtin IDs are reserved. Managed tools cannot use builtin IDs. On machine
+config load, tool ID collisions are detected and fail with error. Builtin
+IDs: `echo@1.0.0`, `fs@1.0.0`, `archive@1.0.0`, `import@1.0.0`,
+`export@1.0.0`.
+
+#### 6.5 State Persistence Consistency Across Layers
+
+Conductor persists state to CAS; MediaPM persists lock to `state.ncl`. No
+atomic consistency across both. Consistency point: `state.ncl` lock records
+must reference valid CAS state blob hash. On startup: verify lock references
+valid CAS state blob; if mismatch, fail with explicit error. Recovery:
+manual state rollback or rebuild from CAS.
+
+#### 6.6 Cache Invalidation Across Tool Versions
+
+Cache key includes (tool_id, version, platform). Tool-id preservation
+(`preserve_existing_generated_step_tools`) preserves old tool ids across
+version changes. Old version stays available until explicitly cleaned up.
+New version provisioned separately.
+
+#### 6.7 Instance Key Immutability and Failure Recovery
+
+Failed workflow step cannot cause previously completed steps to lose their
+I/O. `state.clone()` on error preserves ALL instances. `OrchestrationState`
+is append-mostly; old CAS blobs remain reachable. In-flight steps' pending
+outputs are unprotected on error (must be re-executed).
+
+#### 6.8 NCL↔Rust Schema Sync Contract
+
+Typed envelope pattern, dual decode path, `deny_unknown_fields` on parent
+envelope. All `Option<u64>` fields use custom deserializers. Verification:
+round-trip tests detect field mismatches.

@@ -31,10 +31,10 @@ applyTo: "**"
 
 ## Specification references
 
-- Consolidated technical specification:
-  `.agents/instructions/crate-specifications.md`.
-- Edge-case and ambiguity analysis:
-  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- Deleted monolithic files (`crate-specifications.md`,
+  `elaboration-pass-edge-cases.md`). Use
+  `.agents/instructions/spec-development-index.instructions.md` to locate the
+  relevant per-crate AGENTS.md for any specification or edge-case content.
 
 ## Atomic commit workflow (unstaged changes → multiple commits)
 

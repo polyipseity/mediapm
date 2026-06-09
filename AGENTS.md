@@ -376,10 +376,10 @@
   and cross-crate invariants
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test
   expectations and Rustdoc/docstring depth requirements
-- `.agents/instructions/crate-specifications.md` — consolidated multi-pass,
-  cross-crate technical specification (CAS, conductor, builtins, mediapm)
-- `.agents/instructions/elaboration-pass-edge-cases.md` — second-pass edge
-  cases, ambiguities, and cross-crate risk analysis
+- `.agents/instructions/spec-development-index.instructions.md` — index
+  linking to per-crate AGENTS.md for all specification and edge-case content
+  (replaces the deleted `crate-specifications.md` and
+  `elaboration-pass-edge-cases.md`)
 - `src/cas/AGENTS.md`, `src/conductor/AGENTS.md`, `src/mediapm/AGENTS.md` —
   crate-level detailed behavioral contracts
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,
