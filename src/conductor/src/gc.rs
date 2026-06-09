@@ -38,21 +38,6 @@ pub fn compute_gc_roots(
     )
 }
 
-/// Computes GC roots from a unified `external_data` map (merged user+machine).
-///
-/// Has the same semantics as [`compute_gc_roots`] but takes a single already-
-/// merged map instead of separate user and machine maps. This is the variant
-/// used by the background GC loop which works from the coordinator's
-/// accumulated `external_data` set.
-#[must_use]
-pub fn compute_gc_roots_from_unified(
-    external_data: &BTreeMap<Hash, ExternalContentRef>,
-    state_pointer: Option<Hash>,
-    state: &OrchestrationState,
-) -> BTreeSet<Hash> {
-    compute_gc_roots_from_keys(external_data.keys().copied(), state_pointer, state)
-}
-
 /// Shared GC-root-computation body used by both public entry points.
 fn compute_gc_roots_from_keys(
     external_data_keys: impl Iterator<Item = Hash>,
@@ -83,7 +68,7 @@ fn compute_gc_roots_from_keys(
     roots
 }
 
-/// Runs a CAS sweep + index compaction cycle using unified `external_data` as
+/// Runs a CAS sweep + index compaction cycle using `state.external_data` as
 /// GC roots.
 ///
 /// This is the decoupled function called by the background GC loop (node
@@ -95,7 +80,8 @@ fn compute_gc_roots_from_keys(
 /// This function owns only the CAS sweep + compact concern. Callers are
 /// responsible for:
 /// - Instance GC (`state_store.run_gc(…)`)
-/// - Providing the current `external_data` set, state pointer, and state
+/// - Providing the state pointer and state (whose `external_data` field
+///   supplies root hashes)
 /// - Error handling at the orchestration boundary
 ///
 /// # Errors
@@ -103,14 +89,14 @@ fn compute_gc_roots_from_keys(
 /// Returns [`ConductorError::Cas`] when sweep or compaction fails.
 pub async fn run_cas_gc_sweep<C>(
     cas: &C,
-    external_data: &BTreeMap<Hash, ExternalContentRef>,
     state_pointer: Option<Hash>,
     state: &OrchestrationState,
 ) -> Result<(), ConductorError>
 where
     C: CasApi + CasMaintenanceApi,
 {
-    let roots = compute_gc_roots_from_unified(external_data, state_pointer, state);
+    let roots =
+        compute_gc_roots_from_keys(state.external_data.keys().copied(), state_pointer, state);
     cas.gc_sweep(&roots).await.map_err(ConductorError::Cas)?;
     cas.compact_index().await.map_err(ConductorError::Cas)?;
     Ok(())

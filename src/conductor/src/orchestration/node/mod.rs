@@ -6,18 +6,15 @@
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::gc::run_cas_gc_sweep;
-use crate::model::config::ExternalContentRef;
 use crate::orchestration::actors::state_store::StateStoreClient;
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
@@ -251,11 +248,6 @@ struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
     /// Whether the first GC cycle (with loaded `external_data` roots) has been
     /// performed. Used by the background GC loop to defer startup GC.
     gc_initialized: Arc<AtomicBool>,
-    /// Shared `external_data` snapshot, updated after each successful
-    /// `LoadResolvedState` / `ReplaceResolvedState` / `RunGc`. Read by the
-    /// background GC task to compute CAS sweep roots without going
-    /// through the actor mailbox.
-    shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>>,
     /// Shared `OnceLock` for the state store client, populated by
     /// `ensure_runtime_support` in the `SubmitWorkflow` handler. Read by the
     /// background GC task.
@@ -300,13 +292,10 @@ where
     ) -> Result<Self::State, ActorProcessingErr> {
         // Shared state for the background GC task — populated by handlers.
         let state_gc_initialized = Arc::new(AtomicBool::new(false));
-        let state_shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>> =
-            Arc::new(RwLock::new(BTreeMap::new()));
         let state_shared_state_store: Arc<OnceLock<StateStoreClient>> = Arc::new(OnceLock::new());
 
         let bg_cas = args.clone();
         let bg_initialized = state_gc_initialized.clone();
-        let bg_external_data = state_shared_external_data.clone();
         let bg_state_store = state_shared_state_store.clone();
         tokio::spawn(async move {
             // Phase 1: Wait for initial state load before first GC.
@@ -315,10 +304,9 @@ where
             }
 
             // Phase 2: Periodic GC at fixed interval, directly calling
-            // run_cas_gc_sweep with shared state rather than sending RunGc
-            // through the actor mailbox.
+            // run_cas_gc_sweep through the state store rather than sending
+            // RunGc through the actor mailbox.
             loop {
-                let external_data = bg_external_data.read().await;
                 let Some(state_store) = bg_state_store.get() else {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
@@ -333,8 +321,7 @@ where
                     }
                 };
                 if let Err(e) =
-                    run_cas_gc_sweep(bg_cas.as_ref(), &external_data, state_pointer, &current_state)
-                        .await
+                    run_cas_gc_sweep(bg_cas.as_ref(), state_pointer, &current_state).await
                 {
                     tracing::warn!("background GC failed: {e}");
                 }
@@ -347,7 +334,6 @@ where
             workflow_handles: HashMap::new(),
             next_handle_id: 0,
             gc_initialized: state_gc_initialized,
-            shared_external_data: state_shared_external_data,
             shared_state_store: state_shared_state_store,
         })
     }
@@ -431,8 +417,6 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
-                    *state.shared_external_data.write().await =
-                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }
@@ -454,8 +438,6 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
-                    *state.shared_external_data.write().await =
-                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }
@@ -464,24 +446,20 @@ where
                     // 1. Instance GC (TTL-based pruning of stale instances).
                     state.coordinator.run_gc(ttl_override).await?;
 
-                    // 2. CAS sweep using coordinator's accumulated external_data.
+                    // 2. CAS sweep using state's external_data.
                     let cas = state.coordinator.cas.clone();
-                    let external_data = state.coordinator.external_data().clone();
                     let state_pointer = match state.coordinator.state_store() {
                         Some(store) => store.get_state_pointer().await?,
                         None => None,
                     };
                     let current_state = state.coordinator.current_state().await?;
-                    run_cas_gc_sweep(cas.as_ref(), &external_data, state_pointer, &current_state)
-                        .await?;
+                    run_cas_gc_sweep(cas.as_ref(), state_pointer, &current_state).await?;
 
                     Ok::<_, ConductorError>(())
                 }
                 .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
-                    *state.shared_external_data.write().await =
-                        state.coordinator.external_data().clone();
                 }
                 let _ = reply.send(result);
             }

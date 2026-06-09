@@ -32,8 +32,8 @@ use crate::api::{
 };
 use crate::error::ConductorError;
 use crate::model::config::{
-    ExternalContentRef, ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec,
-    WorkflowStepSpec, parse_input_binding,
+    ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec,
+    parse_input_binding,
 };
 use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
@@ -82,13 +82,6 @@ where
     workers: Vec<ActorRef<StepWorkerMessage>>,
     /// Typed client for the orchestration state-store actor.
     state_store: Option<StateStoreClient>,
-    /// Accumulated external-data hashes across all workflow runs.
-    ///
-    /// Populated from `UnifiedNickelDocument.external_data` after every
-    /// workflow submission and used as GC roots in the background sweep.
-    /// New entries are merged on each run so they survive until the next
-    /// GC cycle.
-    external_data: BTreeMap<Hash, ExternalContentRef>,
 }
 
 /// Default TTL for workflow instances: 7 days.
@@ -108,7 +101,6 @@ where
             scheduler: None,
             workers: Vec::new(),
             state_store: None,
-            external_data: BTreeMap::new(),
         }
     }
 
@@ -140,20 +132,6 @@ where
         }
 
         Ok(Self::empty_runtime_diagnostics())
-    }
-
-    /// Returns a reference to the accumulated external-data map.
-    #[must_use]
-    pub(super) fn external_data(&self) -> &BTreeMap<Hash, ExternalContentRef> {
-        &self.external_data
-    }
-
-    /// Merges new external data entries into the accumulated set.
-    ///
-    /// New entries from a freshly loaded unified document extend the set so
-    /// the background GC eventually sees them as roots.
-    pub(super) fn merge_external_data(&mut self, new_entries: &BTreeMap<Hash, ExternalContentRef>) {
-        self.external_data.extend(new_entries.iter().map(|(k, v)| (*k, v.clone())));
     }
 
     /// Runs instance GC on the state-store's in-memory state with an optional
@@ -315,7 +293,6 @@ where
         )?;
         let mut state = state_store.load_state_from_pointer(prior_state_pointer).await?;
         state.external_data = unified.external_data.clone();
-        self.merge_external_data(&unified.external_data);
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
         )?;
