@@ -14,7 +14,6 @@ use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{MachineNickelDocument, OrchestrationState};
 use pulsebar::{MultiProgress, ProgressBar};
 use regex::Regex;
-use unicode_normalization::UnicodeNormalization;
 
 use crate::conductor_bridge::resolve_ffmpeg_slot_limits;
 use crate::config::{
@@ -57,9 +56,10 @@ mod tests {
     };
     use crate::paths::MediaPmPaths;
 
+    use super::commit::validate_components;
     use crate::materializer::{
         instance_matches_expected_inputs, resolve_managed_ffprobe_path, sanitize_path_component,
-        sync_hierarchy, validate_components,
+        sync_hierarchy,
     };
 
     /// Protects managed ffprobe metadata lookup by resolving relative command
@@ -3019,7 +3019,7 @@ mod zip;
 
 use self::commit::{
     check_nfd_source, ensure_managed_path_readonly, now_unix_seconds, remove_path,
-    sanitize_path_component, unix_epoch_millis, validate_components,
+    sanitize_and_validate_components, sanitize_path_component, unix_epoch_millis,
 };
 use self::file_ops::materialize_file_from_cas_with_order;
 use self::metadata::{
@@ -3270,25 +3270,22 @@ async fn prepare_hierarchy_entry(
     // Pipeline: check NFD → resolve templates per component → force NFD →
     // sanitize per component → validate → join once at the end.
     check_nfd_source(path_components)?;
-    let mut resolved_components =
+    let resolved_components =
         if matches!(entry.kind, HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder) {
             let source = resolve_hierarchy_source(document, entry)?;
             resolve_hierarchy_relative_path(path_components, entry, source, lookup).await?
         } else {
             path_components.to_vec()
         };
-    for component in &mut resolved_components {
-        *component = component.nfd().collect::<String>();
-    }
-    if entry.sanitize_names.is_enabled() {
-        let runtime_replacements = document.runtime.path_sanitization_mapping_with_defaults()?;
-        let effective_replacements =
-            entry.sanitize_names.replacement_map_with_defaults(&runtime_replacements);
-        for component in &mut resolved_components {
-            *component = sanitize_path_component(component, &effective_replacements);
-        }
-    }
-    let relative_path = validate_components(&resolved_components)?.join("/");
+    // Pipeline: check NFD → resolve templates per component →
+    // sanitize_and_validate_components (NFD → sanitize → validate) → join once.
+    let runtime_replacements = document.runtime.path_sanitization_mapping_with_defaults()?;
+    let resolved_components = sanitize_and_validate_components(
+        &resolved_components,
+        &entry.sanitize_names,
+        &runtime_replacements,
+    )?;
+    let relative_path = resolved_components.join("/");
     progress_bar.set_message(&format!(
         "{}: {}",
         hierarchy_entry_kind_label(entry.kind),

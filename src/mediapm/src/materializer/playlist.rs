@@ -8,6 +8,7 @@ use crate::config::{
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
+use super::commit::sanitize_and_validate_components;
 use super::metadata::resolve_hierarchy_relative_path;
 use super::{MaterializationLookupContext, RenderedPlaylistItem};
 
@@ -99,6 +100,12 @@ pub(super) async fn resolve_playlist_media_target_relative_path(
 
     let resolved_components =
         resolve_hierarchy_relative_path(path_components, entry, source, lookup).await?;
+    let runtime_replacements = document.runtime.path_sanitization_mapping_with_defaults()?;
+    let resolved_components = sanitize_and_validate_components(
+        &resolved_components,
+        &entry.sanitize_names,
+        &runtime_replacements,
+    )?;
     let resolved = resolved_components.join("/");
 
     cache.insert(requested_id.to_string(), resolved.clone());

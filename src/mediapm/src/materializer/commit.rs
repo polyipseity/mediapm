@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_normalization::UnicodeNormalization;
 
+use crate::config::SanitizeNamesConfig;
 use crate::error::MediaPmError;
 
 /// Removes one path recursively when it is a directory, or as one file otherwise.
@@ -330,6 +331,37 @@ pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, 
         }
     }
     Ok(components.to_vec())
+}
+
+/// Applies NFD normalization, optional reserved-character sanitization, and
+/// strict validation to resolved hierarchy path components.
+///
+/// Pipeline order:
+/// 1. NFD normalize each component.
+/// 2. If `sanitize_names` is enabled, replace reserved characters using the
+///    effective replacement map (runtime defaults merged with any per-entry
+///    custom overrides).
+/// 3. Validate all components (NFD, non-empty, no `.`/`..`, no reserved chars).
+///
+/// # Errors
+///
+/// Delegates to [`validate_components`] when any component fails validation.
+pub(super) fn sanitize_and_validate_components(
+    components: &[String],
+    sanitize_names: &SanitizeNamesConfig,
+    default_replacements: &BTreeMap<char, char>,
+) -> Result<Vec<String>, MediaPmError> {
+    let mut resolved = components.to_vec();
+    for component in &mut resolved {
+        *component = component.nfd().collect::<String>();
+    }
+    if sanitize_names.is_enabled() {
+        let effective = sanitize_names.replacement_map_with_defaults(default_replacements);
+        for component in &mut resolved {
+            *component = sanitize_path_component(component, &effective);
+        }
+    }
+    validate_components(&resolved)
 }
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
