@@ -704,7 +704,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 - **State persistence**: Conductor serializes `OrchestrationState` to CAS as a content-addressed blob; `state_pointer` (hash) is stored in the volatile state document.
 - **Input resolution**: Step inputs are resolved to CAS hashes (Pass 1) and loaded on demand (Pass 2). `ToolCallInstance.inputs` stores only `ResolvedInputKey` (hash), not full content.
 - **Output capture**: Step outputs are persisted to CAS; `outputs` in `ToolCallInstance` reference CAS hashes.
-- **GC coordination**: Conductor provides root set (external data, state pointer, instance outputs) for CAS GC sweep.
+- **GC coordination**: Conductor provides root set (external data, state pointer, instance outputs, instance blob hashes) for CAS GC sweep.
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
 - **Content map materialization**: `tool_configs.<tool>.content_map` entries are resolved from CAS into step sandbox directories.
 
@@ -733,6 +733,10 @@ The `decode_state()` function at `src/conductor/src/model/state/mod.rs` handles 
 - `OrchestrationStateAuxV2` replaces the flat `aux` map with structured per-instance `AuxData`.
 - `AuxData` gains `last_unreachable: ImpureTimestamp` (non-optional in runtime, bridged from `Option<ImpureTimestampV2>` on wire).
 - `ToolCallInstanceV2.metadata` gains `persistence_overrides: Option<...>` for per-output persistence policy.
+
+### Runtime-Only State Field
+
+- `OrchestrationState` gains `instance_blob_hashes: BTreeSet<Hash>` — a runtime-only field (skip-serialize, skip-deserialize) that caches the CAS hashes of per-instance encoded `OrchestrationStateEnvelopeV2` blobs. Populated during V2 decode from `OrchestrationStateEnvelopeV2.instances[*].hash`. The root set computation in CAS GC sweep includes these hashes so per-instance blobs are not orphaned.
 
 ### Migration Bridge (`versions/v2.rs`)
 
@@ -811,6 +815,7 @@ A shared `compute_gc_roots()` in `gc.rs` computes the root set from:
 - `user.external_data` + `machine.external_data` values
 - `state_pointer` (the current orchestration-state hash)
 - Instance output/input pointers from the `OrchestrationState` pointed to by `state_pointer`
+- Instance blob CAS hashes (the per-instance encoded blobs referenced by `OrchestrationStateEnvelopeV2` that are tracked in the runtime-only `instance_blob_hashes` field)
 
 `content_map` entries are not iterated directly — the decode-time invariant (`vet_latest_envelope`) enforces `content_map ⊆ external_data`, so all content-map hashes are covered by external_data roots.
 
