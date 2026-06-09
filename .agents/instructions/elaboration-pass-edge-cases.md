@@ -2711,6 +2711,39 @@ exercise this path.
 
 ---
 
+### 4.32 Reflink Materialization Edge Cases
+
+**Issue**: The reflink materialization method (`attempt_reflink_materialization`) wraps platform-specific syscalls (Linux `FICLONE` ioctl, macOS `clonefile`) that have platform-dependent failure modes and cleanup requirements.
+
+**Scenarios**:
+
+| Scenario | On Linux | On macOS | On stub (other platforms) |
+|----------|----------|----------|---------------------------|
+| Cross-device (non-COW fs) | ioctl returns `EINVAL`/`EXDEV`; dest file truncated then cleaned up by `std::fs::remove_file`; fallback proceeds | `clonefile` returns `ENOTSUP` on non-APFS; no cleanup needed since `clonefile` rejects before creating dest | Always returns `Unsupported` — no syscall attempted |
+| Filesystem full during reflink | ioctl fails, dest truncated then cleaned up; fallback may also fail | `clonefile` fails before creating dest | N/A |
+| Source is a directory | ioctl `FICLONE` fails with `EISDIR`; cleanup removes partial dest | `clonefile` fails with `EISDIR`; no partial dest | N/A |
+| Null byte in path (macOS) | N/A | `CString::new` returns error → `InvalidInput`; no syscall, no partial dest | N/A |
+| `spawn_blocking` panics | ErrorKind::Other wrapping the panic string; destination may be in inconsistent state; `materialize_file_from_cas_with_order` calls `remove_existing_destination_path` on error | Same | Same |
+| Concurrent reflink to same dest | Second caller encounters existing file, removes it via `remove_existing_destination_path` before retry; winner's result survives | Same | Same |
+
+**Behavioral difference: Linux dest cleanup on failure**
+
+On Linux, `FICLONE` requires the destination file to already exist (opened with `create(true)` + `truncate(true)`). When the ioctl fails (e.g. non-COW filesystem), a truncated empty file remains. The implementation explicitly calls `std::fs::remove_file(destination_path)` on ioctl failure so the ordered fallback loop does not attempt to reflink onto a stale zero-length file.
+
+On macOS, `clonefile` atomically creates the destination — it does not leave a partial file on failure. No cleanup is needed. The stub path similarly leaves no partial file.
+
+**Test coverage**:
+
+- `materialize_file_from_cas_with_order_errors_when_all_methods_fail` — uses a non-existent CAS hash so `source_path` is `None`, causing every method (including reflink) to fail with `io::ErrorKind::NotFound` on CAS object access. This is filesystem-agnostic and does not depend on reflink returning an error.
+- `materialize_file_from_cas_with_order_falls_back_to_copy` — places `Reflink` before `Copy` in the method order. On any non-COW or non-APFS filesystem, reflink will fail (or return `Unsupported` on stub builds) and the materializer must fall back to copy. The test asserts `notices.len() <= 1` (0 on a COW filesystem where reflink succeeds, 1 otherwise).
+- No test exercises the Linux-specific dest-cleanup path explicitly — it is implicitly covered by `falls_back_to_copy` on non-COW filesystems where the ioctl creates then fails on the destination.
+
+**Risk**: The dest-cleanup path on Linux introduces a small race window: between `remove_file` (ioctl failure) and the next method's `remove_existing_destination_path` → `attempt_reflink_materialization`, another process could create a file at the same path. This is inherent to filesystem-level concurrency, not specific to reflink. The ordered fallback loop is tolerant — the next method overwrites or links independently.
+
+**Recommendation**: If cross-device reflink support (e.g. `FICLONE` on network mounts that return `EXDEV`) becomes a common failure mode, consider adding a fallback-or-skip hint rather than eagerly cleaning up the destination, since the caller's `remove_existing_destination_path` already handles pre-existing destinations.
+
+---
+
 ## PART 5: METADATA CACHE — EDGE CASES & FAILURE MODES
 
 ### 5.1 Clock Skew Causes Mass Eviction
