@@ -779,14 +779,14 @@ The root set includes `state.state_pointer` and all instance output pointers. If
 
 **Mitigation**: The background GC loop bypasses the actor mailbox and reads the state pointer + current state directly from the shared `StateStoreClient`. The state store actor processes these reads sequentially with workflow commits (same single-threaded mailbox), so each read returns a consistent snapshot.
 
-**Remaining risk (accepted)**: If a workflow commit advances the state pointer between the external_data lock release and the next GC cycle, the next sweep uses the old external_data roots. This is bounded: the next GC cycle will use the latest snapshot.
+**Remaining risk (accepted)**: If a workflow commit advances the state pointer between a state snapshot and the next GC cycle, the next sweep uses the old external_data roots (because they came from that snapshot's `state.external_data`). This is bounded: the next GC cycle will use the latest state snapshot.
 
 #### 1.21 Background GC Loop
 
 The conductor node actor spawns a single background GC loop in `pre_start`. The loop:
 
-1. **Phase 1 — Wait for initialization**: Spin-waits on the `gc_initialized` flag. This flag is set after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots.
-2. **Phase 2 — Periodic GC**: Enters a loop that snapshots `external_data` roots, reads state pointer from the state store actor, calls `run_cas_gc_sweep()`, then sleeps `GC_INTERVAL_SECONDS` (3600).
+1. **Phase 1 — Wait for initialization**: Spin-waits on the `gc_initialized` flag. This flag is set after the first successful `LoadResolvedState` or `ReplaceResolvedState` call gives the state a populated `external_data` field.
+2. **Phase 2 — Periodic GC**: Enters a loop that loads the current state (whose `external_data` carries root hashes), reads state pointer from the state store actor, calls `run_cas_gc_sweep()`, then sleeps `GC_INTERVAL_SECONDS` (3600).
 
 **Mailbox bypass**: The revised loop calls `run_cas_gc_sweep()` directly from the background task, not through the actor mailbox. The `RunGc` handler is preserved for CLI use.
 

@@ -817,6 +817,8 @@ A shared `compute_gc_roots()` in `gc.rs` computes the root set from:
 - Instance output/input pointers from the `OrchestrationState` pointed to by `state_pointer`
 - Instance blob CAS hashes (the per-instance encoded blobs referenced by `OrchestrationStateEnvelopeV2` that are tracked in the runtime-only `instance_blob_hashes` field)
 
+`external_data` is also stored as a runtime-only (non-serialized) field on `OrchestrationState` itself. The decoupled `run_cas_gc_sweep()` reads `state.external_data` directly instead of receiving a separate parameter — keeping root computation unified with the state it governs.
+
 `content_map` entries are not iterated directly — the decode-time invariant (`vet_latest_envelope`) enforces `content_map ⊆ external_data`, so all content-map hashes are covered by external_data roots.
 
 ### Sweep Contract
@@ -827,11 +829,11 @@ Deleting a non-root object that is a delta base of a root object is safe — the
 
 The conductor node actor spawns a background task in `pre_start` that:
 
-1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the coordinator's `external_data` roots. This prevents premature GC from sweeping all unprotected objects before state is loaded.
+1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the state's `external_data`. This prevents premature GC from sweeping all unprotected objects before state is loaded.
 
-2. **Shared state**: The actor state holds `shared_external_data: Arc<RwLock<BTreeMap<Hash, ExternalContentRef>>>` (updated after each successful LoadResolvedState / ReplaceResolvedState / RunGc handler) and `shared_state_store: Arc<OnceLock<StateStoreClient>>` (populated by the SubmitWorkflow handler after `ensure_runtime_support()`).
+2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>` (populated by the SubmitWorkflow handler after `ensure_runtime_support()`). The `external_data` lives directly on `OrchestrationState` — no separate synchronization is needed.
 
-3. **Enters a periodic loop**: reads the shared external_data snapshot and calls `run_cas_gc_sweep()` directly via the shared state store client (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
+3. **Enters a periodic loop**: loads the current state from the coordinator via shared `state_handle: Arc<RwLock<OrchestrationState>>` and calls `run_cas_gc_sweep()` with it (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
 
 The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shared with the background task. It is also set as a backstop after any successful `RunGc` handler execution.
 

@@ -1018,7 +1018,7 @@ instance output/input pointers. `content_map` entries are covered by
 **Background GC loop**: Conductor node actor spawns background task that:
 
 1. Waits for `gc_initialized` flag (set after first successful state load)
-2. Reads shared `external_data` snapshot
+2. Loads current state (whose `external_data` field carries root hashes)
 3. Calls `run_cas_gc_sweep()` via shared state store client
 4. Sleeps `GC_INTERVAL_SECONDS` (3600) and repeats
 
