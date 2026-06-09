@@ -840,7 +840,7 @@ entries are implicitly active.
 - **Public Trait**: `MediaPmApi` with `process_source()` and `sync_library()`
 - **State Management**: Direct materialization; lock records for cache hits
 - **Tool Provisioning**: User-level cache (downloads) vs. workspace cache (extracted binaries)
-- **Materialization**: Link order preference (hardlink → symlink → reflink → copy)
+- **Materialization**: Link order preference (hardlink → symlink → reflink → copy); reflink uses `tokio::task::spawn_blocking` wrapping platform-specific syscalls: Linux `FICLONE` ioctl via `libc` (btrfs/XFS), macOS `clonefile` via `libc` (APFS), and unsupported-stub for other platforms; stubs report `io::ErrorKind::Unsupported` to trigger ordered fallback; Linux path cleans up destination file on failure so fallback copy does not see a stale truncated file; macOS `clonefile` is atomic — no cleanup needed
 - **HierarchyPath type**: `HierarchyNode.path` is a `HierarchyPath(Vec<String>)`
   newtype, not a raw `String`,
   - empty path (`vec![]`) is valid for root pass-through folder nodes,
