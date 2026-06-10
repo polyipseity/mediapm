@@ -1748,8 +1748,21 @@ impl FileSystemState {
 
             let base_hash = meta.base_hash().expect("non-full metadata must carry base hash");
             let path = diff_object_path(&self.root, current);
-            let file = std::fs::File::open(&path)
-                .map_err(|source| CasError::io("opening diff object for capture", &path, source))?;
+            let file = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Expected delta file is missing (possibly removed by
+                    // self-healing in execute_captured). Trigger the fallback
+                    // full-object lookup path.
+                    tracing::warn!(
+                        "delta object file missing for {current}, falling back to full object",
+                    );
+                    return Ok(None);
+                }
+                Err(source) => {
+                    return Err(CasError::io("opening diff object for capture", &path, source));
+                }
+            };
             links.push(CapturedChainLink { hash: current, file, base_hash: Some(base_hash) });
             current = base_hash;
         }
@@ -1801,6 +1814,21 @@ impl FileSystemState {
                 Err(apply_err) => {
                     let base_hash_actual = Hash::from_content(&base);
                     let vcdiff_hash_actual = Hash::from_content(&vcdiff);
+                    // The delta object is corrupt — remove it from disk so
+                    // future reads can fall back to a full-object variant or
+                    // fail cleanly with a recoverable error.
+                    let corrupt_hash = link.hash;
+                    tracing::warn!(
+                        corrupt_hash = %corrupt_hash,
+                        base_hash = %delta_base,
+                        "corrupt VCDIFF delta detected during reconstruction, removing from storage"
+                    );
+                    if let Err(remove_err) = self.delete_object_files(corrupt_hash).await {
+                        tracing::warn!(
+                            %corrupt_hash,
+                            "failed to remove corrupt delta object: {remove_err}",
+                        );
+                    }
                     return Err(CasError::corrupt_reconstruction(
                         target,
                         link.hash,
