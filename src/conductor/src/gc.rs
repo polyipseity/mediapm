@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::{CasApi, CasMaintenanceApi, GcSweepReport, Hash, OptimizeOptions};
 
 use crate::error::ConductorError;
 use crate::model::config::ExternalContentRef;
@@ -68,16 +68,17 @@ fn compute_gc_roots_from_keys(
     roots
 }
 
-/// Runs a CAS sweep + index compaction cycle using `state.external_data` as
-/// GC roots.
+/// Runs full CAS maintenance: optimize, prune constraints, GC sweep, and
+/// index compaction — using `state.external_data` as GC roots.
 ///
-/// This is the decoupled function called by the background GC loop (node
-/// actor) and the CLI. It does **not** touch instance GC — callers must run
-/// instance GC separately via [`StateStoreClient::run_gc`].
+/// This is the one-stop function called by the background GC loop (node
+/// actor), the `RunGc` handler, and the CLI. It does **not** touch instance
+/// GC — callers must run instance GC separately via
+/// [`StateStoreClient::run_gc`].
 ///
 /// # Decoupling invariant
 ///
-/// This function owns only the CAS sweep + compact concern. Callers are
+/// This function owns only CAS maintenance operations. Callers are
 /// responsible for:
 /// - Instance GC (`state_store.run_gc(…)`)
 /// - Providing the state pointer and state (whose `external_data` field
@@ -86,18 +87,20 @@ fn compute_gc_roots_from_keys(
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError::Cas`] when sweep or compaction fails.
+/// Returns [`ConductorError::Cas`] when any maintenance operation fails.
 pub async fn run_cas_gc_sweep<C>(
     cas: &C,
     state_pointer: Option<Hash>,
     state: &OrchestrationState,
-) -> Result<(), ConductorError>
+) -> Result<GcSweepReport, ConductorError>
 where
     C: CasApi + CasMaintenanceApi,
 {
+    cas.optimize_once(OptimizeOptions::default()).await.map_err(ConductorError::Cas)?;
+    cas.prune_constraints().await.map_err(ConductorError::Cas)?;
     let roots =
         compute_gc_roots_from_keys(state.external_data.keys().copied(), state_pointer, state);
-    cas.gc_sweep(&roots).await.map_err(ConductorError::Cas)?;
+    let report = cas.gc_sweep(&roots).await.map_err(ConductorError::Cas)?;
     cas.compact_index().await.map_err(ConductorError::Cas)?;
-    Ok(())
+    Ok(report)
 }

@@ -520,9 +520,7 @@ use std::sync::Arc;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
-use mediapm_cas::{
-    CasApi, CasConfig, CasError, CasLocatorParseOptions, CasMaintenanceApi, ConfiguredCas, Hash,
-};
+use mediapm_cas::{CasApi, CasConfig, CasError, CasLocatorParseOptions, ConfiguredCas};
 
 #[cfg(feature = "tool-presets")]
 use crate::api::{CommonExecutableTool, fetch_common_executable_tool_payload};
@@ -531,7 +529,7 @@ use crate::api::{
     default_state_paths, export_nickel_config_schemas, resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
-use crate::gc::compute_gc_roots;
+use crate::gc::run_cas_gc_sweep;
 use crate::model::config::{AddExternalDataOptions, ExternalContentRef};
 use crate::model::state::{
     OrchestrationState, decode_state, decode_state_from_slice, persisted_state_json_pretty,
@@ -1824,7 +1822,7 @@ async fn run_gc(
     let state_pointer = state_doc.state_pointer;
 
     // Load orchestration state from CAS if a pointer exists.
-    let state = if let Some(sp) = &state_pointer {
+    let mut state = if let Some(sp) = &state_pointer {
         match decode_state(&cas, *sp).await {
             Ok(state) => state,
             Err(ConductorError::Cas(CasError::NotFound(_))) => OrchestrationState::default(),
@@ -1833,19 +1831,12 @@ async fn run_gc(
     } else {
         OrchestrationState::default()
     };
+    // Merge user/machine external_data into the state for GC root computation.
+    state.external_data.extend(user.external_data);
+    state.external_data.extend(machine.external_data);
 
-    let gc_roots =
-        compute_gc_roots(&user.external_data, &machine.external_data, state_pointer, &state);
-
-    let roots_vec: Vec<Hash> = gc_roots.iter().copied().collect();
-    let optimize = cas.optimize_once(mediapm_cas::OptimizeOptions::default()).await?;
-    let pruned = cas.prune_constraints().await?;
-    let gc = cas.gc_sweep(&gc_roots).await?;
-
-    println!("gc_roots_computed={}", roots_vec.len());
-    println!("optimize_rewritten_objects={}", optimize.rewritten_objects);
-    println!("constraints_removed_candidates={}", pruned.removed_candidates);
-    println!("gc_sweep_deleted={}", gc.deleted_count);
+    let report = run_cas_gc_sweep(&cas, state_pointer, &state).await?;
+    println!("gc_sweep_deleted={}", report.deleted_count);
     Ok(())
 }
 
