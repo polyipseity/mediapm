@@ -226,6 +226,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 reconstructed_bytes_cache_ttl_secs: state
                     .runtime
                     .reconstructed_bytes_cache_ttl_secs,
+                retry_impure: state.runtime.retry_impure,
             },
             external_data: state
                 .external_data
@@ -437,6 +438,7 @@ fn user_runtime_iso() -> IsoPrime<'static, RcBrand, latest::State, UserNickelDoc
                 reconstructed_bytes_cache_ttl_secs: runtime
                     .runtime
                     .reconstructed_bytes_cache_ttl_secs,
+                retry_impure: runtime.runtime.retry_impure,
             },
             external_data: runtime
                 .external_data

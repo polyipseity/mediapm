@@ -593,6 +593,12 @@ pub struct RunWorkflowOptions {
     /// verification sampling, staleness timeouts, and reconstructed-byte
     /// caching.  When `None`, the CAS store uses its own defaults.
     pub cas_integrity_config: Option<CasIntegrityConfig>,
+    /// Enables CorruptObject retry even for impure workflow steps.
+    ///
+    /// When `true`, impure steps that encounter corrupt CAS objects will
+    /// be retried with a cleared tool cache, matching the behavior that
+    /// pure workflows already have. Defaults to `false`.
+    pub retry_impure: bool,
 }
 
 impl PartialEq for RunWorkflowOptions {
@@ -604,6 +610,7 @@ impl PartialEq for RunWorkflowOptions {
             && self.profiler_enabled == other.profiler_enabled
             && self.progress_sender.is_some() == other.progress_sender.is_some()
             && self.cas_integrity_config == other.cas_integrity_config
+            && self.retry_impure == other.retry_impure
     }
 }
 impl Eq for RunWorkflowOptions {}
@@ -620,6 +627,7 @@ impl RunWorkflowOptions {
             profiler_enabled: false,
             progress_sender: None,
             cas_integrity_config: None,
+            retry_impure: false,
         }
     }
 }

@@ -174,6 +174,13 @@ pub struct RuntimeStorageConfig {
     /// many seconds.  When `None`, the cache is disabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reconstructed_bytes_cache_ttl_secs: Option<u64>,
+    /// Enables CorruptObject retry for impure workflow steps.
+    ///
+    /// When `Some(true)`, impure steps that encounter corrupt CAS objects
+    /// are retried with a cleared tool cache. When `None` or `Some(false)`,
+    /// only pure workflows receive CAS-corruption recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_impure: Option<bool>,
 }
 
 /// Returns host-specific default inherited environment-variable names keyed by

@@ -378,6 +378,13 @@ pub(crate) struct RuntimeStorageLatest {
         deserialize_with = "deserialize_option_integral_u64"
     )]
     pub(crate) reconstructed_bytes_cache_ttl_secs: Option<u64>,
+    /// Enables CorruptObject retry for impure workflow steps.
+    ///
+    /// When `Some(true)`, impure steps that encounter corrupt CAS objects
+    /// are retried with a cleared tool cache. When `None` or `Some(false)`,
+    /// only pure workflows receive CAS-corruption recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) retry_impure: Option<bool>,
 }
 
 impl RuntimeStorageLatest {
@@ -393,6 +400,7 @@ impl RuntimeStorageLatest {
             && self.verify_on_read_sample_denominator.is_none()
             && self.verify_on_read_stale_timeout_secs.is_none()
             && self.reconstructed_bytes_cache_ttl_secs.is_none()
+            && self.retry_impure.is_none()
     }
 }
 

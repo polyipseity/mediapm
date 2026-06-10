@@ -731,6 +731,7 @@ impl DocumentLoaderActor {
             reconstructed_bytes_cache_ttl_secs: user
                 .reconstructed_bytes_cache_ttl_secs
                 .or(machine.reconstructed_bytes_cache_ttl_secs),
+            retry_impure: user.retry_impure.or(machine.retry_impure),
         })
     }
 
@@ -1758,6 +1759,7 @@ mod tests {
                 verify_on_read_sample_denominator: None,
                 verify_on_read_stale_timeout_secs: None,
                 reconstructed_bytes_cache_ttl_secs: None,
+                retry_impure: None,
             },
             tools: BTreeMap::from([(
                 "echo@1.0.0".to_string(),
