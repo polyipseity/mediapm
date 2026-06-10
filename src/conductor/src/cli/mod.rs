@@ -632,6 +632,13 @@ pub enum CliCommand {
         /// as an override first.
         #[arg(long, default_value_t = false)]
         enable_profiler: bool,
+        /// Enables CorruptObject retry for impure workflow steps.
+        ///
+        /// When set, impure steps that encounter corrupt CAS objects will
+        /// be retried with a cleared tool cache, matching the behavior that
+        /// pure workflows already have.
+        #[arg(long, default_value_t = false)]
+        retry_impure: bool,
     },
     /// Prints a formatted profiler report from a conductor profile JSON file.
     Profiler {
@@ -924,7 +931,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
             export_nickel_config_schemas(schema_anchor)?;
             let cas = open_cas(&cas_locator).await?;
             match other {
-                CliCommand::Run { allow_tool_redefinition, enable_profiler } => {
+                CliCommand::Run { allow_tool_redefinition, enable_profiler, retry_impure } => {
                     run_workflow(
                         cas,
                         &user_ncl,
@@ -934,6 +941,7 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
                         runtime_storage_paths,
                         runtime_env_var_names,
                         cli.runtime_paths.profile_json.clone(),
+                        retry_impure,
                     )
                     .await
                 }
@@ -1394,6 +1402,7 @@ async fn open_cas(locator: &str) -> Result<ConfiguredCas, ConductorError> {
 
 /// Executes workflow and prints run summary as pretty JSON.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn run_workflow(
     cas: ConfiguredCas,
     user_ncl: &Path,
@@ -1403,6 +1412,7 @@ async fn run_workflow(
     runtime_storage_paths: RuntimeStoragePaths,
     runtime_inherited_env_vars: Vec<String>,
     profile_output_path: Option<PathBuf>,
+    retry_impure: bool,
 ) -> Result<(), ConductorError> {
     let conductor = SimpleConductor::new(cas);
     let summary = conductor
@@ -1417,6 +1427,7 @@ async fn run_workflow(
                 profiler_enabled: enable_profiler,
                 progress_sender: None,
                 cas_integrity_config: None,
+                retry_impure,
             },
         )
         .await?;
