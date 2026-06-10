@@ -110,7 +110,10 @@ Get up and running in minutes:
     path-traversal entries are rejected; separate entries must not overwrite
     the same target path.
   - Pure workflows may auto-recover from CAS integrity failures (warn + drop +
-    retry once); impure workflows fail without auto-retry.
+    retry once); impure workflows also fail without auto-retry unless
+    `retry_impure` is enabled (configurable via `runtime.retry_impure` in
+    `conductor.ncl`/`mediapm.ncl`, `--retry-impure` CLI flag, or
+    `RunWorkflowOptions.retry_impure`).
   See `src/conductor/AGENTS.md` for the full configuration document model,
   tool schema invariants, template syntax contract, and versioned schema policy.
 - `src/conductor-builtins/` provides versioned built-in tool contracts such as

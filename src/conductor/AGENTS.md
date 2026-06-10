@@ -267,7 +267,12 @@ When editing tool/config schema behavior, preserve these invariants:
 
     checks, conductor may auto-recover only for pure workflows by warning,
     dropping affected cached instances, deleting the corrupt hash, and retrying
-    the workflow once. Impure workflows must fail without auto-retry.
+    the workflow once. Impure workflows fail without auto-retry unless
+    `retry_impure` is enabled. When `retry_impure` is `true`, conductor
+    applies the same cache-invalidation and retry logic to both pure and
+    impure steps. Configure `retry_impure` via
+    `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure`
+    (conductor.ncl), or `--retry-impure` (CLI).
 
 26. `tool_configs.<tool>.max_retries` controls per-tool outer retry budget
 
@@ -283,7 +288,8 @@ When editing tool/config schema behavior, preserve these invariants:
     chain race with concurrent GC), conductor invalidates the tool content
     cache entry for the step's tool and retries. This lets the retry
     re-fetch and re-extract clean content from CAS. Impure workflows fail
-    without cache invalidation or auto-retry.
+    without cache invalidation or auto-retry unless `retry_impure` is
+    enabled, which extends the same recovery behavior to impure steps.
 
 Instance-key rationale to preserve:
 
