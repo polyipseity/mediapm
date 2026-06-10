@@ -106,6 +106,10 @@ pub enum CasError {
         /// The base_hash of the delta object that failed.
         base: Option<Hash>,
         /// Detailed error message.
+        ///
+        /// Callers expecting hash context should pattern-match on
+        /// `target`/`current`/`base` fields.  Display will include
+        /// the hash values when `corrupt_reconstruction()` is used.
         detail: String,
     },
     /// Persistent index file failed structural validation.
@@ -300,6 +304,10 @@ impl CasError {
     }
 
     /// Builds a [`CasError::CorruptObject`] with reconstruction context.
+    ///
+    /// The hash context is embedded in the detail string so that Display
+    /// shows it.  The structured `target`/`current`/`base` fields remain
+    /// available for programmatic matching.
     #[must_use]
     pub fn corrupt_reconstruction(
         target: Hash,
@@ -307,11 +315,12 @@ impl CasError {
         base: Hash,
         detail: impl Into<String>,
     ) -> Self {
+        let detail = format!("target={target} current={current} base={base}: {}", detail.into(),);
         Self::CorruptObject {
             target: Some(target),
             current: Some(current),
             base: Some(base),
-            detail: detail.into(),
+            detail,
         }
     }
 
