@@ -894,6 +894,8 @@ where
                     let worker_index = next_worker % worker_count;
                     next_worker = next_worker.saturating_add(1);
                     let worker = self.workers[worker_index].clone();
+                    let is_pure = workflow_is_pure_map.get(&wf_name).copied().unwrap_or(false);
+                    let tool_cache = self.tool_cache.clone();
                     in_flight.push(Box::pin(async move {
                         Self::dispatch_step_rpc(
                             worker,
@@ -903,6 +905,8 @@ where
                             worker_index,
                             max_retries,
                             permit,
+                            is_pure,
+                            tool_cache,
                         )
                         .await
                     }));
@@ -1070,6 +1074,8 @@ where
         worker_index: usize,
         max_retries: i32,
         _permit: Option<OwnedSemaphorePermit>,
+        is_pure: bool,
+        tool_cache: Option<Arc<ToolContentCache<C>>>,
     ) -> StepCompletionEvent {
         let max_attempts = max_retries.max(0) as u32 + 1;
         for attempt in 0..max_attempts {
@@ -1092,6 +1098,23 @@ where
                     "worker RPC failed for step '{step_id}': {rpc_err}",
                 ))),
             };
+
+            // For pure workflows, invalidate the tool cache on CorruptObject
+            // so the retry re-fetches clean content from CAS.
+            if is_pure {
+                if let Err(ConductorError::Cas(mediapm_cas::CasError::CorruptObject { .. })) =
+                    &call_result
+                {
+                    tracing::warn!(
+                        tool_id = %request.step.tool,
+                        "corrupt CAS object detected for pure workflow step, invalidating \
+                         tool cache entry before retry"
+                    );
+                    if let Some(ref cache) = tool_cache {
+                        let _ = cache.invalidate_tool_entry(&request.step.tool).await;
+                    }
+                }
+            }
 
             let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
             if is_last_attempt {
