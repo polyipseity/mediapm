@@ -1439,6 +1439,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // TTL in seconds for reconstructed bytes cache.
         // Default: 3600 (1 hour).
         reconstructed_bytes_cache_ttl_secs: None,
+        retry_impure: None,
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;

@@ -51,6 +51,7 @@ pub(super) fn default_runtime_storage(paths: &MediaPmPaths) -> RuntimeStorageCon
         verify_on_read_sample_denominator: None,
         verify_on_read_stale_timeout_secs: None,
         reconstructed_bytes_cache_ttl_secs: None,
+        retry_impure: None,
     }
 }
 

@@ -282,6 +282,7 @@ mod tests {
                 verify_on_read_sample_denominator: Some(100),
                 verify_on_read_stale_timeout_secs: Some(604800),
                 reconstructed_bytes_cache_ttl_secs: Some(3600),
+                retry_impure: Some(true),
                 ..Default::default()
             },
             ..MediaPmDocument::default()
@@ -317,6 +318,7 @@ mod tests {
             decoded.runtime.reconstructed_bytes_cache_ttl_secs,
             doc.runtime.reconstructed_bytes_cache_ttl_secs
         );
+        assert_eq!(decoded.runtime.retry_impure, doc.runtime.retry_impure);
     }
 
     /// Verifies round-trip preserves `MediaPmState` fields through the typed

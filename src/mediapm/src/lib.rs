@@ -466,6 +466,7 @@ pub(crate) fn merge_runtime_storage(
         reconstructed_bytes_cache_ttl_secs: override_value
             .reconstructed_bytes_cache_ttl_secs
             .or(config_value.reconstructed_bytes_cache_ttl_secs),
+        retry_impure: override_value.retry_impure.or(config_value.retry_impure),
     }
 }
 
@@ -536,6 +537,7 @@ pub(crate) fn conductor_run_workflow_options(
             .is_some_and(|enabled| enabled)
             .then(|| paths.runtime_root.join("profile.json")),
         cas_integrity_config: Some(runtime_storage.to_cas_integrity_config()),
+        retry_impure: runtime_storage.retry_impure.unwrap_or(false),
         ..RunWorkflowOptions::default()
     }
 }

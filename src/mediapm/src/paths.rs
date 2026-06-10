@@ -320,6 +320,7 @@ mod tests {
             verify_on_read_sample_denominator: None,
             verify_on_read_stale_timeout_secs: None,
             reconstructed_bytes_cache_ttl_secs: None,
+            retry_impure: None,
         };
 
         let resolved = base.with_runtime_storage(&runtime_storage);

@@ -45,6 +45,9 @@ struct Cli {
     /// Overrides `runtime.env_generated_file` for this command invocation.
     #[arg(long)]
     env_generated_file: Option<PathBuf>,
+    /// Enables CorruptObject retry for impure workflow steps.
+    #[arg(long)]
+    retry_impure: bool,
     /// Top-level command selector.
     #[command(subcommand)]
     command: Command,
@@ -574,6 +577,7 @@ async fn main() -> anyhow::Result<()> {
         verify_on_read_sample_denominator: None,
         verify_on_read_stale_timeout_secs: None,
         reconstructed_bytes_cache_ttl_secs: None,
+        retry_impure: if cli.retry_impure { Some(true) } else { None },
     };
     let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
 

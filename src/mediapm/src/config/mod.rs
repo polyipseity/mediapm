@@ -499,6 +499,12 @@ pub struct MediaRuntimeStorage {
         deserialize_with = "deserialize_option_u64_from_number"
     )]
     pub reconstructed_bytes_cache_ttl_secs: Option<u64>,
+
+    /// When true, enables CorruptObject retry even for impure workflow steps.
+    ///
+    /// Defaults to `false` (only pure workflows get automatic recovery).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_impure: Option<bool>,
 }
 
 impl MediaRuntimeStorage {

@@ -121,6 +121,7 @@ async fn sync_uses_split_runtime_storage_resolution_roots() {
             verify_on_read_sample_denominator: None,
             verify_on_read_stale_timeout_secs: None,
             reconstructed_bytes_cache_ttl_secs: None,
+            retry_impure: None,
         },
         ..MediaPmDocument::default()
     };
@@ -165,6 +166,7 @@ async fn sync_honors_explicit_conductor_state_override() {
             verify_on_read_sample_denominator: None,
             verify_on_read_stale_timeout_secs: None,
             reconstructed_bytes_cache_ttl_secs: None,
+            retry_impure: None,
         },
         ..MediaPmDocument::default()
     };
