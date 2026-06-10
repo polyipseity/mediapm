@@ -338,37 +338,27 @@ The `FileSystemCas` backend uses an advisory lock file to coordinate access acro
 
 ### Concurrent Mutation Safety (Delta Chain Race)
 
-`get()` for delta-chain objects uses a two-phase plan-then-execute pattern to
-avoid holding the index read lock across disk I/O, which would block concurrent
-writes:
+`get()` for delta-chain objects uses file handle capture to avoid holding the
+index read lock across disk I/O (which would block concurrent writes) while
+eliminating the race window entirely:
 
-1. **Plan phase** (under index read lock): Walk the delta chain metadata from
-   the index, building a `ReconstructionPlan` with ordered `ChainLink` entries
-   (base hash → ... → leaf hash). No disk I/O occurs in this phase.
-2. **Execute phase** (outside lock): Reconstruct by reading object payloads from
-   disk and applying VCDIFF patches sequentially. The index lock is released
-   before any disk reads.
+1. **Capture phase** (under index read lock): Walk the delta chain metadata
+   from the index and open every payload file (`std::fs::File::open()`),
+   producing a `CapturedReconstruction` with `CapturedChainLink` entries.
+   On POSIX, `open()` pins the inode — concurrent `unlink()` removes the
+   directory entry, but the data survives until the last `File` handle drops.
+2. **Execute phase** (outside lock): Reconstruct by reading from pre-opened
+   handles and applying VCDIFF patches sequentially. The index lock is released
+   before any I/O, but the captured handles guarantee data availability.
 
-A version counter guard (`FileSystemState.reconstruction_version: AtomicU64`)
-protects against the plan/execute gap:
+This approach is deterministic — no retry loop is needed. A concurrent
+`delete()` or `optimize()` may unlink the directory entry between capture and
+read, but the inode remains accessible through the captured handle.
 
-- On every index mutation (`delete()`, `optimize_target_if_beneficial()`), the
-  counter is incremented with `Release` ordering after the index write.
-- `get()` snapshots the counter with `Acquire` ordering before the plan phase,
-  then performs a relaxed check after the plan phase.
-- If the version changed between plan and execute, the entire get() is retried
-  once. Repeated version changes indicate sustained concurrent mutation and
-  propagate the error to the caller.
-
-This design ensures concurrent GC/delete/optimize operations cannot cause
-`get()` to decode a VCDIFF patch whose base object has been removed or
-rewritten between reading the chain metadata and reading the payload files.
-
-**Retry-once guarantee**: A single retry covers the common case where a
-concurrent writer finishes one index mutation between plan and execute. If the
-writer is sustained (many rapid mutations), the retry fails and surfaces
-`CasError::CorruptObject` with the reconstruction context — the caller can
-retry at a higher level or fail gracefully.
+**Delta envelope decoding**: `.diff` files carry a versioned envelope (prefix
+`MDCASD` + version bytes). After reading raw bytes from a captured handle,
+`StoredObject::decode_delta()` strips the envelope to expose the raw VCDIFF
+patch bytes for `DeltaPatch::decode()`.
 
 ### Known Limitations
 
