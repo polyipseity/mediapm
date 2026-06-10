@@ -590,7 +590,18 @@ impl CasMaintenanceApi for FileSystemCas {
     }
 
     async fn gc_sweep(&self, roots: &BTreeSet<Hash>) -> Result<GcSweepReport, CasError> {
-        self.state.gc_sweep(roots).await
+        if self
+            .state
+            .gc_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(CasError::invalid_input("gc_sweep is already running"));
+        }
+
+        let result = self.state.gc_sweep(roots).await;
+        self.state.gc_in_progress.store(false, Ordering::Release);
+        result
     }
 
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {

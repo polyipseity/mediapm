@@ -1009,18 +1009,25 @@ Post-processing loop inserts `AuxData` for any key still missing an entry.
 
 ### CAS GC Sweep
 
-`CasMaintenanceApi` exposes `list_all_hashes()` and
-`gc_sweep(&self, roots: &BTreeSet<Hash>)`. Root set computed by
+`run_cas_gc_sweep()` in `gc.rs` runs the full maintenance sequence via
+`CasMaintenanceApi`: `optimize_once()` → `prune_constraints()` →
+`gc_sweep(&self, roots)` → `compact_index()`. Root set computed by
 `compute_gc_roots()` from: user/machine `external_data`, `state_pointer`,
 instance output/input pointers. `content_map` entries are covered by
 `external_data` roots via decode-time invariance.
 
 **Background GC loop**: Conductor node actor spawns background task that:
 
-1. Waits for `gc_initialized` flag (set after first successful state load)
-2. Loads current state (whose `external_data` field carries root hashes)
-3. Calls `run_cas_gc_sweep()` via shared state store client
+1. Waits for `gc_initialized` flag (set after first successful state load,
+   with `shared_state_store` OnceLock populated simultaneously)
+2. Loads current state (whose `external_data` field carries root hashes) via
+   the shared state store client
+3. Calls `run_cas_gc_sweep()` via the same client
 4. Sleeps `GC_INTERVAL_SECONDS` (3600) and repeats
+
+**Concurrent sweep guard**: `FileSystemCas::gc_sweep()` uses a
+`compare_exchange` guard on `gc_in_progress: AtomicBool` to prevent
+concurrent sweeps (same pattern as `optimize_in_progress`).
 
 ### Channel-Based Progress Events
 

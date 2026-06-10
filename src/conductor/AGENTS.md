@@ -696,7 +696,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 6. **Tool Cache → Worker**: `ToolContentCache` materializes tool payloads from CAS into `tools_dir/<id>/payload/`.
 7. **Worker → Tool Cache**: `link_to_sandbox` hard-links payload files into the step sandbox.
 8. **Progress → Caller**: Coordinator emits `WorkflowStepEvent` on an optional channel for progress display.
-9. **GC → CAS**: Background loop and CLI `run_gc` sweep orphaned CAS blobs using root set computation.
+9. **GC → CAS**: Background loop and CLI `run_gc` run full CAS maintenance (index optimize, constraint prune, GC sweep, index compact) using root set computation from `run_cas_gc_sweep()`.
 
 ## B. Shared Invariants (Conductor-Relevant Rows)
 
@@ -815,10 +815,33 @@ The `last_unreachable` timestamp is set to `ImpureTimestamp::now()` on first det
 
 ## G. CAS GC Sweep
 
-The CAS `CasMaintenanceApi` exposes GC sweep capabilities used by Conductor:
+The CAS `CasMaintenanceApi` exposes GC sweep capabilities used by Conductor.
+The unified entry point `run_cas_gc_sweep()` in `gc.rs` runs the full
+maintenance sequence in order:
 
-- **`list_all_hashes()`**: Returns all content hashes tracked in the index. Backend implementations enumerate from their authoritative index (not on-disk directory walk).
-- **`gc_sweep(&self, roots: &BTreeSet<Hash>)`**: Deletes all objects NOT in the root set. Computes `all_hashes - roots` and deletes orphans via `delete_many()`.
+1. **`optimize_once()`**: Rewrites unconstrained objects under the optimizer
+   policy (background priority by default).
+2. **`prune_constraints()`**: Removes stale constraint entries from the index.
+3. **`gc_sweep(&self, roots: &BTreeSet<Hash>)`**: Deletes all objects NOT in the
+   root set. Computes `all_hashes - roots` and deletes orphans via
+   `delete_many()`.
+4. **`compact_index()`**: Compacts the durable index (redb) to reclaim space.
+
+This function is called by all three GC paths:
+
+- **Background loop** (node actor `pre_start`)
+- **Actor `RunGc` handler** (CLI-triggered via `conductor gc`)
+- **CLI `run_gc` subcommand** (standalone, bypassing the actor)
+
+All paths converge on `run_cas_gc_sweep()` — the CLI previously had inline
+duplicate logic that has been removed.
+
+### Concurrent Sweep Guard
+
+`gc_sweep` in `FileSystemCas` is protected by a `gc_in_progress: AtomicBool`
+guard (same pattern as `optimize_in_progress`), preventing concurrent sweeps
+from racing on the index and recently-written set. `compare_exchange` rejects
+concurrent calls with `CasError::invalid_input("gc_sweep is already running")`.
 
 ### Root Set Composition
 
@@ -841,11 +864,11 @@ Deleting a non-root object that is a delta base of a root object is safe — the
 
 The conductor node actor spawns a background task in `pre_start` that:
 
-1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState` or `ReplaceResolvedState` call populates the state's `external_data`. This prevents premature GC from sweeping all unprotected objects before state is loaded.
+1. **Waits** for the `gc_initialized` flag to be set (via `Acquire` load with 1-second polling), which happens after the first successful `LoadResolvedState`, `ReplaceResolvedState`, or `RunGc` call populates the state's `external_data`. This prevents premature GC from sweeping all unprotected objects before state is loaded.
 
-2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>` (populated by the SubmitWorkflow handler after `ensure_runtime_support()`). The `external_data` lives directly on `OrchestrationState` — no separate synchronization is needed.
+2. **Shared state**: The actor state holds `shared_state_store: Arc<OnceLock<StateStoreClient>>`. The OnceLock is populated by `SubmitWorkflow` (after `ensure_runtime_support()`), `LoadResolvedState`, and `ReplaceResolvedState` (via `coordinator.state_store()` after success). Previously the OnceLock was only populated by `SubmitWorkflow`, leaving a window where phase-1 succeeded but the background loop hung on a missing state store. The `external_data` lives directly on `OrchestrationState` — no separate synchronization is needed.
 
-3. **Enters a periodic loop**: loads the current state from the coordinator via shared `state_handle: Arc<RwLock<OrchestrationState>>` and calls `run_cas_gc_sweep()` with it (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
+3. **Enters a periodic loop**: loads the current state from the coordinator via `state_store.current_state()` and calls `run_cas_gc_sweep()` with it (bypassing the actor mailbox entirely), then sleeps `GC_INTERVAL_SECONDS` (3600) and repeats. The `RunGc` handler is preserved for CLI use.
 
 The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shared with the background task. It is also set as a backstop after any successful `RunGc` handler execution.
 

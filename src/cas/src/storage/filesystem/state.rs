@@ -92,6 +92,9 @@ pub(super) struct FileSystemState {
     metrics: FileSystemMetricsState,
     /// Tracks whether an optimize run is currently active.
     pub(super) optimize_in_progress: AtomicBool,
+    /// Tracks whether a GC sweep is currently in progress to prevent
+    /// concurrent sweeps from racing on the index and recently-written set.
+    pub(super) gc_in_progress: AtomicBool,
     /// Shared mmap lease registry coordinating read mmap lifetimes with mutations.
     active_mmaps: Arc<ActiveMmapRegistry>,
     /// Dedicated object I/O actor for on-disk object operations.
@@ -173,6 +176,7 @@ impl FileSystemState {
 
             metrics: FileSystemMetricsState::default(),
             optimize_in_progress: AtomicBool::new(false),
+            gc_in_progress: AtomicBool::new(false),
             active_mmaps,
             object_actor,
             lock_file,

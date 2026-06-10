@@ -797,7 +797,19 @@ The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize
 
 GC sweep runs concurrently with workflow step execution. If a step materializes a new CAS object between `list_all_hashes()` and the actual deletion in `gc_sweep()`, the new object won't be in the initial hash set and won't be deleted.
 
-**Mitigation**: Sweep computes the set difference `all_hashes - roots` at the start of the sweep. Objects added during sweep execution are not in `all_hashes` and are therefore not deleted. The sweep is eventually consistent: the next sweep pass will catch any orphans missed due to concurrent modification.
+**Mitigation 1 — Recently-written set**: Sweep computes the set difference
+`all_hashes - roots` at the start of the sweep, then excludes hashes in the
+`recently_written` set (populated before the durable index write, so any
+object that existed at `list_all_hashes` time is covered). Objects added
+during sweep execution are not in `all_hashes` and are therefore not deleted.
+The sweep is eventually consistent: the next sweep pass will catch any
+orphans missed due to concurrent modification.
+
+**Mitigation 2 — `gc_in_progress` guard**: `FileSystemCas::gc_sweep()` uses a
+`compare_exchange` guard on `gc_in_progress: AtomicBool` to prevent multiple
+concurrent sweep invocations from racing on the index and recently-written
+set (same pattern as `optimize_in_progress`). Concurrent calls are rejected
+with `CasError::invalid_input`.
 
 #### 1.20 GC vs Active State Pointer
 
