@@ -966,18 +966,14 @@ During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool 
 
 The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize all file mutations per store. Large objects (≥64 KB) are served via mmap with reference-counted `ActiveMmapLease` entries tracked in an `ActiveMmapRegistry`.
 
-**Deadlock scenario** (observed in `optimize_target_if_beneficial`):
+**Deadlock scenario** (observed in `optimize_target_if_beneficial` — resolved by two-phase staging):
 
-1. Caller obtains `target_bytes` via `get()` → mmap → acquires an `ActiveMmapLease`.
-2. Caller sends `PersistObjectVariant(target, ...)` RPC to the `FileObjectActor`.
-3. Actor handler calls `wait_for_no_active_mmap(target)` → blocks waiting for the lease held by the caller.
-4. Neither side can proceed until the 8-second timeout fires, causing a spurious timeout error.
+The optimizer and delete paths no longer send actor RPCs. Both use two-phase staging:
 
-**Mitigation**:
+1. **Phase 1** (async, outside lock) — write new object variant to a staging path under `tmp/`.
+2. **Phase 2** (under index write lock, sync-only) — `std::fs::rename(staging → final)`, remove the opposite variant, and update index metadata. A concurrent reader holding the read lock is blocked during Phase 2 and sees consistent state.
 
-- **Fix A** — Drop the mmap lease (`drop(target_bytes)`) before any actor RPC for the same hash.
-- **Fix C** — `wait_for_no_active_mmap` is compiled out on Unix (`#[cfg(not(target_os = "windows"))]` no-op) because POSIX `rename(2)`/`unlink(2)` keep the old inode alive for existing mmap holders. Preserved on Windows where file locks may prevent rename/unlink while handles are held.
-- **Fix D** — A batch message variant `PersistObjectVariants(Vec<(Hash, StoredObject)>)` processes multiple variants in a single actor message loop, avoiding N sequential RPC round-trips in `persist_rewritten_dependents`. Timeout scales linearly with plan count: `8s × count`.
+This eliminates both the mmap lease deadlock and a TOCTOU race where a reader could observe new file content with stale index metadata.
 
 ### Pulsebar Rendering (Terminal-Width Contract)
 

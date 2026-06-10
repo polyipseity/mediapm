@@ -449,9 +449,8 @@ The CAS `repair_index()` operation rebuilds the index from the actual storage co
 
 The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize all file mutations per store. Large objects (≥64 KB) are served via mmap with reference-counted `ActiveMmapLease` entries tracked in an `ActiveMmapRegistry`.
 
-- **Fix A** — Drop the mmap lease (`drop(target_bytes)`) before any actor RPC for the same hash (applied in `optimize_target_if_beneficial`).
 - **Fix C** — `wait_for_no_active_mmap` is compiled out on Unix (`#[cfg(not(target_os = "windows"))]` no-op) because POSIX `rename(2)`/`unlink(2)` keep the old inode alive for existing mmap holders. Preserved on Windows.
-- **Fix D** — Batch message variant `PersistObjectVariants(Vec<(Hash, StoredObject)>)` processes multiple variants in a single actor message loop, avoiding N sequential RPC round-trips in `persist_rewritten_dependents`. Timeout scales linearly with plan count: `8s × count`.
+- **Two-phase staging** — The optimizer (`optimize_target_if_beneficial`) and `delete()` paths no longer send actor RPCs. Instead they write new object variants to staging paths (`tmp/`) outside any lock (Phase 1), then under the index write lock atomically rename staging→final and update index metadata (Phase 2). This eliminates both the mmap lease deadlock and a TOCTOU race where a concurrent reader could observe new file content with stale index metadata.
 
 **Content-addressed memory lifecycle**: Use `bytes::Bytes` for all CAS-resident data to enable zero-copy sharing and cheap clones (ref-count bumps). Avoid `Vec<u8>` for hot-path CAS data in public APIs. CAS `get()` returns `Bytes`; `materialize_to_path()` skips the `Bytes` round-trip entirely when the backend can fast-path via `fs::copy`.
 
@@ -502,7 +501,7 @@ The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize
 
 **Recommendations**:
 
-- Explicit isolation: **Optimizer takes immutable snapshot of object set at start** (or uses "version" guard)
+- ✅ Done: **Two-phase staging isolation** — The optimizer and `delete()` write new variants to staging paths outside any lock, then under the index write lock atomically renames and updates metadata. A concurrent reader holding the read lock is blocked during Phase 2 and observes consistent state.
 - Document: **concurrent puts with identical content are deduplicated** (single write, multiple waiters) vs. race (last write wins)
 - Add test: "concurrent optimize + put + delete" scenario
 
@@ -579,10 +578,10 @@ The `FileSystemCas` backend uses a `FileObjectActor` (ractor actor) to serialize
 
 **Risk**: If mmap fails, entire read fails instead of gracefully degrading to buffer-based read.
 
-**Mmap lease deadlock** (resolved):
+**Mmap lease deadlock & optimizer TOCTOU race** (resolved):
 
-- `optimize_target_if_beneficial` could deadlock with `FileObjectActor` when a caller held an `ActiveMmapLease` for hash H while sending a `PersistObjectVariant(H)` RPC.
-- **Fix**: Drop mmap lease before actor RPC in the caller; `wait_for_no_active_mmap` is a no-op on Unix; preserved on Windows. Batch `PersistObjectVariants` message added.
+- `optimize_target_if_beneficial` previously deadlocked with `FileObjectActor` when a caller held an `ActiveMmapLease` for hash H while sending a `PersistObjectVariant(H)` RPC.
+- **Fix**: Both `optimize_target_if_beneficial` and `delete()` now use two-phase staging (see mmap lease section above), removing the need for actor RPC entirely. The batch message variant `PersistObjectVariants` has been removed as a simplification.
 
 **Recommendations**:
 
@@ -906,7 +905,7 @@ Actors (ractor) serialize access to mutable storage/index state, guaranteeing no
 - [ ] Corrupted delta → recovery path
 - [ ] Orphaned deltas (deleted base) → integrity check detects
 - [ ] Chain exceeding `MAX_DEPTH` after config change → pruning triggered
-- [ ] Concurrent optimization + delete → no race condition
+- [x] Concurrent optimization + delete → no race condition (two-phase staging)
 - [ ] Out-of-space + prune + retry → succeeds
 
 ### 2.4 Troubleshooting
