@@ -1097,7 +1097,8 @@ where
         retry_impure: bool,
         tool_cache: Option<Arc<ToolContentCache<C>>>,
     ) -> StepCompletionEvent {
-        let max_attempts = max_retries.max(0) as u32 + 1;
+        let resolved_retries = if max_retries < 0 { 1 } else { max_retries };
+        let max_attempts = resolved_retries as u32 + 1;
         for attempt in 0..max_attempts {
             let call_result = match call_t!(
                 worker.clone(),
