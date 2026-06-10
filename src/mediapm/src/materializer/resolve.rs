@@ -611,7 +611,7 @@ fn tool_metadata_matches(expected: &ToolSpec, actual: &ToolSpec) -> bool {
         _ => false,
     };
     if !result {
-        eprintln!(
+        tracing::trace!(
             "[TRACE-META-MISMATCH] expected={:?} actual={:?}",
             serde_json::to_string(expected).unwrap_or_default(),
             serde_json::to_string(actual).unwrap_or_default(),
