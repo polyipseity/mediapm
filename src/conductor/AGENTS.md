@@ -279,6 +279,12 @@ When editing tool/config schema behavior, preserve these invariants:
     resolved output specification policy before equivalent-call merge logic is
     applied; do not seed new output entries with unconditional saved defaults.
 
+28. When a pure workflow step encounters a `CorruptObject` CAS error (delta
+    chain race with concurrent GC), conductor invalidates the tool content
+    cache entry for the step's tool and retries. This lets the retry
+    re-fetch and re-extract clean content from CAS. Impure workflows fail
+    without cache invalidation or auto-retry.
+
 Instance-key rationale to preserve:
 
 - Equivalent-call dedup identity excludes tool content-map payload details and
