@@ -1798,7 +1798,25 @@ impl FileSystemState {
                 }
             };
             let patch = DeltaPatch::decode(&vcdiff);
-            base = patch.apply(&base, target, link.hash, delta_base)?;
+            base = match patch.apply(&base, target, link.hash, delta_base) {
+                Ok(result) => result,
+                Err(apply_err) => {
+                    let base_hash_actual = Hash::from_content(&base);
+                    let vcdiff_hash_actual = Hash::from_content(&vcdiff);
+                    return Err(CasError::corrupt_reconstruction(
+                        target,
+                        link.hash,
+                        delta_base,
+                        format!(
+                            "{apply_err}: base hash: expected={delta_base} actual={base_hash_actual} match={}; vcdiff hash: expected={} actual={} match={}",
+                            delta_base == base_hash_actual,
+                            link.hash,
+                            vcdiff_hash_actual,
+                            link.hash == vcdiff_hash_actual,
+                        ),
+                    ));
+                }
+            };
         }
 
         if let Some(expected) = captured.expected_len
