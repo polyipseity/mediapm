@@ -2085,7 +2085,7 @@ where
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        tracing::info!(
+                        tracing::trace!(
                             target: "conductor::tool::stdout",
                             tool = tool_name,
                             chunk = %String::from_utf8_lossy(chunk),
@@ -2123,7 +2123,7 @@ where
                     Ok(0) => break,
                     Ok(n) => {
                         let chunk = &buf[..n];
-                        tracing::warn!(
+                        tracing::trace!(
                             target: "conductor::tool::stderr",
                             tool = tool_name2,
                             chunk = %String::from_utf8_lossy(chunk),
