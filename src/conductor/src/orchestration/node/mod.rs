@@ -417,6 +417,9 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
+                    if let Some(store) = state.coordinator.state_store() {
+                        let _ = state.shared_state_store.set(store);
+                    }
                 }
                 let _ = reply.send(result);
             }
@@ -438,6 +441,9 @@ where
                     .await;
                 if result.is_ok() {
                     state.gc_initialized.store(true, Ordering::Release);
+                    if let Some(store) = state.coordinator.state_store() {
+                        let _ = state.shared_state_store.set(store);
+                    }
                 }
                 let _ = reply.send(result);
             }
