@@ -26,6 +26,7 @@ use std::sync::Arc;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
+use mediapm_conductor::tool_cache::ToolContentCache;
 use mediapm_conductor::{AddToolOptions, InputBinding, ToolKindSpec};
 
 use crate::builtins::media_tagger::MEDIA_TAGGER_FFMPEG_BIN_ENV;
@@ -66,12 +67,13 @@ pub(crate) async fn reconcile_desired_tools(
     ensure_runtime_env_files(&conductor_runtime_dir).map_err(MediaPmError::from)?;
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
     let cas_root = resolve_cas_store_path(paths, &machine);
-    let cas = FileSystemCas::open(&cas_root).await.map_err(|source| {
+    let cas = Arc::new(FileSystemCas::open(&cas_root).await.map_err(|source| {
         MediaPmError::Workflow(format!(
             "opening conductor CAS store '{}' for tool sync failed: {source}",
             cas_root.display()
         ))
-    })?;
+    })?);
+    let tool_content_cache = ToolContentCache::new(paths.tools_dir.clone(), Arc::clone(&cas), None);
 
     let mut requirements_to_provision = BTreeMap::new();
     let mut skipped_tag_update_tool_ids = BTreeMap::new();
@@ -83,11 +85,33 @@ pub(crate) async fn reconcile_desired_tools(
         }
         non_builtin_names.push(tool_name.clone());
 
-        if should_skip_tag_update_check(requirement, tool_name, lock, &machine, check_tag_updates)
-            && let Some(active_tool_id) = lock.active_tools.get(tool_name).cloned()
-        {
-            skipped_tag_update_tool_ids.insert(tool_name.clone(), active_tool_id);
-            continue;
+        let should_skip_tag_update =
+            should_skip_tag_update_check(requirement, tool_name, lock, &machine, check_tag_updates);
+
+        if should_skip_tag_update {
+            if let Some(active_tool_id) = lock.active_tools.get(tool_name).cloned() {
+                // Verify that all content_map CAS blobs still exist before
+                // skipping. If blobs were garbage-collected (or never stored
+                // due to a prior bug such as absent materialization during
+                // sync) we must re-provision so materialization can create
+                // the payload/ directory.  The existence check is a cheap
+                // index lookup, not a full content read.
+                let blobs_available: bool = match machine
+                    .tool_configs
+                    .get(&active_tool_id)
+                    .and_then(|cfg| cfg.content_map.as_ref())
+                {
+                    Some(content_map) if !content_map.is_empty() => {
+                        let hashes: Vec<Hash> = content_map.values().copied().collect();
+                        cas.exists_many(hashes).await.map_or(false, |bitmap| bitmap.all())
+                    }
+                    _ => false,
+                };
+                if blobs_available {
+                    skipped_tag_update_tool_ids.insert(tool_name.clone(), active_tool_id);
+                    continue;
+                }
+            }
         }
 
         requirements_to_provision.insert(tool_name.clone(), requirement.clone());
@@ -319,6 +343,13 @@ pub(crate) async fn reconcile_desired_tools(
                 }
             }
         }
+
+        // Materialize tool content from CAS to payload/ directory so that
+        // env-var paths (e.g. MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN) resolve to
+        // real files on disk.
+        if let Some(tool_content_map) = &desired_config.content_map {
+            let _ = tool_content_cache.materialize(&desired_tool_id, tool_content_map).await?;
+        }
         remove_redundant_inherited_env_vars_from_tool_config(
             &mut desired_config,
             inherited_env_vars,
@@ -378,6 +409,18 @@ pub(crate) async fn reconcile_desired_tools(
             }
         } else {
             report.added_tool_ids.push(desired_tool_id);
+        }
+    }
+
+    // Final materialization pass: ensure all tools with content_maps have
+    // a valid payload/ directory. This covers tools that were skipped
+    // (unchanged) in this sync but whose payload/ may never have been
+    // created due to the pre-fix absence of materialization during sync.
+    for (tool_id, config) in &machine.tool_configs {
+        if let Some(content_map) = &config.content_map {
+            if let Err(e) = tool_content_cache.materialize(tool_id, content_map).await {
+                tracing::warn!("final pass materialization of tool '{tool_id}' failed: {e}");
+            }
         }
     }
 
