@@ -1704,9 +1704,11 @@ struct CapturedReconstruction {
 impl FileSystemState {
     /// Opens all delta-chain payload files under the index read lock.
     ///
-    /// On POSIX, the open file descriptors pin the inodes — concurrent
-    /// `unlink()` removes directory entries but data survives until the last
-    /// handle closes. This makes reconstruction deterministic without retry.
+    /// Open file handles pin the storage — concurrent `unlink()` removes the
+    /// directory entry, but the data survives until the last handle closes.
+    /// Rust's `std::fs::File::open()` sets `FILE_SHARE_DELETE` on Windows
+    /// (and inode pinning is implicit on POSIX), so this works on all major
+    /// platforms. This makes reconstruction deterministic without retry.
     ///
     /// Returns [`None`] when the target hash is not yet indexed (caller should
     /// fall back to a direct filesystem lookup).

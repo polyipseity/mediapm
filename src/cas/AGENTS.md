@@ -345,8 +345,10 @@ eliminating the race window entirely:
 1. **Capture phase** (under index read lock): Walk the delta chain metadata
    from the index and open every payload file (`std::fs::File::open()`),
    producing a `CapturedReconstruction` with `CapturedChainLink` entries.
-   On POSIX, `open()` pins the inode — concurrent `unlink()` removes the
+   Open handles pin the storage — concurrent `unlink()` removes the
    directory entry, but the data survives until the last `File` handle drops.
+   Rust's `std::fs::File::open()` sets `FILE_SHARE_DELETE` on Windows
+   (and inode pinning is implicit on POSIX), so this works cross-platform.
 2. **Execute phase** (outside lock): Reconstruct by reading from pre-opened
    handles and applying VCDIFF patches sequentially. The index lock is released
    before any I/O, but the captured handles guarantee data availability.
