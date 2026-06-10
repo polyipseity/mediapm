@@ -49,6 +49,8 @@ enum CasCommand {
     RepairIndex(CasRootArgs),
     /// Migrates durable CAS index metadata to one schema version.
     MigrateIndex(CasMigrateIndexArgs),
+    /// Deletes one object from the CAS store.
+    Delete(CasDeleteArgs),
     /// Visualizes object/base/constraint topology of a CAS repository.
     Visualize(CasVisualizeArgs),
     /// Generates shell completion scripts for the `mediapm-cas` CLI.
@@ -126,6 +128,16 @@ struct CasVisualizeArgs {
     /// Optional output file path. If omitted, writes to stdout.
     #[arg(long)]
     output: Option<PathBuf>,
+}
+
+/// `cas delete` arguments.
+#[derive(Debug, Args)]
+struct CasDeleteArgs {
+    /// Hash string of the target object (for example `blake3:<hex>`).
+    hash: String,
+    /// CAS root path (default: `.mediapm/cas`).
+    #[arg(long)]
+    root: Option<PathBuf>,
 }
 
 /// `cas constraint` subcommands.
@@ -284,6 +296,13 @@ async fn run_command(command: CasCommand) -> anyhow::Result<()> {
                 output: args.output,
             };
             run_visualize_command(request).await?;
+        }
+        CasCommand::Delete(args) => {
+            let root = resolve_cas_root(args.root);
+            let cas = FileSystemCas::open(&root).await?;
+            let hash = Hash::from_str(&args.hash)?;
+            cas.delete(hash).await?;
+            println!("deleted {hash}");
         }
         CasCommand::Completions { shell } => {
             clap_complete::generate(
