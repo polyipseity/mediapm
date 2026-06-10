@@ -333,6 +333,11 @@ let RuntimeStorageV1 = {
   # ||| Optional TTL in seconds for the reconstructed bytes cache.
   # ||| When set, decoded content bytes are cached for this many seconds.
   reconstructed_bytes_cache_ttl_secs | Dyn | optional,
+  # ||| When true, impure workflow steps may auto-recover from CAS integrity
+  # ||| failures (cache invalidation + retry).
+  # ||| When omitted or false, only pure steps auto-recover and impure steps
+  # ||| fail without retry.
+  retry_impure | Dyn | optional,
 }
 in
 
