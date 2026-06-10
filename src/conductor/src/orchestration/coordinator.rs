@@ -942,7 +942,20 @@ where
             let bundle = match result {
                 Ok(bundle) => bundle,
                 Err(err) => {
-                    return Err(err);
+                    tracing::error!(
+                        workflow = %event_wf,
+                        step = %event_step,
+                        error = %err,
+                        "step execution failed",
+                    );
+                    return Err(match err {
+                        err @ ConductorError::Cas(mediapm_cas::CasError::CorruptObject {
+                            ..
+                        }) => ConductorError::Internal(format!(
+                            "workflow '{event_wf}' step '{event_step}' failed: {err}",
+                        )),
+                        err => err,
+                    });
                 }
             };
 
