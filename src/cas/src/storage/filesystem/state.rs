@@ -51,7 +51,7 @@ use super::metrics::FileSystemMetrics;
 use super::metrics::{FileSystemMetricsState, ObjectActorRpcScope};
 use super::paths::{diff_object_path, object_path};
 use super::recovery;
-use super::util::bootstrap_empty_object;
+use super::util::{bootstrap_empty_object, clear_file_readonly_if_set, write_object_atomic};
 use super::{
     FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY, FILESYSTEM_MAX_BASE_SIZE_RATIO,
     FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS, FILESYSTEM_SMALL_INLINE_HASHES,
@@ -1145,30 +1145,6 @@ impl FileSystemState {
         Ok(())
     }
 
-    /// Persists multiple object variants in a single actor RPC.
-    async fn persist_object_variants(
-        &self,
-        plans: &[(Hash, StoredObject)],
-    ) -> Result<(), CasError> {
-        let _rpc_scope = self.object_actor_rpc_scope();
-        let timeout =
-            FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS.saturating_mul(plans.len().max(1) as u64);
-        call_t!(
-            self.object_actor,
-            FileObjectActorMessage::PersistObjectVariants,
-            timeout,
-            plans.to_vec()
-        )
-        .map_err(|err| CasError::actor_rpc("persisting object variants via object actor", err))??;
-        for (hash, object) in plans {
-            if let StoredObject::Delta { state } = object {
-                self.record_delta_compression(state.payload.len() as u64, state.content_len);
-            }
-            self.invalidate_cached_object_bytes(*hash);
-        }
-        Ok(())
-    }
-
     /// Derives index metadata from one persisted object plan.
     fn meta_for_object(object: &StoredObject, depth: u32) -> ObjectMeta {
         match object.base_hash() {
@@ -1615,20 +1591,6 @@ impl FileSystemState {
         Ok(rewritten_plans)
     }
 
-    /// Persists rewritten dependent objects to disk in a single batch RPC.
-    async fn persist_rewritten_dependents(
-        &self,
-        rewritten_plans: &[(Hash, CandidatePlan)],
-    ) -> Result<(), CasError> {
-        let plans: Vec<(Hash, StoredObject)> =
-            rewritten_plans.iter().map(|(hash, plan)| (*hash, plan.object.clone())).collect();
-        if !plans.is_empty() {
-            self.persist_object_variants(&plans).await?;
-        }
-
-        Ok(())
-    }
-
     /// Optimizes one target hash and returns whether a rewrite was applied.
     #[instrument(name = "filesystem.optimize_target_if_beneficial", skip(self), fields(target_hash = %target))]
     pub(super) async fn optimize_target_if_beneficial(
@@ -1668,16 +1630,48 @@ impl FileSystemState {
         // the actor's persist handler waits for all mmaps on this hash to close.
         drop(target_bytes);
 
-        self.persist_object_variant(target, &best.object).await?;
+        // Phase 1: write the new variant to a staging path (async, outside the
+        // write lock) so it's invisible to concurrent readers.
+        // Phase 2 happens under the write lock below (atomic rename → final).
+        let staging_root = self.root.join(STORAGE_VERSION).join("tmp");
+        let staging_path = staging_root.join(format!("optimize-{}", target.to_hex()));
+        let new_bytes = best.object.encode().into_owned();
+        let (staging_final_path, staging_alt_path) = match best.object.base_hash() {
+            Some(_) => (diff_object_path(&self.root, target), object_path(&self.root, target)),
+            None => (object_path(&self.root, target), diff_object_path(&self.root, target)),
+        };
+        write_object_atomic(&staging_root, &staging_path, &new_bytes).await?;
 
         let resolved_depth = {
             let mut index = self.lock_index_write("updating index after optimize target rewrite");
+            // Phase 2: under the index write lock, atomically rename staging →
+            // final and remove the alternate variant so concurrent readers
+            // holding the read lock see consistent file content and metadata.
+            std::fs::rename(&staging_path, &staging_final_path).map_err(|source| {
+                CasError::io("finalizing optimized object variant", &staging_final_path, source)
+            })?;
+            if staging_alt_path.exists() {
+                clear_file_readonly_if_set(&staging_alt_path)?;
+                std::fs::remove_file(&staging_alt_path).map_err(|source| {
+                    CasError::io(
+                        "removing alternate variant after optimize",
+                        &staging_alt_path,
+                        source,
+                    )
+                })?;
+            }
             Self::upsert_object_meta(&mut index, target, &best.object)?
         };
 
         let mut meta = Self::meta_for_object(&best.object, resolved_depth);
         meta.set_verify_time(Self::now_unix());
         self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target, meta }]).await?;
+
+        // Invalidate cache and record compression stats after file + index are consistent.
+        self.invalidate_cached_object_bytes(target);
+        if let StoredObject::Delta { state } = &best.object {
+            self.record_delta_compression(state.payload.len() as u64, state.content_len);
+        }
 
         Ok(true)
     }
@@ -2143,10 +2137,52 @@ impl CasApi for FileSystemState {
         Self::recompute_descendant_depths_with_fallback(&mut projected, &rewritten_roots)?;
         let index_operations = Self::index_diff_operations(&snapshot, &projected);
 
-        self.persist_rewritten_dependents(&rewritten_plans).await?;
+        // Phase 1: write rewritten dependents to staging paths (async, outside
+        // the write lock) so they're invisible to concurrent readers.
+        // Phase 2 happens under the write lock below (atomic rename → final).
+        let mut staging_entries: Vec<(Hash, PathBuf, PathBuf, PathBuf)> = Vec::new();
+        if !rewritten_plans.is_empty() {
+            let staging_root = self.root.join(STORAGE_VERSION).join("tmp");
+            for (hash, plan) in &rewritten_plans {
+                let staging_path = staging_root.join(format!("rewrite-{}", hash.to_hex()));
+                let new_bytes = plan.object.encode().into_owned();
+                let (final_path, alt_path) = match plan.object.base_hash() {
+                    Some(_) => {
+                        (diff_object_path(&self.root, *hash), object_path(&self.root, *hash))
+                    }
+                    None => (object_path(&self.root, *hash), diff_object_path(&self.root, *hash)),
+                };
+                write_object_atomic(&staging_root, &staging_path, &new_bytes).await?;
+                staging_entries.push((*hash, staging_path, final_path, alt_path));
+                // Invalidate cache and record compression for each rewritten dependent.
+                self.invalidate_cached_object_bytes(*hash);
+                if let StoredObject::Delta { state } = &plan.object {
+                    self.record_delta_compression(state.payload.len() as u64, state.content_len);
+                }
+            }
+        }
 
         {
             let mut index = self.lock_index_write("publishing projected index after delete");
+            // Phase 2: under the index write lock, atomically rename each
+            // staging → final and remove alternate variants so concurrent
+            // readers holding the read lock see consistent file content and
+            // metadata.
+            for (_, staging_path, final_path, alt_path) in &staging_entries {
+                std::fs::rename(staging_path, final_path).map_err(|source| {
+                    CasError::io("finalizing rewritten dependent object", final_path, source)
+                })?;
+                if alt_path.exists() {
+                    clear_file_readonly_if_set(alt_path)?;
+                    std::fs::remove_file(alt_path).map_err(|source| {
+                        CasError::io(
+                            "removing alternate variant after dependent rewrite",
+                            alt_path,
+                            source,
+                        )
+                    })?;
+                }
+            }
             // Merge concurrent entries that arrived while the snapshot was held
             // to avoid overwriting them with a stale projection (Race B).
             // The deleted hash must not be resurrected, and any constraint
