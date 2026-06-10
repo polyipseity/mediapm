@@ -555,6 +555,7 @@ struct ToolSyncArgs {
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
 )]
 async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let runtime_storage_overrides = MediaRuntimeStorage {
         mediapm_dir: option_path_to_string(cli.mediapm_dir),

@@ -45,6 +45,7 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
 url.workspace = true
 unicode-normalization.workspace = true
 xz2.workspace = true

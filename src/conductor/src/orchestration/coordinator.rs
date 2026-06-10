@@ -284,7 +284,6 @@ where
             ConductorError::Internal("state store actor was not initialized".to_string())
         })?;
 
-        let retry_impure = effective_options.retry_impure;
         let LoadedDocuments { machine_document, mut state_document, prior_state_pointer, unified } =
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
@@ -308,7 +307,6 @@ where
                 &resolved_runtime_paths.conductor_tmp_dir,
                 &outermost_config_dir,
                 progress_sender,
-                retry_impure,
             )
             .await;
 
@@ -607,7 +605,6 @@ where
         conductor_tmp_dir: &Path,
         outermost_config_dir: &Path,
         progress_sender: Option<WorkflowProgressSender>,
-        retry_impure: bool,
     ) -> Result<ExecutionOutcome, ConductorError> {
         // Emit early progress event so the caller's progress bar renders
         // immediately, even before dep-graph construction and step execution.
@@ -870,10 +867,11 @@ where
                     };
 
                     // Look up per-tool max_retries from the unified config.
+                    // Default to 3 for tools not explicitly configured.
                     let max_retries = unified_shared
                         .tools
                         .get(&step_spec.tool)
-                        .map_or(0, |spec| spec.max_retries);
+                        .map_or(3, |spec| spec.max_retries);
 
                     let required_output_names =
                         dep_state.required_outputs.get(&step_id).cloned().unwrap_or_default();
@@ -899,8 +897,6 @@ where
                     let worker_index = next_worker % worker_count;
                     next_worker = next_worker.saturating_add(1);
                     let worker = self.workers[worker_index].clone();
-                    let is_pure = workflow_is_pure_map.get(&wf_name).copied().unwrap_or(false);
-                    let tool_cache = self.tool_cache.clone();
                     in_flight.push(Box::pin(async move {
                         Self::dispatch_step_rpc(
                             worker,
@@ -910,9 +906,6 @@ where
                             worker_index,
                             max_retries,
                             permit,
-                            is_pure,
-                            retry_impure,
-                            tool_cache,
                         )
                         .await
                     }));
@@ -954,14 +947,9 @@ where
                         error = %err,
                         "step execution failed",
                     );
-                    return Err(match err {
-                        err @ ConductorError::Cas(mediapm_cas::CasError::CorruptObject {
-                            ..
-                        }) => ConductorError::Internal(format!(
-                            "workflow '{event_wf}' step '{event_step}' failed: {err}",
-                        )),
-                        err => err,
-                    });
+                    return Err(ConductorError::Workflow(format!(
+                        "step '{event_step}' in workflow '{event_wf}' failed: {err}",
+                    )));
                 }
             };
 
@@ -1093,11 +1081,8 @@ where
         worker_index: usize,
         max_retries: i32,
         _permit: Option<OwnedSemaphorePermit>,
-        is_pure: bool,
-        retry_impure: bool,
-        tool_cache: Option<Arc<ToolContentCache<C>>>,
     ) -> StepCompletionEvent {
-        let resolved_retries = if max_retries < 0 { 1 } else { max_retries };
+        let resolved_retries = if max_retries <= 0 { 1 } else { max_retries };
         let max_attempts = resolved_retries as u32 + 1;
         for attempt in 0..max_attempts {
             let call_result = match call_t!(
@@ -1120,23 +1105,6 @@ where
                 ))),
             };
 
-            // For pure workflows (or when retry_impure is enabled), invalidate the tool
-            // cache on CorruptObject so the retry re-fetches clean content from CAS.
-            if is_pure || retry_impure {
-                if let Err(ConductorError::Cas(mediapm_cas::CasError::CorruptObject { .. })) =
-                    &call_result
-                {
-                    tracing::warn!(
-                        tool_id = %request.step.tool,
-                        "corrupt CAS object detected for pure workflow step, invalidating \
-                         tool cache entry before retry"
-                    );
-                    if let Some(ref cache) = tool_cache {
-                        let _ = cache.invalidate_tool_entry(&request.step.tool).await;
-                    }
-                }
-            }
-
             let is_last_attempt = attempt.saturating_add(1) >= max_attempts;
             if is_last_attempt {
                 return StepCompletionEvent {
@@ -1147,6 +1115,12 @@ where
                 };
             }
 
+            tracing::warn!(
+                attempt = attempt.saturating_add(1),
+                max_attempts,
+                error = %call_result.as_ref().unwrap_err(),
+                "step failed, retrying",
+            );
             sleep(Duration::from_millis(500)).await;
         }
         unreachable!()

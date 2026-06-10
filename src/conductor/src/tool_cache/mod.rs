@@ -450,47 +450,6 @@ impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
         retain_only_tool_dirs(self.tools_dir.clone(), active_tool_ids.clone()).await
     }
 
-    /// Removes the cache entry for `tool_id` from the filesystem.
-    ///
-    /// This is used to force re-extraction of a tool's content after a
-    /// corrupt-object CAS error is detected during a pure workflow step.
-    /// Only the on-disk entry is removed; in-memory single-flight state is
-    /// unaffected so the next `materialize` call will re-extract.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] on I/O errors (e.g. permission denied).
-    pub async fn invalidate_tool_entry(&self, tool_id: &str) -> Result<(), ConductorError> {
-        let sanitized = sanitize_tool_id(tool_id);
-        let entry_dir = self.tools_dir.join(sanitized);
-        tokio::task::spawn_blocking(move || -> Result<(), ConductorError> {
-            if !entry_dir.exists() {
-                return Ok(());
-            }
-            // Try to acquire exclusive lock before removing, so we don't
-            // yank the entry from under a concurrent materialize() caller.
-            let lock_path = entry_dir.join(LOCK_FILE_NAME);
-            if let Ok(lock_file) =
-                std::fs::OpenOptions::new().read(true).write(true).open(&lock_path)
-            {
-                if lock_file.try_lock().is_err() {
-                    // Another worker is using this entry — skip removal.
-                    return Ok(());
-                }
-            }
-            fs::remove_dir_all(&entry_dir).map_err(|source| ConductorError::Io {
-                operation: "removing tool-content cache entry for invalidation".to_string(),
-                path: entry_dir,
-                source,
-            })?;
-            Ok(())
-        })
-        .await
-        .map_err(|join_err| {
-            ConductorError::Internal(format!("invalidate tool entry task panicked: {join_err}"))
-        })?
-    }
-
     // -----------------------------------------------------------------------
     // Private methods
     // -----------------------------------------------------------------------
