@@ -10,12 +10,11 @@
 //! methods are in `impl FileSystemState` blocks; standalone helper functions
 //! at the bottom are too few and small to justify a separate file.
 
-use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
@@ -101,17 +100,6 @@ pub(super) struct FileSystemState {
     /// access to the filesystem store. Dropped on state drop to release.
     #[expect(dead_code)]
     lock_file: Option<std::fs::File>,
-
-    /// Monotonically increasing counter for detecting concurrent index mutations
-    /// that may invalidate in-flight delta chain reconstructions.
-    reconstruction_version: AtomicU64,
-}
-
-/// A delta chain entry with hash context for error reporting during reconstruction.
-struct DeltaPatchEntry {
-    payload: Cow<'static, [u8]>,
-    delta_hash: Hash,
-    base_hash: Hash,
 }
 
 /// Internal filesystem backend runtime operations and helpers.
@@ -188,7 +176,6 @@ impl FileSystemState {
             active_mmaps,
             object_actor,
             lock_file,
-            reconstruction_version: AtomicU64::new(0),
         };
 
         cas.repair_index_file_invariant().await?;
@@ -1684,10 +1671,6 @@ impl FileSystemState {
             Self::upsert_object_meta(&mut index, target, &best.object)?
         };
 
-        // Bump reconstruction version to signal concurrent get() callers
-        // that their pre-walk plan may be stale.
-        self.reconstruction_version.fetch_add(1, Ordering::Release);
-
         let mut meta = Self::meta_for_object(&best.object, resolved_depth);
         meta.set_verify_time(Self::now_unix());
         self.persist_index_batch(vec![BatchOperation::UpsertObject { hash: target, meta }]).await?;
@@ -1696,45 +1679,44 @@ impl FileSystemState {
     }
 }
 
-/// One link in a reconstruction plan: either a full-object read or a delta
-/// patch that must be applied over a base.
-#[derive(Debug, Clone)]
-enum ChainLink {
-    /// Read the full object identified by this hash.
-    Full(Hash),
-    /// Apply the delta patch identified by `hash` atop `base_hash`.
-    Delta { hash: Hash, base_hash: Hash },
+/// An open file handle for one link in a delta chain, captured atomically
+/// under the index read lock. Keeping the handle open pins the inode
+/// against concurrent deletion.
+struct CapturedChainLink {
+    hash: Hash,
+    /// Open file handle — holds the inode alive even if the directory entry
+    /// is unlinked by concurrent delete/optimize.
+    file: std::fs::File,
+    /// `None` for full objects, `Some(base_hash)` for delta objects.
+    base_hash: Option<Hash>,
 }
 
-/// Pre-computed reconstruction plan built under a single index read lock.
-///
-/// Holding the index lock during pre-walk prevents concurrent GC/delete from
-/// mutating the delta chain while we collect all necessary hashes. Once the
-/// plan is built, the lock is released and reconstruction proceeds with disk
-/// I/O outside the lock.
-#[derive(Debug, Clone)]
-struct ReconstructionPlan {
-    /// Delta chain from leaf to root (last entry is the base full object).
-    chain: Vec<ChainLink>,
+/// Captured file handles for every link in a delta chain, obtained under a
+/// single index read lock. Once captured, reconstruction proceeds outside the
+/// lock and is immune to concurrent deletion.
+struct CapturedReconstruction {
+    /// Chain from leaf to root (last entry is the base full object).
+    links: Vec<CapturedChainLink>,
     /// Expected logical content length, if available from metadata.
     expected_len: Option<u64>,
 }
 
 impl FileSystemState {
-    /// Pre-walks the delta chain under the index read lock, collecting all
-    /// hashes needed for reconstruction without performing any disk I/O.
+    /// Opens all delta-chain payload files under the index read lock.
+    ///
+    /// On POSIX, the open file descriptors pin the inodes — concurrent
+    /// `unlink()` removes directory entries but data survives until the last
+    /// handle closes. This makes reconstruction deterministic without retry.
     ///
     /// Returns [`None`] when the target hash is not yet indexed (caller should
     /// fall back to a direct filesystem lookup).
-    fn build_reconstruction_plan(
+    fn capture_reconstruction(
         &self,
         hash: Hash,
-    ) -> Result<Option<ReconstructionPlan>, CasError> {
-        let index = self.lock_index_read("building reconstruction plan");
-        let mut chain: Vec<ChainLink> = Vec::new();
+    ) -> Result<Option<CapturedReconstruction>, CasError> {
+        let index = self.lock_index_read("capturing reconstruction handles");
+        let mut links: Vec<CapturedChainLink> = Vec::new();
         let mut current = hash;
-        // Local visited set for cycle detection (async read path in `get()` is
-        // separate, so we can't share a helper with `chain.rs`).
         let mut visited = HashSet::new();
         let mut expected_len: Option<u64> = None;
 
@@ -1756,95 +1738,81 @@ impl FileSystemState {
             }
 
             if meta.is_full() {
-                chain.push(ChainLink::Full(current));
-                return Ok(Some(ReconstructionPlan { chain, expected_len }));
+                let path = object_path(&self.root, current);
+                let file = std::fs::File::open(&path).map_err(|source| {
+                    CasError::io("opening full object for capture", &path, source)
+                })?;
+                links.push(CapturedChainLink { hash: current, file, base_hash: None });
+                return Ok(Some(CapturedReconstruction { links, expected_len }));
             }
 
             let base_hash = meta.base_hash().expect("non-full metadata must carry base hash");
-            chain.push(ChainLink::Delta { hash: current, base_hash });
+            let path = diff_object_path(&self.root, current);
+            let file = std::fs::File::open(&path)
+                .map_err(|source| CasError::io("opening diff object for capture", &path, source))?;
+            links.push(CapturedChainLink { hash: current, file, base_hash: Some(base_hash) });
             current = base_hash;
         }
     }
 
-    /// Executes a pre-computed reconstruction plan: reads objects from disk
-    /// and applies delta patches in reverse order (root → leaf).
-    async fn execute_reconstruction_plan(
+    /// Executes a captured reconstruction using pre-opened file handles.
+    async fn execute_captured(
         &self,
         target: Hash,
-        plan: ReconstructionPlan,
+        captured: CapturedReconstruction,
     ) -> Result<Vec<u8>, CasError> {
-        let mut chain = plan.chain;
-        // Last entry must be the base full object.
+        let mut chain = captured.links;
         let Some(base_link) = chain.pop() else {
-            return Err(CasError::corrupt_object(format!(
-                "empty reconstruction plan for {target}"
-            )));
+            return Err(CasError::corrupt_object(format!("empty captured chain for {target}")));
         };
+        // Read base full object from captured handle.
+        let base_payload = read_all_from_handle(base_link.file).await?;
 
-        let ChainLink::Full(base_hash) = base_link else {
-            return Err(CasError::corrupt_object(format!(
-                "reconstruction plan base is not a full object for {target}"
-            )));
-        };
-
-        // Read the base full object.
-        let base_payload = if let Some(mapped) = self.read_full_object_mmap(base_hash).await? {
-            mapped.to_vec()
-        } else {
-            let object = self.read_stored_object(base_hash).await?;
-            match object {
-                StoredObject::Full { payload } => payload,
-                StoredObject::Delta { .. } => {
+        // Apply delta patches in reverse order (parent-first, leaf-last).
+        let mut base = base_payload;
+        for link in chain.into_iter().rev() {
+            let Some(delta_base) = link.base_hash else {
+                return Err(CasError::corrupt_object(format!(
+                    "delta chain entry missing base_hash for {target} at {}",
+                    link.hash,
+                )));
+            };
+            let envelope_bytes = read_all_from_handle(link.file).await?;
+            let stored = StoredObject::decode_delta(&envelope_bytes).map_err(|source| {
+                CasError::corrupt_reconstruction(
+                    target,
+                    link.hash,
+                    delta_base,
+                    format!("decoding delta envelope: {source}"),
+                )
+            })?;
+            let vcdiff = match stored {
+                StoredObject::Delta { state } => state.payload.into_owned(),
+                _ => {
                     return Err(CasError::corrupt_object(format!(
-                        "expected full object at {base_hash} but found delta in chain for {target}"
+                        "expected delta object at {} (reconstructing {target})",
+                        link.hash,
                     )));
                 }
-            }
-        };
-
-        // Apply remaining delta patches with hash context.
-        let mut patch_stack: Vec<DeltaPatchEntry> = Vec::with_capacity(chain.len());
-        for link in chain {
-            match link {
-                ChainLink::Delta { hash, base_hash } => {
-                    let stored = self.read_stored_object(hash).await?;
-                    match stored {
-                        StoredObject::Delta { state } => {
-                            patch_stack.push(DeltaPatchEntry {
-                                payload: state.payload,
-                                delta_hash: hash,
-                                base_hash,
-                            });
-                        }
-                        StoredObject::Full { .. } => {
-                            return Err(CasError::corrupt_object(format!(
-                                "expected delta object at {hash} but found full in chain for {target}"
-                            )));
-                        }
-                    }
-                }
-                ChainLink::Full(_) => {
-                    // Only base should be full.
-                    unreachable!("full object in non-base position of plan chain");
-                }
-            }
+            };
+            let patch = DeltaPatch::decode(&vcdiff);
+            base = patch.apply(&base, target, link.hash, delta_base)?;
         }
 
-        let data = apply_delta_patch_stack(target, base_payload, &mut patch_stack)?;
-        if let Some(expected) = plan.expected_len
-            && data.len() as u64 != expected
+        if let Some(expected) = captured.expected_len
+            && base.len() as u64 != expected
         {
             return Err(CasError::corrupt_object(format!(
                 "reconstructed size mismatch for {target}: expected {expected}, got {}",
-                data.len(),
+                base.len(),
             )));
         }
         if !self.can_skip_verification(target) {
-            ensure_reconstructed_hash(target, &data, "plan-based delta reconstruction")?;
+            ensure_reconstructed_hash(target, &base, "captured delta reconstruction")?;
             self.record_verified(target);
         }
 
-        Ok(data)
+        Ok(base)
     }
 }
 
@@ -1985,25 +1953,12 @@ impl CasApi for FileSystemState {
             return Ok(Bytes::new());
         }
 
-        // Retry loop with reconstruction-version guard: build a
-        // reconstruction plan under the index read lock (pre-walking the
-        // delta chain from metadata only), then check whether a concurrent
-        // delete/optimize bumped the version. If so, retry once.
-        for attempt in 0..2 {
-            let version_before = self.reconstruction_version.load(Ordering::Acquire);
-
-            let Some(plan) = self.build_reconstruction_plan(hash)? else {
-                // Target not in in-memory index — fall through to direct
-                // filesystem lookup below.
-                break;
-            };
-
-            if self.reconstruction_version.load(Ordering::Relaxed) == version_before || attempt == 1
-            {
-                // Version stable (or last attempt) — execute plan.
-                return self.execute_reconstruction_plan(hash, plan).await.map(Bytes::from);
-            }
-            // Version changed — concurrent mutation; retry once.
+        // File handle capture: open all delta-chain payload files under the
+        // index read lock. The open file handles pin the inodes, so the data
+        // remains accessible even if a concurrent delete/optimize removes the
+        // directory entries before we finish reading.
+        if let Some(captured) = self.capture_reconstruction(hash)? {
+            return self.execute_captured(hash, captured).await.map(Bytes::from);
         }
 
         // Fallback: object not tracked in the in-memory index.  This handles
@@ -2186,10 +2141,6 @@ impl CasApi for FileSystemState {
             Self::remove_constraint_references(&mut projected, hash);
             *index = projected;
         }
-
-        // Bump reconstruction version to signal concurrent get() callers
-        // that their pre-walk plan may be stale.
-        self.reconstruction_version.fetch_add(1, Ordering::Release);
 
         self.delete_object_files(hash).await?;
 
@@ -2414,22 +2365,17 @@ const fn ensure_no_length_collision(
     Ok(())
 }
 
-/// Applies stacked delta payloads to a full-object base payload.
+/// Reads the full content of a file from a captured file handle.
 ///
-/// `patch_stack` is consumed from the end so callers can push base-to-leaf
-/// deltas during traversal and replay them in reconstruction order. Each
-/// entry carries hash context so decoding failures produce actionable errors.
-fn apply_delta_patch_stack(
-    target: Hash,
-    mut base_payload: Vec<u8>,
-    patch_stack: &mut Vec<DeltaPatchEntry>,
-) -> Result<Vec<u8>, CasError> {
-    while let Some(entry) = patch_stack.pop() {
-        let patch = DeltaPatch::decode(entry.payload.as_ref());
-        base_payload = patch.apply(&base_payload, target, entry.delta_hash, entry.base_hash)?;
-    }
-
-    Ok(base_payload)
+/// Converts the `std::fs::File` to a tokio file for async I/O. The handle
+/// was obtained under the index read lock, so the inode it references is
+/// guaranteed to live at least until this read completes.
+async fn read_all_from_handle(file: std::fs::File) -> Result<Vec<u8>, CasError> {
+    let mut buf = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut tokio::fs::File::from_std(file), &mut buf)
+        .await
+        .map_err(|source| CasError::io("reading from captured file handle", "", source))?;
+    Ok(buf)
 }
 
 /// Attempts to open a full object file and produce a chunked streaming reader.
