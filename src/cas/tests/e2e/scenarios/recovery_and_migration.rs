@@ -33,6 +33,7 @@ async fn recover_mode_rebuilds_missing_primary_index() {
             .await
             .expect("set constraint");
             let _ = cas.optimize_once(OptimizeOptions::default()).await.expect("optimize");
+            cas.flush_index_snapshot().await.expect("flush backup snapshot with constraint data");
             (base, target)
         };
 
@@ -203,6 +204,9 @@ async fn backup_retention_and_migration_roundtrip() {
                     .put(synthetic_payload(201 + idx, 4096 + usize::from(idx)))
                     .await
                     .expect("put payload");
+                cas.flush_index_snapshot()
+                    .await
+                    .expect("flush backup snapshot for retention rotation");
                 if idx == 3 {
                     sample_hash = Some(hash);
                 }

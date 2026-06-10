@@ -73,6 +73,7 @@ async fn e2e_missing_primary_index_is_rebuilt_from_objects_and_backups() {
             .await
             .expect("set constraint");
             let _ = cas.optimize_once(OptimizeOptions::default()).await.expect("optimize once");
+            cas.flush_index_snapshot().await.expect("flush backup snapshot with constraint data");
             (base, target)
         };
 
@@ -209,7 +210,10 @@ async fn e2e_backup_retention_respects_configured_limit() {
 
             for index in 0..5u8 {
                 let payload = Bytes::from(vec![index; 64]);
-                let _ = cas.put(payload).await.expect("put payload to rotate backups");
+                let _ = cas.put(payload).await.expect("put payload");
+                cas.flush_index_snapshot()
+                    .await
+                    .expect("flush backup snapshot for retention rotation");
             }
         }
 
