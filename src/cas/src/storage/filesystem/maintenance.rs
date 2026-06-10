@@ -139,7 +139,11 @@ impl CasMaintenanceApi for FileSystemState {
         self.recently_written.clear();
         let sweep_set: Vec<Hash> = all_hashes
             .into_iter()
-            .filter(|hash| !roots.contains(hash) && !recently_written.contains(hash))
+            .filter(|hash| {
+                *hash != empty_content_hash()
+                    && !roots.contains(hash)
+                    && !recently_written.contains(hash)
+            })
             .collect();
         let deleted_count = sweep_set.len();
 
