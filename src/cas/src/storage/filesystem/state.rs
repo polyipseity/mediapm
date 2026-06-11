@@ -1878,6 +1878,109 @@ impl Drop for FileSystemState {
     }
 }
 
+/// Internal helpers used by the CasApi delete path.
+impl FileSystemState {
+    /// Core deletion logic: updates in-memory index and returns batch
+    /// operations for persistence. Does NOT persist the batch or delete
+    /// object files — callers are responsible for both.
+    async fn delete_inner(&self, hash: Hash) -> Result<Vec<BatchOperation>, CasError> {
+        if hash == empty_content_hash() {
+            return Err(CasError::invalid_constraint(
+                "cannot delete implicit empty-content root".to_string(),
+            ));
+        }
+
+        let snapshot = {
+            let index = self.lock_index_read("capturing delete snapshot");
+            if !index.objects.contains_key(&hash) {
+                return Err(CasError::NotFound(hash));
+            }
+            index.clone()
+        };
+
+        let dependents = Self::direct_dependents(&snapshot, hash);
+        let mut projected = snapshot.clone();
+        Self::remove_constraint_references(&mut projected, hash);
+
+        let rewritten_plans =
+            self.plan_dependent_rewrites(hash, &dependents, &mut projected).await?;
+
+        let rewritten_roots: BTreeSet<Hash> =
+            rewritten_plans.iter().map(|(dependent, _)| *dependent).collect();
+
+        Self::remove_object_meta(&mut projected, hash)?;
+        Self::recompute_descendant_depths_with_fallback(&mut projected, &rewritten_roots)?;
+        let index_operations = Self::index_diff_operations(&snapshot, &projected);
+
+        // Phase 1: write rewritten dependents to staging paths (async, outside
+        // the write lock) so they're invisible to concurrent readers.
+        // Phase 2 happens under the write lock below (atomic rename → final).
+        let mut staging_entries: Vec<(Hash, PathBuf, PathBuf, PathBuf)> = Vec::new();
+        if !rewritten_plans.is_empty() {
+            let staging_root = self.root.join(STORAGE_VERSION).join("tmp");
+            for (hash, plan) in &rewritten_plans {
+                let staging_path = staging_root.join(format!("rewrite-{}", hash.to_hex()));
+                let new_bytes = plan.object.encode().into_owned();
+                let (final_path, alt_path) = match plan.object.base_hash() {
+                    Some(_) => {
+                        (diff_object_path(&self.root, *hash), object_path(&self.root, *hash))
+                    }
+                    None => (object_path(&self.root, *hash), diff_object_path(&self.root, *hash)),
+                };
+                write_object_atomic(&staging_root, &staging_path, &new_bytes).await?;
+                staging_entries.push((*hash, staging_path, final_path, alt_path));
+                // Invalidate cache and record compression for each rewritten dependent.
+                self.invalidate_cached_object_bytes(*hash);
+                if let StoredObject::Delta { state } = &plan.object {
+                    self.record_delta_compression(state.payload.len() as u64, state.content_len);
+                }
+            }
+        }
+
+        {
+            let mut index = self.lock_index_write("publishing projected index after delete");
+            // Phase 2: under the index write lock, atomically rename each
+            // staging → final and remove alternate variants so concurrent
+            // readers holding the read lock see consistent file content and
+            // metadata.
+            for (_, staging_path, final_path, alt_path) in &staging_entries {
+                std::fs::rename(staging_path, final_path).map_err(|source| {
+                    CasError::io("finalizing rewritten dependent object", final_path, source)
+                })?;
+                if alt_path.exists() {
+                    clear_file_readonly_if_set(alt_path)?;
+                    std::fs::remove_file(alt_path).map_err(|source| {
+                        CasError::io(
+                            "removing alternate variant after dependent rewrite",
+                            alt_path,
+                            source,
+                        )
+                    })?;
+                }
+            }
+            // Merge concurrent entries that arrived while the snapshot was held
+            // to avoid overwriting them with a stale projection (Race B).
+            // The deleted hash must not be resurrected, and any constraint
+            // references to it that the merge brought back must be re-cleaned.
+            for (h, obj) in &index.objects {
+                if *h != hash {
+                    projected.objects.entry(*h).or_insert(*obj);
+                }
+            }
+            for (h, bases) in &index.constraints {
+                projected.constraints.entry(*h).or_insert_with(|| bases.clone());
+            }
+            for (base, targets) in &index.constraint_reverse {
+                projected.constraint_reverse.entry(*base).or_insert_with(|| targets.clone());
+            }
+            Self::remove_constraint_references(&mut projected, hash);
+            *index = projected;
+        }
+
+        Ok(index_operations)
+    }
+}
+
 #[async_trait]
 /// Core CAS API implementation over shared filesystem backend state.
 impl CasApi for FileSystemState {
@@ -2153,102 +2256,38 @@ impl CasApi for FileSystemState {
     }
 
     async fn delete(&self, hash: Hash) -> Result<(), CasError> {
-        if hash == empty_content_hash() {
-            return Err(CasError::invalid_constraint(
-                "cannot delete implicit empty-content root".to_string(),
-            ));
+        let ops = self.delete_inner(hash).await?;
+        // Crash-safe: persist redb BEFORE touching disk.
+        // If the process crashes between persist and file deletion, the
+        // index still references files that may or may not exist. The
+        // repair path handles this by rebuilding from object store.
+        self.persist_index_batch(ops).await?;
+        self.delete_object_files(hash).await
+    }
+
+    async fn delete_many(&self, hashes: Vec<Hash>) -> Result<(), CasError> {
+        let total = hashes.len();
+        if total == 0 {
+            return Ok(());
         }
 
-        let snapshot = {
-            let index = self.lock_index_read("capturing delete snapshot");
-            if !index.objects.contains_key(&hash) {
-                return Err(CasError::NotFound(hash));
-            }
-            index.clone()
-        };
-
-        let dependents = Self::direct_dependents(&snapshot, hash);
-        let mut projected = snapshot.clone();
-        Self::remove_constraint_references(&mut projected, hash);
-
-        let rewritten_plans =
-            self.plan_dependent_rewrites(hash, &dependents, &mut projected).await?;
-
-        let rewritten_roots: BTreeSet<Hash> =
-            rewritten_plans.iter().map(|(dependent, _)| *dependent).collect();
-
-        Self::remove_object_meta(&mut projected, hash)?;
-        Self::recompute_descendant_depths_with_fallback(&mut projected, &rewritten_roots)?;
-        let index_operations = Self::index_diff_operations(&snapshot, &projected);
-
-        // Phase 1: write rewritten dependents to staging paths (async, outside
-        // the write lock) so they're invisible to concurrent readers.
-        // Phase 2 happens under the write lock below (atomic rename → final).
-        let mut staging_entries: Vec<(Hash, PathBuf, PathBuf, PathBuf)> = Vec::new();
-        if !rewritten_plans.is_empty() {
-            let staging_root = self.root.join(STORAGE_VERSION).join("tmp");
-            for (hash, plan) in &rewritten_plans {
-                let staging_path = staging_root.join(format!("rewrite-{}", hash.to_hex()));
-                let new_bytes = plan.object.encode().into_owned();
-                let (final_path, alt_path) = match plan.object.base_hash() {
-                    Some(_) => {
-                        (diff_object_path(&self.root, *hash), object_path(&self.root, *hash))
-                    }
-                    None => (object_path(&self.root, *hash), diff_object_path(&self.root, *hash)),
-                };
-                write_object_atomic(&staging_root, &staging_path, &new_bytes).await?;
-                staging_entries.push((*hash, staging_path, final_path, alt_path));
-                // Invalidate cache and record compression for each rewritten dependent.
-                self.invalidate_cached_object_bytes(*hash);
-                if let StoredObject::Delta { state } = &plan.object {
-                    self.record_delta_compression(state.payload.len() as u64, state.content_len);
-                }
+        let mut all_ops = Vec::with_capacity(total / 2);
+        for (i, hash) in hashes.iter().enumerate() {
+            let ops = self.delete_inner(*hash).await?;
+            all_ops.extend(ops);
+            if (i + 1) % 100 == 0 || i + 1 == total {
+                tracing::info!(progress = i + 1, total, "GC deletion progress");
             }
         }
-
-        {
-            let mut index = self.lock_index_write("publishing projected index after delete");
-            // Phase 2: under the index write lock, atomically rename each
-            // staging → final and remove alternate variants so concurrent
-            // readers holding the read lock see consistent file content and
-            // metadata.
-            for (_, staging_path, final_path, alt_path) in &staging_entries {
-                std::fs::rename(staging_path, final_path).map_err(|source| {
-                    CasError::io("finalizing rewritten dependent object", final_path, source)
-                })?;
-                if alt_path.exists() {
-                    clear_file_readonly_if_set(alt_path)?;
-                    std::fs::remove_file(alt_path).map_err(|source| {
-                        CasError::io(
-                            "removing alternate variant after dependent rewrite",
-                            alt_path,
-                            source,
-                        )
-                    })?;
-                }
-            }
-            // Merge concurrent entries that arrived while the snapshot was held
-            // to avoid overwriting them with a stale projection (Race B).
-            // The deleted hash must not be resurrected, and any constraint
-            // references to it that the merge brought back must be re-cleaned.
-            for (h, obj) in &index.objects {
-                if *h != hash {
-                    projected.objects.entry(*h).or_insert(*obj);
-                }
-            }
-            for (h, bases) in &index.constraints {
-                projected.constraints.entry(*h).or_insert_with(|| bases.clone());
-            }
-            for (base, targets) in &index.constraint_reverse {
-                projected.constraint_reverse.entry(*base).or_insert_with(|| targets.clone());
-            }
-            Self::remove_constraint_references(&mut projected, hash);
-            *index = projected;
+        // Persist all accumulated operations in a single batch.
+        if !all_ops.is_empty() {
+            self.persist_index_batch(all_ops).await?;
         }
-
-        self.delete_object_files(hash).await?;
-
-        self.persist_index_batch(index_operations).await
+        // Delete files after persist succeeds.
+        for hash in hashes {
+            self.delete_object_files(hash).await?;
+        }
+        Ok(())
     }
 
     async fn set_constraint(&self, constraint: Constraint) -> Result<(), CasError> {
