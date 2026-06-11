@@ -16,10 +16,12 @@
 
 use mediapm_utils::StringMap;
 #[cfg(feature = "cli")]
-#[cfg(feature = "cli")]
 pub use mediapm_utils::builtin::BuiltinCliArgs;
 #[cfg(feature = "cli")]
+use mediapm_utils::builtin::describe_json_compact_meta;
+#[cfg(feature = "cli")]
 use mediapm_utils::builtin::parse_string_pairs;
+use mediapm_utils::builtin::{BuiltinMeta, describe_meta, validate_only_known_keys};
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
@@ -30,40 +32,37 @@ use std::path::{Path, PathBuf};
 use reqwest::blocking::Client;
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "builtins.import@1.0.0";
+pub const TOOL_ID: &str = META.tool_id;
 
 /// Builtin process name used by conductor process dispatch.
-pub const TOOL_NAME: &str = "import";
+pub const TOOL_NAME: &str = META.tool_name;
 
 /// Canonical semantic version handled by this runtime.
-pub const TOOL_VERSION: &str = "1.0.0";
+pub const TOOL_VERSION: &str = META.tool_version;
 
 /// Builtin purity marker.
-pub const IS_IMPURE: bool = true;
+pub const IS_IMPURE: bool = META.is_impure;
+
+/// Metadata for this builtin crate.
+pub const META: BuiltinMeta = BuiltinMeta {
+    tool_id: "builtins.import@1.0.0",
+    tool_name: "import",
+    tool_version: "1.0.0",
+    is_impure: true,
+    summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
+};
 
 /// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    mediapm_utils::builtin::describe(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
-    )
+    describe_meta(&META)
 }
 
 /// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    mediapm_utils::builtin::describe_json_compact(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
-    )
+    describe_json_compact_meta(&META)
 }
 
 /// Executes one import request and returns imported payload bytes.
@@ -209,20 +208,6 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
-///
-/// This helper is always infallible and deterministic.
-#[must_use]
-pub fn describe_json_compat() -> String {
-    mediapm_utils::builtin::describe_json_compat(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
-    )
-}
-
 /// Performs URL fetch with strict integrity pinning.
 #[cfg(feature = "fetch")]
 fn execute_fetch(params: &StringMap) -> Result<Vec<u8>, String> {
@@ -302,9 +287,7 @@ fn resolve_file_or_folder_source(
 
 /// Validates import args/inputs for required and recognized keys.
 fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<(), String> {
-    if let Some(unexpected) = inputs.keys().next() {
-        return Err(format!("import builtin does not accept input '{unexpected}'"));
-    }
+    validate_only_known_keys(inputs, &[], "import")?;
 
     let kind = params
         .get("kind")
@@ -312,11 +295,11 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 
     match kind.as_str() {
         "file" | "folder" => {
-            for key in params.keys() {
-                if key != "kind" && key != "path" && key != "path_mode" {
-                    return Err(format!("import kind='{kind}' does not accept arg '{key}'"));
-                }
-            }
+            validate_only_known_keys(
+                params,
+                &["kind", "path", "path_mode"],
+                &format!("import kind='{kind}'"),
+            )?;
 
             let path = params
                 .get("path")
@@ -329,11 +312,11 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
             Ok(())
         }
         "fetch" => {
-            for key in params.keys() {
-                if key != "kind" && key != "url" && key != "expected_hash" {
-                    return Err(format!("import kind='fetch' does not accept arg '{key}'"));
-                }
-            }
+            validate_only_known_keys(
+                params,
+                &["kind", "url", "expected_hash"],
+                "import kind='fetch'",
+            )?;
 
             for required in ["url", "expected_hash"] {
                 let Some(value) = params.get(required) else {
@@ -347,11 +330,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
             Ok(())
         }
         "cas_hash" => {
-            for key in params.keys() {
-                if key != "kind" && key != "hash" {
-                    return Err(format!("import kind='cas_hash' does not accept arg '{key}'"));
-                }
-            }
+            validate_only_known_keys(params, &["kind", "hash"], "import kind='cas_hash'")?;
 
             let Some(value) = params.get("hash") else {
                 return Err("import kind='cas_hash' requires 'hash'".to_string());

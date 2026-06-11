@@ -26,44 +26,46 @@ use std::path::PathBuf;
 #[cfg(feature = "cli")]
 pub use mediapm_utils::builtin::BuiltinCliArgs;
 #[cfg(feature = "cli")]
+use mediapm_utils::builtin::describe_json_compact_meta;
+#[cfg(feature = "cli")]
 use mediapm_utils::builtin::parse_string_pairs;
-use mediapm_utils::{BinaryInputMap, StringMap};
+use mediapm_utils::{
+    BinaryInputMap, StringMap,
+    builtin::{BuiltinMeta, describe_meta, validate_only_known_keys},
+};
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "builtins.export@1.0.0";
+pub const TOOL_ID: &str = META.tool_id;
 
 /// Builtin process name used by conductor process dispatch.
-pub const TOOL_NAME: &str = "export";
+pub const TOOL_NAME: &str = META.tool_name;
 
 /// Canonical semantic version handled by this runtime.
-pub const TOOL_VERSION: &str = "1.0.0";
+pub const TOOL_VERSION: &str = META.tool_version;
 
 /// Builtin purity marker.
-pub const IS_IMPURE: bool = true;
+pub const IS_IMPURE: bool = META.is_impure;
+
+/// Metadata for this builtin crate.
+pub const META: BuiltinMeta = BuiltinMeta {
+    tool_id: "builtins.export@1.0.0",
+    tool_name: "export",
+    tool_version: "1.0.0",
+    is_impure: true,
+    summary: "export builtin runtime that writes file/folder payloads to host paths",
+};
 
 /// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    mediapm_utils::builtin::describe(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "export builtin runtime that writes file/folder payloads to host paths",
-    )
+    describe_meta(&META)
 }
 
 /// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    mediapm_utils::builtin::describe_json_compact(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "export builtin runtime that writes file/folder payloads to host paths",
-    )
+    describe_json_compact_meta(&META)
 }
 
 /// Executes one export request using argument strings plus binary inputs.
@@ -200,31 +202,10 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
-#[must_use]
-pub fn describe_json_compat() -> String {
-    mediapm_utils::builtin::describe_json_compat(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "export builtin runtime that writes file/folder payloads to host paths",
-    )
-}
-
 /// Validates export args/inputs for required and recognized keys.
 fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Result<(), String> {
-    for key in params.keys() {
-        if key != "kind" && key != "path" && key != "path_mode" && key != "content" {
-            return Err(format!("export builtin does not accept arg '{key}'"));
-        }
-    }
-
-    for key in inputs.keys() {
-        if key != "content" {
-            return Err(format!("export builtin does not accept input '{key}'"));
-        }
-    }
+    validate_only_known_keys(params, &["kind", "path", "path_mode", "content"], "export")?;
+    validate_only_known_keys(inputs, &["content"], "export")?;
 
     let kind =
         params.get("kind").ok_or_else(|| "export requires 'kind' (file|folder)".to_string())?;

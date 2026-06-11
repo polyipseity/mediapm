@@ -4,22 +4,6 @@
 //! - it exposes one Rust API used by `mediapm-conductor`, and
 //! - it can run independently as a CLI (see `main.rs`).
 //!
-//! Stability contract (shared across all builtin crates):
-//! - CLI uses standard Rust flags/options while all values remain strings,
-//! - API input arguments are string maps (`BTreeMap<String, String>`),
-//! - CLI may optionally define one default option key for one value shorthand,
-//!   while explicit keyed input remains supported and maps to the same API key,
-//! - pure successful outputs are string maps (`BTreeMap<String, String>`).
-//!
-//! This echo builtin intentionally stays simple and echo-like:
-//! - CLI text is positional (no `--arg` / `--input` transport),
-//! - one optional `--stream` flag chooses output stream,
-//! - API uses map keys with equivalent semantics (`text` + optional `stream`).
-//! - API rejects undeclared keys and ambiguous duplicate key sources.
-//! - runtime semantics are stream payload pass-through: output bytes are
-//!   returned to the caller; no host-console side effect is implied by API
-//!   execution itself.
-//!
 //! `echo` is pure, so its non-error success payload follows the shared
 //! string-only rule directly.
 //!
@@ -33,197 +17,112 @@ use std::error::Error;
 use std::io::Write;
 
 #[cfg(feature = "cli")]
-use clap::{Parser, ValueEnum};
+use mediapm_utils::builtin::describe_json_compact_meta;
+use mediapm_utils::builtin::{BuiltinMeta, describe_meta, validate_only_known_keys};
 
 /// Re-export of [`mediapm_utils::StringMap`] for downstream convenience.
 pub use mediapm_utils::StringMap;
+#[cfg(feature = "cli")]
+/// Re-export for the shared CLI runner macro.
+pub use mediapm_utils::builtin::BuiltinCliArgs;
 
 /// Builtin tool name handled by this crate.
-pub const TOOL_NAME: &str = "echo";
+pub const TOOL_NAME: &str = META.tool_name;
 
 /// Stable builtin identifier registered in phase topology surfaces.
-pub const TOOL_ID: &str = "builtins.echo@1.0.0";
+pub const TOOL_ID: &str = META.tool_id;
 
 /// Canonical semantic version for this builtin implementation.
-pub const TOOL_VERSION: &str = "1.0.0";
+pub const TOOL_VERSION: &str = META.tool_version;
 
-/// Output stream selector used by both API and CLI entrypoints.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "cli", derive(ValueEnum))]
-pub enum EchoStream {
-    /// Emit text only to stdout.
-    Stdout,
-    /// Emit text only to stderr.
-    Stderr,
-    /// Emit text to both stdout and stderr.
-    Both,
-}
+/// Metadata for this builtin crate.
+pub const META: BuiltinMeta = BuiltinMeta {
+    tool_id: "builtins.echo@1.0.0",
+    tool_name: "echo",
+    tool_version: "1.0.0",
+    is_impure: false,
+    summary: "echo-like builtin returning text as stdout/stderr string-map",
+};
 
-/// Standard clap-based CLI accepted by every builtin crate.
-///
-/// Contract notes:
-/// - text is passed as positional arguments and echoed verbatim,
-/// - one optional `--stream` flag chooses stdout/stderr/both,
-/// - API equivalents are `text` and `stream` in [`StringMap`].
-#[cfg(feature = "cli")]
-#[derive(Debug, Clone, PartialEq, Eq, Parser)]
-pub struct BuiltinCliArgs {
-    /// Output stream selection (`stdout`, `stderr`, or `both`).
-    #[arg(long, value_enum, default_value_t = EchoStream::Stdout)]
-    pub stream: EchoStream,
-    /// Text tokens to echo, joined with single spaces.
-    #[arg(value_name = "TEXT", allow_hyphen_values = true)]
-    pub text: Vec<String>,
-}
-
-/// Pure echo execution result split by output stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EchoEmission {
-    /// Bytes that should be captured as stdout.
-    pub stdout: String,
-    /// Bytes that should be captured as stderr.
-    pub stderr: String,
-}
-
-/// Executes the echo API and returns explicit stdout/stderr payload strings.
+/// Executes the echo API and returns stdout/stderr payload strings.
 ///
 /// API keys:
 /// - `text` (optional): primary text payload,
 /// - `stream` (optional): `stdout`, `stderr`, or `both`.
 ///
-/// Validation rules:
-/// - unknown keys fail,
-/// - if both `params` and `inputs` provide the same key, execution fails.
+/// Returns `{"stdout": "...", "stderr": "..."}`.
 ///
 /// # Errors
 ///
 /// Returns an error when argument contract validation fails or when `stream`
 /// is not one of `stdout`, `stderr`, or `both`.
-pub fn execute_echo(params: &StringMap, inputs: &StringMap) -> Result<EchoEmission, String> {
+pub fn execute(params: &StringMap, inputs: &StringMap) -> Result<StringMap, String> {
     validate_argument_contract(params, inputs)?;
 
-    let stream = parse_stream(
-        params.get("stream").or_else(|| inputs.get("stream")).map_or("stdout", String::as_str),
-    )?;
-
+    let stream =
+        params.get("stream").or_else(|| inputs.get("stream")).map_or("stdout", String::as_str);
     let text = params.get("text").or_else(|| inputs.get("text")).cloned().unwrap_or_default();
-
     let rendered = format!("{text}\n");
-    let emission = match stream {
-        EchoStream::Stdout => EchoEmission { stdout: rendered, stderr: String::new() },
-        EchoStream::Stderr => EchoEmission { stdout: String::new(), stderr: rendered },
-        EchoStream::Both => EchoEmission { stdout: rendered.clone(), stderr: rendered },
+
+    let (stdout, stderr): (String, String) = match stream {
+        "stdout" => (rendered, String::new()),
+        "stderr" => (String::new(), rendered),
+        "both" => (rendered.clone(), rendered),
+        other => {
+            return Err(format!("invalid stream '{other}'; expected one of: stdout, stderr, both"));
+        }
     };
 
-    Ok(emission)
+    Ok(StringMap::from([("stdout".to_string(), stdout), ("stderr".to_string(), stderr)]))
 }
 
-/// Compatibility API that serializes echo emission into a string-map payload.
+/// Runs the standalone CLI command using the shared single-writer pattern.
 ///
-/// Keys:
-/// - `stdout`: emitted stdout text,
-/// - `stderr`: emitted stderr text.
+/// Output is serialized JSON: `{"stdout": "...", "stderr": "..."}`.
 ///
 /// # Errors
 ///
-/// Returns the same execution/validation errors as [`execute_echo`].
-pub fn execute_string_map(params: &StringMap, inputs: &StringMap) -> Result<StringMap, String> {
-    let emission = execute_echo(params, inputs)?;
-    Ok(StringMap::from([
-        ("stdout".to_string(), emission.stdout),
-        ("stderr".to_string(), emission.stderr),
-    ]))
-}
-
-/// Runs the standalone CLI command with one optional stream selector.
-///
-/// This behaves like shell `echo`: positional text is joined with spaces,
-/// then terminated by a newline and written to the selected stream(s).
-///
-/// # Errors
-///
-/// Returns an error when writing to the selected output stream(s) fails.
+/// Returns an error when CLI key/value pairs are malformed, execution fails,
+/// descriptor serialization fails, or writing output to the writer fails.
 #[cfg(feature = "cli")]
-pub fn run_cli_command<WOut: Write, WErr: Write>(
+pub fn run_cli_command<W: Write>(
     cli: &BuiltinCliArgs,
-    stdout_writer: &mut WOut,
-    stderr_writer: &mut WErr,
+    writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
-    let rendered = format!("{}\n", cli.text.join(" "));
-    match cli.stream {
-        EchoStream::Stdout => stdout_writer.write_all(rendered.as_bytes())?,
-        EchoStream::Stderr => stderr_writer.write_all(rendered.as_bytes())?,
-        EchoStream::Both => {
-            stdout_writer.write_all(rendered.as_bytes())?;
-            stderr_writer.write_all(rendered.as_bytes())?;
-        }
+    if cli.describe {
+        let descriptor = describe_json();
+        writer.write_all(descriptor.as_bytes())?;
+        return Ok(());
     }
+
+    let params = mediapm_utils::builtin::parse_string_pairs(&cli.args, "args")
+        .map_err(std::io::Error::other)?;
+    let inputs = mediapm_utils::builtin::parse_string_pairs(&cli.inputs, "inputs")
+        .map_err(std::io::Error::other)?;
+    let response = execute(&params, &inputs).map_err(std::io::Error::other)?;
+    let payload = serde_json::to_vec(&response)?;
+    writer.write_all(&payload)?;
     Ok(())
 }
 
 /// Returns one deterministic descriptor map for this builtin.
 #[must_use]
 pub fn describe() -> StringMap {
-    mediapm_utils::builtin::describe(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        false,
-        "echo-like builtin with positional text and optional stream selection",
-    )
+    describe_meta(&META)
 }
 
 /// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    mediapm_utils::builtin::describe_json_compact(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        false,
-        "echo-like builtin with positional text and optional stream selection",
-    )
-}
-
-/// Serializes [`describe`] for non-CLI callers.
-#[must_use]
-pub fn describe_json_compat() -> String {
-    mediapm_utils::builtin::describe_json_compat(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        false,
-        "echo-like builtin with positional text and optional stream selection",
-    )
-}
-
-/// Parses one API stream selector value into [`EchoStream`].
-fn parse_stream(value: &str) -> Result<EchoStream, String> {
-    match value {
-        "stdout" => Ok(EchoStream::Stdout),
-        "stderr" => Ok(EchoStream::Stderr),
-        "both" => Ok(EchoStream::Both),
-        other => Err(format!("invalid stream '{other}'; expected one of: stdout, stderr, both")),
-    }
+    describe_json_compact_meta(&META)
 }
 
 /// Validates echo API keys and duplicate-key-source ambiguity.
 fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<(), String> {
-    for key in params.keys() {
-        if key != "text" && key != "stream" {
-            return Err(format!(
-                "echo builtin does not accept arg '{key}'; allowed args are: text, stream"
-            ));
-        }
-    }
-    for key in inputs.keys() {
-        if key != "text" && key != "stream" {
-            return Err(format!(
-                "echo builtin does not accept input '{key}'; allowed inputs are: text, stream"
-            ));
-        }
-    }
+    validate_only_known_keys(params, &["text", "stream"], "echo")?;
+    validate_only_known_keys(inputs, &["text", "stream"], "echo")?;
+
     if params.contains_key("text") && inputs.contains_key("text") {
         return Err("echo builtin received duplicate 'text' in args and inputs".to_string());
     }
@@ -237,26 +136,28 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
 mod tests {
     #[cfg(feature = "cli")]
     use clap::Parser;
-
     #[cfg(feature = "cli")]
-    use super::{BuiltinCliArgs, run_cli_command};
-    use super::{execute_echo, execute_string_map};
+    use mediapm_utils::builtin::BuiltinCliArgs;
+
+    use super::execute;
+    #[cfg(feature = "cli")]
+    use super::run_cli_command;
     use std::collections::BTreeMap;
 
     /// Verifies API defaults to stdout and appends newline like shell echo.
     #[test]
-    fn execute_echo_defaults_to_stdout() {
+    fn execute_defaults_to_stdout() {
         let params = BTreeMap::from([("text".to_string(), "hello world".to_string())]);
-        let emission = execute_echo(&params, &BTreeMap::new()).expect("api call should succeed");
+        let result = execute(&params, &BTreeMap::new()).expect("api call should succeed");
 
-        assert_eq!(emission.stdout, "hello world\n");
-        assert!(emission.stderr.is_empty());
+        assert_eq!(result.get("stdout"), Some(&"hello world\n".to_string()));
+        assert_eq!(result.get("stderr"), Some(&String::new()));
     }
 
     /// Verifies API supports stderr and both stream-routing modes.
     #[test]
-    fn execute_echo_supports_stream_routing() {
-        let stderr_only = execute_echo(
+    fn execute_supports_stream_routing() {
+        let stderr_only = execute(
             &BTreeMap::from([
                 ("text".to_string(), "warn".to_string()),
                 ("stream".to_string(), "stderr".to_string()),
@@ -264,33 +165,31 @@ mod tests {
             &BTreeMap::new(),
         )
         .expect("stderr mode should succeed");
-        assert_eq!(stderr_only.stderr, "warn\n");
-        assert!(stderr_only.stdout.is_empty());
+        assert_eq!(stderr_only.get("stderr"), Some(&"warn\n".to_string()));
+        assert_eq!(stderr_only.get("stdout"), Some(&String::new()));
 
-        let both = execute_echo(
+        let both = execute(
             &BTreeMap::from([("stream".to_string(), "both".to_string())]),
             &BTreeMap::from([("text".to_string(), "echoed".to_string())]),
         )
         .expect("both mode should succeed");
-        assert_eq!(both.stdout, "echoed\n");
-        assert_eq!(both.stderr, "echoed\n");
+        assert_eq!(both.get("stdout"), Some(&"echoed\n".to_string()));
+        assert_eq!(both.get("stderr"), Some(&"echoed\n".to_string()));
     }
 
     /// Verifies unknown API keys are rejected with an actionable error.
     #[test]
-    fn execute_echo_rejects_unknown_keys() {
-        let error = execute_echo(
-            &BTreeMap::from([("mode".to_string(), "demo".to_string())]),
-            &BTreeMap::new(),
-        )
-        .expect_err("unknown keys should fail");
-        assert!(error.contains("does not accept arg 'mode'"));
+    fn execute_rejects_unknown_keys() {
+        let error =
+            execute(&BTreeMap::from([("mode".to_string(), "demo".to_string())]), &BTreeMap::new())
+                .expect_err("unknown keys should fail");
+        assert!(error.contains("echo does not accept arg 'mode'"));
     }
 
     /// Verifies duplicate key sources across args/inputs are rejected.
     #[test]
-    fn execute_echo_rejects_duplicate_key_sources() {
-        let error = execute_echo(
+    fn execute_rejects_duplicate_key_sources() {
+        let error = execute(
             &BTreeMap::from([("text".to_string(), "a".to_string())]),
             &BTreeMap::from([("text".to_string(), "b".to_string())]),
         )
@@ -298,30 +197,18 @@ mod tests {
         assert!(error.contains("duplicate 'text'"));
     }
 
-    /// Verifies compatibility API returns explicit stdout/stderr map fields.
-    #[test]
-    fn execute_string_map_returns_stream_fields() {
-        let payload = execute_string_map(
-            &BTreeMap::from([("text".to_string(), "hello".to_string())]),
-            &BTreeMap::new(),
-        )
-        .expect("compatibility api should succeed");
-
-        assert_eq!(payload.get("stdout"), Some(&"hello\n".to_string()));
-        assert_eq!(payload.get("stderr"), Some(&String::new()));
-    }
-
     #[cfg(feature = "cli")]
-    /// Verifies CLI echoes positional text to selected streams.
+    /// Verifies CLI produces JSON string-map output.
     #[test]
-    fn run_cli_emits_to_selected_stream() {
-        let cli = BuiltinCliArgs::parse_from(["echo", "--stream", "both", "hello", "world"]);
+    fn run_cli_produces_json_output() {
+        let cli = BuiltinCliArgs::parse_from(["echo", "--arg", "text", "hello world"]);
 
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
+        let mut output = Vec::new();
 
-        run_cli_command(&cli, &mut stdout, &mut stderr).expect("cli run should succeed");
-        assert_eq!(String::from_utf8(stdout).expect("stdout utf8"), "hello world\n");
-        assert_eq!(String::from_utf8(stderr).expect("stderr utf8"), "hello world\n");
+        run_cli_command(&cli, &mut output).expect("cli run should succeed");
+        let json: serde_json::Value =
+            serde_json::from_slice(&output).expect("output should be valid json");
+        assert_eq!(json["stdout"], "hello world\n");
+        assert_eq!(json["stderr"], "");
     }
 }

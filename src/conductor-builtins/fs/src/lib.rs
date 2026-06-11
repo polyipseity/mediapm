@@ -33,41 +33,41 @@ use mediapm_utils::StringMap;
 #[cfg(feature = "cli")]
 pub use mediapm_utils::builtin::BuiltinCliArgs;
 #[cfg(feature = "cli")]
+use mediapm_utils::builtin::describe_json_compact_meta;
+#[cfg(feature = "cli")]
 use mediapm_utils::builtin::parse_string_pairs;
+use mediapm_utils::builtin::{BuiltinMeta, describe_meta, validate_only_known_keys};
 
 /// Stable builtin id used by topology registration.
-pub const TOOL_ID: &str = "builtins.fs@1.0.0";
+pub const TOOL_ID: &str = META.tool_id;
 
 /// Builtin process name used by conductor process dispatch.
-pub const TOOL_NAME: &str = "fs";
+pub const TOOL_NAME: &str = META.tool_name;
 
 /// Canonical semantic version handled by this runtime.
-pub const TOOL_VERSION: &str = "1.0.0";
+pub const TOOL_VERSION: &str = META.tool_version;
 
 /// Builtin purity marker.
-pub const IS_IMPURE: bool = true;
+pub const IS_IMPURE: bool = META.is_impure;
+
+/// Metadata for this builtin crate.
+pub const META: BuiltinMeta = BuiltinMeta {
+    tool_id: "builtins.fs@1.0.0",
+    tool_name: "fs",
+    tool_version: "1.0.0",
+    is_impure: true,
+    summary: "filesystem operation builtin runtime with impure side-effecting behavior",
+};
 
 #[must_use]
 pub fn describe() -> StringMap {
-    mediapm_utils::builtin::describe(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "filesystem operation builtin runtime with impure side-effecting behavior",
-    )
+    describe_meta(&META)
 }
 
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    mediapm_utils::builtin::describe_json_compact(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "filesystem operation builtin runtime with impure side-effecting behavior",
-    )
+    describe_json_compact_meta(&META)
 }
 
 /// Executes one `fs` request using string-map arguments.
@@ -177,17 +177,6 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-#[must_use]
-pub fn describe_json_compat() -> String {
-    mediapm_utils::builtin::describe_json_compat(
-        TOOL_ID,
-        TOOL_NAME,
-        TOOL_VERSION,
-        IS_IMPURE,
-        "filesystem operation builtin runtime with impure side-effecting behavior",
-    )
-}
-
 /// Validates `fs` args/inputs for required and recognized operation keys.
 fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<(), String> {
     let op = params.get("op").ok_or_else(|| "fs requires 'op' argument".to_string())?.as_str();
@@ -199,16 +188,8 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
         other => return Err(format!("unsupported fs op '{other}'")),
     };
 
-    for key in params.keys() {
-        if !allowed_params.contains(&key.as_str()) {
-            return Err(format!("fs op '{op}' does not accept arg '{key}'"));
-        }
-    }
-    for key in inputs.keys() {
-        if !allowed_inputs.contains(&key.as_str()) {
-            return Err(format!("fs op '{op}' does not accept input '{key}'"));
-        }
-    }
+    validate_only_known_keys(params, allowed_params, &format!("fs op '{op}'"))?;
+    validate_only_known_keys(inputs, allowed_inputs, &format!("fs op '{op}'"))?;
 
     let Some(path) = params.get("path") else {
         return Err(format!("fs op '{op}' requires 'path'"));
