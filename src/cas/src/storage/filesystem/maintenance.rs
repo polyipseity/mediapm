@@ -30,6 +30,18 @@ impl CasMaintenanceApi for FileSystemState {
         // causes visible hangs. The optimizer needs a bounded scan or an
         // incremental approach before re-enabling.
         //
+        // Tests disabled alongside this (search for optimize_once TODO ref):
+        // - codec/object.rs: optimized_delta_is_stored_in_diff_extension_file
+        // - storage/filesystem/mod.rs: filesystem_optimize_once_rewrites_unconstrained_objects
+        // - storage/filesystem/mod.rs: filesystem_metrics_expose_cache_hits_and_optimizer_runtime
+        // - storage/filesystem/mod.rs: filesystem_topology_snapshot_captures_nodes_delta_edges_and_constraints
+        // - storage/filesystem/mod.rs: filesystem_visualize_mermaid_emits_graph_nodes_and_edges
+        // - tests/int/storage_format.rs: diff_objects_use_dot_diff_extension_and_raw_path_absent
+        // - tests/int/visualize.rs: visualize_mermaid_contains_graph_edges
+        //
+        // When re-enabling, remove #[ignore] from all of the above and remove
+        // this whole early-return block.
+        //
         // Tracked by: temporary disable during GC improvements — remove this
         // return and the associated comment once the scaling fix lands.
         return Ok(OptimizeReport { rewritten_objects: 0 });
