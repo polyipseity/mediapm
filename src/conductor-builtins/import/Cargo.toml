@@ -9,7 +9,7 @@ description = "Built-in import tool contract"
 
 [features]
 default = ["cli", "fetch"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "mediapm-utils/cli"]
 fetch = ["dep:reqwest", "dep:url", "dep:blake3"]
 
 [lints]
@@ -19,6 +19,7 @@ workspace = true
 blake3 = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 mediapm-conductor-builtin-archive = { path = "../archive", default-features = false }
+mediapm-utils = { workspace = true }
 reqwest = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 

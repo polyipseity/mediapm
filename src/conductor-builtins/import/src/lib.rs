@@ -14,15 +14,17 @@
 //! For `kind=fetch`, destination file paths are not accepted; output bytes are
 //! returned directly.
 
-use std::collections::BTreeMap;
+use mediapm_utils::StringMap;
+#[cfg(feature = "cli")]
+#[cfg(feature = "cli")]
+pub use mediapm_utils::builtin::BuiltinCliArgs;
+#[cfg(feature = "cli")]
+use mediapm_utils::builtin::parse_string_pairs;
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
-
-#[cfg(feature = "cli")]
-use clap::{ArgAction, Parser};
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "fetch")]
 use reqwest::blocking::Client;
@@ -39,50 +41,29 @@ pub const TOOL_VERSION: &str = "1.0.0";
 /// Builtin purity marker.
 pub const IS_IMPURE: bool = true;
 
-/// Canonical string-map payload used by both API and CLI contracts.
-pub type StringMap = BTreeMap<String, String>;
-
-/// Standard clap-based CLI accepted by every builtin crate.
-#[cfg(feature = "cli")]
-#[derive(Debug, Clone, PartialEq, Eq, Parser)]
-pub struct BuiltinCliArgs {
-    /// Prints builtin descriptor metadata as JSON and exits.
-    #[arg(long, default_value_t = false)]
-    pub describe: bool,
-    /// Optional execution root override.
-    #[arg(long, default_value = ".")]
-    pub root_dir: String,
-    /// Builtin argument pairs as repeated `--arg KEY VALUE` options.
-    #[arg(long = "arg", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub args: Vec<String>,
-    /// Builtin input pairs as repeated `--input KEY VALUE` options.
-    ///
-    /// `import` does not currently accept `inputs`; this transport is rejected.
-    #[arg(long = "input", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub inputs: Vec<String>,
-}
-
 /// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    StringMap::from([
-        ("tool_id".to_string(), TOOL_ID.to_string()),
-        ("tool_name".to_string(), TOOL_NAME.to_string()),
-        ("tool_version".to_string(), TOOL_VERSION.to_string()),
-        ("is_impure".to_string(), IS_IMPURE.to_string()),
-        (
-            "summary".to_string(),
-            "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes"
-                .to_string(),
-        ),
-    ])
+    mediapm_utils::builtin::describe(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
+    )
 }
 
 /// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    describe_json_compact()
+    mediapm_utils::builtin::describe_json_compact(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
+    )
 }
 
 /// Executes one import request and returns imported payload bytes.
@@ -199,15 +180,6 @@ where
     }
 }
 
-/// Path-resolution mode for `kind=file|folder` import operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathMode {
-    /// Resolve `path` under the import root directory.
-    Relative,
-    /// Treat `path` as an explicit absolute host path.
-    Absolute,
-}
-
 /// Runs the standalone CLI command using a normal clap-parsed option structure.
 ///
 /// Successful execution writes imported payload bytes directly to stdout.
@@ -242,14 +214,13 @@ pub fn run_cli_command<W: Write>(
 /// This helper is always infallible and deterministic.
 #[must_use]
 pub fn describe_json_compat() -> String {
-    describe_json_compact()
-}
-
-/// Returns one deterministic descriptor JSON string without serde dependencies.
-#[must_use]
-fn describe_json_compact() -> String {
-    "{\n  \"is_impure\": \"true\",\n  \"summary\": \"import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes\",\n  \"tool_id\": \"builtins.import@1.0.0\",\n  \"tool_name\": \"import\",\n  \"tool_version\": \"1.0.0\"\n}"
-        .to_string()
+    mediapm_utils::builtin::describe_json_compat(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
+    )
 }
 
 /// Performs URL fetch with strict integrity pinning.
@@ -317,33 +288,16 @@ fn resolve_file_or_folder_source(
     params: &StringMap,
 ) -> Result<PathBuf, String> {
     let kind = params.get("kind").map_or("file_or_folder", String::as_str);
-    let path = params.get("path").ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
-    let mode = parse_path_mode(params, kind)?;
-    resolve_path_for_import_root(import_root_dir, kind, path, mode)
-}
-
-/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
-#[cfg(feature = "cli")]
-fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
-    let mut map = StringMap::new();
-    let mut chunks = pairs.chunks_exact(2);
-    for chunk in &mut chunks {
-        let key = chunk[0].trim();
-        let value = &chunk[1];
-        if key.is_empty() {
-            return Err(format!("invalid {label} entry; key must be non-empty"));
-        }
-        if map.insert(key.to_string(), value.clone()).is_some() {
-            return Err(format!("duplicate {label} entry for key '{key}'"));
-        }
-    }
-    if !chunks.remainder().is_empty() {
-        let option_name = if label == "args" { "arg" } else { "input" };
-        return Err(format!(
-            "invalid {label} entries; expected repeated '--{option_name} KEY VALUE' pairs"
-        ));
-    }
-    Ok(map)
+    let path_value =
+        params.get("path").ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
+    let mode = mediapm_utils::path::parse_path_mode(params, &format!("import kind='{kind}'"))?;
+    mediapm_utils::path::resolve_path_for_root(
+        import_root_dir,
+        &format!("import kind='{kind}'"),
+        "path",
+        path_value,
+        mode,
+    )
 }
 
 /// Validates import args/inputs for required and recognized keys.
@@ -371,7 +325,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
                 return Err(format!("import kind='{kind}' requires non-empty 'path'"));
             }
 
-            let _ = parse_path_mode(params, kind)?;
+            let _ = mediapm_utils::path::parse_path_mode(params, &format!("import kind='{kind}'"))?;
             Ok(())
         }
         "fetch" => {
@@ -418,88 +372,6 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
             Err(format!("import builtin requires kind=file|folder|fetch|cas_hash, got '{other}'"))
         }
     }
-}
-
-/// Parses and validates path-mode selector for file/folder import kinds.
-fn parse_path_mode(params: &StringMap, kind: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map_or("relative", String::as_str) {
-        "relative" => Ok(PathMode::Relative),
-        "absolute" => Ok(PathMode::Absolute),
-        other => Err(format!(
-            "import kind='{kind}' path_mode must be 'relative' or 'absolute', got '{other}'"
-        )),
-    }
-}
-
-/// Resolves one source path using import root + path-mode semantics.
-fn resolve_path_for_import_root(
-    import_root_dir: &Path,
-    kind: &str,
-    candidate: &str,
-    mode: PathMode,
-) -> Result<PathBuf, String> {
-    match mode {
-        PathMode::Relative => {
-            if Path::new(candidate).is_absolute() {
-                return Err(format!(
-                    "import kind='{kind}' with path_mode='relative' requires relative 'path'"
-                ));
-            }
-
-            let import_root_absolute = absolute_root(import_root_dir)?;
-            let normalized_relative = normalize_relative_path(candidate, "import source path")?;
-            Ok(import_root_absolute.join(normalized_relative))
-        }
-        PathMode::Absolute => {
-            let parsed = Path::new(candidate);
-            if !parsed.is_absolute() {
-                return Err(format!(
-                    "import kind='{kind}' with path_mode='absolute' requires absolute 'path'"
-                ));
-            }
-            Ok(parsed.to_path_buf())
-        }
-    }
-}
-
-/// Resolves one root directory into an absolute filesystem path.
-fn absolute_root(root: &Path) -> Result<PathBuf, String> {
-    if root.is_absolute() {
-        return Ok(root.to_path_buf());
-    }
-
-    std::env::current_dir()
-        .map(|cwd| cwd.join(root))
-        .map_err(|err| format!("resolving current directory for import root failed: {err}"))
-}
-
-/// Normalizes one relative path and rejects escaping components.
-fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf, String> {
-    if candidate.trim().is_empty() {
-        return Err(format!("{context} must be non-empty"));
-    }
-
-    let parsed = Path::new(candidate);
-    if parsed.is_absolute() {
-        return Err(format!("{context} must be relative"));
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in parsed.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("{context} must stay under import root directory"));
-            }
-        }
-    }
-
-    if normalized.as_os_str().is_empty() {
-        return Err(format!("{context} must contain at least one path component"));
-    }
-
-    Ok(normalized)
 }
 
 /// Validates one expected BLAKE3 digest string shape.
@@ -613,7 +485,7 @@ mod tests {
         )
         .expect_err("relative mode should reject parent traversal");
 
-        assert!(err.contains("must stay under import root directory"));
+        assert!(err.contains("must stay under root directory"));
     }
 
     /// Verifies fetch args reject removed destination-path option.
