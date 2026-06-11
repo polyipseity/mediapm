@@ -21,15 +21,19 @@
 //! CLI entrypoints may return ordinary Rust errors rather than stuffing failure
 //! details into the string-only success object.
 
-use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
-
+use std::path::Path;
 #[cfg(feature = "cli")]
-use clap::{ArgAction, Parser};
+use std::path::PathBuf;
+
+use mediapm_utils::StringMap;
+#[cfg(feature = "cli")]
+pub use mediapm_utils::builtin::BuiltinCliArgs;
+#[cfg(feature = "cli")]
+use mediapm_utils::builtin::parse_string_pairs;
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.fs@1.0.0";
@@ -43,59 +47,27 @@ pub const TOOL_VERSION: &str = "1.0.0";
 /// Builtin purity marker.
 pub const IS_IMPURE: bool = true;
 
-/// Canonical string-map payload used by both API and CLI contracts.
-pub type StringMap = BTreeMap<String, String>;
-
-/// Path-resolution mode for fs path arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathMode {
-    /// Resolve paths under the configured fs root directory.
-    Relative,
-    /// Treat paths as explicit absolute host paths.
-    Absolute,
-}
-
-/// Standard clap-based CLI accepted by every builtin crate.
-///
-/// This crate currently expects explicit `--arg KEY VALUE` and
-/// `--input KEY VALUE` pairs and does not define a default option key.
-#[cfg(feature = "cli")]
-#[derive(Debug, Clone, PartialEq, Eq, Parser)]
-pub struct BuiltinCliArgs {
-    /// Prints builtin descriptor metadata as JSON and exits.
-    #[arg(long, default_value_t = false)]
-    pub describe: bool,
-    /// Optional execution root override.
-    #[arg(long, default_value = ".")]
-    pub root_dir: String,
-    /// Builtin argument pairs as repeated `--arg KEY VALUE` options.
-    #[arg(long = "arg", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub args: Vec<String>,
-    /// Builtin input pairs as repeated `--input KEY VALUE` options.
-    #[arg(long = "input", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub inputs: Vec<String>,
-}
-
-/// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    StringMap::from([
-        ("tool_id".to_string(), TOOL_ID.to_string()),
-        ("tool_name".to_string(), TOOL_NAME.to_string()),
-        ("tool_version".to_string(), TOOL_VERSION.to_string()),
-        ("is_impure".to_string(), IS_IMPURE.to_string()),
-        (
-            "summary".to_string(),
-            "filesystem operation builtin runtime with impure side-effecting behavior".to_string(),
-        ),
-    ])
+    mediapm_utils::builtin::describe(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "filesystem operation builtin runtime with impure side-effecting behavior",
+    )
 }
 
-/// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    describe_json_compact()
+    mediapm_utils::builtin::describe_json_compact(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "filesystem operation builtin runtime with impure side-effecting behavior",
+    )
 }
 
 /// Executes one `fs` request using string-map arguments.
@@ -131,8 +103,14 @@ pub fn execute_string_map(
 
     let op = params.get("op").ok_or_else(|| "fs requires 'op' argument".to_string())?.as_str();
     let path = params.get("path").ok_or_else(|| format!("fs op '{op}' requires 'path'"))?;
-    let mode = parse_path_mode(params, op)?;
-    let resolved = resolve_path_for_fs_root(fs_root_dir, op, "path", path, mode)?;
+    let mode = mediapm_utils::path::parse_path_mode(params, &format!("fs op '{op}'"))?;
+    let resolved = mediapm_utils::path::resolve_path_for_root(
+        fs_root_dir,
+        &format!("fs op '{op}'"),
+        "path",
+        path,
+        mode,
+    )?;
 
     match op {
         "ensure_dir" => {
@@ -153,7 +131,13 @@ pub fn execute_string_map(
         "copy" => {
             let dest =
                 params.get("dest").ok_or_else(|| "fs op 'copy' requires 'dest'".to_string())?;
-            let resolved_dest = resolve_path_for_fs_root(fs_root_dir, op, "dest", dest, mode)?;
+            let resolved_dest = mediapm_utils::path::resolve_path_for_root(
+                fs_root_dir,
+                &format!("fs op '{op}'"),
+                "dest",
+                dest,
+                mode,
+            )?;
             if let Some(parent) = resolved_dest.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|err| format!("create_parent '{dest}' failed: {err}"))?;
@@ -193,49 +177,15 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-/// Serializes [`describe`] for non-CLI callers without requiring CLI features.
-///
-/// This helper is always infallible and deterministic.
 #[must_use]
 pub fn describe_json_compat() -> String {
-    describe_json_compact()
-}
-
-/// Returns one deterministic descriptor JSON string without serde dependencies.
-#[must_use]
-fn describe_json_compact() -> String {
-    "{\n  \"is_impure\": \"true\",\n  \"summary\": \"filesystem operation builtin runtime with impure side-effecting behavior\",\n  \"tool_id\": \"builtins.fs@1.0.0\",\n  \"tool_name\": \"fs\",\n  \"tool_version\": \"1.0.0\"\n}"
-        .to_string()
-}
-
-/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
-///
-/// The helper rejects empty keys and incomplete pairs so builtin execution only
-/// sees normalized map-shaped input.
-///
-/// When a builtin defines a default option key, that shorthand should be
-/// normalized into this same key/value map before validation.
-#[cfg(feature = "cli")]
-fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
-    let mut map = StringMap::new();
-    let mut chunks = pairs.chunks_exact(2);
-    for chunk in &mut chunks {
-        let key = chunk[0].trim();
-        let value = &chunk[1];
-        if key.is_empty() {
-            return Err(format!("invalid {label} entry; key must be non-empty"));
-        }
-        if map.insert(key.to_string(), value.clone()).is_some() {
-            return Err(format!("duplicate {label} entry for key '{key}'"));
-        }
-    }
-    if !chunks.remainder().is_empty() {
-        let option_name = if label == "args" { "arg" } else { "input" };
-        return Err(format!(
-            "invalid {label} entries; expected repeated '--{option_name} KEY VALUE' pairs"
-        ));
-    }
-    Ok(map)
+    mediapm_utils::builtin::describe_json_compat(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "filesystem operation builtin runtime with impure side-effecting behavior",
+    )
 }
 
 /// Validates `fs` args/inputs for required and recognized operation keys.
@@ -273,104 +223,21 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
         }
     }
 
-    let _ = parse_path_mode(params, op)?;
+    let _ = mediapm_utils::path::parse_path_mode(params, &format!("fs op '{op}'"))?;
 
     Ok(())
-}
-
-/// Parses and validates path-mode selector for one fs operation.
-fn parse_path_mode(params: &StringMap, op: &str) -> Result<PathMode, String> {
-    match params.get("path_mode").map_or("relative", String::as_str) {
-        "relative" => Ok(PathMode::Relative),
-        "absolute" => Ok(PathMode::Absolute),
-        other => {
-            Err(format!("fs op '{op}' path_mode must be 'relative' or 'absolute', got '{other}'"))
-        }
-    }
-}
-
-/// Resolves one fs path argument against root + path-mode semantics.
-fn resolve_path_for_fs_root(
-    fs_root_dir: &Path,
-    op: &str,
-    field: &str,
-    candidate: &str,
-    mode: PathMode,
-) -> Result<PathBuf, String> {
-    match mode {
-        PathMode::Relative => {
-            if Path::new(candidate).is_absolute() {
-                return Err(format!(
-                    "fs op '{op}' with path_mode='relative' requires relative '{field}'"
-                ));
-            }
-            let root = absolute_root(fs_root_dir)?;
-            let normalized = normalize_relative_path(candidate, "fs path")?;
-            Ok(root.join(normalized))
-        }
-        PathMode::Absolute => {
-            let parsed = Path::new(candidate);
-            if !parsed.is_absolute() {
-                return Err(format!(
-                    "fs op '{op}' with path_mode='absolute' requires absolute '{field}'"
-                ));
-            }
-            Ok(parsed.to_path_buf())
-        }
-    }
-}
-
-/// Resolves one root directory into an absolute filesystem path.
-fn absolute_root(root: &Path) -> Result<PathBuf, String> {
-    if root.is_absolute() {
-        return Ok(root.to_path_buf());
-    }
-
-    std::env::current_dir()
-        .map(|cwd| cwd.join(root))
-        .map_err(|err| format!("resolving current directory for fs root failed: {err}"))
-}
-
-/// Normalizes one relative path and rejects escaping components.
-fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf, String> {
-    if candidate.trim().is_empty() {
-        return Err(format!("{context} must be non-empty"));
-    }
-
-    let parsed = Path::new(candidate);
-    if parsed.is_absolute() {
-        return Err(format!("{context} must be relative"));
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in parsed.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("{context} must stay under fs root directory"));
-            }
-        }
-    }
-
-    if normalized.as_os_str().is_empty() {
-        return Err(format!("{context} must contain at least one path component"));
-    }
-
-    Ok(normalized)
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
-
-    #[cfg(feature = "cli")]
-    use clap::Parser;
     use tempfile::tempdir;
 
     #[cfg(feature = "cli")]
     use super::{BuiltinCliArgs, run_cli_command};
     use super::{describe_json, execute_string_map};
+    #[cfg(feature = "cli")]
+    use clap::Parser;
 
     /// Verifies the library API can create directories and write text files.
     #[test]
