@@ -19,7 +19,9 @@
 use std::error::Error;
 #[cfg(feature = "cli")]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "cli")]
+use std::path::PathBuf;
 
 #[cfg(feature = "cli")]
 pub use mediapm_utils::builtin::BuiltinCliArgs;
