@@ -334,7 +334,6 @@ mod tests {
                         media_id: "demo".into(),
                         variant: "default".into(),
                         hash: "abc123".into(),
-                        last_synced_unix_millis: 1_700_000_000_000,
                     },
                 )]
                 .into_iter()

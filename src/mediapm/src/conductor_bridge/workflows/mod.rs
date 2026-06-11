@@ -2148,7 +2148,6 @@ mod tests {
                     media_id: "demo-media".to_string(),
                     variant: "video_tagged".to_string(),
                     hash: hash.to_string(),
-                    last_synced_unix_millis: 1,
                 },
             )]),
             ..MediaPmState::default()
@@ -2193,7 +2192,6 @@ mod tests {
                     media_id: "demo-media".to_string(),
                     variant: "infojson".to_string(),
                     hash: shared_hash.to_string(),
-                    last_synced_unix_millis: 1,
                 },
             )]),
             ..MediaPmState::default()

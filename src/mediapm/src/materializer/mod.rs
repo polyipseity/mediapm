@@ -3034,7 +3034,7 @@ mod zip;
 
 use self::commit::{
     check_nfd_source, ensure_managed_path_readonly, now_unix_seconds, remove_path,
-    sanitize_and_validate_components, sanitize_path_component, unix_epoch_millis,
+    sanitize_and_validate_components, sanitize_path_component,
 };
 use self::file_ops::materialize_file_from_cas_with_order;
 use self::metadata::{
@@ -3963,15 +3963,6 @@ pub async fn sync_hierarchy(
         desired_paths.extend(prepared.skipped_paths.iter().cloned());
         desired_paths.extend(prepared.managed_file_hashes.keys().cloned());
 
-        // Refresh timestamps for individually skipped paths. This runs before
-        // the `skipped_entry` guard so that per-file skips within a partially
-        // materialized entry also get their timestamps updated.
-        for managed_path in &prepared.refreshed_lock_paths {
-            if let Some(record) = lock.managed_files.get_mut(managed_path) {
-                record.last_synced_unix_millis = unix_epoch_millis();
-            }
-        }
-
         if prepared.skipped_entry {
             // Full entry was skipped (e.g. unchanged Media entry).
             report.skipped_paths += prepared.skipped_paths.len();
@@ -4013,7 +4004,6 @@ pub async fn sync_hierarchy(
                     media_id: managed_media_id.clone(),
                     variant: managed_variant,
                     hash: managed_hash.to_string(),
-                    last_synced_unix_millis: unix_epoch_millis(),
                 },
             );
         }

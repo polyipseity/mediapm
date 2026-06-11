@@ -230,12 +230,6 @@ pub struct ManagedFileRecord {
     /// This identity is used by machine-config external-data reconciliation so
     /// all managed file bytes remain rooted in conductor persistence metadata.
     pub hash: String,
-    /// Last successful sync timestamp in Unix epoch milliseconds.
-    ///
-    /// `mediapm` uses explicit unit-suffixed epoch fields to match CAS-style
-    /// timestamp conventions.
-    #[serde(deserialize_with = "deserialize_u64_from_number")]
-    pub last_synced_unix_millis: u64,
 }
 
 /// Safety-pinned external-data entry.
