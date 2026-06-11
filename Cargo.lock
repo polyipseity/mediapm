@@ -2217,6 +2217,7 @@ name = "mediapm-conductor-builtin-echo"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "mediapm-utils",
 ]
 
 [[package]]

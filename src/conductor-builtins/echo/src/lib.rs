@@ -27,7 +27,6 @@
 //! CLI entrypoints may return ordinary Rust errors rather than encoding failure
 //! details inside the string-only success object.
 
-use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
@@ -35,6 +34,9 @@ use std::io::Write;
 
 #[cfg(feature = "cli")]
 use clap::{Parser, ValueEnum};
+
+/// Re-export of [`mediapm_utils::StringMap`] for downstream convenience.
+pub use mediapm_utils::StringMap;
 
 /// Builtin tool name handled by this crate.
 pub const TOOL_NAME: &str = "echo";
@@ -44,9 +46,6 @@ pub const TOOL_ID: &str = "builtins.echo@1.0.0";
 
 /// Canonical semantic version for this builtin implementation.
 pub const TOOL_VERSION: &str = "1.0.0";
-
-/// Canonical string-map payload used by both API and CLI contracts.
-pub type StringMap = BTreeMap<String, String>;
 
 /// Output stream selector used by both API and CLI entrypoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,16 +164,13 @@ pub fn run_cli_command<WOut: Write, WErr: Write>(
 /// Returns one deterministic descriptor map for this builtin.
 #[must_use]
 pub fn describe() -> StringMap {
-    StringMap::from([
-        ("tool_id".to_string(), TOOL_ID.to_string()),
-        ("tool_name".to_string(), TOOL_NAME.to_string()),
-        ("tool_version".to_string(), TOOL_VERSION.to_string()),
-        ("is_impure".to_string(), "false".to_string()),
-        (
-            "summary".to_string(),
-            "echo-like builtin with positional text and optional stream selection".to_string(),
-        ),
-    ])
+    mediapm_utils::builtin::describe(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        false,
+        "echo-like builtin with positional text and optional stream selection",
+    )
 }
 
 /// Parses one API stream selector value into [`EchoStream`].
