@@ -62,6 +62,39 @@ pub fn describe_json_compat(
     describe_json_compact(tool_id, tool_name, tool_version, is_impure, summary)
 }
 
+/// Metadata describing a builtin tool identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltinMeta {
+    /// Stable qualified tool identifier (e.g. `builtins.echo@1.0.0`).
+    pub tool_id: &'static str,
+    /// Short tool process name (e.g. `echo`).
+    pub tool_name: &'static str,
+    /// Canonical semver string (e.g. `1.0.0`).
+    pub tool_version: &'static str,
+    /// Whether this tool has side effects.
+    pub is_impure: bool,
+    /// Human-readable one-line tool summary.
+    pub summary: &'static str,
+}
+
+/// Returns a descriptor map from a [`BuiltinMeta`].
+#[must_use]
+pub fn describe_meta(meta: &BuiltinMeta) -> StringMap {
+    describe(meta.tool_id, meta.tool_name, meta.tool_version, meta.is_impure, meta.summary)
+}
+
+/// Returns a compact descriptor JSON string from a [`BuiltinMeta`].
+#[must_use]
+pub fn describe_json_compact_meta(meta: &BuiltinMeta) -> String {
+    describe_json_compact(
+        meta.tool_id,
+        meta.tool_name,
+        meta.tool_version,
+        meta.is_impure,
+        meta.summary,
+    )
+}
+
 // ---------------------------------------------------------------------------
 // CLI-specific helpers (behind `cli` feature)
 // ---------------------------------------------------------------------------
@@ -177,13 +210,14 @@ macro_rules! builtin_main_single_writer {
 /// # Errors
 ///
 /// Returns `Err` if any key in `params` is not in `known`.
-pub fn validate_only_known_keys(
-    params: &StringMap,
+pub fn validate_only_known_keys<K: AsRef<str> + Ord, V>(
+    params: &std::collections::BTreeMap<K, V>,
     known: &[&str],
     context: &str,
 ) -> Result<(), String> {
     for key in params.keys() {
-        if !known.contains(&key.as_str()) {
+        let key = key.as_ref();
+        if !known.contains(&key) {
             return Err(format!("{context} does not accept arg '{key}'"));
         }
     }
