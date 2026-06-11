@@ -16,7 +16,6 @@
 //!
 //! Folder payloads are represented as uncompressed ZIP bytes (stored entries).
 
-use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
 use std::io::Write;
@@ -27,7 +26,10 @@ use std::path::PathBuf;
 use regex::{Regex as TextRegex, bytes::Regex as BytesRegex};
 
 #[cfg(feature = "cli")]
-use clap::{ArgAction, Parser};
+pub use mediapm_utils::builtin::BuiltinCliArgs;
+#[cfg(feature = "cli")]
+use mediapm_utils::builtin::parse_string_pairs;
+pub use mediapm_utils::{BinaryInputMap, StringMap};
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.archive@1.0.0";
@@ -41,53 +43,29 @@ pub const TOOL_VERSION: &str = "1.0.0";
 /// Builtin purity marker.
 pub const IS_IMPURE: bool = false;
 
-/// Canonical string-map payload used by both API and CLI contracts.
-pub type StringMap = BTreeMap<String, String>;
-
-/// Canonical binary-input payload map used by API execution.
-pub type BinaryInputMap = BTreeMap<String, Vec<u8>>;
-
-/// Standard clap-based CLI accepted by every builtin crate.
-#[cfg(feature = "cli")]
-#[derive(Debug, Clone, PartialEq, Eq, Parser)]
-pub struct BuiltinCliArgs {
-    /// Prints builtin descriptor metadata as JSON and exits.
-    #[arg(long, default_value_t = false)]
-    pub describe: bool,
-    /// Optional execution root override.
-    #[arg(long, default_value = ".")]
-    pub root_dir: String,
-    /// Builtin argument pairs as repeated `--arg KEY VALUE` options.
-    #[arg(long = "arg", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub args: Vec<String>,
-    /// Builtin input pairs as repeated `--input KEY VALUE` options.
-    ///
-    /// CLI transports inputs as UTF-8 strings. Conductor API calls may provide
-    /// arbitrary bytes.
-    #[arg(long = "input", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub inputs: Vec<String>,
-}
-
 /// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    StringMap::from([
-        ("tool_id".to_string(), TOOL_ID.to_string()),
-        ("tool_name".to_string(), TOOL_NAME.to_string()),
-        ("tool_version".to_string(), TOOL_VERSION.to_string()),
-        ("is_impure".to_string(), IS_IMPURE.to_string()),
-        (
-            "summary".to_string(),
-            "pure archive builtin runtime transforming bytes to bytes".to_string(),
-        ),
-    ])
+    mediapm_utils::builtin::describe(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "pure archive builtin runtime transforming bytes to bytes",
+    )
 }
 
 /// Serializes [`describe`] for CLI output.
 #[cfg(feature = "cli")]
 #[must_use]
 pub fn describe_json() -> String {
-    describe_json_compact()
+    mediapm_utils::builtin::describe_json_compact(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "pure archive builtin runtime transforming bytes to bytes",
+    )
 }
 
 /// Executes one archive request and returns transformed bytes.
@@ -118,7 +96,8 @@ pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Resul
             let kind = params
                 .get("kind")
                 .ok_or_else(|| "archive pack requires 'kind' (file|folder)".to_string())?;
-            let payload = payload_bytes_from_maps(inputs, params, "content")
+            let payload = inputs
+                .get("content")
                 .ok_or_else(|| "archive pack requires input 'content'".to_string())?;
 
             match kind.as_str() {
@@ -133,17 +112,20 @@ pub fn execute_content_map(params: &StringMap, inputs: &BinaryInputMap) -> Resul
             }
         }
         "unpack" => {
-            let archive_payload = payload_bytes_from_maps(inputs, params, "archive")
+            let archive_payload = inputs
+                .get("archive")
                 .ok_or_else(|| "archive unpack requires input 'archive'".to_string())?;
             normalize_archive_zip_bytes_to_folder_zip_bytes(archive_payload)
         }
         "repack" => {
-            let archive_payload = payload_bytes_from_maps(inputs, params, "archive")
+            let archive_payload = inputs
+                .get("archive")
                 .ok_or_else(|| "archive repack requires input 'archive'".to_string())?;
             normalize_archive_zip_bytes_to_folder_zip_bytes(archive_payload)
         }
         "transform" => {
-            let zip_payload = payload_bytes_from_maps(inputs, params, "content")
+            let zip_payload = inputs
+                .get("content")
                 .ok_or_else(|| "archive transform requires input 'content'".to_string())?;
             transform_zip_bytes(zip_payload, params)
         }
@@ -189,14 +171,13 @@ pub fn run_cli_command<W: Write>(
 /// This helper is always infallible and deterministic.
 #[must_use]
 pub fn describe_json_compat() -> String {
-    describe_json_compact()
-}
-
-/// Returns one deterministic descriptor JSON string without serde dependencies.
-#[must_use]
-fn describe_json_compact() -> String {
-    "{\n  \"is_impure\": \"false\",\n  \"summary\": \"pure archive builtin runtime transforming bytes to bytes\",\n  \"tool_id\": \"builtins.archive@1.0.0\",\n  \"tool_name\": \"archive\",\n  \"tool_version\": \"1.0.0\"\n}"
-        .to_string()
+    mediapm_utils::builtin::describe_json_compat(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "pure archive builtin runtime transforming bytes to bytes",
+    )
 }
 
 /// Packs one directory tree into uncompressed ZIP bytes.
@@ -485,45 +466,6 @@ fn pack_single_file_to_uncompressed_zip_bytes(
         .map(std::io::Cursor::into_inner)
 }
 
-/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
-#[cfg(feature = "cli")]
-fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
-    let mut map = StringMap::new();
-    let mut chunks = pairs.chunks_exact(2);
-    for chunk in &mut chunks {
-        let key = chunk[0].trim();
-        let value = &chunk[1];
-        if key.is_empty() {
-            return Err(format!("invalid {label} entry; key must be non-empty"));
-        }
-        if map.insert(key.to_string(), value.clone()).is_some() {
-            return Err(format!("duplicate {label} entry for key '{key}'"));
-        }
-    }
-    if !chunks.remainder().is_empty() {
-        let option_name = if label == "args" { "arg" } else { "input" };
-        return Err(format!(
-            "invalid {label} entries; expected repeated '--{option_name} KEY VALUE' pairs"
-        ));
-    }
-    Ok(map)
-}
-
-/// Resolves one payload byte value from binary inputs or string params.
-///
-/// Binary inputs take precedence. String-param fallback supports existing
-/// builtin step input injection semantics for UTF-8 payloads.
-fn payload_bytes_from_maps<'a>(
-    inputs: &'a BinaryInputMap,
-    params: &'a StringMap,
-    key: &str,
-) -> Option<&'a [u8]> {
-    if let Some(bytes) = inputs.get(key) {
-        return Some(bytes.as_slice());
-    }
-    params.get(key).map(String::as_bytes)
-}
-
 /// Validates archive args/inputs for required and recognized keys.
 fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Result<(), String> {
     let action = params.get("action").ok_or_else(|| {
@@ -566,7 +508,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
                     return Err(format!("archive pack does not accept input '{key}'"));
                 }
             }
-            if payload_bytes_from_maps(inputs, params, "content").is_none() {
+            if inputs.get("content").is_none() {
                 return Err("archive pack requires input 'content'".to_string());
             }
         }
@@ -589,7 +531,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
                     return Err(format!("archive action '{action}' does not accept input '{key}'"));
                 }
             }
-            if payload_bytes_from_maps(inputs, params, "archive").is_none() {
+            if inputs.get("archive").is_none() {
                 return Err(format!("archive action '{action}' requires input 'archive'"));
             }
         }
@@ -619,7 +561,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
                     return Err(format!("archive transform does not accept input '{key}'"));
                 }
             }
-            if payload_bytes_from_maps(inputs, params, "content").is_none() {
+            if inputs.get("content").is_none() {
                 return Err("archive transform requires input 'content'".to_string());
             }
         }

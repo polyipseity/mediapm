@@ -2207,6 +2207,7 @@ name = "mediapm-conductor-builtin-archive"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "mediapm-utils",
  "regex",
  "tempfile",
  "zip",
@@ -2226,6 +2227,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "mediapm-conductor-builtin-archive",
+ "mediapm-utils",
  "serde_json",
  "tempfile",
 ]
@@ -2235,6 +2237,7 @@ name = "mediapm-conductor-builtin-fs"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "mediapm-utils",
  "tempfile",
 ]
 
@@ -2245,6 +2248,7 @@ dependencies = [
  "blake3",
  "clap",
  "mediapm-conductor-builtin-archive",
+ "mediapm-utils",
  "reqwest",
  "tempfile",
  "url",

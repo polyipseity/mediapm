@@ -9,13 +9,14 @@ description = "Built-in archive tool contract (zip/tar.gz)"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap"]
+cli = ["dep:clap", "mediapm-utils/cli"]
 
 [lints]
 workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "std"], optional = true }
+mediapm-utils = { workspace = true }
 regex.workspace = true
 zip.workspace = true
 
