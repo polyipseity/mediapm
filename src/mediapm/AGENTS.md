@@ -33,6 +33,7 @@ Use concrete files as canonical references:
 - Lockfile module root: `src/mediapm/src/lockfile/mod.rs`
 - Config wire versions/migrations: `src/mediapm/src/config/versions/`
 - Lockfile wire versions/migrations: `src/mediapm/src/lockfile/versions/`
+- Standalone helpers: `src/mediapm/src/service_standalone.rs`
 - Integration tests: `src/mediapm/tests/`
 
 Core dependency boundary:

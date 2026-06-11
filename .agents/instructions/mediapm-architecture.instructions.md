@@ -77,7 +77,14 @@ is a narrow, documented reason.
   - optimizer candidate selection balances delta size against chain depth cost
     (avoid regressions that optimize bytes while making reconstruction
     pathologically deep),
-  - storage fan-out and hash identity behavior stay deterministic.
+  - storage fan-out and hash identity behavior stay deterministic,
+  - orchestration runtime constants (RPC timeouts, disk-pressure thresholds)
+    are centralized in `src/cas/src/orchestration/config.rs` so clients and
+    actor implementations remain aligned,
+  - concurrent batch operations over hash collections use the
+    `batch_concurrent_map!` macro (defined in `src/cas/src/api.rs`) for
+    consistent `FuturesUnordered` + index-ordering behavior across
+    `exists_many`, `get_many`, `info_many`, and `get_constraint_many`.
 - `conductor` should keep deterministic planning/keying logic explicit and testable.
   Conductor-specific invariants to preserve in `src/conductor/**`:
   - `conductor.ncl` (user intent) and `conductor.machine.ncl`

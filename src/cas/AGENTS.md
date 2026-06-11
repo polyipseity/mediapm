@@ -332,6 +332,8 @@ All four `Option<u64>` fields in `MediaRuntimeStorage` use `#[serde(deserialize_
 | **Public Traits** | `CasApi`, `CasMaintenanceApi` |
 | **Types** | `Hash`, `Constraint`, `ConstraintBatchOp`, `ObjectInfo`, `OptimizeReport` |
 | **Backends** | `FileSystemCas`, `InMemoryCas` |
+| **Orchestration Config** | `src/cas/src/orchestration/config.rs` — shared runtime constants (RPC timeouts, disk-pressure thresholds) |
+| **Batch Macro** | `src/cas/src/api.rs` — `batch_concurrent_map!` macro for concurrent hash-iterated operations |
 | **Performance** | O(1) full, O(depth) delta; mmap + buffer pool |
 
 ### Filesystem Locking
