@@ -10,6 +10,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use super::protocol::StepPhaseTiming;
+
 use crate::api::{RunSummary, RuntimeDiagnostics};
 use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
@@ -78,26 +80,6 @@ impl WorkflowRunProfile {
     }
 }
 
-/// Fine-grained execution-phase timings for one workflow step.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
-pub(super) struct StepPhaseTimingProfile {
-    /// Time spent resolving step/default input bindings.
-    pub resolve_inputs_ms: f64,
-    /// Time spent resolving process and output specs from templates.
-    pub resolve_specs_ms: f64,
-    /// Time spent evaluating cache-hit/rematerialization requirements.
-    pub cache_probe_ms: f64,
-    /// Time spent preparing execution sandbox content before process start.
-    pub materialization_ms: f64,
-    /// Time spent running the tool process or builtin implementation.
-    pub execution_ms: f64,
-    /// Time spent capturing declared outputs into CAS.
-    pub capture_outputs_ms: f64,
-    /// Time spent applying persistence policies and CAS save hints.
-    pub persistence_merge_ms: f64,
-}
-
 /// One workflow-step execution timing sample.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(super) struct StepExecutionProfile {
@@ -126,7 +108,7 @@ pub(super) struct StepExecutionProfile {
     /// Number of unsaved output hashes reported by this step.
     pub pending_unsaved_hashes_count: usize,
     /// Fine-grained phase timing breakdown captured by the step worker.
-    pub phase_timings: StepPhaseTimingProfile,
+    pub phase_timings: StepPhaseTiming,
 }
 
 /// Persists one workflow run profile as pretty JSON.
@@ -486,7 +468,7 @@ mod tests {
     use crate::api::{RuntimeDiagnostics, SchedulerDiagnostics};
 
     use super::{
-        StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, render_profile_timing,
+        StepExecutionProfile, StepPhaseTiming, WorkflowRunProfile, render_profile_timing,
         write_profile_json,
     };
 
@@ -520,7 +502,7 @@ mod tests {
                 elapsed_ms: 123.0,
                 requested_output_count: 1,
                 pending_unsaved_hashes_count: 0,
-                phase_timings: StepPhaseTimingProfile {
+                phase_timings: StepPhaseTiming {
                     resolve_inputs_ms: 1.0,
                     resolve_specs_ms: 1.0,
                     cache_probe_ms: 1.0,
@@ -582,7 +564,7 @@ mod tests {
                     elapsed_ms: 4000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
-                    phase_timings: StepPhaseTimingProfile {
+                    phase_timings: StepPhaseTiming {
                         resolve_inputs_ms: 100.0,
                         resolve_specs_ms: 100.0,
                         cache_probe_ms: 100.0,
@@ -605,7 +587,7 @@ mod tests {
                     elapsed_ms: 3000.0,
                     requested_output_count: 1,
                     pending_unsaved_hashes_count: 0,
-                    phase_timings: StepPhaseTimingProfile {
+                    phase_timings: StepPhaseTiming {
                         resolve_inputs_ms: 100.0,
                         resolve_specs_ms: 100.0,
                         cache_probe_ms: 100.0,

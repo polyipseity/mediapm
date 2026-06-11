@@ -45,8 +45,8 @@ use crate::model::state::{
     merge_persistence_flags,
 };
 use crate::orchestration::protocol::{
-    StepExecutionBundle, StepExecutionPhaseTimings, StepExecutionRequest, StepOutputs,
-    UnifiedNickelDocument, UnifiedToolSpec,
+    StepExecutionBundle, StepExecutionRequest, StepOutputs, StepPhaseTiming, UnifiedNickelDocument,
+    UnifiedToolSpec,
 };
 mod template;
 
@@ -338,7 +338,7 @@ where
             ))
         })?;
 
-        let mut phase_timings = StepExecutionPhaseTimings::default();
+        let mut phase_timings = StepPhaseTiming::default();
 
         // Phase B: Two-pass input resolution.
         // 1. Hash-only pass (no content loading) for instance-key derivation
@@ -658,148 +658,6 @@ where
             elapsed_ms: started_at.elapsed().as_secs_f64() * 1000.0,
             phase_timings,
         })
-    }
-
-    /// Resolves workflow-step inputs into concrete byte payloads.
-    ///
-    /// Step inputs represent call-site input data for both executable and
-    /// builtin tools.
-    ///
-    /// Executable tools additionally enforce declared input/default contracts,
-    /// while builtin tools accept pass-through key/value bindings and delegate
-    /// strict argument validation to builtin implementations.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-    )]
-    #[allow(dead_code)]
-    async fn resolve_inputs(
-        &self,
-        unified: &UnifiedNickelDocument,
-        tool: &UnifiedToolSpec,
-        workflow_name: &str,
-        step: &WorkflowStepSpec,
-        step_outputs: &StepOutputs,
-    ) -> Result<BTreeMap<String, ResolvedInput>, ConductorError> {
-        if matches!(tool.process, ProcessSpec::Builtin { .. }) {
-            let mut passthrough = BTreeMap::new();
-            for (input_name, binding) in &step.inputs {
-                let InputBinding::String(binding_text) = binding else {
-                    return Err(ConductorError::Workflow(format!(
-                        "workflow '{workflow_name}' step '{}' input '{input_name}' has kind '{}' but builtin tool '{}' accepts only scalar string step inputs",
-                        step.id,
-                        binding.kind_name(),
-                        step.tool,
-                    )));
-                };
-                let input = self
-                    .resolve_input_binding(unified, workflow_name, step, binding_text, step_outputs)
-                    .await?;
-                passthrough.insert(input_name.clone(), input);
-            }
-            return Ok(passthrough);
-        }
-
-        let mut resolved = BTreeMap::new();
-
-        for input_name in step.inputs.keys() {
-            if !tool.inputs.contains_key(input_name) {
-                return Err(ConductorError::Workflow(format!(
-                    "workflow '{workflow_name}' step '{}' provides undeclared input '{input_name}' for tool '{}'",
-                    step.id, step.tool,
-                )));
-            }
-        }
-
-        for (input_name, input_spec) in &tool.inputs {
-            if let Some(binding) = step.inputs.get(input_name) {
-                let input = match (input_spec.kind, binding) {
-                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
-                        self.resolve_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            binding_text,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
-                        self.resolve_list_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            input_name,
-                            binding_list,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::String, InputBinding::StringList(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string' for tool '{}', but received 'string_list'",
-                            step.id, step.tool,
-                        )));
-                    }
-                    (ToolInputKind::StringList, InputBinding::String(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "workflow '{workflow_name}' step '{}' input '{input_name}' expects kind 'string_list' for tool '{}', but received 'string'",
-                            step.id, step.tool,
-                        )));
-                    }
-                };
-                resolved.insert(input_name.clone(), input);
-                continue;
-            }
-
-            if let Some(default_binding) = tool.default_inputs.get(input_name) {
-                let resolved_input = match (input_spec.kind, default_binding) {
-                    (ToolInputKind::String, InputBinding::String(binding_text)) => {
-                        self.resolve_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            binding_text,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::StringList, InputBinding::StringList(binding_list)) => {
-                        self.resolve_list_input_binding(
-                            unified,
-                            workflow_name,
-                            step,
-                            input_name,
-                            binding_list,
-                            step_outputs,
-                        )
-                        .await?
-                    }
-                    (ToolInputKind::String, InputBinding::StringList(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "workflow '{workflow_name}' step '{}' input default '{input_name}' expects kind 'string' for tool '{}', but tool_configs default provides 'string_list'",
-                            step.id, step.tool,
-                        )));
-                    }
-                    (ToolInputKind::StringList, InputBinding::String(_)) => {
-                        return Err(ConductorError::Workflow(format!(
-                            "workflow '{workflow_name}' step '{}' input default '{input_name}' expects kind 'string_list' for tool '{}', but tool_configs default provides 'string'",
-                            step.id, step.tool,
-                        )));
-                    }
-                };
-
-                resolved.insert(input_name.clone(), resolved_input);
-                continue;
-            }
-
-            return Err(ConductorError::Workflow(format!(
-                "workflow '{workflow_name}' step '{}' is missing required input '{input_name}' for tool '{}'",
-                step.id, step.tool,
-            )));
-        }
-
-        Ok(resolved)
     }
 
     /// Resolves workflow-step inputs into hash-only keys without loading

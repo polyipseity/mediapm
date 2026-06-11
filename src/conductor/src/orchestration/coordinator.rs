@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,13 +29,14 @@ use ractor::{ActorRef, call_t};
 
 use crate::CasBound;
 use crate::api::{
-    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics, StateMutationOptions,
-    WorkflowProgressSender, WorkflowStepEvent, resolve_runtime_storage_paths,
+    ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
+    SchedulerDiagnostics, StateMutationOptions, WorkflowProgressSender, WorkflowStepEvent,
+    resolve_runtime_storage_paths,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
-    ImpureTimestamp, InputBinding, ParsedInputBindingSegment, WorkflowSpec, WorkflowStepSpec,
-    parse_input_binding,
+    ImpureTimestamp, InputBinding, MachineNickelDocument, ParsedInputBindingSegment,
+    StateNickelDocument, WorkflowSpec, WorkflowStepSpec, parse_input_binding,
 };
 use crate::model::state::{AuxData, OrchestrationState, merge_persistence_flags};
 use crate::runtime_env::load_runtime_env_files;
@@ -48,9 +49,7 @@ use super::actors::scheduler::{SchedulerClient, spawn_scheduler_actor};
 use super::actors::state_store::{StateStoreClient, spawn_state_store_actor};
 use super::actors::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 use super::config::{default_worker_pool_size, profile_output_path_from_env, rpc_timeout_ms};
-use super::profiler::{
-    StepExecutionProfile, StepPhaseTimingProfile, WorkflowRunProfile, write_profile_json,
-};
+use super::profiler::{StepExecutionProfile, WorkflowRunProfile, write_profile_json};
 use super::protocol::{
     CommitStateRequest, LoadedDocuments, StepCompletionRecord, StepExecutionBundle,
     StepExecutionRequest, StepOutputs, UnifiedNickelDocument, UnifiedToolSpec,
@@ -77,6 +76,38 @@ struct ExecutionOutcome {
     pending_unsaved_hashes: BTreeSet<Hash>,
     /// Per-step execution timing records collected for profiler reporting.
     step_executions: Vec<StepExecutionProfile>,
+}
+
+/// Runtime environment prepared for one workflow run.
+struct PrepareRuntimeOutcome {
+    /// Timestamp captured before runtime preparation started.
+    run_started_unix_nanos: u128,
+    /// Runtime storage paths resolved for this run.
+    resolved_runtime_paths: ResolvedRuntimeStoragePaths,
+    /// Resolved volatile state document path.
+    conductor_state_config: PathBuf,
+    /// Optional profiler output path.
+    profile_output_path: Option<PathBuf>,
+    /// Client for the document-loader actor.
+    document_loader: DocumentLoaderClient,
+    /// Client for the scheduler actor.
+    scheduler: SchedulerClient,
+    /// Client for the state-store actor.
+    state_store: StateStoreClient,
+    /// Machine-editable document after merged runtime-owned fields are updated.
+    machine_document: MachineNickelDocument,
+    /// Volatile runtime state document.
+    state_document: StateNickelDocument,
+    /// Prior state pointer resolved across all documents.
+    prior_state_pointer: Option<Hash>,
+    /// Effective configuration used for workflow execution.
+    unified: UnifiedNickelDocument,
+    /// Orchestration state loaded from prior state pointer.
+    state: OrchestrationState,
+    /// Absolute directory containing the outermost configuration file.
+    outermost_config_dir: PathBuf,
+    /// Optional progress sender for workflow events.
+    progress_sender: Option<WorkflowProgressSender>,
 }
 
 /// Deterministic workflow coordinator rooted in one CAS implementation.
@@ -203,33 +234,13 @@ impl<C: CasBound> WorkflowCoordinator<C> {
         Ok(())
     }
 
-    /// Executes workflows using `conductor.ncl` and `conductor.machine.ncl`
-    /// paths with strict-safe defaults.
-    pub(super) async fn run_workflow(
-        &mut self,
-        user_ncl: &Path,
-        machine_ncl: &Path,
-    ) -> Result<RunSummary, ConductorError> {
-        self.run_workflow_with_options(user_ncl, machine_ncl, RunWorkflowOptions::default()).await
-    }
-
-    /// Executes workflows using `conductor.ncl` and `conductor.machine.ncl` paths
-    /// with explicit runtime options.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "this item intentionally keeps workflow lifecycle sequencing explicit and auditable"
-    )]
-    pub(super) async fn run_workflow_with_options(
+    /// Prepares the runtime environment for a workflow run.
+    async fn prepare_runtime(
         &mut self,
         user_ncl: &Path,
         machine_ncl: &Path,
         options: RunWorkflowOptions,
-    ) -> Result<RunSummary, ConductorError> {
-        if user_ncl.as_os_str().is_empty() || machine_ncl.as_os_str().is_empty() {
-            return Err(ConductorError::Workflow(
-                "conductor.ncl and conductor.machine.ncl paths must be non-empty".to_string(),
-            ));
-        }
+    ) -> Result<PrepareRuntimeOutcome, ConductorError> {
         let run_started_unix_nanos = ImpureTimestamp::now().as_unix_nanos();
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
@@ -263,7 +274,7 @@ impl<C: CasBound> WorkflowCoordinator<C> {
             ConductorError::Internal("state store actor was not initialized".to_string())
         })?;
 
-        let LoadedDocuments { machine_document, mut state_document, prior_state_pointer, unified } =
+        let LoadedDocuments { machine_document, state_document, prior_state_pointer, unified } =
             document_loader
                 .load_and_unify(user_ncl, machine_ncl, &conductor_state_config, effective_options)
                 .await?;
@@ -275,6 +286,64 @@ impl<C: CasBound> WorkflowCoordinator<C> {
         let outermost_config_dir = Self::absolute_outermost_config_dir(
             user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or_else(|| Path::new(".")),
         )?;
+
+        Ok(PrepareRuntimeOutcome {
+            run_started_unix_nanos,
+            resolved_runtime_paths,
+            conductor_state_config,
+            profile_output_path,
+            document_loader,
+            scheduler,
+            state_store,
+            machine_document,
+            state_document,
+            prior_state_pointer,
+            unified,
+            state,
+            outermost_config_dir,
+            progress_sender,
+        })
+    }
+
+    /// Executes workflows using `conductor.ncl` and `conductor.machine.ncl`
+    /// paths with strict-safe defaults.
+    pub(super) async fn run_workflow(
+        &mut self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+    ) -> Result<RunSummary, ConductorError> {
+        self.run_workflow_with_options(user_ncl, machine_ncl, RunWorkflowOptions::default()).await
+    }
+
+    /// Executes workflows using `conductor.ncl` and `conductor.machine.ncl` paths
+    /// with explicit runtime options.
+    pub(super) async fn run_workflow_with_options(
+        &mut self,
+        user_ncl: &Path,
+        machine_ncl: &Path,
+        options: RunWorkflowOptions,
+    ) -> Result<RunSummary, ConductorError> {
+        if user_ncl.as_os_str().is_empty() || machine_ncl.as_os_str().is_empty() {
+            return Err(ConductorError::Workflow(
+                "conductor.ncl and conductor.machine.ncl paths must be non-empty".to_string(),
+            ));
+        }
+        let PrepareRuntimeOutcome {
+            run_started_unix_nanos,
+            resolved_runtime_paths,
+            conductor_state_config,
+            profile_output_path,
+            document_loader,
+            scheduler,
+            state_store,
+            machine_document,
+            mut state_document,
+            prior_state_pointer,
+            unified,
+            mut state,
+            outermost_config_dir,
+            progress_sender,
+        } = self.prepare_runtime(user_ncl, machine_ncl, options).await?;
 
         let execution_outcome = self
             .execute_workflows(
@@ -948,15 +1017,7 @@ impl<C: CasBound> WorkflowCoordinator<C> {
                 elapsed_ms: bundle.elapsed_ms,
                 requested_output_count: bundle.requested_output_names.len(),
                 pending_unsaved_hashes_count: bundle.pending_unsaved_hashes.len(),
-                phase_timings: StepPhaseTimingProfile {
-                    resolve_inputs_ms: bundle.phase_timings.resolve_inputs_ms,
-                    resolve_specs_ms: bundle.phase_timings.resolve_specs_ms,
-                    cache_probe_ms: bundle.phase_timings.cache_probe_ms,
-                    materialization_ms: bundle.phase_timings.materialization_ms,
-                    execution_ms: bundle.phase_timings.execution_ms,
-                    capture_outputs_ms: bundle.phase_timings.capture_outputs_ms,
-                    persistence_merge_ms: bundle.phase_timings.persistence_merge_ms,
-                },
+                phase_timings: bundle.phase_timings,
             });
 
             // Record completion with scheduler for EWMA runtime estimation.

@@ -10,6 +10,8 @@ use std::sync::Arc;
 
 use mediapm_cas::Hash;
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::config::{
     ExternalContentRef, InputBinding, MachineNickelDocument, ProcessSpec, StateNickelDocument,
     ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
@@ -135,9 +137,9 @@ pub(crate) struct StepExecutionRequest {
 }
 
 /// Fine-grained phase timings captured within one step execution.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_field_names)]
-pub(crate) struct StepExecutionPhaseTimings {
+pub(crate) struct StepPhaseTiming {
     /// Time spent resolving step/default input bindings.
     pub resolve_inputs_ms: f64,
     /// Time spent resolving process and output specs from templates.
@@ -186,7 +188,7 @@ pub(crate) struct StepExecutionBundle {
     /// Observed execution duration in milliseconds.
     pub elapsed_ms: f64,
     /// Fine-grained timing breakdown for internal execution phases.
-    pub phase_timings: StepExecutionPhaseTimings,
+    pub phase_timings: StepPhaseTiming,
 }
 
 /// Scheduler-facing completion facts derived from one finished step.
