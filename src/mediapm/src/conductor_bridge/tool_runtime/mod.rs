@@ -800,10 +800,88 @@ pub(super) fn merge_tool_config_defaults(
 /// These defaults prioritize high-quality, metadata-preserving outputs while
 /// still allowing users to override all behavior through `input_defaults` or
 /// step-level media `options` values.
-#[expect(
-    clippy::too_many_lines,
-    reason = "per-tool defaults table is intentionally explicit for schema stability"
-)]
+// ── Static string-valued default input tables ────────────────────────────
+
+const YT_DLP_INPUT_DEFAULTS: &[(&str, &str)] = &[
+    ("paths", "downloads"),
+    ("output", "%(title)s [%(id)s]%(playlist_index|)s__mediapm__.%(ext)s"),
+    ("format", "bestvideo*+bestaudio/best"),
+    ("sub_langs", "all"),
+    ("merge_output_format", "mkv"),
+    ("extractor_args", "youtube:skip=translated_subs"),
+    ("embed_metadata", "true"),
+    ("embed_chapters", "true"),
+    ("embed_info_json", "true"),
+    ("write_subs", "true"),
+    ("write_auto_subs", "false"),
+    ("write_thumbnail", "true"),
+    ("write_all_thumbnails", "false"),
+    ("write_info_json", "true"),
+    ("clean_info_json", "true"),
+    ("write_comments", "false"),
+    ("write_description", "true"),
+    ("write_annotations", "false"),
+    ("write_chapters", "true"),
+    ("write_link", "true"),
+    ("write_url_link", "true"),
+    ("write_webloc_link", "true"),
+    ("write_desktop_link", "true"),
+    ("download_archive", "downloads/archive.txt"),
+    ("split_chapters", "false"),
+    ("no_playlist", "true"),
+    ("cache_dir", ""),
+    ("ffmpeg_location", "ffmpeg"),
+];
+
+const RSGAIN_INPUT_DEFAULTS: &[(&str, &str)] = &[
+    ("input_extension", "flac"),
+    ("album", "false"),
+    ("album_mode", "false"),
+    ("target_lufs", "-18"),
+    ("tagmode", "i"),
+    ("clip_mode", "p"),
+    ("true_peak", "true"),
+    ("max_peak", "0"),
+    ("preserve_mtimes", "true"),
+];
+
+const SD_INPUT_DEFAULTS: &[(&str, &str)] = &[("pattern", ""), ("replacement", "")];
+
+const MEDIA_TAGGER_INPUT_DEFAULTS: &[(&str, &str)] = &[
+    ("strict_identification", "true"),
+    ("write_all_tags", "true"),
+    ("write_all_images", "true"),
+    ("save_images_to_tags", "true"),
+    ("embed_only_one_front_image", "false"),
+    ("ca_providers", "caa_release,url_relationships,caa_release_group"),
+    ("caa_image_types", "all,-matrix/runout,-raw/unedited,-watermark"),
+    ("caa_image_size", "full"),
+    ("caa_approved_only", "false"),
+    ("preserve_images", "false"),
+    ("clear_existing_tags", "false"),
+    ("enable_tag_saving", "true"),
+    ("release_ars", "true"),
+    ("cover_art_slot_count", "16"),
+    ("acoustid_endpoint", "https://api.acoustid.org/v2/lookup"),
+    ("musicbrainz_endpoint", "https://musicbrainz.org/ws/2"),
+    ("cache_dir", ""),
+    ("cache_expiry_seconds", "86400"),
+];
+
+const FFMPEG_STATIC_DEFAULTS: &[(&str, &str)] = &[
+    ("vn", "false"),
+    ("an", "false"),
+    ("codec_copy", "true"),
+    ("map_metadata", "0"),
+    ("map_chapters", "0"),
+    ("movflags", ""),
+    ("cues_to_front", ""),
+    ("hide_banner", "true"),
+];
+
+/// These defaults prioritize high-quality, metadata-preserving outputs while
+/// still allowing users to override all behavior through `input_defaults` or
+/// step-level media `options` values.
 fn default_input_defaults_for_tool(
     tool_name: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
@@ -822,69 +900,26 @@ fn default_input_defaults_for_tool(
         input_defaults.insert((*option_input).to_string(), default_binding);
     }
 
-    if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        input_defaults
-            .insert("paths".to_string(), InputBinding::String(SANDBOX_DOWNLOADS_DIR.to_string()));
-        input_defaults.insert(
-            "output".to_string(),
-            InputBinding::String(YT_DLP_DEFAULT_OUTPUT_TEMPLATE.to_string()),
-        );
-        input_defaults.insert(
-            "format".to_string(),
-            InputBinding::String("bestvideo*+bestaudio/best".to_string()),
-        );
-        input_defaults.insert("sub_langs".to_string(), InputBinding::String("all".to_string()));
-        input_defaults
-            .insert("merge_output_format".to_string(), InputBinding::String("mkv".to_string()));
-        input_defaults.insert(
-            "extractor_args".to_string(),
-            InputBinding::String(YT_DLP_DEFAULT_EXTRACTOR_ARGS.to_string()),
-        );
-        input_defaults
-            .insert("embed_metadata".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("embed_chapters".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("embed_info_json".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("write_subs".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_auto_subs".to_string(), InputBinding::String("false".to_string()));
-        input_defaults
-            .insert("write_thumbnail".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_all_thumbnails".to_string(), InputBinding::String("false".to_string()));
-        input_defaults
-            .insert("write_info_json".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("clean_info_json".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_comments".to_string(), InputBinding::String("false".to_string()));
-        input_defaults
-            .insert("write_description".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_annotations".to_string(), InputBinding::String("false".to_string()));
-        input_defaults
-            .insert("write_chapters".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("write_link".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_url_link".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_webloc_link".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_desktop_link".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert(
-            "download_archive".to_string(),
-            InputBinding::String("downloads/archive.txt".to_string()),
-        );
-        input_defaults
-            .insert("split_chapters".to_string(), InputBinding::String("false".to_string()));
-        // Prevents single-item URLs from being treated as playlist downloads by default.
-        // Explicitly set to "false" in steps that intentionally download full playlists.
-        input_defaults.insert("no_playlist".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("cache_dir".to_string(), InputBinding::String(String::new()));
-        input_defaults
-            .insert("ffmpeg_location".to_string(), InputBinding::String("ffmpeg".to_string()));
+    // Static string defaults from const lookup tables.
+    let static_defaults: &[(&str, &str)] = if tool_name.eq_ignore_ascii_case("yt-dlp") {
+        YT_DLP_INPUT_DEFAULTS
+    } else if tool_name.eq_ignore_ascii_case("rsgain") {
+        RSGAIN_INPUT_DEFAULTS
+    } else if tool_name.eq_ignore_ascii_case("sd") {
+        SD_INPUT_DEFAULTS
+    } else if tool_name.eq_ignore_ascii_case("media-tagger") {
+        MEDIA_TAGGER_INPUT_DEFAULTS
     } else if tool_name.eq_ignore_ascii_case("ffmpeg") {
+        FFMPEG_STATIC_DEFAULTS
+    } else {
+        &[]
+    };
+    for &(name, value) in static_defaults {
+        input_defaults.insert(name.to_string(), InputBinding::String(value.to_string()));
+    }
+
+    // Ffmpeg indexed slot defaults (dynamic — computed at runtime per slot limit).
+    if tool_name.eq_ignore_ascii_case("ffmpeg") {
         for index in 0..ffmpeg_slot_limits.max_input_slots {
             input_defaults
                 .insert(ffmpeg_input_content_name(index), InputBinding::String(String::new()));
@@ -901,130 +936,6 @@ fn default_input_defaults_for_tool(
         }
         input_defaults
             .insert(INPUT_FFMETADATA_CONTENT.to_string(), InputBinding::String(String::new()));
-        input_defaults.insert("vn".to_string(), InputBinding::String("false".to_string()));
-        input_defaults.insert("an".to_string(), InputBinding::String("false".to_string()));
-        input_defaults.insert("codec_copy".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("map_metadata".to_string(), InputBinding::String("0".to_string()));
-        input_defaults.insert("map_chapters".to_string(), InputBinding::String("0".to_string()));
-        // `movflags` and `cues_to_front` default to empty so they do not emit
-        // any flag unless the user sets them explicitly or the auto-inject
-        // container-conditional tokens in `build_tool_command` fire based on
-        // the `container` input value.  This avoids applying MP4-only
-        // `+faststart` to Matroska outputs and avoids applying
-        // `cues_to_front` to non-Matroska muxers.
-        input_defaults.insert("movflags".to_string(), InputBinding::String(String::new()));
-        input_defaults.insert("cues_to_front".to_string(), InputBinding::String(String::new()));
-        // Suppress ffmpeg version/build banner on every invocation; reduces stderr noise
-        // and avoids unnecessary output buffering in conductor's subprocess capture.
-        // Steps that need the banner for diagnostics can override with hide_banner = "false".
-        input_defaults.insert("hide_banner".to_string(), InputBinding::String("true".to_string()));
-    } else if tool_name.eq_ignore_ascii_case("rsgain") {
-        input_defaults.insert(
-            INPUT_RSGAIN_INPUT_EXTENSION.to_string(),
-            InputBinding::String("flac".to_string()),
-        );
-        input_defaults.insert("album".to_string(), InputBinding::String("false".to_string()));
-        input_defaults.insert("album_mode".to_string(), InputBinding::String("false".to_string()));
-        input_defaults.insert("target_lufs".to_string(), InputBinding::String("-18".to_string()));
-        input_defaults.insert("tagmode".to_string(), InputBinding::String("i".to_string()));
-        input_defaults.insert("clip_mode".to_string(), InputBinding::String("p".to_string()));
-        input_defaults.insert("true_peak".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert("max_peak".to_string(), InputBinding::String("0".to_string()));
-        input_defaults
-            .insert("preserve_mtimes".to_string(), InputBinding::String("true".to_string()));
-    } else if tool_name.eq_ignore_ascii_case("sd") {
-        input_defaults.insert(INPUT_SD_PATTERN.to_string(), InputBinding::String(String::new()));
-        input_defaults
-            .insert(INPUT_SD_REPLACEMENT.to_string(), InputBinding::String(String::new()));
-    } else if tool_name.eq_ignore_ascii_case("media-tagger") {
-        input_defaults
-            .insert("strict_identification".to_string(), InputBinding::String("true".to_string()));
-        input_defaults
-            .insert("write_all_tags".to_string(), InputBinding::String("true".to_string()));
-        // Default is "true" so cover art is captured when identification succeeds.
-        // Demo examples explicitly set this to "false" to reduce AcoustID/MusicBrainz
-        // cover-art network pressure during automated runs.
-        input_defaults
-            .insert("write_all_images".to_string(), InputBinding::String("true".to_string()));
-        input_defaults.insert(
-            "save_images_to_tags".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "embed_only_one_front_image".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "ca_providers".to_string(),
-            InputBinding::String(crate::builtins::media_tagger::DEFAULT_CA_PROVIDERS.to_string()),
-        );
-        input_defaults.insert(
-            "caa_image_types".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "caa_image_size".to_string(),
-            InputBinding::String(crate::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string()),
-        );
-        input_defaults.insert(
-            "caa_approved_only".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "preserve_images".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "clear_existing_tags".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "enable_tag_saving".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "release_ars".to_string(),
-            InputBinding::String(crate::builtins::media_tagger::DEFAULT_RELEASE_ARS.to_string()),
-        );
-        input_defaults.insert(
-            "cover_art_slot_count".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "acoustid_endpoint".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_ACOUSTID_ENDPOINT.to_string(),
-            ),
-        );
-        input_defaults.insert(
-            "musicbrainz_endpoint".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT.to_string(),
-            ),
-        );
-        input_defaults.insert("cache_dir".to_string(), InputBinding::String(String::new()));
-        input_defaults.insert(
-            "cache_expiry_seconds".to_string(),
-            InputBinding::String(
-                crate::builtins::media_tagger::DEFAULT_CACHE_EXPIRY_SECONDS.to_string(),
-            ),
-        );
     }
 
     input_defaults
