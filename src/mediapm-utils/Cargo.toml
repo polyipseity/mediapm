@@ -1,0 +1,18 @@
+[package]
+name = "mediapm-utils"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+description = "Shared utility types, path helpers, and builtin boilerplate for mediapm crates"
+
+[features]
+default = []
+cli = ["dep:clap"]
+
+[lints]
+workspace = true
+
+[dependencies]
+clap = { workspace = true, features = ["derive", "std"], optional = true }
