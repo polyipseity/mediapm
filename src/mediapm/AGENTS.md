@@ -638,10 +638,13 @@ Media probe metadata caches as JSONC for TTL-based reuse (86400s default).
   - per-workflow step execution with batch cache probe
   (`exists_many`/`CasExistenceBitmap`).
 - Per-file hashing and materialization parallelized across available workers.
+  A local blake3 hash is computed for each file before CAS interaction. When the
+  hash matches the stored `managed_files` record AND the file exists on disk,
+  both the CAS `put` and the filesystem materialization are skipped.
+  This per-file skip applies to `Media` (via `variant` hash from step output),
+  `MediaFolder` (via local blake3 hash of each extracted member), and `Playlist`
+  (via local blake3 hash of rendered bytes). Matching hashes → no re-materialization.
   No hash tree; flat per-file comparison.
-- Lock reconciliation compares stored hash (in lock) with current file hash.
-  Computed once per file (not incremental). Matching hashes → no
-  re-materialization.
 
 ## Testing, validation, and docs bar
 
@@ -1425,9 +1428,12 @@ per-worker text lines.
 
 ### 4.28 Hierarchy Sync Progress Display
 
-Hierarchy materialization does not have per-file progress. The single
-progress bar tracks `completed_steps/total_steps` across the entire
-workflow execution phase.
+Hierarchy materialization uses entry-level progress bars: the single progress
+bar tracks `completed_steps/total_steps` across the entire workflow execution
+phase. Within each entry, individual files may be skipped via per-file hash
+comparison (see "Sync performance expectations"), updating the
+`materialized_paths`/`skipped_paths` report counters accordingly despite the
+entry-level progress display.
 
 ### 4.29 Media Metadata Resolution Edge Cases
 
