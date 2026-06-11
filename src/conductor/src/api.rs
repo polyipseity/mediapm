@@ -319,10 +319,28 @@ fn resolve_managed_tool_id(
         [] => Err(ConductorError::Workflow(format!(
             "tool selector '{selector}' did not match any managed tool id in conductor machine config"
         ))),
-        _ => Err(ConductorError::Workflow(format!(
-            "tool selector '{selector}' matched multiple managed tool ids ({}) ; pass --tool <immutable-id>",
-            matches.join(", ")
-        ))),
+        _ => {
+            // When multiple tools match one logical name, prefer the one
+            // with a non-empty content_map (the active tool). Generated
+            // configs have at most one such tool per logical name.
+            let with_content = matches
+                .iter()
+                .filter(|id| {
+                    machine
+                        .tool_configs
+                        .get(*id)
+                        .and_then(|c| c.content_map.as_ref())
+                        .is_some_and(|m| !m.is_empty())
+                })
+                .collect::<Vec<_>>();
+            if with_content.len() == 1 {
+                return Ok(with_content[0].clone());
+            }
+            Err(ConductorError::Workflow(format!(
+                "tool selector '{selector}' matched multiple managed tool ids ({}) and the content_map tiebreaker could not resolve; pass --tool <immutable-id>",
+                matches.join(", ")
+            )))
+        }
     }
 }
 

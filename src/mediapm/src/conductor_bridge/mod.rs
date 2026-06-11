@@ -1185,10 +1185,10 @@ mod tests {
         );
     }
 
-    /// Protects ambiguity diagnostics so logical selectors with multiple managed
-    /// matches fail fast and require one immutable tool id selector.
+    /// Verifies that when multiple tools match one logical selector, the one
+    /// with a non-empty content_map (active tool) is preferred.
     #[test]
-    fn resolve_managed_tool_target_rejects_ambiguous_selector_without_exact_id() {
+    fn resolve_managed_tool_target_picks_active_tool_when_multiple_match() {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = MediaPmPaths::from_root(temp.path());
         ensure_conductor_documents(&paths).expect("bootstrap conductor documents");
@@ -1198,50 +1198,55 @@ mod tests {
 
         let mut machine = MachineNickelDocument::default();
         let cas_root = crate::source_metadata::resolve_conductor_cas_root(&paths, &machine);
-        let hash_a = put_test_cas_bytes(&cas_root, b"stub binary a".to_vec());
-        let hash_b = put_test_cas_bytes(&cas_root, b"stub binary b".to_vec());
-        for (tool_id, hash) in [(tool_a, hash_a), (tool_b, hash_b)] {
-            machine.tools.insert(
-                tool_id.to_string(),
-                ToolSpec {
-                    kind: ToolKindSpec::Executable {
-                        command: vec![relative_command.to_string()],
-                        env_vars: BTreeMap::new(),
-                        success_codes: vec![0],
-                    },
-                    ..ToolSpec::default()
+        let hash_b = put_test_cas_bytes(&cas_root, b"stub binary".to_vec());
+        // tool_a without content_map (stale entry)
+        machine.tools.insert(
+            tool_a.to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec![relative_command.to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
                 },
-            );
-            machine.tool_configs.insert(
-                tool_id.to_string(),
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(relative_command.to_string(), hash)])),
-                    ..ToolConfigSpec::default()
+                ..ToolSpec::default()
+            },
+        );
+        // tool_b with content_map (active entry)
+        machine.tools.insert(
+            tool_b.to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Executable {
+                    command: vec![relative_command.to_string()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
                 },
-            );
-            machine.external_data.insert(
-                hash,
-                mediapm_conductor::ExternalContentRef {
-                    description: Some(format!("test managed ffmpeg payload for '{tool_id}'")),
-                    save: None,
-                },
-            );
-        }
+                ..ToolSpec::default()
+            },
+        );
+        machine.tool_configs.insert(
+            tool_b.to_string(),
+            ToolConfigSpec {
+                content_map: Some(BTreeMap::from([(relative_command.to_string(), hash_b)])),
+                ..ToolConfigSpec::default()
+            },
+        );
+        machine.external_data.insert(
+            hash_b,
+            mediapm_conductor::ExternalContentRef {
+                description: Some(format!("test managed ffmpeg payload for '{tool_b}'")),
+                save: None,
+            },
+        );
         save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-        let error = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
+        let resolved = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
             &paths.conductor_machine_ncl,
             &cas_root,
             &paths.tools_dir,
             "ffmpeg",
         ))
-        .expect_err("ambiguous logical selector should fail without exact selector");
-        let message = error.to_string();
-        assert!(
-            message.contains("matched multiple managed tool ids") || message.contains("ambiguous")
-        );
-        assert!(message.contains("source-a"));
-        assert!(message.contains("source-b"));
+        .expect("logical selector should resolve to tool with content_map");
+        assert_eq!(resolved.tool_id, tool_b);
     }
 
     /// Protects config-edit reconciliation by ensuring managed workflows are

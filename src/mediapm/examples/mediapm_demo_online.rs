@@ -2683,29 +2683,43 @@ fn resolve_managed_tool_id(
     machine: &MachineNickelDocument,
     logical_name: &str,
 ) -> ExampleResult<String> {
-    let mut matches = machine
+    let matches: Vec<String> = machine
         .tools
         .keys()
         .filter(|candidate| {
             logical_name_from_managed_tool_id(candidate).is_some_and(|name| name == logical_name)
         })
-        .cloned();
+        .cloned()
+        .collect();
 
-    let Some(first) = matches.next() else {
-        return Err(format!(
+    match matches.len() {
+        0 => Err(format!(
             "machine config is missing immutable managed tool id for logical tool '{logical_name}'"
         )
-        .into());
-    };
-
-    if matches.next().is_some() {
-        return Err(format!(
-            "machine config has multiple immutable managed tool ids for logical tool '{logical_name}'"
-        )
-        .into());
+        .into()),
+        1 => Ok(matches[0].clone()),
+        _ => {
+            // Prefer the tool with non-empty content_map (active).
+            let with_content = matches
+                .iter()
+                .filter(|id| {
+                    machine
+                        .tool_configs
+                        .get(*id)
+                        .and_then(|c| c.content_map.as_ref())
+                        .is_some_and(|m| !m.is_empty())
+                })
+                .collect::<Vec<_>>();
+            if with_content.len() == 1 {
+                return Ok(with_content[0].clone());
+            }
+            Err(format!(
+                "tool selector '{logical_name}' matched multiple managed tool ids ({}) and the content_map tiebreaker could not resolve; pass --tool <immutable-id>",
+                matches.join(", ")
+            )
+            .into())
+        }
     }
-
-    Ok(first)
 }
 
 /// Detects if running in a CI environment based on standard CI env vars.
