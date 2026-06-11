@@ -13,6 +13,210 @@ use super::option_constants::{
 };
 use super::{FfmpegSlotLimits, ffmpeg_cover_slot_enabled_input_name};
 
+/// Describes how one tool input maps to CLI argument templates.
+#[derive(Clone, Copy)]
+enum TokenSpec {
+    /// key/value pair `--flag value`, emitted when the input has a non-empty
+    /// value.
+    Pair(&'static str),
+    /// boolean flag: emits `--flag` only when the input value is `"true"`.
+    Bool(&'static str),
+    /// boolean-triggered pair: emits `--flag value` when input is `"true"`.
+    BoolPair(&'static str, &'static str),
+    /// Produces no CLI tokens (input is used only for internal plumbing).
+    None,
+}
+
+const YT_DLP_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
+    ("format", TokenSpec::Pair("-f")),
+    ("format_sort", TokenSpec::Pair("-S")),
+    ("extract_audio", TokenSpec::Bool("--extract-audio")),
+    ("audio_format", TokenSpec::Pair("--audio-format")),
+    ("audio_quality", TokenSpec::Pair("--audio-quality")),
+    ("remux_video", TokenSpec::Pair("--remux-video")),
+    ("recode_video", TokenSpec::Pair("--recode-video")),
+    ("merge_output_format", TokenSpec::Pair("--merge-output-format")),
+    ("embed_thumbnail", TokenSpec::Bool("--embed-thumbnail")),
+    ("embed_metadata", TokenSpec::Bool("--embed-metadata")),
+    ("embed_subs", TokenSpec::Bool("--embed-subs")),
+    ("embed_chapters", TokenSpec::Bool("--embed-chapters")),
+    ("embed_info_json", TokenSpec::Bool("--embed-info-json")),
+    ("write_subs", TokenSpec::Bool("--write-subs")),
+    ("write_auto_subs", TokenSpec::Bool("--write-auto-subs")),
+    ("sub_langs", TokenSpec::Pair("--sub-langs")),
+    ("sub_format", TokenSpec::Pair("--sub-format")),
+    ("convert_subs", TokenSpec::Pair("--convert-subs")),
+    ("write_thumbnail", TokenSpec::Bool("--write-thumbnail")),
+    ("write_all_thumbnails", TokenSpec::Bool("--write-all-thumbnails")),
+    ("convert_thumbnails", TokenSpec::Pair("--convert-thumbnails")),
+    ("write_info_json", TokenSpec::Bool("--write-info-json")),
+    ("clean_info_json", TokenSpec::Bool("--clean-info-json")),
+    ("write_comments", TokenSpec::Bool("--write-comments")),
+    ("write_description", TokenSpec::Bool("--write-description")),
+    ("write_annotations", TokenSpec::Bool("--write-annotations")),
+    ("write_chapters", TokenSpec::Bool("--write-chapters")),
+    ("write_link", TokenSpec::Bool("--write-link")),
+    ("write_url_link", TokenSpec::Bool("--write-url-link")),
+    ("write_webloc_link", TokenSpec::Bool("--write-webloc-link")),
+    ("write_desktop_link", TokenSpec::Bool("--write-desktop-link")),
+    ("split_chapters", TokenSpec::Bool("--split-chapters")),
+    ("playlist_items", TokenSpec::Pair("--playlist-items")),
+    ("no_playlist", TokenSpec::Bool("--no-playlist")),
+    ("skip_download", TokenSpec::Bool("--skip-download")),
+    ("retries", TokenSpec::Pair("--retries")),
+    ("limit_rate", TokenSpec::Pair("--limit-rate")),
+    ("concurrent_fragments", TokenSpec::Pair("--concurrent-fragments")),
+    ("proxy", TokenSpec::Pair("--proxy")),
+    ("socket_timeout", TokenSpec::Pair("--socket-timeout")),
+    ("sleep_subtitles", TokenSpec::Pair("--sleep-subtitles")),
+    ("user_agent", TokenSpec::Pair("--user-agent")),
+    ("referer", TokenSpec::Pair("--referer")),
+    ("add_header", TokenSpec::Pair("--add-header")),
+    ("cookies", TokenSpec::Pair("--cookies")),
+    ("cookies_from_browser", TokenSpec::Pair("--cookies-from-browser")),
+    ("paths", TokenSpec::Pair("--paths")),
+    ("js_runtimes", TokenSpec::Pair("--js-runtimes")),
+    ("output", TokenSpec::Pair("--output")),
+    ("parse_metadata", TokenSpec::Pair("--parse-metadata")),
+    ("replace_in_metadata", TokenSpec::Pair("--replace-in-metadata")),
+    ("download_sections", TokenSpec::Pair("--download-sections")),
+    ("postprocessor_args", TokenSpec::Pair("--postprocessor-args")),
+    ("extractor_args", TokenSpec::Pair("--extractor-args")),
+    ("http_chunk_size", TokenSpec::Pair("--http-chunk-size")),
+    ("download_archive", TokenSpec::Pair("--download-archive")),
+    ("sponsorblock_mark", TokenSpec::Pair("--sponsorblock-mark")),
+    ("sponsorblock_remove", TokenSpec::Pair("--sponsorblock-remove")),
+];
+
+const FFMPEG_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
+    ("audio_codec", TokenSpec::Pair("-c:a")),
+    ("video_codec", TokenSpec::Pair("-c:v")),
+    ("container", TokenSpec::Pair("-f")),
+    ("audio_bitrate", TokenSpec::Pair("-b:a")),
+    ("video_bitrate", TokenSpec::Pair("-b:v")),
+    ("audio_quality", TokenSpec::Pair("-q:a")),
+    ("video_quality", TokenSpec::Pair("-q:v")),
+    ("crf", TokenSpec::Pair("-crf")),
+    ("preset", TokenSpec::Pair("-preset")),
+    ("threads", TokenSpec::Pair("-threads")),
+    ("log_level", TokenSpec::Pair("-loglevel")),
+    ("progress", TokenSpec::Pair("-progress")),
+    ("tune", TokenSpec::Pair("-tune")),
+    ("profile", TokenSpec::Pair("-profile:v")),
+    ("level", TokenSpec::Pair("-level")),
+    ("pixel_format", TokenSpec::Pair("-pix_fmt")),
+    ("frame_rate", TokenSpec::Pair("-r")),
+    ("sample_rate", TokenSpec::Pair("-ar")),
+    ("channels", TokenSpec::Pair("-ac")),
+    ("audio_filters", TokenSpec::Pair("-af")),
+    ("video_filters", TokenSpec::Pair("-vf")),
+    ("filter_complex", TokenSpec::Pair("-filter_complex")),
+    ("start_time", TokenSpec::Pair("-ss")),
+    ("duration", TokenSpec::Pair("-t")),
+    ("to", TokenSpec::Pair("-to")),
+    ("movflags", TokenSpec::Pair("-movflags")),
+    ("cues_to_front", TokenSpec::BoolPair("-cues_to_front", "1")),
+    ("map_metadata", TokenSpec::Pair("-map_metadata")),
+    ("map_chapters", TokenSpec::Pair("-map_chapters")),
+    ("map", TokenSpec::Pair("-map")),
+    ("map_channel", TokenSpec::Pair("-map_channel")),
+    ("copy_ts", TokenSpec::Bool("-copyts")),
+    ("start_at_zero", TokenSpec::Bool("-start_at_zero")),
+    ("stats", TokenSpec::Bool("-stats")),
+    ("no_overwrite", TokenSpec::Bool("-n")),
+    ("codec_copy", TokenSpec::BoolPair("-c", "copy")),
+    ("faststart", TokenSpec::BoolPair("-movflags", "+faststart")),
+    ("hwaccel", TokenSpec::Pair("-hwaccel")),
+    ("sample_format", TokenSpec::Pair("-sample_fmt")),
+    ("channel_layout", TokenSpec::Pair("-channel_layout")),
+    ("metadata", TokenSpec::Pair("-metadata")),
+    ("timestamp", TokenSpec::Pair("-timestamp")),
+    ("disposition", TokenSpec::Pair("-disposition")),
+    ("fps_mode", TokenSpec::Pair("-fps_mode")),
+    ("force_key_frames", TokenSpec::Pair("-force_key_frames")),
+    ("aspect", TokenSpec::Pair("-aspect")),
+    ("stream_loop", TokenSpec::Pair("-stream_loop")),
+    ("max_muxing_queue_size", TokenSpec::Pair("-max_muxing_queue_size")),
+    ("strict", TokenSpec::Pair("-strict")),
+    ("maxrate", TokenSpec::Pair("-maxrate")),
+    ("bufsize", TokenSpec::Pair("-bufsize")),
+    ("bitstream_filter", TokenSpec::Pair("-bsf")),
+    ("id3v2_version", TokenSpec::Pair("-id3v2_version")),
+    ("shortest", TokenSpec::Bool("-shortest")),
+    ("vn", TokenSpec::Bool("-vn")),
+    ("an", TokenSpec::Bool("-an")),
+    ("sn", TokenSpec::Bool("-sn")),
+    ("dn", TokenSpec::Bool("-dn")),
+    ("hide_banner", TokenSpec::Bool("-hide_banner")),
+];
+
+const RSGAIN_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
+    ("input_extension", TokenSpec::None),
+    ("mode", TokenSpec::None),
+    ("album", TokenSpec::Bool("--album")),
+    ("album_mode", TokenSpec::Bool("--album")),
+    ("album_aes77", TokenSpec::Bool("--album-aes77")),
+    ("skip_existing", TokenSpec::Bool("--skip-existing")),
+    ("tagmode", TokenSpec::Pair("--tagmode")),
+    ("target_lufs", TokenSpec::Pair("--loudness")),
+    ("loudness", TokenSpec::Pair("--loudness")),
+    ("clip_mode", TokenSpec::Pair("--clip-mode")),
+    ("true_peak", TokenSpec::Bool("--true-peak")),
+    ("dual_mono", TokenSpec::Bool("--dual-mono")),
+    ("max_peak", TokenSpec::Pair("--max-peak")),
+    ("lowercase", TokenSpec::Bool("--lowercase")),
+    ("id3v2_version", TokenSpec::Pair("--id3v2-version")),
+    ("opus_mode", TokenSpec::Pair("--opus-mode")),
+    ("jobs", TokenSpec::Pair("--multithread")),
+    ("multithread", TokenSpec::Pair("--multithread")),
+    ("preset", TokenSpec::Pair("--preset")),
+    ("dry_run", TokenSpec::Bool("--dry-run")),
+    ("output", TokenSpec::Pair("--output")),
+    ("quiet", TokenSpec::Bool("--quiet")),
+    ("skip_tags", TokenSpec::BoolPair("--tagmode", "s")),
+    ("preserve_mtime", TokenSpec::Bool("--preserve-mtimes")),
+    ("preserve_mtimes", TokenSpec::Bool("--preserve-mtimes")),
+];
+
+const MEDIA_TAGGER_TOKEN_SPECS: &[(&str, TokenSpec)] = &[
+    ("acoustid_endpoint", TokenSpec::Pair("--acoustid-endpoint")),
+    ("musicbrainz_endpoint", TokenSpec::Pair("--musicbrainz-endpoint")),
+    ("cache_dir", TokenSpec::Pair("--cache-dir")),
+    ("cache_expiry_seconds", TokenSpec::Pair("--cache-expiry-seconds")),
+    ("strict_identification", TokenSpec::Bool("--strict-identification")),
+    ("write_all_tags", TokenSpec::Bool("--write-all-tags")),
+    ("write_all_images", TokenSpec::Bool("--write-all-images")),
+    ("save_images_to_tags", TokenSpec::Bool("--save-images-to-tags")),
+    ("embed_only_one_front_image", TokenSpec::Bool("--embed-only-one-front-image")),
+    ("ca_providers", TokenSpec::Pair("--ca-providers")),
+    ("caa_image_types", TokenSpec::Pair("--caa-image-types")),
+    ("caa_image_size", TokenSpec::Pair("--caa-image-size")),
+    ("caa_approved_only", TokenSpec::Bool("--caa-approved-only")),
+    ("preserve_images", TokenSpec::Bool("--preserve-images")),
+    ("clear_existing_tags", TokenSpec::Bool("--clear-existing-tags")),
+    ("enable_tag_saving", TokenSpec::Bool("--enable-tag-saving")),
+    ("release_ars", TokenSpec::Bool("--release-ars")),
+    ("cover_art_slot_count", TokenSpec::Pair("--cover-art-slot-count")),
+    ("recording_mbid", TokenSpec::Pair("--recording-mbid")),
+    ("release_mbid", TokenSpec::Pair("--release-mbid")),
+];
+
+/// Returns the token spec table for a tool, or an empty slice.
+#[must_use]
+fn token_specs_for_tool(tool_name: &str) -> &'static [(&'static str, TokenSpec)] {
+    if tool_name.eq_ignore_ascii_case("yt-dlp") {
+        YT_DLP_TOKEN_SPECS
+    } else if tool_name.eq_ignore_ascii_case("ffmpeg") {
+        FFMPEG_TOKEN_SPECS
+    } else if tool_name.eq_ignore_ascii_case("rsgain") {
+        RSGAIN_TOKEN_SPECS
+    } else if tool_name.eq_ignore_ascii_case("media-tagger") {
+        MEDIA_TAGGER_TOKEN_SPECS
+    } else {
+        &[]
+    }
+}
+
 /// Returns ordered option-input names for the provided managed tool.
 #[must_use]
 pub(super) fn option_input_names_for_tool(tool_name: &str) -> &'static [&'static str] {
@@ -44,237 +248,25 @@ pub(super) fn command_option_tokens_for_tool(tool_name: &str, input_names: &[&st
 
 /// Resolves option templates for one logical tool option input.
 #[must_use]
-#[expect(
-    clippy::too_many_lines,
-    reason = "option-token mapping is intentionally exhaustive and declarative"
-)]
 pub(super) fn option_tokens_for_input(tool_name: &str, input_name: &str) -> Vec<String> {
     if input_name == "option_args" {
         return vec![format!("${{*inputs.{input_name}}}")];
     }
 
-    if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        return match input_name {
-            "format" => pair_option_tokens(input_name, "-f"),
-            "format_sort" => pair_option_tokens(input_name, "-S"),
-            "extract_audio" => bool_flag_tokens(input_name, "--extract-audio"),
-            "audio_format" => pair_option_tokens(input_name, "--audio-format"),
-            "audio_quality" => pair_option_tokens(input_name, "--audio-quality"),
-            "remux_video" => pair_option_tokens(input_name, "--remux-video"),
-            "recode_video" => pair_option_tokens(input_name, "--recode-video"),
-            "merge_output_format" => pair_option_tokens(input_name, "--merge-output-format"),
-            "embed_thumbnail" => {
-                bool_switch_tokens(input_name, "--embed-thumbnail", "--no-embed-thumbnail")
-            }
-            "embed_metadata" => {
-                bool_switch_tokens(input_name, "--embed-metadata", "--no-embed-metadata")
-            }
-            "embed_subs" => bool_switch_tokens(input_name, "--embed-subs", "--no-embed-subs"),
-            "embed_chapters" => {
-                bool_switch_tokens(input_name, "--embed-chapters", "--no-embed-chapters")
-            }
-            "embed_info_json" => {
-                bool_switch_tokens(input_name, "--embed-info-json", "--no-embed-info-json")
-            }
-            "write_subs" => bool_switch_tokens(input_name, "--write-subs", "--no-write-subs"),
-            "write_auto_subs" => {
-                bool_switch_tokens(input_name, "--write-auto-subs", "--no-write-auto-subs")
-            }
-            "sub_langs" => pair_option_tokens(input_name, "--sub-langs"),
-            "sub_format" => pair_option_tokens(input_name, "--sub-format"),
-            "convert_subs" => pair_option_tokens(input_name, "--convert-subs"),
-            "write_thumbnail" => {
-                bool_switch_tokens(input_name, "--write-thumbnail", "--no-write-thumbnail")
-            }
-            "write_all_thumbnails" => bool_switch_tokens(
-                input_name,
-                "--write-all-thumbnails",
-                "--no-write-all-thumbnails",
-            ),
-            "convert_thumbnails" => pair_option_tokens(input_name, "--convert-thumbnails"),
-            "write_info_json" => {
-                bool_switch_tokens(input_name, "--write-info-json", "--no-write-info-json")
-            }
-            "clean_info_json" => {
-                bool_switch_tokens(input_name, "--clean-info-json", "--no-clean-info-json")
-            }
-            "write_comments" => {
-                bool_switch_tokens(input_name, "--write-comments", "--no-write-comments")
-            }
-            "write_description" => {
-                bool_switch_tokens(input_name, "--write-description", "--no-write-description")
-            }
-            "write_annotations" => {
-                bool_switch_tokens(input_name, "--write-annotations", "--no-write-annotations")
-            }
-            "write_chapters" => {
-                bool_switch_tokens(input_name, "--write-chapters", "--no-write-chapters")
-            }
-            "write_link" => bool_switch_tokens(input_name, "--write-link", "--no-write-link"),
-            "write_url_link" => {
-                bool_switch_tokens(input_name, "--write-url-link", "--no-write-url-link")
-            }
-            "write_webloc_link" => {
-                bool_switch_tokens(input_name, "--write-webloc-link", "--no-write-webloc-link")
-            }
-            "write_desktop_link" => {
-                bool_switch_tokens(input_name, "--write-desktop-link", "--no-write-desktop-link")
-            }
-            "split_chapters" => {
-                bool_switch_tokens(input_name, "--split-chapters", "--no-split-chapters")
-            }
-            "playlist_items" => pair_option_tokens(input_name, "--playlist-items"),
-            "no_playlist" => bool_flag_tokens(input_name, "--no-playlist"),
-            "skip_download" => bool_flag_tokens(input_name, "--skip-download"),
-            "retries" => pair_option_tokens(input_name, "--retries"),
-            "limit_rate" => pair_option_tokens(input_name, "--limit-rate"),
-            "concurrent_fragments" => pair_option_tokens(input_name, "--concurrent-fragments"),
-            "proxy" => pair_option_tokens(input_name, "--proxy"),
-            "socket_timeout" => pair_option_tokens(input_name, "--socket-timeout"),
-            "sleep_subtitles" => pair_option_tokens(input_name, "--sleep-subtitles"),
-            "user_agent" => pair_option_tokens(input_name, "--user-agent"),
-            "referer" => pair_option_tokens(input_name, "--referer"),
-            "add_header" => pair_option_tokens(input_name, "--add-header"),
-            "cookies" => pair_option_tokens(input_name, "--cookies"),
-            "cookies_from_browser" => pair_option_tokens(input_name, "--cookies-from-browser"),
-            "paths" => pair_option_tokens(input_name, "--paths"),
-            "js_runtimes" => pair_option_tokens(input_name, "--js-runtimes"),
-            "output" => pair_option_tokens(input_name, "--output"),
-            "parse_metadata" => pair_option_tokens(input_name, "--parse-metadata"),
-            "replace_in_metadata" => pair_option_tokens(input_name, "--replace-in-metadata"),
-            "download_sections" => pair_option_tokens(input_name, "--download-sections"),
-            "postprocessor_args" => pair_option_tokens(input_name, "--postprocessor-args"),
-            "extractor_args" => pair_option_tokens(input_name, "--extractor-args"),
-            "http_chunk_size" => pair_option_tokens(input_name, "--http-chunk-size"),
-            "download_archive" => pair_option_tokens(input_name, "--download-archive"),
-            "sponsorblock_mark" => pair_option_tokens(input_name, "--sponsorblock-mark"),
-            "sponsorblock_remove" => pair_option_tokens(input_name, "--sponsorblock-remove"),
-            _ => pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-"))),
-        };
-    }
+    let spec = token_specs_for_tool(tool_name)
+        .iter()
+        .find(|(name, _)| *name == input_name)
+        .map(|(_, spec)| *spec);
 
-    if tool_name.eq_ignore_ascii_case("ffmpeg") {
-        return match input_name {
-            "audio_codec" => pair_option_tokens(input_name, "-c:a"),
-            "video_codec" => pair_option_tokens(input_name, "-c:v"),
-            "container" => pair_option_tokens(input_name, "-f"),
-            "audio_bitrate" => pair_option_tokens(input_name, "-b:a"),
-            "video_bitrate" => pair_option_tokens(input_name, "-b:v"),
-            "audio_quality" => pair_option_tokens(input_name, "-q:a"),
-            "video_quality" => pair_option_tokens(input_name, "-q:v"),
-            "crf" => pair_option_tokens(input_name, "-crf"),
-            "preset" => pair_option_tokens(input_name, "-preset"),
-            "threads" => pair_option_tokens(input_name, "-threads"),
-            "log_level" => pair_option_tokens(input_name, "-loglevel"),
-            "progress" => pair_option_tokens(input_name, "-progress"),
-            "tune" => pair_option_tokens(input_name, "-tune"),
-            "profile" => pair_option_tokens(input_name, "-profile:v"),
-            "level" => pair_option_tokens(input_name, "-level"),
-            "pixel_format" => pair_option_tokens(input_name, "-pix_fmt"),
-            "frame_rate" => pair_option_tokens(input_name, "-r"),
-            "sample_rate" => pair_option_tokens(input_name, "-ar"),
-            "channels" => pair_option_tokens(input_name, "-ac"),
-            "audio_filters" => pair_option_tokens(input_name, "-af"),
-            "video_filters" => pair_option_tokens(input_name, "-vf"),
-            "filter_complex" => pair_option_tokens(input_name, "-filter_complex"),
-            "start_time" => pair_option_tokens(input_name, "-ss"),
-            "duration" => pair_option_tokens(input_name, "-t"),
-            "to" => pair_option_tokens(input_name, "-to"),
-            "movflags" => pair_option_tokens(input_name, "-movflags"),
-            "cues_to_front" => bool_value_pair_tokens(input_name, "-cues_to_front", "1"),
-            "map_metadata" => pair_option_tokens(input_name, "-map_metadata"),
-            "map_chapters" => pair_option_tokens(input_name, "-map_chapters"),
-            "map" => pair_option_tokens(input_name, "-map"),
-            "map_channel" => pair_option_tokens(input_name, "-map_channel"),
-            "copy_ts" => bool_flag_tokens(input_name, "-copyts"),
-            "start_at_zero" => bool_flag_tokens(input_name, "-start_at_zero"),
-            "stats" => bool_flag_tokens(input_name, "-stats"),
-            "no_overwrite" => bool_flag_tokens(input_name, "-n"),
-            "codec_copy" => bool_value_pair_tokens(input_name, "-c", "copy"),
-            "faststart" => bool_value_pair_tokens(input_name, "-movflags", "+faststart"),
-            "hwaccel" => pair_option_tokens(input_name, "-hwaccel"),
-            "sample_format" => pair_option_tokens(input_name, "-sample_fmt"),
-            "channel_layout" => pair_option_tokens(input_name, "-channel_layout"),
-            "metadata" => pair_option_tokens(input_name, "-metadata"),
-            "timestamp" => pair_option_tokens(input_name, "-timestamp"),
-            "disposition" => pair_option_tokens(input_name, "-disposition"),
-            "fps_mode" => pair_option_tokens(input_name, "-fps_mode"),
-            "force_key_frames" => pair_option_tokens(input_name, "-force_key_frames"),
-            "aspect" => pair_option_tokens(input_name, "-aspect"),
-            "stream_loop" => pair_option_tokens(input_name, "-stream_loop"),
-            "max_muxing_queue_size" => pair_option_tokens(input_name, "-max_muxing_queue_size"),
-            "strict" => pair_option_tokens(input_name, "-strict"),
-            "maxrate" => pair_option_tokens(input_name, "-maxrate"),
-            "bufsize" => pair_option_tokens(input_name, "-bufsize"),
-            "bitstream_filter" => pair_option_tokens(input_name, "-bsf"),
-            "id3v2_version" => pair_option_tokens(input_name, "-id3v2_version"),
-            "shortest" => bool_flag_tokens(input_name, "-shortest"),
-            "vn" => bool_flag_tokens(input_name, "-vn"),
-            "an" => bool_flag_tokens(input_name, "-an"),
-            "sn" => bool_flag_tokens(input_name, "-sn"),
-            "dn" => bool_flag_tokens(input_name, "-dn"),
-            "hide_banner" => bool_flag_tokens(input_name, "-hide_banner"),
-            _ => pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-"))),
-        };
+    match spec {
+        Some(TokenSpec::Pair(flag)) => pair_option_tokens(input_name, flag),
+        Some(TokenSpec::Bool(flag)) => bool_flag_tokens(input_name, flag),
+        Some(TokenSpec::BoolPair(flag, value)) => bool_value_pair_tokens(input_name, flag, value),
+        Some(TokenSpec::None) => Vec::new(),
+        // Programmatic wildcard fallback: convert snake_case input name to
+        // kebab-case CLI flags with a `--` prefix.
+        None => pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-"))),
     }
-
-    if tool_name.eq_ignore_ascii_case("rsgain") {
-        return match input_name {
-            "input_extension" | "mode" => Vec::new(),
-            "album" | "album_mode" => bool_flag_tokens(input_name, "--album"),
-            "album_aes77" => bool_flag_tokens(input_name, "--album-aes77"),
-            "skip_existing" => bool_flag_tokens(input_name, "--skip-existing"),
-            "tagmode" => pair_option_tokens(input_name, "--tagmode"),
-            "target_lufs" | "loudness" => pair_option_tokens(input_name, "--loudness"),
-            "clip_mode" => pair_option_tokens(input_name, "--clip-mode"),
-            "true_peak" => bool_flag_tokens(input_name, "--true-peak"),
-            "dual_mono" => bool_flag_tokens(input_name, "--dual-mono"),
-            "max_peak" => pair_option_tokens(input_name, "--max-peak"),
-            "lowercase" => bool_flag_tokens(input_name, "--lowercase"),
-            "id3v2_version" => pair_option_tokens(input_name, "--id3v2-version"),
-            "opus_mode" => pair_option_tokens(input_name, "--opus-mode"),
-            "jobs" | "multithread" => pair_option_tokens(input_name, "--multithread"),
-            "preset" => pair_option_tokens(input_name, "--preset"),
-            "dry_run" => bool_flag_tokens(input_name, "--dry-run"),
-            "output" => pair_option_tokens(input_name, "--output"),
-            "quiet" => bool_flag_tokens(input_name, "--quiet"),
-            "skip_tags" => bool_value_pair_tokens(input_name, "--tagmode", "s"),
-            "preserve_mtime" | "preserve_mtimes" => {
-                bool_flag_tokens(input_name, "--preserve-mtimes")
-            }
-            _ => pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-"))),
-        };
-    }
-
-    if tool_name.eq_ignore_ascii_case("media-tagger") {
-        return match input_name {
-            "acoustid_endpoint" => pair_option_tokens(input_name, "--acoustid-endpoint"),
-            "musicbrainz_endpoint" => pair_option_tokens(input_name, "--musicbrainz-endpoint"),
-            "cache_dir" => pair_option_tokens(input_name, "--cache-dir"),
-            "cache_expiry_seconds" => pair_option_tokens(input_name, "--cache-expiry-seconds"),
-            "strict_identification" => bool_flag_tokens(input_name, "--strict-identification"),
-            "write_all_tags" => bool_flag_tokens(input_name, "--write-all-tags"),
-            "write_all_images" => bool_flag_tokens(input_name, "--write-all-images"),
-            "save_images_to_tags" => bool_flag_tokens(input_name, "--save-images-to-tags"),
-            "embed_only_one_front_image" => {
-                bool_flag_tokens(input_name, "--embed-only-one-front-image")
-            }
-            "ca_providers" => pair_option_tokens(input_name, "--ca-providers"),
-            "caa_image_types" => pair_option_tokens(input_name, "--caa-image-types"),
-            "caa_image_size" => pair_option_tokens(input_name, "--caa-image-size"),
-            "caa_approved_only" => bool_flag_tokens(input_name, "--caa-approved-only"),
-            "preserve_images" => bool_flag_tokens(input_name, "--preserve-images"),
-            "clear_existing_tags" => bool_flag_tokens(input_name, "--clear-existing-tags"),
-            "enable_tag_saving" => bool_flag_tokens(input_name, "--enable-tag-saving"),
-            "release_ars" => bool_flag_tokens(input_name, "--release-ars"),
-            "cover_art_slot_count" => pair_option_tokens(input_name, "--cover-art-slot-count"),
-            "recording_mbid" => pair_option_tokens(input_name, "--recording-mbid"),
-            "release_mbid" => pair_option_tokens(input_name, "--release-mbid"),
-            _ => pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-"))),
-        };
-    }
-
-    pair_option_tokens(input_name, &format!("--{}", input_name.replace('_', "-")))
 }
 
 /// Builds `${*inputs.<name> ? <flag> | ''}` + `${*inputs.<name>}` tokens for
@@ -291,17 +283,6 @@ fn pair_option_tokens(input_name: &str, flag: &str) -> Vec<String> {
 #[must_use]
 fn bool_flag_tokens(input_name: &str, flag: &str) -> Vec<String> {
     vec![unpack_if_equals(input_name, "true", flag)]
-}
-
-/// Builds conditional tokens that emit `true_flag` only when the option value
-/// is exactly `"true"`.
-///
-/// The `false` branch is intentionally omitted in mediapm for simpler
-/// value-centric option behavior: non-`"true"` values produce no boolean CLI
-/// toggle token.
-#[must_use]
-fn bool_switch_tokens(input_name: &str, true_flag: &str, _false_flag: &str) -> Vec<String> {
-    bool_flag_tokens(input_name, true_flag)
 }
 
 /// Builds conditional tokens that emit one `flag value` pair only when the
