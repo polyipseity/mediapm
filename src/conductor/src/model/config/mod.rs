@@ -112,6 +112,12 @@ impl ImpureTimestamp {
         let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
         Self { epoch_seconds: duration.as_secs(), subsec_nanos: duration.subsec_nanos() }
     }
+
+    /// Returns the timestamp as Unix nanoseconds since epoch.
+    #[must_use]
+    pub fn as_unix_nanos(self) -> u128 {
+        self.epoch_seconds as u128 * 1_000_000_000 + self.subsec_nanos as u128
+    }
 }
 
 /// Runtime storage path defaults persisted in user/machine config documents.

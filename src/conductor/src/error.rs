@@ -32,3 +32,14 @@ pub enum ConductorError {
     #[error("internal conductor error: {0}")]
     Internal(String),
 }
+
+impl ConductorError {
+    /// Constructs an I/O error with operation name and path.
+    pub fn io(
+        operation: impl Into<String>,
+        path: impl Into<PathBuf>,
+        source: std::io::Error,
+    ) -> Self {
+        Self::Io { operation: operation.into(), path: path.into(), source }
+    }
+}

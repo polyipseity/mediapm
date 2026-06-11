@@ -4,7 +4,9 @@
 //! messages, typed RPC client, actor marker, spawn helper, and the concrete
 //! `ractor::Actor` implementation that delegates to the workflow coordinator.
 
-use mediapm_cas::{CasApi, CasMaintenanceApi, Hash};
+use mediapm_cas::Hash;
+
+use crate::{CasBound, CasMaintenanceBound};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -238,7 +240,7 @@ impl ConductorActorClient {
 }
 
 /// Actor state wrapping the workflow coordinator with background task tracking.
-struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
+struct ConductorActorState<C: CasBound> {
     /// Core workflow coordinator.
     coordinator: WorkflowCoordinator<C>,
     /// Background workflow tasks keyed by handle ID.
@@ -271,10 +273,7 @@ impl<C> Default for ConductorNodeActor<C> {
     }
 }
 
-impl<C> Actor for ConductorNodeActor<C>
-where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
-{
+impl<C: CasMaintenanceBound> Actor for ConductorNodeActor<C> {
     type Msg = ConductorNodeMessage;
     type State = ConductorActorState<C>;
     type Arguments = Arc<C>;
@@ -479,10 +478,9 @@ where
 /// # Errors
 ///
 /// Returns an error when the node actor cannot be spawned.
-pub async fn spawn_conductor_actor<C>(cas: Arc<C>) -> Result<ConductorActorClient, ConductorError>
-where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
-{
+pub async fn spawn_conductor_actor<C: CasMaintenanceBound>(
+    cas: Arc<C>,
+) -> Result<ConductorActorClient, ConductorError> {
     let (actor_ref, _join_handle) =
         Actor::spawn(None, ConductorNodeActor::<C>::default(), cas).await.map_err(|err| {
             ConductorError::Internal(format!("failed spawning conductor actor: {err}"))

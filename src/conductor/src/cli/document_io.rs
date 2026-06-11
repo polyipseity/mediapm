@@ -18,62 +18,49 @@ const GENERATED_MACHINE_DOCUMENT_BANNER: &str = concat!(
     "# This file is machine-managed. Prefer editing conductor.ncl for user intent.\n\n",
 );
 
-/// Loads `conductor.ncl` through versioned decoder, returning default when absent.
-pub(super) fn load_user_document(path: &Path) -> Result<UserNickelDocument, ConductorError> {
+/// Shared loading logic for all Nickel document types.
+///
+/// Checks existence, reads bytes from disk, skips whitespace-only content,
+/// and passes through the versioned decoder.
+fn load_document<T>(
+    path: &Path,
+    display_name: &str,
+    decode: fn(&[u8]) -> Result<T, ConductorError>,
+    default: T,
+) -> Result<T, ConductorError> {
     if !path.exists() {
-        return Ok(UserNickelDocument::default());
+        return Ok(default);
     }
 
-    let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
-        operation: "reading conductor.ncl".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
+    let bytes = std::fs::read(path)
+        .map_err(|source| ConductorError::io(format!("reading {display_name}"), path, source))?;
 
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(UserNickelDocument::default());
+        return Ok(default);
     }
 
-    decode_user_document(&bytes)
+    decode(&bytes)
+}
+
+/// Loads `conductor.ncl` through versioned decoder, returning default when absent.
+pub(super) fn load_user_document(path: &Path) -> Result<UserNickelDocument, ConductorError> {
+    load_document(path, "conductor.ncl", decode_user_document, UserNickelDocument::default())
 }
 
 /// Loads `conductor.machine.ncl` through versioned decoder, returning default when absent.
 pub(super) fn load_machine_document(path: &Path) -> Result<MachineNickelDocument, ConductorError> {
-    if !path.exists() {
-        return Ok(MachineNickelDocument::default());
-    }
-
-    let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
-        operation: "reading conductor.machine.ncl".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(MachineNickelDocument::default());
-    }
-
-    decode_machine_document(&bytes)
+    load_document(
+        path,
+        "conductor.machine.ncl",
+        decode_machine_document,
+        MachineNickelDocument::default(),
+    )
 }
 
 /// Loads one state document path through versioned decoder, returning default
 /// when absent.
 pub(super) fn load_state_document(path: &Path) -> Result<StateNickelDocument, ConductorError> {
-    if !path.exists() {
-        return Ok(StateNickelDocument::default());
-    }
-
-    let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
-        operation: "reading state document".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(StateNickelDocument::default());
-    }
-
-    decode_state_document(&bytes)
+    load_document(path, "state document", decode_state_document, StateNickelDocument::default())
 }
 
 /// Saves `conductor.machine.ncl` using versioned encoder.

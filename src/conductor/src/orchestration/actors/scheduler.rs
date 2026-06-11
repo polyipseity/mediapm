@@ -5,7 +5,6 @@
 //! coordinator stays purely workflow-oriented.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
@@ -14,6 +13,7 @@ use crate::api::{
     ToolRuntimeEstimate, WorkerQueueDiagnostics,
 };
 use crate::error::ConductorError;
+use crate::model::config::ImpureTimestamp;
 use crate::orchestration::config::{
     rpc_timeout_ms, scheduler_ewma_alpha, scheduler_trace_capacity, unknown_step_cost_ms,
 };
@@ -200,7 +200,7 @@ impl SchedulerService {
         self.instrumentation.trace_sequence = self.instrumentation.trace_sequence.saturating_add(1);
         let event = SchedulerTraceEvent {
             sequence: self.instrumentation.trace_sequence,
-            timestamp_unix_nanos: Self::now_unix_nanos(),
+            timestamp_unix_nanos: ImpureTimestamp::now().as_unix_nanos(),
             kind,
         };
 
@@ -208,11 +208,6 @@ impl SchedulerService {
         while self.instrumentation.traces.len() > self.instrumentation.trace_capacity {
             let _ = self.instrumentation.traces.pop_front();
         }
-    }
-
-    /// Returns the current wall-clock time in Unix nanoseconds for trace events.
-    fn now_unix_nanos() -> u128 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
     }
 
     /// Records one completed step and updates diagnostics-visible state.

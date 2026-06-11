@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use mediapm_cas::{CasApi, CasError, Hash};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
+use crate::CasBound;
 use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
 use crate::model::state::{OrchestrationState, decode_state, encode_state};
@@ -169,10 +170,7 @@ where
     current_state_pointer: Option<Hash>,
 }
 
-impl<C> StateStoreService<C>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+impl<C: CasBound> StateStoreService<C> {
     /// Runs instance GC on the in-memory state using the provided TTL override
     /// (or the stored TTL if override is `None`). Persists the cleaned state
     /// to CAS and publishes it.
@@ -315,10 +313,7 @@ where
     }
 }
 
-impl<C> Actor for StateStoreActor<C>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+impl<C: CasBound> Actor for StateStoreActor<C> {
     type Msg = StateStoreMessage;
     type State = StateStoreService<C>;
     type Arguments = (Arc<C>, Option<u64>);
@@ -372,13 +367,10 @@ where
 }
 
 /// Spawns the state-store actor and returns its typed client.
-pub(in crate::orchestration) async fn spawn_state_store_actor<C>(
+pub(in crate::orchestration) async fn spawn_state_store_actor<C: CasBound>(
     cas: Arc<C>,
     instance_ttl_seconds: Option<u64>,
-) -> Result<StateStoreClient, ConductorError>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+) -> Result<StateStoreClient, ConductorError> {
     let (actor_ref, _handle) =
         Actor::spawn(None, StateStoreActor::<C>::default(), (cas, instance_ttl_seconds))
             .await

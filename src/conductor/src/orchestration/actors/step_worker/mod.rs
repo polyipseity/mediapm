@@ -34,6 +34,7 @@ use mediapm_cas::{
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
 
+use crate::CasBound;
 use crate::error::ConductorError;
 use crate::model::config::{
     InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
@@ -50,6 +51,23 @@ use crate::orchestration::protocol::{
 mod template;
 
 use crate::tool_cache::{ToolCacheEntry, ToolContentCache};
+
+/// Creates a temporary directory inside `root` with the given `prefix`.
+///
+/// Ensures `root` exists before creating the temp dir. `purpose` is used in
+/// error messages for diagnostics.
+fn create_temp_dir_in(
+    root: &Path,
+    prefix: &str,
+    purpose: &str,
+) -> Result<tempfile::TempDir, ConductorError> {
+    std::fs::create_dir_all(root).map_err(|source| {
+        ConductorError::io(format!("creating {purpose} root directory"), root, source)
+    })?;
+    tempfile::Builder::new().prefix(prefix).tempdir_in(root).map_err(|source| {
+        ConductorError::io(format!("creating {purpose} working directory"), root, source)
+    })
+}
 
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
@@ -87,14 +105,14 @@ impl<C> Default for StepWorkerActor<C> {
 
 /// Runtime state for one worker actor, carrying the CAS handle and tool cache.
 #[derive(Debug)]
-struct StepWorkerState<C: CasApi + Send + Sync + 'static> {
+struct StepWorkerState<C: CasBound> {
     /// Shared CAS handle for content I/O.
     cas: Arc<C>,
     /// Shared tool-content cache for managed-tool materialization.
     tool_cache: Arc<ToolContentCache<C>>,
 }
 
-impl<C: CasApi + Send + Sync + 'static> Clone for StepWorkerState<C> {
+impl<C: CasBound> Clone for StepWorkerState<C> {
     fn clone(&self) -> Self {
         Self { cas: Arc::clone(&self.cas), tool_cache: Arc::clone(&self.tool_cache) }
     }

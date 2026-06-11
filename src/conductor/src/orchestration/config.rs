@@ -43,17 +43,20 @@ pub const ENV_PROFILE_OUTPUT_PATH: &str = "MEDIAPM_CONDUCTOR_PROFILE_JSON";
 /// fails with a timeout error. Default is 300 seconds.
 pub const ENV_RPC_TIMEOUT_SECONDS: &str = "MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS";
 
+/// Reads an environment variable, parses it, and falls back to a default.
+#[must_use]
+fn env_parse_or<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.parse::<T>().ok()).unwrap_or(default)
+}
+
 /// Returns the conductor RPC timeout in milliseconds from env var or default.
 ///
 /// Reads `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS` and multiplies by 1000.
 /// Falls back to [`DEFAULT_RPC_TIMEOUT_MS`] when unset, unparseable, or zero.
 #[must_use]
 pub fn rpc_timeout_ms() -> u64 {
-    std::env::var(ENV_RPC_TIMEOUT_SECONDS)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .map_or(DEFAULT_RPC_TIMEOUT_MS, |v| v * 1000)
+    let seconds = env_parse_or::<u64>(ENV_RPC_TIMEOUT_SECONDS, 0);
+    if seconds > 0 { seconds * 1000 } else { DEFAULT_RPC_TIMEOUT_MS }
 }
 
 /// Returns default step-worker pool size for multi-actor execution.
@@ -72,30 +75,21 @@ pub fn default_worker_pool_size() -> usize {
 /// Returns EWMA alpha used by adaptive scheduler.
 #[must_use]
 pub fn scheduler_ewma_alpha() -> f64 {
-    std::env::var(ENV_SCHEDULER_EWMA_ALPHA)
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|alpha| (0.0..=1.0).contains(alpha) && *alpha > 0.0)
-        .unwrap_or(DEFAULT_SCHEDULER_EWMA_ALPHA)
+    let v = env_parse_or::<f64>(ENV_SCHEDULER_EWMA_ALPHA, DEFAULT_SCHEDULER_EWMA_ALPHA);
+    if (0.0..=1.0).contains(&v) && v > 0.0 { v } else { DEFAULT_SCHEDULER_EWMA_ALPHA }
 }
 
 /// Returns default estimated cost for unseen tools (milliseconds).
 #[must_use]
 pub fn unknown_step_cost_ms() -> f64 {
-    std::env::var(ENV_UNKNOWN_STEP_COST_MS)
-        .ok()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|estimate| estimate.is_finite() && *estimate > 0.0)
-        .unwrap_or(DEFAULT_UNKNOWN_STEP_COST_MS)
+    let v = env_parse_or::<f64>(ENV_UNKNOWN_STEP_COST_MS, DEFAULT_UNKNOWN_STEP_COST_MS);
+    if v.is_finite() && v > 0.0 { v } else { DEFAULT_UNKNOWN_STEP_COST_MS }
 }
 
 /// Returns scheduler trace ring-buffer capacity.
 #[must_use]
 pub fn scheduler_trace_capacity() -> usize {
-    std::env::var(ENV_SCHEDULER_TRACE_CAPACITY)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_SCHEDULER_TRACE_CAPACITY)
+    env_parse_or::<usize>(ENV_SCHEDULER_TRACE_CAPACITY, DEFAULT_SCHEDULER_TRACE_CAPACITY)
 }
 
 /// Returns optional profile-artifact path from environment configuration.

@@ -17,8 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bytes::Bytes;
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::Hash;
 
+use crate::CasBound;
 use crate::error::ConductorError;
 use crate::model::state::ResolvedInput;
 
@@ -50,10 +51,7 @@ enum TemplateMaterializationDirective<'a> {
     Folder(&'a str),
 }
 
-impl<C> StepWorkerExecutor<C>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+impl<C: CasBound> StepWorkerExecutor<C> {
     /// Parses one standalone command-argument unpack token.
     ///
     /// Supported form is exactly `${*<token>}` where `<token>` is either:

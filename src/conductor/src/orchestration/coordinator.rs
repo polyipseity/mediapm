@@ -16,6 +16,7 @@
 //! external `coordinator_tests.rs` already handles test isolation.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,6 +27,7 @@ use futures_util::stream::FuturesUnordered;
 use mediapm_cas::{CasApi, Hash};
 use ractor::{ActorRef, call_t};
 
+use crate::CasBound;
 use crate::api::{
     RunSummary, RunWorkflowOptions, RuntimeDiagnostics, SchedulerDiagnostics, StateMutationOptions,
     WorkflowProgressSender, WorkflowStepEvent, resolve_runtime_storage_paths,
@@ -53,6 +55,18 @@ use super::protocol::{
     CommitStateRequest, LoadedDocuments, StepCompletionRecord, StepExecutionBundle,
     StepExecutionRequest, StepOutputs, UnifiedNickelDocument, UnifiedToolSpec,
 };
+
+/// Ensures a lazy-initialized slot is populated at most once.
+async fn ensure_once<T, F, Fut>(slot: &mut Option<T>, spawn: F) -> Result<(), ConductorError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<T, ConductorError>>,
+{
+    if slot.is_none() {
+        *slot = Some(spawn().await?);
+    }
+    Ok(())
+}
 
 /// Summary and cleanup metadata returned by one workflow run.
 #[derive(Debug)]
@@ -87,10 +101,7 @@ where
 /// Default TTL for workflow instances: 7 days.
 const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
 
-impl<C> WorkflowCoordinator<C>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+impl<C: CasBound> WorkflowCoordinator<C> {
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(super) fn new(cas: Arc<C>) -> Self {
@@ -159,12 +170,6 @@ where
         }
     }
 
-    /// Returns current Unix wall-clock timestamp in nanoseconds.
-    #[must_use]
-    fn now_unix_nanos() -> u128 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
-    }
-
     /// Ensures all supporting actors are spawned before workflow execution.
     ///
     /// Note: workers are not initialized here because they require a
@@ -172,25 +177,13 @@ where
     /// resolved. Callers must invoke [`ensure_workers`](Self::ensure_workers)
     /// separately when the tools directory is known.
     pub(super) async fn ensure_runtime_support(&mut self) -> Result<(), ConductorError> {
-        self.ensure_document_loader().await?;
-        self.ensure_scheduler().await?;
-        self.ensure_state_store().await?;
-        Ok(())
-    }
-
-    /// Lazily spawns the document-loader actor.
-    async fn ensure_document_loader(&mut self) -> Result<(), ConductorError> {
-        if self.document_loader.is_none() {
-            self.document_loader = Some(spawn_document_loader_actor().await?);
-        }
-        Ok(())
-    }
-
-    /// Lazily spawns the workflow scheduler actor.
-    async fn ensure_scheduler(&mut self) -> Result<(), ConductorError> {
-        if self.scheduler.is_none() {
-            self.scheduler = Some(spawn_scheduler_actor().await?);
-        }
+        ensure_once(&mut self.document_loader, || async { spawn_document_loader_actor().await })
+            .await?;
+        ensure_once(&mut self.scheduler, || async { spawn_scheduler_actor().await }).await?;
+        ensure_once(&mut self.state_store, || async {
+            spawn_state_store_actor(self.cas.clone(), Some(DEFAULT_INSTANCE_TTL_SECONDS)).await
+        })
+        .await?;
         Ok(())
     }
 
@@ -206,20 +199,6 @@ where
             self.workers =
                 spawn_step_worker_pool(self.cas.clone(), tool_cache.clone(), pool_size).await?;
             self.tool_cache = Some(tool_cache);
-        }
-        Ok(())
-    }
-
-    /// Lazily spawns the CAS-backed orchestration state-store actor.
-    ///
-    /// Instance GC TTL starts at the 7-day default until the first config
-    /// load potentially overrides it via `StateStoreClient::set_instance_ttl`.
-    async fn ensure_state_store(&mut self) -> Result<(), ConductorError> {
-        if self.state_store.is_none() {
-            self.state_store = Some(
-                spawn_state_store_actor(self.cas.clone(), Some(DEFAULT_INSTANCE_TTL_SECONDS))
-                    .await?,
-            );
         }
         Ok(())
     }
@@ -251,7 +230,7 @@ where
                 "conductor.ncl and conductor.machine.ncl paths must be non-empty".to_string(),
             ));
         }
-        let run_started_unix_nanos = Self::now_unix_nanos();
+        let run_started_unix_nanos = ImpureTimestamp::now().as_unix_nanos();
         let resolved_runtime_paths =
             resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
         let mut effective_options = options;
@@ -355,7 +334,7 @@ where
                 );
                 Self::empty_runtime_diagnostics()
             });
-            let run_finished_unix_nanos = Self::now_unix_nanos();
+            let run_finished_unix_nanos = ImpureTimestamp::now().as_unix_nanos();
             let profile = WorkflowRunProfile::new(
                 run_started_unix_nanos,
                 run_finished_unix_nanos,
@@ -578,10 +557,7 @@ struct StepCompletionEvent {
     result: Result<StepExecutionBundle, ConductorError>,
 }
 
-impl<C> WorkflowCoordinator<C>
-where
-    C: CasApi + Send + Sync + 'static,
-{
+impl<C: CasBound> WorkflowCoordinator<C> {
     /// Executes all unified workflows using a dependency-stream dispatch model.
     ///
     /// Builds per-workflow dependency graphs from the unified workflow specs,

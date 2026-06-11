@@ -18,6 +18,8 @@ pub mod runtime_env;
 pub mod tool_cache;
 pub mod tools;
 
+use mediapm_cas::{CasApi, CasMaintenanceApi};
+
 #[cfg(feature = "tool-presets")]
 pub use api::{
     CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
@@ -52,6 +54,18 @@ pub use tools::downloader::{
     UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
     default_user_download_cache_root,
 };
+
+/// Trait alias for CAS storage types used in the conductor.
+///
+/// All conductor actors and coordinators require this bound.
+pub trait CasBound: CasApi + Send + Sync + 'static {}
+impl<T: CasApi + Send + Sync + 'static> CasBound for T {}
+
+/// Trait alias for CAS maintenance types used in the conductor.
+///
+/// Required when CAS operations like GC sweep are performed.
+pub trait CasMaintenanceBound: CasApi + CasMaintenanceApi + Send + Sync + 'static {}
+impl<T: CasApi + CasMaintenanceApi + Send + Sync + 'static> CasMaintenanceBound for T {}
 
 /// Returns built-in tool ids known by the conductor runtime.
 ///

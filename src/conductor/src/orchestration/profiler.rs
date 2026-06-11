@@ -7,12 +7,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::{RunSummary, RuntimeDiagnostics};
 use crate::error::ConductorError;
+use crate::model::config::ImpureTimestamp;
 
 /// Wire-format version for serialized workflow profiler reports.
 pub(super) const WORKFLOW_RUN_PROFILE_VERSION: u32 = 2;
@@ -66,7 +66,7 @@ impl WorkflowRunProfile {
             version: WORKFLOW_RUN_PROFILE_VERSION,
             run_started_unix_nanos,
             run_finished_unix_nanos,
-            generated_unix_nanos: now_unix_nanos(),
+            generated_unix_nanos: ImpureTimestamp::now().as_unix_nanos(),
             user_ncl_path: display_path(user_ncl_path),
             machine_ncl_path: display_path(machine_ncl_path),
             conductor_dir_path: display_path(conductor_dir_path),
@@ -159,12 +159,6 @@ pub(super) fn write_profile_json(
         path: output_path.to_path_buf(),
         source,
     })
-}
-
-/// Returns current wall-clock Unix timestamp in nanoseconds.
-#[must_use]
-fn now_unix_nanos() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
 }
 
 /// Renders one path as slash-normalized display text.
