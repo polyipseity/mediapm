@@ -99,6 +99,8 @@ pub(super) struct FileSystemState {
     active_mmaps: Arc<ActiveMmapRegistry>,
     /// Dedicated object I/O actor for on-disk object operations.
     pub(super) object_actor: ActorRef<FileObjectActorMessage>,
+    /// Path to the lock file on disk. Stored so the Drop impl can delete it.
+    lock_path: PathBuf,
     /// Lock file handle held for the duration of this process's exclusive
     /// access to the filesystem store. Dropped on state drop to release.
     #[expect(dead_code)]
@@ -179,6 +181,7 @@ impl FileSystemState {
             gc_in_progress: AtomicBool::new(false),
             active_mmaps,
             object_actor,
+            lock_path,
             lock_file,
         };
 
@@ -1859,6 +1862,19 @@ impl FileSystemState {
         }
 
         Ok(base)
+    }
+}
+
+impl Drop for FileSystemState {
+    fn drop(&mut self) {
+        // Delete the lock file to avoid stale-PID warnings on next startup.
+        // The flock is still held because lock_file (the last field) has not
+        // been dropped yet.
+        if let Err(e) = std::fs::remove_file(&self.lock_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(error = %e, "failed to remove CAS lock file on shutdown");
+            }
+        }
     }
 }
 
