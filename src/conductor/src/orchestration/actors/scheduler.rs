@@ -38,22 +38,14 @@ impl SchedulerClient {
         &self,
         record: StepCompletionRecord,
     ) -> Result<(), ConductorError> {
-        call_t!(self.actor, SchedulerMessage::RecordCompletion, rpc_timeout_ms(), record).map_err(
-            |err| {
-                ConductorError::Internal(format!("scheduler record_completion RPC failed: {err}"))
-            },
-        )?
+        call_t!(self.actor, SchedulerMessage::RecordCompletion, rpc_timeout_ms(), record)
+            .map_err(|err| ConductorError::rpc_error("scheduler record_completion", err))?
     }
 
     /// Returns the latest diagnostics snapshot owned by the scheduler actor.
     pub(crate) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
-        call_t!(self.actor, SchedulerMessage::GetRuntimeDiagnostics, rpc_timeout_ms()).map_err(
-            |err| {
-                ConductorError::Internal(format!(
-                    "scheduler get_runtime_diagnostics RPC failed: {err}"
-                ))
-            },
-        )?
+        call_t!(self.actor, SchedulerMessage::GetRuntimeDiagnostics, rpc_timeout_ms())
+            .map_err(|err| ConductorError::rpc_error("scheduler get_runtime_diagnostics", err))?
     }
 }
 

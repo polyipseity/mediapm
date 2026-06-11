@@ -9,15 +9,13 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mediapm_cas::{CasApi, CasError, Hash};
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
-
-use crate::CasBound;
 use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
 use crate::model::state::{OrchestrationState, decode_state, encode_state};
 use crate::orchestration::config::rpc_timeout_ms;
 use crate::orchestration::protocol::{CommitStateRequest, UnifiedNickelDocument};
+use mediapm_cas::{CasApi, CasError, Hash};
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 
 /// Typed client for the state-store actor.
 #[derive(Debug, Clone)]
@@ -37,11 +35,8 @@ impl StateStoreClient {
     pub(in crate::orchestration) async fn current_state(
         &self,
     ) -> Result<OrchestrationState, ConductorError> {
-        call_t!(self.actor, StateStoreMessage::GetCurrentState, rpc_timeout_ms()).map_err(
-            |err| {
-                ConductorError::Internal(format!("state store get_current_state RPC failed: {err}"))
-            },
-        )?
+        call_t!(self.actor, StateStoreMessage::GetCurrentState, rpc_timeout_ms())
+            .map_err(|err| ConductorError::rpc_error("state store get_current_state", err))?
     }
 
     /// Loads a state snapshot from one persisted pointer, or falls back to the current in-memory state.
@@ -50,11 +45,7 @@ impl StateStoreClient {
         pointer: Option<Hash>,
     ) -> Result<OrchestrationState, ConductorError> {
         call_t!(self.actor, StateStoreMessage::LoadStateFromPointer, rpc_timeout_ms(), pointer)
-            .map_err(|err| {
-                ConductorError::Internal(format!(
-                    "state store load_state_from_pointer RPC failed: {err}"
-                ))
-            })?
+            .map_err(|err| ConductorError::rpc_error("state store load_state_from_pointer", err))?
     }
 
     /// Persists a completed workflow run, publishes it as current state, and returns the new state pointer.
@@ -63,9 +54,7 @@ impl StateStoreClient {
         request: CommitStateRequest,
     ) -> Result<Hash, ConductorError> {
         call_t!(self.actor, StateStoreMessage::CommitRun, rpc_timeout_ms(), Box::new(request))
-            .map_err(|err| {
-                ConductorError::Internal(format!("state store commit_run RPC failed: {err}"))
-            })?
+            .map_err(|err| ConductorError::rpc_error("state store commit_run", err))?
     }
 
     /// Sets the instance GC TTL on the state-store actor (fire-and-forget).
@@ -90,11 +79,7 @@ impl StateStoreClient {
             rpc_timeout_ms(),
             Box::new(state)
         )
-        .map_err(|err| {
-            ConductorError::Internal(format!(
-                "state store persist_and_publish_state RPC failed: {err}"
-            ))
-        })?
+        .map_err(|err| ConductorError::rpc_error("state store persist_and_publish_state", err))?
     }
 
     /// Runs instance GC on the current in-memory state, optionally with a TTL
@@ -103,20 +88,16 @@ impl StateStoreClient {
         &self,
         ttl_override: Option<u64>,
     ) -> Result<(), ConductorError> {
-        call_t!(self.actor, StateStoreMessage::RunGc, rpc_timeout_ms(), ttl_override).map_err(
-            |err| ConductorError::Internal(format!("state store run_gc RPC failed: {err}")),
-        )?
+        call_t!(self.actor, StateStoreMessage::RunGc, rpc_timeout_ms(), ttl_override)
+            .map_err(|err| ConductorError::rpc_error("state store run_gc", err))?
     }
 
     /// Returns the last persisted state blob CAS pointer, if any.
     pub(in crate::orchestration) async fn get_state_pointer(
         &self,
     ) -> Result<Option<Hash>, ConductorError> {
-        call_t!(self.actor, StateStoreMessage::GetStatePointer, rpc_timeout_ms()).map_err(
-            |err| {
-                ConductorError::Internal(format!("state store get_state_pointer RPC failed: {err}"))
-            },
-        )?
+        call_t!(self.actor, StateStoreMessage::GetStatePointer, rpc_timeout_ms())
+            .map_err(|err| ConductorError::rpc_error("state store get_state_pointer", err))?
     }
 }
 
@@ -170,7 +151,7 @@ where
     current_state_pointer: Option<Hash>,
 }
 
-impl<C: CasBound> StateStoreService<C> {
+impl<C: CasApi + Send + Sync + 'static> StateStoreService<C> {
     /// Runs instance GC on the in-memory state using the provided TTL override
     /// (or the stored TTL if override is `None`). Persists the cleaned state
     /// to CAS and publishes it.
@@ -313,7 +294,7 @@ impl<C: CasBound> StateStoreService<C> {
     }
 }
 
-impl<C: CasBound> Actor for StateStoreActor<C> {
+impl<C: CasApi + Send + Sync + 'static> Actor for StateStoreActor<C> {
     type Msg = StateStoreMessage;
     type State = StateStoreService<C>;
     type Arguments = (Arc<C>, Option<u64>);
@@ -367,7 +348,7 @@ impl<C: CasBound> Actor for StateStoreActor<C> {
 }
 
 /// Spawns the state-store actor and returns its typed client.
-pub(in crate::orchestration) async fn spawn_state_store_actor<C: CasBound>(
+pub(in crate::orchestration) async fn spawn_state_store_actor<C: CasApi + Send + Sync + 'static>(
     cas: Arc<C>,
     instance_ttl_seconds: Option<u64>,
 ) -> Result<StateStoreClient, ConductorError> {

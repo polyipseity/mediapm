@@ -42,4 +42,9 @@ impl ConductorError {
     ) -> Self {
         Self::Io { operation: operation.into(), path: path.into(), source }
     }
+
+    /// Constructs an internal RPC error with operation name and underlying error.
+    pub(crate) fn rpc_error(operation: &'static str, err: impl std::fmt::Display) -> Self {
+        Self::Internal(format!("{operation} RPC failed: {err}"))
+    }
 }
