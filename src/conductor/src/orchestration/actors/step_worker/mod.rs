@@ -34,7 +34,6 @@ use mediapm_cas::{
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use regex::Regex;
 
-use crate::CasBound;
 use crate::error::ConductorError;
 use crate::model::config::{
     InputBinding, OutputCaptureSpec, ParsedInputBindingSegment, ProcessSpec, ToolInputKind,
@@ -105,14 +104,14 @@ impl<C> Default for StepWorkerActor<C> {
 
 /// Runtime state for one worker actor, carrying the CAS handle and tool cache.
 #[derive(Debug)]
-struct StepWorkerState<C: CasBound> {
+struct StepWorkerState<C: CasApi + Send + Sync + 'static> {
     /// Shared CAS handle for content I/O.
     cas: Arc<C>,
     /// Shared tool-content cache for managed-tool materialization.
     tool_cache: Arc<ToolContentCache<C>>,
 }
 
-impl<C: CasBound> Clone for StepWorkerState<C> {
+impl<C: CasApi + Send + Sync + 'static> Clone for StepWorkerState<C> {
     fn clone(&self) -> Self {
         Self { cas: Arc::clone(&self.cas), tool_cache: Arc::clone(&self.tool_cache) }
     }

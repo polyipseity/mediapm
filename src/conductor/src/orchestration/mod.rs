@@ -17,7 +17,7 @@ use tokio::sync::OnceCell;
 
 use crate::api::{
     ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions,
-    export_nickel_config_schemas, resolve_runtime_storage_paths,
+    export_nickel_config_schemas,
 };
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
@@ -81,8 +81,7 @@ where
         // Clone state-relevant paths before consuming `options` in submit.
         let reload_storage_paths = options.runtime_storage_paths.clone();
         let reload_inherited_env_vars = options.runtime_inherited_env_vars.clone();
-        let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &reload_storage_paths);
+        let resolved_runtime_paths = reload_storage_paths.resolve_for(user_ncl, machine_ncl);
         export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
         let handle_id = client.submit_workflow(user_ncl, machine_ncl, options).await?;
@@ -108,7 +107,7 @@ where
         options: RunWorkflowOptions,
     ) -> Result<u64, ConductorError> {
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
         client.submit_workflow(user_ncl, machine_ncl, options).await
@@ -134,7 +133,7 @@ where
         options: StateMutationOptions,
     ) -> Result<OrchestrationState, ConductorError> {
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
         client.load_resolved_state(user_ncl, machine_ncl, options).await
@@ -148,7 +147,7 @@ where
         options: StateMutationOptions,
     ) -> Result<Hash, ConductorError> {
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         export_nickel_config_schemas(&resolved_runtime_paths.conductor_schema_dir)?;
         let client = self.actor_client().await?;
         client.replace_resolved_state(user_ncl, machine_ncl, state, options).await

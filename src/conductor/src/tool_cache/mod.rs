@@ -44,7 +44,8 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, Semaphore};
 
-use crate::CasBound;
+use mediapm_cas::CasApi;
+
 use crate::error::ConductorError;
 
 // ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ pub async fn retain_only_tool_dirs<S: std::hash::BuildHasher>(
     )?
 }
 
-impl<C: CasBound> ToolContentCache<C> {
+impl<C: CasApi + Send + Sync + 'static> ToolContentCache<C> {
     /// Creates a new tool-content cache rooted at `tools_dir`.
     ///
     /// # Arguments
@@ -859,7 +860,7 @@ fn double_check_hit(
 // ---------------------------------------------------------------------------
 
 /// Fetches all bytes referenced by `content_map` from the CAS concurrently.
-async fn fetch_all_cas_entries<C: CasBound>(
+async fn fetch_all_cas_entries<C: CasApi + Send + Sync + 'static>(
     cas: Arc<C>,
     content_map: &BTreeMap<String, Hash>,
 ) -> Result<Vec<(String, ContentMapKeyKind, Vec<u8>)>, ConductorError> {

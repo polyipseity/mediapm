@@ -42,100 +42,105 @@ const DEFAULT_SCHEMA_EXPORT_PARENT_DIR_NAME: &str = "config";
 ///
 /// This keeps all runtime-managed filesystem paths in one place:
 /// - `conductor_dir` anchors runtime-owned artifacts,
-/// - `conductor_state_config` optionally overrides the volatile state document path,
-/// - `cas_store_dir` optionally overrides the default CAS filesystem root,
-/// - `conductor_schema_dir` optionally overrides the schema export directory,
-/// - `conductor_tools_dir` optionally overrides the tool-content cache root.
-///
-/// When optional fields are `None`, defaults are derived from
-/// `conductor_dir`:
-/// - `<conductor_dir>/state.ncl` for state,
-/// - `<conductor_dir>/store` for CAS,
-/// - `<os-temp>/mediapm-conductor-<conductor-dir-hash>` for temporary execution sandboxes,
-/// - `<conductor_dir>/config/conductor` for schema export,
-/// - `<conductor_dir>/tools` for the tool-content cache.
+/// - `conductor_state_config` is the volatile state document path,
+/// - `cas_store_dir` is the filesystem CAS root,
+/// - `conductor_tmp_dir` is the temporary execution sandbox root,
+/// - `conductor_schema_dir` is the schema export directory,
+/// - `conductor_tools_dir` is the tool-content cache root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStoragePaths {
     /// Root folder for runtime-owned artifacts.
     ///
     /// Default: `.conductor`.
     pub conductor_dir: PathBuf,
-    /// Optional override path for the volatile state document.
+    /// Volatile state document path.
     ///
     /// Default: `<conductor_dir>/state.ncl`.
-    pub conductor_state_config: Option<PathBuf>,
-    /// Optional override path for the filesystem CAS store root used by
-    /// command-line defaults.
+    pub conductor_state_config: PathBuf,
+    /// Filesystem CAS store root used by command-line defaults.
     ///
     /// Default: `<conductor_dir>/store`.
-    pub cas_store_dir: Option<PathBuf>,
-    /// Optional override path for exported schema files.
+    pub cas_store_dir: PathBuf,
+    /// Temporary execution sandbox root (OS-backed with per-conductor-dir hash
+    /// path: `<os-temp>/mediapm-conductor-<conductor-dir-hash>`).
+    pub conductor_tmp_dir: PathBuf,
+    /// Schema export directory path.
     ///
     /// Default: `<conductor_dir>/config/conductor`.
-    pub conductor_schema_dir: Option<PathBuf>,
-    /// Optional override path for the tool-content cache root.
+    pub conductor_schema_dir: PathBuf,
+    /// Tool-content cache root path.
     ///
     /// The tool-content cache stores one ready-to-execute payload directory per
     /// tool id.  Entries are keyed on the full `content_map` and expire after
     /// 24 hours of non-use.
     ///
     /// Default: `<conductor_dir>/tools`.
-    pub conductor_tools_dir: Option<PathBuf>,
+    pub conductor_tools_dir: PathBuf,
 }
 
 impl RuntimeStoragePaths {
     /// Returns grouped runtime-storage defaults rooted under `.conductor`.
     #[must_use]
     pub fn new() -> Self {
+        Self::default_for(&PathBuf::from(DEFAULT_CONDUCTOR_DIR_NAME))
+    }
+
+    /// Returns grouped runtime-storage defaults rooted under the given directory.
+    #[must_use]
+    pub fn default_for(conductor_dir: &Path) -> Self {
+        let key = {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            conductor_dir.hash(&mut hasher);
+            format!("{:016x}", hasher.finish())
+        };
         Self {
-            conductor_dir: PathBuf::from(DEFAULT_CONDUCTOR_DIR_NAME),
-            conductor_state_config: None,
-            cas_store_dir: None,
-            conductor_schema_dir: None,
-            conductor_tools_dir: None,
+            conductor_dir: conductor_dir.to_path_buf(),
+            conductor_state_config: conductor_dir.join(DEFAULT_STATE_FILE_NAME),
+            cas_store_dir: conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
+            conductor_tmp_dir: std::env::temp_dir().join(format!("mediapm-conductor-{key}")),
+            conductor_schema_dir: schema_export_dir(conductor_dir),
+            conductor_tools_dir: conductor_dir.join(DEFAULT_TOOLS_DIR_NAME),
         }
     }
 
     /// Resolves all runtime storage paths for a specific user/machine config
     /// location pair.
     ///
-    /// Relative paths are resolved against the user config parent when
-    /// available, otherwise the machine config parent, otherwise `.`.
+    /// The resolved `conductor_dir` is used as the anchor for resolving
+    /// default-valued fields; explicitly overridden fields are resolved
+    /// against the user config parent (or machine config parent as fallback).
     #[must_use]
-    pub fn resolve_for(&self, user_ncl: &Path, machine_ncl: &Path) -> ResolvedRuntimeStoragePaths {
+    pub fn resolve_for(&self, user_ncl: &Path, machine_ncl: &Path) -> Self {
         let anchor = user_ncl.parent().or_else(|| machine_ncl.parent()).unwrap_or(Path::new("."));
         let conductor_dir = Self::resolve_path(anchor, &self.conductor_dir);
-        let conductor_state_config = self.conductor_state_config.as_ref().map_or_else(
-            || conductor_dir.join(DEFAULT_STATE_FILE_NAME),
-            |path| Self::resolve_path(anchor, path),
-        );
-        let cas_store_dir = self.cas_store_dir.as_ref().map_or_else(
-            || conductor_dir.join(DEFAULT_CAS_STORE_DIR_NAME),
-            |path| Self::resolve_path(anchor, path),
-        );
-        let key = {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            conductor_dir.hash(&mut hasher);
-            format!("{:016x}", hasher.finish())
-        };
-        let conductor_tmp_dir = std::env::temp_dir().join(format!("mediapm-conductor-{key}"));
-        let conductor_schema_dir = self.conductor_schema_dir.as_ref().map_or_else(
-            || schema_export_dir(&conductor_dir),
-            |path| Self::resolve_path(anchor, path),
-        );
-        let conductor_tools_dir = self.conductor_tools_dir.as_ref().map_or_else(
-            || conductor_dir.join(DEFAULT_TOOLS_DIR_NAME),
-            |path| Self::resolve_path(anchor, path),
-        );
 
-        ResolvedRuntimeStoragePaths {
-            conductor_dir,
-            conductor_state_config,
-            cas_store_dir,
-            conductor_tmp_dir,
-            conductor_schema_dir,
-            conductor_tools_dir,
+        // Start with defaults computed from the resolved conductor_dir.
+        let mut result = Self::default_for(&conductor_dir);
+        result.conductor_dir = conductor_dir;
+
+        // Detect explicit overrides: a field that differs from the default
+        // computed from the (unresolved) conductor_dir is an override and
+        // should be resolved against the config-parent anchor.
+        let base = Self::default_for(&self.conductor_dir);
+
+        if self.conductor_state_config != base.conductor_state_config {
+            result.conductor_state_config =
+                Self::resolve_path(anchor, &self.conductor_state_config);
         }
+        if self.cas_store_dir != base.cas_store_dir {
+            result.cas_store_dir = Self::resolve_path(anchor, &self.cas_store_dir);
+        }
+        if self.conductor_schema_dir != base.conductor_schema_dir {
+            result.conductor_schema_dir = Self::resolve_path(anchor, &self.conductor_schema_dir);
+        }
+        if self.conductor_tools_dir != base.conductor_tools_dir {
+            result.conductor_tools_dir = Self::resolve_path(anchor, &self.conductor_tools_dir);
+        }
+        // `conductor_tmp_dir` is computed from the resolved conductor_dir
+        // hash — the `default_for` value above already uses the correct
+        // resolved conductor_dir.
+
+        result
     }
 
     /// Resolves one candidate path against the provided anchor.
@@ -149,24 +154,6 @@ impl Default for RuntimeStoragePaths {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Concrete runtime storage paths after resolving relative values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolvedRuntimeStoragePaths {
-    /// Resolved runtime root folder.
-    pub conductor_dir: PathBuf,
-    /// Resolved volatile state document path.
-    pub conductor_state_config: PathBuf,
-    /// Resolved filesystem CAS store root path.
-    pub cas_store_dir: PathBuf,
-    /// Temporary execution sandbox root path (OS-backed with per-conductor-dir
-    /// hash path: `<os-temp>/mediapm-conductor-<conductor-dir-hash>`).
-    pub conductor_tmp_dir: PathBuf,
-    /// Resolved schema export directory path.
-    pub conductor_schema_dir: PathBuf,
-    /// Resolved tool-content cache root path.
-    pub conductor_tools_dir: PathBuf,
 }
 
 /// Resolved managed executable path prepared by conductor tool-cache logic.
@@ -855,16 +842,6 @@ pub fn default_state_paths() -> (PathBuf, PathBuf) {
     (PathBuf::from("conductor.ncl"), PathBuf::from("conductor.machine.ncl"))
 }
 
-/// Resolves grouped runtime storage paths for one user/machine pair.
-#[must_use]
-pub fn resolve_runtime_storage_paths(
-    user_ncl: &Path,
-    machine_ncl: &Path,
-    runtime_storage_paths: &RuntimeStoragePaths,
-) -> ResolvedRuntimeStoragePaths {
-    runtime_storage_paths.resolve_for(user_ncl, machine_ncl)
-}
-
 /// Resolves the conductor schema export directory under one runtime root.
 ///
 /// The default runtime export target is:
@@ -1037,18 +1014,14 @@ mod tests {
 
     #[cfg(feature = "tool-presets")]
     use super::CommonExecutableTool;
-    use super::{
-        RuntimeStoragePaths, export_nickel_config_schemas, resolve_runtime_storage_paths,
-        schema_export_dir,
-    };
+    use super::{RuntimeStoragePaths, export_nickel_config_schemas, schema_export_dir};
 
     /// Protects grouped-runtime default resolution rooted at `.conductor`.
     #[test]
     fn default_runtime_storage_paths_resolve_under_conductor_directory() {
         let user_ncl = PathBuf::from("workspace").join("conductor.ncl");
         let machine_ncl = PathBuf::from("workspace").join("conductor.machine.ncl");
-        let resolved =
-            resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &RuntimeStoragePaths::default());
+        let resolved = RuntimeStoragePaths::default().resolve_for(&user_ncl, &machine_ncl);
 
         assert_eq!(resolved.conductor_dir, PathBuf::from("workspace").join(".conductor"));
         assert_eq!(
@@ -1077,17 +1050,10 @@ mod tests {
     fn runtime_storage_path_overrides_are_applied_per_field() {
         let user_ncl = PathBuf::from("workspace").join("conductor.ncl");
         let machine_ncl = PathBuf::from("workspace").join("conductor.machine.ncl");
-        let resolved = resolve_runtime_storage_paths(
-            &user_ncl,
-            &machine_ncl,
-            &RuntimeStoragePaths {
-                conductor_dir: PathBuf::from("runtime-root"),
-                conductor_state_config: Some(PathBuf::from("runtime/custom-state.ncl")),
-                cas_store_dir: None,
-                conductor_schema_dir: Some(PathBuf::from("runtime/custom-schemas")),
-                conductor_tools_dir: None,
-            },
-        );
+        let mut paths = RuntimeStoragePaths::default_for(&PathBuf::from("runtime-root"));
+        paths.conductor_state_config = PathBuf::from("runtime/custom-state.ncl");
+        paths.conductor_schema_dir = PathBuf::from("runtime/custom-schemas");
+        let resolved = paths.resolve_for(&user_ncl, &machine_ncl);
 
         assert_eq!(resolved.conductor_dir, PathBuf::from("workspace").join("runtime-root"));
         assert_eq!(
@@ -1104,6 +1070,10 @@ mod tests {
             resolved.conductor_schema_dir,
             PathBuf::from("workspace").join("runtime/custom-schemas")
         );
+        assert_eq!(
+            resolved.conductor_tools_dir,
+            PathBuf::from("workspace").join("runtime-root").join("tools")
+        );
     }
 
     /// Protects default runtime path anchoring when user and machine config
@@ -1113,8 +1083,7 @@ mod tests {
         let user_ncl = PathBuf::from("workspace").join("config").join("conductor.ncl");
         let machine_ncl = PathBuf::from("workspace").join("runtime").join("conductor.machine.ncl");
 
-        let resolved =
-            resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &RuntimeStoragePaths::default());
+        let resolved = RuntimeStoragePaths::default().resolve_for(&user_ncl, &machine_ncl);
 
         assert_eq!(
             resolved.conductor_dir,

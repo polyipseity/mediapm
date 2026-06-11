@@ -21,7 +21,7 @@ use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
 use crate::model::state::{AuxData, OrchestrationState};
 
-#[expect(dead_code, reason = "Preserved V1 wire format with ISO bridges for migration/audit")]
+#[allow(dead_code)]
 pub(crate) mod v1;
 pub(crate) mod v2;
 
@@ -29,30 +29,21 @@ pub(crate) mod v2;
 ///
 /// Keep explicit latest-version references centralized for safe schema bumps.
 // BEGIN latest-version bindings
+#[allow(dead_code)]
 mod latest {
     pub(super) const VERSION: u32 = super::v2::ORCHESTRATION_STATE_VERSION_V2;
 
     pub(super) type Envelope = super::v2::OrchestrationStateEnvelopeV2;
-    #[expect(dead_code)]
     pub(super) type PersistenceFlags = super::v2::PersistenceFlagsV2;
-    #[expect(dead_code)]
     pub(super) type OutputSaveMode = super::v2::OutputSaveModeV2;
-    #[expect(dead_code)]
     pub(super) type ResolvedInputKey = super::v2::ResolvedInputV2;
-    #[expect(dead_code)]
     pub(super) type OutputRef = super::v2::OutputRefV2;
-    #[expect(dead_code)]
     pub(super) type ToolMetadata = super::v2::ToolMetadataV2;
-    #[expect(dead_code)]
     pub(super) type ToolCallInstance = super::v2::ToolCallInstanceV2;
-    #[expect(dead_code)]
     pub(super) type ImpureTimestamp = super::v2::ImpureTimestampV2;
-    #[expect(dead_code)]
     pub(super) type BuiltinMetadataKind = super::v2::BuiltinMetadataKindV2;
-    #[expect(dead_code)]
     pub(super) type AuxData = super::v2::AuxDataV2;
 
-    #[expect(dead_code)]
     pub(super) const fn is_version(marker: u32) -> bool {
         super::v2::is_orchestration_state_version_v2(marker)
     }

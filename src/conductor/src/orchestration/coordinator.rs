@@ -27,11 +27,9 @@ use futures_util::stream::FuturesUnordered;
 use mediapm_cas::{CasApi, Hash};
 use ractor::{ActorRef, call_t};
 
-use crate::CasBound;
 use crate::api::{
-    ResolvedRuntimeStoragePaths, RunSummary, RunWorkflowOptions, RuntimeDiagnostics,
-    SchedulerDiagnostics, StateMutationOptions, WorkflowProgressSender, WorkflowStepEvent,
-    resolve_runtime_storage_paths,
+    RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths, SchedulerDiagnostics,
+    StateMutationOptions, WorkflowProgressSender, WorkflowStepEvent,
 };
 use crate::error::ConductorError;
 use crate::model::config::{
@@ -83,7 +81,7 @@ struct PrepareRuntimeOutcome {
     /// Timestamp captured before runtime preparation started.
     run_started_unix_nanos: u128,
     /// Runtime storage paths resolved for this run.
-    resolved_runtime_paths: ResolvedRuntimeStoragePaths,
+    resolved_runtime_paths: RuntimeStoragePaths,
     /// Resolved volatile state document path.
     conductor_state_config: PathBuf,
     /// Optional profiler output path.
@@ -132,7 +130,7 @@ where
 /// Default TTL for workflow instances: 7 days.
 const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
 
-impl<C: CasBound> WorkflowCoordinator<C> {
+impl<C: CasApi + Send + Sync + 'static> WorkflowCoordinator<C> {
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(super) fn new(cas: Arc<C>) -> Self {
@@ -243,7 +241,7 @@ impl<C: CasBound> WorkflowCoordinator<C> {
     ) -> Result<PrepareRuntimeOutcome, ConductorError> {
         let run_started_unix_nanos = ImpureTimestamp::now().as_unix_nanos();
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         let mut effective_options = options;
         let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
         Self::append_unique_env_var_names(
@@ -444,7 +442,7 @@ impl<C: CasBound> WorkflowCoordinator<C> {
         })?;
 
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         let mut runtime_inherited_env_vars = options.runtime_inherited_env_vars;
         let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
         Self::append_unique_env_var_names(&mut runtime_inherited_env_vars, &runtime_env_names);
@@ -502,7 +500,7 @@ impl<C: CasBound> WorkflowCoordinator<C> {
         })?;
 
         let resolved_runtime_paths =
-            resolve_runtime_storage_paths(user_ncl, machine_ncl, &options.runtime_storage_paths);
+            options.runtime_storage_paths.resolve_for(user_ncl, machine_ncl);
         let mut runtime_inherited_env_vars = options.runtime_inherited_env_vars;
         let runtime_env_names = load_runtime_env_files(&resolved_runtime_paths.conductor_dir)?;
         Self::append_unique_env_var_names(&mut runtime_inherited_env_vars, &runtime_env_names);
@@ -626,7 +624,7 @@ struct StepCompletionEvent {
     result: Result<StepExecutionBundle, ConductorError>,
 }
 
-impl<C: CasBound> WorkflowCoordinator<C> {
+impl<C: CasApi + Send + Sync + 'static> WorkflowCoordinator<C> {
     /// Executes all unified workflows using a dependency-stream dispatch model.
     ///
     /// Builds per-workflow dependency graphs from the unified workflow specs,

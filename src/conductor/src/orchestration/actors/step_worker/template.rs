@@ -19,7 +19,8 @@ use std::path::Path;
 use bytes::Bytes;
 use mediapm_cas::Hash;
 
-use crate::CasBound;
+use mediapm_cas::CasApi;
+
 use crate::error::ConductorError;
 use crate::model::state::ResolvedInput;
 
@@ -51,7 +52,7 @@ enum TemplateMaterializationDirective<'a> {
     Folder(&'a str),
 }
 
-impl<C: CasBound> StepWorkerExecutor<C> {
+impl<C: CasApi + Send + Sync + 'static> StepWorkerExecutor<C> {
     /// Parses one standalone command-argument unpack token.
     ///
     /// Supported form is exactly `${*<token>}` where `<token>` is either:

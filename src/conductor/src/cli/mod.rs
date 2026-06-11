@@ -526,7 +526,7 @@ use mediapm_cas::{CasApi, CasConfig, CasError, CasLocatorParseOptions, Configure
 use crate::api::{CommonExecutableTool, fetch_common_executable_tool_payload};
 use crate::api::{
     ConductorApi, RunWorkflowOptions, RuntimeStoragePaths, StateMutationOptions,
-    default_state_paths, export_nickel_config_schemas, resolve_runtime_storage_paths,
+    default_state_paths, export_nickel_config_schemas,
 };
 use crate::error::ConductorError;
 use crate::gc::run_cas_gc_sweep;
@@ -890,15 +890,18 @@ pub async fn run(cli: Cli) -> Result<(), ConductorError> {
     let user_ncl = cli.config.unwrap_or(default_user);
     let machine_ncl = cli.config_machine.unwrap_or(default_machine);
 
-    let runtime_storage_paths = RuntimeStoragePaths {
-        conductor_dir: cli.runtime_paths.conductor_dir,
-        conductor_state_config: cli.runtime_paths.conductor_state_config,
-        cas_store_dir: None,
-        conductor_schema_dir: cli.runtime_paths.conductor_schema_dir,
-        conductor_tools_dir: cli.runtime_paths.conductor_tools_dir,
-    };
-    let resolved_runtime_paths =
-        resolve_runtime_storage_paths(&user_ncl, &machine_ncl, &runtime_storage_paths);
+    let conductor_dir = cli.runtime_paths.conductor_dir;
+    let mut runtime_storage_paths = RuntimeStoragePaths::default_for(&conductor_dir);
+    if let Some(ref path) = cli.runtime_paths.conductor_state_config {
+        runtime_storage_paths.conductor_state_config = path.clone();
+    }
+    if let Some(ref path) = cli.runtime_paths.conductor_schema_dir {
+        runtime_storage_paths.conductor_schema_dir = path.clone();
+    }
+    if let Some(ref path) = cli.runtime_paths.conductor_tools_dir {
+        runtime_storage_paths.conductor_tools_dir = path.clone();
+    }
+    let resolved_runtime_paths = runtime_storage_paths.resolve_for(&user_ncl, &machine_ncl);
 
     let cas_locator = cli
         .runtime_paths
