@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use blake3;
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{MachineNickelDocument, OrchestrationState};
 use pulsebar::{MultiProgress, ProgressBar};
@@ -3253,6 +3254,21 @@ fn truncate_progress_label(value: &str, max_chars: usize) -> String {
     format!("{prefix}…")
 }
 
+/// Checks whether a managed file already has the expected hash recorded in the
+/// lock state and exists on disk. When both conditions hold, materialization
+/// can be skipped without touching the filesystem or CAS.
+#[must_use]
+fn should_skip_materialization(
+    lock: &MediaPmState,
+    relative_path: &str,
+    hash: &Hash,
+    final_path: &Path,
+) -> bool {
+    let hash_str = hash.to_string();
+    lock.managed_files.get(relative_path).is_some_and(|r| r.hash == hash_str)
+        && fs::symlink_metadata(final_path).is_ok()
+}
+
 /// Prepares one hierarchy entry for materialization to its final output path.
 #[expect(
     clippy::too_many_lines,
@@ -3353,10 +3369,7 @@ async fn prepare_hierarchy_entry(
                 resolve_variant_source_hash(lookup, &entry.media_id, source, variant).await?;
 
             if let Some(hint_hash) = hint_hash {
-                let hint_hash_str = hint_hash.to_string();
-                if lock.managed_files.get(&relative_path).is_some_and(|r| r.hash == hint_hash_str)
-                    && fs::symlink_metadata(&final_path).is_ok()
-                {
+                if should_skip_materialization(lock, &relative_path, &hint_hash, &final_path) {
                     skipped_paths.push(relative_path.clone());
                     refreshed_lock_paths.push(relative_path.clone());
                     progress_bar.set_position(100);
@@ -3546,6 +3559,8 @@ async fn prepare_hierarchy_entry(
 
                 let managed_path = join_relative_paths(fs_relative_path, entry_path);
                 let extract_file_path = extract_dir.join(entry_path);
+                let final_file_path = final_path.join(entry_path);
+
                 let extracted_bytes =
                     tokio::fs::read(&extract_file_path).await.map_err(|source_err| {
                         MediaPmError::Io {
@@ -3554,32 +3569,46 @@ async fn prepare_hierarchy_entry(
                             source: source_err,
                         }
                     })?;
-                let extracted_hash = lookup.cas.put(extracted_bytes).await.map_err(|source| {
+                let extracted_hash = Hash::from_bytes(*blake3::hash(&extracted_bytes).as_bytes());
+
+                let entry_variant = extracted_entry_variants
+                    .get(entry_path)
+                    .cloned()
+                    .ok_or_else(|| {
+                        MediaPmError::Workflow(format!(
+                            "missing extracted variant provenance for hierarchy path '{relative_path}' media '{}' extracted file '{entry_path}'",
+                            entry.media_id
+                        ))
+                    })?;
+
+                if should_skip_materialization(
+                    lock,
+                    &managed_path,
+                    &extracted_hash,
+                    &final_file_path,
+                ) {
+                    skipped_paths.push(managed_path.clone());
+                    refreshed_lock_paths.push(managed_path.clone());
+                    managed_file_hashes.insert(managed_path.clone(), extracted_hash);
+                    managed_file_variants.insert(managed_path, entry_variant);
+                    continue;
+                }
+
+                let stored_hash = lookup.cas.put(extracted_bytes).await.map_err(|source| {
                         MediaPmError::Workflow(format!(
                             "importing materialized folder member '{managed_path}' into CAS failed: {source}",
                         ))
                     })?;
-                let final_file_path = final_path.join(entry_path);
                 materialize_file_from_cas_with_order(
                     &lookup.cas,
-                    extracted_hash,
+                    stored_hash,
                     &final_file_path,
                     &managed_path,
                     materialization_methods,
                     &mut notices,
                 )
                 .await?;
-                managed_file_hashes.insert(managed_path.clone(), extracted_hash);
-
-                let entry_variant = extracted_entry_variants
-                        .get(entry_path)
-                        .cloned()
-                        .ok_or_else(|| {
-                            MediaPmError::Workflow(format!(
-                                "missing extracted variant provenance for hierarchy path '{relative_path}' media '{}' extracted file '{entry_path}'",
-                                entry.media_id
-                            ))
-                        })?;
+                managed_file_hashes.insert(managed_path.clone(), stored_hash);
                 managed_file_variants.insert(managed_path, entry_variant);
             }
 
@@ -3657,30 +3686,46 @@ async fn prepare_hierarchy_entry(
 
             progress_bar.set_position(70);
             let playlist_bytes = render_playlist_bytes(entry.format, &rendered_items);
-            let playlist_hash = lookup.cas.put(playlist_bytes).await.map_err(|source| {
-                MediaPmError::Workflow(format!(
-                    "importing generated playlist '{relative_path}' into CAS failed: {source}",
-                ))
-            })?;
-            materialize_file_from_cas_with_order(
-                &lookup.cas,
-                playlist_hash,
-                &final_path,
-                relative_path.as_str(),
-                materialization_methods,
-                &mut notices,
-            )
-            .await?;
+            let playlist_hash = Hash::from_bytes(*blake3::hash(&playlist_bytes).as_bytes());
 
-            (
-                Some("playlist".to_string()),
-                BTreeMap::from([(
-                    relative_path.clone(),
-                    format!("playlist:{}", playlist_format_label(entry.format)),
-                )]),
-                BTreeMap::from([(relative_path.clone(), playlist_hash)]),
-                false,
-            )
+            if should_skip_materialization(lock, &relative_path, &playlist_hash, &final_path) {
+                skipped_paths.push(relative_path.clone());
+                refreshed_lock_paths.push(relative_path.clone());
+                (
+                    Some("playlist".to_string()),
+                    BTreeMap::from([(
+                        relative_path.clone(),
+                        format!("playlist:{}", playlist_format_label(entry.format)),
+                    )]),
+                    BTreeMap::from([(relative_path.clone(), playlist_hash)]),
+                    false,
+                )
+            } else {
+                let stored_hash = lookup.cas.put(playlist_bytes).await.map_err(|source| {
+                    MediaPmError::Workflow(format!(
+                        "importing generated playlist '{relative_path}' into CAS failed: {source}",
+                    ))
+                })?;
+                materialize_file_from_cas_with_order(
+                    &lookup.cas,
+                    stored_hash,
+                    &final_path,
+                    relative_path.as_str(),
+                    materialization_methods,
+                    &mut notices,
+                )
+                .await?;
+
+                (
+                    Some("playlist".to_string()),
+                    BTreeMap::from([(
+                        relative_path.clone(),
+                        format!("playlist:{}", playlist_format_label(entry.format)),
+                    )]),
+                    BTreeMap::from([(relative_path.clone(), stored_hash)]),
+                    false,
+                )
+            }
         }
     };
 
@@ -3918,13 +3963,18 @@ pub async fn sync_hierarchy(
         desired_paths.extend(prepared.skipped_paths.iter().cloned());
         desired_paths.extend(prepared.managed_file_hashes.keys().cloned());
 
-        if prepared.skipped_entry {
-            for managed_path in &prepared.refreshed_lock_paths {
-                if let Some(record) = lock.managed_files.get_mut(managed_path) {
-                    record.last_synced_unix_millis = unix_epoch_millis();
-                }
+        // Refresh timestamps for individually skipped paths. This runs before
+        // the `skipped_entry` guard so that per-file skips within a partially
+        // materialized entry also get their timestamps updated.
+        for managed_path in &prepared.refreshed_lock_paths {
+            if let Some(record) = lock.managed_files.get_mut(managed_path) {
+                record.last_synced_unix_millis = unix_epoch_millis();
             }
-            report.skipped_paths += 1;
+        }
+
+        if prepared.skipped_entry {
+            // Full entry was skipped (e.g. unchanged Media entry).
+            report.skipped_paths += prepared.skipped_paths.len();
             continue;
         }
 
@@ -3941,6 +3991,10 @@ pub async fn sync_hierarchy(
                 prepared.relative_path
             ))
         })?;
+
+        // Per-file counting: capture lengths before consuming the BTreeMap.
+        let per_entry_total = prepared.managed_file_hashes.len();
+        let per_entry_skipped = prepared.refreshed_lock_paths.len();
 
         for (managed_file_path, managed_hash) in prepared.managed_file_hashes {
             let managed_variant = prepared
@@ -3964,7 +4018,8 @@ pub async fn sync_hierarchy(
             );
         }
 
-        report.materialized_paths += 1;
+        report.materialized_paths += per_entry_total - per_entry_skipped;
+        report.skipped_paths += per_entry_skipped;
     }
 
     let stale_paths = lock
