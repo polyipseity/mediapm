@@ -511,7 +511,7 @@ Effective grouped defaults:
   `to_variant_hash` must exist in `variants`).
 - Keep schema version explicit and migrations sequential.
 - Machine-managed state `managed_files` provenance stores per-file `media_id` (not source
-  URI strings) together with `variant` and `last_synced_unix_millis`.
+  URI strings) together with `variant`.
 - Materializer verification enforces NFD-only filenames and rejects reserved
   path characters (`<`, `>`, `:`, `"`, `/`, `\\`, `|`, `?`, `*`).
 - Link/write materialization order follows
