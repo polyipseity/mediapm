@@ -758,7 +758,7 @@ mod tests {
         .await
         .expect("sync hierarchy");
 
-        assert_eq!(report.materialized_paths, 1);
+        assert_eq!(report.materialized_paths, 2);
         assert!(
             paths
                 .hierarchy_root_dir
@@ -991,7 +991,7 @@ mod tests {
         .await
         .expect("sync hierarchy");
 
-        assert_eq!(report.materialized_paths, 2);
+        assert_eq!(report.materialized_paths, 3);
         assert!(paths.hierarchy_root_dir.join("library/media-a/sidecars/info.json").is_file());
         assert!(paths.hierarchy_root_dir.join("library/media-a/sidecars/links.url").is_file());
         assert!(paths.hierarchy_root_dir.join("library/media-a/thumb.webp").is_file());
