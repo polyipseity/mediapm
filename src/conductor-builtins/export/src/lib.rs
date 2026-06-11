@@ -15,15 +15,17 @@
 //! `export` is impure because it materializes payloads onto the host
 //! filesystem.
 
-use std::collections::BTreeMap;
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
 use std::io::Write;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "cli")]
-use clap::{ArgAction, Parser};
+pub use mediapm_utils::builtin::BuiltinCliArgs;
+#[cfg(feature = "cli")]
+use mediapm_utils::builtin::parse_string_pairs;
+use mediapm_utils::{BinaryInputMap, StringMap};
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = "builtins.export@1.0.0";
@@ -37,46 +39,16 @@ pub const TOOL_VERSION: &str = "1.0.0";
 /// Builtin purity marker.
 pub const IS_IMPURE: bool = true;
 
-/// Canonical string-map payload used by both API and CLI contracts.
-pub type StringMap = BTreeMap<String, String>;
-
-/// Canonical binary-input payload map used by API execution.
-pub type BinaryInputMap = BTreeMap<String, Vec<u8>>;
-
-/// Standard clap-based CLI accepted by every builtin crate.
-#[cfg(feature = "cli")]
-#[derive(Debug, Clone, PartialEq, Eq, Parser)]
-pub struct BuiltinCliArgs {
-    /// Prints builtin descriptor metadata as JSON and exits.
-    #[arg(long, default_value_t = false)]
-    pub describe: bool,
-    /// Optional execution root override.
-    #[arg(long, default_value = ".")]
-    pub root_dir: String,
-    /// Builtin argument pairs as repeated `--arg KEY VALUE` options.
-    #[arg(long = "arg", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub args: Vec<String>,
-    /// Builtin input pairs as repeated `--input KEY VALUE` options.
-    ///
-    /// CLI transports inputs as UTF-8 strings. Conductor API calls may provide
-    /// arbitrary bytes.
-    #[arg(long = "input", value_names = ["KEY", "VALUE"], num_args = 2, action = ArgAction::Append)]
-    pub inputs: Vec<String>,
-}
-
 /// Returns one deterministic descriptor map for this crate.
 #[must_use]
 pub fn describe() -> StringMap {
-    StringMap::from([
-        ("tool_id".to_string(), TOOL_ID.to_string()),
-        ("tool_name".to_string(), TOOL_NAME.to_string()),
-        ("tool_version".to_string(), TOOL_VERSION.to_string()),
-        ("is_impure".to_string(), IS_IMPURE.to_string()),
-        (
-            "summary".to_string(),
-            "export builtin runtime that writes file/folder payloads to host paths".to_string(),
-        ),
-    ])
+    mediapm_utils::builtin::describe(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "export builtin runtime that writes file/folder payloads to host paths",
+    )
 }
 
 /// Serializes [`describe`] for CLI output.
@@ -124,8 +96,14 @@ pub fn execute_string_map(
     let kind =
         params.get("kind").ok_or_else(|| "export requires 'kind' (file|folder)".to_string())?;
     let destination = params.get("path").ok_or_else(|| "export requires 'path'".to_string())?;
-    let mode = parse_path_mode(params)?;
-    let destination = resolve_path_for_export_root(export_root_dir, kind, destination, mode)?;
+    let mode = mediapm_utils::path::parse_path_mode(params, "export")?;
+    let destination = mediapm_utils::path::resolve_path_for_root(
+        export_root_dir,
+        &format!("export kind='{kind}'"),
+        "path",
+        destination,
+        mode,
+    )?;
     let content = payload_bytes_from_maps(inputs, params)
         .ok_or_else(|| "export requires input 'content'".to_string())?;
 
@@ -166,15 +144,6 @@ pub fn execute_string_map(
         }
         other => Err(format!("unsupported export kind '{other}'")),
     }
-}
-
-/// Destination-path resolution mode for export operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PathMode {
-    /// Resolve `path` under the export root directory.
-    Relative,
-    /// Treat `path` as an explicit absolute host path.
-    Absolute,
 }
 
 /// Resolves export payload bytes from binary inputs or string params.
@@ -257,30 +226,6 @@ pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
     }
 }
 
-/// Converts repeated `--arg KEY VALUE` or `--input KEY VALUE` pairs into a map.
-#[cfg(feature = "cli")]
-fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, String> {
-    let mut map = StringMap::new();
-    let mut chunks = pairs.chunks_exact(2);
-    for chunk in &mut chunks {
-        let key = chunk[0].trim();
-        let value = &chunk[1];
-        if key.is_empty() {
-            return Err(format!("invalid {label} entry; key must be non-empty"));
-        }
-        if map.insert(key.to_string(), value.clone()).is_some() {
-            return Err(format!("duplicate {label} entry for key '{key}'"));
-        }
-    }
-    if !chunks.remainder().is_empty() {
-        let option_name = if label == "args" { "arg" } else { "input" };
-        return Err(format!(
-            "invalid {label} entries; expected repeated '--{option_name} KEY VALUE' pairs"
-        ));
-    }
-    Ok(map)
-}
-
 /// Validates export args/inputs for required and recognized keys.
 fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Result<(), String> {
     for key in params.keys() {
@@ -306,7 +251,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
         return Err("export requires non-empty 'path'".to_string());
     }
 
-    let _ = parse_path_mode(params)?;
+    let _ = mediapm_utils::path::parse_path_mode(params, "export")?;
 
     let Some(content) = payload_bytes_from_maps(inputs, params) else {
         return Err("export requires input 'content'".to_string());
@@ -316,85 +261,6 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
     }
 
     Ok(())
-}
-
-/// Parses export destination path-mode selector.
-fn parse_path_mode(params: &StringMap) -> Result<PathMode, String> {
-    match params.get("path_mode").map_or("relative", String::as_str) {
-        "relative" => Ok(PathMode::Relative),
-        "absolute" => Ok(PathMode::Absolute),
-        other => Err(format!("export path_mode must be 'relative' or 'absolute', got '{other}'")),
-    }
-}
-
-/// Resolves one candidate path against export root + path-mode semantics.
-fn resolve_path_for_export_root(
-    export_root_dir: &Path,
-    kind: &str,
-    candidate: &str,
-    mode: PathMode,
-) -> Result<PathBuf, String> {
-    match mode {
-        PathMode::Relative => {
-            if Path::new(candidate).is_absolute() {
-                return Err(format!(
-                    "export kind='{kind}' with path_mode='relative' requires relative 'path'"
-                ));
-            }
-            let root = absolute_root(export_root_dir)?;
-            let normalized = normalize_relative_path(candidate, "export destination path")?;
-            Ok(root.join(normalized))
-        }
-        PathMode::Absolute => {
-            let parsed = Path::new(candidate);
-            if !parsed.is_absolute() {
-                return Err(format!(
-                    "export kind='{kind}' with path_mode='absolute' requires absolute 'path'"
-                ));
-            }
-            Ok(parsed.to_path_buf())
-        }
-    }
-}
-
-/// Resolves export root directory into absolute path.
-fn absolute_root(root: &Path) -> Result<PathBuf, String> {
-    if root.is_absolute() {
-        return Ok(root.to_path_buf());
-    }
-
-    std::env::current_dir()
-        .map(|cwd| cwd.join(root))
-        .map_err(|err| format!("resolving current directory for export root failed: {err}"))
-}
-
-/// Normalizes one relative path and rejects escaping components.
-fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf, String> {
-    if candidate.trim().is_empty() {
-        return Err(format!("{context} must be non-empty"));
-    }
-
-    let parsed = Path::new(candidate);
-    if parsed.is_absolute() {
-        return Err(format!("{context} must be relative"));
-    }
-
-    let mut normalized = PathBuf::new();
-    for component in parsed.components() {
-        match component {
-            Component::Normal(part) => normalized.push(part),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(format!("{context} must stay under export root directory"));
-            }
-        }
-    }
-
-    if normalized.as_os_str().is_empty() {
-        return Err(format!("{context} must contain at least one path component"));
-    }
-
-    Ok(normalized)
 }
 
 #[cfg(test)]
@@ -504,7 +370,7 @@ mod tests {
         )
         .expect_err("relative mode should reject parent traversal");
 
-        assert!(error.contains("must stay under export root directory"));
+        assert!(error.contains("must stay under root directory"));
     }
 
     /// Verifies absolute mode allows explicit absolute destination paths.

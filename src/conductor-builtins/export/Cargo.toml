@@ -9,7 +9,7 @@ description = "Built-in export tool contract"
 
 [features]
 default = ["cli"]
-cli = ["dep:clap", "dep:serde_json"]
+cli = ["dep:clap", "dep:serde_json", "mediapm-utils/cli"]
 
 [lints]
 workspace = true
@@ -17,6 +17,7 @@ workspace = true
 [dependencies]
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 mediapm-conductor-builtin-archive = { path = "../archive", default-features = false }
+mediapm-utils = { workspace = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
