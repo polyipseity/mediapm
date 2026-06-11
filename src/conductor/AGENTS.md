@@ -412,6 +412,14 @@ layout consistently:
 Avoid keeping both `foo.rs` and `foo/mod.rs` for one module and avoid
 `#[path = "..."]` for ordinary in-crate module/test placement.
 
+## GC Pipeline Logging
+
+The `run_cas_gc_sweep()` function in `gc.rs` emits `tracing::info!` messages
+at each of its 5 phases (1/5 through 5/5) so that operators can observe GC
+progress. The sweep itself (`gc_sweep` in `maintenance.rs`) logs per-batch
+progress during `delete_many` calls. This addresses the previously observed
+issue of GC hanging at 100% CPU with no visible output.
+
 ## Process and Builtin Execution Semantics
 
 Execution dispatch is decided per tool:

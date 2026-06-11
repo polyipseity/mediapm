@@ -44,6 +44,20 @@ alone.
 - CAS-owned overwrite/delete paths may temporarily clear read-only bits before
   replacing or removing object files.
 - Delete is transitive for delta descendants to avoid orphan reconstruction paths.
+- **Delete ordering**: index mutations (`persist_index_batch`) always happen
+  **before** object file deletions (`delete_object_files`). This ensures crash
+  atomicity: after a crash, conservative false negatives (index claims existence
+  but file is gone) are preferable to false positives.
+- **Lock file lifecycle**: the lock file is deleted on graceful `Drop` of
+  `FileSystemState`. A stale lock file on disk is safe (kernel releases the
+  `flock` on fd close), but deleting it prevents spurious warnings.
+- **`delete_many` uses batched persistence**: the GC sweep calls
+  `delete_many()` which accumulates all `delete_inner` plans, issues a single
+  `persist_index_batch`, then deletes all object files — avoiding O(n) redb
+  transaction overhead.
+- **`optimize_once` temporarily disabled**: full-object scan has O(n×m)
+  scaling proportional to total store size. Disabled with a `TODO` for
+  scope-bounded replacement. The dead code body remains as a reference.
 - Constraints never persist an explicit empty-only candidate list; empty base is
   implicit at read time.
 - Optimizer candidate scoring must preserve the depth/size tradeoff contract:
@@ -330,9 +344,10 @@ The `FileSystemCas` backend uses an advisory lock file to coordinate access acro
 | Lock type | `fs4::fs_std::FileExt::try_lock_exclusive()` (non-blocking) |
 | Scope | Per-store-filesystem — all `FileSystemCas` instances sharing the same root |
 | Release | On `File` drop (closes file descriptor) |
+| File deletion on Drop | `FileSystemState::drop()` unlinks `<store_root>/lock`. Content (old PID) is advisory only; `flock` is kernel-released on fd close. |
 | Error type | `CasError::StoreLocked { root: PathBuf }` |
 | Wait behavior | `FileSystemRecoveryOptions.wait_for_lock: bool` (default `false`). When `true`, retries in a loop with backoff instead of failing immediately. |
-| State | `FileSystemState.lock_file: Option<File>` — held for the lifetime of the `FileSystemCas` instance |
+| State | `FileSystemState.lock_file: Option<File>` — held for the lifetime of the `FileSystemCas` instance. `lock_path: PathBuf` tracks the path for Drop cleanup. |
 
 **Contract**: The lock is advisory — cooperative processes must respect it. Non-cooperative processes (e.g., a direct `cp` or `rsync` into the store) are not prevented but risk corrupting the index or creating inconsistent state.
 
@@ -368,6 +383,7 @@ patch bytes for `DeltaPatch::decode()`.
 - **Index false negatives**: Index-backed existence checks may return `false` for objects that exist in storage (conservative by design). Callers must fall back to storage for a definitive answer.
 - **Manual filesystem modification**: Direct manipulation of files under the CAS store root (adding, removing, or modifying files outside the CAS API) is unsupported and may produce silently incorrect index state.
 - **Recovery scope**: `repair_index()` only verifies and rebuilds the index from existing storage objects. It does not detect or repair corrupted object content (bit rot) — that requires an external integrity-verification tool such as a periodic `blake3sum` audit.
+- **`optimize_once` disabled**: temporarily disabled due to O(n×m) full-object scan scaling. Expected to be replaced with a scope-bounded alternative.
 
 ### Index-Backed Existence Checks
 
