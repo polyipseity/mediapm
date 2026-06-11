@@ -138,3 +138,54 @@ pub fn parse_string_pairs(pairs: &[String], label: &str) -> Result<StringMap, St
     }
     Ok(map)
 }
+
+// ---------------------------------------------------------------------------
+// Macro: builtin_main_single_writer!
+// ---------------------------------------------------------------------------
+
+/// Expands to a full `main()` function for builtin CLI binaries.
+///
+/// Suitable for archive, export, fs, and import (not echo, which is special).
+///
+/// # Arguments
+///
+/// * `$crate_id` — the crate identifier (e.g. `mediapm_conductor_builtin_archive`).
+///
+/// The expanded code includes `use clap::Parser;` so callers do not need to
+/// pre-import it.
+#[macro_export]
+macro_rules! builtin_main_single_writer {
+    ($crate_id:ident) => {
+        fn main() -> Result<(), Box<dyn std::error::Error>> {
+            use clap::Parser;
+            let cli = $crate_id::BuiltinCliArgs::parse();
+            let mut stdout = std::io::stdout();
+            $crate_id::run_cli_command(&cli, &mut stdout)
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Helper: validate_only_known_keys
+// ---------------------------------------------------------------------------
+
+/// Checks that every key in `params` appears in `known`.
+///
+/// Returns `Err` with a descriptive message using `context` as the subject
+/// (e.g. `"fs op 'copy'"`) when an unknown key is found.
+///
+/// # Errors
+///
+/// Returns `Err` if any key in `params` is not in `known`.
+pub fn validate_only_known_keys(
+    params: &StringMap,
+    known: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    for key in params.keys() {
+        if !known.contains(&key.as_str()) {
+            return Err(format!("{context} does not accept arg '{key}'"));
+        }
+    }
+    Ok(())
+}
