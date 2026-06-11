@@ -20,8 +20,20 @@ use super::{FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES, FileSystemState};
 #[async_trait]
 /// Maintenance trait implementation for shared filesystem runtime state.
 impl CasMaintenanceApi for FileSystemState {
+    #[allow(unreachable_code, unused_variables)]
     #[instrument(name = "filesystem.optimize_once", skip(self, options))]
     async fn optimize_once(&self, options: OptimizeOptions) -> Result<OptimizeReport, CasError> {
+        // TODO(#XXX): Re-enable optimize_once after fixing the O(n×m) scaling
+        // issue. The current implementation does a full object scan per call
+        // to unconstrained_candidate_bases_for_target (up to 24× the full
+        // object set). For small repos it's wasted work; for large repos it
+        // causes visible hangs. The optimizer needs a bounded scan or an
+        // incremental approach before re-enabling.
+        //
+        // Tracked by: temporary disable during GC improvements — remove this
+        // return and the associated comment once the scaling fix lands.
+        return Ok(OptimizeReport { rewritten_objects: 0 });
+
         let optimize_started = Instant::now();
         let (mut constrained_targets, mut unconstrained_targets) = {
             let index = self.lock_index_read("collecting optimize targets");
@@ -148,7 +160,15 @@ impl CasMaintenanceApi for FileSystemState {
         let deleted_count = sweep_set.len();
 
         if !sweep_set.is_empty() {
+            tracing::info!(
+                sweeping = sweep_set.len(),
+                total = total_objects,
+                "GC sweep: deleting unreachable objects"
+            );
             self.delete_many(sweep_set).await?;
+            tracing::info!("GC sweep: deletion complete");
+        } else {
+            tracing::info!(total = total_objects, "GC sweep: no unreachable objects to delete");
         }
 
         Ok(GcSweepReport { deleted_count, total_objects })

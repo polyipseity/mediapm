@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, GcSweepReport, Hash, OptimizeOptions};
+use tracing;
 
 use crate::error::ConductorError;
 use crate::model::config::ExternalContentRef;
@@ -96,11 +97,16 @@ pub async fn run_cas_gc_sweep<C>(
 where
     C: CasApi + CasMaintenanceApi,
 {
+    tracing::info!("GC phase 1/5: optimize_once");
     cas.optimize_once(OptimizeOptions::default()).await.map_err(ConductorError::Cas)?;
+    tracing::info!("GC phase 2/5: prune_constraints");
     cas.prune_constraints().await.map_err(ConductorError::Cas)?;
     let roots =
         compute_gc_roots_from_keys(state.external_data.keys().copied(), state_pointer, state);
+    tracing::info!("GC phase 3/5: gc_sweep");
     let report = cas.gc_sweep(&roots).await.map_err(ConductorError::Cas)?;
+    tracing::info!("GC phase 4/5: compact_index");
     cas.compact_index().await.map_err(ConductorError::Cas)?;
+    tracing::info!("GC phase 5/5: complete (deleted={})", report.deleted_count);
     Ok(report)
 }
