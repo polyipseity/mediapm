@@ -43,6 +43,7 @@ use crate::{
     empty_content_hash, ensure_empty_record, recalculate_depths,
 };
 
+use super::super::STREAM_READ_CHUNK_BYTES;
 use super::actor::{
     ActiveMmapRegistry, FileObjectActor, FileObjectActorMessage, FileObjectActorState,
     read_full_object_bytes_mmap,
@@ -55,8 +56,8 @@ use super::util::{bootstrap_empty_object, clear_file_readonly_if_set, write_obje
 use super::{
     FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY, FILESYSTEM_MAX_BASE_SIZE_RATIO,
     FILESYSTEM_OBJECT_ACTOR_RPC_TIMEOUT_MS, FILESYSTEM_SMALL_INLINE_HASHES,
-    FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS, FILESYSTEM_STREAM_READ_CHUNK_BYTES,
-    FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT, STORAGE_VERSION,
+    FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS, FILESYSTEM_UNRESTRICTED_CANDIDATE_LIMIT,
+    STORAGE_VERSION,
 };
 
 /// Shared filesystem CAS backend state.
@@ -168,7 +169,7 @@ impl FileSystemState {
             index: RwLock::new(index),
             reconstructed_bytes_cache: Mutex::new(HashMap::new()),
             stream_buffer_pool: StreamBufferPool::new(
-                FILESYSTEM_STREAM_READ_CHUNK_BYTES,
+                STREAM_READ_CHUNK_BYTES,
                 FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS,
             ),
             index_db: parking_lot::RwLock::new(redb_index),
@@ -2057,7 +2058,7 @@ impl CasApi for FileSystemState {
     }
 
     async fn put_stream(&self, mut reader: CasByteReader) -> Result<Hash, CasError> {
-        let mut data = BytesMut::with_capacity(FILESYSTEM_STREAM_READ_CHUNK_BYTES);
+        let mut data = BytesMut::with_capacity(STREAM_READ_CHUNK_BYTES);
         let mut chunk = self.stream_buffer_pool.lease();
         loop {
             chunk.clear();

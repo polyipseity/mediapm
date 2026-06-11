@@ -13,6 +13,9 @@ mod visualization;
 
 pub(crate) use buffer_pool::StreamBufferPool;
 
+/// Chunk size for streaming reads from CAS storage backends.
+pub const STREAM_READ_CHUNK_BYTES: usize = 32 * 1024;
+
 /// Canonical validation message for self-referential constraint rows.
 pub(crate) const CONSTRAINT_SELF_BASE_MESSAGE: &str =
     "target hash cannot be its own base candidate";

@@ -61,8 +61,6 @@ const FILESYSTEM_DEFAULT_OPTIMIZE_MAX_REWRITES: usize = 24;
 const FILESYSTEM_CANDIDATE_EVAL_CONCURRENCY: usize = 8;
 /// Minimum full-object size for mmap-backed reads.
 pub(super) const FILESYSTEM_MMAP_MIN_BYTES: u64 = 64 * 1024;
-/// Chunk size used when buffering streamed writes.
-const FILESYSTEM_STREAM_READ_CHUNK_BYTES: usize = 32 * 1024;
 /// Max retained reusable stream buffers.
 const FILESYSTEM_STREAM_BUFFER_POOL_MAX_BUFFERS: usize = 128;
 /// Inline capacity hint for small hash collections.
@@ -918,7 +916,7 @@ mod tests {
     async fn filesystem_put_stream_hash_matches_multihash_identity() {
         let (_dir, cas) = open_temp_filesystem_cas().await;
 
-        let len = (super::FILESYSTEM_STREAM_READ_CHUNK_BYTES * 2) + 257;
+        let len = (super::super::STREAM_READ_CHUNK_BYTES * 2) + 257;
         let payload = vec![b'z'; len];
         let expected = Hash::from_content_with_algorithm(HashAlgorithm::Blake3, &payload);
 

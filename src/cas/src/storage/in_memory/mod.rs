@@ -32,8 +32,6 @@ use reconstruction::{build_reconstruction_plan, ensure_reconstructed_hash};
 
 /// Default cap for streamed object size in in-memory backend.
 const IN_MEMORY_DEFAULT_MAX_OBJECT_SIZE_BYTES: usize = 64 * 1024 * 1024;
-/// Stream read chunk size for incremental in-memory ingestion.
-const IN_MEMORY_STREAM_READ_CHUNK_BYTES: usize = 32 * 1024;
 /// Inline-capacity hint for dependent-hash small vectors.
 const IN_MEMORY_SMALL_DEPENDENT_INLINE: usize = 8;
 /// Maximum retained stream buffers in in-memory pool.
@@ -76,7 +74,7 @@ impl InMemoryCas {
             constraints: Arc::new(DashMap::new()),
             mutation_gate: Arc::new(Mutex::new(())),
             stream_buffer_pool: StreamBufferPool::new(
-                IN_MEMORY_STREAM_READ_CHUNK_BYTES,
+                super::STREAM_READ_CHUNK_BYTES,
                 IN_MEMORY_STREAM_BUFFER_POOL_MAX_BUFFERS,
             ),
             max_object_size_bytes,
@@ -85,7 +83,7 @@ impl InMemoryCas {
 
     /// Streams bytes into memory with incremental size checks and hashing.
     async fn put_stream_incremental(&self, mut reader: CasByteReader) -> Result<Hash, CasError> {
-        let mut payload = BytesMut::with_capacity(IN_MEMORY_STREAM_READ_CHUNK_BYTES);
+        let mut payload = BytesMut::with_capacity(super::STREAM_READ_CHUNK_BYTES);
         let mut chunk = self.stream_buffer_pool.lease();
 
         loop {
@@ -969,7 +967,7 @@ mod tests {
     #[tokio::test]
     async fn in_memory_put_stream_hash_matches_multihash_identity() {
         let cas = InMemoryCas::new();
-        let len = (super::IN_MEMORY_STREAM_READ_CHUNK_BYTES * 2) + 113;
+        let len = (super::super::STREAM_READ_CHUNK_BYTES * 2) + 113;
         let payload = vec![b'q'; len];
         let expected = Hash::from_content_with_algorithm(HashAlgorithm::Blake3, &payload);
 
