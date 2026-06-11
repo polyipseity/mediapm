@@ -23,7 +23,7 @@ use dashmap::DashSet;
 use futures_util::{StreamExt, stream};
 use parking_lot::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use ractor::{Actor, ActorRef, call_t};
-use rand::Rng;
+use rand::RngExt;
 use smallvec::SmallVec;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -1449,27 +1449,6 @@ impl FileSystemState {
         }
     }
 
-    /// Applies patch semantics to an existing explicit constraint candidate set.
-    fn merge_constraint_patch(
-        existing: Option<&BTreeSet<Hash>>,
-        patch: ConstraintPatch,
-    ) -> BTreeSet<Hash> {
-        let mut merged = if patch.clear_existing {
-            BTreeSet::new()
-        } else {
-            existing.cloned().unwrap_or_default()
-        };
-
-        for base in patch.remove_bases {
-            merged.remove(&base);
-        }
-        for base in patch.add_bases {
-            merged.insert(base);
-        }
-
-        merged
-    }
-
     /// Writes one normalized explicit constraint row and maintains reverse index.
     ///
     /// Returns the persisted explicit set, or `None` when row normalizes to
@@ -2338,7 +2317,7 @@ impl CasApi for FileSystemState {
             }
 
             before = index.constraints.get(&target_hash).cloned().unwrap_or_default();
-            let merged = Self::merge_constraint_patch(Some(&before), patch);
+            let merged = crate::storage::merge_constraint_patch(Some(&before), patch);
             validate_constraint_target_not_in_bases(target_hash, &merged)?;
 
             let after_optic = Self::set_constraint_row_optic(&mut index, target_hash, merged);
@@ -2424,7 +2403,8 @@ impl CasApi for FileSystemState {
 
                         let before =
                             index.constraints.get(target_hash).cloned().unwrap_or_default();
-                        let merged = Self::merge_constraint_patch(Some(&before), patch.clone());
+                        let merged =
+                            crate::storage::merge_constraint_patch(Some(&before), patch.clone());
                         validate_constraint_target_not_in_bases(*target_hash, &merged)?;
 
                         // Update in-memory state via the full row optic (computes

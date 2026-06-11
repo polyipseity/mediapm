@@ -262,6 +262,37 @@ impl Default for OptimizeOptions {
     }
 }
 
+/// Concurrently maps an async method over a batch of hashes, collecting
+/// ordered results.
+///
+/// Spawns one future per hash via [`FuturesUnordered`] and writes each
+/// completed result into a pre-sized output buffer at the original index,
+/// avoiding sort overhead for large batches.
+macro_rules! batch_concurrent_map {
+    ($self:expr, $hashes:expr, $method:ident, $output:ty, $debug:expr, $invariant:expr) => {{
+        let total = $hashes.len();
+        let mut pending: FuturesUnordered<_> = $hashes
+            .into_iter()
+            .enumerate()
+            .map(|(idx, hash)| async move {
+                let result = $self.$method(hash).await;
+                (idx, hash, result)
+            })
+            .collect();
+        let mut ordered: Vec<Option<($crate::Hash, $output)>> = vec![None; total];
+        let mut completed = 0usize;
+        while let Some((idx, hash, value)) = pending.next().await {
+            ordered[idx] = Some((hash, value?));
+            completed = completed.saturating_add(1);
+        }
+        debug_assert_eq!(completed, total, $debug);
+        ordered
+            .into_iter()
+            .map(|entry| entry.ok_or_else(|| $crate::CasError::invariant($invariant)))
+            .collect::<Result<Vec<($crate::Hash, $output)>, $crate::CasError>>()
+    }};
+}
+
 /// Async API contract for CAS behavior.
 ///
 /// Implementations may differ internally (filesystem, in-memory, remote, or
@@ -425,32 +456,14 @@ pub trait CasApi: Send + Sync {
     /// directly into a pre-sized output buffer, avoiding sort overhead for
     /// very large batches.
     async fn get_many(&self, hashes: Vec<Hash>) -> Result<Vec<(Hash, Bytes)>, CasError> {
-        let total = hashes.len();
-        let mut pending: FuturesUnordered<_> = hashes
-            .into_iter()
-            .enumerate()
-            .map(|(idx, hash)| async move {
-                let result = self.get(hash).await;
-                (idx, hash, result)
-            })
-            .collect();
-
-        let mut ordered: Vec<Option<(Hash, Bytes)>> = vec![None; total];
-        let mut completed = 0usize;
-        while let Some((idx, hash, bytes)) = pending.next().await {
-            ordered[idx] = Some((hash, bytes?));
-            completed = completed.saturating_add(1);
-        }
-        debug_assert_eq!(completed, total, "all get_many fetches should complete exactly once");
-
-        ordered
-            .into_iter()
-            .map(|entry| {
-                entry.ok_or_else(|| {
-                    CasError::invariant("get_many completion buffer was not fully populated")
-                })
-            })
-            .collect()
+        batch_concurrent_map!(
+            self,
+            hashes,
+            get,
+            Bytes,
+            "all get_many fetches should complete exactly once",
+            "get_many completion buffer was not fully populated"
+        )
     }
 
     /// Returns object metadata without loading full payload bytes.
@@ -474,32 +487,14 @@ pub trait CasApi: Send + Sync {
     /// directly into a pre-sized output buffer, avoiding sort overhead for
     /// very large batches.
     async fn info_many(&self, hashes: Vec<Hash>) -> Result<Vec<(Hash, ObjectInfo)>, CasError> {
-        let total = hashes.len();
-        let mut pending: FuturesUnordered<_> = hashes
-            .into_iter()
-            .enumerate()
-            .map(|(idx, hash)| async move {
-                let result = self.info(hash).await;
-                (idx, hash, result)
-            })
-            .collect();
-
-        let mut ordered: Vec<Option<(Hash, ObjectInfo)>> = vec![None; total];
-        let mut completed = 0usize;
-        while let Some((idx, hash, info)) = pending.next().await {
-            ordered[idx] = Some((hash, info?));
-            completed = completed.saturating_add(1);
-        }
-        debug_assert_eq!(completed, total, "all info_many lookups should complete exactly once");
-
-        ordered
-            .into_iter()
-            .map(|entry| {
-                entry.ok_or_else(|| {
-                    CasError::invariant("info_many completion buffer was not fully populated")
-                })
-            })
-            .collect()
+        batch_concurrent_map!(
+            self,
+            hashes,
+            info,
+            ObjectInfo,
+            "all info_many lookups should complete exactly once",
+            "info_many completion buffer was not fully populated"
+        )
     }
 
     /// Deletes one object while preserving reconstructability of descendants.
@@ -601,37 +596,14 @@ pub trait CasApi: Send + Sync {
         &self,
         hashes: Vec<Hash>,
     ) -> Result<Vec<(Hash, Option<Constraint>)>, CasError> {
-        let total = hashes.len();
-        let mut pending: FuturesUnordered<_> = hashes
-            .into_iter()
-            .enumerate()
-            .map(|(idx, hash)| async move {
-                let result = self.get_constraint(hash).await;
-                (idx, hash, result)
-            })
-            .collect();
-
-        let mut ordered: Vec<Option<(Hash, Option<Constraint>)>> = vec![None; total];
-        let mut completed = 0usize;
-        while let Some((idx, hash, constraint)) = pending.next().await {
-            ordered[idx] = Some((hash, constraint?));
-            completed = completed.saturating_add(1);
-        }
-        debug_assert_eq!(
-            completed, total,
-            "all get_constraint_many lookups should complete exactly once"
-        );
-
-        ordered
-            .into_iter()
-            .map(|entry| {
-                entry.ok_or_else(|| {
-                    CasError::invariant(
-                        "get_constraint_many completion buffer was not fully populated",
-                    )
-                })
-            })
-            .collect()
+        batch_concurrent_map!(
+            self,
+            hashes,
+            get_constraint,
+            Option<Constraint>,
+            "all get_constraint_many lookups should complete exactly once",
+            "get_constraint_many completion buffer was not fully populated"
+        )
     }
 
     /// Applies many constraint mutations atomically in one batch.
@@ -680,17 +652,6 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// # Performance
     /// O(number of constraints × candidate count) for one pass.
     async fn optimize_once(&self, options: OptimizeOptions) -> Result<OptimizeReport, CasError>;
-
-    /// Executes one pass with default options.
-    ///
-    /// # Errors
-    /// Returns [`CasError`] when optimization fails.
-    ///
-    /// # Performance
-    /// Equivalent to [`Self::optimize_once`] with [`OptimizeOptions::default`].
-    async fn optimize_once_default(&self) -> Result<OptimizeReport, CasError> {
-        self.optimize_once(OptimizeOptions::default()).await
-    }
 
     /// Removes dangling base candidates from constraints.
     ///

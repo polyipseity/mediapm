@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::{CasError, Hash};
+use crate::{CasError, ConstraintPatch, Hash};
 
 mod buffer_pool;
 mod chain;
@@ -46,6 +46,27 @@ pub(crate) fn is_unconstrained_constraint_row(bases: &BTreeSet<Hash>) -> bool {
 /// otherwise `None` to indicate implicit unconstrained semantics.
 pub(crate) fn normalize_explicit_constraint_set(bases: BTreeSet<Hash>) -> Option<BTreeSet<Hash>> {
     (!is_unconstrained_constraint_row(&bases)).then_some(bases)
+}
+
+/// Applies patch semantics to an existing explicit constraint candidate set.
+///
+/// When `existing` is `None`, the initial set is treated as empty.
+/// `remove_bases` is applied before `add_bases`.
+pub(crate) fn merge_constraint_patch(
+    existing: Option<&BTreeSet<Hash>>,
+    patch: ConstraintPatch,
+) -> BTreeSet<Hash> {
+    let mut merged =
+        if patch.clear_existing { BTreeSet::new() } else { existing.cloned().unwrap_or_default() };
+
+    for base in patch.remove_bases {
+        merged.remove(&base);
+    }
+    for base in patch.add_bases {
+        merged.insert(base);
+    }
+
+    merged
 }
 
 /// Storage backend configuration and runtime backend delegation.

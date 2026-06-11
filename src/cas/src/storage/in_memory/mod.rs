@@ -482,27 +482,6 @@ impl InMemoryCas {
         Ok(data)
     }
 
-    /// Merges one constraint patch with existing explicit candidates.
-    fn merge_constraint_patch(
-        existing: Option<&BTreeSet<Hash>>,
-        patch: ConstraintPatch,
-    ) -> BTreeSet<Hash> {
-        let mut merged = if patch.clear_existing {
-            BTreeSet::new()
-        } else {
-            existing.cloned().unwrap_or_default()
-        };
-
-        for base in patch.remove_bases {
-            merged.remove(&base);
-        }
-        for base in patch.add_bases {
-            merged.insert(base);
-        }
-
-        merged
-    }
-
     /// Writes normalized explicit constraint row or removes implicit rows.
     fn set_normalized_constraint_row(
         &self,
@@ -705,8 +684,10 @@ impl CasApi for InMemoryCas {
             }
         }
 
-        let merged =
-            Self::merge_constraint_patch(self.constraints.get(&target_hash).as_deref(), patch);
+        let merged = crate::storage::merge_constraint_patch(
+            self.constraints.get(&target_hash).as_deref(),
+            patch,
+        );
 
         validate_constraint_target_not_in_bases(target_hash, &merged)?;
 
@@ -748,7 +729,7 @@ impl CasApi for InMemoryCas {
                         }
                     }
 
-                    let merged = Self::merge_constraint_patch(
+                    let merged = crate::storage::merge_constraint_patch(
                         self.constraints.get(target_hash).as_deref(),
                         patch.clone(),
                     );
