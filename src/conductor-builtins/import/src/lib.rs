@@ -429,65 +429,6 @@ mod tests {
         assert!(unpacked.join("nested").join("a.txt").exists());
     }
 
-    /// Verifies relative mode rejects absolute path values.
-    #[test]
-    fn execute_relative_mode_rejects_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute_path = temp.path().join("payload.txt");
-        std::fs::write(&absolute_path, b"hello").expect("write payload");
-
-        let err = execute_content_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path".to_string(), absolute_path.to_string_lossy().to_string()),
-            ]),
-            &BTreeMap::new(),
-        )
-        .expect_err("relative mode should reject absolute path");
-
-        assert!(err.contains("path_mode='relative'"));
-    }
-
-    /// Verifies absolute mode accepts explicit absolute source paths.
-    #[test]
-    fn execute_absolute_mode_accepts_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute_path = temp.path().join("payload.txt");
-        std::fs::write(&absolute_path, b"hello").expect("write payload");
-
-        let payload = execute_content_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path_mode".to_string(), "absolute".to_string()),
-                ("path".to_string(), absolute_path.to_string_lossy().to_string()),
-            ]),
-            &BTreeMap::new(),
-        )
-        .expect("absolute mode should accept absolute path");
-
-        assert_eq!(payload, b"hello");
-    }
-
-    /// Verifies relative mode rejects escaping parent traversal.
-    #[test]
-    fn execute_relative_mode_rejects_parent_escape() {
-        let temp = tempdir().expect("tempdir");
-
-        let err = execute_content_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path".to_string(), "../outside.txt".to_string()),
-            ]),
-            &BTreeMap::new(),
-        )
-        .expect_err("relative mode should reject parent traversal");
-
-        assert!(err.contains("must stay under root directory"));
-    }
-
     /// Verifies fetch args reject removed destination-path option.
     #[test]
     fn execute_fetch_rejects_dest_path_arg() {

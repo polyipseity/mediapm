@@ -311,43 +311,6 @@ mod tests {
         assert!(temp.path().join("relative.txt").exists());
     }
 
-    /// Verifies relative mode rejects absolute path values.
-    #[test]
-    fn execute_relative_mode_rejects_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute = temp.path().join("abs.txt");
-        let error = execute_string_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("op".to_string(), "write_text".to_string()),
-                ("path".to_string(), absolute.to_string_lossy().to_string()),
-                ("content".to_string(), "x".to_string()),
-            ]),
-            &BTreeMap::new(),
-        )
-        .expect_err("relative mode should reject absolute path");
-        assert!(error.contains("path_mode='relative'"));
-    }
-
-    /// Verifies absolute mode accepts explicit absolute paths.
-    #[test]
-    fn execute_absolute_mode_accepts_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute = temp.path().join("abs.txt");
-        execute_string_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("op".to_string(), "write_text".to_string()),
-                ("path_mode".to_string(), "absolute".to_string()),
-                ("path".to_string(), absolute.to_string_lossy().to_string()),
-                ("content".to_string(), "x".to_string()),
-            ]),
-            &BTreeMap::new(),
-        )
-        .expect("absolute mode should accept absolute path");
-        assert_eq!(std::fs::read(&absolute).ok(), Some(b"x".to_vec()));
-    }
-
     /// Verifies unknown args fail fast instead of being silently ignored.
     #[test]
     fn execute_rejects_unknown_arg() {

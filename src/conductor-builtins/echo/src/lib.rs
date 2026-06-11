@@ -173,6 +173,31 @@ pub fn describe() -> StringMap {
     )
 }
 
+/// Serializes [`describe`] for CLI output.
+#[cfg(feature = "cli")]
+#[must_use]
+pub fn describe_json() -> String {
+    mediapm_utils::builtin::describe_json_compact(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        false,
+        "echo-like builtin with positional text and optional stream selection",
+    )
+}
+
+/// Serializes [`describe`] for non-CLI callers.
+#[must_use]
+pub fn describe_json_compat() -> String {
+    mediapm_utils::builtin::describe_json_compat(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        false,
+        "echo-like builtin with positional text and optional stream selection",
+    )
+}
+
 /// Parses one API stream selector value into [`EchoStream`].
 fn parse_stream(value: &str) -> Result<EchoStream, String> {
     match value {

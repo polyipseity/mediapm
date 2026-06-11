@@ -54,14 +54,16 @@ pub fn describe() -> StringMap {
 }
 
 /// Serializes [`describe`] for CLI output.
-///
-/// # Errors
-///
-/// Returns a serialization error when the descriptor map cannot be rendered
-/// as valid JSON.
 #[cfg(feature = "cli")]
-pub fn describe_json() -> Result<String, serde_json::Error> {
-    serde_json::to_string_pretty(&describe())
+#[must_use]
+pub fn describe_json() -> String {
+    mediapm_utils::builtin::describe_json_compact(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "export builtin runtime that writes file/folder payloads to host paths",
+    )
 }
 
 /// Executes one export request using argument strings plus binary inputs.
@@ -178,7 +180,7 @@ pub fn run_cli_command<W: Write>(
     writer: &mut W,
 ) -> Result<(), Box<dyn Error>> {
     if cli.describe {
-        let descriptor = describe_json()?;
+        let descriptor = describe_json();
         writer.write_all(descriptor.as_bytes())?;
         return Ok(());
     }
@@ -198,34 +200,16 @@ pub fn run_cli_command<W: Write>(
     Ok(())
 }
 
-#[cfg(not(feature = "cli"))]
-type DescribeJsonError = String;
-
-#[cfg(feature = "cli")]
-type DescribeJsonError = serde_json::Error;
-
 /// Serializes [`describe`] for non-CLI callers without requiring CLI features.
-///
-/// When the `cli` feature is disabled, this helper still provides deterministic
-/// descriptor JSON via a prebuilt string and never fails.
-///
-/// # Errors
-///
-/// Returns a serialization error only when the `cli` feature is enabled and
-/// descriptor JSON encoding fails. With `cli` disabled this helper always
-/// returns `Ok` with a deterministic JSON payload.
-pub fn describe_json_compat() -> Result<String, DescribeJsonError> {
-    #[cfg(feature = "cli")]
-    {
-        describe_json()
-    }
-    #[cfg(not(feature = "cli"))]
-    {
-        Ok(
-            "{\n  \"is_impure\": \"true\",\n  \"summary\": \"export builtin runtime that writes file/folder payloads to host paths\",\n  \"tool_id\": \"builtins.export@1.0.0\",\n  \"tool_name\": \"export\",\n  \"tool_version\": \"1.0.0\"\n}"
-                .to_string(),
-        )
-    }
+#[must_use]
+pub fn describe_json_compat() -> String {
+    mediapm_utils::builtin::describe_json_compat(
+        TOOL_ID,
+        TOOL_NAME,
+        TOOL_VERSION,
+        IS_IMPURE,
+        "export builtin runtime that writes file/folder payloads to host paths",
+    )
 }
 
 /// Validates export args/inputs for required and recognized keys.
@@ -338,60 +322,5 @@ mod tests {
         .expect_err("unknown arg should fail");
 
         assert!(error.contains("does not accept arg 'unexpected'"));
-    }
-
-    /// Verifies relative mode rejects absolute destination path values.
-    #[test]
-    fn export_relative_mode_rejects_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute_path = temp.path().join("out.bin");
-        let error = execute_string_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path".to_string(), absolute_path.to_string_lossy().to_string()),
-            ]),
-            &BinaryInputMap::from([("content".to_string(), b"x".to_vec())]),
-        )
-        .expect_err("relative mode should reject absolute path");
-
-        assert!(error.contains("path_mode='relative'"));
-    }
-
-    /// Verifies relative mode rejects escaping parent traversal.
-    #[test]
-    fn export_relative_mode_rejects_parent_escape() {
-        let temp = tempdir().expect("tempdir");
-        let error = execute_string_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path".to_string(), "../escape.bin".to_string()),
-            ]),
-            &BinaryInputMap::from([("content".to_string(), b"x".to_vec())]),
-        )
-        .expect_err("relative mode should reject parent traversal");
-
-        assert!(error.contains("must stay under root directory"));
-    }
-
-    /// Verifies absolute mode allows explicit absolute destination paths.
-    #[test]
-    fn export_absolute_mode_accepts_absolute_path() {
-        let temp = tempdir().expect("tempdir");
-        let absolute_path = temp.path().join("abs").join("payload.bin");
-
-        execute_string_map(
-            temp.path(),
-            &BTreeMap::from([
-                ("kind".to_string(), "file".to_string()),
-                ("path_mode".to_string(), "absolute".to_string()),
-                ("path".to_string(), absolute_path.to_string_lossy().to_string()),
-            ]),
-            &BinaryInputMap::from([("content".to_string(), b"ok".to_vec())]),
-        )
-        .expect("absolute mode should accept absolute path");
-
-        assert_eq!(std::fs::read(&absolute_path).ok(), Some(b"ok".to_vec()));
     }
 }

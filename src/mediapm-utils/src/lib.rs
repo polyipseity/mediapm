@@ -25,4 +25,7 @@ pub mod builtin;
 pub mod path;
 pub mod types;
 
+#[cfg(test)]
+mod path_tests;
+
 pub use types::{BinaryInputMap, StringMap};
