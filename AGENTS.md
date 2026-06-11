@@ -17,6 +17,7 @@
   - `src/conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
   - `src/conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
+  - `src/mediapm-utils/` (shared utilities for builtins)
 - Integration tests currently live with workspace crates (for example,
   `src/mediapm/tests/`).
   Prefer one shared harness shape across crates:
