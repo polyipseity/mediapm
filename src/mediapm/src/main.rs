@@ -120,7 +120,7 @@ enum ToolCommand {
     ///
     /// Default policy checks remote updates for tag-only selectors unless
     /// `--no-check-tag-updates` is provided.
-    Sync(ToolSyncArgs),
+    Sync(SyncArgs),
     /// Lists registered tools and binary status.
     List,
     /// Removes one tool requirement entry from `mediapm.ncl`.
@@ -240,8 +240,8 @@ struct MediaAddArgs {
     #[arg(long)]
     release_mbid: Option<String>,
     /// Insertion position policy for media-map mutation.
-    #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
-    insert_position: InsertPosition,
+    #[arg(long, value_enum, default_value_t = AddInsertPosition::Sorted)]
+    insert_position: AddInsertPosition,
     /// Overwrite an existing media entry with the same id.
     #[arg(long)]
     overwrite: bool,
@@ -261,7 +261,7 @@ enum MediaAddPreset {
 struct HierarchyAddArgs {
     /// Hierarchy-add preset.
     #[arg(long, value_enum)]
-    preset: HierarchyPreset,
+    preset: MediaHierarchyPreset,
     /// Optional hierarchy root folder.
     ///
     /// When omitted, defaults to `media/` for all presets.
@@ -270,8 +270,8 @@ struct HierarchyAddArgs {
     /// Existing media id in `mediapm.ncl`.
     media_id: String,
     /// Insertion position policy inside the affected root-folder group.
-    #[arg(long, value_enum, default_value_t = InsertPosition::Sorted)]
-    insert_position: InsertPosition,
+    #[arg(long, value_enum, default_value_t = AddInsertPosition::Sorted)]
+    insert_position: AddInsertPosition,
     /// Overwrite an existing hierarchy node with the same id.
     #[arg(long)]
     overwrite: bool,
@@ -282,7 +282,7 @@ struct HierarchyAddArgs {
 struct HierarchyRemoveArgs {
     /// Hierarchy-remove preset.
     #[arg(long, value_enum)]
-    preset: HierarchyPreset,
+    preset: MediaHierarchyPreset,
     /// Optional hierarchy root folder.
     ///
     /// When omitted, defaults to `media/` for all presets.
@@ -290,27 +290,6 @@ struct HierarchyRemoveArgs {
     root_folder: Option<String>,
     /// Existing media id in `mediapm.ncl`.
     media_id: String,
-}
-
-/// CLI insertion-position values for add commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-enum InsertPosition {
-    /// Keep deterministic sorted insertion behavior.
-    #[default]
-    Sorted,
-    /// Insert at the beginning of the affected logical group.
-    Beginning,
-    /// Insert at the end of the affected logical group.
-    End,
-}
-
-/// Hierarchy presets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum HierarchyPreset {
-    /// Local-source hierarchy preset.
-    Local,
-    /// Online yt-dlp hierarchy preset.
-    YtDlp,
 }
 
 /// Global-directory management commands.
@@ -537,17 +516,6 @@ struct SyncArgs {
     verify_materialization: VerifyMaterializationArgs,
 }
 
-/// Arguments for `mediapm tool sync`.
-#[derive(Debug, Args, Clone, Copy, Default)]
-struct ToolSyncArgs {
-    /// Optional override for tag-only tool update checks.
-    #[command(flatten)]
-    tag_update_policy: TagUpdatePolicyArgs,
-    /// Optional override for materialization verification.
-    #[command(flatten)]
-    verify_materialization: VerifyMaterializationArgs,
-}
-
 #[tokio::main]
 /// Parses CLI args and executes one top-level command.
 #[expect(
@@ -716,7 +684,7 @@ async fn main() -> anyhow::Result<()> {
                                     args.album.as_deref(),
                                     args.recording_mbid.as_deref(),
                                     args.release_mbid.as_deref(),
-                                    map_insert_position(args.insert_position),
+                                    args.insert_position,
                                     args.overwrite,
                                 )
                                 .await?
@@ -732,7 +700,7 @@ async fn main() -> anyhow::Result<()> {
                                     args.album.as_deref(),
                                     args.recording_mbid.as_deref(),
                                     args.release_mbid.as_deref(),
-                                    map_insert_position(args.insert_position),
+                                    args.insert_position,
                                     args.overwrite,
                                 )
                                 .await?
@@ -792,16 +760,15 @@ async fn main() -> anyhow::Result<()> {
             .await?;
             match command {
                 HierarchyCommand::Add(args) => {
-                    let preset = map_hierarchy_preset(args.preset);
                     let effective_root = args
                         .root_folder
                         .as_deref()
                         .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
                     service.add_media_hierarchy_preset_with_position(
-                        preset,
+                        args.preset,
                         &args.media_id,
                         args.root_folder.as_deref(),
-                        map_insert_position(args.insert_position),
+                        args.insert_position,
                         args.overwrite,
                     )?;
                     println!(
@@ -813,13 +780,12 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
                 }
                 HierarchyCommand::Remove(args) => {
-                    let preset = map_hierarchy_preset(args.preset);
                     let effective_root = args
                         .root_folder
                         .as_deref()
                         .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
                     let removed_nodes = service.remove_media_hierarchy_preset(
-                        preset,
+                        args.preset,
                         &args.media_id,
                         effective_root,
                     )?;
@@ -931,28 +897,9 @@ fn option_path_to_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|value| value.to_string_lossy().to_string())
 }
 
-/// Converts CLI hierarchy preset values into service-layer presets.
-#[must_use]
-fn map_hierarchy_preset(preset: HierarchyPreset) -> MediaHierarchyPreset {
-    match preset {
-        HierarchyPreset::Local => MediaHierarchyPreset::Local,
-        HierarchyPreset::YtDlp => MediaHierarchyPreset::YtDlp,
-    }
-}
-
-/// Converts CLI insertion-position values into service-layer insertion policy.
-#[must_use]
-fn map_insert_position(position: InsertPosition) -> AddInsertPosition {
-    match position {
-        InsertPosition::Sorted => AddInsertPosition::Sorted,
-        InsertPosition::Beginning => AddInsertPosition::Beginning,
-        InsertPosition::End => AddInsertPosition::End,
-    }
-}
-
 /// Returns preset-specific default hierarchy root folder for CLI add/remove.
 #[must_use]
-fn default_hierarchy_root_for_preset(_preset: HierarchyPreset) -> &'static str {
+fn default_hierarchy_root_for_preset(_preset: MediaHierarchyPreset) -> &'static str {
     "media/"
 }
 

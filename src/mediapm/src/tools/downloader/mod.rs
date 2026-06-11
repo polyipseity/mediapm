@@ -16,8 +16,6 @@ mod tests {
     //! Unit tests for downloader helper behavior.
 
     use std::collections::BTreeMap;
-    use std::future::Future;
-    use std::path::PathBuf;
 
     use crate::config::{ToolRequirement, ToolRequirementDependencies};
     use crate::tools::catalog::ToolOs;
@@ -26,21 +24,13 @@ mod tests {
     };
 
     use crate::paths::MediaPmPaths;
+    use crate::test_util::run_async;
     use crate::tools::downloader::ResolvedToolIdentity;
     use crate::tools::downloader::materialize::build_command_selector;
     use crate::tools::downloader::resolve::{
         logical_name_matches_tool_id, resolve_download_plan, tool_id_suffix_from_identity,
     };
     use crate::tools::downloader::resolve_provision_staging_base_dir;
-
-    /// Runs one async downloader helper future on a single-thread runtime.
-    fn run_async<T>(future: impl Future<Output = T>) -> T {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime")
-            .block_on(future)
-    }
 
     /// Verifies immutable id suffix precedence is hash -> version -> tag.
     #[test]

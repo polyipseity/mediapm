@@ -638,8 +638,8 @@ fn strip_managed_tool_id_prefix(prefix: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_util::run_async;
     use std::collections::BTreeMap;
-    use std::future::Future;
 
     use serde_json::json;
 
@@ -654,14 +654,6 @@ mod tests {
         remap_latest_download_urls_from_release, resolve_download_plan,
         should_refresh_release_metadata,
     };
-
-    fn run_async<T>(future: impl Future<Output = T>) -> T {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime")
-            .block_on(future)
-    }
 
     /// Verifies release-metadata cache keys normalize selectors for stable reuse.
     #[test]

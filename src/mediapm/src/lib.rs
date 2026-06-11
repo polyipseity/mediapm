@@ -25,6 +25,9 @@ mod service;
 mod source_metadata;
 mod tools;
 
+#[cfg(test)]
+mod test_util;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -125,6 +128,7 @@ pub struct MediaStepInvalidationSummary {
 
 /// Preset families supported by `mediapm hierarchy add/remove`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum MediaHierarchyPreset {
     /// Local-source hierarchy preset.
     Local,
@@ -133,9 +137,11 @@ pub enum MediaHierarchyPreset {
 }
 
 /// Supported insertion policies for add-command mutations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum AddInsertPosition {
     /// Keep deterministic sorted insertion behavior (default).
+    #[default]
     Sorted,
     /// Insert at the beginning of the affected logical group.
     Beginning,

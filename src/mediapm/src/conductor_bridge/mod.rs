@@ -32,6 +32,7 @@ mod tests {
         MediaPmDocument, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
     };
     use crate::paths::MediaPmPaths;
+    use crate::test_util::run_async;
     use crate::tools::catalog::tool_catalog_entry;
     use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
@@ -59,21 +60,9 @@ mod tests {
         MediaPmPaths::from_root(std::path::Path::new("."))
     }
 
-    /// Runs one async test operation on a single-thread Tokio runtime.
-    fn run_async_test<F, T>(future: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("create test tokio runtime");
-        runtime.block_on(future)
-    }
-
     /// Stores one byte payload in filesystem CAS and returns its hash.
     fn put_test_cas_bytes(cas_root: &std::path::Path, bytes: Vec<u8>) -> Hash {
-        run_async_test(async {
+        run_async(async {
             let cas = mediapm_cas::FileSystemCas::open(cas_root).await.expect("open test CAS");
             cas.put(bytes).await.expect("store test CAS payload")
         })
@@ -1169,7 +1158,7 @@ mod tests {
         );
         save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-        let resolved = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
+        let resolved = run_async(resolve_managed_tool_executable_with_filesystem_cas(
             &paths.conductor_machine_ncl,
             &cas_root,
             &paths.tools_dir,
@@ -1239,7 +1228,7 @@ mod tests {
         );
         save_machine_document(&paths.conductor_machine_ncl, &machine).expect("save machine doc");
 
-        let resolved = run_async_test(resolve_managed_tool_executable_with_filesystem_cas(
+        let resolved = run_async(resolve_managed_tool_executable_with_filesystem_cas(
             &paths.conductor_machine_ncl,
             &cas_root,
             &paths.tools_dir,

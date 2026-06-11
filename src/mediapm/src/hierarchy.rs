@@ -20,21 +20,9 @@ pub(crate) fn remove_hierarchy_nodes_by_id(
     nodes: &mut Vec<HierarchyNode>,
     target_id: &str,
 ) -> usize {
-    let mut removed = 0;
-    let mut index = 0;
-
-    while index < nodes.len() {
-        if nodes[index].id.as_deref().is_some_and(|value| value == target_id) {
-            nodes.remove(index);
-            removed += 1;
-            continue;
-        }
-
-        removed += remove_hierarchy_nodes_by_id(&mut nodes[index].children, target_id);
-        index += 1;
-    }
-
-    removed
+    remove_hierarchy_nodes_by(nodes, &|node| {
+        node.id.as_deref().is_some_and(|value| value == target_id)
+    })
 }
 
 /// Removes all nodes in one recursive hierarchy tree whose `media_id` matches
@@ -43,20 +31,27 @@ pub(crate) fn remove_hierarchy_nodes_by_media_id(
     nodes: &mut Vec<HierarchyNode>,
     target_media_id: &str,
 ) -> usize {
+    remove_hierarchy_nodes_by(nodes, &|node| {
+        node.media_id.as_deref().is_some_and(|value| value == target_media_id)
+    })
+}
+
+/// Generic recursive node removal by predicate.
+fn remove_hierarchy_nodes_by<F>(nodes: &mut Vec<HierarchyNode>, predicate: &F) -> usize
+where
+    F: Fn(&HierarchyNode) -> bool,
+{
     let mut removed = 0;
     let mut index = 0;
-
     while index < nodes.len() {
-        if nodes[index].media_id.as_deref().is_some_and(|value| value == target_media_id) {
+        if predicate(&nodes[index]) {
             nodes.remove(index);
             removed += 1;
             continue;
         }
-
-        removed += remove_hierarchy_nodes_by_media_id(&mut nodes[index].children, target_media_id);
+        removed += remove_hierarchy_nodes_by(&mut nodes[index].children, predicate);
         index += 1;
     }
-
     removed
 }
 
