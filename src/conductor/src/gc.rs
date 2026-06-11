@@ -8,13 +8,12 @@
 //! compaction step — this is the decoupled function used by the background
 //! GC loop in the node actor and by the CLI.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi, GcSweepReport, Hash, OptimizeOptions};
 use tracing;
 
 use crate::error::ConductorError;
-use crate::model::config::ExternalContentRef;
 use crate::model::state::OrchestrationState;
 
 /// Computes the full set of protected CAS hashes for GC root computation.
@@ -27,20 +26,6 @@ use crate::model::state::OrchestrationState;
 /// is redundant and omitted.
 #[must_use]
 pub fn compute_gc_roots(
-    user_external_data: &BTreeMap<Hash, ExternalContentRef>,
-    machine_external_data: &BTreeMap<Hash, ExternalContentRef>,
-    state_pointer: Option<Hash>,
-    state: &OrchestrationState,
-) -> BTreeSet<Hash> {
-    compute_gc_roots_from_keys(
-        user_external_data.keys().copied().chain(machine_external_data.keys().copied()),
-        state_pointer,
-        state,
-    )
-}
-
-/// Shared GC-root-computation body used by both public entry points.
-fn compute_gc_roots_from_keys(
     external_data_keys: impl Iterator<Item = Hash>,
     state_pointer: Option<Hash>,
     state: &OrchestrationState,
@@ -101,8 +86,7 @@ where
     cas.optimize_once(OptimizeOptions::default()).await.map_err(ConductorError::Cas)?;
     tracing::info!("GC phase 2/5: prune_constraints");
     cas.prune_constraints().await.map_err(ConductorError::Cas)?;
-    let roots =
-        compute_gc_roots_from_keys(state.external_data.keys().copied(), state_pointer, state);
+    let roots = compute_gc_roots(state.external_data.keys().copied(), state_pointer, state);
     tracing::info!("GC phase 3/5: gc_sweep");
     let report = cas.gc_sweep(&roots).await.map_err(ConductorError::Cas)?;
     tracing::info!("GC phase 4/5: compact_index");
