@@ -124,3 +124,209 @@ pub fn normalize_relative_path(candidate: &str, context: &str) -> Result<PathBuf
 
     Ok(normalized)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PathMode, absolute_root, normalize_relative_path, parse_path_mode, resolve_path_for_root,
+    };
+    use crate::StringMap;
+    use tempfile::tempdir;
+
+    // -----------------------------------------------------------------------
+    // parse_path_mode tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_path_mode_defaults_to_relative() {
+        let mode = parse_path_mode(&StringMap::new(), "test").expect("should succeed");
+        assert_eq!(mode, PathMode::Relative);
+    }
+
+    #[test]
+    fn parse_path_mode_explicit_relative() {
+        let params = StringMap::from([("path_mode".to_string(), "relative".to_string())]);
+        let mode = parse_path_mode(&params, "test").expect("should succeed");
+        assert_eq!(mode, PathMode::Relative);
+    }
+
+    #[test]
+    fn parse_path_mode_explicit_absolute() {
+        let params = StringMap::from([("path_mode".to_string(), "absolute".to_string())]);
+        let mode = parse_path_mode(&params, "test").expect("should succeed");
+        assert_eq!(mode, PathMode::Absolute);
+    }
+
+    #[test]
+    fn parse_path_mode_rejects_invalid() {
+        let params = StringMap::from([("path_mode".to_string(), "hybrid".to_string())]);
+        let err = parse_path_mode(&params, "test").expect_err("should reject invalid");
+        assert!(err.contains("hybrid"), "error should mention invalid value: {err}");
+    }
+
+    #[test]
+    fn parse_path_mode_includes_context() {
+        let params = StringMap::from([("path_mode".to_string(), "bad".to_string())]);
+        let err = parse_path_mode(&params, "my_ctx").expect_err("should fail");
+        assert!(err.contains("my_ctx"), "error should include context: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // normalize_relative_path tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn normalize_relative_path_accepts_simple() {
+        let result = normalize_relative_path("foo/bar/baz.txt", "test").expect("should succeed");
+        assert_eq!(result.to_string_lossy(), "foo/bar/baz.txt");
+    }
+
+    #[test]
+    fn normalize_relative_path_strips_curdir() {
+        let result = normalize_relative_path("./foo/bar", "test").expect("should succeed");
+        assert_eq!(result.to_string_lossy(), "foo/bar");
+    }
+
+    #[test]
+    fn normalize_relative_path_strips_mid_curdir() {
+        let result = normalize_relative_path("foo/./bar", "test").expect("should succeed");
+        assert_eq!(result.to_string_lossy(), "foo/bar");
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_empty() {
+        let err = normalize_relative_path("", "test").expect_err("should reject empty");
+        assert!(err.contains("non-empty"), "error: {err}");
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_whitespace() {
+        let err = normalize_relative_path("   ", "test").expect_err("should reject whitespace");
+        assert!(err.contains("non-empty"), "error: {err}");
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_absolute() {
+        let err = normalize_relative_path("/foo/bar", "test").expect_err("should reject absolute");
+        assert!(err.contains("must be relative"), "error: {err}");
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_parent() {
+        let err =
+            normalize_relative_path("../foo", "test").expect_err("should reject parent traversal");
+        assert!(err.contains("under root directory"), "error: {err}");
+    }
+
+    #[test]
+    fn normalize_relative_path_rejects_double_parent() {
+        let err = normalize_relative_path("foo/../../bar", "test")
+            .expect_err("should reject double parent traversal");
+        assert!(err.contains("under root directory"), "error: {err}");
+    }
+
+    #[test]
+    fn normalize_relative_path_mixed() {
+        let result = normalize_relative_path("./a/./b/./c.txt", "test").expect("should succeed");
+        assert_eq!(result.to_string_lossy(), "a/b/c.txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // absolute_root tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn absolute_root_keeps_absolute() {
+        let root = std::path::Path::new("/tmp");
+        let result = absolute_root(root, "test").expect("should succeed");
+        assert_eq!(result, root);
+    }
+
+    #[test]
+    fn absolute_root_resolves_relative() {
+        let root = std::path::Path::new(".");
+        let result = absolute_root(root, "test").expect("should succeed");
+        assert!(result.is_absolute(), "resolved root should be absolute: {result:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_path_for_root tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn relative_mode_rejects_absolute_path() {
+        let temp = tempdir().expect("tempdir");
+        let absolute_path = temp.path().join("out.bin");
+        let mode = parse_path_mode(&StringMap::new(), "test").expect("default path_mode");
+        assert_eq!(mode, PathMode::Relative);
+
+        let err = resolve_path_for_root(
+            temp.path(),
+            "test context",
+            "path",
+            &absolute_path.to_string_lossy(),
+            mode,
+        )
+        .expect_err("relative mode should reject absolute path");
+        assert!(err.contains("path_mode='relative'"));
+    }
+
+    #[test]
+    fn relative_mode_rejects_parent_escape() {
+        let temp = tempdir().expect("tempdir");
+        let mode =
+            parse_path_mode(&StringMap::new(), "test").expect("default path_mode should succeed");
+
+        let err = resolve_path_for_root(temp.path(), "test context", "path", "../escape.txt", mode)
+            .expect_err("relative mode should reject parent escape");
+        assert!(err.contains("must stay under root directory"));
+    }
+
+    #[test]
+    fn absolute_mode_accepts_absolute_path() {
+        let temp = tempdir().expect("tempdir");
+        let absolute_path = temp.path().join("abs").join("payload.bin");
+
+        let resolved = resolve_path_for_root(
+            temp.path(),
+            "test context",
+            "path",
+            &absolute_path.to_string_lossy(),
+            PathMode::Absolute,
+        )
+        .expect("absolute mode should accept absolute path");
+        assert_eq!(resolved, absolute_path);
+    }
+
+    #[test]
+    fn absolute_mode_rejects_relative_path() {
+        let temp = tempdir().expect("tempdir");
+        let err = resolve_path_for_root(
+            temp.path(),
+            "test context",
+            "path",
+            "relative.txt",
+            PathMode::Absolute,
+        )
+        .expect_err("absolute mode should reject relative path");
+        assert!(err.contains("path_mode='absolute'"));
+    }
+
+    #[test]
+    fn relative_mode_resolves_normal_path() {
+        let temp = tempdir().expect("tempdir");
+        let resolved =
+            resolve_path_for_root(temp.path(), "test", "path", "foo/bar.txt", PathMode::Relative)
+                .expect("should resolve");
+        assert_eq!(resolved, temp.path().join("foo/bar.txt"));
+    }
+
+    #[test]
+    fn relative_mode_strips_curdir() {
+        let temp = tempdir().expect("tempdir");
+        let resolved =
+            resolve_path_for_root(temp.path(), "test", "path", "./foo/bar.txt", PathMode::Relative)
+                .expect("should resolve");
+        assert_eq!(resolved, temp.path().join("foo/bar.txt"));
+    }
+}
