@@ -1067,7 +1067,7 @@ where
     pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        conductor_bridge::list_tools(&effective_paths)
+        conductor_bridge::documents::list_tools(&effective_paths)
     }
 
     /// Adds one tool requirement to `mediapm.ncl` by logical name.
