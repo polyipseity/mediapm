@@ -306,6 +306,7 @@ All four `Option<u64>` fields in `MediaRuntimeStorage` use `#[serde(deserialize_
 **Entry Point**: Conductor requires `CasApi` trait object at startup
 
 - `SimpleConductor::new(cas: Arc<C: CasApi>)`
+- New thin API `CoreCasApi` + `CasApiStreaming` + `ConstraintApi` available alongside `CasApi` for phased migration (see PLAN.md §3).
 
 **Operations**:
 
@@ -329,7 +330,7 @@ All four `Option<u64>` fields in `MediaRuntimeStorage` use `#[serde(deserialize_
 
 | Aspect | Details |
 |--------|---------|
-| **Public Traits** | `CasApi`, `CasMaintenanceApi` |
+| **Public Traits** | `CasApi` (legacy full surface), `CasMaintenanceApi` (maintenance), `CoreCasApi` (thin read/write), `CasApiStreaming` (streaming extensions), `ConstraintApi` (constraint hints) |
 | **Types** | `Hash`, `Constraint`, `ConstraintBatchOp`, `ObjectInfo`, `OptimizeReport` |
 | **Backends** | `FileSystemCas`, `InMemoryCas` |
 | **Orchestration Config** | `src/cas/src/orchestration/config.rs` — shared runtime constants (RPC timeouts, disk-pressure thresholds) |
