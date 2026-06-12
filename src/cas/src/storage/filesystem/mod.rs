@@ -38,8 +38,8 @@ use crate::storage::{
 };
 use crate::{
     CasApi, CasByteReader, CasByteStream, CasError, CasExistenceBitmap, CasMaintenanceApi,
-    Constraint, ConstraintBatchOp, ConstraintPatch, GcSweepReport, Hash, IndexRepairReport,
-    ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport,
+    Constraint, ConstraintApi, ConstraintBatchOp, ConstraintPatch, CoreCasApi, GcSweepReport, Hash,
+    IndexRepairReport, ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport,
 };
 
 /// Filesystem object-store layout version segment.
@@ -501,8 +501,9 @@ impl CasApi for FileSystemCas {
         D: TryInto<Bytes> + Send,
         D::Error: std::fmt::Display + Send,
     {
-        let hash = self.put(data).await?;
-        self.set_constraint(Constraint { target_hash: hash, potential_bases: bases }).await?;
+        let hash = CasApi::put(self, data).await?;
+        CasApi::set_constraint(self, Constraint { target_hash: hash, potential_bases: bases })
+            .await?;
         Ok(hash)
     }
 
@@ -516,7 +517,8 @@ impl CasApi for FileSystemCas {
         bases: BTreeSet<Hash>,
     ) -> Result<Hash, CasError> {
         let hash = self.put_stream(reader).await?;
-        self.set_constraint(Constraint { target_hash: hash, potential_bases: bases }).await?;
+        CasApi::set_constraint(self, Constraint { target_hash: hash, potential_bases: bases })
+            .await?;
         Ok(hash)
     }
 
@@ -608,6 +610,46 @@ impl CasMaintenanceApi for FileSystemCas {
 
     async fn migrate_index_to_version(&self, target_version: u32) -> Result<(), CasError> {
         FileSystemCas::migrate_index_to_version(self, target_version).await
+    }
+}
+
+/// Delegates core read/write API into filesystem runtime state.
+#[async_trait]
+impl CoreCasApi for FileSystemCas {
+    async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
+        self.state.put(data).await
+    }
+
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        self.state.get(hash).await
+    }
+
+    async fn stat(&self, hash: Hash) -> Result<ObjectInfo, CasError> {
+        self.state.info(hash).await
+    }
+
+    async fn delete(&self, hash: Hash) -> Result<(), CasError> {
+        self.state.delete(hash).await
+    }
+}
+
+/// Delegates constraint API into filesystem runtime state.
+#[async_trait]
+impl ConstraintApi for FileSystemCas {
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+        self.state.set_constraint(Constraint { target_hash: target, potential_bases: bases }).await
+    }
+
+    async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError> {
+        self.state.get_constraint(hash).await
+    }
+
+    async fn patch_constraint(
+        &self,
+        target_hash: Hash,
+        patch: ConstraintPatch,
+    ) -> Result<Option<Constraint>, CasError> {
+        self.state.patch_constraint(target_hash, patch).await
     }
 }
 
