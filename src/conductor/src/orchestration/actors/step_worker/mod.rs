@@ -51,23 +51,6 @@ mod template;
 
 use crate::tool_cache::{ToolCacheEntry, ToolContentCache};
 
-/// Creates a temporary directory inside `root` with the given `prefix`.
-///
-/// Ensures `root` exists before creating the temp dir. `purpose` is used in
-/// error messages for diagnostics.
-fn create_temp_dir_in(
-    root: &Path,
-    prefix: &str,
-    purpose: &str,
-) -> Result<tempfile::TempDir, ConductorError> {
-    std::fs::create_dir_all(root).map_err(|source| {
-        ConductorError::io(format!("creating {purpose} root directory"), root, source)
-    })?;
-    tempfile::Builder::new().prefix(prefix).tempdir_in(root).map_err(|source| {
-        ConductorError::io(format!("creating {purpose} working directory"), root, source)
-    })
-}
-
 /// Environment-variable override for executable subprocess timeout (seconds).
 const EXECUTABLE_TIMEOUT_SECS_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";
 
@@ -2149,18 +2132,17 @@ where
                 mediapm_conductor_builtin_echo::TOOL_VERSION,
             ) => {
                 let response =
-                    mediapm_conductor_builtin_echo::execute_echo(resolved_args, &BTreeMap::new())
+                    mediapm_conductor_builtin_echo::execute(resolved_args, &BTreeMap::new())
                         .map_err(|err| {
-                        ConductorError::Workflow(format!(
-                            "builtin '{builtin_name}@{builtin_version}' failed: {err}"
-                        ))
-                    })?;
+                            ConductorError::Workflow(format!(
+                                "builtin '{builtin_name}@{builtin_version}' failed: {err}"
+                            ))
+                        })?;
 
-                Ok(ToolExecutionCapture {
-                    stdout: response.stdout.into_bytes(),
-                    stderr: response.stderr.into_bytes(),
-                    process_code: 0,
-                })
+                let payload = serde_json::to_vec(&response)
+                    .map_err(|err| ConductorError::Serialization(err.to_string()))?;
+
+                Ok(ToolExecutionCapture { stdout: payload, stderr: Vec::new(), process_code: 0 })
             }
             (
                 mediapm_conductor_builtin_fs::TOOL_NAME,
