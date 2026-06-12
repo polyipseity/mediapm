@@ -8,15 +8,14 @@
 //!   via optic composition.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
 use fp_library::brands::RcBrand;
 use fp_library::types::optics::IsoPrime;
 use mediapm_cas::Hash;
-use serde::de::{self, Error as _, Visitor};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 
-use crate::model::config::{ToolKindSpec, ToolSpec};
+use crate::model::config::ToolSpec;
+use crate::{impl_output_save_mode_serde, impl_tool_metadata_deserialize};
 
 /// V1 orchestration-state schema marker.
 pub const ORCHESTRATION_STATE_VERSION_V1: u32 = 1;
@@ -43,71 +42,7 @@ pub enum OutputSaveModeV1 {
     Full,
 }
 
-impl Serialize for OutputSaveModeV1 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Bool(value) => serializer.serialize_bool(*value),
-            Self::Full => serializer.serialize_str("full"),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for OutputSaveModeV1 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct OutputSaveModeV1Visitor;
-
-        impl Visitor<'_> for OutputSaveModeV1Visitor {
-            type Value = OutputSaveModeV1;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(
-                    "a boolean save mode, or one of the strings \"full\", \"saved\", \"unsaved\"",
-                )
-            }
-
-            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                Ok(OutputSaveModeV1::Bool(value))
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                if value.eq_ignore_ascii_case("full") {
-                    return Ok(OutputSaveModeV1::Full);
-                }
-
-                if value.eq_ignore_ascii_case("saved") || value.eq_ignore_ascii_case("true") {
-                    return Ok(OutputSaveModeV1::Bool(true));
-                }
-
-                if value.eq_ignore_ascii_case("unsaved") || value.eq_ignore_ascii_case("false") {
-                    return Ok(OutputSaveModeV1::Bool(false));
-                }
-
-                Err(E::invalid_value(de::Unexpected::Str(value), &self))
-            }
-
-            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-            where
-                E: de::Error,
-            {
-                self.visit_str(&value)
-            }
-        }
-
-        deserializer.deserialize_any(OutputSaveModeV1Visitor)
-    }
-}
+impl_output_save_mode_serde!(OutputSaveModeV1, OutputSaveModeV1Visitor);
 
 /// Structured timezone-independent impure timestamp used by the latest V1 wire shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,57 +108,7 @@ pub enum ToolMetadataV1 {
     Executable(ToolSpec),
 }
 
-impl<'de> Deserialize<'de> for ToolMetadataV1 {
-    /// Decodes one V1 metadata record with explicit `kind` dispatch.
-    ///
-    /// This custom implementation keeps builtin metadata strict by rejecting
-    /// unknown fields for `kind = "builtin"` while preserving executable
-    /// decoding through `ToolSpec`.
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        /// Wire shape for strict builtin metadata decoding.
-        #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct BuiltinMetadataWireV1 {
-            /// Builtin kind marker.
-            kind: BuiltinMetadataKindV1,
-            /// Builtin name.
-            name: String,
-            /// Builtin semantic version.
-            version: String,
-        }
-
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let kind = value
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| D::Error::custom("tool metadata must define string field 'kind'"))?;
-
-        match kind {
-            "builtin" => {
-                let builtins: BuiltinMetadataWireV1 =
-                    serde_json::from_value(value).map_err(D::Error::custom)?;
-                Ok(Self::Builtin {
-                    kind: builtins.kind,
-                    name: builtins.name,
-                    version: builtins.version,
-                })
-            }
-            "executable" => {
-                let spec: ToolSpec = serde_json::from_value(value).map_err(D::Error::custom)?;
-                match spec.kind {
-                    ToolKindSpec::Executable { .. } => Ok(Self::Executable(spec)),
-                    ToolKindSpec::Builtin { .. } => Err(D::Error::custom(
-                        "executable metadata must decode to executable tool kind",
-                    )),
-                }
-            }
-            other => Err(D::Error::custom(format!("unsupported tool metadata kind '{other}'"))),
-        }
-    }
-}
+impl_tool_metadata_deserialize!(ToolMetadataV1, BuiltinMetadataKindV1, BuiltinMetadataWireV1);
 
 /// V1 tool-call instance record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

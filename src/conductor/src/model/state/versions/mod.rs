@@ -21,6 +21,7 @@ use crate::error::ConductorError;
 use crate::model::config::ImpureTimestamp;
 use crate::model::state::{AuxData, OrchestrationState};
 
+mod shared_serde;
 #[allow(dead_code)]
 pub(crate) mod v1;
 pub(crate) mod v2;
