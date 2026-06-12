@@ -5,7 +5,7 @@
 //! as `Number` (f64-compatible), so direct `u64`/`u32` deserialization would
 //! reject config values like `recheck_seconds = 3600`.
 
-use serde::Deserializer;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::nickel_io::{parse_non_negative_integral_u32, parse_non_negative_integral_u64};

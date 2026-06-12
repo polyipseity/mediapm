@@ -514,7 +514,7 @@ pub(crate) struct ResolvedVariantOutputBinding {
 
 /// One variant-source producer binding available to downstream steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum VariantProducer {
+pub(super) enum VariantProducer {
     /// Variant bytes come from one external-data reference.
     ExternalData { hash: Hash },
     /// Variant bytes come from one prior step output.

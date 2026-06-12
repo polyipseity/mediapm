@@ -22,6 +22,7 @@ mod materializer;
 mod metadata_cache;
 mod paths;
 mod service;
+pub(crate) mod service_standalone;
 mod source_metadata;
 mod tools;
 
@@ -531,10 +532,11 @@ pub(crate) fn conductor_run_workflow_options(
     RunWorkflowOptions {
         runtime_storage_paths: RuntimeStoragePaths {
             conductor_dir: paths.runtime_root.clone(),
-            conductor_state_config: Some(paths.conductor_state_config.clone()),
-            cas_store_dir: Some(paths.runtime_root.join("store")),
-            conductor_schema_dir: Some(paths.conductor_schema_dir.clone()),
-            conductor_tools_dir: Some(paths.tools_dir.clone()),
+            conductor_state_config: paths.conductor_state_config.clone(),
+            cas_store_dir: paths.runtime_root.join("store"),
+            conductor_tmp_dir: paths.conductor_tmp_dir.clone(),
+            conductor_schema_dir: paths.conductor_schema_dir.clone(),
+            conductor_tools_dir: paths.tools_dir.clone(),
         },
         runtime_inherited_env_vars: runtime_storage.inherited_env_vars_with_defaults(),
         profiler_enabled: runtime_storage.profiler_enabled.unwrap_or(false),

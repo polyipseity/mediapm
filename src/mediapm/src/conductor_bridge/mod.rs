@@ -1337,7 +1337,7 @@ mod tests {
     }
 }
 
-pub(crate) use documents::{ensure_conductor_documents, load_machine_document};
+pub(crate) use documents::{ensure_conductor_documents, list_tools, load_machine_document};
 pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
 pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 pub(crate) use workflows::{

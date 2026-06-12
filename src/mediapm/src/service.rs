@@ -7,19 +7,16 @@
 //! methods take `&self` or `&mut self`. Splitting `impl` methods across files
 //! requires non-idiomatic `include!()`, so the module is kept whole.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
 
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
-use mediapm_conductor::model::config::ImpureTimestamp;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
-    ConductorApi, MachineNickelDocument, SimpleConductor, StateMutationOptions,
-    StateNickelDocument, ToolCallInstance, ToolKindSpec, WorkflowStepEvent, decode_state_document,
-    encode_state_document, resolve_managed_tool_executable_with_filesystem_cas,
+    ConductorApi, SimpleConductor, StateMutationOptions, ToolKindSpec, WorkflowStepEvent,
+    resolve_managed_tool_executable_with_filesystem_cas,
 };
 use pulsebar::{MultiProgress, ProgressBar};
 use tokio::sync::mpsc;
@@ -29,7 +26,7 @@ use crate::conductor_bridge::ConductorToolRow;
 use crate::config::{
     MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
     MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
-    load_mediapm_document, load_mediapm_document_without_validation, save_mediapm_document,
+    load_mediapm_document_without_validation, save_mediapm_document,
 };
 use crate::config::{MediaPmState, load_mediapm_state_document, save_mediapm_state_document};
 use crate::error::MediaPmError;
@@ -40,6 +37,7 @@ use crate::hierarchy::{
     remove_hierarchy_nodes_by_media_id,
 };
 use crate::paths::MediaPmPaths;
+pub use crate::service_standalone::*;
 use crate::source_metadata::{
     fetch_local_source_metadata, fetch_online_source_metadata, resolve_conductor_cas_root,
     resolve_online_source_metadata_for_add,
@@ -48,9 +46,6 @@ use crate::{
     AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaRuntimeStorage,
     MediaStepInvalidationSummary, SyncSummary, ToolsSyncSummary,
 };
-mod service_standalone;
-
-use self::service_standalone::*;
 use crate::{
     build_local_default_description, conductor_run_workflow_options,
     export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_default_title,
@@ -1067,7 +1062,7 @@ where
     pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
         let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
         let effective_paths = self.resolve_effective_paths(&document.runtime);
-        conductor_bridge::documents::list_tools(&effective_paths)
+        conductor_bridge::list_tools(&effective_paths)
     }
 
     /// Adds one tool requirement to `mediapm.ncl` by logical name.

@@ -64,13 +64,13 @@ const SANDBOX_FFMETADATA_INPUT_FILE: &str = "inputs/input.ffmeta";
 /// Fixed sandbox file path used by `sd` in-place rewrite operations.
 const SANDBOX_SD_INPUT_FILE: &str = "inputs/input.ffmeta";
 /// Managed yt-dlp output template that embeds a marker before extension.
+#[cfg(test)]
 const YT_DLP_DEFAULT_OUTPUT_TEMPLATE: &str =
     "%(title)s [%(id)s]%(playlist_index|)s__mediapm__.%(ext)s";
 /// Managed yt-dlp extractor args that keep comment extraction bounded while
 /// Skips translated-subtitle variants that cause provider-side HTTP 429 throttling
-/// on broad `sub_langs` selectors. Comment extraction bounds (`comment_sort`,
-/// `max_comments`) are intentionally omitted from this base default because they
-/// are redundant when `write_comments` is controlled through its own option key.
+/// on broad `sub_langs` selectors.
+#[cfg(test)]
 const YT_DLP_DEFAULT_EXTRACTOR_ARGS: &str = "youtube:skip=translated_subs";
 /// Regex for yt-dlp output file paths.
 const YT_DLP_OUTPUT_CONTENT_REGEX: &str = "^downloads/.+(?:__mediapm__)?[.](?:3gp|aac|aiff?|alac|asf|avi|flac|m4a|m4v|mka|mkv|mov|mp3|mp4|mpeg|mpg|oga|ogg|opus|wav|weba|webm|wma)$";

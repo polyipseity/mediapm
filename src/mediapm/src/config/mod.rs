@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use mediapm_cas::{CasIntegrityConfig, Hash, VerifyTriggerStrategy};
 use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::MediaPmError;
