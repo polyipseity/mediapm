@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Monotonically increasing counter used to generate unique workspace names.
 static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-use nickel_lang_core::error::{Error as NickelError, NullReporter};
+use nickel_lang_core::error::Error as NickelError;
 use nickel_lang_core::eval::cache::CacheImpl;
-use nickel_lang_core::program::Program;
+use nickel_lang_core::program::{BuilderError, Program, ProgramBuilder};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -42,16 +42,19 @@ pub(super) fn evaluate_nickel_source_to_json(
         source: source_err,
     })?;
 
-    let mut program = Program::<CacheImpl>::new_from_file(
-        source_path.as_os_str(),
-        std::io::sink(),
-        NullReporter {},
-    )
-    .map_err(|source_err| MediaPmError::Io {
-        operation: "constructing Nickel program".to_string(),
-        path: path.to_path_buf(),
-        source: source_err,
-    })?;
+    let mut program: Program<CacheImpl> = ProgramBuilder::new()
+        .add_path(source_path.as_os_str())
+        .build()
+        .map_err(|err| match err {
+            BuilderError::Io { path: _, error } => MediaPmError::Io {
+                operation: "constructing Nickel program".to_string(),
+                path: path.to_path_buf(),
+                source: error,
+            },
+            BuilderError::NoInputs => MediaPmError::Workflow(
+                "constructing Nickel program: no inputs provided".to_string(),
+            ),
+        })?;
 
     let exported = program.eval_full_for_export().map_err(|err| {
         MediaPmError::Workflow(format!(
