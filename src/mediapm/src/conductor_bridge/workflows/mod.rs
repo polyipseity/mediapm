@@ -469,29 +469,6 @@ where
     format!("{} {}", MANAGED_EXTERNAL_DESCRIPTION_PREFIX, suffix.as_ref())
 }
 
-/// Normalizes optional external-data save policy into a non-unsaved minimum.
-#[must_use]
-fn normalized_external_data_save_mode(save: Option<OutputSaveMode>) -> OutputSaveMode {
-    match save {
-        Some(OutputSaveMode::Full) => OutputSaveMode::Full,
-        Some(OutputSaveMode::Saved | OutputSaveMode::Unsaved) | None => OutputSaveMode::Saved,
-    }
-}
-
-/// Merges two external-data save policies while enforcing monotonic persistence.
-#[must_use]
-fn merge_external_data_save_mode(
-    existing: Option<OutputSaveMode>,
-    minimum: OutputSaveMode,
-) -> OutputSaveMode {
-    let existing = normalized_external_data_save_mode(existing);
-    if matches!(existing, OutputSaveMode::Full) || matches!(minimum, OutputSaveMode::Full) {
-        OutputSaveMode::Full
-    } else {
-        OutputSaveMode::Saved
-    }
-}
-
 /// Upserts one managed external-data row with hash dedupe and save-policy merge.
 fn upsert_managed_external_data(
     external_data: &mut BTreeMap<Hash, ExternalContentRef>,
@@ -499,10 +476,14 @@ fn upsert_managed_external_data(
     description: String,
     minimum_save: OutputSaveMode,
 ) {
-    let minimum_save = normalized_external_data_save_mode(Some(minimum_save));
-
+    let is_minimum_full = matches!(minimum_save, OutputSaveMode::Full);
     if let Some(existing) = external_data.get_mut(&hash) {
-        existing.save = Some(merge_external_data_save_mode(existing.save, minimum_save));
+        let is_existing_full = matches!(existing.save, Some(OutputSaveMode::Full));
+        existing.save = Some(if is_existing_full || is_minimum_full {
+            OutputSaveMode::Full
+        } else {
+            OutputSaveMode::Saved
+        });
         if existing.description.is_none() {
             existing.description = Some(description);
         }
@@ -511,7 +492,10 @@ fn upsert_managed_external_data(
 
     external_data.insert(
         hash,
-        ExternalContentRef { description: Some(description), save: Some(minimum_save) },
+        ExternalContentRef {
+            description: Some(description),
+            save: Some(if is_minimum_full { OutputSaveMode::Full } else { OutputSaveMode::Saved }),
+        },
     );
 }
 
@@ -968,10 +952,12 @@ fn preserve_existing_generated_step_tools(
         return false;
     };
 
+    let existing_index: HashMap<&str, &WorkflowStepSpec> =
+        existing.steps.iter().map(|step| (step.id.as_str(), step)).collect();
+
     let mut all_matched = true;
     for generated in workflow.steps.iter_mut().skip(generated_start) {
-        if let Some(previous) = existing.steps.iter().find(|candidate| candidate.id == generated.id)
-        {
+        if let Some(previous) = existing_index.get(generated.id.as_str()).copied() {
             if previous.tool == generated.tool {
                 if !preserved_step_tool_is_valid(machine, &previous.tool) {
                     all_matched = false;
