@@ -33,7 +33,7 @@ use mediapm_utils::builtin::describe_json_compact_meta;
 use mediapm_utils::builtin::parse_string_pairs;
 pub use mediapm_utils::{
     BinaryInputMap, StringMap,
-    builtin::{BuiltinMeta, describe_meta},
+    builtin::{BuiltinMeta, describe_meta, validate_only_known_keys},
 };
 
 /// Stable builtin id used by topology registration.
@@ -460,32 +460,20 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
         "archive builtin requires 'action' (pack|unpack|repack|transform)".to_string()
     })?;
 
-    let base_known_keys: &[&str] =
-        &["action", "kind", "entry_name", "content", "archive", "mode", "filter"];
-
-    let mut param_keys: Vec<&str> = Vec::new();
+    // Numbered transform keys are only valid for transform.
     for key in params.keys() {
-        if is_numbered_transform_key(key) {
-            if action != "transform" {
-                return Err(format!("archive action '{action}' does not accept arg '{key}'"));
-            }
-        } else {
-            param_keys.push(key.as_str());
-        }
-    }
-    for key in &param_keys {
-        if !base_known_keys.contains(key) {
+        if is_numbered_transform_key(key) && action != "transform" {
             return Err(format!("archive action '{action}' does not accept arg '{key}'"));
         }
     }
 
     match action.as_str() {
         "pack" => {
-            if params.contains_key("mode") {
-                return Err("archive pack does not accept arg 'mode'".to_string());
-            }
-            if params.contains_key("filter") {
-                return Err("archive pack does not accept arg 'filter'".to_string());
+            validate_only_known_keys(params, &["action", "kind", "entry_name"], "archive pack")?;
+            validate_only_known_keys(inputs, &["content"], "archive pack")?;
+
+            if inputs.get("content").is_none() {
+                return Err("archive pack requires input 'content'".to_string());
             }
 
             let kind = params
@@ -495,47 +483,32 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
                 return Err(format!("archive pack kind must be 'file' or 'folder', got '{kind}'"));
             }
 
-            for key in inputs.keys() {
-                if key != "content" {
-                    return Err(format!("archive pack does not accept input '{key}'"));
-                }
-            }
-            if inputs.get("content").is_none() {
-                return Err("archive pack requires input 'content'".to_string());
-            }
+            Ok(())
         }
         "unpack" | "repack" => {
-            if params.contains_key("kind") {
-                return Err(format!("archive action '{action}' does not accept arg 'kind'"));
-            }
-            if params.contains_key("entry_name") {
-                return Err(format!("archive action '{action}' does not accept arg 'entry_name'"));
-            }
-            if params.contains_key("mode") {
-                return Err(format!("archive action '{action}' does not accept arg 'mode'"));
-            }
-            if params.contains_key("filter") {
-                return Err(format!("archive action '{action}' does not accept arg 'filter'"));
-            }
+            validate_only_known_keys(params, &["action"], "archive unpack")?;
+            validate_only_known_keys(inputs, &["archive"], "archive unpack")?;
 
-            for key in inputs.keys() {
-                if key != "archive" {
-                    return Err(format!("archive action '{action}' does not accept input '{key}'"));
-                }
-            }
             if inputs.get("archive").is_none() {
                 return Err(format!("archive action '{action}' requires input 'archive'"));
             }
+
+            Ok(())
         }
         "transform" => {
-            if params.contains_key("kind") {
-                return Err("archive transform does not accept arg 'kind'".to_string());
+            // Check static params (numbered transform keys are checked per-action above).
+            for key in params.keys() {
+                if is_numbered_transform_key(key) {
+                    continue;
+                }
+                if !["action", "mode", "filter"].contains(&key.as_str()) {
+                    return Err(format!("archive transform does not accept arg '{key}'"));
+                }
             }
-            if params.contains_key("entry_name") {
-                return Err("archive transform does not accept arg 'entry_name'".to_string());
-            }
-            if params.contains_key("archive") {
-                return Err("archive transform does not accept arg 'archive'".to_string());
+            validate_only_known_keys(inputs, &["content"], "archive transform")?;
+
+            if inputs.get("content").is_none() {
+                return Err("archive transform requires input 'content'".to_string());
             }
 
             if let Some(mode) = params.get("mode") {
@@ -548,23 +521,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
 
             validate_numbered_transforms(params)?;
 
-            for key in inputs.keys() {
-                if key != "content" {
-                    return Err(format!("archive transform does not accept input '{key}'"));
-                }
-            }
-            if inputs.get("content").is_none() {
-                return Err("archive transform requires input 'content'".to_string());
-            }
+            Ok(())
         }
-        other => {
-            return Err(format!(
-                "archive action must be 'pack', 'unpack', 'repack', or 'transform', got '{other}'"
-            ));
-        }
+        other => Err(format!(
+            "archive action must be 'pack', 'unpack', 'repack', or 'transform', got '{other}'"
+        )),
     }
-
-    Ok(())
 }
 
 /// Checks whether a parameter key has the form `find_<N>`, `replace_<N>`,
