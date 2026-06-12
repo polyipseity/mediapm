@@ -6,6 +6,7 @@
 //! - desired-tool reconciliation and prune logic,
 //! - tool command/config normalization and validation.
 
+mod constants;
 mod documents;
 mod runtime_storage;
 mod sync;

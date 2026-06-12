@@ -29,6 +29,7 @@ use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
+use super::constants::*;
 use super::documents::{
     load_machine_document, register_missing_builtin_tools, save_machine_document,
 };
@@ -56,50 +57,12 @@ const MANAGED_EXTERNAL_DESCRIPTION_PREFIX: &str = "managed external data:";
 /// Legacy prefix used by older local-variant-only managed external-data rows.
 const LEGACY_MANAGED_EXTERNAL_DESCRIPTION_PREFIX: &str = "managed local variant source for media";
 
-/// Output name exposed by generated executable tool contracts.
-const OUTPUT_CONTENT: &str = "content";
 /// Output name exposed by the builtin import tool contract.
 const OUTPUT_IMPORT_RESULT: &str = "result";
 /// Preferred generated output name for primary media payloads.
 const OUTPUT_PRIMARY: &str = "primary";
-/// Output name exposing full sandbox artifact bundles.
-const OUTPUT_SANDBOX_ARTIFACTS: &str = "sandbox_artifacts";
-/// yt-dlp subtitle artifact bundle output.
-const OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS: &str = "yt_dlp_subtitle_artifacts";
-/// yt-dlp thumbnail artifact bundle output.
-const OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS: &str = "yt_dlp_thumbnail_artifacts";
-/// yt-dlp description file output.
-const OUTPUT_YT_DLP_DESCRIPTION_FILE: &str = "yt_dlp_description_file";
-/// yt-dlp annotation file output.
-const OUTPUT_YT_DLP_ANNOTATION_FILE: &str = "yt_dlp_annotation_file";
-/// yt-dlp infojson file output.
-const OUTPUT_YT_DLP_INFOJSON_FILE: &str = "yt_dlp_infojson_file";
-/// yt-dlp download-archive file output.
-const OUTPUT_YT_DLP_ARCHIVE_FILE: &str = "yt_dlp_archive_file";
-/// yt-dlp internet-shortcut artifact bundle output.
-const OUTPUT_YT_DLP_LINK_ARTIFACTS: &str = "yt_dlp_link_artifacts";
-/// yt-dlp split-chapter artifact bundle output.
-const OUTPUT_YT_DLP_CHAPTER_ARTIFACTS: &str = "yt_dlp_chapter_artifacts";
-/// yt-dlp playlist-description file output.
-const OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE: &str = "yt_dlp_playlist_description_file";
-/// yt-dlp playlist-infojson file output.
-const OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE: &str = "yt_dlp_playlist_infojson_file";
 /// Deterministic managed archive path used when archive output is requested.
 const YT_DLP_MANAGED_ARCHIVE_FILE: &str = "downloads/archive.txt";
-/// Generated tool input for list args injected right after executable token.
-const INPUT_LEADING_ARGS: &str = "leading_args";
-/// Generated tool input for list args appended after default operation args.
-const INPUT_TRAILING_ARGS: &str = "trailing_args";
-/// Generated tool input carrying upstream bytes for non-downloader tools.
-const INPUT_CONTENT: &str = "input_content";
-/// Generated ffmpeg input carrying ffmetadata sidecar bytes.
-const INPUT_FFMETADATA_CONTENT: &str = "ffmetadata_content";
-/// Generated `sd` input carrying regex pattern text.
-const INPUT_SD_PATTERN: &str = "pattern";
-/// Generated `sd` input carrying replacement text.
-const INPUT_SD_REPLACEMENT: &str = "replacement";
-/// Generated tool input carrying source URL for online downloader tools.
-const INPUT_SOURCE_URL: &str = "source_url";
 /// Generated builtin import arg key selecting operation kind.
 const INPUT_IMPORT_KIND: &str = "kind";
 /// Generated builtin import arg key carrying source CAS hash text.

@@ -9,6 +9,7 @@ use mediapm_conductor::{
     ToolSpec,
 };
 
+use super::constants::*;
 use crate::config::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS as DEFAULT_FFMPEG_MAX_INPUT_SLOTS_U32,
     DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS as DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS_U32, ToolRequirement,
@@ -17,26 +18,12 @@ use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
-/// Reserved list-input name injected right after executable token.
-const INPUT_LEADING_ARGS: &str = "leading_args";
-/// Reserved list-input name injected after all generated operation arguments.
-const INPUT_TRAILING_ARGS: &str = "trailing_args";
-/// Common scalar input used by transform tools to consume upstream bytes.
-const INPUT_CONTENT: &str = "input_content";
 /// Prefix for indexed ffmpeg content inputs.
 const INPUT_FFMPEG_CONTENT_PREFIX: &str = "input_content_";
-/// Optional scalar input carrying `FFmetadata` bytes for ffmpeg metadata merge.
-const INPUT_FFMETADATA_CONTENT: &str = "ffmetadata_content";
 /// Prefix for indexed ffmpeg output-path option inputs.
 const INPUT_FFMPEG_OUTPUT_PATH_PREFIX: &str = "output_path_";
 /// Internal rsgain-only input selecting sandbox materialization extension.
 const INPUT_RSGAIN_INPUT_EXTENSION: &str = "input_extension";
-/// Required regex pattern input for `sd` text replacement operations.
-const INPUT_SD_PATTERN: &str = "pattern";
-/// Required replacement-string input for `sd` text replacement operations.
-const INPUT_SD_REPLACEMENT: &str = "replacement";
-/// Scalar URL input used by download tools.
-const INPUT_SOURCE_URL: &str = "source_url";
 
 /// Fixed sandbox input path used when materializing byte-content inputs.
 const SANDBOX_INPUT_FILE: &str = "inputs/input.bin";
@@ -117,30 +104,7 @@ const SANDBOX_DOWNLOADS_DIR: &str = "downloads";
 const SANDBOX_INPUTS_DIR: &str = "inputs";
 /// Fixed sandbox output file path for media-tagger `FFmetadata` documents.
 const MEDIA_TAGGER_OUTPUT_FILE: &str = "metadata/output.ffmeta";
-/// Output capture name exposing one tool's primary file content payload.
-const OUTPUT_CONTENT: &str = "content";
-/// Output capture name exposing the full sandbox artifact tree.
-const OUTPUT_SANDBOX_ARTIFACTS: &str = "sandbox_artifacts";
-/// Output capture name exposing yt-dlp subtitle artifact bundle.
-const OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS: &str = "yt_dlp_subtitle_artifacts";
-/// Output capture name exposing yt-dlp thumbnail artifact bundle.
-const OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS: &str = "yt_dlp_thumbnail_artifacts";
-/// Output capture name exposing yt-dlp annotation file payload.
-const OUTPUT_YT_DLP_ANNOTATION_FILE: &str = "yt_dlp_annotation_file";
-/// Output capture name exposing yt-dlp description file payload.
-const OUTPUT_YT_DLP_DESCRIPTION_FILE: &str = "yt_dlp_description_file";
-/// Output capture name exposing yt-dlp infojson file payload.
-const OUTPUT_YT_DLP_INFOJSON_FILE: &str = "yt_dlp_infojson_file";
-/// Output capture name exposing yt-dlp download-archive file payload.
-const OUTPUT_YT_DLP_ARCHIVE_FILE: &str = "yt_dlp_archive_file";
-/// Output capture name exposing yt-dlp internet-shortcut artifact bundle.
-const OUTPUT_YT_DLP_LINK_ARTIFACTS: &str = "yt_dlp_link_artifacts";
-/// Output capture name exposing yt-dlp split-chapter artifact bundle.
-const OUTPUT_YT_DLP_CHAPTER_ARTIFACTS: &str = "yt_dlp_chapter_artifacts";
-/// Output capture name exposing yt-dlp playlist-description file payload.
-const OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE: &str = "yt_dlp_playlist_description_file";
-/// Output capture name exposing yt-dlp playlist-infojson file payload.
-const OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE: &str = "yt_dlp_playlist_infojson_file";
+
 /// Platform-prefixed env var carrying mediapm executable path for the
 /// internal media-tagger Windows launcher.
 pub(super) const MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV: &str =
