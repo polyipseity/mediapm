@@ -74,7 +74,7 @@ pub(crate) fn ensure_conductor_documents(paths: &MediaPmPaths) -> Result<(), Med
 /// (for example `import@1.0.0` for local-source ingest). This helper ensures
 /// those builtin ids are always present in the machine document so workflow
 /// reconciliation can resolve them deterministically.
-pub(super) fn register_missing_builtin_tools(machine: &mut MachineNickelDocument) -> bool {
+pub(crate) fn register_missing_builtin_tools(machine: &mut MachineNickelDocument) -> bool {
     let mut changed = false;
 
     for tool_id in registered_builtin_ids() {

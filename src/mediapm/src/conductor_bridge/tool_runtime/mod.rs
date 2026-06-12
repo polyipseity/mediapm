@@ -219,31 +219,31 @@ const FFMPEG_MATROSKA_CUES_TO_FRONT_CONTAINERS: &[&str] =
 
 /// Returns indexed ffmpeg input-content field name.
 #[must_use]
-pub(super) fn ffmpeg_input_content_name(index: usize) -> String {
+pub(crate) fn ffmpeg_input_content_name(index: usize) -> String {
     format!("{INPUT_FFMPEG_CONTENT_PREFIX}{index}")
 }
 
 /// Returns indexed ffmpeg cover-art slot flag input field name.
 #[must_use]
-pub(super) fn ffmpeg_cover_slot_enabled_input_name(index: usize) -> String {
+pub(crate) fn ffmpeg_cover_slot_enabled_input_name(index: usize) -> String {
     format!("cover_art_slot_enabled_{index}")
 }
 
 /// Returns indexed ffmpeg output-path input field name.
 #[must_use]
-pub(super) fn ffmpeg_output_path_input_name(index: usize) -> String {
+pub(crate) fn ffmpeg_output_path_input_name(index: usize) -> String {
     format!("{INPUT_FFMPEG_OUTPUT_PATH_PREFIX}{index}")
 }
 
 /// Returns indexed ffmpeg output capture name.
 #[must_use]
-pub(super) fn ffmpeg_output_capture_name(index: usize) -> String {
+pub(crate) fn ffmpeg_output_capture_name(index: usize) -> String {
     if index == 0 { "primary".to_string() } else { format!("primary_{index}") }
 }
 
 /// Returns sandbox-relative ffmpeg output file path for one indexed slot.
 #[must_use]
-pub(super) fn ffmpeg_output_file_path(index: usize) -> String {
+pub(crate) fn ffmpeg_output_file_path(index: usize) -> String {
     format!("output-{index}{DEFAULT_FFMPEG_OUTPUT_EXTENSION_WITH_DOT}")
 }
 
@@ -406,7 +406,7 @@ pub(super) fn build_tool_command(
 }
 
 /// Builds one complete executable tool specification for generated tool rows.
-pub(super) fn build_tool_spec(
+pub(crate) fn build_tool_spec(
     _paths: &MediaPmPaths,
     tool_name: &str,
     provisioned: &ProvisionedToolPayload,
@@ -712,7 +712,7 @@ pub(super) fn default_max_retries(tool_name: &str) -> i32 {
 }
 
 /// Merges existing runtime tool config with default policy and fresh content map.
-pub(super) fn merge_tool_config_defaults(
+pub(crate) fn merge_tool_config_defaults(
     existing: Option<&ToolConfigSpec>,
     _paths: &MediaPmPaths,
     tool_name: &str,
@@ -907,7 +907,7 @@ fn default_input_defaults_for_tool(
 
 /// Builds one default human description for generated tool runtime config rows.
 #[must_use]
-pub(super) fn default_tool_config_description(
+pub(crate) fn default_tool_config_description(
     tool_name: &str,
     identity: &ResolvedToolIdentity,
     tool_description: &str,

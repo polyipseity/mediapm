@@ -6,3 +6,4 @@
 
 pub(crate) mod catalog;
 pub(crate) mod downloader;
+pub(crate) mod workflows;

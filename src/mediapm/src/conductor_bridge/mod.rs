@@ -6,13 +6,12 @@
 //! - desired-tool reconciliation and prune logic,
 //! - tool command/config normalization and validation.
 
-mod constants;
-mod documents;
+pub(crate) mod constants;
+pub(crate) mod documents;
 mod runtime_storage;
 mod sync;
-mod tool_runtime;
+pub(crate) mod tool_runtime;
 mod util;
-mod workflows;
 
 #[cfg(test)]
 mod tests {
@@ -1307,8 +1306,10 @@ mod tests {
         };
 
         let mut lock = MediaPmState::default();
-        super::workflows::reconcile_media_workflows_for_config_edits(&paths, &document, &mut lock)
-            .expect("config-edit workflow reconciliation");
+        crate::tools::workflows::reconcile_media_workflows_for_config_edits(
+            &paths, &document, &mut lock,
+        )
+        .expect("config-edit workflow reconciliation");
 
         let machine = load_machine_document(&paths.conductor_machine_ncl).expect("load machine");
         assert!(
@@ -1337,16 +1338,16 @@ mod tests {
     }
 }
 
-pub(crate) use documents::{ensure_conductor_documents, list_tools, load_machine_document};
-pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
-pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
-pub(crate) use workflows::{
+pub(crate) use crate::tools::workflows::{
     managed_workflow_id_for_media, reconcile_media_workflows,
     reconcile_media_workflows_for_config_edits, resolve_media_variant_output_binding_with_limits,
 };
+pub(crate) use documents::{ensure_conductor_documents, list_tools, load_machine_document};
+pub(crate) use sync::{prune_tool_binary, reconcile_desired_tools};
+pub(crate) use tool_runtime::resolve_ffmpeg_slot_limits;
 
 #[cfg(test)]
-pub(crate) use workflows::resolve_media_variant_output_binding;
+pub(crate) use crate::tools::workflows::resolve_media_variant_output_binding;
 
 /// Summary of one desired-tool reconciliation pass.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

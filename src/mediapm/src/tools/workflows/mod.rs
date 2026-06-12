@@ -29,11 +29,11 @@ use crate::paths::MediaPmPaths;
 use crate::tools::catalog::tool_catalog_entry;
 use crate::tools::downloader::{ProvisionedToolPayload, ResolvedToolIdentity};
 
-use super::constants::*;
-use super::documents::{
+use crate::conductor_bridge::constants::*;
+use crate::conductor_bridge::documents::{
     load_machine_document, register_missing_builtin_tools, save_machine_document,
 };
-use super::tool_runtime::{
+use crate::conductor_bridge::tool_runtime::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, FfmpegSlotLimits,
     build_tool_spec, default_tool_config_description, ffmpeg_cover_slot_enabled_input_name,
     ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_path,
@@ -1435,7 +1435,11 @@ pub(super) fn map_step_option_input_binding(
         return None;
     }
 
-    if matches!(key, INPUT_LEADING_ARGS | INPUT_TRAILING_ARGS) {
+    if matches!(
+        key,
+        crate::conductor_bridge::constants::INPUT_LEADING_ARGS
+            | crate::conductor_bridge::constants::INPUT_TRAILING_ARGS
+    ) {
         return None;
     }
 
@@ -1615,7 +1619,7 @@ mod tests {
         TransformInputValue,
     };
 
-    use crate::conductor_bridge::workflows::{
+    use crate::tools::workflows::{
         MANAGED_EXTERNAL_DESCRIPTION_PREFIX, MANAGED_WORKFLOW_PREFIX, build_media_workflow_plan,
         build_media_workflow_plan_and_update_state,
         collect_managed_external_data_from_machine_and_lock, resolve_media_variant_output_binding,
