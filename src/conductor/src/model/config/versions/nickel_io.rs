@@ -2,15 +2,14 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use blake3;
-use nickel_lang_core::error::{Error as NickelError, NullReporter};
+use nickel_lang_core::error::Error as NickelError;
 use nickel_lang_core::eval::cache::CacheImpl;
-use nickel_lang_core::program::Program;
+use nickel_lang_core::program::{BuilderError, Program, ProgramBuilder};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -68,11 +67,6 @@ pub(super) fn write_nickel_file(
     })
 }
 
-/// Creates a conductor error from one Nickel interpreter I/O setup failure.
-fn nickel_io_error(err: io::Error, operation: &str, path: &Path) -> ConductorError {
-    ConductorError::Io { operation: operation.to_string(), path: path.to_path_buf(), source: err }
-}
-
 /// Renders a Nickel interpreter error with file context for user-facing diagnostics.
 fn nickel_eval_error(
     program: &Program<CacheImpl>,
@@ -94,12 +88,17 @@ pub(super) fn evaluate_main_file_as<T>(main_file: &Path, context: &str) -> Resul
 where
     T: DeserializeOwned,
 {
-    let mut program = Program::<CacheImpl>::new_from_file(
-        main_file.as_os_str(),
-        std::io::sink(),
-        NullReporter {},
-    )
-    .map_err(|err| nickel_io_error(err, "constructing Nickel program", main_file))?;
+    let mut program: Program<CacheImpl> =
+        ProgramBuilder::new().add_path(main_file.as_os_str()).build().map_err(|err| match err {
+            BuilderError::Io { path: _, error } => ConductorError::Io {
+                operation: "constructing Nickel program".to_string(),
+                path: main_file.to_path_buf(),
+                source: error,
+            },
+            BuilderError::NoInputs => ConductorError::Workflow(
+                "constructing Nickel program: no inputs provided".to_string(),
+            ),
+        })?;
 
     let value =
         program.eval_full_for_export().map_err(|err| nickel_eval_error(&program, err, context))?;
