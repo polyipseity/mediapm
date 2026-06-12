@@ -27,6 +27,7 @@ use std::borrow::Cow;
 use zerocopy::little_endian::U64 as Le64;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
+use crate::codec::versions::v2::DeltaStateV2;
 use crate::codec::versions::{Migrate, migrate_with_version_state};
 use crate::{CasError, Hash, HashParseError};
 
@@ -155,12 +156,13 @@ impl<'a> V3Envelope<'a> {
         buf.extend_from_slice(&self.content_len.to_le_bytes());
         buf.extend_from_slice(&self.payload_len.to_le_bytes());
         buf.extend_from_slice(&self.diff_hash);
-        buf.extend_from_slice(self.base_hash.storage_bytes());
+        buf.extend_from_slice(&self.base_hash.storage_bytes());
         buf.extend_from_slice(&self.payload);
         buf
     }
 
     /// Builds an envelope from content parameters, computing diff_hash internally.
+    #[allow(dead_code)] // used in test code only
     pub(crate) fn from_parts(base_hash: Hash, content_len: u64, payload: Vec<u8>) -> Self {
         let payload_len = payload.len() as u64;
         let diff_hash = *blake3::hash(&payload).as_bytes();
@@ -189,8 +191,8 @@ pub(crate) fn delta_state_v3_iso<'a>() -> IsoPrime<'a, RcBrand, V3Envelope<'a>, 
 
 /// V2 → V3 migration: preserves base_hash, content_len, payload; computes
 /// diff_hash from payload.
-impl From<DeltaStateV2<'_>> for DeltaStateV3<'_> {
-    fn from(v2: DeltaStateV2<'_>) -> Self {
+impl<'a> From<DeltaStateV2<'a>> for DeltaStateV3<'a> {
+    fn from(v2: DeltaStateV2<'a>) -> Self {
         let diff_hash = *blake3::hash(&v2.payload).as_bytes();
         DeltaStateV3 {
             base_hash: v2.base_hash,

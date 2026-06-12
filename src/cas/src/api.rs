@@ -328,10 +328,13 @@ pub trait CoreCasApi: Send + Sync {
 pub trait CasApiStreaming: CoreCasApi {
     /// Read from an unbuffered reader, store contents, return hash.
     /// Default: read into `Bytes`, call [`CoreCasApi::put`].
-    async fn put_stream(&self, reader: CasByteReader) -> Result<Hash, CasError> {
-        use tokio::io::AsyncReadExt;
+    async fn put_stream(&self, mut reader: CasByteReader) -> Result<Hash, CasError> {
+        use tokio::io::AsyncReadExt as _;
         let mut buf = bytes::BytesMut::new();
-        tokio::io::AsyncReadExt::read_buf(&mut *reader, &mut buf).await?;
+        reader.read_buf(&mut buf).await.map_err(|e| CasError::StreamIo {
+            operation: "read from stream for put_stream".into(),
+            source: e,
+        })?;
         self.put(buf.freeze()).await
     }
 

@@ -158,8 +158,8 @@ pub(crate) fn decode_delta_state_borrowed(bytes: &[u8]) -> Result<DeltaState<'_>
 
     let version = decode_magic_embedded_version(bytes)?;
     let envelope = decode_envelope_for_version(bytes, version)?;
-    /// V1→V2→V3 and V2→V3 migration is handled inside decode_envelope_for_version.
-    /// V3→V3 is identity via Migrate trait.
+    // V1→V2→V3 and V2→V3 migration is handled inside decode_envelope_for_version.
+    // V3→V3 is identity via Migrate trait.
     let migrated = envelope.migrate();
     let latest_version_state = latest::version_iso().from(migrated);
     Ok(latest_delta_state_iso().from(latest_version_state))

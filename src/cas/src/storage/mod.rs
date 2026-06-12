@@ -9,6 +9,7 @@ mod chain;
 mod config;
 mod filesystem;
 mod in_memory;
+pub(crate) mod journal;
 mod visualization;
 
 pub(crate) use buffer_pool::StreamBufferPool;

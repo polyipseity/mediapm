@@ -21,7 +21,7 @@ const BLAKE3_DIGEST_SIZE: usize = 32;
 /// Stable algorithm token used in textual hash representation.
 const BLAKE3_NAME: &str = "blake3";
 /// Encoded multihash storage width for current algorithm set.
-const STORAGE_BYTES_LEN: usize = 2 + BLAKE3_DIGEST_SIZE;
+pub(crate) const STORAGE_BYTES_LEN: usize = 2 + BLAKE3_DIGEST_SIZE;
 
 /// `blake3` hasher wrapper for `multihash_derive` code table generation.
 #[derive(Default)]
