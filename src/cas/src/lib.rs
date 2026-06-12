@@ -24,9 +24,10 @@ mod orchestration;
 mod storage;
 
 pub use api::{
-    CasApi, CasByteReader, CasByteStream, CasExistenceBitmap, CasMaintenanceApi, CompactReport,
-    Constraint, ConstraintBatchOp, ConstraintPatch, GcSweepReport, IndexRepairConstraintSource,
-    IndexRepairReport, ObjectInfo, OptimizeOptions, OptimizePriority, OptimizeReport, PruneReport,
+    CasApi, CasApiStreaming, CasByteReader, CasByteStream, CasExistenceBitmap, CasMaintenanceApi,
+    CompactReport, Constraint, ConstraintApi, ConstraintBatchOp, ConstraintPatch, CoreCasApi,
+    GcSweepReport, IndexRepairConstraintSource, IndexRepairReport, ObjectInfo, OptimizeOptions,
+    OptimizePriority, OptimizeReport, PruneReport,
 };
 pub use cli_visualization::{CasVisualizeFormat, CasVisualizeRequest, run_visualize_command};
 pub use error::{CasError, HashParseError};

@@ -262,6 +262,121 @@ impl Default for OptimizeOptions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 1 redesign: new thin CoreCasApi, CasApiStreaming, and ConstraintApi
+// ---------------------------------------------------------------------------
+// These traits are the target API surface described in PLAN.md §2.1.
+// The existing `CasApi` trait remains as a super-set for backward compatibility
+// until all callers are migrated.
+
+/// Thin core CAS API — the canonical read/write surface.
+///
+/// This trait is the minimal, object-safe contract that every CAS backend
+/// must implement. It covers the four fundamental operations: store, retrieve,
+/// metadata, and delete.
+///
+/// ## Guarantees
+///
+/// All ordering guarantees (write-then-read, delete-then-get) apply **within a
+/// single async task**. Concurrent operations on the same `Arc<dyn CoreCasApi>`
+/// are safe but no cross-task ordering is promised.
+///
+/// - **Write-then-read**: after `put()` completes, `get()` with the returned
+///   hash succeeds immediately on the same task.
+/// - **Delete-then-get**: after `delete()` completes, `get()` with that hash
+///   returns `NotFound` immediately on the same task.
+/// - **Crash safety**: after `put()`/`delete()` return, the operation survives
+///   process death.
+#[async_trait]
+pub trait CoreCasApi: Send + Sync {
+    /// Store bytes and return their canonical content hash.
+    ///
+    /// After this returns, [`get`](CoreCasApi::get) with the returned hash
+    /// succeeds immediately (write-then-read guarantee).
+    async fn put(&self, data: Bytes) -> Result<Hash, CasError>;
+
+    /// Retrieve previously stored bytes by hash.
+    ///
+    /// Returns [`CasError::NotFound`] if the hash was never stored or has been
+    /// deleted.
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
+
+    /// Retrieve object metadata without loading payload bytes.
+    ///
+    /// This is the lightweight alternative to `get()` — it returns the
+    /// storage properties (payload size, encoding kind, base hash) without
+    /// transferring or reconstructing the content bytes.
+    ///
+    /// Returns [`CasError::NotFound`] if the hash was never stored or has been
+    /// deleted.
+    async fn stat(&self, hash: Hash) -> Result<ObjectInfo, CasError>;
+
+    /// Mark an object for deletion.
+    ///
+    /// After this returns, [`get`](CoreCasApi::get) with this hash returns
+    /// `NotFound` immediately (delete-then-get guarantee). Actual storage
+    /// reclamation is eventual.
+    async fn delete(&self, hash: Hash) -> Result<(), CasError>;
+}
+
+/// Streaming I/O extension for [`CoreCasApi`].
+///
+/// Provides stream-oriented put/get for large payloads. Every `CoreCasApi`
+/// backend automatically gets a buffered default implementation. Backends
+/// that can perform zero-copy streaming should override these methods.
+#[async_trait]
+pub trait CasApiStreaming: CoreCasApi {
+    /// Read from an unbuffered reader, store contents, return hash.
+    /// Default: read into `Bytes`, call [`CoreCasApi::put`].
+    async fn put_stream(&self, reader: CasByteReader) -> Result<Hash, CasError> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = bytes::BytesMut::new();
+        tokio::io::AsyncReadExt::read_buf(&mut *reader, &mut buf).await?;
+        self.put(buf.freeze()).await
+    }
+
+    /// Retrieve content as a byte stream.
+    /// Default: call [`CoreCasApi::get`], yield as single chunk.
+    async fn get_stream(&self, hash: Hash) -> Result<CasByteStream, CasError> {
+        let data = self.get(hash).await?;
+        Ok(Box::pin(futures_util::stream::once(async move { Ok(data) })))
+    }
+}
+
+// Blanket impl: every CoreCasApi automatically provides streaming methods.
+impl<T: CoreCasApi + Send + Sync> CasApiStreaming for T {}
+
+/// Constraint API — optimization hints for delta base selection.
+///
+/// Constraints are **non-binding hints** that narrow which base objects the
+/// optimizer should consider when encoding a target as a delta. They are
+/// set and queried independently from the core read/write lifecycle.
+///
+/// If no explicit constraint row exists for a target, the optimizer is free
+/// to choose any valid base (including the empty-content hash for full
+/// storage).
+#[async_trait]
+pub trait ConstraintApi: Send + Sync {
+    /// Set or replace explicit constraints for one target hash.
+    ///
+    /// A non-empty `bases` set restricts the optimizer to choose from those
+    /// hashes only. An empty set removes the constraint row entirely
+    /// (unrestricted base selection).
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
+
+    /// Read current explicit constraint row for one hash.
+    ///
+    /// Returns `None` when no explicit row exists (unrestricted base selection).
+    async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError>;
+
+    /// Incrementally mutate an existing explicit constraint row.
+    async fn patch_constraint(
+        &self,
+        target_hash: Hash,
+        patch: ConstraintPatch,
+    ) -> Result<Option<Constraint>, CasError>;
+}
+
 /// Concurrently maps an async method over a batch of hashes, collecting
 /// ordered results.
 ///
