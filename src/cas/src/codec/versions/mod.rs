@@ -27,6 +27,7 @@ use crate::codec::object::DeltaState;
 
 pub(crate) mod v1;
 pub(crate) mod v2;
+pub(crate) mod v3;
 
 /// Prefix bytes required to dispatch a delta envelope: `magic_with_version`[8].
 const ENVELOPE_PREFIX_LEN: usize = 8;
@@ -40,14 +41,14 @@ const DIFF_STORAGE_FAMILY_PREFIX: &[u8; 6] = b"MDCASD";
 /// module so version bumps are less error-prone.
 // BEGIN latest-version bindings
 mod latest {
-    use super::v2;
+    use super::v3;
     use crate::codec::object::DeltaState;
     use fp_library::brands::RcBrand;
     use fp_library::types::optics::IsoPrime;
 
-    pub(super) const WIRE_VERSION: u16 = 2;
-    pub(super) type Envelope<'a> = v2::V2Envelope<'a>;
-    pub(super) type State<'a> = v2::DeltaStateV2<'a>;
+    pub(super) const WIRE_VERSION: u16 = 3;
+    pub(super) type Envelope<'a> = v3::V3Envelope<'a>;
+    pub(super) type State<'a> = v3::DeltaStateV3<'a>;
 
     pub(super) fn runtime_iso<'a>() -> IsoPrime<'a, RcBrand, State<'a>, DeltaState<'a>> {
         IsoPrime::new(
@@ -59,13 +60,15 @@ mod latest {
             |runtime: DeltaState<'a>| State {
                 base_hash: runtime.base_hash,
                 content_len: runtime.content_len,
+                // diff_hash is computed from payload on encode (V3-specific)
+                diff_hash: *blake3::hash(&runtime.payload).as_bytes(),
                 payload: runtime.payload,
             },
         )
     }
 
     pub(super) fn version_iso<'a>() -> IsoPrime<'a, RcBrand, Envelope<'a>, State<'a>> {
-        v2::delta_state_v2_iso()
+        v3::delta_state_v3_iso()
     }
 }
 // END latest-version bindings
@@ -91,6 +94,7 @@ fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
 enum DeltaEnvelopeVersion {
     V1,
     V2,
+    V3,
 }
 
 /// Returns the latest supported wire envelope version marker.
@@ -104,6 +108,9 @@ pub(crate) const fn latest_delta_wire_version() -> u16 {
 /// Version checks shoud always start checking from the latest version to ensure performance.
 fn dispatch_delta_wire_version(version: u16) -> Result<DeltaEnvelopeVersion, CasError> {
     if version == latest_delta_wire_version() {
+        return Ok(DeltaEnvelopeVersion::V3);
+    }
+    if version == 2 {
         return Ok(DeltaEnvelopeVersion::V2);
     }
     if version == 1 {
@@ -151,8 +158,8 @@ pub(crate) fn decode_delta_state_borrowed(bytes: &[u8]) -> Result<DeltaState<'_>
 
     let version = decode_magic_embedded_version(bytes)?;
     let envelope = decode_envelope_for_version(bytes, version)?;
-    // V1→V2 migration is handled inside decode_envelope_for_version.
-    // V2→V2 is identity via Migrate trait.
+    /// V1→V2→V3 and V2→V3 migration is handled inside decode_envelope_for_version.
+    /// V3→V3 is identity via Migrate trait.
     let migrated = envelope.migrate();
     let latest_version_state = latest::version_iso().from(migrated);
     Ok(latest_delta_state_iso().from(latest_version_state))
@@ -164,19 +171,29 @@ fn decode_envelope_for_version(
     version: u16,
 ) -> Result<latest::Envelope<'_>, CasError> {
     match dispatch_delta_wire_version(version)? {
-        DeltaEnvelopeVersion::V2 => {
-            let envelope = v2::V2Envelope::parse(bytes)?;
+        DeltaEnvelopeVersion::V3 => {
+            let envelope = v3::V3Envelope::parse(bytes)?;
             envelope.validate()?;
             Ok(envelope)
+        }
+        DeltaEnvelopeVersion::V2 => {
+            let v2_envelope = v2::V2Envelope::parse(bytes)?;
+            v2_envelope.validate()?;
+            // Migrate V2 → V3 (compute diff_hash from payload)
+            let v2_state = v2::delta_state_v2_iso().from(v2_envelope);
+            let v3_state = v3::DeltaStateV3::from(v2_state);
+            let v3_envelope = v3::delta_state_v3_iso().to(v3_state);
+            Ok(v3_envelope)
         }
         DeltaEnvelopeVersion::V1 => {
             let v1_envelope = v1::V1Envelope::parse(bytes)?;
             v1_envelope.validate()?;
-            // Migrate V1 → V2 (strip CRC32)
+            // Migrate V1 → V2 (strip CRC32) → V3 (compute diff_hash)
             let v1_state = v1::delta_state_v1_iso().from(v1_envelope);
             let v2_state = v2::DeltaStateV2::from(v1_state);
-            let v2_envelope = v2::delta_state_v2_iso().to(v2_state);
-            Ok(v2_envelope)
+            let v3_state = v3::DeltaStateV3::from(v2_state);
+            let v3_envelope = v3::delta_state_v3_iso().to(v3_state);
+            Ok(v3_envelope)
         }
     }
 }
@@ -185,8 +202,8 @@ fn decode_envelope_for_version(
 ///
 /// This is intentionally the central migration gateway used by decode paths.
 ///
-/// Currently only V2→V2 identity migration is supported; V1→V2 migration is
-/// handled inline in [`decode_envelope_for_version`].
+/// Currently only V3→V3 identity and V2→V2 identity are supported; V1→V2 and
+/// V2→V3 migration is handled inline in [`decode_envelope_for_version`].
 #[expect(dead_code, reason = "reserved for future cross-version migration paths")]
 pub(crate) fn migrate_envelope_to_version(
     envelope: latest::Envelope<'_>,
@@ -197,6 +214,7 @@ pub(crate) fn migrate_envelope_to_version(
     let to_layout = dispatch_delta_wire_version(target_version)?;
 
     match (from_layout, to_layout) {
+        (DeltaEnvelopeVersion::V3, DeltaEnvelopeVersion::V3) => Ok(envelope.migrate()),
         (DeltaEnvelopeVersion::V2, DeltaEnvelopeVersion::V2) => Ok(envelope.migrate()),
         _ => Err(CasError::corrupt_object(format!(
             "delta envelope: unsupported migration from version {from_version} to {target_version}"
