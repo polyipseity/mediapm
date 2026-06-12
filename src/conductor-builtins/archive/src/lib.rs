@@ -33,7 +33,9 @@ use mediapm_utils::builtin::describe_json_compact_meta;
 use mediapm_utils::builtin::parse_string_pairs;
 pub use mediapm_utils::{
     BinaryInputMap, StringMap,
-    builtin::{BuiltinMeta, describe_meta, validate_only_known_keys},
+    builtin::{
+        BuiltinMeta, describe_meta, require_binary_input, require_param, validate_only_known_keys,
+    },
 };
 
 /// Stable builtin id used by topology registration.
@@ -472,9 +474,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
             validate_only_known_keys(params, &["action", "kind", "entry_name"], "archive pack")?;
             validate_only_known_keys(inputs, &["content"], "archive pack")?;
 
-            if inputs.get("content").is_none() {
-                return Err("archive pack requires input 'content'".to_string());
-            }
+            let _ = require_binary_input(inputs, "content", "archive pack")?;
 
             let kind = params
                 .get("kind")
@@ -489,9 +489,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
             validate_only_known_keys(params, &["action"], "archive unpack")?;
             validate_only_known_keys(inputs, &["archive"], "archive unpack")?;
 
-            if inputs.get("archive").is_none() {
-                return Err(format!("archive action '{action}' requires input 'archive'"));
-            }
+            let _ = require_binary_input(inputs, "archive", &format!("archive action '{action}'"))?;
 
             Ok(())
         }
@@ -507,9 +505,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
             }
             validate_only_known_keys(inputs, &["content"], "archive transform")?;
 
-            if inputs.get("content").is_none() {
-                return Err("archive transform requires input 'content'".to_string());
-            }
+            let _ = require_binary_input(inputs, "content", "archive transform")?;
 
             if let Some(mode) = params.get("mode") {
                 if mode != "text" && mode != "binary" {

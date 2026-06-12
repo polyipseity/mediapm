@@ -208,6 +208,53 @@ pub fn validate_only_known_keys<K: AsRef<str> + Ord, V>(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Helpers: contract validation
+// ---------------------------------------------------------------------------
+
+/// Returns a required param value from a [`StringMap`], or an error.
+///
+/// # Errors
+///
+/// Returns `Err` if `key` is missing.
+pub fn require_param<'a>(
+    params: &'a StringMap,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    params.get(key).map(String::as_str).ok_or_else(|| format!("{context} requires '{key}'"))
+}
+
+/// Returns a required non-empty param value from a [`StringMap`], or an error.
+///
+/// # Errors
+///
+/// Returns `Err` if `key` is missing or its value is empty/whitespace.
+pub fn require_non_empty_param<'a>(
+    params: &'a StringMap,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    let value = require_param(params, key, context)?;
+    if value.trim().is_empty() {
+        return Err(format!("{context} requires non-empty '{key}'"));
+    }
+    Ok(value)
+}
+
+/// Returns a required binary input value, or an error.
+///
+/// # Errors
+///
+/// Returns `Err` if `key` is missing.
+pub fn require_binary_input<'a>(
+    inputs: &'a crate::BinaryInputMap,
+    key: &str,
+    context: &str,
+) -> Result<&'a Vec<u8>, String> {
+    inputs.get(key).ok_or_else(|| format!("{context} requires input '{key}'"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{describe, describe_json_compact, validate_only_known_keys};

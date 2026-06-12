@@ -21,7 +21,9 @@ pub use mediapm_utils::builtin::BuiltinCliArgs;
 use mediapm_utils::builtin::describe_json_compact_meta;
 #[cfg(feature = "cli")]
 use mediapm_utils::builtin::parse_string_pairs;
-use mediapm_utils::builtin::{BuiltinMeta, describe_meta, validate_only_known_keys};
+use mediapm_utils::builtin::{
+    BuiltinMeta, describe_meta, require_non_empty_param, validate_only_known_keys,
+};
 #[cfg(feature = "cli")]
 use std::error::Error;
 #[cfg(feature = "cli")]
@@ -301,12 +303,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
                 &format!("import kind='{kind}'"),
             )?;
 
-            let path = params
-                .get("path")
-                .ok_or_else(|| format!("import kind='{kind}' requires 'path'"))?;
-            if path.trim().is_empty() {
-                return Err(format!("import kind='{kind}' requires non-empty 'path'"));
-            }
+            let _ = require_non_empty_param(params, "path", &format!("import kind='{kind}'"))?;
 
             let _ = mediapm_utils::path::parse_path_mode(params, &format!("import kind='{kind}'"))?;
             Ok(())
@@ -319,12 +316,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
             )?;
 
             for required in ["url", "expected_hash"] {
-                let Some(value) = params.get(required) else {
-                    return Err(format!("import kind='fetch' requires '{required}'"));
-                };
-                if value.trim().is_empty() {
-                    return Err(format!("import kind='fetch' requires non-empty '{required}'"));
-                }
+                let _ = require_non_empty_param(params, required, "import kind='fetch'")?;
             }
 
             Ok(())
@@ -332,12 +324,7 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
         "cas_hash" => {
             validate_only_known_keys(params, &["kind", "hash"], "import kind='cas_hash'")?;
 
-            let Some(value) = params.get("hash") else {
-                return Err("import kind='cas_hash' requires 'hash'".to_string());
-            };
-            if value.trim().is_empty() {
-                return Err("import kind='cas_hash' requires non-empty 'hash'".to_string());
-            }
+            let value = require_non_empty_param(params, "hash", "import kind='cas_hash'")?;
             if !is_valid_blake3_digest(value) {
                 return Err(
                     "import kind='cas_hash' requires 'hash' in form 'blake3:<64 lowercase hex chars>'"

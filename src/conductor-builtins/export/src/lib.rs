@@ -31,7 +31,10 @@ use mediapm_utils::builtin::describe_json_compact_meta;
 use mediapm_utils::builtin::parse_string_pairs;
 use mediapm_utils::{
     BinaryInputMap, StringMap,
-    builtin::{BuiltinMeta, describe_meta, validate_only_known_keys},
+    builtin::{
+        BuiltinMeta, describe_meta, require_non_empty_param, require_param,
+        validate_only_known_keys,
+    },
 };
 
 /// Stable builtin id used by topology registration.
@@ -207,16 +210,12 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
     validate_only_known_keys(params, &["kind", "path", "path_mode", "content"], "export")?;
     validate_only_known_keys(inputs, &["content"], "export")?;
 
-    let kind =
-        params.get("kind").ok_or_else(|| "export requires 'kind' (file|folder)".to_string())?;
+    let kind = require_param(params, "kind", "export")?;
     if kind != "file" && kind != "folder" {
-        return Err(format!("unsupported export kind '{kind}'"));
+        return Err(format!("unsupported export kind '{kind}', expected 'file' or 'folder'"));
     }
 
-    let path = params.get("path").ok_or_else(|| "export requires 'path'".to_string())?;
-    if path.trim().is_empty() {
-        return Err("export requires non-empty 'path'".to_string());
-    }
+    let _ = require_non_empty_param(params, "path", "export")?;
 
     let _ = mediapm_utils::path::parse_path_mode(params, "export")?;
 

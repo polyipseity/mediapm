@@ -36,7 +36,9 @@ pub use mediapm_utils::builtin::BuiltinCliArgs;
 use mediapm_utils::builtin::describe_json_compact_meta;
 #[cfg(feature = "cli")]
 use mediapm_utils::builtin::parse_string_pairs;
-use mediapm_utils::builtin::{BuiltinMeta, describe_meta, validate_only_known_keys};
+use mediapm_utils::builtin::{
+    BuiltinMeta, describe_meta, require_non_empty_param, validate_only_known_keys,
+};
 
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
@@ -191,17 +193,9 @@ fn validate_argument_contract(params: &StringMap, inputs: &StringMap) -> Result<
     validate_only_known_keys(params, allowed_params, &format!("fs op '{op}'"))?;
     validate_only_known_keys(inputs, allowed_inputs, &format!("fs op '{op}'"))?;
 
-    let Some(path) = params.get("path") else {
-        return Err(format!("fs op '{op}' requires 'path'"));
-    };
-    if path.trim().is_empty() {
-        return Err(format!("fs op '{op}' requires non-empty 'path'"));
-    }
+    let _ = require_non_empty_param(params, "path", &format!("fs op '{op}'"))?;
     if op == "copy" {
-        let dest = params.get("dest").ok_or_else(|| "fs op 'copy' requires 'dest'".to_string())?;
-        if dest.trim().is_empty() {
-            return Err("fs op 'copy' requires non-empty 'dest'".to_string());
-        }
+        let _ = require_non_empty_param(params, "dest", &format!("fs op '{op}'"))?;
     }
 
     let _ = mediapm_utils::path::parse_path_mode(params, &format!("fs op '{op}'"))?;
