@@ -22,9 +22,9 @@ use crate::storage::{
     validate_constraint_target_not_in_bases,
 };
 use crate::{
-    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint,
-    ConstraintBatchOp, ConstraintPatch, DeltaPatch, GcSweepReport, Hash, HashAlgorithm, ObjectInfo,
-    OptimizeOptions, OptimizeReport, PruneReport, StoredObject, empty_content_hash,
+    CasApi, CasByteReader, CasByteStream, CasError, CasMaintenanceApi, Constraint, ConstraintApi,
+    ConstraintBatchOp, ConstraintPatch, CoreCasApi, DeltaPatch, GcSweepReport, Hash, HashAlgorithm,
+    ObjectInfo, OptimizeOptions, OptimizeReport, PruneReport, StoredObject, empty_content_hash,
 };
 
 mod reconstruction;
@@ -531,8 +531,9 @@ impl CasApi for InMemoryCas {
         D: TryInto<Bytes> + Send,
         D::Error: std::fmt::Display + Send,
     {
-        let hash = self.put(data).await?;
-        self.set_constraint(Constraint { target_hash: hash, potential_bases: bases }).await?;
+        let hash = CasApi::put(self, data).await?;
+        CasApi::set_constraint(self, Constraint { target_hash: hash, potential_bases: bases })
+            .await?;
         Ok(hash)
     }
 
@@ -546,7 +547,8 @@ impl CasApi for InMemoryCas {
         bases: BTreeSet<Hash>,
     ) -> Result<Hash, CasError> {
         let hash = self.put_stream(reader).await?;
-        self.set_constraint(Constraint { target_hash: hash, potential_bases: bases }).await?;
+        CasApi::set_constraint(self, Constraint { target_hash: hash, potential_bases: bases })
+            .await?;
         Ok(hash)
     }
 
@@ -555,7 +557,7 @@ impl CasApi for InMemoryCas {
     }
 
     async fn get_stream(&self, hash: Hash) -> Result<CasByteStream, CasError> {
-        let bytes = self.get(hash).await?;
+        let bytes = CasApi::get(self, hash).await?;
         Ok(Box::pin(stream::once(async move { Ok(bytes) })))
     }
 
@@ -829,6 +831,47 @@ impl CasMaintenanceApi for InMemoryCas {
 
     async fn compact_index(&self) -> Result<crate::CompactReport, CasError> {
         Ok(crate::CompactReport { size_before: 0, size_after: 0 })
+    }
+}
+
+/// Delegates core read/write API to the in-memory backend's existing CasApi impl.
+#[async_trait]
+impl CoreCasApi for InMemoryCas {
+    async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
+        CasApi::put(self, data).await
+    }
+
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        CasApi::get(self, hash).await
+    }
+
+    async fn stat(&self, hash: Hash) -> Result<ObjectInfo, CasError> {
+        CasApi::info(self, hash).await
+    }
+
+    async fn delete(&self, hash: Hash) -> Result<(), CasError> {
+        CasApi::delete(self, hash).await
+    }
+}
+
+/// Delegates constraint API to the in-memory backend's existing CasApi impl.
+#[async_trait]
+impl ConstraintApi for InMemoryCas {
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+        CasApi::set_constraint(self, Constraint { target_hash: target, potential_bases: bases })
+            .await
+    }
+
+    async fn get_constraint(&self, hash: Hash) -> Result<Option<Constraint>, CasError> {
+        CasApi::get_constraint(self, hash).await
+    }
+
+    async fn patch_constraint(
+        &self,
+        target_hash: Hash,
+        patch: ConstraintPatch,
+    ) -> Result<Option<Constraint>, CasError> {
+        CasApi::patch_constraint(self, target_hash, patch).await
     }
 }
 
