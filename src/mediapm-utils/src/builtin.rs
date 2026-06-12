@@ -1,8 +1,8 @@
 //! Shared builtin descriptor and CLI helpers for conductor builtin crates.
 //!
-//! The [`describe`], [`describe_json_compact`], and [`describe_json_compat`]
-//! helpers are always available.  [`BuiltinCliArgs`] and [`parse_string_pairs`]
-//! require the `cli` feature.
+//! The [`describe`] and [`describe_json_compact`] helpers are always
+//! available.  [`BuiltinCliArgs`] and [`parse_string_pairs`] require the `cli`
+//! feature.
 
 use crate::StringMap;
 
@@ -44,22 +44,6 @@ pub fn describe_json_compact(
     format!(
         "{{\n  \"is_impure\": \"{is_impure}\",\n  \"summary\": \"{summary}\",\n  \"tool_id\": \"{tool_id}\",\n  \"tool_name\": \"{tool_name}\",\n  \"tool_version\": \"{tool_version}\"\n}}"
     )
-}
-
-/// Returns a deterministic descriptor JSON string, always available.
-///
-/// Unlike [`describe_json_compact`], this function is the canonical compat
-/// entry point that builtins expose as a stable public API.  The return type
-/// is [`String`] (infallible) across all builtins.
-#[must_use]
-pub fn describe_json_compat(
-    tool_id: &str,
-    tool_name: &str,
-    tool_version: &str,
-    is_impure: bool,
-    summary: &str,
-) -> String {
-    describe_json_compact(tool_id, tool_name, tool_version, is_impure, summary)
 }
 
 /// Metadata describing a builtin tool identity.
@@ -226,7 +210,7 @@ pub fn validate_only_known_keys<K: AsRef<str> + Ord, V>(
 
 #[cfg(test)]
 mod tests {
-    use super::{describe, describe_json_compact, describe_json_compat, validate_only_known_keys};
+    use super::{describe, describe_json_compact, validate_only_known_keys};
     use crate::StringMap;
 
     #[test]
@@ -269,13 +253,6 @@ mod tests {
             }
             assert!(line.starts_with("  "), "line should be indented: {line:?}");
         }
-    }
-
-    #[test]
-    fn describe_json_compat_matches_compact() {
-        let compat = describe_json_compat("t", "T", "1", true, "Compat test");
-        let compact = describe_json_compact("t", "T", "1", true, "Compat test");
-        assert_eq!(compat, compact);
     }
 
     #[test]

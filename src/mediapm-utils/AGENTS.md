@@ -10,7 +10,7 @@ Crate: `mediapm-utils`
 |--------|----------|-------------|
 | `types` | `StringMap`, `BinaryInputMap` type aliases | always |
 | `path` | `PathMode` enum, `parse_path_mode`, `resolve_path_for_root` | always |
-| `builtin` | `describe()`, `describe_json_compact()`, `describe_json_compat()`, `BuiltinMeta`, `describe_meta()`, `describe_json_compact_meta()`, `validate_only_known_keys()`, `BuiltinCliArgs`, `parse_string_pairs` | `cli` feature for `BuiltinCliArgs`/`parse_string_pairs` |
+| `builtin` | `describe()`, `describe_json_compact()`, `BuiltinMeta`, `describe_meta()`, `describe_json_compact_meta()`, `validate_only_known_keys()`, `BuiltinCliArgs`, `parse_string_pairs` | `cli` feature for `BuiltinCliArgs`/`parse_string_pairs` |
 
 ## Conventions
 
