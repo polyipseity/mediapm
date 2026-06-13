@@ -92,11 +92,6 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
     /// iteratively (not recursively) to avoid Rust async recursion
     /// restrictions.
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
-        // Zero hash is always present (empty sentinel).
-        if *hash == Hash::zero() {
-            return Ok(Some(Bytes::new()));
-        }
-
         // Check Index for metadata.
         let entry = match self.index.get(hash).await? {
             Some(e) => e,
@@ -197,11 +192,6 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
     }
 
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError> {
-        // Zero hash is always present.
-        if *hash == Hash::zero() {
-            return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
-        }
-
         // Check Index first.
         if let Some(entry) = self.index.get(hash).await? {
             // Before returning metadata, check the WAL for a pending Delete

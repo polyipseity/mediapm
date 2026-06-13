@@ -116,7 +116,7 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
         self.index
             .put(
                 hash,
-                IndexEntry { size: data.len() as u64, encoding: ObjectEncoding::Full, bases: None },
+                IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full, bases: None },
             )
             .await?;
         // Update the read-view cache so a subsequent get sees the data.
@@ -126,10 +126,18 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     }
 
     async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        // Zero hash is always present (empty sentinel).
+        if hash == Hash::zero() {
+            return Ok(Bytes::new());
+        }
         self.read_view.get(&hash).await
     }
 
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {
+        // Zero hash is always present (empty sentinel).
+        if hash == Hash::zero() {
+            return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
+        }
         self.read_view.stat(&hash).await
     }
 
