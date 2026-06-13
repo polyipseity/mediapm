@@ -87,9 +87,6 @@ pub trait Wal: Send + Sync {
     /// Append a single entry. Returns its position.
     async fn append(&self, entry: WalEntry) -> Result<WalPosition, CasError>;
 
-    /// Append multiple entries atomically (single flush).
-    async fn append_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError>;
-
     /// Return the highest committed position.
     async fn committed_position(&self) -> WalPosition;
 
@@ -153,15 +150,6 @@ impl Wal for InMemoryWal {
         guard.push_back((pos, entry));
         drop(guard);
         Ok(pos)
-    }
-
-    async fn append_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError> {
-        let mut guard = self.inner.entries.lock().unwrap();
-        for entry in entries {
-            let pos = WalPosition(self.inner.next_pos.fetch_add(1, Ordering::SeqCst));
-            guard.push_back((pos, entry));
-        }
-        Ok(())
     }
 
     async fn committed_position(&self) -> WalPosition {

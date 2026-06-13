@@ -494,58 +494,6 @@ impl Wal for FileWal {
         Ok(pos)
     }
 
-    async fn append_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError> {
-        if entries.is_empty() {
-            return Ok(());
-        }
-
-        let inner = &*self.inner;
-        let mut state = inner.write_lock.lock().await;
-
-        // Check sealing before batch.
-        Self::maybe_seal(&mut state, inner).await?;
-
-        if let Some(active) = &mut state.active {
-            for entry in &entries {
-                let pos = WalPosition::from_u64(inner.next_pos.fetch_add(1, Ordering::SeqCst));
-                let encoded = format::encode_entry(entry, pos);
-
-                if active.first_pos == WalPosition::ZERO {
-                    // Find actual first pos from existing entries + current.
-                    let (existing_entries, _) =
-                        Self::read_segment_entries(&ActiveSegment::path(&inner.journal_dir))
-                            .await?;
-                    if let Some((first, _)) = existing_entries.first() {
-                        active.first_pos = *first;
-                    } else {
-                        active.first_pos = pos;
-                    }
-                    drop(existing_entries);
-                }
-
-                active.write_entry(&encoded).await?;
-
-                // Update pending state.
-                match entry {
-                    WalEntry::Put { hash, data } => {
-                        inner
-                            .pending
-                            .lock()
-                            .unwrap()
-                            .insert(*hash, (pos, PendingState::Present(data.clone())));
-                    }
-                    WalEntry::Delete { hash } => {
-                        inner.pending.lock().unwrap().insert(*hash, (pos, PendingState::Tombstone));
-                    }
-                    WalEntry::Constraint { .. } => {}
-                }
-            }
-            active.flush().await?;
-        }
-
-        Ok(())
-    }
-
     async fn committed_position(&self) -> WalPosition {
         let next = self.inner.next_pos.load(Ordering::SeqCst);
         if next == 0 { WalPosition::ZERO } else { WalPosition::from_u64(next - 1) }
@@ -752,17 +700,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn append_batch() {
+    async fn append_multiple_entries() {
         let (journal, _tmp) = create_test_journal().await;
         let h1 = Hash::from_content(b"1");
         let h2 = Hash::from_content(b"2");
-        journal
-            .append_batch(vec![
-                WalEntry::Put { hash: h1, data: Bytes::from_static(b"1") },
-                WalEntry::Put { hash: h2, data: Bytes::from_static(b"2") },
-            ])
-            .await
-            .unwrap();
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"1") }).await.unwrap();
+        journal.append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"2") }).await.unwrap();
         assert_eq!(journal.pending_count().await, 2);
     }
 
