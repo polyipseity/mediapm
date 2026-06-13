@@ -58,13 +58,16 @@ impl CasError {
     /// Convenience constructor for reconstruction corruption errors.
     pub fn corrupt_reconstruction(
         target: Hash,
-        _current: Hash,
+        current: Hash,
         base_hash: Hash,
         detail: impl Into<String>,
     ) -> Self {
         CasError::CorruptObject {
             hash: Some(target),
-            details: format!("failed to reconstruct from base {base_hash}: {}", detail.into()),
+            details: format!(
+                "failed to reconstruct from base {base_hash} at step {current}: {}",
+                detail.into()
+            ),
         }
     }
 

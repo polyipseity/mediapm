@@ -18,8 +18,7 @@ use mediapm_cas::new_in_memory_cas;
 /// Write → Delete → Write for the same content must work.
 ///
 /// After deleting an object, putting the same content again must make it
-/// retrievable — the new journal entry takes precedence in reverse scan,
-/// and the read-view cache is refreshed by `hint_state_change`.
+/// retrievable — the new journal entry takes precedence in reverse scan.
 #[tokio::test]
 async fn write_delete_write_recreation() {
     let cas = new_in_memory_cas();

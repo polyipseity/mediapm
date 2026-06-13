@@ -120,10 +120,6 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             self.wal.trim(*last_pos).await?;
         }
 
-        // Refresh the read-view cache with processed entries so
-        // concurrent readers see materialized state.
-        self.read_view.apply_batch(entries.iter().map(|(_, e)| e.clone()).collect()).await?;
-
         Ok(entries.len() as u64)
     }
 
@@ -209,46 +205,16 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                 })
             }
             ObjectEncoding::Delta { base_hash } => {
-                let mut chain: Vec<(Hash, Bytes)> = Vec::new();
-                let mut current = *hash;
-                let mut base = base_hash;
-
-                loop {
-                    if current == base {
-                        return Err(CasError::CorruptObject {
-                            hash: Some(current),
-                            details: "delta self-reference detected during \
-                                      optimizer reconstruction"
-                                .into(),
-                        });
-                    }
-                    let delta_data = self.blob_store.read_delta(&current).await?;
-                    chain.push((current, delta_data));
-                    current = base;
-
-                    match self.index.get(&current).await? {
-                        Some(base_entry) => match base_entry.encoding {
-                            ObjectEncoding::Full => {
-                                let full_data = self.blob_store.read(&current).await?;
-                                return crate::delta::delta::resolve_delta_chain(
-                                    full_data, &mut chain, current,
-                                )
-                                .map(Some);
-                            }
-                            ObjectEncoding::Delta { base_hash: next_base } => {
-                                base = next_base;
-                            }
-                        },
-                        None => {
-                            return Err(CasError::CorruptObject {
-                                hash: Some(current),
-                                details: format!(
-                                    "delta chain: base {current} not found during reconstruction"
-                                ),
-                            });
-                        }
-                    }
-                }
+                return super::delta_resolve::resolve_delta_chain(
+                    hash,
+                    base_hash,
+                    &self.index,
+                    &self.blob_store,
+                    "delta self-reference detected during optimizer reconstruction",
+                    "delta chain: base",
+                )
+                .await
+                .map(Some);
             }
         }
     }
@@ -352,7 +318,8 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         // constraint set (intersection of stored bases with live hashes).
         // Constraints are delta-compression hints and have no bearing on
         // object liveness.
-        let live: HashSet<Hash> = self.index.list_hashes().await?.into_iter().collect();
+        // `live` was built in Phase 1 and is still valid — the optimizer only
+        // changes encodings, not which hashes exist.
         let before = self.index.list_targets().await?.len();
         self.index.prune_targets(&live).await?;
         let after = self.index.list_targets().await?.len();

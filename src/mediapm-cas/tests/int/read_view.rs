@@ -8,7 +8,7 @@ async fn get_after_put_immediate_visibility() {
     let cas = new_in_memory_cas();
     let data = Bytes::from_static(b"immediate");
     let hash = cas.put(data.clone()).await.unwrap();
-    // Should be visible right away (hint_state_change populates cache).
+    // Should be visible right away (CasStore writes index + blob directly).
     let retrieved = cas.get(hash).await.unwrap();
     assert_eq!(retrieved, data);
 }
@@ -19,7 +19,7 @@ async fn get_after_delete_immediate_miss() {
     let data = Bytes::from_static(b"ephemeral");
     let hash = cas.put(data).await.unwrap();
     cas.delete(hash).await.unwrap();
-    // Should be invisible right away (hint_state_change populates tombstone).
+    // Should be invisible right away (CasStore deletes from index + writes tombstone to WAL).
     assert!(cas.get(hash).await.is_err());
 }
 
