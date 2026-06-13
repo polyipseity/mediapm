@@ -1717,7 +1717,7 @@ async fn import_common_tool(
 
     let payload = fetch_common_executable_tool_payload(tool)?;
     let mut machine = load_machine_document(machine_ncl)?;
-    let hash = cas.put(payload.executable_bytes).await?;
+    let hash = cas.put(payload.executable_bytes.into()).await?;
     let imported_content_map = BTreeMap::from([(payload.executable_file_name.clone(), hash)]);
 
     let resolved_process_name = process_name_override
@@ -1772,7 +1772,7 @@ async fn import_tool(
             path: file.clone(),
             source,
         })?;
-        let hash = cas.put(content).await?;
+        let hash = cas.put(content.into()).await?;
         let relative = normalized_relative_path(&base_dir, &file)?;
         imported_content_map.insert(relative, hash);
     }
@@ -1804,7 +1804,7 @@ async fn import_data(
         path: path.to_path_buf(),
         source,
     })?;
-    let hash = cas.put(bytes).await?;
+    let hash = cas.put(bytes.into()).await?;
     let default_description = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1856,8 +1856,8 @@ async fn run_gc(
     state.external_data.extend(user.external_data);
     state.external_data.extend(machine.external_data);
 
-    let report = run_cas_gc_sweep(&cas, state_pointer, &state).await?;
-    println!("gc_sweep_deleted={}", report.deleted_count);
+    let report = run_cas_gc_sweep(&cas).await?;
+    println!("gc_sweep_removed={}", report.removed);
     Ok(())
 }
 

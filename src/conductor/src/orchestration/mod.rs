@@ -13,6 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use mediapm_cas::CasApi;
 use mediapm_cas::CasMaintenanceApi;
+use mediapm_cas::ConstraintApi;
 use tokio::sync::OnceCell;
 
 use crate::api::{
@@ -30,7 +31,7 @@ pub use profiler::print_profile_timing;
 /// Public conductor API facade backed by a lazily spawned ractor node.
 pub struct SimpleConductor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     cas: Arc<C>,
     actor_client: OnceCell<ConductorActorClient>,
@@ -38,7 +39,7 @@ where
 
 impl<C> SimpleConductor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     /// Creates an actor-backed conductor facade.
     #[must_use]
@@ -70,7 +71,7 @@ where
 #[async_trait]
 impl<C> ConductorApi for SimpleConductor<C>
 where
-    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
 {
     async fn run_workflow_with_options(
         &self,

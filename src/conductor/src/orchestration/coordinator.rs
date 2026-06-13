@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::{CasApi, ConstraintApi, Hash};
 use ractor::{ActorRef, call_t};
 
 use crate::api::{
@@ -130,7 +130,7 @@ where
 /// Default TTL for workflow instances: 7 days.
 const DEFAULT_INSTANCE_TTL_SECONDS: u64 = 604_800;
 
-impl<C: CasApi + Send + Sync + 'static> WorkflowCoordinator<C> {
+impl<C: CasApi + ConstraintApi + Send + Sync + 'static> WorkflowCoordinator<C> {
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(super) fn new(cas: Arc<C>) -> Self {
@@ -624,7 +624,7 @@ struct StepCompletionEvent {
     result: Result<StepExecutionBundle, ConductorError>,
 }
 
-impl<C: CasApi + Send + Sync + 'static> WorkflowCoordinator<C> {
+impl<C: CasApi + ConstraintApi + Send + Sync + 'static> WorkflowCoordinator<C> {
     /// Executes all unified workflows using a dependency-stream dispatch model.
     ///
     /// Builds per-workflow dependency graphs from the unified workflow specs,

@@ -157,7 +157,7 @@ async fn dedup_merges_persistence_flags_without_rematerializing_unreferenced_out
 
     assert_eq!(output_ref.persistence.save, OutputSaveMode::Unsaved);
     assert!(
-        !cas.exists(output_ref.hash).await.expect("exists check should succeed"),
+        cas.stat(output_ref.hash).await.is_err(),
         "save=false output should be dropped from CAS after run"
     );
 
@@ -464,7 +464,7 @@ async fn unsupported_state_schema_is_rejected() {
     });
 
     let state_hash = cas
-        .put(serde_json::to_vec(&unsupported_state).expect("serialize state"))
+        .put(serde_json::to_vec(&unsupported_state).expect("serialize state").into())
         .await
         .expect("put state");
 

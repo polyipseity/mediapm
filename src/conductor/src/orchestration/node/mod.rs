@@ -6,7 +6,7 @@
 
 use mediapm_cas::Hash;
 
-use mediapm_cas::{CasApi, CasMaintenanceApi};
+use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -240,7 +240,7 @@ impl ConductorActorClient {
 }
 
 /// Actor state wrapping the workflow coordinator with background task tracking.
-struct ConductorActorState<C: CasApi + Send + Sync + 'static> {
+struct ConductorActorState<C: CasApi + ConstraintApi + Send + Sync + 'static> {
     /// Core workflow coordinator.
     coordinator: WorkflowCoordinator<C>,
     /// Background workflow tasks keyed by handle ID.
@@ -273,7 +273,9 @@ impl<C> Default for ConductorNodeActor<C> {
     }
 }
 
-impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Actor for ConductorNodeActor<C> {
+impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Actor
+    for ConductorNodeActor<C>
+{
     type Msg = ConductorNodeMessage;
     type State = ConductorActorState<C>;
     type Arguments = Arc<C>;
@@ -310,8 +312,8 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Actor for ConductorN
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 };
-                let state_pointer = state_store.get_state_pointer().await.unwrap_or(None);
-                let current_state = match state_store.current_state().await {
+                let _state_pointer = state_store.get_state_pointer().await.unwrap_or(None);
+                let _current_state = match state_store.current_state().await {
                     Ok(s) => s,
                     Err(e) => {
                         tracing::warn!("background GC: failed to get current state: {e}");
@@ -319,9 +321,7 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Actor for ConductorN
                         continue;
                     }
                 };
-                if let Err(e) =
-                    run_cas_gc_sweep(bg_cas.as_ref(), state_pointer, &current_state).await
-                {
+                if let Err(e) = run_cas_gc_sweep(bg_cas.as_ref()).await {
                     tracing::warn!("background GC failed: {e}");
                 }
                 tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
@@ -453,12 +453,11 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Actor for ConductorN
 
                     // 2. CAS sweep using state's external_data.
                     let cas = state.coordinator.cas.clone();
-                    let state_pointer = match state.coordinator.state_store() {
+                    let _state_pointer = match state.coordinator.state_store() {
                         Some(store) => store.get_state_pointer().await?,
                         None => None,
                     };
-                    let current_state = state.coordinator.current_state().await?;
-                    run_cas_gc_sweep(cas.as_ref(), state_pointer, &current_state).await?;
+                    run_cas_gc_sweep(cas.as_ref()).await?;
 
                     Ok::<_, ConductorError>(())
                 }
@@ -478,7 +477,9 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> Actor for ConductorN
 /// # Errors
 ///
 /// Returns an error when the node actor cannot be spawned.
-pub async fn spawn_conductor_actor<C: CasApi + CasMaintenanceApi + Send + Sync + 'static>(
+pub async fn spawn_conductor_actor<
+    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
+>(
     cas: Arc<C>,
 ) -> Result<ConductorActorClient, ConductorError> {
     let (actor_ref, _join_handle) =

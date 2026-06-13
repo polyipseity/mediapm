@@ -182,7 +182,7 @@ impl UserDownloadCache {
             return;
         }
 
-        let Ok(hash) = self.cas.put(payload.to_vec()).await else {
+        let Ok(hash) = self.cas.put(payload.to_vec().into()).await else {
             return;
         };
 
@@ -257,7 +257,7 @@ impl UserDownloadCache {
                 continue;
             };
 
-            if self.cas.exists(hash).await.unwrap_or(false) && self.cas.delete(hash).await.is_ok() {
+            if self.cas.stat(hash).await.is_ok() && self.cas.delete(hash).await.is_ok() {
                 removed_payloads = removed_payloads.saturating_add(1);
             }
         }
@@ -632,6 +632,6 @@ mod tests {
         assert_eq!(report.removed_payloads, 0);
 
         let payload_hash = Hash::from_str(payload_hash_text.trim()).expect("parse payload hash");
-        assert!(runtime.block_on(cache.cas.exists(payload_hash)).expect("exists"));
+        assert!(runtime.block_on(cache.cas.stat(payload_hash)).is_ok());
     }
 }

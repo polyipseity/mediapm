@@ -72,7 +72,7 @@ pub(crate) async fn encode_state<C: CasApi>(
     for (key, instance) in state.instances {
         let v2_instance = v2::tool_call_instance_v2_iso().to(instance);
         let encoded = v2::encode_instance_v2(&v2_instance)?;
-        let hash = cas.put(encoded).await?;
+        let hash = cas.put(encoded.into()).await?;
         instance_refs.insert(key, v2::InstanceRefV2 { hash });
     }
 
@@ -89,7 +89,7 @@ pub(crate) async fn encode_state<C: CasApi>(
 
     let envelope_bytes =
         serde_json::to_vec(&envelope).map_err(|e| ConductorError::Serialization(e.to_string()))?;
-    let envelope_hash = cas.put(envelope_bytes).await?;
+    let envelope_hash = cas.put(envelope_bytes.into()).await?;
     Ok(envelope_hash)
 }
 
