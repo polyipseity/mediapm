@@ -15,7 +15,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 use crate::api::ObjectEncoding;
@@ -24,9 +23,6 @@ use crate::hash::Hash;
 
 use super::object_index::ObjectIndex;
 use super::wal::{PendingState, Wal, WalEntry};
-
-/// How long a cache entry lives before it is considered stale.
-const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// A pending read result that other concurrent readers can wait on.
 struct PendingResult {
@@ -68,20 +64,16 @@ pub use crate::api::ObjectMeta;
 // ComposedReadView
 // ---------------------------------------------------------------------------
 
-/// A read-through cache backed by ObjectIndex + WAL fallback.
+/// A read-through view backed by ObjectIndex + WAL fallback.
 ///
-/// Implements a three-layer lookup:
-/// 1. In-memory `DashMap` cache with TTL eviction
-/// 2. `ObjectIndex` for committed data
-/// 3. `Wal` fallback for entries not yet materialized
+/// Implements a two-layer lookup:
+/// 1. `ObjectIndex` for committed data
+/// 2. `Wal` fallback for entries not yet materialized
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
 /// hash simultaneously, only one performs the ObjectIndex + WAL
 /// lookup while the other waits on a [`Notify`].
 pub struct ComposedReadView<S: ObjectIndex, J: Wal> {
-    /// In-memory cache: hash → (timestamp, cached data).
-    /// `None` data means a confirmed NotFound (tombstone cached).
-    cache: DashMap<Hash, (Instant, Option<Bytes>)>,
     /// In-flight read dedup: hash → shared pending result.
     pending: DashMap<Hash, Arc<PendingResult>>,
     /// Persistent object index (committed data).
@@ -93,7 +85,7 @@ pub struct ComposedReadView<S: ObjectIndex, J: Wal> {
 impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
     /// Create a new view.
     pub fn new(object_index: S, wal: J) -> Self {
-        Self { cache: DashMap::new(), pending: DashMap::new(), object_index, wal }
+        Self { pending: DashMap::new(), object_index, wal }
     }
 
     /// Inner fetch: ObjectIndex → WAL fallback with transparent delta
@@ -110,9 +102,7 @@ impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         // Zero hash is always present (empty sentinel).
         if *hash == Hash::zero() {
-            let empty = Bytes::new();
-            self.cache.insert(*hash, (Instant::now(), Some(empty.clone())));
-            return Ok(Some(empty));
+            return Ok(Some(Bytes::new()));
         }
 
         // Walk the delta chain iteratively, collecting deltas to apply.
@@ -131,11 +121,9 @@ impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
                         break 'fetch (data, ObjectEncoding::Full);
                     }
                     PendingState::Tombstone => {
-                        self.cache.insert(current, (Instant::now(), None));
                         return Ok(None);
                     }
                     PendingState::NotPresent => {
-                        self.cache.insert(current, (Instant::now(), None));
                         return Ok(None);
                     }
                 }
@@ -146,7 +134,6 @@ impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
                     // Found the root base. Apply collected deltas in reverse.
                     let result =
                         crate::delta::delta::resolve_delta_chain(data, &mut chain, current)?;
-                    self.cache.insert(*hash, (Instant::now(), Some(result.clone())));
                     return Ok(Some(result));
                 }
                 ObjectEncoding::Delta { base_hash } => {
@@ -168,18 +155,7 @@ impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
 #[async_trait]
 impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedReadView<S, J> {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
-        // 1. Check cache (fast path).
-        if let Some(entry) = self.cache.get(hash) {
-            let (ts, data) = entry.value();
-            if ts.elapsed() < CACHE_TTL {
-                return match data {
-                    Some(bytes) => Ok(bytes.clone()),
-                    None => Err(CasError::NotFound(*hash)),
-                };
-            }
-        }
-
-        // 2. In-flight read dedup.
+        // 1. In-flight read dedup.
         let pending_result =
             Arc::new(PendingResult { done: Notify::new(), result: std::sync::OnceLock::new() });
 
@@ -204,7 +180,7 @@ impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedRe
             }
         }
 
-        // 3. Fetch from ObjectIndex → WAL.
+        // 2. Fetch from ObjectIndex → WAL.
         let fetch_result = self.fetch_inner(hash).await;
 
         // Share result with waiters.
@@ -255,30 +231,14 @@ impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedRe
         Err(CasError::NotFound(*hash))
     }
 
-    async fn hint_state_change(&self, hash: Hash, data: Option<Bytes>) {
-        self.cache.insert(hash, (Instant::now(), data));
+    async fn hint_state_change(&self, _hash: Hash, _data: Option<Bytes>) {
+        // Cache was removed; this is a no-op.
     }
 
     /// Apply a batch of WAL entries (called by WALConsumer).
     ///
-    /// TODO: Wire this into BackgroundEngine so the in-memory cache is
-    /// proactively refreshed when WAL entries are consumed. Currently
-    /// unused because the cache is updated via `hint_state_change` during
-    /// write operations.
-    async fn apply_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError> {
-        for entry in entries {
-            match entry {
-                WalEntry::Put { hash, data } => {
-                    self.cache.insert(hash, (Instant::now(), Some(data)));
-                }
-                WalEntry::Delete { hash } => {
-                    self.cache.insert(hash, (Instant::now(), None));
-                }
-                WalEntry::Constraint { .. } => {
-                    // Constraints have no payload — no-op for read view.
-                }
-            }
-        }
+    /// No-op since the in-memory cache was removed.
+    async fn apply_batch(&self, _entries: Vec<WalEntry>) -> Result<(), CasError> {
         Ok(())
     }
 }

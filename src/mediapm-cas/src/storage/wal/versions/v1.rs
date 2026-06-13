@@ -12,9 +12,6 @@
 //! - Latest-version bridging to unversioned runtime structs is owned by
 //!   `versions/mod.rs`.
 
-// TODO: remove when FileWal is wired into storage backends.
-#![allow(dead_code)]
-
 use std::collections::BTreeSet;
 
 use bytes::Bytes;

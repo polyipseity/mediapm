@@ -10,7 +10,6 @@
 //! ephemeral use). [`FileWal`] provides a file-backed implementation.
 
 pub(crate) mod file_wal;
-pub(crate) mod format;
 pub(crate) mod versions;
 
 pub use file_wal::FileWal;

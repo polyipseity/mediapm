@@ -9,8 +9,10 @@
 //! populate the map — the WAL is the single persistent source of truth.
 
 use async_trait::async_trait;
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::collections::{BTreeSet, HashSet};
+use std::sync::Arc;
+
+use dashmap::DashMap;
 
 use crate::api::ConstraintPatch;
 use crate::error::CasError;
@@ -49,13 +51,13 @@ pub trait MetadataIndex: Send + Sync {
 // InMemoryMetadataIndex
 // ---------------------------------------------------------------------------
 
-/// An in-memory [`MetadataIndex`] backed by `Arc<RwLock<HashMap>>`.
+/// An in-memory [`MetadataIndex`] backed by `Arc<DashMap>`.
 ///
 /// Clones share the same backing data, so all references observe the same
 /// constraint state — essential for concurrent access patterns.
 #[derive(Clone, Default)]
 pub struct InMemoryMetadataIndex {
-    data: Arc<RwLock<HashMap<Hash, BTreeSet<Hash>>>>,
+    data: Arc<DashMap<Hash, BTreeSet<Hash>>>,
 }
 
 impl InMemoryMetadataIndex {
@@ -68,17 +70,16 @@ impl InMemoryMetadataIndex {
 #[async_trait]
 impl MetadataIndex for InMemoryMetadataIndex {
     async fn set(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
-        self.data.write().unwrap().insert(target, bases);
+        self.data.insert(target, bases);
         Ok(())
     }
 
     async fn get(&self, target: &Hash) -> Result<Option<BTreeSet<Hash>>, CasError> {
-        Ok(self.data.read().unwrap().get(target).cloned())
+        Ok(self.data.get(target).as_deref().cloned())
     }
 
     async fn patch(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
-        let mut guard = self.data.write().unwrap();
-        let entry = guard.entry(target).or_default();
+        let mut entry = self.data.entry(target).or_default();
         if patch.clear {
             entry.clear();
         }
@@ -92,17 +93,16 @@ impl MetadataIndex for InMemoryMetadataIndex {
     }
 
     async fn remove(&self, target: &Hash) -> Result<(), CasError> {
-        self.data.write().unwrap().remove(target);
+        self.data.remove(target);
         Ok(())
     }
 
     async fn list_targets(&self) -> Result<Vec<Hash>, CasError> {
-        Ok(self.data.read().unwrap().keys().copied().collect())
+        Ok(self.data.iter().map(|r| *r.key()).collect())
     }
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
-        let mut guard = self.data.write().unwrap();
-        guard.retain(|target, bases| {
+        self.data.retain(|target, bases| {
             if !live.contains(target) {
                 // Entire entry removed: target object was deleted.
                 return false;
@@ -121,7 +121,7 @@ impl MetadataIndex for InMemoryMetadataIndex {
         let entries = wal.replay_from(WalPosition::ZERO).await;
         for (_, entry) in entries {
             if let WalEntry::Constraint { target, bases } = entry {
-                self.data.write().unwrap().insert(target, bases);
+                self.data.insert(target, bases);
             }
         }
         Ok(())

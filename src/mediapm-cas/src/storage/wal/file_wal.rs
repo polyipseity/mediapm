@@ -1,6 +1,4 @@
 //! File-based journal and checkpoint implementation.
-// TODO: remove when FileWal is wired into storage backends.
-#![allow(dead_code)]
 //!
 //! ## File locations
 //!
@@ -37,7 +35,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::format;
+use super::versions as format;
 use super::{PendingState, Wal, WalEntry, WalPosition};
 
 // ---------------------------------------------------------------------------
@@ -221,6 +219,7 @@ pub struct FileWal {
 
 struct FileWalInner {
     /// CAS directory root.
+    #[expect(dead_code, reason = "deferring: unused field, clarify with user")]
     dir: PathBuf,
     /// Journal segment directory: `<dir>/journal/`.
     journal_dir: PathBuf,

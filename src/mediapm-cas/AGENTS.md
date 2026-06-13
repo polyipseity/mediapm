@@ -42,13 +42,13 @@ eliminating TOCTOU.
 **put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL, hint cache.
 Zero hash returns immediately — nothing stored.
 
-**get**: Three-layer lookup (L1 cache → L2 ObjectIndex → L3 WAL fallback).
+**get**: Two-layer lookup (ObjectIndex → WAL fallback).
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only
 (Full or Delta { base_hash }). Callers must NOT make decisions based on encoding.
 
-**delete**: Append `WalEntry::Delete` to WAL, tombstone cache. Physical removal is
+**delete**: Append `WalEntry::Delete` to WAL. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
@@ -76,7 +76,7 @@ pub trait ConstraintApi: Send + Sync {
 ```
 
 Constraints are **non-binding hints** — the system never blocks on completeness or accuracy.
-`effective_bases = stored_bases ∩ live`. Stored in MetadataIndex (in-memory, rebuilt from WAL).
+`effective_bases = stored_bases ∩ live`. Stored in MetadataIndex (in-memory `DashMap`, rebuilt from WAL).
 
 ```rust
 pub struct ConstraintPatch {
@@ -180,16 +180,15 @@ src/mediapm-cas/src/
     ├── mod.rs           — module root + #[macro_use] macros
     ├── macros.rs        — impl_cas_wrapper_traits!($ty) macro
     ├── store.rs         — CasStore<J,S,M> (composed handle, implements all traits)
-    ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + format
+    ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + versions
     │   ├── mod.rs       — trait definitions + InMemoryWal
     │   ├── file_wal.rs  — FileWal (segmented file-backed WAL)
-    │   ├── format.rs    — encode/decode helpers
     │   └── versions/    — on-disk format V1+
     │       ├── mod.rs
     │       └── v1.rs
     ├── object_index.rs  — ObjectIndex trait + InMemoryObjectIndex
     ├── metadata_index.rs— MetadataIndex trait + InMemoryMetadataIndex
-    ├── read_view.rs     — ComposedReadView (3-layer lookup: cache → index → WAL)
+    ├── read_view.rs     — ComposedReadView (2-layer lookup: index → WAL)
     ├── bg_engine.rs     — BackgroundEngine (WAL consumer + maintenance orchestrator)
     ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
     └── file_system.rs   — FileSystemCas wrapper + open()
@@ -198,13 +197,13 @@ src/mediapm-cas/src/
 ## 4. Data flow
 
 ```text
-put(data) → Hash(data) → Wal.append(Put{hash, data}) → cache hint
+put(data) → Hash(data) → Wal.append(Put{hash, data})
                                                                     ↓
 WAL consumer (bg_engine) → ObjectIndex.put(hash, data) → checkpoint
                                                                     ↓
-get(hash) → ReadView: L1 cache → L2 ObjectIndex → L3 WAL fallback
+get(hash) → ReadView: ObjectIndex → WAL fallback
                                                                     ↓
-delete(hash) → Wal.append(Delete{hash}) → tombstone cache
+delete(hash) → Wal.append(Delete{hash})
                                                                     ↓
 WAL consumer → re-materialize dependents → ObjectIndex.delete(hash)
 ```
@@ -231,18 +230,16 @@ Stores raw bytes for Full encoding or complete V3 delta envelope for Delta encod
 
 ### 5.3 ReadView
 
-Three-layer lookup for get/stat:
+Two-layer lookup for get/stat:
 
-1. **L1 — Cache** (DashMap, 60s TTL). Fast path. Proactively updated via `hint_state_change()`.
-2. **L2 — ObjectIndex**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF → cache result).
-3. **L3 — WAL fallback**. Pending entries not yet materialized. Respects tombstones.
+1. **ObjectIndex**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF).
+2. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
 
-**Delta reconstruction**: Recursive `get(base_hash)` through full 3-layer lookup →
-`DeltaPatch::apply(base_bytes, vcdiff)` → cache reconstructed bytes.
-If base_hash not found → `CasError::CorruptObject`.
+**Delta reconstruction**: Recursive `get(base_hash)` through full 2-layer lookup →
+`DeltaPatch::apply(base_bytes, vcdiff)`. If base_hash not found → `CasError::CorruptObject`.
 
 ### 5.4 Delta Codec
 
