@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-use crate::api::{ConstraintPatch, ObjectEncoding, ObjectMeta};
+use crate::api::{ObjectEncoding, ObjectMeta};
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -82,12 +82,6 @@ pub trait Index: Send + Sync {
 
     /// Get bases for `target`, if any.
     async fn get_constraint(&self, target: &Hash) -> Result<Option<BTreeSet<Hash>>, CasError>;
-
-    /// Atomically add/remove/clear bases for `target`.
-    async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
-
-    /// Remove constraint for `target` (sets bases to `None`).
-    async fn remove_constraint(&self, target: &Hash) -> Result<(), CasError>;
 
     /// List all constraint targets.
     async fn list_targets(&self) -> Result<Vec<Hash>, CasError>;
@@ -169,35 +163,6 @@ impl Index for InMemoryIndex {
         Ok(self.data.get(target).map(|r| r.value().clone()).and_then(|e| e.bases))
     }
 
-    async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
-        // Extract entry from the Ref guard before mutating + re-inserting.
-        let mut entry = self.data.get(&target).map(|r| r.value().clone()).unwrap_or(IndexEntry {
-            size: 0,
-            encoding: ObjectEncoding::Full,
-            bases: None,
-        });
-        let bases = entry.bases.get_or_insert_with(BTreeSet::new);
-        if patch.clear {
-            bases.clear();
-        }
-        for h in &patch.add_bases {
-            bases.insert(*h);
-        }
-        for h in &patch.remove_bases {
-            bases.remove(h);
-        }
-        self.data.insert(target, entry);
-        Ok(())
-    }
-
-    async fn remove_constraint(&self, target: &Hash) -> Result<(), CasError> {
-        // Use get_mut for direct mutation (write lock, no conflict).
-        if let Some(mut entry) = self.data.get_mut(target) {
-            entry.bases = None;
-        }
-        Ok(())
-    }
-
     async fn list_targets(&self) -> Result<Vec<Hash>, CasError> {
         Ok(self.data.iter().filter(|r| r.value().bases.is_some()).map(|r| *r.key()).collect())
     }
@@ -259,7 +224,6 @@ impl Index for InMemoryIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::ConstraintPatch;
     use crate::storage::wal::InMemoryWal;
     use bytes::Bytes;
 
@@ -321,25 +285,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn patch_constraint_add() {
+    async fn set_get_constraint_roundtrip() {
         let index = InMemoryIndex::new();
         let target = Hash::from_content(b"t");
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
-        let patch = ConstraintPatch { add_bases: BTreeSet::from([a, b]), ..Default::default() };
-        index.patch_constraint(target, patch).await.unwrap();
+        index.set_constraint(target, BTreeSet::from([a, b])).await.unwrap();
         let got = index.get_constraint(&target).await.unwrap().unwrap();
         assert!(got.contains(&a));
         assert!(got.contains(&b));
     }
 
     #[tokio::test]
-    async fn remove_constraint_clears() {
+    async fn replace_constraint_clears_previous() {
         let index = InMemoryIndex::new();
         let target = Hash::from_content(b"t");
         index.set_constraint(target, BTreeSet::from([Hash::from_content(b"b")])).await.unwrap();
-        index.remove_constraint(&target).await.unwrap();
-        assert_eq!(index.get_constraint(&target).await.unwrap(), None);
+        // Replacing with empty set clears the constraint.
+        index.set_constraint(target, BTreeSet::new()).await.unwrap();
+        assert_eq!(index.get_constraint(&target).await.unwrap(), Some(BTreeSet::new()));
     }
 
     #[tokio::test]
