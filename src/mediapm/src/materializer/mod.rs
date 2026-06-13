@@ -193,7 +193,7 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
 
         let payload = b"hardlink-preferred".to_vec();
-        let hash = cas.put(payload.clone()).await.expect("put bytes");
+        let hash = cas.put(payload.clone().into()).await.expect("put bytes");
         let destination_path = temp.path().join("materialized.bin");
 
         let mut notices = Vec::new();
@@ -227,7 +227,7 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
 
         let payload = b"copy-fallback".to_vec();
-        let hash = cas.put(payload.clone()).await.expect("put bytes");
+        let hash = cas.put(payload.clone().into()).await.expect("put bytes");
         let destination_path = temp.path().join("fallback.bin");
 
         let mut notices = Vec::new();
@@ -391,7 +391,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+        let hash = cas.put(b"abc".to_vec().into()).await.expect("put local bytes");
 
         let artist_name = "Beyoncé".to_string();
 
@@ -455,7 +455,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+        let hash = cas.put(b"abc".to_vec().into()).await.expect("put local bytes");
 
         let media_id = "média-a".to_string();
 
@@ -705,7 +705,7 @@ mod tests {
             ("Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].jpg", b"jpg"),
             ("Rick Astley - Never Gonna Give You Up [dQw4w9WgXcQ].url", b"[InternetShortcut]"),
         ]);
-        let zip_hash = cas.put(zip_bytes).await.expect("put zip bytes");
+        let zip_hash = cas.put(zip_bytes.into()).await.expect("put zip bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -817,11 +817,11 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
 
         let sidecar_hash = cas
-            .put(zip_payload(&[("info.json", br#"{"id":"demo"}"#)]))
+            .put(zip_payload(&[("info.json", br#"{"id":"demo"}"#)]).into())
             .await
             .expect("put sidecar zip");
         let root_hash =
-            cas.put(zip_payload(&[("thumb.webp", b"webp")])).await.expect("put root zip");
+            cas.put(zip_payload(&[("thumb.webp", b"webp")]).into()).await.expect("put root zip");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -918,14 +918,17 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
 
         let sidecar_hash = cas
-            .put(zip_payload(&[("info.json", br#"{"id":"demo"}"#)]))
+            .put(zip_payload(&[("info.json", br#"{"id":"demo"}"#)]).into())
             .await
             .expect("put sidecar zip");
         let root_hash = cas
-            .put(zip_payload(&[
-                ("sidecars/links.url", b"[InternetShortcut]"),
-                ("thumb.webp", b"webp"),
-            ]))
+            .put(
+                zip_payload(&[
+                    ("sidecars/links.url", b"[InternetShortcut]"),
+                    ("thumb.webp", b"webp"),
+                ])
+                .into(),
+            )
             .await
             .expect("put root zip");
 
@@ -1031,7 +1034,7 @@ mod tests {
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
 
         let zip_bytes = zip_payload(&[("thumb [video-id].jpg", b"jpg")]);
-        let zip_hash = cas.put(zip_bytes).await.expect("put zip bytes");
+        let zip_hash = cas.put(zip_bytes.into()).await.expect("put zip bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1099,7 +1102,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+        let hash = cas.put(b"abc".to_vec().into()).await.expect("put local bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1173,8 +1176,8 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let alpha_hash = cas.put(b"alpha".to_vec()).await.expect("put alpha bytes");
-        let beta_hash = cas.put(b"beta".to_vec()).await.expect("put beta bytes");
+        let alpha_hash = cas.put(b"alpha".to_vec().into()).await.expect("put alpha bytes");
+        let beta_hash = cas.put(b"beta".to_vec().into()).await.expect("put beta bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([
@@ -1313,8 +1316,8 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let alpha_hash = cas.put(b"alpha".to_vec()).await.expect("put alpha bytes");
-        let beta_hash = cas.put(b"beta".to_vec()).await.expect("put beta bytes");
+        let alpha_hash = cas.put(b"alpha".to_vec().into()).await.expect("put alpha bytes");
+        let beta_hash = cas.put(b"beta".to_vec().into()).await.expect("put beta bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([
@@ -1433,8 +1436,10 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let sidecar_zip_hash =
-            cas.put(zip_payload(&[("captions.en.vtt", b"sub")])).await.expect("put sidecar zip");
+        let sidecar_zip_hash = cas
+            .put(zip_payload(&[("captions.en.vtt", b"sub")]).into())
+            .await
+            .expect("put sidecar zip");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1515,8 +1520,8 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let alpha_hash = cas.put(b"alpha".to_vec()).await.expect("put alpha bytes");
-        let beta_hash = cas.put(b"beta".to_vec()).await.expect("put beta bytes");
+        let alpha_hash = cas.put(b"alpha".to_vec().into()).await.expect("put alpha bytes");
+        let beta_hash = cas.put(b"beta".to_vec().into()).await.expect("put beta bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([
@@ -1680,7 +1685,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let alpha_hash = cas.put(b"alpha".to_vec()).await.expect("put alpha bytes");
+        let alpha_hash = cas.put(b"alpha".to_vec().into()).await.expect("put alpha bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1781,7 +1786,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+        let hash = cas.put(b"abc".to_vec().into()).await.expect("put local bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1841,9 +1846,11 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let audio_hash = cas.put(b"audio-bytes".to_vec()).await.expect("put audio bytes");
-        let infojson_hash =
-            cas.put(br#"{"title":"Variant Title"}"#.to_vec()).await.expect("put infojson bytes");
+        let audio_hash = cas.put(b"audio-bytes".to_vec().into()).await.expect("put audio bytes");
+        let infojson_hash = cas
+            .put(br#"{"title":"Variant Title"}"#.to_vec().into())
+            .await
+            .expect("put infojson bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1914,7 +1921,7 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let hash = cas.put(b"abc".to_vec()).await.expect("put local bytes");
+        let hash = cas.put(b"abc".to_vec().into()).await.expect("put local bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -1971,9 +1978,9 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let audio_hash = cas.put(b"audio-bytes".to_vec()).await.expect("put audio bytes");
+        let audio_hash = cas.put(b"audio-bytes".to_vec().into()).await.expect("put audio bytes");
         let infojson_hash =
-            cas.put(br#"{"ext":"mkv"}"#.to_vec()).await.expect("put infojson bytes");
+            cas.put(br#"{"ext":"mkv"}"#.to_vec().into()).await.expect("put infojson bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -2043,8 +2050,9 @@ mod tests {
         let paths = MediaPmPaths::from_root(temp.path());
         let cas_root = paths.root_dir.join(".mediapm").join("store");
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let audio_hash = cas.put(b"audio-bytes".to_vec()).await.expect("put audio bytes");
-        let infojson_hash = cas.put(br#"{"ext":""}"#.to_vec()).await.expect("put infojson bytes");
+        let audio_hash = cas.put(b"audio-bytes".to_vec().into()).await.expect("put audio bytes");
+        let infojson_hash =
+            cas.put(br#"{"ext":""}"#.to_vec().into()).await.expect("put infojson bytes");
 
         let document = MediaPmDocument {
             media: BTreeMap::from([(
@@ -2137,7 +2145,7 @@ mod tests {
         let media_id = "remote-a";
         let source_uri = "https://example.com/audio";
         let output_bytes = b"ID3workflow-output".to_vec();
-        let output_hash = cas.put(output_bytes.clone()).await.expect("put output bytes");
+        let output_hash = cas.put(output_bytes.clone().into()).await.expect("put output bytes");
 
         let tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string();
         let tool_spec = ToolSpec {
@@ -2707,7 +2715,7 @@ mod tests {
         let required_member = "coverart-slot-0.flag";
         let member_bytes = b"coverart-present";
         let valid_zip_hash = cas
-            .put(zip_payload(&[(required_member, member_bytes.as_slice())]))
+            .put(zip_payload(&[(required_member, member_bytes.as_slice())]).into())
             .await
             .expect("put valid zip payload");
         let missing_zip_hash = Hash::from_content(b"missing-zip-payload");
@@ -3441,7 +3449,7 @@ async fn prepare_hierarchy_entry(
                 let file_hash = if let Some(source_hash) = variant_source.source_hash {
                     source_hash
                 } else {
-                    lookup.cas.put(variant_source.bytes).await.map_err(|source| {
+                    lookup.cas.put(variant_source.bytes.into()).await.map_err(|source| {
                         MediaPmError::Workflow(format!(
                             "importing materialized file '{relative_path}' into CAS failed: {source}",
                         ))
@@ -3594,7 +3602,7 @@ async fn prepare_hierarchy_entry(
                     continue;
                 }
 
-                let stored_hash = lookup.cas.put(extracted_bytes).await.map_err(|source| {
+                let stored_hash = lookup.cas.put(extracted_bytes.into()).await.map_err(|source| {
                         MediaPmError::Workflow(format!(
                             "importing materialized folder member '{managed_path}' into CAS failed: {source}",
                         ))
@@ -3701,7 +3709,7 @@ async fn prepare_hierarchy_entry(
                     false,
                 )
             } else {
-                let stored_hash = lookup.cas.put(playlist_bytes).await.map_err(|source| {
+                let stored_hash = lookup.cas.put(playlist_bytes.into()).await.map_err(|source| {
                     MediaPmError::Workflow(format!(
                         "importing generated playlist '{relative_path}' into CAS failed: {source}",
                     ))

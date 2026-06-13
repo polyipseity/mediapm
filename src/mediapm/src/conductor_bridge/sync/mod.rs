@@ -103,7 +103,14 @@ pub(crate) async fn reconcile_desired_tools(
                 {
                     Some(content_map) if !content_map.is_empty() => {
                         let hashes: Vec<Hash> = content_map.values().copied().collect();
-                        cas.exists_many(hashes).await.map_or(false, |bitmap| bitmap.all())
+                        let mut all_exist = true;
+                        for h in &hashes {
+                            if cas.stat(*h).await.is_err() {
+                                all_exist = false;
+                                break;
+                            }
+                        }
+                        all_exist
                     }
                     _ => false,
                 };
@@ -477,7 +484,7 @@ pub(crate) async fn prune_tool_binary(
                 continue;
             }
 
-            if cas.exists(*hash).await.unwrap_or(false) {
+            if cas.stat(*hash).await.is_ok() {
                 let _ = cas.delete(*hash).await;
             }
         }

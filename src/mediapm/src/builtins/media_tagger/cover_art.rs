@@ -341,8 +341,10 @@ impl MediaTaggerHttpCache {
 
         let encoded =
             serde_json::to_vec(payload).context("encoding media-tagger cached payload")?;
-        let hash =
-            cas.put(encoded).await.context("writing media-tagger cached payload bytes to CAS")?;
+        let hash = cas
+            .put(encoded.into())
+            .await
+            .context("writing media-tagger cached payload bytes to CAS")?;
         self.upsert_index_entry(Self::cache_key(namespace, key), hash)
     }
 
@@ -358,7 +360,7 @@ impl MediaTaggerHttpCache {
         };
 
         let hash = cas
-            .put(payload.to_vec())
+            .put(payload.to_vec().into())
             .await
             .context("writing media-tagger cached payload bytes to CAS")?;
         self.upsert_index_entry(Self::cache_key(namespace, key), hash)

@@ -634,13 +634,7 @@ where
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-        let cas = FileSystemCas::open_with_alpha_and_integrity(
-            &cas_root,
-            4,
-            self.runtime_storage_overrides.to_cas_integrity_config(),
-        )
-        .await
-        .map_err(|source| {
+        let cas = FileSystemCas::open(&cas_root).await.map_err(|source| {
             MediaPmError::Workflow(format!(
                 "opening conductor CAS store '{}' for local import: {source}",
                 cas_root.display()
@@ -652,7 +646,7 @@ where
             path: absolute.clone(),
             source,
         })?;
-        let hash = cas.put(bytes).await.map_err(|source| {
+        let hash = cas.put(bytes.into()).await.map_err(|source| {
             MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
         })?;
 
@@ -1491,13 +1485,7 @@ impl MediaPmService<SimpleConductor<FileSystemCas>> {
     ) -> Result<Self, MediaPmError> {
         let paths = MediaPmPaths::from_root(root_dir);
         let cas_store_root = paths.runtime_root.join("store");
-        let file_system_cas = FileSystemCas::open_with_alpha_and_integrity(
-            &cas_store_root,
-            4,
-            runtime_storage_overrides.to_cas_integrity_config(),
-        )
-        .await
-        .map_err(|error| {
+        let file_system_cas = FileSystemCas::open(&cas_store_root).await.map_err(|error| {
             MediaPmError::Workflow(format!(
                 "opening conductor CAS store '{}' for workflow execution failed: {error}",
                 cas_store_root.display()

@@ -64,7 +64,7 @@ mod tests {
     fn put_test_cas_bytes(cas_root: &std::path::Path, bytes: Vec<u8>) -> Hash {
         run_async(async {
             let cas = mediapm_cas::FileSystemCas::open(cas_root).await.expect("open test CAS");
-            cas.put(bytes).await.expect("store test CAS payload")
+            cas.put(bytes.into()).await.expect("store test CAS payload")
         })
     }
 

@@ -301,23 +301,9 @@ pub(crate) fn should_invalidate_instance(
 #[cfg(test)]
 #[allow(clippy::needless_pass_by_value)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::fs;
-
     use mediapm_cas::Hash;
-    use mediapm_conductor::{
-        ExternalContentRef, MachineNickelDocument, OutputRef, PersistenceFlags, ToolConfigSpec,
-        ToolKindSpec, ToolSpec, encode_machine_document,
-    };
-    use tempfile::tempdir;
-    use url::Url;
-
-    use crate::HierarchyNodeKind;
-    use crate::HierarchyPath;
-    use crate::ToolRequirementDependencies;
-    use crate::config::{
-        MediaPmState, ToolRegistryRecord, load_mediapm_state_document, save_mediapm_state_document,
-    };
+    use mediapm_conductor::{ImpureTimestamp, OutputRef, PersistenceFlags, ToolSpec};
+    use std::collections::BTreeMap;
 
     use super::{
         ManagedWorkflowStepTarget, ToolInvalidationRule, remove_target_step_impure_timestamps,
@@ -363,7 +349,11 @@ mod tests {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::from([(
                 "result".to_string(),
-                OutputRef { content_hash: Hash::ZERO, blob_size: 0 },
+                OutputRef {
+                    hash: Hash::zero(),
+                    persistence: PersistenceFlags::default(),
+                    allow_empty_capture: false,
+                },
             )]),
         };
         let rules = BTreeMap::from([(

@@ -560,7 +560,7 @@ impl MediaRuntimeStorage {
                 "always" => Some(VerifyTriggerStrategy::Always),
                 "modified" => Some(VerifyTriggerStrategy::Modified),
                 "sample" => Some(VerifyTriggerStrategy::Sample {
-                    denominator: self.verify_on_read_sample_denominator(),
+                    denominator: self.verify_on_read_sample_denominator() as u32,
                 }),
                 "stale" => Some(VerifyTriggerStrategy::Stale {
                     timeout: Duration::from_secs(self.verify_on_read_stale_timeout_secs()),
@@ -570,7 +570,10 @@ impl MediaRuntimeStorage {
             .collect();
 
         if verify_on_read.is_empty() {
-            return CasIntegrityConfig::default();
+            return CasIntegrityConfig {
+                verify_on_read: vec![],
+                reconstructed_bytes_cache_ttl: Duration::from_secs(300),
+            };
         }
 
         CasIntegrityConfig {

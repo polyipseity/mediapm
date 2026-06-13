@@ -16,6 +16,7 @@ mod tests {
     //! Unit tests for downloader helper behavior.
 
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
 
     use crate::config::{ToolRequirement, ToolRequirementDependencies};
     use crate::tools::catalog::ToolOs;

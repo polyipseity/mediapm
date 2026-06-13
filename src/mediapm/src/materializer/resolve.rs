@@ -573,7 +573,7 @@ async fn instance_has_materializable_required_outputs(
         let Some(members) = required_zip_members.and_then(|by_output| by_output.get(output_name))
         else {
             // No ZIP members needed — lightweight existence check.
-            if cas.info(output_ref.hash).await.is_err() {
+            if cas.stat(output_ref.hash).await.is_err() {
                 return false;
             }
             continue;

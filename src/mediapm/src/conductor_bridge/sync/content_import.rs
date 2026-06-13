@@ -92,7 +92,7 @@ pub(super) async fn import_tool_content_source_into_cas(
         }
     };
 
-    let hash = cas.put(bytes).await.map_err(|source| {
+    let hash = cas.put(bytes.into()).await.map_err(|source| {
         MediaPmError::Workflow(format!(
             "importing tool payload entry '{relative_path}' into CAS failed: {source}",
         ))
