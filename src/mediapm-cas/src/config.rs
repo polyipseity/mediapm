@@ -7,6 +7,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::BTreeSet;
+use std::ops::Deref;
 
 use crate::api::{
     CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectMeta, OptimizeReport,
@@ -99,12 +100,10 @@ impl CasConfig {
     pub fn from_locator_with_options(
         locator: &str,
         opts: CasLocatorParseOptions,
+        integrity: CasIntegrityConfig,
     ) -> Result<Self, CasError> {
         if locator == "memory" {
-            return Ok(Self {
-                storage_locator: CasStorageLocator::InMemory,
-                integrity: CasIntegrityConfig { verify_on_read: Vec::new() },
-            });
+            return Ok(Self { storage_locator: CasStorageLocator::InMemory, integrity });
         }
 
         if opts.allow_plain_filesystem_path && !locator.is_empty() && !locator.contains("://") {
@@ -112,11 +111,20 @@ impl CasConfig {
                 storage_locator: CasStorageLocator::FileSystem {
                     path: Path::new(locator).to_path_buf(),
                 },
-                integrity: CasIntegrityConfig { verify_on_read: Vec::new() },
+                integrity,
             });
         }
 
         Err(CasError::InvalidArgument(format!("unsupported CAS locator: {locator}")))
+    }
+
+    /// Parse a locator string with default options and empty integrity config.
+    pub fn from_locator(locator: &str) -> Result<Self, CasError> {
+        Self::from_locator_with_options(
+            locator,
+            CasLocatorParseOptions { allow_plain_filesystem_path: true },
+            CasIntegrityConfig { verify_on_read: Vec::new() },
+        )
     }
 
     /// Open the configured CAS backend.
@@ -150,8 +158,8 @@ pub enum ConfiguredCas {
 macro_rules! forward {
     ($self:ident.$method:ident($($arg:ident),*).await) => {
         match $self {
-            Self::InMemory(cas) => cas.0.$method($($arg),*).await,
-            Self::FileSystem(cas) => cas.0.$method($($arg),*).await,
+            Self::InMemory(cas) => cas.deref().$method($($arg),*).await,
+            Self::FileSystem(cas) => cas.deref().$method($($arg),*).await,
         }
     };
 }

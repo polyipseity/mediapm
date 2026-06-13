@@ -1410,6 +1410,7 @@ async fn open_cas(locator: &str) -> Result<ConfiguredCas, ConductorError> {
     let config = CasConfig::from_locator_with_options(
         locator,
         CasLocatorParseOptions { allow_plain_filesystem_path: true },
+        mediapm_cas::config::CasIntegrityConfig { verify_on_read: Vec::new() },
     )
     .map_err(|err| ConductorError::Workflow(format!("invalid CAS locator '{locator}': {err}")))?;
 
