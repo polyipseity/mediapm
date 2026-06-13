@@ -24,44 +24,6 @@ async fn optimize_once_wal_consumer() {
 }
 
 #[tokio::test]
-async fn gc_sweep_preserves_live_objects() {
-    let cas = new_in_memory_cas();
-    // Put objects that have no constraints.
-    let h1 = cas.put(Bytes::from_static(b"live-1")).await.unwrap();
-    let h2 = cas.put(Bytes::from_static(b"live-2")).await.unwrap();
-    // Set a constraint on h1 (delta-compression hint, NOT liveness).
-    cas.set_constraint(h1, BTreeSet::new()).await.unwrap();
-
-    // GC must NOT delete objects — objects are only removed by explicit
-    // delete() operations. Constraints do not determine liveness.
-    let report = cas.gc_sweep().await.unwrap();
-    assert_eq!(report.deleted, 0);
-
-    // Both objects remain retrievable.
-    assert!(cas.get(h1).await.is_ok());
-    assert!(cas.get(h2).await.is_ok());
-}
-
-#[tokio::test]
-async fn gc_sweep_prunes_orphan_constraints() {
-    let cas = new_in_memory_cas();
-    // Create an object with a constraint.
-    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
-    cas.set_constraint(target, BTreeSet::new()).await.unwrap();
-
-    // Delete the target explicitly — this is what removes objects.
-    cas.delete(target).await.unwrap();
-
-    // gc_sweep drains WAL (materializing the delete) then prunes
-    // constraint entries whose targets no longer exist.
-    let report = cas.gc_sweep().await.unwrap();
-    assert_eq!(report.deleted, 1, "gc_sweep should prune orphaned constraint for deleted target");
-
-    // Constraint should be gone after pruning.
-    assert_eq!(cas.get_constraint(target).await.unwrap(), None);
-}
-
-#[tokio::test]
 async fn prune_constraints_removes_orphan_targets() {
     let cas = new_in_memory_cas();
     let target = cas.put(Bytes::from_static(b"orphan")).await.unwrap();
@@ -100,14 +62,14 @@ async fn gc_sweep_never_deletes_objects() {
     // Consume WAL so objects are in the object store.
     cas.optimize_once().await.unwrap();
 
-    // GC sweep runs without error and does NOT delete any object.
-    let report = cas.gc_sweep().await.unwrap();
-    assert_eq!(report.deleted, 0, "GC should not delete objects");
+    // Prune_constraints runs without error and does NOT delete any object.
+    let report = cas.prune_constraints().await.unwrap();
+    assert_eq!(report.removed, 0, "prune_constraints should not delete objects");
 
-    // All objects still retrievable after GC.
-    assert!(cas.get(b1).await.is_ok(), "b1 should still exist after GC");
-    assert!(cas.get(b2).await.is_ok(), "b2 should still exist after GC");
-    assert!(cas.get(target).await.is_ok(), "target should still exist after GC");
+    // All objects still retrievable after prune.
+    assert!(cas.get(b1).await.is_ok(), "b1 should still exist after prune");
+    assert!(cas.get(b2).await.is_ok(), "b2 should still exist after prune");
+    assert!(cas.get(target).await.is_ok(), "target should still exist after prune");
 }
 
 /// prune_constraints approaches effective constraints — surviving bases winnow

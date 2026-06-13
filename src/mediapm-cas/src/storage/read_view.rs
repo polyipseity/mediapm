@@ -1,15 +1,15 @@
-//! Read-through view — provides coherent reads over cache + ObjectStore +
-//! journal fallback.
+//! Read-through view — provides coherent reads over cache + ObjectIndex +
+//! WAL fallback.
 //!
 //! The [`ComposedReadView`] implements the three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
 //! 1. In-memory cache (fast path, DashMap with TTL eviction)
-//! 2. ObjectStore (persistent committed data)
-//! 3. Journal fallback (unconsumed WAL entries for latest in-flight writes)
+//! 2. ObjectIndex (persistent committed data)
+//! 3. WAL fallback (unconsumed WAL entries for latest in-flight writes)
 //!
-//! In-flight read dedup prevents redundant journal scans when multiple
-//! concurrent `get()` calls miss cache and ObjectStore simultaneously.
+//! In-flight read dedup prevents redundant WAL scans when multiple
+//! concurrent `get()` calls miss cache and ObjectIndex simultaneously.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -19,12 +19,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 use crate::api::ObjectEncoding;
-use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::payload_store::ObjectStore;
-use super::wal::{Journal, JournalEntry, PendingState};
+use super::object_index::ObjectIndex;
+use super::wal::{PendingState, Wal, WalEntry};
 
 /// How long a cache entry lives before it is considered stale.
 const CACHE_TTL: Duration = Duration::from_secs(60);
@@ -39,10 +38,10 @@ struct PendingResult {
 // ReadView trait
 // ---------------------------------------------------------------------------
 
-/// Fast read path backed by materialized storage + mandatory journal fallback.
+/// Fast read path backed by materialized storage + mandatory WAL fallback.
 #[async_trait]
 pub trait ReadView: Send + Sync {
-    /// Get bytes. Falls back to journal if not materialized.
+    /// Get bytes. Falls back to WAL if not materialized.
     /// Returns [`CasError::NotFound`] if the hash was never stored or was
     /// deleted.
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError>;
@@ -55,15 +54,10 @@ pub trait ReadView: Send + Sync {
     /// Best-effort hint for inline caching.
     async fn hint_state_change(&self, hash: Hash, data: Option<Bytes>);
 
-    /// Apply a batch of journal entries (called by WALConsumer).
-    ///
-    /// TODO: Wire this into BackgroundEngine so the in-memory cache is
-    /// proactively refreshed when journal entries are consumed. Currently
-    /// unused because the cache is updated via `hint_state_change` during
-    /// write operations, and the read-path's journal fallback provides
-    /// consistency.
-    #[expect(dead_code)]
-    async fn apply_batch(&self, entries: Vec<JournalEntry>) -> Result<(), CasError>;
+    /// Apply a batch of WAL entries (called by WALConsumer) to refresh
+    /// the in-memory cache, so subsequent reads from cache reflect the
+    /// materialized state without falling through to the WAL.
+    async fn apply_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError>;
 }
 
 /// Metadata about a stored object, re-exported for convenience.
@@ -74,35 +68,35 @@ pub use crate::api::ObjectMeta;
 // ComposedReadView
 // ---------------------------------------------------------------------------
 
-/// A read-through cache backed by ObjectStore + journal fallback.
+/// A read-through cache backed by ObjectIndex + WAL fallback.
 ///
 /// Implements a three-layer lookup:
 /// 1. In-memory `DashMap` cache with TTL eviction
-/// 2. `ObjectStore` for committed data
-/// 3. `Journal` fallback for entries not yet materialized
+/// 2. `ObjectIndex` for committed data
+/// 3. `Wal` fallback for entries not yet materialized
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
-/// hash simultaneously, only one performs the ObjectStore + journal
+/// hash simultaneously, only one performs the ObjectIndex + WAL
 /// lookup while the other waits on a [`Notify`].
-pub struct ComposedReadView<S: ObjectStore, J: Journal> {
+pub struct ComposedReadView<S: ObjectIndex, J: Wal> {
     /// In-memory cache: hash → (timestamp, cached data).
     /// `None` data means a confirmed NotFound (tombstone cached).
     cache: DashMap<Hash, (Instant, Option<Bytes>)>,
     /// In-flight read dedup: hash → shared pending result.
     pending: DashMap<Hash, Arc<PendingResult>>,
-    /// Persistent object store (committed data).
-    object_store: S,
-    /// Journal for pending-entry fallback.
-    journal: J,
+    /// Persistent object index (committed data).
+    object_index: S,
+    /// WAL for pending-entry fallback.
+    wal: J,
 }
 
-impl<S: ObjectStore, J: Journal> ComposedReadView<S, J> {
+impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
     /// Create a new view.
-    pub fn new(object_store: S, journal: J) -> Self {
-        Self { cache: DashMap::new(), pending: DashMap::new(), object_store, journal }
+    pub fn new(object_index: S, wal: J) -> Self {
+        Self { cache: DashMap::new(), pending: DashMap::new(), object_index, wal }
     }
 
-    /// Inner fetch: ObjectStore → journal fallback with transparent delta
+    /// Inner fetch: ObjectIndex → WAL fallback with transparent delta
     /// reconstruction.
     ///
     /// Returns `Ok(Some(data))` if found, `Ok(None)` if confirmed absent.
@@ -111,7 +105,7 @@ impl<S: ObjectStore, J: Journal> ComposedReadView<S, J> {
     /// iteratively (not recursively) to avoid Rust async recursion
     /// restrictions. The base lookup bypasses L1 cache, so cache tombstones
     /// from logical deletes do not block reconstruction — base bytes still
-    /// exist in ObjectStore until the WAL consumer physically removes them
+    /// exist in ObjectIndex until the WAL consumer physically removes them
     /// (after re-materializing dependents).
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         // Zero hash is always present (empty sentinel).
@@ -127,12 +121,12 @@ impl<S: ObjectStore, J: Journal> ComposedReadView<S, J> {
         let mut current = *hash;
 
         loop {
-            // Physical fetch: ObjectStore → journal fallback.
+            // Physical fetch: ObjectIndex → WAL fallback.
             let (data, encoding): (Bytes, ObjectEncoding) = 'fetch: {
-                if let Some(result) = self.object_store.get(&current).await? {
+                if let Some(result) = self.object_index.get(&current).await? {
                     break 'fetch result;
                 }
-                match self.journal.check_pending(&current).await {
+                match self.wal.check_pending(&current).await {
                     PendingState::Present(data) => {
                         break 'fetch (data, ObjectEncoding::Full);
                     }
@@ -150,29 +144,8 @@ impl<S: ObjectStore, J: Journal> ComposedReadView<S, J> {
             match encoding {
                 ObjectEncoding::Full => {
                     // Found the root base. Apply collected deltas in reverse.
-                    let mut result = data;
-                    while let Some((dep_hash, dep_data)) = chain.pop() {
-                        let stored_obj = StoredObject::decode_delta(&dep_data).map_err(|e| {
-                            CasError::CorruptObject {
-                                hash: Some(dep_hash),
-                                details: format!(
-                                    "failed to decode delta envelope \
-                                         during chain resolution: {e}"
-                                ),
-                            }
-                        })?;
-                        let vcdiff = stored_obj.payload();
-                        let patch = crate::delta::delta::DeltaPatch::decode(vcdiff);
-                        result = Bytes::from(
-                            patch.apply(&result, dep_hash, dep_hash, current).map_err(|e| {
-                                CasError::CorruptObject {
-                                    hash: Some(dep_hash),
-                                    details: format!("failed to apply delta chain step: {e}"),
-                                }
-                            })?,
-                        );
-                        current = dep_hash;
-                    }
+                    let result =
+                        crate::delta::delta::resolve_delta_chain(data, &mut chain, current)?;
                     self.cache.insert(*hash, (Instant::now(), Some(result.clone())));
                     return Ok(Some(result));
                 }
@@ -193,7 +166,7 @@ impl<S: ObjectStore, J: Journal> ComposedReadView<S, J> {
 }
 
 #[async_trait]
-impl<S: ObjectStore + Send + Sync, J: Journal + Send + Sync> ReadView for ComposedReadView<S, J> {
+impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedReadView<S, J> {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
         // 1. Check cache (fast path).
         if let Some(entry) = self.cache.get(hash) {
@@ -231,7 +204,7 @@ impl<S: ObjectStore + Send + Sync, J: Journal + Send + Sync> ReadView for Compos
             }
         }
 
-        // 3. Fetch from ObjectStore → journal.
+        // 3. Fetch from ObjectIndex → WAL.
         let fetch_result = self.fetch_inner(hash).await;
 
         // Share result with waiters.
@@ -266,13 +239,13 @@ impl<S: ObjectStore + Send + Sync, J: Journal + Send + Sync> ReadView for Compos
             return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
         }
 
-        // Check ObjectStore first.
-        if let Some(meta) = self.object_store.stat(hash).await? {
+        // Check ObjectIndex first.
+        if let Some(meta) = self.object_index.stat(hash).await? {
             return Ok(meta);
         }
 
-        // Journal fallback: data may only exist as pending Put.
-        match self.journal.check_pending(hash).await {
+        // WAL fallback: data may only exist as pending Put.
+        match self.wal.check_pending(hash).await {
             PendingState::Present(data) => {
                 return Ok(ObjectMeta { len: data.len() as u64, encoding: ObjectEncoding::Full });
             }
@@ -286,22 +259,22 @@ impl<S: ObjectStore + Send + Sync, J: Journal + Send + Sync> ReadView for Compos
         self.cache.insert(hash, (Instant::now(), data));
     }
 
-    /// Apply a batch of journal entries (called by WALConsumer).
+    /// Apply a batch of WAL entries (called by WALConsumer).
     ///
     /// TODO: Wire this into BackgroundEngine so the in-memory cache is
-    /// proactively refreshed when journal entries are consumed. Currently
+    /// proactively refreshed when WAL entries are consumed. Currently
     /// unused because the cache is updated via `hint_state_change` during
     /// write operations.
-    async fn apply_batch(&self, entries: Vec<JournalEntry>) -> Result<(), CasError> {
+    async fn apply_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError> {
         for entry in entries {
             match entry {
-                JournalEntry::Put { hash, data } => {
+                WalEntry::Put { hash, data } => {
                     self.cache.insert(hash, (Instant::now(), Some(data)));
                 }
-                JournalEntry::Delete { hash } => {
+                WalEntry::Delete { hash } => {
                     self.cache.insert(hash, (Instant::now(), None));
                 }
-                JournalEntry::Constraint { .. } => {
+                WalEntry::Constraint { .. } => {
                     // Constraints have no payload — no-op for read view.
                 }
             }

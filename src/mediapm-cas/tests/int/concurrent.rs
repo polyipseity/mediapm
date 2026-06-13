@@ -44,7 +44,7 @@ async fn write_delete_write_recreation() {
 
 /// Multiple write-delete-write cycles on the same content.
 ///
-/// Exercises the journal reverse-scan ordering across many tombstone →
+/// Exercises the WAL reverse-scan ordering across many tombstone →
 /// re-creation transitions.
 #[tokio::test]
 async fn write_delete_write_cycle_multiple() {
@@ -66,7 +66,7 @@ async fn write_delete_write_cycle_multiple() {
 /// Concurrent put/get/delete on many unique hashes.
 ///
 /// Each task operates on its own independent hash; all share the same
-/// CasStore instance. This exercises DashMap, journal append, and the
+/// CasStore instance. This exercises DashMap, WAL append, and the
 /// read-view cache under contention.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_operations_many_hashes() {
@@ -102,7 +102,7 @@ async fn concurrent_operations_many_hashes() {
 /// Concurrent constraint operations on shared hashes.
 ///
 /// Multiple tasks simultaneously set, patch, and get constraints on the
-/// same target hash. Exercises MetadataStore concurrent access patterns.
+/// same target hash. Exercises MetadataIndex concurrent access patterns.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_constraint_operations() {
     let cas = new_in_memory_cas();
@@ -210,16 +210,16 @@ async fn bg_engine_cancellation_graceful() {
     // State consistent.
     assert!(cas.get(keep).await.is_ok());
 
-    // gc_sweep works independently.
-    let sweep = cas.gc_sweep().await.unwrap();
-    assert_eq!(sweep.deleted, 0);
+    // prune_constraints works independently.
+    let sweep = cas.prune_constraints().await.unwrap();
+    assert_eq!(sweep.removed, 0);
 }
 
 /// In-flight dedup concurrent stress test.
 ///
 /// Many tasks simultaneously put the *same* content (same bytes → same
 /// hash), then concurrently get and delete it. This exercises the CAS
-/// dedup path under contention: journal append, read-view cache updates,
+/// dedup path under contention: WAL append, read-view cache updates,
 /// and the in-memory object store's write-once semantics must all handle
 /// concurrent identical puts without data loss or corruption.
 #[tokio::test(flavor = "multi_thread")]

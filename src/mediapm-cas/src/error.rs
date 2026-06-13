@@ -13,9 +13,6 @@ pub enum CasError {
     /// Invalid argument (e.g. self-referencing constraint).
     InvalidArgument(String),
 
-    /// Caller-provided input failed validation.
-    InvalidInput(String),
-
     /// Internal error.
     Internal(String),
 
@@ -41,7 +38,6 @@ impl std::fmt::Display for CasError {
             },
             Self::NotFound(h) => write!(f, "object not found: {h}"),
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
-            Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
             Self::Io(inner) => write!(f, "I/O error: {inner}"),
         }

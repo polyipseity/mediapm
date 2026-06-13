@@ -39,16 +39,16 @@ Guarantees (within a single async task):
 No standalone `exists()` method — use `stat()` or `get()`. Both return `NotFound` on miss,
 eliminating TOCTOU.
 
-**put**: Hash data with `Hash::from_content`, append `JournalEntry::Put` to WAL, hint cache.
+**put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL, hint cache.
 Zero hash returns immediately — nothing stored.
 
-**get**: Three-layer lookup (L1 cache → L2 ObjectStore → L3 journal fallback).
+**get**: Three-layer lookup (L1 cache → L2 ObjectIndex → L3 WAL fallback).
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only
 (Full or Delta { base_hash }). Callers must NOT make decisions based on encoding.
 
-**delete**: Append `JournalEntry::Delete` to WAL, tombstone cache. Physical removal is
+**delete**: Append `WalEntry::Delete` to WAL, tombstone cache. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
@@ -76,7 +76,7 @@ pub trait ConstraintApi: Send + Sync {
 ```
 
 Constraints are **non-binding hints** — the system never blocks on completeness or accuracy.
-`effective_bases = stored_bases ∩ live`. Stored in MetadataStore (in-memory, rebuilt from journal).
+`effective_bases = stored_bases ∩ live`. Stored in MetadataIndex (in-memory, rebuilt from WAL).
 
 ```rust
 pub struct ConstraintPatch {
@@ -93,7 +93,7 @@ pub struct ConstraintPatch {
 pub trait CasMaintenanceApi: Send + Sync {
     async fn optimize_once(&self) -> Result<OptimizeReport, CasError>;
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
-    async fn gc_sweep(&self) -> Result<GcSweepReport, CasError>;
+
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError>;
 }
@@ -101,7 +101,6 @@ pub trait CasMaintenanceApi: Send + Sync {
 
 - **optimize_once**: Drain WAL consumer, run GC + optimizer.
 - **prune_constraints**: Remove constraint entries whose target or bases no longer exist.
-- **gc_sweep**: Prune constraint metadata only (objects only removed by explicit delete).
 - **repair_index**: Rebuild index from storage contents.
 
 ### 2.5 Backend types
@@ -113,7 +112,7 @@ let cas = new_in_memory_cas(); // or InMemoryCas::new()
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<InMemoryJournal, InMemoryObjectStore, InMemoryMetadataStore>`.
+Wraps `CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>`.
 Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` via `impl_cas_wrapper_traits!` macro.
 `Deref` target is the inner `CasStore`.
 
@@ -124,9 +123,9 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<FileJournal, InMemoryObjectStore, InMemoryMetadataStore>`.
-Same trait impl pattern as `InMemoryCas`. Journal is persisted on disk; payload and
-metadata stores are in-memory (rebuilt from journal on open).
+Wraps `CasStore<FileWal, InMemoryObjectIndex, InMemoryMetadataIndex>`.
+Same trait impl pattern as `InMemoryCas`. WAL is persisted on disk; payload and
+metadata indexes are in-memory (rebuilt from WAL on open).
 
 #### ConfiguredCas — dispatch enum
 
@@ -152,14 +151,13 @@ Created via `CasConfig::from_locator_with_options()` + `CasConfig::open()`.
 
 ### 2.7 Report types
 
-| Type | Fields |
-|------|--------|
-| `ObjectMeta` | `len: u64`, `encoding: ObjectEncoding` |
-| `ObjectEncoding` | `Full` or `Delta { base_hash }` |
-| `OptimizeReport` | (opaque stats from optimization pass) |
-| `PruneReport` | (deleted constraint entries) |
-| `GcSweepReport` | `deleted: usize` |
-| `IndexRepairReport` | (repair stats) |
+| Type                | Fields                                 |
+| ------------------- | -------------------------------------- |
+| `ObjectMeta`        | `len: u64`, `encoding: ObjectEncoding` |
+| `ObjectEncoding`    | `Full` or `Delta { base_hash }`        |
+| `OptimizeReport`    | (opaque stats from optimization pass)  |
+| `PruneReport`       | (deleted constraint entries)           |
+| `IndexRepairReport` | (repair stats)                         |
 
 ## 3. Crate structure
 
@@ -172,61 +170,63 @@ src/mediapm-cas/src/
 ├── config.rs            — CasConfig, ConfiguredCas, CasStorageLocator, integrity settings
 ├── main.rs              — CLI binary (feature-gated)
 ├── cli.rs               — CLI subcommands + run_from_passthrough_args (feature-gated)
-├── cli_visualization.rs — topology viz (feature-gated)
+
 ├── delta/
 │   ├── mod.rs           — module root, versioning boundary guard
-│   ├── delta.rs         — DeltaPatch (VCDIFF via oxidelta)
+│   ├── delta.rs         — DeltaPatch (VCDIFF via oxidelta) + resolve_delta_chain
 │   ├── object.rs        — DeltaState + StoredObject (version-agnostic)
 │   └── versions/        — V1/V2/V3 delta envelope wire formats (mod.rs = canonical API)
 └── storage/
     ├── mod.rs           — module root + #[macro_use] macros
     ├── macros.rs        — impl_cas_wrapper_traits!($ty) macro
     ├── store.rs         — CasStore<J,S,M> (composed handle, implements all traits)
-    ├── wal.rs           — Journal trait + InMemoryJournal + entry types
-    ├── payload_store.rs — ObjectStore trait + InMemoryObjectStore
-    ├── meta_store.rs    — MetadataStore trait + InMemoryMetadataStore
-    ├── read_view.rs     — ComposedReadView (3-layer lookup: cache → store → journal)
+    ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + format
+    │   ├── mod.rs       — trait definitions + InMemoryWal
+    │   ├── file_wal.rs  — FileWal (segmented file-backed WAL)
+    │   ├── format.rs    — encode/decode helpers
+    │   └── versions/    — on-disk format V1+
+    │       ├── mod.rs
+    │       └── v1.rs
+    ├── object_index.rs  — ObjectIndex trait + InMemoryObjectIndex
+    ├── metadata_index.rs— MetadataIndex trait + InMemoryMetadataIndex
+    ├── read_view.rs     — ComposedReadView (3-layer lookup: cache → index → WAL)
     ├── bg_engine.rs     — BackgroundEngine (WAL consumer + maintenance orchestrator)
     ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
-    ├── file_system.rs   — FileSystemCas wrapper + open()
-    └── journal/         — FileJournal + on-disk format (V1+)
-        ├── mod.rs       — FileJournal re-export
-        ├── file_journal.rs
-        └── format.rs    — journal format helpers
+    └── file_system.rs   — FileSystemCas wrapper + open()
 ```
 
 ## 4. Data flow
 
 ```text
-put(data) → Hash(data) → Journal.append(Put{hash, data}) → cache hint
+put(data) → Hash(data) → Wal.append(Put{hash, data}) → cache hint
                                                                     ↓
-WAL consumer (bg_engine) → ObjectStore.put(hash, data) → checkpoint
+WAL consumer (bg_engine) → ObjectIndex.put(hash, data) → checkpoint
                                                                     ↓
-get(hash) → ReadView: L1 cache → L2 ObjectStore → L3 Journal fallback
+get(hash) → ReadView: L1 cache → L2 ObjectIndex → L3 WAL fallback
                                                                     ↓
-delete(hash) → Journal.append(Delete{hash}) → tombstone cache
+delete(hash) → Wal.append(Delete{hash}) → tombstone cache
                                                                     ↓
-WAL consumer → re-materialize dependents → ObjectStore.delete(hash)
+WAL consumer → re-materialize dependents → ObjectIndex.delete(hash)
 ```
 
 ## 5. Internals
 
-### 5.1 Journal (WAL)
+### 5.1 WAL
 
-The only crash-safe commitment point. ObjectStore and MetadataStore are derived —
-rebuildable by journal replay.
+The only crash-safe commitment point. ObjectIndex and MetadataIndex are derived —
+rebuildable by WAL replay.
 
 **Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
 
-**PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 fallback.
+**PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
 
-**WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays journal entries from
-checkpoint position, materializing to ObjectStore/MetadataStore. After processing,
+**WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays WAL entries from
+checkpoint position, materializing to ObjectIndex/MetadataIndex. After processing,
 position is persisted atomically. Idempotent.
 
-### 5.2 ObjectStore
+### 5.2 ObjectIndex
 
-Pluggable payload backend. `InMemoryObjectStore` uses `DashMap<Hash, (Bytes, ObjectEncoding)>`.
+Pluggable payload backend. `InMemoryObjectIndex` uses `DashMap<Hash, (Bytes, ObjectEncoding)>`.
 Stores raw bytes for Full encoding or complete V3 delta envelope for Delta encoding.
 
 ### 5.3 ReadView
@@ -234,8 +234,8 @@ Stores raw bytes for Full encoding or complete V3 delta envelope for Delta encod
 Three-layer lookup for get/stat:
 
 1. **L1 — Cache** (DashMap, 60s TTL). Fast path. Proactively updated via `hint_state_change()`.
-2. **L2 — ObjectStore**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF → cache result).
-3. **L3 — Journal fallback**. Pending entries not yet materialized. Respects tombstones.
+2. **L2 — ObjectIndex**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF → cache result).
+3. **L3 — WAL fallback**. Pending entries not yet materialized. Respects tombstones.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
@@ -247,6 +247,7 @@ If base_hash not found → `CasError::CorruptObject`.
 ### 5.4 Delta Codec
 
 - **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
+- **resolve_delta_chain**: Shared `pub(crate)` function in `delta/delta.rs`. Takes base bytes + collected delta envelopes, applies deltas inner-to-outer, returns fully reconstructed payload. Used by both `read_view.rs` and `bg_engine.rs`.
 - **StoredObject**: `Full { payload }` or `Delta { state }`. Encode/decode to/from versioned envelopes.
 - **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer, magic `b"CASDLT"`).
 
@@ -262,10 +263,10 @@ metadata. Objects are removed solely by `CasApi::delete` materialized through th
 
 When the WAL consumer processes `Delete { hash }`:
 
-1. **Scan for dependents**: Find ObjectStore entries where `encoding == Delta { base_hash: hash }`.
+1. **Scan for dependents**: Find ObjectIndex entries where `encoding == Delta { base_hash: hash }`.
 2. **Re-materialize each**: Fetch delta bytes, decode V3 envelope, fetch base (still available),
    apply VCDIFF, store as Full, hint cache.
-3. **Physically remove**: `ObjectStore.delete(hash)`.
+3. **Physically remove**: `ObjectIndex.delete(hash)`.
 
 The WAL consumer doesn't advance the checkpoint until re-materialization is complete.
 
@@ -277,7 +278,7 @@ against B, A's bytes live under A's content hash.
 `InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>`:
 
 ```rust
-pub struct InMemoryCas(pub(crate) CasStore<InMemoryJournal, InMemoryObjectStore, InMemoryMetadataStore>);
+pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>);
 
 impl std::ops::Deref for InMemoryCas { /* → inner CasStore */ }
 impl_cas_wrapper_traits!(InMemoryCas);  // CasApi + CasMaintenanceApi + ConstraintApi
@@ -285,7 +286,7 @@ impl_cas_wrapper_traits!(InMemoryCas);  // CasApi + CasMaintenanceApi + Constrai
 
 The `impl_cas_wrapper_traits!` macro (defined in `storage/macros.rs`, uses `paste` crate)
 generates trait impls that delegate to `self.0`. This avoids manual forwarding.
-`ConfiguredCas` uses explicit match forwarding instead (cannot use the macro).
+`ConfiguredCas` uses the `forward!` macro (defined in `config.rs`) to delegate trait methods to the inner `cas.0`.
 
 ## 8. Invariants & edge cases
 
@@ -295,8 +296,8 @@ generates trait impls that delegate to `self.0`. This avoids manual forwarding.
 
 ### 8.2 Crash safety
 
-- Journal is the single crash-safe commitment point. All operations append before acknowledging.
-- ObjectStore and MetadataStore are derived — rebuilt by journal replay.
+- WAL is the single crash-safe commitment point. All operations append before acknowledging.
+- ObjectIndex and MetadataIndex are derived — rebuilt by WAL replay.
 
 ### 8.3 No TOCTOU
 

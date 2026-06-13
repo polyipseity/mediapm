@@ -12,7 +12,7 @@
 //! - Latest-version bridging to unversioned runtime structs is owned by
 //!   `versions/mod.rs`.
 
-// TODO: remove when FileJournal is wired into storage backends.
+// TODO: remove when FileWal is wired into storage backends.
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;
@@ -26,10 +26,10 @@ use crate::hash::Hash;
 // Version-specific types
 // ---------------------------------------------------------------------------
 
-/// V1 journal entry — mirrors [`JournalEntry`] but is self-contained within
+/// V1 journal entry — mirrors [`WalEntry`] but is self-contained within
 /// `versions/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum JournalEntryV1 {
+pub(crate) enum WalEntryV1 {
     /// Store data under hash.
     Put { hash: Hash, data: Bytes },
     /// Logically delete hash.
@@ -80,11 +80,11 @@ pub(crate) const MAX_CHECKPOINT_VERSION: u16 = 1;
 //   Delete:     (empty)
 //   Constraint: base_count(4-byte LE u32) + base_hashes(32 bytes each)
 
-impl JournalEntryV1 {
+impl WalEntryV1 {
     /// Encode a journal entry into bytes at the given position.
     pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
         match self {
-            JournalEntryV1::Put { hash, data } => {
+            WalEntryV1::Put { hash, data } => {
                 let payload = data.as_ref();
                 let total = 8 + 34 + 1 + 4 + payload.len();
                 let mut buf = Vec::with_capacity(total);
@@ -95,7 +95,7 @@ impl JournalEntryV1 {
                 buf.extend_from_slice(payload);
                 buf
             }
-            JournalEntryV1::Delete { hash } => {
+            WalEntryV1::Delete { hash } => {
                 let mut buf = Vec::with_capacity(8 + 34 + 1 + 4);
                 buf.extend_from_slice(&pos.to_le_bytes());
                 buf.extend_from_slice(&hash.storage_bytes());
@@ -103,7 +103,7 @@ impl JournalEntryV1 {
                 buf.extend_from_slice(&0u32.to_le_bytes()); // payload_len = 0
                 buf
             }
-            JournalEntryV1::Constraint { target, bases } => {
+            WalEntryV1::Constraint { target, bases } => {
                 // Payload: base_count(4) + base_hashes(34 each, multihash-encoded)
                 let payload_len = 4 + bases.len() * 34;
                 let total = 8 + 34 + 1 + 4 + payload_len;
@@ -159,7 +159,7 @@ impl JournalEntryV1 {
         let entry = match op_type {
             0 => {
                 // Put
-                JournalEntryV1::Put { hash, data: Bytes::copy_from_slice(payload) }
+                WalEntryV1::Put { hash, data: Bytes::copy_from_slice(payload) }
             }
             1 => {
                 // Delete
@@ -168,7 +168,7 @@ impl JournalEntryV1 {
                         "journal entry: Delete with non-empty payload",
                     ));
                 }
-                JournalEntryV1::Delete { hash }
+                WalEntryV1::Delete { hash }
             }
             2 => {
                 // Constraint
@@ -201,7 +201,7 @@ impl JournalEntryV1 {
                         })?;
                     bases.insert(base);
                 }
-                JournalEntryV1::Constraint { target: hash, bases }
+                WalEntryV1::Constraint { target: hash, bases }
             }
             _ => {
                 return Err(CasError::corrupt_object(format!(

@@ -2,18 +2,23 @@
 //!
 //! This module owns argument parsing and command dispatch for the CAS CLI.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::{Shell, generate};
 use std::io::{self, Read, Write};
 
 use crate::api::CasApi;
+use crate::config::{CasConfig, CasLocatorParseOptions};
 use crate::error::CasError;
 use crate::hash::{HASH_SIZE, Hash};
-use crate::storage::in_memory::new_in_memory_cas;
 
 /// Top-level `mediapm-cas` CLI arguments.
 #[derive(Debug, Parser)]
 #[command(author, version, about = "mediapm CAS CLI")]
 struct Cli {
+    /// Storage backend locator (e.g. "memory", "/path/to/store").
+    #[arg(long, default_value = "memory")]
+    storage: String,
+
     /// Subcommand to execute.
     #[command(subcommand)]
     command: CasCommand,
@@ -39,6 +44,11 @@ enum CasCommand {
         /// BLAKE3 hash of the object (hex).
         hash: String,
     },
+    /// Generate shell completions.
+    Completions {
+        /// Shell name (bash, elvish, fish, powershell, zsh).
+        shell: String,
+    },
 }
 
 /// Run the CLI from environment arguments and exit.
@@ -47,8 +57,18 @@ pub async fn run_from_env() -> anyhow::Result<()> {
     run(cli).await
 }
 
+/// Run the CLI from explicit arguments (for library API callers).
+pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
+    let cli = Cli::try_parse_from(args.iter().map(String::as_str))?;
+    run(cli).await
+}
+
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    let cas = new_in_memory_cas();
+    let config = CasConfig::from_locator_with_options(
+        &cli.storage,
+        CasLocatorParseOptions { allow_plain_filesystem_path: true },
+    )?;
+    let cas = config.open().await?;
 
     match cli.command {
         CasCommand::Put => {
@@ -80,6 +100,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let hash = parse_hex_hash(&hash)?;
             cas.delete(hash).await?;
             println!("deleted {hash}");
+        }
+        CasCommand::Completions { shell } => {
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            let shell = shell.as_str();
+            let mut stdout = io::stdout();
+            match shell {
+                "bash" => generate(Shell::Bash, &mut cmd, &name, &mut stdout),
+                "elvish" => generate(Shell::Elvish, &mut cmd, &name, &mut stdout),
+                "fish" => generate(Shell::Fish, &mut cmd, &name, &mut stdout),
+                "powershell" => generate(Shell::PowerShell, &mut cmd, &name, &mut stdout),
+                "zsh" => generate(Shell::Zsh, &mut cmd, &name, &mut stdout),
+                _ => return Err(anyhow::anyhow!("unsupported shell: {shell}")),
+            }
         }
     }
 

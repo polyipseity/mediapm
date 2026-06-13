@@ -35,6 +35,7 @@
 //! ```
 
 pub mod api;
+pub mod config;
 pub(crate) mod delta;
 pub mod error;
 pub mod hash;
@@ -42,14 +43,18 @@ pub mod storage;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-#[cfg(feature = "cli")]
-pub mod cli_visualization;
 
 // Re-export the most important types at crate root for convenience.
 pub use api::{
-    CasApi, CasApiStreaming, CasMaintenanceApi, ConstraintApi, ObjectEncoding, ObjectMeta,
+    CasApi, CasApiStreaming, CasMaintenanceApi, ConstraintApi, ConstraintPatch, IndexRepairReport,
+    ObjectEncoding, ObjectMeta, OptimizeReport, PruneReport,
+};
+pub use config::{
+    CasConfig, CasIntegrityConfig, CasLocatorParseOptions, CasStorageLocator, ConfiguredCas,
+    VerifyTriggerStrategy,
 };
 pub use error::CasError;
 pub use hash::{Hash, HashParseError};
-pub use storage::in_memory::new_in_memory_cas;
+pub use storage::file_system::FileSystemCas;
+pub use storage::in_memory::{InMemoryCas, new_in_memory_cas};
 pub use storage::store::CasStore;

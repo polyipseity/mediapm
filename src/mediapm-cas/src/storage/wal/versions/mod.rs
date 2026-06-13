@@ -18,14 +18,14 @@
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
-// TODO: remove when FileJournal is wired into storage backends.
+// TODO: remove when FileWal is wired into storage backends.
 #![allow(dead_code)]
 
 pub(crate) mod v1;
 
 use crate::error::CasError;
 
-use super::super::wal::{JournalEntry, JournalPosition};
+use super::{WalEntry, WalPosition};
 
 // ---------------------------------------------------------------------------
 // Re-exported constants
@@ -56,25 +56,25 @@ pub(crate) const MAX_CHECKPOINT_VERSION: u16 = v1::MAX_CHECKPOINT_VERSION;
 pub(crate) use v1::{decode_header, encode_header};
 
 // ---------------------------------------------------------------------------
-// Entry encode/decode (bridge between unversioned JournalEntry and V1 types)
+// Entry encode/decode (bridge between unversioned WalEntry and V1 types)
 // ---------------------------------------------------------------------------
 
 /// Encode a journal entry at the given position.
-pub(crate) fn encode_entry(entry: &JournalEntry, pos: JournalPosition) -> Vec<u8> {
+pub(crate) fn encode_entry(entry: &WalEntry, pos: WalPosition) -> Vec<u8> {
     entry_to_v1(entry).encode(pos.as_u64())
 }
 
 /// Decode a single journal entry from bytes.
 ///
 /// Returns `(entry, position, bytes_consumed)`.
-pub(crate) fn decode_entry(buf: &[u8]) -> Result<(JournalEntry, JournalPosition, usize), CasError> {
-    let (v1_entry, pos_u64, consumed) = v1::JournalEntryV1::decode(buf)?;
+pub(crate) fn decode_entry(buf: &[u8]) -> Result<(WalEntry, WalPosition, usize), CasError> {
+    let (v1_entry, pos_u64, consumed) = v1::WalEntryV1::decode(buf)?;
     let entry = entry_from_v1(&v1_entry);
-    Ok((entry, JournalPosition::from_u64(pos_u64), consumed))
+    Ok((entry, WalPosition::from_u64(pos_u64), consumed))
 }
 
 /// Decode all journal entries from a buffer.
-pub(crate) fn decode_entries(buf: &[u8]) -> Result<Vec<(JournalPosition, JournalEntry)>, CasError> {
+pub(crate) fn decode_entries(buf: &[u8]) -> Result<Vec<(WalPosition, WalEntry)>, CasError> {
     let mut entries = Vec::new();
     let mut offset = 0;
     while offset < buf.len() {
@@ -90,40 +90,36 @@ pub(crate) fn decode_entries(buf: &[u8]) -> Result<Vec<(JournalPosition, Journal
 // ---------------------------------------------------------------------------
 
 /// Encode a checkpoint file for the given position.
-pub(crate) fn encode_checkpoint(pos: JournalPosition) -> Vec<u8> {
+pub(crate) fn encode_checkpoint(pos: WalPosition) -> Vec<u8> {
     v1::CheckpointV1::encode(pos.as_u64())
 }
 
 /// Decode a checkpoint file, returning the last consumed position.
-pub(crate) fn decode_checkpoint(buf: &[u8]) -> Result<JournalPosition, CasError> {
+pub(crate) fn decode_checkpoint(buf: &[u8]) -> Result<WalPosition, CasError> {
     let pos_u64 = v1::CheckpointV1::decode(buf)?;
-    Ok(JournalPosition::from_u64(pos_u64))
+    Ok(WalPosition::from_u64(pos_u64))
 }
 
 // ---------------------------------------------------------------------------
 // Bridge conversions between versioned and unversioned entry types
 // ---------------------------------------------------------------------------
 
-fn entry_to_v1(entry: &JournalEntry) -> v1::JournalEntryV1 {
+fn entry_to_v1(entry: &WalEntry) -> v1::WalEntryV1 {
     match entry {
-        JournalEntry::Put { hash, data } => {
-            v1::JournalEntryV1::Put { hash: *hash, data: data.clone() }
-        }
-        JournalEntry::Delete { hash } => v1::JournalEntryV1::Delete { hash: *hash },
-        JournalEntry::Constraint { target, bases } => {
-            v1::JournalEntryV1::Constraint { target: *target, bases: bases.clone() }
+        WalEntry::Put { hash, data } => v1::WalEntryV1::Put { hash: *hash, data: data.clone() },
+        WalEntry::Delete { hash } => v1::WalEntryV1::Delete { hash: *hash },
+        WalEntry::Constraint { target, bases } => {
+            v1::WalEntryV1::Constraint { target: *target, bases: bases.clone() }
         }
     }
 }
 
-fn entry_from_v1(entry: &v1::JournalEntryV1) -> JournalEntry {
+fn entry_from_v1(entry: &v1::WalEntryV1) -> WalEntry {
     match entry {
-        v1::JournalEntryV1::Put { hash, data } => {
-            JournalEntry::Put { hash: *hash, data: data.clone() }
-        }
-        v1::JournalEntryV1::Delete { hash } => JournalEntry::Delete { hash: *hash },
-        v1::JournalEntryV1::Constraint { target, bases } => {
-            JournalEntry::Constraint { target: *target, bases: bases.clone() }
+        v1::WalEntryV1::Put { hash, data } => WalEntry::Put { hash: *hash, data: data.clone() },
+        v1::WalEntryV1::Delete { hash } => WalEntry::Delete { hash: *hash },
+        v1::WalEntryV1::Constraint { target, bases } => {
+            WalEntry::Constraint { target: *target, bases: bases.clone() }
         }
     }
 }

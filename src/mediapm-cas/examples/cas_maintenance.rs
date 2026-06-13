@@ -36,11 +36,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pruned = cas.prune_constraints().await?;
     println!("Pruned {} constraint entries.", pruned.removed);
 
-    // --- gc_sweep ---
-    // GC prunes constraint metadata, not objects.
-    let sweep = cas.gc_sweep().await?;
-    println!("GC sweep: {} entries deleted.", sweep.deleted);
-
     // --- list_all_hashes ---
     let all = cas.list_all_hashes().await?;
     println!("Current objects: {}", all.len());

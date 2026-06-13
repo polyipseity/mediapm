@@ -1,11 +1,11 @@
-//! On-disk format definitions for journal and checkpoint files.
+//! On-disk format definitions for WAL and checkpoint files.
 //!
 //! Thin compatibility shim that re-exports the versioned format layer
 //! from `versions/`. All encode/decode/constant definitions live in
 //! version-specific `versions/vX.rs` files, bridged through
 //! `versions/mod.rs`.
 
-// TODO: remove when FileJournal is wired into storage backends.
+// TODO: remove when FileWal is wired into storage backends.
 #![allow(dead_code)]
 
 pub(crate) use super::versions::{
@@ -20,8 +20,8 @@ mod tests {
     use bytes::Bytes;
 
     use crate::hash::Hash;
-    use crate::storage::journal::versions::CHECKPOINT_MAGIC;
-    use crate::storage::wal::{JournalEntry, JournalPosition};
+    use crate::storage::wal::versions::CHECKPOINT_MAGIC;
+    use crate::storage::wal::{WalEntry, WalPosition};
 
     use super::*;
 
@@ -52,15 +52,15 @@ mod tests {
     fn entry_roundtrip_put() {
         let data = Bytes::from_static(b"hello world");
         let hash = Hash::from_content(&data);
-        let entry = JournalEntry::Put { hash, data: data.clone() };
-        let pos = JournalPosition::from_u64(42);
+        let entry = WalEntry::Put { hash, data: data.clone() };
+        let pos = WalPosition::from_u64(42);
 
         let encoded = encode_entry(&entry, pos);
         let (decoded, decoded_pos, consumed) = decode_entry(&encoded).unwrap();
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded_pos, pos);
         match decoded {
-            JournalEntry::Put { hash: h, data: d } => {
+            WalEntry::Put { hash: h, data: d } => {
                 assert_eq!(h, hash);
                 assert_eq!(d, data);
             }
@@ -71,14 +71,14 @@ mod tests {
     #[test]
     fn entry_roundtrip_delete() {
         let hash = Hash::from_content(b"delete-me");
-        let entry = JournalEntry::Delete { hash };
-        let pos = JournalPosition::from_u64(7);
+        let entry = WalEntry::Delete { hash };
+        let pos = WalPosition::from_u64(7);
 
         let encoded = encode_entry(&entry, pos);
         let (decoded, decoded_pos, consumed) = decode_entry(&encoded).unwrap();
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded_pos, pos);
-        assert!(matches!(decoded, JournalEntry::Delete { hash: h } if h == hash));
+        assert!(matches!(decoded, WalEntry::Delete { hash: h } if h == hash));
     }
 
     #[test]
@@ -86,15 +86,15 @@ mod tests {
         let target = Hash::from_content(b"target");
         let bases: BTreeSet<_> =
             [b"base1", b"base2", b"base3"].iter().map(|b| Hash::from_content(*b)).collect();
-        let entry = JournalEntry::Constraint { target, bases: bases.clone() };
-        let pos = JournalPosition::from_u64(99);
+        let entry = WalEntry::Constraint { target, bases: bases.clone() };
+        let pos = WalPosition::from_u64(99);
 
         let encoded = encode_entry(&entry, pos);
         let (decoded, decoded_pos, consumed) = decode_entry(&encoded).unwrap();
         assert_eq!(consumed, encoded.len());
         assert_eq!(decoded_pos, pos);
         match decoded {
-            JournalEntry::Constraint { target: t, bases: bs } => {
+            WalEntry::Constraint { target: t, bases: bs } => {
                 assert_eq!(t, target);
                 assert_eq!(bs, bases);
             }
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn checkpoint_roundtrip() {
-        let pos = JournalPosition::from_u64(12345);
+        let pos = WalPosition::from_u64(12345);
         let encoded = encode_checkpoint(pos);
         let decoded = decode_checkpoint(&encoded).unwrap();
         assert_eq!(decoded, pos);
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn checkpoint_rejects_corrupt() {
-        let pos = JournalPosition::from_u64(42);
+        let pos = WalPosition::from_u64(42);
         let mut encoded = encode_checkpoint(pos);
         // Corrupt the integrity hash
         let last = encoded.len() - 1;
@@ -125,11 +125,8 @@ mod tests {
         let h1 = Hash::from_content(b"a");
         let h2 = Hash::from_content(b"b");
         let entries = vec![
-            (
-                JournalPosition::from_u64(1),
-                JournalEntry::Put { hash: h1, data: Bytes::from_static(b"a") },
-            ),
-            (JournalPosition::from_u64(2), JournalEntry::Delete { hash: h2 }),
+            (WalPosition::from_u64(1), WalEntry::Put { hash: h1, data: Bytes::from_static(b"a") }),
+            (WalPosition::from_u64(2), WalEntry::Delete { hash: h2 }),
         ];
 
         let mut encoded = Vec::new();
@@ -139,7 +136,7 @@ mod tests {
 
         let decoded = decode_entries(&encoded).unwrap();
         assert_eq!(decoded.len(), 2);
-        assert_eq!(decoded[0].0, JournalPosition::from_u64(1));
-        assert_eq!(decoded[1].0, JournalPosition::from_u64(2));
+        assert_eq!(decoded[0].0, WalPosition::from_u64(1));
+        assert_eq!(decoded[1].0, WalPosition::from_u64(2));
     }
 }

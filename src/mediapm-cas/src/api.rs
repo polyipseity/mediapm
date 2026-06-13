@@ -197,9 +197,6 @@ pub trait CasMaintenanceApi: Send + Sync {
     /// Remove constraints whose target or bases no longer exist.
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
 
-    /// Prune orphaned constraint metadata entries.
-    async fn gc_sweep(&self) -> Result<GcSweepReport, CasError>;
-
     /// List all hashes currently in the store (best-effort).
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
 
@@ -225,18 +222,6 @@ pub struct OptimizeReport {
 pub struct PruneReport {
     /// Number of constraint entries removed.
     pub removed: usize,
-}
-
-/// Result of [`CasMaintenanceApi::gc_sweep`].
-///
-/// GC does not delete objects — it only prunes constraint metadata entries so
-/// they approach effective constraints (intersection of stored bases with live
-/// hashes). Per-base pruning removes individual dead bases rather than whole
-/// entries. Objects are only removed by explicit [`CasApi::delete`].
-#[derive(Debug, Clone, Default)]
-pub struct GcSweepReport {
-    /// Number of constraint entries removed (those whose target was deleted).
-    pub deleted: usize,
 }
 
 /// Result of [`CasMaintenanceApi::repair_index`].

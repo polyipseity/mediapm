@@ -1,7 +1,7 @@
 //! Object store — payload storage backend.
 //!
-//! Defines the [`ObjectStore`] trait and its in-memory implementation
-//! [`InMemoryObjectStore`].
+//! Defines the [`ObjectIndex`] trait and its in-memory implementation
+//! [`InMemoryObjectIndex`].
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -33,7 +33,7 @@ impl StoredEntry {
 }
 
 // ---------------------------------------------------------------------------
-// ObjectStore trait
+// ObjectIndex trait
 // ---------------------------------------------------------------------------
 
 /// Persistent storage for object payload bytes.
@@ -41,7 +41,7 @@ impl StoredEntry {
 /// Pluggable backend that the WAL consumer writes into and the ReadView
 /// reads from.
 #[async_trait]
-pub trait ObjectStore: Send + Sync {
+pub trait ObjectIndex: Send + Sync {
     /// Store bytes for a hash with the given encoding (replaces if exists).
     async fn put(&self, hash: Hash, data: Bytes, encoding: ObjectEncoding) -> Result<(), CasError>;
 
@@ -67,32 +67,32 @@ pub trait ObjectStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// InMemoryObjectStore
+// InMemoryObjectIndex
 // ---------------------------------------------------------------------------
 
-/// An [`ObjectStore`] backed by a `DashMap<Hash, StoredEntry>`.
+/// An [`ObjectIndex`] backed by a `DashMap<Hash, StoredEntry>`.
 ///
 /// All data lives in memory. Suitable for testing and ephemeral usage.
 #[derive(Clone)]
-pub struct InMemoryObjectStore {
+pub struct InMemoryObjectIndex {
     data: Arc<DashMap<Hash, StoredEntry>>,
 }
 
-impl InMemoryObjectStore {
+impl InMemoryObjectIndex {
     /// Create an empty store.
     pub fn new() -> Self {
         Self { data: Arc::new(DashMap::new()) }
     }
 }
 
-impl Default for InMemoryObjectStore {
+impl Default for InMemoryObjectIndex {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl ObjectStore for InMemoryObjectStore {
+impl ObjectIndex for InMemoryObjectIndex {
     async fn put(&self, hash: Hash, data: Bytes, encoding: ObjectEncoding) -> Result<(), CasError> {
         self.data.insert(hash, StoredEntry::new(data, encoding));
         Ok(())
@@ -143,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_and_get_roundtrip() {
-        let store = InMemoryObjectStore::new();
+        let store = InMemoryObjectIndex::new();
         let data = Bytes::from_static(b"hello world");
         let hash = Hash::from_content(&data);
         store.put(hash, data.clone(), ObjectEncoding::Full).await.unwrap();
@@ -154,14 +154,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_missing_returns_none() {
-        let store = InMemoryObjectStore::new();
+        let store = InMemoryObjectIndex::new();
         let hash = Hash::from_content(b"missing");
         assert_eq!(store.get(&hash).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn put_overwrite_same() {
-        let store = InMemoryObjectStore::new();
+        let store = InMemoryObjectIndex::new();
         let hash = Hash::from_content(b"data");
         store.put(hash, Bytes::from_static(b"old"), ObjectEncoding::Full).await.unwrap();
         store.put(hash, Bytes::from_static(b"new"), ObjectEncoding::Full).await.unwrap();
@@ -171,7 +171,7 @@ mod tests {
 
     #[tokio::test]
     async fn stat_returns_encoding() {
-        let store = InMemoryObjectStore::new();
+        let store = InMemoryObjectIndex::new();
         let data = Bytes::from_static(b"hello world");
         let hash = Hash::from_content(&data);
         store.put(hash, data.clone(), ObjectEncoding::Full).await.unwrap();
@@ -182,7 +182,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_hashes_after_puts() {
-        let store = InMemoryObjectStore::new();
+        let store = InMemoryObjectIndex::new();
         let h1 = Hash::from_content(b"a");
         let h2 = Hash::from_content(b"b");
         store.put(h1, Bytes::from_static(b"a"), ObjectEncoding::Full).await.unwrap();

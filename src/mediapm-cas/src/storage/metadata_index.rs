@@ -1,11 +1,11 @@
-//! Metadata store — constraint hints.
+//! Metadata index — constraint hints.
 //!
 //! Stores **only** constraint hints — the pairings (target hash → base
 //! hashes) that the maintenance pass uses for delta optimization. This is
-//! the **only** durable metadata not derivable from the ObjectStore alone.
+//! the **only** durable metadata not derivable from the ObjectIndex alone.
 //!
 //! The implementation is in-memory only. On startup,
-//! [`MetadataStore::rebuild_from_journal`] replays journal entries to
+//! [`MetadataIndex::rebuild_from_wal`] replays WAL entries to
 //! populate the map — the WAL is the single persistent source of truth.
 
 use async_trait::async_trait;
@@ -16,13 +16,13 @@ use crate::api::ConstraintPatch;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::wal::{Journal, JournalEntry, JournalPosition};
+use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Lightweight storage for constraint hints.
 ///
 /// In-memory only — reconstructed from journal replay on startup.
 #[async_trait]
-pub trait MetadataStore: Send + Sync {
+pub trait MetadataIndex: Send + Sync {
     /// Record bases for target.
     async fn set(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
 
@@ -42,23 +42,23 @@ pub trait MetadataStore: Send + Sync {
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError>;
 
     /// Rebuild state by replaying the journal.
-    async fn rebuild_from_journal(&self, journal: &dyn Journal) -> Result<(), CasError>;
+    async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError>;
 }
 
 // ---------------------------------------------------------------------------
-// InMemoryMetadataStore
+// InMemoryMetadataIndex
 // ---------------------------------------------------------------------------
 
-/// An in-memory [`MetadataStore`] backed by `Arc<RwLock<HashMap>>`.
+/// An in-memory [`MetadataIndex`] backed by `Arc<RwLock<HashMap>>`.
 ///
 /// Clones share the same backing data, so all references observe the same
 /// constraint state — essential for concurrent access patterns.
 #[derive(Clone, Default)]
-pub struct InMemoryMetadataStore {
+pub struct InMemoryMetadataIndex {
     data: Arc<RwLock<HashMap<Hash, BTreeSet<Hash>>>>,
 }
 
-impl InMemoryMetadataStore {
+impl InMemoryMetadataIndex {
     /// Create an empty store.
     pub fn new() -> Self {
         Self::default()
@@ -66,7 +66,7 @@ impl InMemoryMetadataStore {
 }
 
 #[async_trait]
-impl MetadataStore for InMemoryMetadataStore {
+impl MetadataIndex for InMemoryMetadataIndex {
     async fn set(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.data.write().unwrap().insert(target, bases);
         Ok(())
@@ -117,10 +117,10 @@ impl MetadataStore for InMemoryMetadataStore {
         Ok(())
     }
 
-    async fn rebuild_from_journal(&self, journal: &dyn Journal) -> Result<(), CasError> {
-        let entries = journal.replay_from(JournalPosition::ZERO).await;
+    async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
+        let entries = wal.replay_from(WalPosition::ZERO).await;
         for (_, entry) in entries {
-            if let JournalEntry::Constraint { target, bases } = entry {
+            if let WalEntry::Constraint { target, bases } = entry {
                 self.data.write().unwrap().insert(target, bases);
             }
         }
@@ -132,12 +132,12 @@ impl MetadataStore for InMemoryMetadataStore {
 mod tests {
     use super::*;
     use crate::api::ConstraintPatch;
-    use crate::storage::wal::InMemoryJournal;
+    use crate::storage::wal::{InMemoryWal, WalEntry};
     use bytes::Bytes;
 
     #[tokio::test]
     async fn set_and_get() {
-        let store = InMemoryMetadataStore::new();
+        let store = InMemoryMetadataIndex::new();
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         let bases = BTreeSet::from([base]);
@@ -147,7 +147,7 @@ mod tests {
 
     #[tokio::test]
     async fn patch_add() {
-        let store = InMemoryMetadataStore::new();
+        let store = InMemoryMetadataIndex::new();
         let target = Hash::from_content(b"t");
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
@@ -160,7 +160,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_clears() {
-        let store = InMemoryMetadataStore::new();
+        let store = InMemoryMetadataIndex::new();
         let target = Hash::from_content(b"t");
         store.set(target, BTreeSet::from([Hash::from_content(b"b")])).await.unwrap();
         store.remove(&target).await.unwrap();
@@ -168,24 +168,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rebuild_from_journal_populates() {
-        let journal = InMemoryJournal::new();
+    async fn rebuild_from_wal_populates() {
+        let journal = InMemoryWal::new();
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         journal
-            .append(JournalEntry::Put {
+            .append(WalEntry::Put {
                 hash: Hash::from_content(b"unrelated"),
                 data: Bytes::from_static(b"x"),
             })
             .await
             .unwrap();
         journal
-            .append(JournalEntry::Constraint { target, bases: BTreeSet::from([base]) })
+            .append(WalEntry::Constraint { target, bases: BTreeSet::from([base]) })
             .await
             .unwrap();
 
-        let store = InMemoryMetadataStore::new();
-        store.rebuild_from_journal(&journal).await.unwrap();
+        let store = InMemoryMetadataIndex::new();
+        store.rebuild_from_wal(&journal).await.unwrap();
         assert!(store.get(&target).await.unwrap().is_some());
     }
 }

@@ -1,5 +1,5 @@
-//! Composed CAS store — the primary handle tying together journal, read
-//! view, object store, metadata store, and background engine.
+//! Composed CAS store — the primary handle tying together WAL, read
+//! view, object index, metadata index, and background engine.
 //!
 //! # Architecture
 //!
@@ -7,12 +7,12 @@
 //! +--------------------------------------------------+
 //! |                   CasStore                        |
 //! |  +----------+  +-----------+  +---------------+   |
-//! |  | Journal  |  | ReadView  |  | ObjectStore   |   |
+//! |  | Wal      |  | ReadView  |  | ObjectIndex   |   |
 //! |  | (WAL)    |  | (cache +  |  | (payloads)    |   |
-//! |  |          |  |  store +  |  |               |   |
-//! |  |          |  |  journal) |  |               |   |
+//! |  |          |  |  index +  |  |               |   |
+//! |  |          |  |  wal)     |  |               |   |
 //! |  +----------+  +-----------+  +---------------+   |
-//! |  | MetaStore|  | BgEngine  |  |               |   |
+//! |  | MetaIdx  |  | BgEngine  |  |               |   |
 //! |  |(constraints)|(consumer+ |  |               |   |
 //! |  |          |  | maint)    |  |               |   |
 //! |  +----------+  +-----------+  +---------------+   |
@@ -23,59 +23,64 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, GcSweepReport, IndexRepairReport,
-    ObjectMeta, OptimizeReport, PruneReport,
+    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, IndexRepairReport, ObjectMeta,
+    OptimizeReport, PruneReport,
 };
 use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::bg_engine::BackgroundEngine;
-use super::meta_store::MetadataStore;
-use super::payload_store::ObjectStore;
+use super::metadata_index::MetadataIndex;
+use super::object_index::ObjectIndex;
 use super::read_view::{ComposedReadView, ReadView};
-use super::wal::{Journal, JournalEntry, JournalPosition};
+use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Composed CAS store — primary handle for all CAS operations.
-pub struct CasStore<J: Journal, S: ObjectStore, M: MetadataStore> {
-    journal: J,
-    object_store: S,
-    meta_store: M,
-    read_view: ComposedReadView<S, J>,
+pub struct CasStore<J: Wal, S: ObjectIndex, M: MetadataIndex> {
+    wal: J,
+    object_index: S,
+    metadata_index: M,
+    read_view: Arc<dyn ReadView>,
     bg_engine: BackgroundEngine<J, S, M>,
 }
 
-impl<J: Journal + Clone, S: ObjectStore + Clone, M: MetadataStore + Clone> Clone
-    for CasStore<J, S, M>
-{
+impl<J: Wal + Clone, S: ObjectIndex + Clone, M: MetadataIndex + Clone> Clone for CasStore<J, S, M> {
     fn clone(&self) -> Self {
         Self {
-            journal: self.journal.clone(),
-            object_store: self.object_store.clone(),
-            meta_store: self.meta_store.clone(),
-            read_view: ComposedReadView::new(self.object_store.clone(), self.journal.clone()),
+            wal: self.wal.clone(),
+            object_index: self.object_index.clone(),
+            metadata_index: self.metadata_index.clone(),
+            read_view: self.read_view.clone(),
             bg_engine: self.bg_engine.clone(),
         }
     }
 }
 
-impl<J: Journal + Clone, S: ObjectStore + Clone, M: MetadataStore + Clone> CasStore<J, S, M> {
+impl<J: Wal + Clone, S: ObjectIndex + Clone, M: MetadataIndex + Clone> CasStore<J, S, M> {
     /// Create a new composed store.
-    pub fn new(journal: J, object_store: S, meta_store: M) -> Self {
-        let read_view = ComposedReadView::new(object_store.clone(), journal.clone());
+    pub fn new(wal: J, object_index: S, metadata_index: M) -> Self
+    where
+        J: 'static,
+        S: 'static,
+    {
+        let read_view: Arc<dyn ReadView> =
+            Arc::new(ComposedReadView::new(object_index.clone(), wal.clone()));
         let bg_engine = BackgroundEngine::new(
-            journal.clone(),
-            object_store.clone(),
-            meta_store.clone(),
-            JournalPosition::ZERO,
+            wal.clone(),
+            object_index.clone(),
+            metadata_index.clone(),
+            WalPosition::ZERO,
+            read_view.clone(),
         );
-        Self { journal, object_store, meta_store, read_view, bg_engine }
+        Self { wal, object_index, metadata_index, read_view, bg_engine }
     }
 
-    /// Rebuild metadata store from journal (for recovery after restart).
-    pub async fn rebuild_meta_from_journal(&self) -> Result<(), CasError> {
-        self.meta_store.rebuild_from_journal(&self.journal).await
+    /// Rebuild metadata index from WAL (for recovery after restart).
+    pub async fn rebuild_metadata_from_wal(&self) -> Result<(), CasError> {
+        self.metadata_index.rebuild_from_wal(&self.wal).await
     }
 
     /// Return a reference to the background engine.
@@ -89,17 +94,15 @@ impl<J: Journal + Clone, S: ObjectStore + Clone, M: MetadataStore + Clone> CasSt
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Journal, S: ObjectStore, M: MetadataStore> CasApi for CasStore<J, S, M> {
+impl<J: Wal, S: ObjectIndex, M: MetadataIndex> CasApi for CasStore<J, S, M> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
         // Empty hash is always valid but never stored.
         if hash == Hash::zero() {
             return Ok(hash);
         }
-        // Append to journal (the crash-safe commitment).
-        self.journal.append(JournalEntry::Put { hash, data: data.clone() }).await?;
-        // Increment generation for GC coordination.
-        self.bg_engine.increment_generation();
+        // Append to WAL (the crash-safe commitment).
+        self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
         // Update the read-view cache so a subsequent get sees the data.
         self.read_view.hint_state_change(hash, Some(data)).await;
         Ok(hash)
@@ -118,7 +121,7 @@ impl<J: Journal, S: ObjectStore, M: MetadataStore> CasApi for CasStore<J, S, M> 
         if hash == Hash::zero() {
             return Ok(());
         }
-        self.journal.append(JournalEntry::Delete { hash }).await?;
+        self.wal.append(WalEntry::Delete { hash }).await?;
         // Update cache so subsequent reads miss.
         self.read_view.hint_state_change(hash, None).await;
         Ok(())
@@ -130,7 +133,7 @@ impl<J: Journal, S: ObjectStore, M: MetadataStore> CasApi for CasStore<J, S, M> 
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Journal, S: ObjectStore, M: MetadataStore> ConstraintApi for CasStore<J, S, M> {
+impl<J: Wal, S: ObjectIndex, M: MetadataIndex> ConstraintApi for CasStore<J, S, M> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         // Validate: bases must be distinct and not include target.
         if bases.contains(&target) {
@@ -139,20 +142,20 @@ impl<J: Journal, S: ObjectStore, M: MetadataStore> ConstraintApi for CasStore<J,
             ));
         }
 
-        // Journal the constraint first.
-        self.journal.append(JournalEntry::Constraint { target, bases: bases.clone() }).await?;
+        // Write the constraint to WAL first.
+        self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
 
-        // Then update the meta store.
-        self.meta_store.set(target, bases).await
+        // Then update the metadata index.
+        self.metadata_index.set(target, bases).await
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError> {
-        self.meta_store.get(&target).await
+        self.metadata_index.get(&target).await
     }
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
         // Read current state.
-        let mut bases = self.meta_store.get(&target).await?.unwrap_or_default();
+        let mut bases = self.metadata_index.get(&target).await?.unwrap_or_default();
 
         if patch.clear {
             bases.clear();
@@ -169,9 +172,9 @@ impl<J: Journal, S: ObjectStore, M: MetadataStore> ConstraintApi for CasStore<J,
             bases.remove(remove);
         }
 
-        // Journal the full updated constraint.
-        self.journal.append(JournalEntry::Constraint { target, bases: bases.clone() }).await?;
-        self.meta_store.set(target, bases).await
+        // Write the full updated constraint to WAL.
+        self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
+        self.metadata_index.set(target, bases).await
     }
 }
 
@@ -180,51 +183,33 @@ impl<J: Journal, S: ObjectStore, M: MetadataStore> ConstraintApi for CasStore<J,
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Journal, S: ObjectStore, M: MetadataStore> CasMaintenanceApi for CasStore<J, S, M> {
+impl<J: Wal, S: ObjectIndex, M: MetadataIndex> CasMaintenanceApi for CasStore<J, S, M> {
     async fn optimize_once(&self) -> Result<OptimizeReport, CasError> {
-        let wal_done = self.bg_engine.run_wal_consumer().await?;
+        let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
-        Ok(OptimizeReport {
-            wal_entries_consumed: if wal_done { 1 } else { 0 },
-            maintenance_done: maint_done,
-        })
+        Ok(OptimizeReport { wal_entries_consumed: count, maintenance_done: maint_done })
     }
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         let all_hashes: HashSet<Hash> =
-            self.object_store.list_hashes().await?.into_iter().collect();
-        let targets = self.meta_store.list_targets().await?;
+            self.object_index.list_hashes().await?.into_iter().collect();
+        let targets = self.metadata_index.list_targets().await?;
         let initial_count = targets.len();
-        self.meta_store.prune_targets(&all_hashes).await?;
-        let final_count = self.meta_store.list_targets().await?.len();
+        self.metadata_index.prune_targets(&all_hashes).await?;
+        let final_count = self.metadata_index.list_targets().await?.len();
         Ok(PruneReport { removed: initial_count.saturating_sub(final_count) })
     }
 
-    async fn gc_sweep(&self) -> Result<GcSweepReport, CasError> {
-        // Drain WAL first for a consistent view of the object store.
-        self.bg_engine.run_wal_consumer().await?;
-
-        // Prune constraint entries whose targets or bases no longer exist.
-        // GC never deletes objects — objects are only removed by explicit
-        // delete() operations materialized by the WAL consumer.
-        // Constraints are delta-compression hints, NOT liveness indicators.
-        let all_hashes: HashSet<Hash> =
-            self.object_store.list_hashes().await?.into_iter().collect();
-        let targets = self.meta_store.list_targets().await?;
-        let initial_count = targets.len();
-        self.meta_store.prune_targets(&all_hashes).await?;
-        let final_count = self.meta_store.list_targets().await?.len();
-
-        Ok(GcSweepReport { deleted: initial_count.saturating_sub(final_count) })
-    }
-
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
-        self.object_store.list_hashes().await
+        self.object_index.list_hashes().await
     }
 
     async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {
         // For in-memory backends, index is always consistent.
         // File-based implementations will override.
+        // TODO(mediapm-cas#file-repair): Implement for FileSystemCas —
+        // verify that FileWal entries have corresponding ObjectIndex entries
+        // and vice versa, removing orphaned entries.
         Ok(IndexRepairReport { fixed: 0 })
     }
 }

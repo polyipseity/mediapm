@@ -6,7 +6,11 @@
 use oxidelta::compress::encoder::{CompressOptions, encode_all};
 use oxidelta::vcdiff::decoder::decode_memory;
 
+use bytes::Bytes;
+
 use crate::{CasError, Hash};
+
+use super::object::StoredObject;
 
 /// Encoded VCDIFF patch payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,7 +63,38 @@ impl DeltaPatch {
         })
     }
 }
-
+/// Apply collected delta envelopes in reverse order (innermost-first) to
+/// reconstruct the original full payload from a delta chain.
+///
+/// `base_data` is the full-encoded root bytes found at the base of the chain.
+/// `chain` is consumed from innermost delta outward.
+///
+/// Returns the fully reconstructed bytes or a [`CasError::CorruptObject`] if
+/// any delta envelope or VCDIFF patch is invalid.
+pub(crate) fn resolve_delta_chain(
+    mut base_data: Bytes,
+    chain: &mut Vec<(Hash, Bytes)>,
+    mut current: Hash,
+) -> Result<Bytes, CasError> {
+    while let Some((dep_hash, dep_data)) = chain.pop() {
+        let stored_obj =
+            StoredObject::decode_delta(&dep_data).map_err(|e| CasError::CorruptObject {
+                hash: Some(dep_hash),
+                details: format!("failed to decode delta envelope during chain resolution: {e}"),
+            })?;
+        let vcdiff = stored_obj.payload();
+        let patch = DeltaPatch::decode(vcdiff);
+        base_data =
+            Bytes::from(patch.apply(&base_data, dep_hash, dep_hash, current).map_err(|e| {
+                CasError::CorruptObject {
+                    hash: Some(dep_hash),
+                    details: format!("failed to apply delta chain step: {e}"),
+                }
+            })?);
+        current = dep_hash;
+    }
+    Ok(base_data)
+}
 #[cfg(test)]
 mod tests {
     use super::DeltaPatch;

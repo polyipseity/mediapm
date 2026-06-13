@@ -1,5 +1,5 @@
 //! File-based journal and checkpoint implementation.
-// TODO: remove when FileJournal is wired into storage backends.
+// TODO: remove when FileWal is wired into storage backends.
 #![allow(dead_code)]
 //!
 //! ## File locations
@@ -37,8 +37,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::super::wal::{Journal, JournalEntry, JournalPosition, PendingState};
 use super::format;
+use super::{PendingState, Wal, WalEntry, WalPosition};
 
 // ---------------------------------------------------------------------------
 // Checkpoint
@@ -63,12 +63,12 @@ impl Checkpoint {
     }
 
     /// Return the last consumed position.
-    fn position(&self) -> JournalPosition {
-        JournalPosition::from_u64(self.last_pos.load(Ordering::SeqCst))
+    fn position(&self) -> WalPosition {
+        WalPosition::from_u64(self.last_pos.load(Ordering::SeqCst))
     }
 
     /// Persist a new position atomically.
-    async fn persist(&self, pos: JournalPosition) -> Result<(), CasError> {
+    async fn persist(&self, pos: WalPosition) -> Result<(), CasError> {
         let data = format::encode_checkpoint(pos);
         // Atomic write: write to .tmp, then rename.
         let tmp_path = self.path.with_extension("tmp");
@@ -85,24 +85,24 @@ impl Checkpoint {
 
 #[derive(Debug, Clone)]
 struct SealedSegment {
-    first_pos: JournalPosition,
-    last_pos: JournalPosition,
+    first_pos: WalPosition,
+    last_pos: WalPosition,
     path: PathBuf,
 }
 
 /// Parse the position range from a sealed segment filename.
 ///
 /// Expected format: `<first:020x>-<last:020x>.seg`
-fn parse_sealed_filename(name: &str) -> Option<(JournalPosition, JournalPosition)> {
+fn parse_sealed_filename(name: &str) -> Option<(WalPosition, WalPosition)> {
     let name = name.strip_suffix(".seg")?;
     let (first_hex, last_hex) = name.split_once('-')?;
     let first = u64::from_str_radix(first_hex, 16).ok()?;
     let last = u64::from_str_radix(last_hex, 16).ok()?;
-    Some((JournalPosition::from_u64(first), JournalPosition::from_u64(last)))
+    Some((WalPosition::from_u64(first), WalPosition::from_u64(last)))
 }
 
 /// Format a sealed segment filename.
-fn sealed_filename(first: JournalPosition, last: JournalPosition) -> String {
+fn sealed_filename(first: WalPosition, last: WalPosition) -> String {
     format!("{:020x}-{:020x}.seg", first.as_u64(), last.as_u64())
 }
 
@@ -113,7 +113,7 @@ fn sealed_filename(first: JournalPosition, last: JournalPosition) -> String {
 /// Writable segment for new journal entries.
 struct ActiveSegment {
     file: tokio::fs::File,
-    first_pos: JournalPosition,
+    first_pos: WalPosition,
     bytes_written: u64,
 }
 
@@ -133,7 +133,7 @@ impl ActiveSegment {
         file.write_all(&header).await.map_err(CasError::Io)?;
         file.sync_data().await.map_err(CasError::Io)?;
 
-        Ok(Self { file, first_pos: JournalPosition::ZERO, bytes_written: 0 })
+        Ok(Self { file, first_pos: WalPosition::ZERO, bytes_written: 0 })
     }
 
     /// Open an existing active segment file for appending.
@@ -157,7 +157,7 @@ impl ActiveSegment {
             let (_, pos, _) = format::decode_entry(&buf[format::HEADER_LEN..])?;
             pos
         } else {
-            JournalPosition::ZERO
+            WalPosition::ZERO
         };
 
         let bytes_written = (buf.len() - format::HEADER_LEN) as u64;
@@ -189,7 +189,7 @@ impl ActiveSegment {
     async fn seal(
         mut self,
         journal_dir: &PathBuf,
-        last_pos: JournalPosition,
+        last_pos: WalPosition,
     ) -> Result<SealedSegment, CasError> {
         self.flush().await?;
         drop(self.file); // Close the file.
@@ -203,10 +203,10 @@ impl ActiveSegment {
 }
 
 // ---------------------------------------------------------------------------
-// FileJournal
+// FileWal
 // ---------------------------------------------------------------------------
 
-/// A [`Journal`] implementation backed by files on disk.
+/// A [`Wal`] implementation backed by files on disk.
 ///
 /// ## Crash safety
 ///
@@ -215,11 +215,11 @@ impl ActiveSegment {
 /// - The checkpoint is written atomically (`.tmp` + `rename`).
 /// - On startup, the checkpoint determines the replay start position.
 /// - Unknown segment or checkpoint versions are refused with an error.
-pub struct FileJournal {
-    inner: Arc<FileJournalInner>,
+pub struct FileWal {
+    inner: Arc<FileWalInner>,
 }
 
-struct FileJournalInner {
+struct FileWalInner {
     /// CAS directory root.
     dir: PathBuf,
     /// Journal segment directory: `<dir>/journal/`.
@@ -237,14 +237,14 @@ struct FileJournalInner {
     next_pos: AtomicU64,
     /// In-memory pending state for fast `check_pending`.
     /// Maps hash → (position, state). Retains only entries > checkpoint.
-    pending: Mutex<HashMap<Hash, (JournalPosition, PendingState)>>,
+    pending: Mutex<HashMap<Hash, (WalPosition, PendingState)>>,
 }
 
 struct JournalWriterState {
     active: Option<ActiveSegment>,
 }
 
-impl FileJournal {
+impl FileWal {
     /// Default max segment size: 64 MiB.
     pub const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 
@@ -321,18 +321,18 @@ impl FileJournal {
         for (pos, entry) in &all_entries {
             // Constraint entries don't affect check_pending (only Put/Delete).
             match entry {
-                JournalEntry::Put { hash, data } => {
+                WalEntry::Put { hash, data } => {
                     pending.insert(*hash, (*pos, PendingState::Present(data.clone())));
                 }
-                JournalEntry::Delete { hash } => {
+                WalEntry::Delete { hash } => {
                     pending.insert(*hash, (*pos, PendingState::Tombstone));
                 }
-                JournalEntry::Constraint { .. } => {}
+                WalEntry::Constraint { .. } => {}
             }
         }
 
         Ok(Self {
-            inner: Arc::new(FileJournalInner {
+            inner: Arc::new(FileWalInner {
                 dir: cas_dir,
                 journal_dir,
                 checkpoint,
@@ -349,10 +349,7 @@ impl FileJournal {
     /// the first/last position range.
     async fn read_segment_entries(
         path: &PathBuf,
-    ) -> Result<
-        (Vec<(JournalPosition, JournalEntry)>, Option<(JournalPosition, JournalPosition)>),
-        CasError,
-    > {
+    ) -> Result<(Vec<(WalPosition, WalEntry)>, Option<(WalPosition, WalPosition)>), CasError> {
         let buf = tokio::fs::read(path).await.map_err(CasError::Io)?;
         if buf.len() < format::HEADER_LEN {
             return Err(CasError::corrupt_object(format!(
@@ -375,10 +372,10 @@ impl FileJournal {
     /// from sealed segments, active entries list, and new entries.
     fn collect_entries_from_checkpoint(
         sealed: &[SealedSegment],
-        active_entries: &[(JournalPosition, JournalEntry)],
-        pre_pended: &[(JournalPosition, JournalEntry)],
-        checkpoint_pos: JournalPosition,
-    ) -> Result<Vec<(JournalPosition, JournalEntry)>, CasError> {
+        active_entries: &[(WalPosition, WalEntry)],
+        pre_pended: &[(WalPosition, WalEntry)],
+        checkpoint_pos: WalPosition,
+    ) -> Result<Vec<(WalPosition, WalEntry)>, CasError> {
         let mut all = Vec::new();
 
         // Collect from sealed segments whose range overlaps checkpoint_pos.
@@ -409,7 +406,7 @@ impl FileJournal {
     /// If it exceeds max_segment_size, seal it and create a new one.
     async fn maybe_seal(
         state: &mut JournalWriterState,
-        inner: &FileJournalInner,
+        inner: &FileWalInner,
     ) -> Result<(), CasError> {
         let Some(active) = &state.active else {
             return Ok(());
@@ -426,17 +423,17 @@ impl FileJournal {
         //
         // However, the active segment might be empty (no entries written).
         // In that case, don't seal.
-        if active.first_pos == JournalPosition::ZERO && active.bytes_written == 0 {
+        if active.first_pos == WalPosition::ZERO && active.bytes_written == 0 {
             return Ok(());
         }
 
         // Determine last pos from the active segment's entries.
         let act_path = ActiveSegment::path(&inner.journal_dir);
         let entries = Self::read_segment_entries(&act_path).await?;
-        let last_pos = entries.0.last().map(|(pos, _)| *pos).unwrap_or(JournalPosition::ZERO);
+        let last_pos = entries.0.last().map(|(pos, _)| *pos).unwrap_or(WalPosition::ZERO);
 
         // If no entries were written yet, nothing to seal.
-        if last_pos == JournalPosition::ZERO {
+        if last_pos == WalPosition::ZERO {
             return Ok(());
         }
 
@@ -455,20 +452,20 @@ impl FileJournal {
 }
 
 #[async_trait]
-impl Journal for FileJournal {
-    async fn append(&self, entry: JournalEntry) -> Result<JournalPosition, CasError> {
+impl Wal for FileWal {
+    async fn append(&self, entry: WalEntry) -> Result<WalPosition, CasError> {
         let inner = &*self.inner;
         let mut state = inner.write_lock.lock().await;
 
         // Check sealing before writing.
         Self::maybe_seal(&mut state, inner).await?;
 
-        let pos = JournalPosition::from_u64(inner.next_pos.fetch_add(1, Ordering::SeqCst));
+        let pos = WalPosition::from_u64(inner.next_pos.fetch_add(1, Ordering::SeqCst));
 
         let encoded = format::encode_entry(&entry, pos);
         if let Some(active) = &mut state.active {
             // Record first_pos if this is the first entry.
-            if active.first_pos == JournalPosition::ZERO {
+            if active.first_pos == WalPosition::ZERO {
                 // Re-read from file to find the actual first entry's position.
                 // We'll set it from the entries in the active segment.
                 let (existing_entries, _) =
@@ -486,23 +483,23 @@ impl Journal for FileJournal {
 
         // Update pending state.
         match &entry {
-            JournalEntry::Put { hash, data } => {
+            WalEntry::Put { hash, data } => {
                 inner
                     .pending
                     .lock()
                     .unwrap()
                     .insert(*hash, (pos, PendingState::Present(data.clone())));
             }
-            JournalEntry::Delete { hash } => {
+            WalEntry::Delete { hash } => {
                 inner.pending.lock().unwrap().insert(*hash, (pos, PendingState::Tombstone));
             }
-            JournalEntry::Constraint { .. } => {}
+            WalEntry::Constraint { .. } => {}
         }
 
         Ok(pos)
     }
 
-    async fn append_batch(&self, entries: Vec<JournalEntry>) -> Result<(), CasError> {
+    async fn append_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError> {
         if entries.is_empty() {
             return Ok(());
         }
@@ -515,10 +512,10 @@ impl Journal for FileJournal {
 
         if let Some(active) = &mut state.active {
             for entry in &entries {
-                let pos = JournalPosition::from_u64(inner.next_pos.fetch_add(1, Ordering::SeqCst));
+                let pos = WalPosition::from_u64(inner.next_pos.fetch_add(1, Ordering::SeqCst));
                 let encoded = format::encode_entry(entry, pos);
 
-                if active.first_pos == JournalPosition::ZERO {
+                if active.first_pos == WalPosition::ZERO {
                     // Find actual first pos from existing entries + current.
                     let (existing_entries, _) =
                         Self::read_segment_entries(&ActiveSegment::path(&inner.journal_dir))
@@ -535,17 +532,17 @@ impl Journal for FileJournal {
 
                 // Update pending state.
                 match entry {
-                    JournalEntry::Put { hash, data } => {
+                    WalEntry::Put { hash, data } => {
                         inner
                             .pending
                             .lock()
                             .unwrap()
                             .insert(*hash, (pos, PendingState::Present(data.clone())));
                     }
-                    JournalEntry::Delete { hash } => {
+                    WalEntry::Delete { hash } => {
                         inner.pending.lock().unwrap().insert(*hash, (pos, PendingState::Tombstone));
                     }
-                    JournalEntry::Constraint { .. } => {}
+                    WalEntry::Constraint { .. } => {}
                 }
             }
             active.flush().await?;
@@ -554,9 +551,9 @@ impl Journal for FileJournal {
         Ok(())
     }
 
-    async fn committed_position(&self) -> JournalPosition {
+    async fn committed_position(&self) -> WalPosition {
         let next = self.inner.next_pos.load(Ordering::SeqCst);
-        if next == 0 { JournalPosition::ZERO } else { JournalPosition::from_u64(next - 1) }
+        if next == 0 { WalPosition::ZERO } else { WalPosition::from_u64(next - 1) }
     }
 
     async fn pending_count(&self) -> u64 {
@@ -568,7 +565,7 @@ impl Journal for FileJournal {
         map.get(hash).map(|(_, state)| state.clone()).unwrap_or(PendingState::NotPresent)
     }
 
-    async fn replay_from(&self, pos: JournalPosition) -> Vec<(JournalPosition, JournalEntry)> {
+    async fn replay_from(&self, pos: WalPosition) -> Vec<(WalPosition, WalEntry)> {
         let inner = &*self.inner;
         // Acquire write lock first (tokio::sync::Mutex) to prevent concurrent writes,
         // then sealed list (std::sync::Mutex). Order ensures no non-Send MutexGuard
@@ -623,7 +620,7 @@ impl Journal for FileJournal {
         all
     }
 
-    async fn trim(&self, up_to: JournalPosition) -> Result<(), CasError> {
+    async fn trim(&self, up_to: WalPosition) -> Result<(), CasError> {
         let inner = &*self.inner;
 
         // Persist checkpoint first.
@@ -657,7 +654,7 @@ impl Journal for FileJournal {
     }
 }
 
-impl Clone for FileJournal {
+impl Clone for FileWal {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
@@ -674,10 +671,10 @@ mod tests {
     use bytes::Bytes;
     use tempfile::TempDir;
 
-    async fn create_test_journal() -> (FileJournal, TempDir) {
+    async fn create_test_journal() -> (FileWal, TempDir) {
         let tmp = TempDir::new().unwrap();
         let journal =
-            FileJournal::create_with_max_size(tmp.path().to_path_buf(), 1024 * 1024).await.unwrap();
+            FileWal::create_with_max_size(tmp.path().to_path_buf(), 1024 * 1024).await.unwrap();
         (journal, tmp)
     }
 
@@ -686,7 +683,7 @@ mod tests {
         let (journal, _tmp) = create_test_journal().await;
         let data = Bytes::from_static(b"hello");
         let hash = Hash::from_content(&data);
-        journal.append(JournalEntry::Put { hash, data: data.clone() }).await.unwrap();
+        journal.append(WalEntry::Put { hash, data: data.clone() }).await.unwrap();
 
         match journal.check_pending(&hash).await {
             PendingState::Present(d) => assert_eq!(d, data),
@@ -698,7 +695,7 @@ mod tests {
     async fn delete_and_tombstone() {
         let (journal, _tmp) = create_test_journal().await;
         let hash = Hash::from_content(b"gone");
-        journal.append(JournalEntry::Delete { hash }).await.unwrap();
+        journal.append(WalEntry::Delete { hash }).await.unwrap();
 
         match journal.check_pending(&hash).await {
             PendingState::Tombstone => {}
@@ -711,28 +708,23 @@ mod tests {
         let (journal, _tmp) = create_test_journal().await;
         let h1 = Hash::from_content(b"a");
         let h2 = Hash::from_content(b"b");
-        journal
-            .append(JournalEntry::Put { hash: h1, data: Bytes::from_static(b"a") })
-            .await
-            .unwrap();
+        journal.append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"a") }).await.unwrap();
         let pos = journal
-            .append(JournalEntry::Put { hash: h2, data: Bytes::from_static(b"b") })
+            .append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"b") })
             .await
             .unwrap();
 
         let replayed = journal.replay_from(pos).await;
         assert_eq!(replayed.len(), 1);
-        assert!(matches!(replayed[0].1, JournalEntry::Put { hash, .. } if hash == h2));
+        assert!(matches!(replayed[0].1, WalEntry::Put { hash, .. } if hash == h2));
     }
 
     #[tokio::test]
     async fn trim_removes_entries() {
         let (journal, _tmp) = create_test_journal().await;
         let hash = Hash::from_content(b"x");
-        let pos = journal
-            .append(JournalEntry::Put { hash, data: Bytes::from_static(b"x") })
-            .await
-            .unwrap();
+        let pos =
+            journal.append(WalEntry::Put { hash, data: Bytes::from_static(b"x") }).await.unwrap();
         journal.trim(pos).await.unwrap();
         assert_eq!(journal.pending_count().await, 0);
     }
@@ -744,11 +736,11 @@ mod tests {
         let h2 = Hash::from_content(b"2");
 
         let pos1 = journal
-            .append(JournalEntry::Put { hash: h1, data: Bytes::from_static(b"1") })
+            .append(WalEntry::Put { hash: h1, data: Bytes::from_static(b"1") })
             .await
             .unwrap();
         let _pos2 = journal
-            .append(JournalEntry::Put { hash: h2, data: Bytes::from_static(b"2") })
+            .append(WalEntry::Put { hash: h2, data: Bytes::from_static(b"2") })
             .await
             .unwrap();
 
@@ -771,8 +763,8 @@ mod tests {
         let h2 = Hash::from_content(b"2");
         journal
             .append_batch(vec![
-                JournalEntry::Put { hash: h1, data: Bytes::from_static(b"1") },
-                JournalEntry::Put { hash: h2, data: Bytes::from_static(b"2") },
+                WalEntry::Put { hash: h1, data: Bytes::from_static(b"1") },
+                WalEntry::Put { hash: h2, data: Bytes::from_static(b"2") },
             ])
             .await
             .unwrap();
@@ -787,16 +779,16 @@ mod tests {
         // Create journal, append, trim (which writes checkpoint).
         let hash = Hash::from_content(b"checkpoint-test");
         {
-            let journal = FileJournal::create(cas_dir.clone()).await.unwrap();
+            let journal = FileWal::create(cas_dir.clone()).await.unwrap();
             let pos = journal
-                .append(JournalEntry::Put { hash, data: Bytes::from_static(b"data") })
+                .append(WalEntry::Put { hash, data: Bytes::from_static(b"data") })
                 .await
                 .unwrap();
             journal.trim(pos).await.unwrap();
         }
 
         // Reopen — checkpoint should have persisted.
-        let journal = FileJournal::create(cas_dir.clone()).await.unwrap();
+        let journal = FileWal::create(cas_dir.clone()).await.unwrap();
         // The appended entry was trimmed, so it should not be pending.
         match journal.check_pending(&hash).await {
             PendingState::NotPresent => {}
@@ -808,20 +800,19 @@ mod tests {
     async fn segment_sealing_and_replay() {
         let tmp = TempDir::new().unwrap();
         // Very small max segment size to force sealing.
-        let journal =
-            FileJournal::create_with_max_size(tmp.path().to_path_buf(), 128).await.unwrap();
+        let journal = FileWal::create_with_max_size(tmp.path().to_path_buf(), 128).await.unwrap();
 
         // Append enough entries to trigger sealing.
-        let mut last_pos = JournalPosition::ZERO;
+        let mut last_pos = WalPosition::ZERO;
         for i in 0..20u8 {
             let data = vec![i; 256];
             let hash = Hash::from_content(&data);
             last_pos =
-                journal.append(JournalEntry::Put { hash, data: Bytes::from(data) }).await.unwrap();
+                journal.append(WalEntry::Put { hash, data: Bytes::from(data) }).await.unwrap();
         }
 
         // Replay from first position should return all entries.
-        let all = journal.replay_from(JournalPosition::ZERO).await;
+        let all = journal.replay_from(WalPosition::ZERO).await;
         assert_eq!(all.len(), 20, "expected 20 entries from replay");
         assert_eq!(all.last().unwrap().0, last_pos);
 
@@ -838,13 +829,13 @@ mod tests {
             let data = [i; 64];
             let hash = Hash::from_content(&data);
             let pos = journal
-                .append(JournalEntry::Put { hash, data: Bytes::from(data.to_vec()) })
+                .append(WalEntry::Put { hash, data: Bytes::from(data.to_vec()) })
                 .await
                 .unwrap();
             positions.push(pos);
         }
 
-        let all = journal.replay_from(JournalPosition::ZERO).await;
+        let all = journal.replay_from(WalPosition::ZERO).await;
         assert_eq!(all.len(), 5);
         for (i, (pos, _)) in all.iter().enumerate() {
             assert_eq!(*pos, positions[i], "entry {i} position mismatch");
@@ -854,11 +845,11 @@ mod tests {
     #[tokio::test]
     async fn committed_position() {
         let (journal, _tmp) = create_test_journal().await;
-        assert_eq!(journal.committed_position().await, JournalPosition::ZERO);
+        assert_eq!(journal.committed_position().await, WalPosition::ZERO);
 
         let h = Hash::from_content(b"x");
         let pos = journal
-            .append(JournalEntry::Put { hash: h, data: Bytes::from_static(b"x") })
+            .append(WalEntry::Put { hash: h, data: Bytes::from_static(b"x") })
             .await
             .unwrap();
         assert_eq!(journal.committed_position().await, pos);
