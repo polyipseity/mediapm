@@ -2037,6 +2037,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "zerocopy",
 ]
 

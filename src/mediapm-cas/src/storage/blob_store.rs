@@ -207,8 +207,12 @@ impl BlobStore for FileSystemBlobStore {
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         let full_path = hash_to_path(&self.root, hash);
         let delta_path = hash_to_delta_path(&self.root, hash);
-        let _ = tokio::fs::remove_file(&full_path).await;
-        let _ = tokio::fs::remove_file(&delta_path).await;
+        if let Err(e) = tokio::fs::remove_file(&full_path).await {
+            tracing::warn!(%hash, path = %full_path.display(), error = %e, "failed to remove full blob");
+        }
+        if let Err(e) = tokio::fs::remove_file(&delta_path).await {
+            tracing::warn!(%hash, path = %delta_path.display(), error = %e, "failed to remove delta blob");
+        }
         Ok(())
     }
 

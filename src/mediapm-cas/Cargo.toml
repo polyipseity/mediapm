@@ -26,6 +26,7 @@ multihash.workspace = true
 oxidelta = { workspace = true, default-features = false }
 serde.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 zerocopy = { workspace = true, features = ["derive"] }
 
