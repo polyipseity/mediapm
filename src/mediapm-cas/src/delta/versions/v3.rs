@@ -152,7 +152,7 @@ impl V3Envelope {
     }
 
     /// Builds an envelope from content parameters, computing diff_hash internally.
-    #[cfg_attr(not(test), expect(dead_code))]
+    #[allow(dead_code)]
     pub(crate) fn from_parts(base_hash: Hash, content_len: u64, payload: Vec<u8>) -> Self {
         let payload_len = payload.len() as u64;
         let diff_hash = *blake3::hash(&payload).as_bytes();

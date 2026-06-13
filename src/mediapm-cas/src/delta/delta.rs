@@ -71,7 +71,7 @@ impl DeltaPatch {
 ///
 /// Returns the fully reconstructed bytes or a [`CasError::CorruptObject`] if
 /// any delta envelope or VCDIFF patch is invalid.
-pub(crate) fn resolve_delta_chain(
+pub(crate) fn apply_delta_chain(
     mut base_data: Bytes,
     chain: &mut Vec<(Hash, Bytes)>,
     mut current: Hash,

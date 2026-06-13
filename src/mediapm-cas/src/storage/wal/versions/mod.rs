@@ -37,7 +37,7 @@ pub(crate) const JOURNAL_MAGIC: &[u8; 6] = v1::JOURNAL_MAGIC;
 pub(crate) const JOURNAL_VERSION: u16 = v1::JOURNAL_VERSION;
 
 /// Magic prefix for checkpoint files.
-#[cfg_attr(not(test), expect(dead_code))]
+#[allow(dead_code)]
 pub(crate) const CHECKPOINT_MAGIC: &[u8; 6] = v1::CHECKPOINT_MAGIC;
 
 /// Maximum supported journal segment format version.

@@ -9,7 +9,6 @@
 //!
 //! Hash encoding/decoding is delegated to `rust-multihash` through
 //! [`crate::Hash`] helpers. No manual varint parsing is performed here.
-#![cfg_attr(not(test), expect(dead_code))]
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!
@@ -32,6 +31,7 @@ use crate::{CasError, Hash, HashParseError};
 /// DO NOT REMOVE: In the fat future when there are more than 65535 versions,
 /// we use 0 for both bytes to represent the version, and we will at that time
 /// find a better way to represent the version.
+#[allow(dead_code)]
 pub(crate) const DIFF_STORAGE_MAGIC: &[u8; 8] = b"MDCASD\x01\x00";
 
 /// Version-local delta state for V1 wire semantics.
@@ -63,6 +63,7 @@ pub(crate) struct V1Envelope {
     /// Encoded payload length.
     pub(crate) payload_len: u64,
     /// Envelope checksum.
+    #[allow(dead_code)]
     pub(crate) checksum: u32,
     /// VCDIFF payload bytes.
     pub(crate) payload: Vec<u8>,
@@ -159,6 +160,7 @@ impl V1Envelope {
     }
 
     /// Encodes V1 envelope to bytes.
+    #[allow(dead_code)]
     pub(crate) fn encode(&self) -> Vec<u8> {
         let base_hash_bytes = self.base_hash.storage_bytes();
         let capacity = V1Metadata::SIZE + base_hash_bytes.len() + self.payload.len();
