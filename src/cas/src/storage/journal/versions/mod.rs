@@ -18,7 +18,7 @@
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
-// TODO(phase8): remove when journal is wired into storage backends.
+// TODO: remove when FileJournal is wired into storage backends.
 #![allow(dead_code)]
 
 pub(crate) mod v1;

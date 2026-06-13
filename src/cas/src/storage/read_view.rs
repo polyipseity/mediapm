@@ -57,12 +57,11 @@ pub trait ReadView: Send + Sync {
 
     /// Apply a batch of journal entries (called by WALConsumer).
     ///
-    /// TODO(#plan-phase5): Connect this to the WALConsumer so the in-memory
-    /// cache is proactively refreshed when journal entries are consumed.
-    /// Currently unused because the cache is updated via `hint_state_change`
-    /// during write operations, and the read-path's journal fallback
-    /// provides consistency. This method will be called once the
-    /// `BackgroundEngine` gains a reference to the `ReadView`.
+    /// TODO: Wire this into BackgroundEngine so the in-memory cache is
+    /// proactively refreshed when journal entries are consumed. Currently
+    /// unused because the cache is updated via `hint_state_change` during
+    /// write operations, and the read-path's journal fallback provides
+    /// consistency.
     #[expect(dead_code)]
     async fn apply_batch(&self, entries: Vec<JournalEntry>) -> Result<(), CasError>;
 }
@@ -289,10 +288,10 @@ impl<S: ObjectStore + Send + Sync, J: Journal + Send + Sync> ReadView for Compos
 
     /// Apply a batch of journal entries (called by WALConsumer).
     ///
-    /// TODO(#plan-phase5): Connect this to the WALConsumer so the in-memory
-    /// cache is proactively refreshed when journal entries are consumed.
-    /// Currently unused because the cache is updated via `hint_state_change`
-    /// during write operations.
+    /// TODO: Wire this into BackgroundEngine so the in-memory cache is
+    /// proactively refreshed when journal entries are consumed. Currently
+    /// unused because the cache is updated via `hint_state_change` during
+    /// write operations.
     async fn apply_batch(&self, entries: Vec<JournalEntry>) -> Result<(), CasError> {
         for entry in entries {
             match entry {

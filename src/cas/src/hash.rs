@@ -6,6 +6,7 @@
 use multihash::Multihash;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 
 pub const HASH_SIZE: usize = 32;
 
@@ -53,6 +54,36 @@ impl Hash {
     /// Return the zero hash (all zeros). Useful as a sentinel.
     pub const fn zero() -> Self {
         Self([0u8; HASH_SIZE])
+    }
+
+    /// Composite hash from a sequence of hashes.
+    ///
+    /// Produces `blake3(h₁.as_bytes() ‖ h₂.as_bytes() ‖ …)`. Deterministic —
+    /// same sequence always produces same composite hash.
+    ///
+    /// This is used by Conductor and MediaPM for StringList identity where
+    /// element hashes are already stored as individual CAS objects.
+    pub fn composite(hashes: &[Hash]) -> Self {
+        let mut inner = blake3::Hasher::new();
+        for h in hashes {
+            inner.update(h.as_bytes());
+        }
+        Self(*inner.finalize().as_bytes())
+    }
+
+    /// Return the raw digest bytes (same as [`as_bytes`](Self::as_bytes)).
+    pub fn digest(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Return the multihash codec code (blake3 = `0x1e`).
+    pub fn code(&self) -> u64 {
+        BLAKE3_MULTICODEC
+    }
+
+    /// Return the multihash digest length in bytes (always 32 for blake3-256).
+    pub fn size(&self) -> u8 {
+        HASH_SIZE as u8
     }
 
     /// Encode the hash as multihash storage bytes using the official [`multihash`] crate.
@@ -112,6 +143,17 @@ impl From<Hash> for [u8; HASH_SIZE] {
 impl AsRef<[u8]> for Hash {
     fn as_ref(&self) -> &[u8] {
         &self.0
+    }
+}
+
+impl FromStr for Hash {
+    type Err = HashParseError;
+
+    /// Parse a lowercase 64-char hex string (as produced by [`to_hex`](Hash::to_hex)).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes =
+            blake3::Hash::from_hex(s).map_err(|e| HashParseError::Multihash(e.to_string()))?;
+        Ok(Self(*bytes.as_bytes()))
     }
 }
 

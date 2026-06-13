@@ -1,411 +1,276 @@
 # CAS Agent Guide
 
-> **CAS** is the content-identified object store. `put(bytes)` → hash; `get(hash)` → bytes.
+> CAS is the content-identified object store. `put(bytes)` → hash; `get(hash)` → bytes.
 > Deduplicates identical content via Blake3-256. Foundation for deterministic workflows.
 > Used by Conductor (state), MediaPM (materialization), and CAS internally.
 
-This guide captures implementation context that is easy to miss from signatures
-alone.
+This guide is the canonical specification. Every statement is part of the
+behavioral contract — code must match.
 
-## Core model contract
+## 1. Hash
 
-- Treat CAS as an "everything is a diff" system at planning/index level:
-  full blobs are logically diff-from-empty identity roots even when persisted
-  as raw full payload bytes for fast reads.
-- Keep storage/index behavior deterministic and reconstructable:
-  - hash identity uses validated BLAKE3 values,
-  - object fan-out pathing is deterministic,
-  - diff lineage must remain acyclic.
-- Preserve runtime-agnostic async boundaries in API contracts; runtime-specific
-  scheduling details remain adapter-side.
+`Hash([u8; 32])` — blake3-256 content address.
 
-## Context map
+- **Content-addressed**: `Hash::from_content(data)` = blake3(data). Same data → same hash.
+- **Zero sentinel**: `Hash::zero()` = `[0u8; 32]`. Never stored: put is no-op, get/stat always succeed (empty data), delete is no-op.
+- **Wire format**: Multihash-encoded (`multihash` crate): `[varint code: 0x1e][varint length: 0x20][32-byte digest]`.
+  `storage_bytes()` / `from_storage_bytes_with_len()` use `Multihash::wrap` / `Multihash::read`.
+  The varint format enables future hash function adoption without breaking backward
+  compatibility at the multihash level.
+- **Serialization**: Derives `Serialize`/`Deserialize` (serde) and `Ord` (lexicographic on bytes).
 
-- `StorageActor` is the write/read gateway for `put/get/delete/set_constraint`.
-- `IndexActor` is the persistence coordinator for `redb` snapshot flushes.
-- `OptimizerActor` runs rewrite/prune maintenance passes.
-- `CasNodeActor` is the wire-command façade that composes the three actors.
+## 2. Public API
 
-### Interaction rules
-
-- `StorageActor` may request index flushes via `IndexActorMessage::FlushSnapshot`.
-- `StorageActor` may request optimizer actions when disk pressure increases.
-- `CasNodeActor` dispatches commands to child actors; it does not bypass them.
-
-## Invariants
-
-- A non-empty hash should exist in redb only if at least one on-disk object file
-  exists (`<hash>` or `<hash>.diff`).
-- Full objects are stored as raw payload bytes with no headers.
-- Delta objects are stored as `.diff` files using the oxidelta-backed payload
-  format.
-- Persisted object payload files are read-only by default after successful CAS
-  writes (`<hash>` and `<hash>.diff`).
-- CAS-owned overwrite/delete paths may temporarily clear read-only bits before
-  replacing or removing object files.
-- Delete is transitive for delta descendants to avoid orphan reconstruction paths.
-- **Delete ordering**: index mutations (`persist_index_batch`) always happen
-  **before** object file deletions (`delete_object_files`). This ensures crash
-  atomicity: after a crash, conservative false negatives (index claims existence
-  but file is gone) are preferable to false positives.
-- **Lock file lifecycle**: the lock file is deleted on graceful `Drop` of
-  `FileSystemState`. A stale lock file on disk is safe (kernel releases the
-  `flock` on fd close), but deleting it prevents spurious warnings.
-- **`delete_many` uses batched persistence**: the GC sweep calls
-  `delete_many()` which accumulates all `delete_inner` plans, issues a single
-  `persist_index_batch`, then deletes all object files — avoiding O(n) redb
-  transaction overhead.
-- **`optimize_once` temporarily disabled**: full-object scan has O(n×m)
-  scaling proportional to total store size. Disabled with a `TODO` for
-  scope-bounded replacement. The dead code body remains as a reference.
-- Constraints never persist an explicit empty-only candidate list; empty base is
-  implicit at read time.
-- Optimizer candidate scoring must preserve the depth/size tradeoff contract:
-  minimize $Cost = Size(Delta) + \alpha \cdot Depth(Chain)$ and avoid changes
-  that collapse storage size at the expense of pathological reconstruction
-  depth.
-
-## Storage and retrieval behavior
-
-- Keep root empty-content identity bootstrap behavior stable.
-- Retrieval must resolve base ancestry deterministically before applying delta
-  reconstruction.
-- Keep full-object and delta-object persistence semantics explicit in index and
-  runtime code paths so read behavior remains predictable.
-
-## Failure resilience
-
-- Writes stay atomic (`tempfile` on same mount + atomic rename).
-- Under disk pressure, preserve soft/hard-threshold behavior:
-  - soft threshold enables compression-first optimization behavior,
-  - hard threshold rejects writes and surfaces explicit out-of-space errors.
-
-## Documentation requirement (strict)
-
-- In `src/cas/**/*.rs`, document touched files thoroughly:
-  - module docs via `//!`,
-  - item docs via `///` for public and private items.
-- Prefer rich docs (purpose, invariants, side effects, failure behavior,
-  and performance rationale where relevant) over brief labels.
-- For tests, include concise guarantee-oriented doc/comments describing what
-  user-facing or invariant behavior the test protects.
-
-## Codec versioning protocol
-
-- This crate is currently unreleased; backward compatibility is **not**
-  required between in-development wire versions.
-- Keep `DeltaState` in `src/cas/src/codec/object.rs` as the stable,
-  version-agnostic source of truth.
-- Put each on-disk wire format in its own file under
-  `src/cas/src/codec/versions/` (for example `v1.rs`, `v2.rs`).
-- Inside `versions/vX.rs`, do **not** import unversioned structs from outside
-  `versions/`.
-- A `versions/vX.rs` file may reference only the immediately previous version
-  file, and only to implement version-to-version isomorphism/migration.
-- Implement latest-version ↔ unversioned-struct isomorphism in
-  `versions/mod.rs`, not in `vX.rs` files.
-- Keep an explicit `DO NOT REMOVE` policy docstring at the top of each file in
-  `versions/`.
-- Files outside `codec/versions/` and `index/versions/` must interact with
-  versioned symbols only through each folder's `versions/mod.rs` API surface;
-  never import `versions::vX` directly.
-- `versions/mod.rs` must not directly re-export `versions::vX` structs/types;
-  expose unversioned APIs/wrappers there instead.
-- Non-`versions/` modules should keep unversioned runtime data structures and
-  use `versions/mod.rs` only for serialization/deserialization boundaries.
-- For the `index/` tree specifically, modules outside `index/versions/` should
-  import unversioned facade symbols from `index/mod.rs` instead of importing
-  `index::versions::*` paths directly.
-- In non-`versions/` index modules (for example `index/db.rs`, `index/graph.rs`,
-  `index/state.rs`), do not add `version` fields or explicit version-checking
-  logic. Keep those concerns in `index/versions/` and expose only
-  version-agnostic helpers through the facade.
-- Keep versioned envelope structs `pub(crate)`; they are internal to the codec
-  boundary and must not leak into the public API.
-- Every wire version must provide an `IsoPrime` between its envelope and a
-  version-local state type in `versions/`.
-- `versions/mod.rs` must provide the `IsoPrime` bridge between the latest
-  version-local state and unversioned runtime `DeltaState`.
-- Do not add manual `From`/`Into` or ad-hoc `to_state`/`from_state` conversion
-  methods for version envelopes; use optics exclusively.
-- Implement version-to-version migration through optic composition
-  (`old_iso.view` -> `new_iso.review`) so payload bytes are not recompressed.
-- Delegate hash byte encoding/decoding to `rust-multihash` via the `Hash`
-  helpers; do not manually parse multihash varints in envelope code.
-- Do **not** apply Unicode NFD normalization in CAS codec structs/fields;
-  NFD normalization is reserved for mediapm filepath handling only.
-
-### Automated enforcement
-
-- The versioning convention is CI-enforced for both version roots:
-  - `src/cas/src/codec/versions/mod.rs` test
-    `versioned_files_keep_policy_guard_and_boundary_rules`
-  - `src/cas/src/index/versions/mod.rs` test
-    `versioned_files_keep_policy_guard_and_boundary_rules`
-- These tests scan `versions/v*.rs` files and fail if a version file:
-  - removes the `DO NOT REMOVE` policy guard docstring,
-  - imports unversioned runtime structs directly, or
-  - references non-adjacent versions (anything other than `vN` or `vN-1`).
-- Additional guard tests also fail when any non-`versions/` Rust file directly
-  imports/references `versions::vX`; non-version files must go through
-  `versions/mod.rs`.
-- When adding `vN.rs`, keep the policy guard text and boundary rules intact.
-
-## Operational notes
-
-- Disk pressure is evaluated before accepting writes.
-  - Soft threshold: enable compression-first mode.
-  - Hard threshold: reject writes with `CasError::OutOfSpace` and trigger prune.
-- In-flight deduplication (`DashMap<Hash, Arc<Notify>>`) ensures a hash is
-  persisted once even when many concurrent puts race.
-
----
-
-## Detailed Specification
-
-The following sections consolidate cross-crate specification content relevant to CAS, inlined from the external spec files that previously held them.
-
-### Cross-Crate Data Flow
-
-```text
-User Input (mediapm.ncl)
-    ↓
-MediaPm Configuration Parsing
-    ├─→ CAS: Content-address media
-    ├─→ Conductor: Synthesize workflows
-    └─→ Builtins: Tool registration
-    ↓
-Conductor Workflow Execution
-    ├─ Step 1: import (builtin) → CAS store
-    ├─ Step 2: ffmpeg (managed tool) → CAS store
-    ├─ Step 3: media-tagger (managed tool) → CAS store
-    └─ Step N: export (builtin) → Materialized files
-    ↓
-CAS-Backed Materialization
-    └─ Direct materialization to final output paths
-
-Temp extraction directory (mediapm_tmp_dir, for zip processing only)
-    └─ Extract → materialize → cleanup
-    ↓
-State Persistence (state.ncl)
-    └─ Lock records: path → media_id, variant, hash
-```
-
-### Shared Invariants
-
-#### 1. Content Identity Contract
-
-**Principle**: Same bytes → same hash (always)
-
-| Crate | Implementation |
-|-------|----------------|
-| **CAS** | Blake3-256 multihash; `from_content()` is deterministic; `Hash::composite(&[Hash])` produces deterministic composite hash via `blake3(h₁.bytes() ‖ h₂.bytes() ‖ …)` |
-| **Conductor** | CAS hash used for state blob identity; external_data keyed by hash; StringList input hashing uses `Hash::composite` |
-| **Builtins** | Pure builtins (echo, archive) produce deterministic payloads |
-| **MediaPM** | Lock records keyed by `(media_id, variant)` → CAS hash; materializer StringList hashing uses `Hash::composite` |
-
-**Verification**: If same input produces different hash across runs, it's a bug.
-
-**Composite hash invariant**: All StringList composite hash computations across conductor and materializer must use `Hash::composite` to prevent drift. The 4 independent implementations were unified under `Hash::composite` in `refactor(cas): add Hash::composite and deduplicate StringList hash computation`.
-
-#### 2. Constraint Correctness Contract
-
-**Principle**: Base selection respects explicit constraints
-
-| Crate | Enforcement |
-|-------|-------------|
-| **CAS** | `set_constraint_batch()` validates each op's bases exist; optimizer honors constraints |
-| **Conductor** | External data → CAS → constraint metadata preserved across loads |
-| **Builtins** | N/A (read-only, no constraints) |
-| **MediaPM** | Workflow state persisted in CAS; constraints implicit (content-addressed) |
-
-**Verification**: If optimizer rewrite violates explicit constraints, it's a bug.
-
-#### 3. Reconstructability Contract
-
-**Principle**: Stored bytes are retrievable exactly
-
-| Crate | Guarantee |
-|-------|----------|
-| **CAS** | `get(hash)` returns exact bytes; delta chains reconstructible |
-| **Conductor** | State blob persisted to CAS; can round-trip serialize ↔ deserialize |
-| **Builtins** | Output bytes persist; pure outputs are deterministic |
-| **MediaPM** | Files materialized from CAS are byte-identical to source |
-
-**Verification**: If retrieved bytes differ from stored, it's a bug.
-
-#### 4. Atomicity Contract
-
-**Principle**: Operations succeed or fail cleanly (no partial state)
-
-| Crate | Mechanism |
-|-------|-----------|
-| **CAS** | Temp file + atomic rename; index snapshots on mutation; `put_new_full_object()` rolls back in-memory index entry + deletes orphaned file if `persist_index_batch()` fails |
-| **Conductor** | State persisted atomically; workflow fails fast on conflicts |
-| **Builtins** | File operations succeed or rollback (no orphaned state) |
-| **MediaPM** | Direct materialization to final output paths; CAS integrity trusted by default |
-
-**Verification**: If partial state persists after failure, it's a bug.
-
-#### 5. Determinism Contract
-
-**Principle**: Identical inputs → identical outputs (pure paths only)
-
-| Crate | Scope |
-|-------|-------|
-| **CAS** | `put()` and `get()` are deterministic; `optimize()` may change encoding |
-| **Conductor** | Pure workflows deterministic; impure workflows may vary on retries |
-| **Builtins** | Pure (echo, archive) deterministic; impure (fs, import, export) side-effect-driven |
-| **MediaPM** | Lock state deterministic; sync can skip if hash unchanged |
-
-**Verification**: If pure operation produces different output, it's a bug.
-
-#### 6. Schema Sync
-
-The NCL↔Rust schema sync contract applies to conductor and mediapm but not CAS, which uses Rust-native serialization for codec and index schemas. See conductor/mediapm AGENTS.md for NCL-specific rules.
-
-### CAS Integrity Verification
-
-The content-addressed storage layer implements configurable integrity verification that re-checks BLAKE3 hashes when objects are read. Verification is gated by a list of trigger strategies (`VerifyTriggerStrategy`):
-
-- `Always` — Re-verify on every `get()`.
-- `Modified` — Re-verify when the object's mtime has changed since the last put or verify (fieldless variant; no per-entity timestamp is tracked).
-- `Sample { denominator }` — Re-verify on a 1-in-N probabilistic basis.
-- `Stale { timeout }` — Re-verify when the elapsed time since the last put or verify exceeds the timeout.
-
-All strategies are evaluated on every `get()`; verification runs if *any* matching strategy triggers.
-
-**Configuration** (`CasIntegrityConfig`):
+### 2.1 CasApi — four-method contract
 
 ```rust
-pub struct CasIntegrityConfig {
-    pub verify_on_read: Vec<VerifyTriggerStrategy>,
-    pub reconstructed_bytes_cache_ttl: Duration,
+#[async_trait]
+pub trait CasApi: Send + Sync {
+    async fn put(&self, data: Bytes) -> Result<Hash, CasError>;
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
+    async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError>;
+    async fn delete(&self, hash: Hash) -> Result<(), CasError>;
 }
 ```
 
-Default `verify_on_read`: `[Modified, Sample { denominator: 100 }, Stale { timeout: 604800s }]`.
-Default `reconstructed_bytes_cache_ttl`: `3600s`.
+**Guarantees** (within a single async task):
 
-Reconstructed-object bytes are cached with a configurable TTL (`reconstructed_bytes_cache_ttl`) to reduce redundant decoding work. No separate integrity-result cache is maintained; verification decisions are made fresh on every `get()` call against object-file metadata and the strategy list.
+- **Write-then-read**: After `put(data)` returns, `get(hash)` returns the data and `stat(hash)` returns metadata immediately.
+- **Delete-then-read**: After `delete(hash)` returns, `get(hash)` and `stat(hash)` return NotFound immediately.
+- **Idempotent**: `put(data)` twice with same data is no-op. `delete(hash)` twice is no-op.
+- **Crash survival**: After any method returns Ok, the effect survives process death.
 
-**Runtime wiring** (`MediaRuntimeStorage`, `RuntimeStorageConfig`):
+**put**: Hash data with `Hash::from_content`, append `JournalEntry::Put` to WAL (crash-safe
+commit), hint cache. Zero hash returns immediately — nothing stored.
 
-The CAS integrity configuration is wired through the runtime storage config stack:
+**get**: Three-layer lookup (L1 cache → L2 ObjectStore → L3 journal fallback).
+Delta reconstruction is transparent — caller never sees it.
+Returns `CasError::NotFound` if absent.
 
-- `MediaRuntimeStorage.verify_on_read_sample_denominator: Option<u64>` — overrides the `Sample` strategy denominator (default: 100).
-- `MediaRuntimeStorage.verify_on_read_stale_timeout_secs: Option<u64>` — overrides the `Stale` strategy timeout in seconds (default: 604800, 7 days).
-- `MediaRuntimeStorage.reconstructed_bytes_cache_ttl_secs: Option<u64>` — overrides the reconstructed-bytes cache TTL in seconds (default: 3600, 1 hour).
+**stat**: Returns `ObjectMeta { len, encoding }`. Encoding field is informational only
+(Full or Delta { base_hash }). Callers must NEVER make decisions based on it.
 
-These three fields (plus `instance_ttl_seconds`) are mirrored in `RuntimeStorageConfig` (conductor crate) and converted to `CasIntegrityConfig` via `MediaRuntimeStorage::to_cas_integrity_config()`. The resulting config is passed through `RunWorkflowOptions.cas_integrity_config` to the conductor orchestration layer.
+**delete**: Append `JournalEntry::Delete` to WAL, tombstone cache. Physical removal is
+deferred to WAL consumer. Idempotent. Does not cascade (see §5).
 
-All four `Option<u64>` fields in `MediaRuntimeStorage` use `#[serde(deserialize_with = "deserialize_option_u64_from_number")]` to accept both `N::PosInt` and `N::Float` representations, because Nickel exports all numbers as `f64`.
-
-### Integration Boundaries — CAS ↔ Conductor
-
-**Entry Point**: Conductor requires `CasApi` trait object at startup
-
-- `SimpleConductor::new(cas: Arc<C: CasApi>)`
-- New thin API `CoreCasApi` + `CasApiStreaming` + `ConstraintApi` available alongside `CasApi` for phased migration (see PLAN.md §3).
-
-**Operations**:
-
-1. External data stored in CAS: `put_from_uri(uri) → Hash`
-2. Workflow state serialized to CAS: `put(orchestration_state_bytes) → Hash`
-3. Tool content materialized from CAS: `get(hash) → Bytes`
-4. Index repair on startup (optional): `repair_index() → IndexRepairReport`
-
-**Ownership**:
-
-- **Conductor owns**: External data refs, state blobs, input bindings
-- **CAS owns**: Storage, persistence, optimization, constraint metadata
-
-**Contract**:
-
-- Conductor may call CAS operations concurrently (thread-safe)
-- CAS doesn't reference Conductor types (no circular dep)
-- Failures are propagated as-is (no translation)
-
-### Key References
-
-| Aspect | Details |
-|--------|---------|
-| **Public Traits** | `CasApi` (legacy full surface), `CasMaintenanceApi` (maintenance), `CoreCasApi` (thin read/write), `CasApiStreaming` (streaming extensions), `ConstraintApi` (constraint hints) |
-| **Types** | `Hash`, `Constraint`, `ConstraintBatchOp`, `ObjectInfo`, `OptimizeReport` |
-| **Backends** | `FileSystemCas`, `InMemoryCas` |
-| **Orchestration Config** | `src/cas/src/orchestration/config.rs` — shared runtime constants (RPC timeouts, disk-pressure thresholds) |
-| **Batch Macro** | `src/cas/src/api.rs` — `batch_concurrent_map!` macro for concurrent hash-iterated operations |
-| **Performance** | O(1) full, O(depth) delta; mmap + buffer pool |
-
-### Filesystem Locking
-
-The `FileSystemCas` backend uses an advisory lock file to coordinate access across processes:
-
-| Property | Value |
-|----------|-------|
-| Lock file location | `<store_root>/lock` |
-| Lock type | `fs4::fs_std::FileExt::try_lock_exclusive()` (non-blocking) |
-| Scope | Per-store-filesystem — all `FileSystemCas` instances sharing the same root |
-| Release | On `File` drop (closes file descriptor) |
-| File deletion on Drop | `FileSystemState::drop()` unlinks `<store_root>/lock`. Content (old PID) is advisory only; `flock` is kernel-released on fd close. |
-| Error type | `CasError::StoreLocked { root: PathBuf }` |
-| Wait behavior | `FileSystemRecoveryOptions.wait_for_lock: bool` (default `false`). When `true`, retries in a loop with backoff instead of failing immediately. |
-| State | `FileSystemState.lock_file: Option<File>` — held for the lifetime of the `FileSystemCas` instance. `lock_path: PathBuf` tracks the path for Drop cleanup. |
-
-**Contract**: The lock is advisory — cooperative processes must respect it. Non-cooperative processes (e.g., a direct `cp` or `rsync` into the store) are not prevented but risk corrupting the index or creating inconsistent state.
-
-### Concurrent Mutation Safety (Delta Chain Race)
-
-`get()` for delta-chain objects uses file handle capture to avoid holding the
-index read lock across disk I/O (which would block concurrent writes) while
-eliminating the race window entirely:
-
-1. **Capture phase** (under index read lock): Walk the delta chain metadata
-   from the index and open every payload file (`std::fs::File::open()`),
-   producing a `CapturedReconstruction` with `CapturedChainLink` entries.
-   Open handles pin the storage — concurrent `unlink()` removes the
-   directory entry, but the data survives until the last `File` handle drops.
-   Rust's `std::fs::File::open()` sets `FILE_SHARE_DELETE` on Windows
-   (and inode pinning is implicit on POSIX), so this works cross-platform.
-2. **Execute phase** (outside lock): Reconstruct by reading from pre-opened
-   handles and applying VCDIFF patches sequentially. The index lock is released
-   before any I/O, but the captured handles guarantee data availability.
-
-This approach is deterministic — no retry loop is needed. A concurrent
-`delete()` or `optimize()` may unlink the directory entry between capture and
-read, but the inode remains accessible through the captured handle.
-
-**Delta envelope decoding**: `.diff` files carry a versioned envelope (prefix
-`MDCASD` + version bytes). After reading raw bytes from a captured handle,
-`StoredObject::decode_delta()` strips the envelope to expose the raw VCDIFF
-patch bytes for `DeltaPatch::decode()`.
-
-### Known Limitations
-
-- **Advisory lock**: The store lock is advisory only. Cooperative processes that attempt `try_lock_exclusive()` will be serialized, but a process that bypasses the lock (direct filesystem manipulation, a CAS client built without locking) can still cause concurrent-access corruption.
-- **Index false negatives**: Index-backed existence checks may return `false` for objects that exist in storage (conservative by design). Callers must fall back to storage for a definitive answer.
-- **Manual filesystem modification**: Direct manipulation of files under the CAS store root (adding, removing, or modifying files outside the CAS API) is unsupported and may produce silently incorrect index state.
-- **Recovery scope**: `repair_index()` only verifies and rebuilds the index from existing storage objects. It does not detect or repair corrupted object content (bit rot) — that requires an external integrity-verification tool such as a periodic `blake3sum` audit.
-- **`optimize_once` disabled**: temporarily disabled due to O(n×m) full-object scan scaling. Expected to be replaced with a scope-bounded alternative.
-
-### Index-Backed Existence Checks
-
-**`contains()` / `contains_many()`**:
+### 2.2 CasApiStreaming — blanket-impl streaming extension
 
 ```rust
-impl IndexState {
-    /// Returns true when `hash` is known to exist in storage.
-    ///
-    /// Guarantees:
-    /// - `true` means the object is retrievable (no false positives),
-    /// - `false` means the object may still exist (conservative — caller
-    ///   must fall through to storage for a definitive answer).
-    pub fn contains(&self, hash: &Hash) -> bool { ... }
+#[async_trait]
+pub trait CasApiStreaming: CasApi {
+    async fn put_stream<R: AsyncRead + Send + Unpin>(&self, reader: R) -> Result<Hash, CasError>;
+    async fn get_stream<W: AsyncWrite + Send + Unpin>(&self, hash: Hash, writer: W) -> Result<(), CasError>;
+}
+```
+
+Blanket impl over CasApi (buffers through bytes). Override for zero-copy paths.
+
+### 2.3 ConstraintApi — delta-compression hints
+
+```rust
+#[async_trait]
+pub trait ConstraintApi: Send + Sync {
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
+    async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError>;
+    async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
+    async fn effective_bases(&self, target: Hash, live: &HashSet<Hash>) -> Result<BTreeSet<Hash>, CasError>;
+}
+```
+
+Constraints are **non-binding hints** — the system never blocks on completeness or
+accuracy. `effective_bases = stored_bases ∩ live_hashes`. Empty effective set = "full
+or any base allowed". Stored in MetadataStore (in-memory, rebuilt from journal).
+
+### 2.4 CasMaintenanceApi — maintenance operations
+
+```rust
+#[async_trait]
+pub trait CasMaintenanceApi: Send + Sync {
+    async fn optimize_once(&self) -> Result<OptimizeReport, CasError>;
+    async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
+    async fn gc_sweep(&self) -> Result<GcSweepReport, CasError>;
+    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
+    async fn repair_index(&self) -> Result<IndexRepairReport, CasError>;
+}
+```
+
+- **optimize_once**: Drain WAL consumer, run GC + optimizer.
+- **prune_constraints**: Remove constraint entries whose target or bases no longer exist.
+- **gc_sweep**: Prune constraint metadata only (objects only removed by explicit delete).
+- **repair_index**: Rebuild index from storage contents.
+
+## 3. Architecture
+
+### Module tree
+
+```text
+src/cas/src/
+├── lib.rs              — crate root, re-exports, doc-test
+├── api.rs              — CasApi, CasApiStreaming, ConstraintApi, CasMaintenanceApi
+├── hash.rs             — Hash type (blake3-256, multihash wire format)
+├── error.rs            — CasError enum
+├── main.rs             — CLI binary (feature-gated)
+├── cli.rs              — CLI subcommands (feature-gated)
+├── cli_visualization.rs — topology viz (feature-gated)
+├── delta/
+│   ├── delta.rs        — DeltaPatch (VCDIFF via oxidelta)
+│   ├── object.rs       — DeltaState + StoredObject (version-agnostic)
+│   └── versions/       — V1/V2/V3 delta envelope wire formats
+└── storage/
+    ├── store.rs        — CasStore (composed handle, implements all traits)
+    ├── wal.rs          — Journal trait + InMemoryJournal
+    ├── payload_store.rs — ObjectStore trait + InMemoryObjectStore
+    ├── meta_store.rs   — MetadataStore trait + InMemoryMetadataStore
+    ├── read_view.rs    — ReadView + ComposedReadView (3-layer lookup)
+    ├── bg_engine.rs    — BackgroundEngine (WAL consumer + maintenance)
+    ├── in_memory.rs    — new_in_memory_cas() factory
+    └── journal/        — FileJournal (planned, not yet wired)
+```
+
+### Data flow
+
+```text
+put(data) → Hash(data) → Journal.append(Put{hash, data}) → cache hint
+                                                                    ↓
+WAL consumer (bg_engine) → ObjectStore.put(hash, data) → checkpoint
+                                                                    ↓
+get(hash) → ReadView: L1 cache → L2 ObjectStore → L3 Journal fallback
+                                                                    ↓
+delete(hash) → Journal.append(Delete{hash}) → tombstone cache
+                                                                    ↓
+WAL consumer → re-materialize dependents → ObjectStore.delete(hash)
+```
+
+## 4. Internals
+
+### 4.1 Journal (WAL)
+
+The only crash-safe commitment point. ObjectStore and MetadataStore are derived —
+rebuildable by journal replay.
+
+**Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
+
+**PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 fallback.
+
+**WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays journal entries from
+checkpoint position, materializing to ObjectStore/MetadataStore. After processing,
+position is persisted atomically. Idempotent — re-consuming already-processed entries
+is safe.
+
+### 4.2 ObjectStore
+
+Pluggable payload backend. `InMemoryObjectStore` uses `DashMap<Hash, (Bytes, ObjectEncoding)>`.
+Stores raw bytes for Full encoding or complete V3 delta envelope for Delta encoding.
+
+**Delta-aware operations**: `put(hash, data, encoding)` overwrites existing. `get(hash)` returns
+stored bytes regardless of encoding. `stat(hash)` returns `(len, encoding)`.
+
+### 4.3 ReadView
+
+Three-layer lookup for get/stat:
+
+1. **L1 — Cache** (DashMap, 60s TTL). Fast path. Proactively updated via `hint_state_change()`.
+2. **L2 — ObjectStore**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF → cache result).
+3. **L3 — Journal fallback**. Pending entries not yet materialized. Respects tombstones.
+
+**Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
+callers wait for shared result.
+
+**Delta reconstruction**: For L2 delta entries, decode V3 envelope → recursive `get(base_hash)`
+(through full 3-layer lookup) → `DeltaPatch::apply(base_bytes, vcdiff)` → cache reconstructed
+bytes. If base_hash not found, return `CorruptObject`.
+
+### 4.4 Delta Codec
+
+- **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
+- **StoredObject**: `Full { payload }` or `Delta { state }`. Encode/decode to/from versioned envelopes.
+- **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer,
+  magic `b"CASDLT"`). Format: `[magic(6)][version(2)][base_hash(multihash)][diff_hash(32)][content_len(8)][payload]`.
+
+**Versioning boundary guard**: Files outside `delta/versions/` must interact with versioned
+envelopes only through `delta::versions` module APIs, never via `delta::versions::vX` imports.
+
+### 4.5 Background Engine
+
+Drives WAL consumer and maintenance pass. GC never deletes objects — only prunes constraint
+metadata so orphaned bases are removed individually. Objects are removed solely by
+`CasApi::delete` materialized through the WAL consumer.
+
+## 5. Delete Semantics — No Dangling Deltas
+
+When the WAL consumer processes `Delete { hash }`:
+
+1. **Scan for dependents**: Find ObjectStore entries with `encoding == Delta { base_hash: hash }`.
+2. **Re-materialize each**: Fetch delta bytes, decode V3 envelope, fetch base (still available),
+   apply VCDIFF, store as Full, hint cache.
+3. **Physically remove**: `ObjectStore.delete(hash)`.
+
+The WAL consumer doesn't advance the checkpoint until re-materialization is complete.
+
+**Does not cascade**: Deleting B has zero effect on any other hash. Even if A is delta-compressed
+against B, A's bytes live under A's content hash. The A→B dependency is a reconstruction concern,
+not a storage concern.
+
+## 6. Invariants & Edge Cases
+
+### 6.1 Content identity
+
+- Same bytes → same hash. Deterministic. Zero hash is sentinel-only, never stored.
+
+### 6.2 Crash safety
+
+- Journal is the single crash-safe commitment point. All operations append before acknowledging.
+- ObjectStore and MetadataStore are derived — rebuilt by journal replay.
+
+### 6.3 No TOCTOU
+
+No standalone `exists()` method. Use `get()` or `stat()` (both return NotFound on miss).
+
+### 6.4 Delta chain integrity
+
+- Recursive `get(base_hash)` for reconstruction goes through full 3-layer lookup.
+- If base_hash not found → `CorruptObject`.
+- Cyclic references prevented by `check_no_cycle()` in chain traversal.
+
+### 6.5 Constraint invariants
+
+- `effective_bases = stored_bases ∩ live_hashes`. Dead bases are excluded.
+- `prune_constraints()` removes entries whose target or bases no longer exist.
+- Constraint-graph DAG validation at set time is future work.
+
+### 6.6 Codec versioning
+
+- V1/V2 are read-only legacy. Writers always emit V3.
+- New versions go in `delta/versions/vN.rs` with `DO NOT REMOVE` policy guard.
+- Versioned boundary guard: non-versions/ code must import versioned behavior through
+  `delta::versions` APIs (mod.rs), never `delta::versions::vX`.
+
+## 7. Cross-Crate Integration
+
+- **Conductor**: CAS hash used for state blob identity, external data keys, StringList input hashing.
+- **MediaPM**: Lock records keyed by `(media_id, variant)` → CAS hash. Materializer reads from CAS.
+- **Constraints**: Set by conductor as optimization hints. CAS owns storage and enforcement.
+
+**Contract**: Conductor may call CAS concurrently (thread-safe). CAS doesn't reference Conductor
+types. Failures propagate as-is.
+
+## 8. Build & Test
+
+- `cargo test -p mediapm-cas` — unit + integration + doctest.
+- `cargo clippy -p mediapm-cas` — lint.
+- `cargo build -p mediapm-cas` — build with default features (cli).
+- `cargo build -p mediapm-cas --no-default-features` — minimal (no CLI binary).
+- Tests use `new_in_memory_cas()` — no filesystem dependencies.
+- Integration tests in `tests/int/`: api_workflows, concurrent, constraints, in_memory, maintenance, read_view.
+  /// - `false` means the object may still exist (conservative — caller
+  /// must fall through to storage for a definitive answer).
+  pub fn contains(&self, hash: &Hash) -> bool { ... }
 
     /// Batch variant — checks up to `hashes.len()` entries in one call.
     pub fn contains_many(&self, hashes: &[Hash]) -> CasExistenceBitmap { ... }
 }
-```
+
+```text
 
 **Index invalidation strategy**:
 

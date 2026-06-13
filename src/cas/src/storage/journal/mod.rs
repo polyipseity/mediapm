@@ -4,7 +4,8 @@
 //! backed by append-only segment files on disk with atomic checkpoint
 //! persistence. Read-write separation and segment sealing ensure bounded
 //! replay performance.
-// TODO(phase8): remove this when journal is wired into storage backends.
+// TODO: remove when FileJournal is wired into storage backends; code is
+// complete but not yet connected to any factory.
 #![allow(dead_code)]
 
 pub(crate) mod file_journal;

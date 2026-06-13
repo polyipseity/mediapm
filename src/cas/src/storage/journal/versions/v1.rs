@@ -12,7 +12,7 @@
 //! - Latest-version bridging to unversioned runtime structs is owned by
 //!   `versions/mod.rs`.
 
-// TODO(phase8): remove when journal is wired into storage backends.
+// TODO: remove when FileJournal is wired into storage backends.
 #![allow(dead_code)]
 
 use std::collections::BTreeSet;

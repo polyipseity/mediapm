@@ -1,5 +1,5 @@
 //! File-based journal and checkpoint implementation.
-// TODO(phase8): remove when journal is wired into storage backends.
+// TODO: remove when FileJournal is wired into storage backends.
 #![allow(dead_code)]
 //!
 //! ## File locations
