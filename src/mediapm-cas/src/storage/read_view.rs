@@ -24,7 +24,7 @@ use crate::hash::Hash;
 
 use super::blob_store::BlobStore;
 use super::index::Index;
-use super::wal::{PendingState, Wal, WalEntry};
+use super::wal::{PendingState, Wal};
 
 /// A pending read result that other concurrent readers can wait on.
 struct PendingResult {
@@ -46,16 +46,6 @@ pub trait ReadView: Send + Sync {
 
     /// Get metadata without loading payload bytes.
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError>;
-
-    /// Notify the read path of a state change.
-    /// `data` is `Some(bytes)` for puts and `None` for deletes.
-    /// Best-effort hint for inline caching.
-    async fn hint_state_change(&self, hash: Hash, data: Option<Bytes>);
-
-    /// Apply a batch of WAL entries (called by WALConsumer) to refresh
-    /// the in-memory cache, so subsequent reads from cache reflect the
-    /// materialized state without falling through to the WAL.
-    async fn apply_batch(&self, entries: Vec<WalEntry>) -> Result<(), CasError>;
 }
 
 /// Metadata about a stored object, re-exported for convenience.
@@ -132,47 +122,16 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
                 return self.blob_store.read(hash).await.map(Some);
             }
             ObjectEncoding::Delta { base_hash } => {
-                // Walk the delta chain iteratively.
-                let mut chain: Vec<(Hash, Bytes)> = Vec::new();
-                let mut current = *hash;
-                let mut base = base_hash;
-
-                loop {
-                    if current == base {
-                        // Guard against self-referential cycles.
-                        return Err(CasError::CorruptObject {
-                            hash: Some(current),
-                            details: "delta self-reference detected".into(),
-                        });
-                    }
-                    // Read delta envelope from blob store.
-                    let delta_data = self.blob_store.read_delta(&current).await?;
-                    chain.push((current, delta_data));
-                    current = base;
-
-                    // Check the base's encoding in Index.
-                    match self.index.get(&current).await? {
-                        Some(base_entry) => match base_entry.encoding {
-                            ObjectEncoding::Full => {
-                                let base_data = self.blob_store.read(&current).await?;
-                                return crate::delta::delta::resolve_delta_chain(
-                                    base_data, &mut chain, current,
-                                )
-                                .map(Some);
-                            }
-                            ObjectEncoding::Delta { base_hash: next_base } => {
-                                // Continue chain with this base as the new current.
-                                base = next_base;
-                            }
-                        },
-                        None => {
-                            return Err(CasError::CorruptObject {
-                                hash: Some(current),
-                                details: format!("delta chain: base {current} not found in index"),
-                            });
-                        }
-                    }
-                }
+                return super::delta_resolve::resolve_delta_chain(
+                    hash,
+                    base_hash,
+                    &self.index,
+                    &self.blob_store,
+                    "delta self-reference detected",
+                    "delta chain: base",
+                )
+                .await
+                .map(Some);
             }
         }
     }
@@ -262,16 +221,5 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
         }
 
         Err(CasError::NotFound(*hash))
-    }
-
-    async fn hint_state_change(&self, _hash: Hash, _data: Option<Bytes>) {
-        // Inline cache was removed; this is a no-op.
-    }
-
-    /// Apply a batch of WAL entries (called by WALConsumer).
-    ///
-    /// No-op since the in-memory cache was removed.
-    async fn apply_batch(&self, _entries: Vec<WalEntry>) -> Result<(), CasError> {
-        Ok(())
     }
 }

@@ -120,7 +120,8 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
             )
             .await?;
         // Update the read-view cache so a subsequent get sees the data.
-        self.read_view.hint_state_change(hash, Some(data)).await;
+        // The read-view fallback path uses the Index + BlobStore directly,
+        // which are already updated above.
         Ok(hash)
     }
 
@@ -138,8 +139,6 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
             return Ok(());
         }
         self.wal.append(WalEntry::Delete { hash }).await?;
-        // Update cache so subsequent reads miss.
-        self.read_view.hint_state_change(hash, None).await;
         Ok(())
     }
 }

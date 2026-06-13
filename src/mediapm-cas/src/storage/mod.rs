@@ -6,6 +6,7 @@ mod macros;
 
 pub mod bg_engine;
 pub mod blob_store;
+pub(super) mod delta_resolve;
 pub mod file_system;
 pub mod in_memory;
 pub mod index;
