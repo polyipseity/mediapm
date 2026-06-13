@@ -1,16 +1,16 @@
 //! In-memory CAS — ephemeral store using only memory backends.
 //!
 //! Composes [`InMemoryWal`](super::wal::InMemoryWal),
-//! [`InMemoryObjectIndex`](super::object_index::InMemoryObjectIndex), and
-//! [`InMemoryMetadataIndex`](super::metadata_index::InMemoryMetadataIndex) into
+//! [`InMemoryIndex`](super::index::InMemoryIndex), and
+//! [`InMemoryBlobStore`](super::blob_store::InMemoryBlobStore) into
 //! a fully functional [`CasStore`](super::store::CasStore) that implements
 //! all CAS traits without any filesystem persistence.
 //!
 //! Useful for testing, benchmarks, and short-lived sessions where data does
 //! not need to survive process death.
 
-use super::metadata_index::InMemoryMetadataIndex;
-use super::object_index::InMemoryObjectIndex;
+use super::blob_store::InMemoryBlobStore;
+use super::index::InMemoryIndex;
 use super::store::CasStore;
 use super::wal::InMemoryWal;
 
@@ -19,23 +19,17 @@ use super::wal::InMemoryWal;
 /// Wraps [`CasStore`] with the in-memory backend triplet for convenient
 /// construction and naming.
 #[derive(Clone)]
-pub struct InMemoryCas(
-    pub(crate) CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>,
-);
+pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>);
 
 impl InMemoryCas {
     /// Create a new empty in-memory CAS store.
     pub fn new() -> Self {
-        Self(CasStore::new(
-            InMemoryWal::new(),
-            InMemoryObjectIndex::new(),
-            InMemoryMetadataIndex::new(),
-        ))
+        Self(CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new()))
     }
 }
 
 impl std::ops::Deref for InMemoryCas {
-    type Target = CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>;
+    type Target = CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

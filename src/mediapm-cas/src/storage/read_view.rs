@@ -1,15 +1,16 @@
-//! Read-through view — provides coherent reads over cache + ObjectIndex +
+//! Read-through view — provides coherent reads over Index + BlobStore +
 //! WAL fallback.
 //!
-//! The [`ComposedReadView`] implements the three-layer lookup used by
+//! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
-//! 1. In-memory cache (fast path, DashMap with TTL eviction)
-//! 2. ObjectIndex (persistent committed data)
-//! 3. WAL fallback (unconsumed WAL entries for latest in-flight writes)
+//! 1. [`Index`](super::index::Index) — metadata (encoding, size, bases).
+//! 2. [`BlobStore`](super::blob_store::BlobStore) — payload bytes (full
+//!    or delta).
+//! 3. WAL fallback — entries not yet materialized into BlobStore/Index.
 //!
-//! In-flight read dedup prevents redundant WAL scans when multiple
-//! concurrent `get()` calls miss cache and ObjectIndex simultaneously.
+//! In-flight read dedup prevents redundant blob-store reads when multiple
+//! concurrent `get()` calls miss Index simultaneously.
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -21,7 +22,8 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::object_index::ObjectIndex;
+use super::blob_store::BlobStore;
+use super::index::Index;
 use super::wal::{PendingState, Wal, WalEntry};
 
 /// A pending read result that other concurrent readers can wait on.
@@ -64,96 +66,114 @@ pub use crate::api::ObjectMeta;
 // ComposedReadView
 // ---------------------------------------------------------------------------
 
-/// A read-through view backed by ObjectIndex + WAL fallback.
+/// A read-through view backed by Index + BlobStore + WAL fallback.
 ///
-/// Implements a two-layer lookup:
-/// 1. `ObjectIndex` for committed data
-/// 2. `Wal` fallback for entries not yet materialized
+/// Implements a three-layer lookup:
+/// 1. `Index` for metadata (encoding, size).
+/// 2. `BlobStore` for payload bytes.
+/// 3. `Wal` fallback for entries not yet materialized.
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
-/// hash simultaneously, only one performs the ObjectIndex + WAL
-/// lookup while the other waits on a [`Notify`].
-pub struct ComposedReadView<S: ObjectIndex, J: Wal> {
+/// hash simultaneously, only one performs the lookup while the other waits
+/// on a [`Notify`].
+pub struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
     /// In-flight read dedup: hash → shared pending result.
     pending: DashMap<Hash, Arc<PendingResult>>,
-    /// Persistent object index (committed data).
-    object_index: S,
+    /// Metadata index (encoding, size, constraint bases).
+    index: I,
     /// WAL for pending-entry fallback.
     wal: J,
+    /// Blob store for persistent payload bytes.
+    blob_store: B,
 }
 
-impl<S: ObjectIndex, J: Wal> ComposedReadView<S, J> {
+impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
     /// Create a new view.
-    pub fn new(object_index: S, wal: J) -> Self {
-        Self { pending: DashMap::new(), object_index, wal }
+    pub fn new(index: I, wal: J, blob_store: B) -> Self {
+        Self { pending: DashMap::new(), index, wal, blob_store }
     }
 
-    /// Inner fetch: ObjectIndex → WAL fallback with transparent delta
+    /// Inner fetch: Index + BlobStore → WAL fallback with transparent delta
     /// reconstruction.
     ///
     /// Returns `Ok(Some(data))` if found, `Ok(None)` if confirmed absent.
     ///
     /// Delta-encoded entries are resolved by walking the delta chain
     /// iteratively (not recursively) to avoid Rust async recursion
-    /// restrictions. The base lookup bypasses L1 cache, so cache tombstones
-    /// from logical deletes do not block reconstruction — base bytes still
-    /// exist in ObjectIndex until the WAL consumer physically removes them
-    /// (after re-materializing dependents).
+    /// restrictions.
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         // Zero hash is always present (empty sentinel).
         if *hash == Hash::zero() {
             return Ok(Some(Bytes::new()));
         }
 
-        // Walk the delta chain iteratively, collecting deltas to apply.
-        // Each entry is the V3 envelope bytes for a delta-encoded object.
-        let mut chain: Vec<(Hash, Bytes)> = Vec::new();
-        let mut current = *hash;
-
-        loop {
-            // Physical fetch: ObjectIndex → WAL fallback.
-            let (data, encoding): (Bytes, ObjectEncoding) = 'fetch: {
-                if let Some(result) = self.object_index.get(&current).await? {
-                    break 'fetch result;
-                }
-                match self.wal.check_pending(&current).await {
-                    PendingState::Present(data) => {
-                        break 'fetch (data, ObjectEncoding::Full);
-                    }
-                    PendingState::Tombstone => {
-                        return Ok(None);
-                    }
-                    PendingState::NotPresent => {
-                        return Ok(None);
-                    }
-                }
-            };
-
-            match encoding {
+        // Check Index for metadata.
+        if let Some(entry) = self.index.get(hash).await? {
+            match entry.encoding {
                 ObjectEncoding::Full => {
-                    // Found the root base. Apply collected deltas in reverse.
-                    let result =
-                        crate::delta::delta::resolve_delta_chain(data, &mut chain, current)?;
-                    return Ok(Some(result));
+                    return self.blob_store.read(hash).await.map(Some);
                 }
                 ObjectEncoding::Delta { base_hash } => {
-                    // Guard against self-referential cycles.
-                    if current == base_hash {
-                        return Err(CasError::CorruptObject {
-                            hash: Some(current),
-                            details: "delta self-reference detected".into(),
-                        });
+                    // Walk the delta chain iteratively.
+                    let mut chain: Vec<(Hash, Bytes)> = Vec::new();
+                    let mut current = *hash;
+                    let mut base = base_hash;
+
+                    loop {
+                        if current == base {
+                            // Guard against self-referential cycles.
+                            return Err(CasError::CorruptObject {
+                                hash: Some(current),
+                                details: "delta self-reference detected".into(),
+                            });
+                        }
+                        // Read delta envelope from blob store.
+                        let delta_data = self.blob_store.read_delta(&current).await?;
+                        chain.push((current, delta_data));
+                        current = base;
+
+                        // Check the base's encoding in Index.
+                        match self.index.get(&current).await? {
+                            Some(base_entry) => match base_entry.encoding {
+                                ObjectEncoding::Full => {
+                                    let base_data = self.blob_store.read(&current).await?;
+                                    return crate::delta::delta::resolve_delta_chain(
+                                        base_data, &mut chain, current,
+                                    )
+                                    .map(Some);
+                                }
+                                ObjectEncoding::Delta { base_hash: next_base } => {
+                                    // Continue chain with this base as the new current.
+                                    base = next_base;
+                                }
+                            },
+                            None => {
+                                return Err(CasError::CorruptObject {
+                                    hash: Some(current),
+                                    details: format!(
+                                        "delta chain: base {current} not found in index"
+                                    ),
+                                });
+                            }
+                        }
                     }
-                    chain.push((current, data));
-                    current = base_hash;
                 }
             }
+        }
+
+        // WAL fallback: data may only exist as pending Put.
+        let wal_result = self.wal.check_pending(hash).await;
+        match wal_result {
+            PendingState::Present(data) => Ok(Some(data)),
+            PendingState::Tombstone | PendingState::NotPresent => Ok(None),
         }
     }
 }
 
 #[async_trait]
-impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedReadView<S, J> {
+impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> ReadView
+    for ComposedReadView<I, J, B>
+{
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
         // 1. In-flight read dedup.
         let pending_result =
@@ -180,7 +200,7 @@ impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedRe
             }
         }
 
-        // 2. Fetch from ObjectIndex → WAL.
+        // 2. Fetch from Index + BlobStore → WAL.
         let fetch_result = self.fetch_inner(hash).await;
 
         // Share result with waiters.
@@ -215,9 +235,9 @@ impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedRe
             return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
         }
 
-        // Check ObjectIndex first.
-        if let Some(meta) = self.object_index.stat(hash).await? {
-            return Ok(meta);
+        // Check Index first.
+        if let Some(entry) = self.index.get(hash).await? {
+            return Ok(entry.as_meta());
         }
 
         // WAL fallback: data may only exist as pending Put.
@@ -232,7 +252,7 @@ impl<S: ObjectIndex + Send + Sync, J: Wal + Send + Sync> ReadView for ComposedRe
     }
 
     async fn hint_state_change(&self, _hash: Hash, _data: Option<Bytes>) {
-        // Cache was removed; this is a no-op.
+        // Inline cache was removed; this is a no-op.
     }
 
     /// Apply a batch of WAL entries (called by WALConsumer).

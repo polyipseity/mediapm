@@ -112,7 +112,7 @@ let cas = new_in_memory_cas(); // or InMemoryCas::new()
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>`.
+Wraps `CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>`.
 Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` via `impl_cas_wrapper_traits!` macro.
 `Deref` target is the inner `CasStore`.
 
@@ -123,9 +123,9 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<FileWal, InMemoryObjectIndex, InMemoryMetadataIndex>`.
-Same trait impl pattern as `InMemoryCas`. WAL is persisted on disk; payload and
-metadata indexes are in-memory (rebuilt from WAL on open).
+Wraps `CasStore<FileWal, InMemoryIndex, FileSystemBlobStore>`.
+Same trait impl pattern as `InMemoryCas`. WAL + blob store are persisted on disk;
+the index is in-memory (rebuilt from WAL on open).
 
 #### ConfiguredCas — dispatch enum
 
@@ -186,10 +186,10 @@ src/mediapm-cas/src/
     │   └── versions/    — on-disk format V1+
     │       ├── mod.rs
     │       └── v1.rs
-    ├── object_index.rs  — ObjectIndex trait + InMemoryObjectIndex
-    ├── metadata_index.rs— MetadataIndex trait + InMemoryMetadataIndex
-    ├── read_view.rs     — ComposedReadView (2-layer lookup: index → WAL)
-    ├── bg_engine.rs     — BackgroundEngine (WAL consumer + maintenance orchestrator)
+    ├── blob_store.rs    — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore
+    ├── index.rs         — Index trait + InMemoryIndex (unified metadata + constraints)
+    ├── read_view.rs     — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
+    ├── bg_engine.rs     — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
     ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
     └── file_system.rs   — FileSystemCas wrapper + open()
 ```
@@ -199,20 +199,20 @@ src/mediapm-cas/src/
 ```text
 put(data) → Hash(data) → Wal.append(Put{hash, data})
                                                                     ↓
-WAL consumer (bg_engine) → ObjectIndex.put(hash, data) → checkpoint
+WAL consumer (bg_engine) → BlobStore.write(hash) + Index.put(hash) → checkpoint
                                                                     ↓
-get(hash) → ReadView: ObjectIndex → WAL fallback
+get(hash) → ReadView: Index → BlobStore.read/read_delta → WAL fallback
                                                                     ↓
 delete(hash) → Wal.append(Delete{hash})
                                                                     ↓
-WAL consumer → re-materialize dependents → ObjectIndex.delete(hash)
+WAL consumer → re-materialize dependents → BlobStore.delete(hash) + Index.delete(hash)
 ```
 
 ## 5. Internals
 
 ### 5.1 WAL
 
-The only crash-safe commitment point. ObjectIndex and MetadataIndex are derived —
+The only crash-safe commitment point. Index and BlobStore are derived —
 rebuildable by WAL replay.
 
 **Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
@@ -220,28 +220,39 @@ rebuildable by WAL replay.
 **PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
 
 **WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays WAL entries from
-checkpoint position, materializing to ObjectIndex/MetadataIndex. After processing,
+checkpoint position, materializing to BlobStore + Index. After processing,
 position is persisted atomically. Idempotent.
 
-### 5.2 ObjectIndex
+### 5.2 BlobStore
 
-Pluggable payload backend. `InMemoryObjectIndex` uses `DashMap<Hash, (Bytes, ObjectEncoding)>`.
-Stores raw bytes for Full encoding or complete V3 delta envelope for Delta encoding.
+Pluggable payload backend.
 
-### 5.3 ReadView
+- `InMemoryBlobStore`: `DashMap<Hash, Bytes>`. Ignores Full/Delta distinction.
+- `FileSystemBlobStore`: Hash-derived paths `<root>/v1/blake3/ab/cd/<remaining>` (full)
+  or `<remaining>.diff` (delta). Atomic write via temp+rename. Hash verification on read.
 
-Two-layer lookup for get/stat:
+### 5.3 Index
 
-1. **ObjectIndex**. If delta-encoded, reconstruct (decode V3 envelope → recursive get(base_hash) → apply VCDIFF).
-2. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
+Unified metadata + constraint index. `InMemoryIndex` uses `Arc<DashMap<Hash, IndexEntry>>`.
+`IndexEntry { size, encoding, bases }` — `bases` is `Option<BTreeSet<Hash>>`.
+Rebuilt from WAL via `rebuild_from_wal()`.
+
+### 5.4 ReadView
+
+Three-layer lookup for get/stat:
+
+1. **Index**. Check entry encoding. If `Full` → BlobStore.read(). If `Delta { base_hash }` → iterative walk.
+2. **BlobStore**. Read payload bytes (full or delta envelope). Walk delta chains via `read_delta`/`read`.
+3. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
 
-**Delta reconstruction**: Recursive `get(base_hash)` through full 2-layer lookup →
-`DeltaPatch::apply(base_bytes, vcdiff)`. If base_hash not found → `CasError::CorruptObject`.
+**Delta reconstruction**: Index → BlobStore.read_delta(hash) → walk base chain via Index
 
-### 5.4 Delta Codec
+- BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`. If base not found → `CasError::CorruptObject`.
+
+### 5.5 Delta Codec
 
 - **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
 - **resolve_delta_chain**: Shared `pub(crate)` function in `delta/delta.rs`. Takes base bytes + collected delta envelopes, applies deltas inner-to-outer, returns fully reconstructed payload. Used by both `read_view.rs` and `bg_engine.rs`.
@@ -251,7 +262,7 @@ callers wait for shared result.
 **Versioning boundary guard**: Code outside `delta/versions/` must interact with versioned
 envelopes only through `delta::versions` module APIs (`mod.rs`), never via `delta::versions::vX` imports.
 
-### 5.5 Background Engine
+### 5.6 Background Engine
 
 Drives WAL consumer and maintenance pass. GC never deletes objects — only prunes constraint
 metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
@@ -260,10 +271,10 @@ metadata. Objects are removed solely by `CasApi::delete` materialized through th
 
 When the WAL consumer processes `Delete { hash }`:
 
-1. **Scan for dependents**: Find ObjectIndex entries where `encoding == Delta { base_hash: hash }`.
-2. **Re-materialize each**: Fetch delta bytes, decode V3 envelope, fetch base (still available),
-   apply VCDIFF, store as Full, hint cache.
-3. **Physically remove**: `ObjectIndex.delete(hash)`.
+1. **Scan for dependents**: Find Index entries where `encoding == Delta { base_hash: hash }`.
+2. **Re-materialize each**: Read delta blob from BlobStore, decode V3 envelope, fetch base
+   (still available in BlobStore), apply VCDIFF, store result as Full in BlobStore + Index.
+3. **Physically remove**: `BlobStore.delete(hash)` + `Index.delete(hash)`.
 
 The WAL consumer doesn't advance the checkpoint until re-materialization is complete.
 
@@ -275,7 +286,7 @@ against B, A's bytes live under A's content hash.
 `InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>`:
 
 ```rust
-pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryObjectIndex, InMemoryMetadataIndex>);
+pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>);
 
 impl std::ops::Deref for InMemoryCas { /* → inner CasStore */ }
 impl_cas_wrapper_traits!(InMemoryCas);  // CasApi + CasMaintenanceApi + ConstraintApi
@@ -294,7 +305,7 @@ generates trait impls that delegate to `self.0`. This avoids manual forwarding.
 ### 8.2 Crash safety
 
 - WAL is the single crash-safe commitment point. All operations append before acknowledging.
-- ObjectIndex and MetadataIndex are derived — rebuilt by WAL replay.
+- Index and BlobStore are derived — rebuilt by WAL replay.
 
 ### 8.3 No TOCTOU
 
@@ -304,7 +315,7 @@ Removed methods are replaced by composition of remaining primitives.
 
 ### 8.4 Delta chain integrity
 
-- Recursive `get(base_hash)` for reconstruction goes through full 3-layer lookup.
+- Iterative `get(base_hash)` for reconstruction goes through Index → BlobStore walk.
 - If base_hash not found → `CorruptObject`.
 - Cyclic references prevented by `check_no_cycle()` during chain traversal.
 

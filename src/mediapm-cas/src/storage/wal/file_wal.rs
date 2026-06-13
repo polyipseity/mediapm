@@ -218,9 +218,6 @@ pub struct FileWal {
 }
 
 struct FileWalInner {
-    /// CAS directory root.
-    #[expect(dead_code, reason = "deferring: unused field, clarify with user")]
-    dir: PathBuf,
     /// Journal segment directory: `<dir>/journal/`.
     journal_dir: PathBuf,
     /// Checkpoint manager.
@@ -332,7 +329,6 @@ impl FileWal {
 
         Ok(Self {
             inner: Arc::new(FileWalInner {
-                dir: cas_dir,
                 journal_dir,
                 checkpoint,
                 max_segment_size,

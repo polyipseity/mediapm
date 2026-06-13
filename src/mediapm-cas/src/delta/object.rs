@@ -67,14 +67,6 @@ impl StoredObject {
         }
     }
 
-    /// Returns reconstructed content length.
-    pub(crate) const fn content_len(&self) -> u64 {
-        match self {
-            Self::Full { payload } => payload.len() as u64,
-            Self::Delta { state } => state.content_len,
-        }
-    }
-
     /// Returns payload byte length.
     #[expect(dead_code)]
     pub(crate) fn payload_len(&self) -> u64 {

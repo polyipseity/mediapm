@@ -1,14 +1,14 @@
-//! Storage backends: WAL, ObjectIndex, MetadataIndex, BackgroundEngine,
+//! Storage backends: WAL, Index, BlobStore, BackgroundEngine,
 //! and the composed CasStore handle.
 
 #[macro_use]
 mod macros;
 
 pub mod bg_engine;
+pub mod blob_store;
 pub mod file_system;
 pub mod in_memory;
-pub mod metadata_index;
-pub mod object_index;
+pub mod index;
 pub(crate) mod read_view;
 pub mod store;
 pub mod wal;

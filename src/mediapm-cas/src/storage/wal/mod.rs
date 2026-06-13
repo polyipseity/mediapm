@@ -149,7 +149,9 @@ impl Default for InMemoryWal {
 impl Wal for InMemoryWal {
     async fn append(&self, entry: WalEntry) -> Result<WalPosition, CasError> {
         let pos = WalPosition(self.inner.next_pos.fetch_add(1, Ordering::SeqCst));
-        self.inner.entries.lock().unwrap().push_back((pos, entry));
+        let mut guard = self.inner.entries.lock().unwrap();
+        guard.push_back((pos, entry));
+        drop(guard);
         Ok(pos)
     }
 

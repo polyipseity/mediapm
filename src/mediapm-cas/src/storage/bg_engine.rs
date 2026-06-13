@@ -2,8 +2,8 @@
 //!
 //! Drives two background tasks:
 //!
-//! - **WAL consumer** — drains pending WAL entries into the ObjectIndex,
-//!   then trims them from the WAL.
+//! - **WAL consumer** — drains pending WAL entries into the BlobStore and
+//!   Index, then trims them from the WAL.
 //! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
 //!   approach effective constraints (intersection of stored bases with live
 //!   hashes) and evaluates delta-compression opportunities.
@@ -25,42 +25,42 @@ use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::metadata_index::MetadataIndex;
-use super::object_index::ObjectIndex;
+use super::blob_store::BlobStore;
+use super::index::{Index, IndexEntry};
 use super::read_view::ReadView;
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Background engine driving WAL consumption and maintenance.
-pub struct BackgroundEngine<J: Wal, S: ObjectIndex, M: MetadataIndex> {
+pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
     wal: J,
-    object_index: S,
-    metadata_index: M,
+    index: I,
+    blob_store: B,
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
     cancelled: Arc<AtomicBool>,
 }
 
-impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
+impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Create a new engine, checkpointing at `start_pos`.
     pub fn new(
         wal: J,
-        object_index: S,
-        metadata_index: M,
+        index: I,
+        blob_store: B,
         start_pos: WalPosition,
         read_view: Arc<dyn ReadView>,
     ) -> Self {
         Self {
             wal,
-            object_index,
-            metadata_index,
+            index,
+            blob_store,
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Drain the WAL consumer once: drain WAL entries into ObjectIndex,
-    /// advancing checkpoint after each entry.
+    /// Drain the WAL consumer once: drain WAL entries into BlobStore +
+    /// Index, advancing checkpoint after each entry.
     ///
     /// Returns the number of entries consumed.
     pub async fn run_wal_consumer(&self) -> Result<u64, CasError> {
@@ -84,17 +84,31 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
             }
             match entry {
                 WalEntry::Put { hash, data } => {
-                    self.object_index.put(*hash, data.clone(), ObjectEncoding::Full).await?;
+                    // Write payload to BlobStore as Full.
+                    self.blob_store.write(*hash, ObjectEncoding::Full, data.clone()).await?;
+                    // Preserve existing constraint bases, if any.
+                    let existing_bases = self.index.get(hash).await?.and_then(|e| e.bases);
+                    self.index
+                        .put(
+                            *hash,
+                            IndexEntry {
+                                size: data.len() as u64,
+                                encoding: ObjectEncoding::Full,
+                                bases: existing_bases,
+                            },
+                        )
+                        .await?;
                 }
                 WalEntry::Delete { hash } => {
                     // Before physical deletion, re-materialize any deltas
                     // that depend on this hash as their base. This prevents
                     // dangling-delta reconstruction failure.
                     self.rematerialize_deltas_for(hash).await?;
-                    self.object_index.delete(hash).await?;
+                    self.blob_store.delete(hash).await?;
+                    self.index.delete(hash).await?;
                 }
                 WalEntry::Constraint { target, bases } => {
-                    self.metadata_index.set(*target, bases.clone()).await?;
+                    self.index.set_constraint(*target, bases.clone()).await?;
                 }
             }
             // Advance checkpoint after each entry (incremental).
@@ -116,52 +130,39 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
     /// Re-materialize all delta-encoded objects that depend on `hash` as
     /// their base. After this call, each dependent is stored as
     /// [`ObjectEncoding::Full`] so it remains reachable after `hash` is
-    /// physically removed from the ObjectIndex.
+    /// physically removed from the BlobStore and Index.
     ///
     /// This is called by the WAL consumer **before** physically deleting
     /// `hash`.
     async fn rematerialize_deltas_for(&self, hash: &Hash) -> Result<(), CasError> {
-        let dependents: Vec<Hash> = self
-            .object_index
-            .list_hashes()
-            .await?
-            .into_iter()
-            .filter(|h| {
-                // Don't re-check the hash being deleted.
-                h != hash
-            })
-            .collect();
+        let dependents: Vec<Hash> =
+            self.index.list_hashes().await?.into_iter().filter(|h| h != hash).collect();
 
         for dep_hash in dependents {
             if self.is_cancelled() {
                 break;
             }
             // Get the dependent's current entry (delta or full).
-            let Some((data, encoding)) = self.object_index.get(&dep_hash).await? else {
+            let Some(entry) = self.index.get(&dep_hash).await? else {
                 continue;
             };
-            let ObjectEncoding::Delta { base_hash } = encoding else {
+            let ObjectEncoding::Delta { base_hash } = entry.encoding else {
                 continue; // Not a delta, nothing to re-materialize.
             };
             if base_hash != *hash {
                 continue; // Depends on a different base.
             }
 
-            // Reconstruct original bytes.
+            // Read delta envelope from blob store.
+            let delta_data = self.blob_store.read_delta(&dep_hash).await?;
+            // Base bytes are still in BlobStore (not yet deleted).
+            let base_bytes = self.blob_store.read(&base_hash).await?;
+
             let stored_obj =
-                StoredObject::decode_delta(&data).map_err(|e| CasError::CorruptObject {
+                StoredObject::decode_delta(&delta_data).map_err(|e| CasError::CorruptObject {
                     hash: Some(dep_hash),
                     details: format!("failed to decode delta envelope for re-materialization: {e}"),
                 })?;
-            // Base bytes are still in ObjectIndex (not yet deleted).
-            let Some((base_bytes, _)) = self.object_index.get(&base_hash).await? else {
-                return Err(CasError::CorruptObject {
-                    hash: Some(dep_hash),
-                    details: format!(
-                        "delta base {base_hash} missing during re-materialization of {dep_hash}"
-                    ),
-                });
-            };
             let vcdiff = stored_obj.payload();
             let patch = crate::delta::delta::DeltaPatch::decode(vcdiff);
             let result = patch.apply(&base_bytes, dep_hash, dep_hash, base_hash).map_err(|e| {
@@ -172,34 +173,48 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
             })?;
 
             // Store as Full, replacing the delta-encoded entry.
-            self.object_index.put(dep_hash, Bytes::from(result), ObjectEncoding::Full).await?;
+            let result_bytes = Bytes::from(result);
+            self.blob_store.write(dep_hash, ObjectEncoding::Full, result_bytes.clone()).await?;
+            // Preserve constraint bases.
+            let bases = entry.bases;
+            self.index
+                .put(
+                    dep_hash,
+                    IndexEntry {
+                        size: result_bytes.len() as u64,
+                        encoding: ObjectEncoding::Full,
+                        bases,
+                    },
+                )
+                .await?;
         }
 
         Ok(())
     }
 
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
-    /// any delta chain present in the ObjectIndex.
+    /// any delta chain present in the Index + BlobStore.
     ///
     /// Returns `None` if the hash does not exist in the store.
     async fn read_full_bytes(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
-        let mut chain: Vec<(Hash, Bytes)> = Vec::new();
-        let mut current = *hash;
+        let Some(entry) = self.index.get(hash).await? else {
+            return Ok(None);
+        };
 
-        loop {
-            let Some((data, encoding)) = self.object_index.get(&current).await? else {
-                return Ok(None);
-            };
+        match entry.encoding {
+            ObjectEncoding::Full => {
+                self.blob_store.read(hash).await.map(Some).or_else(|e| match e {
+                    CasError::NotFound(_) => Ok(None),
+                    other => Err(other),
+                })
+            }
+            ObjectEncoding::Delta { base_hash } => {
+                let mut chain: Vec<(Hash, Bytes)> = Vec::new();
+                let mut current = *hash;
+                let mut base = base_hash;
 
-            match encoding {
-                ObjectEncoding::Full => {
-                    // Found the base. Apply collected deltas in reverse.
-                    return Ok(Some(crate::delta::delta::resolve_delta_chain(
-                        data, &mut chain, current,
-                    )?));
-                }
-                ObjectEncoding::Delta { base_hash } => {
-                    if current == base_hash {
+                loop {
+                    if current == base {
                         return Err(CasError::CorruptObject {
                             hash: Some(current),
                             details: "delta self-reference detected during \
@@ -207,8 +222,32 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
                                 .into(),
                         });
                     }
-                    chain.push((current, data));
-                    current = base_hash;
+                    let delta_data = self.blob_store.read_delta(&current).await?;
+                    chain.push((current, delta_data));
+                    current = base;
+
+                    match self.index.get(&current).await? {
+                        Some(base_entry) => match base_entry.encoding {
+                            ObjectEncoding::Full => {
+                                let full_data = self.blob_store.read(&current).await?;
+                                return crate::delta::delta::resolve_delta_chain(
+                                    full_data, &mut chain, current,
+                                )
+                                .map(Some);
+                            }
+                            ObjectEncoding::Delta { base_hash: next_base } => {
+                                base = next_base;
+                            }
+                        },
+                        None => {
+                            return Err(CasError::CorruptObject {
+                                hash: Some(current),
+                                details: format!(
+                                    "delta chain: base {current} not found during reconstruction"
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -216,8 +255,8 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
 
     /// Run maintenance: optimizer + constraint pruning.
     ///
-    /// 1. **Optimizer**: build constraint map from MetadataIndex, attempt
-    ///    delta rewrites. Skips zero-hash targets (sentinel).
+    /// 1. **Optimizer**: build constraint map from Index, attempt delta
+    ///    rewrites. Skips zero-hash targets (sentinel).
     ///    Computes VCDIFF delta for each constraint and stores the
     ///    delta-encoded result if it is smaller than the full payload.
     /// 2. **Constraint pruning**: per-base prune so each entry converges
@@ -242,8 +281,8 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
         // === Phase 1: Optimizer ===
         // Build the live set once — it is reused for both the optimizer and
         // the pruning step that follows.
-        let live: HashSet<Hash> = self.object_index.list_hashes().await?.into_iter().collect();
-        let targets = self.metadata_index.list_targets().await?;
+        let live: HashSet<Hash> = self.index.list_hashes().await?.into_iter().collect();
+        let targets = self.index.list_targets().await?;
         for target in &targets {
             if self.is_cancelled() {
                 break;
@@ -253,7 +292,7 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
                 continue;
             }
 
-            if let Some(bases) = self.metadata_index.get(target).await? {
+            if let Some(bases) = self.index.get_constraint(target).await? {
                 // Effective bases: intersection of stored bases with live
                 // hashes. Dead bases cannot be used for delta reconstruction.
                 let effective: Vec<&Hash> = bases.iter().filter(|b| live.contains(b)).collect();
@@ -279,12 +318,24 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
                             target_bytes.len() as u64,
                             delta_payload.to_vec(),
                         );
-                        let envelope = stored.encode();
-                        self.object_index
+                        let envelope = Bytes::from(stored.encode());
+                        self.blob_store
+                            .write(
+                                *target,
+                                ObjectEncoding::Delta { base_hash: **best_base },
+                                envelope,
+                            )
+                            .await?;
+                        // Preserve constraint bases.
+                        let bases = self.index.get(target).await?.and_then(|e| e.bases);
+                        self.index
                             .put(
                                 *target,
-                                Bytes::from(envelope),
-                                ObjectEncoding::Delta { base_hash: **best_base },
+                                IndexEntry {
+                                    size: target_bytes.len() as u64,
+                                    encoding: ObjectEncoding::Delta { base_hash: **best_base },
+                                    bases,
+                                },
                             )
                             .await?;
                         did_work = true;
@@ -301,10 +352,10 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
         // constraint set (intersection of stored bases with live hashes).
         // Constraints are delta-compression hints and have no bearing on
         // object liveness.
-        let live: HashSet<Hash> = self.object_index.list_hashes().await?.into_iter().collect();
-        let before = self.metadata_index.list_targets().await?.len();
-        self.metadata_index.prune_targets(&live).await?;
-        let after = self.metadata_index.list_targets().await?.len();
+        let live: HashSet<Hash> = self.index.list_hashes().await?.into_iter().collect();
+        let before = self.index.list_targets().await?.len();
+        self.index.prune_targets(&live).await?;
+        let after = self.index.list_targets().await?.len();
         if after < before {
             did_work = true;
         }
@@ -335,17 +386,17 @@ impl<J: Wal, S: ObjectIndex, M: MetadataIndex> BackgroundEngine<J, S, M> {
     }
 }
 
-impl<J: Wal, S: ObjectIndex, M: MetadataIndex> Clone for BackgroundEngine<J, S, M>
+impl<J: Wal, I: Index, B: BlobStore> Clone for BackgroundEngine<J, I, B>
 where
     J: Clone,
-    S: Clone,
-    M: Clone,
+    I: Clone,
+    B: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             wal: self.wal.clone(),
-            object_index: self.object_index.clone(),
-            metadata_index: self.metadata_index.clone(),
+            index: self.index.clone(),
+            blob_store: self.blob_store.clone(),
             read_view: self.read_view.clone(),
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
             cancelled: self.cancelled.clone(),

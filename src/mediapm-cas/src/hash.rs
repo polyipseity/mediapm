@@ -4,7 +4,7 @@
 //! encoding: `[code: varint(0x1e)][digest_len: varint(0x20)][digest: 32 bytes]`.
 
 use multihash::Multihash;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use std::str::FromStr;
 
@@ -26,7 +26,11 @@ pub enum HashParseError {
 /// Derives [`Ord`] so hashes can be used in sorted collections. The ordering
 /// is lexicographic on the underlying bytes — meaningful for set membership
 /// and tree structures but not for content priority.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+///
+/// Serializes as a human-readable string `"blake3:hexdigest"` (e.g.
+/// `"blake3:0000000000000000000000000000000000000000000000000000000000000000"`)
+/// for compatibility with Nickel config/state documents.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct Hash([u8; HASH_SIZE]);
 
@@ -116,6 +120,24 @@ impl Hash {
     }
 }
 
+impl Serialize for Hash {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("blake3:{}", self.to_hex()))
+    }
+}
+
+impl<'de> Deserialize<'de> for Hash {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        let hex = s.strip_prefix("blake3:").ok_or_else(|| {
+            serde::de::Error::custom(format!("expected hash in format 'blake3:hex', got '{s}'"))
+        })?;
+        let bytes = blake3::Hash::from_hex(hex)
+            .map_err(|e| serde::de::Error::custom(format!("invalid hex digest: {e}")))?;
+        Ok(Self(*bytes.as_bytes()))
+    }
+}
+
 impl fmt::Debug for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Hash({})", self.to_hex())
@@ -123,8 +145,10 @@ impl fmt::Debug for Hash {
 }
 
 impl fmt::Display for Hash {
+    /// Returns the canonical human-readable format `"blake3:hexdigest"`,
+    /// matching the [`Serialize`](Serialize) representation.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_hex().fmt(f)
+        write!(f, "blake3:{}", self.to_hex())
     }
 }
 
@@ -149,10 +173,16 @@ impl AsRef<[u8]> for Hash {
 impl FromStr for Hash {
     type Err = HashParseError;
 
-    /// Parse a lowercase 64-char hex string (as produced by [`to_hex`](Hash::to_hex)).
+    /// Parse a hash from a string.
+    ///
+    /// Accepts either:
+    /// - `"blake3:hexdigest"` (the canonical human-readable serialization)
+    /// - plain 64-char lowercase hex (as produced by [`to_hex`](Hash::to_hex))
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Strip optional "blake3:" prefix used in config/state serialization.
+        let hex = s.strip_prefix("blake3:").unwrap_or(s);
         let bytes =
-            blake3::Hash::from_hex(s).map_err(|e| HashParseError::Multihash(e.to_string()))?;
+            blake3::Hash::from_hex(hex).map_err(|e| HashParseError::Multihash(e.to_string()))?;
         Ok(Self(*bytes.as_bytes()))
     }
 }
