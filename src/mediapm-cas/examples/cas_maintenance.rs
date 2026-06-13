@@ -40,9 +40,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let all = cas.list_all_hashes().await?;
     println!("Current objects: {}", all.len());
 
-    // --- repair_index ---
-    let repaired = cas.repair_index().await?;
-    println!("Index repair: {} fixes.", repaired.fixed);
-
     Ok(())
 }

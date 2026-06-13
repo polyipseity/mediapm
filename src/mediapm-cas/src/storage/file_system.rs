@@ -34,7 +34,7 @@ impl FileSystemCas {
     /// they don't exist. Rebuilds the index from the WAL on open.
     pub async fn open(dir: &Path) -> Result<Self, CasError> {
         let wal = FileWal::create(dir.to_path_buf()).await?;
-        let blob_store = FileSystemBlobStore::create(dir.join("blobs")).await?;
+        let blob_store = FileSystemBlobStore::create(dir.join("blobs"), false).await?;
         let index = InMemoryIndex::new();
         index.rebuild_from_wal(&wal).await?;
         Ok(Self(CasStore::new(wal, index, blob_store)))

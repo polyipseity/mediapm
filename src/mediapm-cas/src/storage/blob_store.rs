@@ -115,19 +115,19 @@ fn hash_to_delta_path(root: &Path, hash: &Hash) -> PathBuf {
 /// ## Concurrency
 ///
 /// All methods are safe for concurrent access. Directory creation uses
-/// `create_dir_all` which is idempotent.
 #[derive(Clone, Debug)]
 pub struct FileSystemBlobStore {
     root: PathBuf,
+    verify_on_read: bool,
 }
 
 impl FileSystemBlobStore {
     /// Create a new blob store rooted at `root`.
     ///
     /// The root directory is created if it does not exist.
-    pub async fn create(root: PathBuf) -> Result<Self, CasError> {
+    pub async fn create(root: PathBuf, verify_on_read: bool) -> Result<Self, CasError> {
         tokio::fs::create_dir_all(&root).await.map_err(CasError::Io)?;
-        Ok(Self { root })
+        Ok(Self { root, verify_on_read })
     }
 
     /// Return the root path.
@@ -189,16 +189,18 @@ impl BlobStore for FileSystemBlobStore {
     async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_path(&self.root, hash);
         let data = tokio::fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        // Verify integrity: content must hash correctly.
-        Self::verify_hash(&path, hash).await?;
+        if self.verify_on_read {
+            Self::verify_hash(&path, hash).await?;
+        }
         Ok(Bytes::from(data))
     }
 
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_delta_path(&self.root, hash);
         let data = tokio::fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        // Verify integrity: content must hash correctly.
-        Self::verify_hash(&path, hash).await?;
+        if self.verify_on_read {
+            Self::verify_hash(&path, hash).await?;
+        }
         Ok(Bytes::from(data))
     }
 
@@ -347,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn file_system_write_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FileSystemBlobStore::create(dir.path().to_path_buf()).await.unwrap();
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), true).await.unwrap();
 
         let data = Bytes::from_static(b"hello fs blob store");
         let hash = Hash::from_content(&data);
@@ -369,7 +371,7 @@ mod tests {
     #[tokio::test]
     async fn file_system_delta_path_works() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FileSystemBlobStore::create(dir.path().to_path_buf()).await.unwrap();
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), false).await.unwrap();
 
         let base = Hash::from_content(b"base");
         let data = Bytes::from_static(b"delta envelope data");
@@ -388,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn file_system_delete_removes_both_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FileSystemBlobStore::create(dir.path().to_path_buf()).await.unwrap();
+        let store = FileSystemBlobStore::create(dir.path().to_path_buf(), false).await.unwrap();
 
         let base = Hash::from_content(b"base");
         let data = Bytes::from_static(b"dual blob");

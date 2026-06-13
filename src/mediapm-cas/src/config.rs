@@ -9,8 +9,8 @@ use bytes::Bytes;
 use std::collections::BTreeSet;
 
 use crate::api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, IndexRepairReport, ObjectMeta,
-    OptimizeReport, PruneReport,
+    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectMeta, OptimizeReport,
+    PruneReport,
 };
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -45,8 +45,6 @@ pub enum VerifyTriggerStrategy {
 pub struct CasIntegrityConfig {
     /// Ordered list of trigger strategies.
     pub verify_on_read: Vec<VerifyTriggerStrategy>,
-    /// TTL for cache of reconstructed delta bytes.
-    pub reconstructed_bytes_cache_ttl: Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -105,10 +103,7 @@ impl CasConfig {
         if locator == "memory" {
             return Ok(Self {
                 storage_locator: CasStorageLocator::InMemory,
-                integrity: CasIntegrityConfig {
-                    verify_on_read: Vec::new(),
-                    reconstructed_bytes_cache_ttl: Duration::from_secs(300),
-                },
+                integrity: CasIntegrityConfig { verify_on_read: Vec::new() },
             });
         }
 
@@ -117,10 +112,7 @@ impl CasConfig {
                 storage_locator: CasStorageLocator::FileSystem {
                     path: Path::new(locator).to_path_buf(),
                 },
-                integrity: CasIntegrityConfig {
-                    verify_on_read: Vec::new(),
-                    reconstructed_bytes_cache_ttl: Duration::from_secs(300),
-                },
+                integrity: CasIntegrityConfig { verify_on_read: Vec::new() },
             });
         }
 
@@ -195,10 +187,6 @@ impl CasMaintenanceApi for ConfiguredCas {
 
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
         forward!(self.list_all_hashes().await)
-    }
-
-    async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {
-        forward!(self.repair_index().await)
     }
 }
 

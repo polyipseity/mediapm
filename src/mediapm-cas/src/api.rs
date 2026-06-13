@@ -199,9 +199,6 @@ pub trait CasMaintenanceApi: Send + Sync {
 
     /// List all hashes currently in the store (best-effort).
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
-
-    /// Repair any index inconsistencies.
-    async fn repair_index(&self) -> Result<IndexRepairReport, CasError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -222,11 +219,4 @@ pub struct OptimizeReport {
 pub struct PruneReport {
     /// Number of constraint entries removed.
     pub removed: usize,
-}
-
-/// Result of [`CasMaintenanceApi::repair_index`].
-#[derive(Debug, Clone, Default)]
-pub struct IndexRepairReport {
-    /// Number of inconsistencies fixed.
-    pub fixed: usize,
 }

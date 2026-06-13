@@ -46,8 +46,8 @@ pub mod cli;
 
 // Re-export the most important types at crate root for convenience.
 pub use api::{
-    CasApi, CasApiStreaming, CasMaintenanceApi, ConstraintApi, ConstraintPatch, IndexRepairReport,
-    ObjectEncoding, ObjectMeta, OptimizeReport, PruneReport,
+    CasApi, CasApiStreaming, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding,
+    ObjectMeta, OptimizeReport, PruneReport,
 };
 pub use config::{
     CasConfig, CasIntegrityConfig, CasLocatorParseOptions, CasStorageLocator, ConfiguredCas,

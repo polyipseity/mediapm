@@ -52,12 +52,6 @@ macro_rules! impl_cas_wrapper_traits {
             ) -> Result<Vec<$crate::hash::Hash>, $crate::error::CasError> {
                 self.0.list_all_hashes().await
             }
-
-            async fn repair_index(
-                &self,
-            ) -> Result<$crate::api::IndexRepairReport, $crate::error::CasError> {
-                self.0.repair_index().await
-            }
         }
 
         #[async_trait::async_trait]

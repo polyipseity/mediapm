@@ -26,8 +26,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::api::{
-    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, IndexRepairReport, ObjectEncoding,
-    ObjectMeta, OptimizeReport, PruneReport,
+    CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
+    OptimizeReport, PruneReport,
 };
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -216,14 +216,5 @@ impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
 
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
         self.index.list_hashes().await
-    }
-
-    async fn repair_index(&self) -> Result<IndexRepairReport, CasError> {
-        // For in-memory backends, index is always consistent.
-        // File-based implementations will override.
-        // TODO(mediapm-cas#file-repair): Implement for FileSystemCas —
-        // verify that FileWal entries have corresponding Index entries
-        // and vice versa, removing orphaned entries.
-        Ok(IndexRepairReport { fixed: 0 })
     }
 }
