@@ -28,7 +28,7 @@ use super::wal::{Wal, WalEntry, WalPosition};
 #[derive(Debug, Clone, PartialEq)]
 pub struct IndexEntry {
     /// Original payload length (before any encoding).
-    pub size: u64,
+    pub len: u64,
     /// How the payload is encoded.
     pub encoding: ObjectEncoding,
     /// Constraint bases, if any.
@@ -39,7 +39,7 @@ pub struct IndexEntry {
 impl IndexEntry {
     /// Convenience: returns `ObjectMeta` from this entry.
     pub fn as_meta(&self) -> ObjectMeta {
-        ObjectMeta { len: self.size, encoding: self.encoding }
+        ObjectMeta { len: self.len, encoding: self.encoding }
     }
 }
 
@@ -116,14 +116,7 @@ impl InMemoryIndex {
 #[async_trait]
 impl Index for InMemoryIndex {
     async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
-        // Preserve existing constraint bases when overwriting an entry.
-        let prev = self.data.get(&hash).map(|r| r.value().clone());
-        let merged = if let Some(prev) = prev {
-            if entry.bases.is_none() { IndexEntry { bases: prev.bases, ..entry } } else { entry }
-        } else {
-            entry
-        };
-        self.data.insert(hash, merged);
+        self.data.insert(hash, entry);
         Ok(())
     }
 
@@ -148,7 +141,7 @@ impl Index for InMemoryIndex {
         // Extract entry from the DashMap Ref guard first so we don't hold
         // the shard read lock while trying to acquire the write lock.
         let mut entry = self.data.get(&target).map(|r| r.value().clone()).unwrap_or(IndexEntry {
-            size: 0,
+            len: 0,
             encoding: ObjectEncoding::Full,
             bases: None,
         });
@@ -192,7 +185,7 @@ impl Index for InMemoryIndex {
                     self.data.insert(
                         hash,
                         IndexEntry {
-                            size: data.len() as u64,
+                            len: data.len() as u64,
                             encoding: ObjectEncoding::Full,
                             bases,
                         },
@@ -204,7 +197,7 @@ impl Index for InMemoryIndex {
                 WalEntry::Constraint { target, bases } => {
                     let mut entry =
                         self.data.get(&target).as_deref().cloned().unwrap_or(IndexEntry {
-                            size: 0,
+                            len: 0,
                             encoding: ObjectEncoding::Full,
                             bases: None,
                         });
@@ -233,10 +226,10 @@ mod tests {
     async fn put_and_get_roundtrip() {
         let index = InMemoryIndex::new();
         let hash = Hash::from_content(b"hello world");
-        let entry = IndexEntry { size: 11, encoding: ObjectEncoding::Full, bases: None };
+        let entry = IndexEntry { len: 11, encoding: ObjectEncoding::Full, bases: None };
         index.put(hash, entry.clone()).await.unwrap();
         let retrieved = index.get(&hash).await.unwrap().unwrap();
-        assert_eq!(retrieved.size, entry.size);
+        assert_eq!(retrieved.len, entry.len);
         assert_eq!(retrieved.encoding, entry.encoding);
         assert_eq!(retrieved.bases, None);
     }
@@ -253,7 +246,7 @@ mod tests {
         let index = InMemoryIndex::new();
         let hash = Hash::from_content(b"delete me");
         index
-            .put(hash, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(hash, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         index.delete(&hash).await.unwrap();
@@ -266,7 +259,7 @@ mod tests {
         assert!(index.is_empty());
         let hash = Hash::from_content(b"item");
         index
-            .put(hash, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(hash, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         assert_eq!(index.len(), 1);
@@ -329,21 +322,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn put_preserves_existing_bases() {
+    async fn put_overwrites_bases() {
         let index = InMemoryIndex::new();
         let hash = Hash::from_content(b"h");
         let base = Hash::from_content(b"b");
 
         // Set constraint first.
         index.set_constraint(hash, BTreeSet::from([base])).await.unwrap();
-        // Then put an object.
+        // Then put an object with explicit bases: None.
         index
-            .put(hash, IndexEntry { size: 5, encoding: ObjectEncoding::Full, bases: None })
+            .put(hash, IndexEntry { len: 5, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
 
-        // Put preserves the existing constraint bases from set_constraint.
-        assert_eq!(index.get_constraint(&hash).await.unwrap(), Some(BTreeSet::from([base])));
+        // Put overwrites constraint bases when bases is explicitly None.
+        assert_eq!(index.get_constraint(&hash).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -353,7 +346,7 @@ mod tests {
         let b = Hash::from_content(b"b");
 
         index
-            .put(a, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(a, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         index.set_constraint(b, BTreeSet::from([a])).await.unwrap();
@@ -370,15 +363,15 @@ mod tests {
         let base = Hash::from_content(b"base");
 
         index
-            .put(live, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(live, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         index
-            .put(dead, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(dead, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         index
-            .put(base, IndexEntry { size: 1, encoding: ObjectEncoding::Full, bases: None })
+            .put(base, IndexEntry { len: 1, encoding: ObjectEncoding::Full, bases: None })
             .await
             .unwrap();
         index.set_constraint(live, BTreeSet::from([base, dead])).await.unwrap();
@@ -411,7 +404,7 @@ mod tests {
         index.rebuild_from_wal(&journal).await.unwrap();
 
         let entry = index.get(&hash).await.unwrap().unwrap();
-        assert_eq!(entry.size, 5);
+        assert_eq!(entry.len, 5);
         assert_eq!(entry.encoding, ObjectEncoding::Full);
         assert_eq!(entry.bases, Some(BTreeSet::from([base])));
     }

@@ -92,7 +92,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                         .put(
                             *hash,
                             IndexEntry {
-                                size: data.len() as u64,
+                                len: data.len() as u64,
                                 encoding: ObjectEncoding::Full,
                                 bases: existing_bases,
                             },
@@ -177,7 +177,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                 .put(
                     dep_hash,
                     IndexEntry {
-                        size: result_bytes.len() as u64,
+                        len: result_bytes.len() as u64,
                         encoding: ObjectEncoding::Full,
                         bases,
                     },
@@ -298,7 +298,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                             .put(
                                 *target,
                                 IndexEntry {
-                                    size: target_bytes.len() as u64,
+                                    len: target_bytes.len() as u64,
                                     encoding: ObjectEncoding::Delta { base_hash: **best_base },
                                     bases,
                                 },
