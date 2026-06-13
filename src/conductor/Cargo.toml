@@ -34,7 +34,7 @@ dotenvy.workspace = true
 flate2 = { workspace = true, optional = true }
 fp-library.workspace = true
 futures-util.workspace = true
-mediapm-cas = { path = "../cas", default-features = false }
+mediapm-cas = { path = "../mediapm-cas", default-features = false }
 mediapm-conductor-builtin-echo = { path = "../conductor-builtins/echo", default-features = false }
 mediapm-conductor-builtin-fs = { path = "../conductor-builtins/fs", default-features = false }
 mediapm-conductor-builtin-import = { path = "../conductor-builtins/import", default-features = false }

@@ -2,7 +2,8 @@
 resolver = "3"
 members = [
 	"scripts/cargo-bin",
-	"src/cas",
+	"src/mediapm",
+	"src/mediapm-cas",
 	"src/conductor",
 	"src/conductor/examples/support/concat-tool",
 	"src/conductor-builtins/archive",
@@ -10,7 +11,6 @@ members = [
 	"src/conductor-builtins/export",
 	"src/conductor-builtins/fs",
 	"src/conductor-builtins/import",
-	"src/mediapm",
 	"src/mediapm-utils",
 ]
 

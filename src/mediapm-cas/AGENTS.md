@@ -104,7 +104,7 @@ pub trait CasMaintenanceApi: Send + Sync {
 ### Module tree
 
 ```text
-src/cas/src/
+src/mediapm-cas/src/
 ├── lib.rs              — crate root, re-exports, doc-test
 ├── api.rs              — CasApi, CasApiStreaming, ConstraintApi, CasMaintenanceApi
 ├── hash.rs             — Hash type (blake3-256, multihash wire format)

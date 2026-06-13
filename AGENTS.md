@@ -12,7 +12,7 @@
   `.agents/prompts/*.prompt.md`, and skill assets in `.agents/skills/<skill>/`.
 - Every crate directory ships an `AGENTS.md` with crate-local guidance.
 - `src/` now contains workspace member crates:
-  - `src/cas/` (CAS)
+  - `src/mediapm-cas/` (CAS)
   - `src/conductor/` (Conductor)
   - `src/conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
   - `src/conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
@@ -93,7 +93,7 @@ Get up and running in minutes:
 
 ## Rust Architecture Snapshot
 
-- `src/cas/` provides the CAS identity model and async API contracts.
+- `src/mediapm-cas/` provides the CAS identity model and async API contracts.
   CAS topology visualization implementation also belongs in this crate.
 - `src/conductor/` provides the orchestration state model and
   persistence-merge logic.
@@ -395,7 +395,7 @@ Get up and running in minutes:
   linking to per-crate AGENTS.md for all specification and edge-case content
   (replaces the deleted `crate-specifications.md` and
   `elaboration-pass-edge-cases.md`)
-- `src/cas/AGENTS.md`, `src/conductor/AGENTS.md`, `src/mediapm/AGENTS.md` —
+- `src/mediapm-cas/AGENTS.md`, `src/conductor/AGENTS.md`, `src/mediapm/AGENTS.md` —
   crate-level detailed behavioral contracts
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,
   `.agents/.markdownlint.jsonc` — formatting and line-ending rules

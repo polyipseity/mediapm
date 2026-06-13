@@ -23,7 +23,7 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `AGENTS.md` + `.agents/instructions/*.instructions.md` for active
   architecture and implementation contract.
 - `src/` workspace member crates for current module boundaries:
-  - `src/cas/` (CAS)
+  - `src/mediapm-cas/` (CAS)
   - `src/conductor/` (Conductor)
   - `src/conductor-builtins/*/` (conductor built-ins)
   - `src/mediapm/` (mediapm application)

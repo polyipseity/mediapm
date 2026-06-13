@@ -44,7 +44,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
   assumptions.
 - For this repository specifically, confirm the workspace crate split and its
   responsibilities from real files:
-  - `src/cas/` as CAS,
+  - `src/mediapm-cas/` as CAS,
   - `src/conductor/` as orchestration,
   - `src/conductor-builtins/*/` as builtin runtime crates,
   - `src/mediapm/` as media-facing composition.

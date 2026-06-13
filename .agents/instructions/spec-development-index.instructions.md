@@ -16,7 +16,7 @@ locate the relevant specification or edge-case content by crate.
 
 | Crate                                         | File                               | Coverage                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | --------------------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **CAS** (content-addressed storage)           | `src/cas/AGENTS.md`                | Hash identity (blake3-256, multihash wire format), 4-trait public API (CasApi, CasApiStreaming, ConstraintApi, CasMaintenanceApi), architecture module tree & data flow, internals (Journal, ObjectStore, ReadView, Delta Codec, BackgroundEngine), delete semantics (no dangling deltas), invariants & edge cases (content identity, crash safety, TOCTOU, delta chain integrity, constraints, codec versioning), cross-crate integration (Conductor, MediaPM), build & test commands                                                                                                                                                                                                                                                                                                                    |
+| **CAS** (content-addressed storage)           | `src/mediapm-cas/AGENTS.md`        | Hash identity (blake3-256, multihash wire format), 4-trait public API (CasApi, CasApiStreaming, ConstraintApi, CasMaintenanceApi), architecture module tree & data flow, internals (Journal, ObjectStore, ReadView, Delta Codec, BackgroundEngine), delete semantics (no dangling deltas), invariants & edge cases (content identity, crash safety, TOCTOU, delta chain integrity, constraints, codec versioning), cross-crate integration (Conductor, MediaPM), build & test commands                                                                                                                                                                                                                                                                                           |
 | **Conductor** (workflow orchestration)        | `src/conductor/AGENTS.md`          | Orchestration contract, 3-document config model, 27 tool schema invariants, template syntax specification, tool-content cache design, process execution semantics, step dispatch (dependency-stream model), Instance GC lifecycle, CAS GC sweep, background GC loop, channel-based progress events, orchestration state decode migration, instance key lifecycle & failure recovery, integration boundaries (CAS↔Conductor, Conductor↔Builtins, MediaPM↔Conductor), performance, known limitations, N.1–N.19 edge cases (expanded Part 2), O.1–O.9 specification sections (decision rationale, EWMA performance details, testing requirements, troubleshooting, implementation checklist, extension points, cross-crate references, ambiguities resolved, architecture diagrams) |
 | **Conductor-Builtins** (tool implementations) | `src/conductor-builtins/AGENTS.md` | Shared validation framework, CLI/API contract, 5 builtin specs (echo, fs, archive, import, export), tool registration & identity, builtin contract stability rule, integration boundary (Conductor↔Builtins), performance, Part 3 edge cases (3.1–3.6), section H (ambiguities resolved: fail-fast scope, deterministic payload)                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | MediaPM (user-facing API/CLI)                 | `src/mediapm/AGENTS.md`            | Runtime path resolution, media workflow pipeline, versioning & migration, media schema (hierarchy node kinds, metadata binding, managed tool reconciliation), tool provisioning & catalog, materialization, metadata cache, lock records, HierarchyPath sanitization pipeline (5 stages), companion paths, integration boundary (MediaPM↔Conductor), identity/sidecar/storage invariants, testing policy, L–N edge case sections (2.1–2.11 Conductor edge cases, 3.1–3.6 Builtins edge cases, 4.1–4.33 MediaPM edge cases, 5.1–5.5 Metadata cache edge cases, 6.1–6.8 Cross-crate conflicts)                                                                                                                                                                                     |
@@ -50,7 +50,7 @@ locate the relevant specification or edge-case content by crate.
 
 | When you need...                              | Start with...                                                     |
 | --------------------------------------------- | ----------------------------------------------------------------- |
-| CAS storage semantics or integrity            | `src/cas/AGENTS.md`                                               |
+| CAS storage semantics or integrity            | `src/mediapm-cas/AGENTS.md`                                       |
 | Conductor orchestration or tool contracts     | `src/conductor/AGENTS.md`                                         |
 | Builtin tool parameter or output schema       | `src/conductor-builtins/AGENTS.md`                                |
 | Media workflow pipeline or media-schema rules | `src/mediapm/AGENTS.md`                                           |
@@ -66,11 +66,11 @@ The following temp files from the original monolithic-specs deletion were
 verified against current per-crate AGENTS.md. All content is already covered
 (no new content needed).
 
-| Temp file              | Internal section                                                                                                        | Covered in                                                                                                                                                   |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `part6-cross-crate.md` | Part 7: Ambiguities (fail-fast, deterministic payload, cleanup, tool IDs, index repair, config versioning)              | `src/conductor-builtins/AGENTS.md` H.7 (§7.1–7.2), `src/mediapm/AGENTS.md` (§7.3), `src/conductor/AGENTS.md` O.8 (§7.4, 7.7), `src/cas/AGENTS.md` 2.8 (§7.6) |
-| `part7-ambiguities.md` | Part 8: Performance (CAS optimizer, EWMA, parallelization, lock reconciliation, delta cache, builtin overhead)          | `src/cas/AGENTS.md` 2.2 (§8.1, 8.5), `src/conductor/AGENTS.md` O.2 (§8.2), `src/mediapm/AGENTS.md` (§8.3–8.4), `src/conductor-builtins/AGENTS.md` H.2 (§8.6) |
-| `part8-performance.md` | Part 9: Testing gaps (CAS deltas, conductor external data, builtins path safety, mediapm sync, cross-crate integration) | `src/cas/AGENTS.md` 2.3 (§9.1), `src/conductor/AGENTS.md` O.3 (§9.2), `src/conductor-builtins/AGENTS.md` H.3 (§9.3), `src/mediapm/AGENTS.md` (§9.4–9.5)      |
+| Temp file              | Internal section                                                                                                        | Covered in                                                                                                                                                           |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `part6-cross-crate.md` | Part 7: Ambiguities (fail-fast, deterministic payload, cleanup, tool IDs, index repair, config versioning)              | `src/conductor-builtins/AGENTS.md` H.7 (§7.1–7.2), `src/mediapm/AGENTS.md` (§7.3), `src/conductor/AGENTS.md` O.8 (§7.4, 7.7), `src/mediapm-cas/AGENTS.md` 2.8 (§7.6) |
+| `part7-ambiguities.md` | Part 8: Performance (CAS optimizer, EWMA, parallelization, lock reconciliation, delta cache, builtin overhead)          | `src/mediapm-cas/AGENTS.md` 2.2 (§8.1, 8.5), `src/conductor/AGENTS.md` O.2 (§8.2), `src/mediapm/AGENTS.md` (§8.3–8.4), `src/conductor-builtins/AGENTS.md` H.2 (§8.6) |
+| `part8-performance.md` | Part 9: Testing gaps (CAS deltas, conductor external data, builtins path safety, mediapm sync, cross-crate integration) | `src/mediapm-cas/AGENTS.md` 2.3 (§9.1), `src/conductor/AGENTS.md` O.3 (§9.2), `src/conductor-builtins/AGENTS.md` H.3 (§9.3), `src/mediapm/AGENTS.md` (§9.4–9.5)      |
 
 > **Note**: The temp files are misnamed relative to their internal headers.
 > No "Part 6: Cross-Crate" content exists in any of the three temp files. The
@@ -87,7 +87,7 @@ per-crate AGENTS.md files. Key cross-crate reference points:
 
 | Contract                                              | Location                                                                                    |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| CAS versioning vs Conductor versioning                | `src/cas/AGENTS.md` 2.7, `src/mediapm/AGENTS.md` §6.1                                       |
+| CAS versioning vs Conductor versioning                | `src/mediapm-cas/AGENTS.md` 2.7, `src/mediapm/AGENTS.md` §6.1                               |
 | Builtin failure semantics vs Conductor error recovery | `src/conductor/AGENTS.md` O.7, N.15; `src/mediapm/AGENTS.md` §6.2                           |
 | MediaPM lock vs CAS constraint consistency            | `src/mediapm/AGENTS.md` §6.3                                                                |
 | Tool ID collision (builtin vs managed)                | `src/conductor/AGENTS.md` O.7, N.16; `src/mediapm/AGENTS.md` §6.4                           |
@@ -95,12 +95,12 @@ per-crate AGENTS.md files. Key cross-crate reference points:
 | Cache invalidation across tool versions               | `src/conductor/AGENTS.md` O.7; `src/mediapm/AGENTS.md` §6.6                                 |
 | Instance key immutability and failure recovery        | `src/conductor/AGENTS.md` O.7; `src/mediapm/AGENTS.md` §6.7                                 |
 | NCL↔Rust schema sync contract                         | `src/conductor/AGENTS.md` N.18, O.7; `src/mediapm/AGENTS.md` §6.8                           |
-| Composite hash (`Hash::composite`) across crates      | `src/cas/AGENTS.md` §1, §7; `src/mediapm/AGENTS.md` §C    |
+| Composite hash (`Hash::composite`) across crates      | `src/mediapm-cas/AGENTS.md` §1, §7; `src/mediapm/AGENTS.md` §C                              |
 | Cross-workflow cache-probe race                       | `src/conductor/AGENTS.md` N.12                                                              |
 | Direct materialization cleanup on failure             | `src/mediapm/AGENTS.md` (automatic cleanup section); `src/conductor-builtins/AGENTS.md` 3.5 |
-| Index repair semantics                                | `src/cas/AGENTS.md` §2.4 (ambiguity resolved)                                                |
+| Index repair semantics                                | `src/mediapm-cas/AGENTS.md` §2.4 (ambiguity resolved)                                       |
 | EWMA scheduler parameters                             | `src/conductor/AGENTS.md` O.2                                                               |
-| CAS optimizer and delta reconstruction cache          | `src/cas/AGENTS.md` §4.5, §4.4                                                             |
+| CAS optimizer and delta reconstruction cache          | `src/mediapm-cas/AGENTS.md` §4.5, §4.4                                                      |
 | Builtin deterministic payload / fail-fast             | `src/conductor-builtins/AGENTS.md` H.7                                                      |
 
 ### Testing Gaps (Cross-Crate)
@@ -197,11 +197,11 @@ fully covered by dedicated e2e tests:
 
 | Path                               | Role                                    |
 | ---------------------------------- | --------------------------------------- |
-| `src/cas/src/api.rs`               | `CasApi` trait                          |
-| `src/cas/src/hash.rs`              | `Hash` type, Blake3                     |
-| `src/cas/src/codec/`               | Serialization & versioning              |
-| `src/cas/src/index/`               | Persistence, repair                     |
-| `src/cas/src/storage/`             | `FileSystemCas`, `InMemoryCas`          |
+| `src/mediapm-cas/src/api.rs`       | `CasApi` trait                          |
+| `src/mediapm-cas/src/hash.rs`      | `Hash` type, Blake3                     |
+| `src/mediapm-cas/src/codec/`       | Serialization & versioning              |
+| `src/mediapm-cas/src/index/`       | Persistence, repair                     |
+| `src/mediapm-cas/src/storage/`     | `FileSystemCas`, `InMemoryCas`          |
 | `src/conductor/src/api.rs`         | `ConductorApi` trait                    |
 | `src/conductor/src/model/`         | 3-document config + orchestration state |
 | `src/conductor/src/orchestration/` | Actor-based execution                   |

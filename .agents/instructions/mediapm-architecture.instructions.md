@@ -27,7 +27,7 @@ applyTo: "src/**/*.rs"
 
 ## Module layout (source of truth)
 
-- `src/cas/` (CAS)
+- `src/mediapm-cas/` (CAS)
   - identity/hash model
   - CAS async API contracts
   - storage/index/constraint behavior
@@ -70,7 +70,7 @@ is a narrow, documented reason.
 ## Layering rules
 
 - `cas` should remain runtime-agnostic at public API boundaries.
-  CAS-specific invariants to preserve in `src/cas/**`:
+  CAS-specific invariants to preserve in `src/mediapm-cas/**`:
   - storage follows an "everything is a diff" logical model where full blobs
     are treated as diff-from-empty identity in planning/index semantics,
   - diff graph/index relationships stay acyclic and reconstructable,
@@ -79,10 +79,10 @@ is a narrow, documented reason.
     pathologically deep),
   - storage fan-out and hash identity behavior stay deterministic,
   - orchestration runtime constants (RPC timeouts, disk-pressure thresholds)
-    are centralized in `src/cas/src/orchestration/config.rs` so clients and
+    are centralized in `src/mediapm-cas/src/orchestration/config.rs` so clients and
     actor implementations remain aligned,
   - concurrent batch operations over hash collections use the
-    `batch_concurrent_map!` macro (defined in `src/cas/src/api.rs`) for
+    `batch_concurrent_map!` macro (defined in `src/mediapm-cas/src/api.rs`) for
     consistent `FuturesUnordered` + index-ordering behavior across
     `exists_many`, `get_many`, `info_many`, and `get_constraint_many`.
 - `conductor` should keep deterministic planning/keying logic explicit and testable.
