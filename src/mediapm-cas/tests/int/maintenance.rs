@@ -24,17 +24,20 @@ async fn optimize_once_wal_consumer() {
 }
 
 #[tokio::test]
-async fn prune_constraints_removes_orphan_targets() {
+async fn prune_constraints_no_orphans_after_materialized_delete() {
     let cas = new_in_memory_cas();
     let target = cas.put(Bytes::from_static(b"orphan")).await.unwrap();
     cas.set_constraint(target, BTreeSet::new()).await.unwrap();
 
-    // Delete the target object.
+    // Delete and fully materialize the delete through the WAL consumer.
     cas.delete(target).await.unwrap();
+    cas.optimize_once().await.unwrap();
 
-    // Prune — the constraint referencing the deleted target should be removed.
+    // In the unified Index architecture, constraints are embedded in the
+    // index entry — deleting the entry also removes its constraint, so
+    // no orphans remain after materialization.
     let report = cas.prune_constraints().await.unwrap();
-    assert_eq!(report.removed, 1);
+    assert_eq!(report.removed, 0);
 }
 
 #[tokio::test]
