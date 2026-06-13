@@ -465,8 +465,7 @@ fn collect_store_object_hashes(cas_root: &Path) -> ExampleResult<BTreeSet<Hash>>
 /// Resolves canonical CAS object file path for one content hash.
 fn cas_object_path_for_hash(cas_root: &Path, hash: Hash) -> PathBuf {
     let hex = hash.to_hex();
-    let algorithm = hash.algorithm_name();
-    cas_root.join("v1").join(algorithm).join(&hex[..2]).join(&hex[2..4]).join(&hex[4..])
+    cas_root.join("v1").join("blake3").join(&hex[..2]).join(&hex[2..4]).join(&hex[4..])
 }
 
 /// Returns lockfile-relative managed path for one materialized output file.
@@ -536,9 +535,9 @@ async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats>
     let mut with_delta = 0u64;
 
     for hash in collect_store_object_hashes(cas_root)? {
-        let info = cas.info(hash).await?;
-        without_delta = without_delta.saturating_add(info.content_len);
-        with_delta = with_delta.saturating_add(info.payload_len);
+        let info = cas.stat(hash).await?;
+        without_delta = without_delta.saturating_add(info.len);
+        with_delta = with_delta.saturating_add(info.len);
     }
 
     Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
@@ -598,7 +597,7 @@ async fn import_source_fixture_into_cas(
     cas: &FileSystemCas,
     source_bytes: &[u8],
 ) -> ExampleResult<Hash> {
-    let hash = cas.put(source_bytes.to_vec()).await?;
+    let hash = cas.put(source_bytes.to_vec().into()).await?;
     Ok(hash)
 }
 
@@ -1140,7 +1139,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     };
 
     let source_hash_text = {
-        let cas = FileSystemCas::open(paths.runtime_root.join("store")).await?;
+        let cas = FileSystemCas::open(&paths.runtime_root.join("store")).await?;
         let source_hash = import_source_fixture_into_cas(&cas, &source_bytes).await?;
         source_hash.to_string()
     };

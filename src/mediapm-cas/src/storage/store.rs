@@ -138,10 +138,6 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
             return Ok(());
         }
         self.wal.append(WalEntry::Delete { hash }).await?;
-        // Write through to BlobStore and Index so deletion is immediately
-        // visible.  The background WAL consumer is idempotent.
-        self.blob_store.delete(&hash).await?;
-        self.index.delete(&hash).await?;
         // Update cache so subsequent reads miss.
         self.read_view.hint_state_change(hash, None).await;
         Ok(())

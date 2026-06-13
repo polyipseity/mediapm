@@ -123,15 +123,13 @@ impl InMemoryIndex {
 impl Index for InMemoryIndex {
     async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
         // Preserve existing constraint bases when overwriting an entry.
-        if let Some(prev) = self.data.get(&hash).map(|r| r.value().clone()) {
-            let mut merged = entry;
-            if merged.bases.is_none() {
-                merged.bases = prev.bases;
-            }
-            self.data.insert(hash, merged);
+        let prev = self.data.get(&hash).map(|r| r.value().clone());
+        let merged = if let Some(prev) = prev {
+            if entry.bases.is_none() { IndexEntry { bases: prev.bases, ..entry } } else { entry }
         } else {
-            self.data.insert(hash, entry);
-        }
+            entry
+        };
+        self.data.insert(hash, merged);
         Ok(())
     }
 
@@ -155,13 +153,13 @@ impl Index for InMemoryIndex {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         // Extract entry from the DashMap Ref guard first so we don't hold
         // the shard read lock while trying to acquire the write lock.
-        let prev = self.data.get(&target).map(|r| r.value().clone());
-        if let Some(mut entry) = prev {
-            entry.bases = Some(bases);
-            self.data.insert(target, entry);
-        }
-        // If no entry exists and bases is non-empty, we preserve the
-        // constraint only in the WAL for later replay alongside the Put.
+        let mut entry = self.data.get(&target).map(|r| r.value().clone()).unwrap_or(IndexEntry {
+            size: 0,
+            encoding: ObjectEncoding::Full,
+            bases: None,
+        });
+        entry.bases = Some(bases);
+        self.data.insert(target, entry);
         Ok(())
     }
 
@@ -173,22 +171,22 @@ impl Index for InMemoryIndex {
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
         // Extract entry from the Ref guard before mutating + re-inserting.
-        let prev = self.data.get(&target).map(|r| r.value().clone());
-        if let Some(mut entry) = prev {
-            let bases = entry.bases.get_or_insert_with(BTreeSet::new);
-            if patch.clear {
-                bases.clear();
-            }
-            for h in &patch.add_bases {
-                bases.insert(*h);
-            }
-            for h in &patch.remove_bases {
-                bases.remove(h);
-            }
-            self.data.insert(target, entry);
+        let mut entry = self.data.get(&target).map(|r| r.value().clone()).unwrap_or(IndexEntry {
+            size: 0,
+            encoding: ObjectEncoding::Full,
+            bases: None,
+        });
+        let bases = entry.bases.get_or_insert_with(BTreeSet::new);
+        if patch.clear {
+            bases.clear();
         }
-        // If no entry exists yet, the patch is a no-op on the index.
-        // The WAL preserves the full Constraint entry for later replay.
+        for h in &patch.add_bases {
+            bases.insert(*h);
+        }
+        for h in &patch.remove_bases {
+            bases.remove(h);
+        }
+        self.data.insert(target, entry);
         Ok(())
     }
 
@@ -380,9 +378,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Put overwrites the entry — bases are lost because caller didn't preserve them.
-        // This is by design: the caller (BgEngine) must preserve bases when putting.
-        assert_eq!(index.get_constraint(&hash).await.unwrap(), None);
+        // Put preserves the existing constraint bases from set_constraint.
+        assert_eq!(index.get_constraint(&hash).await.unwrap(), Some(BTreeSet::from([base])));
     }
 
     #[tokio::test]

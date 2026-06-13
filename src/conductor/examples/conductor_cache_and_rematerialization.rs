@@ -402,12 +402,12 @@ async fn run_cache_and_rematerialization_demo() -> ExampleResult<()> {
         .expect("shared result output should exist in state after first run");
 
     let cas_reader = FileSystemCas::open(&cas_root).await?;
-    let output_existed_after_first_run = cas_reader.exists(shared_output_hash).await?;
+    let output_existed_after_first_run = cas_reader.stat(shared_output_hash).await.is_ok();
 
     let second_run = conductor.run_workflow(&user_path, &machine_path).await?;
 
     let output_existed_after_second_run =
-        FileSystemCas::open(&cas_root).await?.exists(shared_output_hash).await?;
+        FileSystemCas::open(&cas_root).await?.stat(shared_output_hash).await.is_ok();
 
     println!("temporary run directory (auto-cleaned): {}", root.display());
     println!(

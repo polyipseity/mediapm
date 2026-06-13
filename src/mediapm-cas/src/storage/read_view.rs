@@ -108,64 +108,72 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
         }
 
         // Check Index for metadata.
-        if let Some(entry) = self.index.get(hash).await? {
-            match entry.encoding {
-                ObjectEncoding::Full => {
-                    return self.blob_store.read(hash).await.map(Some);
-                }
-                ObjectEncoding::Delta { base_hash } => {
-                    // Walk the delta chain iteratively.
-                    let mut chain: Vec<(Hash, Bytes)> = Vec::new();
-                    let mut current = *hash;
-                    let mut base = base_hash;
+        let entry = match self.index.get(hash).await? {
+            Some(e) => e,
+            None => {
+                // WAL fallback: data may only exist as pending Put.
+                return match self.wal.check_pending(hash).await {
+                    PendingState::Present(data) => Ok(Some(data)),
+                    PendingState::Tombstone | PendingState::NotPresent => Ok(None),
+                };
+            }
+        };
 
-                    loop {
-                        if current == base {
-                            // Guard against self-referential cycles.
+        // Before reading payload, check the WAL for a pending Delete
+        // (tombstone) that hasn't been consumed yet.  This ensures
+        // WAL-only (background) deletes are visible immediately.
+        match self.wal.check_pending(hash).await {
+            PendingState::Tombstone => return Ok(None),
+            PendingState::Present(_) | PendingState::NotPresent => {}
+        }
+
+        match entry.encoding {
+            ObjectEncoding::Full => {
+                return self.blob_store.read(hash).await.map(Some);
+            }
+            ObjectEncoding::Delta { base_hash } => {
+                // Walk the delta chain iteratively.
+                let mut chain: Vec<(Hash, Bytes)> = Vec::new();
+                let mut current = *hash;
+                let mut base = base_hash;
+
+                loop {
+                    if current == base {
+                        // Guard against self-referential cycles.
+                        return Err(CasError::CorruptObject {
+                            hash: Some(current),
+                            details: "delta self-reference detected".into(),
+                        });
+                    }
+                    // Read delta envelope from blob store.
+                    let delta_data = self.blob_store.read_delta(&current).await?;
+                    chain.push((current, delta_data));
+                    current = base;
+
+                    // Check the base's encoding in Index.
+                    match self.index.get(&current).await? {
+                        Some(base_entry) => match base_entry.encoding {
+                            ObjectEncoding::Full => {
+                                let base_data = self.blob_store.read(&current).await?;
+                                return crate::delta::delta::resolve_delta_chain(
+                                    base_data, &mut chain, current,
+                                )
+                                .map(Some);
+                            }
+                            ObjectEncoding::Delta { base_hash: next_base } => {
+                                // Continue chain with this base as the new current.
+                                base = next_base;
+                            }
+                        },
+                        None => {
                             return Err(CasError::CorruptObject {
                                 hash: Some(current),
-                                details: "delta self-reference detected".into(),
+                                details: format!("delta chain: base {current} not found in index"),
                             });
-                        }
-                        // Read delta envelope from blob store.
-                        let delta_data = self.blob_store.read_delta(&current).await?;
-                        chain.push((current, delta_data));
-                        current = base;
-
-                        // Check the base's encoding in Index.
-                        match self.index.get(&current).await? {
-                            Some(base_entry) => match base_entry.encoding {
-                                ObjectEncoding::Full => {
-                                    let base_data = self.blob_store.read(&current).await?;
-                                    return crate::delta::delta::resolve_delta_chain(
-                                        base_data, &mut chain, current,
-                                    )
-                                    .map(Some);
-                                }
-                                ObjectEncoding::Delta { base_hash: next_base } => {
-                                    // Continue chain with this base as the new current.
-                                    base = next_base;
-                                }
-                            },
-                            None => {
-                                return Err(CasError::CorruptObject {
-                                    hash: Some(current),
-                                    details: format!(
-                                        "delta chain: base {current} not found in index"
-                                    ),
-                                });
-                            }
                         }
                     }
                 }
             }
-        }
-
-        // WAL fallback: data may only exist as pending Put.
-        let wal_result = self.wal.check_pending(hash).await;
-        match wal_result {
-            PendingState::Present(data) => Ok(Some(data)),
-            PendingState::Tombstone | PendingState::NotPresent => Ok(None),
         }
     }
 }
@@ -237,7 +245,12 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
 
         // Check Index first.
         if let Some(entry) = self.index.get(hash).await? {
-            return Ok(entry.as_meta());
+            // Before returning metadata, check the WAL for a pending Delete
+            // (tombstone) that hasn't been consumed yet.
+            match self.wal.check_pending(hash).await {
+                PendingState::Tombstone => {}
+                _ => return Ok(entry.as_meta()),
+            }
         }
 
         // WAL fallback: data may only exist as pending Put.

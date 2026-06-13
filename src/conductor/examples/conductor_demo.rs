@@ -22,6 +22,7 @@ use std::str::FromStr;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
     ConductorApi, ExternalContentRef, MachineNickelDocument, NickelDocumentMetadata,
@@ -394,9 +395,9 @@ async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats>
     let mut with_delta = 0u64;
 
     for hash in collect_store_object_hashes(cas_root)? {
-        let info = cas.info(hash).await?;
-        without_delta = without_delta.saturating_add(info.content_len);
-        with_delta = with_delta.saturating_add(info.payload_len);
+        let meta = cas.stat(hash).await?;
+        without_delta = without_delta.saturating_add(meta.len);
+        with_delta = with_delta.saturating_add(meta.len);
     }
 
     Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
@@ -1156,10 +1157,10 @@ async fn generate_demo_artifacts() -> ExampleResult<DemoRunPaths> {
 
     let cas = FileSystemCas::open(&cas_root).await?;
     let banner_hash = cas
-        .put("demo banner payload resolved through ${external_data.<hash>}".as_bytes().to_vec())
+        .put(Bytes::from("demo banner payload resolved through ${external_data.<hash>}"))
         .await?;
-    let concat_tool_binary_hash = cas.put(fs::read(&concat_binary_path)?).await?;
-    let concat_tool_resource_hash = cas.put(fs::read(&concat_resource_path)?).await?;
+    let concat_tool_binary_hash = cas.put(fs::read(&concat_binary_path)?.into()).await?;
+    let concat_tool_resource_hash = cas.put(fs::read(&concat_resource_path)?.into()).await?;
 
     let build_inputs = DemoWorkflowBuildInputs {
         banner_hash,
