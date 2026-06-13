@@ -29,24 +29,49 @@ pub(crate) mod v3;
 /// Prefix bytes required to dispatch a delta envelope: `magic_with_version`[8].
 const ENVELOPE_PREFIX_LEN: usize = 8;
 
-/// Stable family prefix; trailing two bytes in magic encode little-endian `u16` version.
-const DIFF_STORAGE_FAMILY_PREFIX: &[u8; 6] = b"MDCASD";
+/// Magic prefix for V3+ delta envelopes (`CASDLT` = Content-Addressed Storage Delta).
+const DIFF_STORAGE_MAGIC_PREFIX_V3: &[u8; 6] = b"CASDLT";
+/// Legacy magic prefix for V1/V2 delta envelopes (`MDCASD` = Media Delta).
+const DIFF_STORAGE_MAGIC_PREFIX_LEGACY: &[u8; 6] = b"MDCASD";
 
 /// Latest supported wire version.
 #[expect(dead_code, reason = "available for external migration use")]
 pub(crate) const LATEST_WIRE_VERSION: u16 = 3;
 
 /// Decodes and validates the embedded wire version from envelope magic bytes.
+///
+/// Accepts two magic prefixes:
+/// - `CASDLT` (V3+, new)
+/// - `MDCASD` (V1/V2, legacy)
+/// Cross-validation: `CASDLT` requires version ≥ 3; `MDCASD` requires version ≤ 2.
 fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
-    if &bytes[..DIFF_STORAGE_FAMILY_PREFIX.len()] != DIFF_STORAGE_FAMILY_PREFIX {
+    let (prefix, version) = if bytes[..6] == *DIFF_STORAGE_MAGIC_PREFIX_V3 {
+        (DIFF_STORAGE_MAGIC_PREFIX_V3, u16::from_le_bytes([bytes[6], bytes[7]]))
+    } else if bytes[..6] == *DIFF_STORAGE_MAGIC_PREFIX_LEGACY {
+        (DIFF_STORAGE_MAGIC_PREFIX_LEGACY, u16::from_le_bytes([bytes[6], bytes[7]]))
+    } else {
         return Err(CasError::corrupt_object("delta envelope: magic mismatch"));
-    }
+    };
 
-    let version = u16::from_le_bytes([bytes[6], bytes[7]]);
     if version == 0 {
         return Err(CasError::corrupt_object(
             "delta envelope: embedded version 0 is reserved for a future >65535-version scheme",
         ));
+    }
+
+    // Cross-validate: CASDLT → V3+, MDCASD → V1/V2
+    match prefix {
+        p if p == DIFF_STORAGE_MAGIC_PREFIX_V3 && version < 3 => {
+            return Err(CasError::corrupt_object(
+                "delta envelope: CASDLT magic requires version >= 3",
+            ));
+        }
+        p if p == DIFF_STORAGE_MAGIC_PREFIX_LEGACY && version > 2 => {
+            return Err(CasError::corrupt_object(
+                "delta envelope: MDCASD magic only valid for V1/V2 (use CASDLT for V3+)",
+            ));
+        }
+        _ => {}
     }
 
     Ok(version)

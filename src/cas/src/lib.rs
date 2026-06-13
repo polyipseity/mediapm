@@ -1,99 +1,55 @@
-//! High-performance unified-delta CAS.
+//! # mediapm-cas — Content-Addressable Storage
 //!
-//! This crate implements the core behaviors of the CAS contract:
+//! A minimal, content-addressed blob store with delta-compression hints.
 //!
-//! - Algorithm-tagged content identity (`HashAlgorithm` + 32-byte digest).
-//! - Deterministic fan-out object layout:
-//!   `{root}/{version}/{algorithm_name}/{h[0:2]}/{h[2:4]}/{h[4..]}`.
-//! - Full objects stored as raw data-only files (no headers).
-//! - Delta objects stored as `.diff` files with explicit reconstruction metadata.
-//! - Persistent constraint/index state with invariant checks.
-//! - Incremental optimizer pass that can rewrite stored bases.
-//! - Implicit empty-base fallback (empty-only constraints are intentionally not persisted).
-//! - Async API contracts suitable for use by higher orchestration layers.
+//! ## Quick start
+//!
+//! ```
+//! # use mediapm_cas::storage::in_memory::new_in_memory_cas;
+//! # use mediapm_cas::api::CasApi;
+//! # use bytes::Bytes;
+//! #
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let cas = new_in_memory_cas();
+//!
+//! // Store some data.
+//! let data = Bytes::from_static(b"hello content-addressable world");
+//! let hash = cas.put(data.clone()).await?;
+//!
+//! // Retrieve it by hash.
+//! let retrieved = cas.get(hash).await?;
+//! assert_eq!(retrieved, data);
+//!
+//! // Get metadata.
+//! let info = cas.stat(hash).await?;
+//! assert_eq!(info.len, data.len() as u64);
+//!
+//! // Delete.
+//! cas.delete(hash).await?;
+//! assert!(cas.get(hash).await.is_err());
+//! # Ok(())
+//! # }
+//! #
+//! # let rt = tokio::runtime::Runtime::new().unwrap();
+//! # rt.block_on(example()).unwrap();
+//! ```
 
-mod api;
+pub mod api;
+pub(crate) mod delta;
+pub mod error;
+pub mod hash;
+pub mod storage;
+
 #[cfg(feature = "cli")]
 pub mod cli;
-mod cli_visualization;
-mod codec;
-mod error;
-mod hash;
-mod index;
-mod orchestration;
-mod storage;
+#[cfg(feature = "cli")]
+pub mod cli_visualization;
 
+// Re-export the most important types at crate root for convenience.
 pub use api::{
-    CasApi, CasApiStreaming, CasByteReader, CasByteStream, CasExistenceBitmap, CasMaintenanceApi,
-    CompactReport, Constraint, ConstraintApi, ConstraintBatchOp, ConstraintPatch, CoreCasApi,
-    GcSweepReport, IndexRepairConstraintSource, IndexRepairReport, ObjectInfo, OptimizeOptions,
-    OptimizePriority, OptimizeReport, PruneReport,
+    CasApi, CasApiStreaming, CasMaintenanceApi, ConstraintApi, ObjectEncoding, ObjectMeta,
 };
-pub use cli_visualization::{CasVisualizeFormat, CasVisualizeRequest, run_visualize_command};
-pub use error::{CasError, HashParseError};
-pub use hash::{Hash, HashAlgorithm, empty_content_hash};
-pub use orchestration::{
-    CasNodeActorClient, CasNodeActorMessage, CasWireCommand, CasWireResponse, IndexActorClient,
-    IndexActorMessage, OptimizerActorClient, OptimizerActorMessage, StorageActorArgs,
-    StorageActorClient, StorageActorMessage, spawn_cas_node_actor, spawn_cas_node_actor_from_refs,
-    spawn_index_actor, spawn_optimizer_actor, spawn_storage_actor,
-    spawn_storage_actor_with_dependencies,
-};
-pub use storage::{
-    CasBackendConfig, CasConfig, CasIntegrityConfig, CasLocatorParseOptions, CasTopologyConstraint,
-    CasTopologyEncoding, CasTopologyNode, CasTopologySnapshot, ConfiguredCas, FileSystemCas,
-    FileSystemMetrics, FileSystemRecoveryOptions, InMemoryCas, IndexRecoveryMode,
-    VerifyTriggerStrategy, render_topology_mermaid, render_topology_mermaid_neighborhood,
-    topology_neighborhood_snapshot,
-};
-
-pub(crate) use codec::{DeltaPatch, StoredObject};
-pub(crate) use index::{
-    BatchOperation, CasIndexDb, IndexState, ObjectEncoding, ObjectMeta, ensure_empty_record,
-    recalculate_depths,
-};
-
-#[cfg(test)]
-mod tests {
-    use bytes::Bytes;
-    use tempfile::tempdir;
-
-    use crate::{
-        CasApi, CasNodeActorClient, CasWireCommand, CasWireResponse, FileSystemCas, Hash,
-        InMemoryCas,
-    };
-
-    /// Type-check helper that ensures exported actor client aliases stay public.
-    fn accept_client(client: Option<CasNodeActorClient>) {
-        drop(client);
-    }
-
-    #[test]
-    fn public_exports_are_constructible() {
-        let hash = Hash::from_content(b"export-smoke");
-        assert!(!hash.to_hex().is_empty());
-
-        let command = CasWireCommand::OptimizeOnce;
-        assert!(matches!(command, CasWireCommand::OptimizeOnce));
-
-        let response = CasWireResponse::Ack;
-        assert!(matches!(response, CasWireResponse::Ack));
-
-        let in_memory = InMemoryCas::new();
-        drop(in_memory);
-
-        accept_client(None);
-    }
-
-    #[tokio::test]
-    async fn exported_filesystem_cas_can_roundtrip() {
-        let dir = tempdir().expect("tempdir");
-        let cas = FileSystemCas::open(dir.path()).await.expect("open cas");
-
-        let payload = Bytes::from_static(b"lib-export-roundtrip");
-        let hash = cas.put(payload.clone()).await.expect("put payload");
-        let restored = cas.get(hash).await.expect("get payload");
-
-        assert_eq!(restored, payload);
-    }
-}
+pub use error::CasError;
+pub use hash::{Hash, HashParseError};
+pub use storage::in_memory::new_in_memory_cas;
+pub use storage::store::CasStore;

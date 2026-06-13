@@ -13,10 +13,16 @@
   same hash. Collision resistance per blake3.
 - **Zero sentinel**: `Hash::zero()` = `[0u8; 32]`. Special sentinel meaning
   "full encoding acceptable" in constraint bases. **Never stored**: put is
-  no-op (returns hash but stores nothing), get/stat return NotFound, delete
-  is no-op.
-- **Wire format**: multihash encoding `[0x1e, 0x20, 32-byte digest]` for
-  persistence; hex for display.
+  no-op (returns hash but stores nothing), get and stat always succeed
+  (empty data), delete is no-op.
+- **Wire format**: multihash encoding (`multihash` crate)
+  `[varint code: 0x1e][varint length: 0x20][32-byte digest]` for
+  persistence; hex for display. `storage_bytes()`/`from_storage_bytes_with_len()`
+  in `hash.rs` use the official `multihash` crate's
+  [`Multihash::wrap`] / [`Multihash::read`] with proper unsigned-varint encoding.
+  Only blake3-256 is supported initially; the varint format enables
+  future hash function adoption without breaking backward compatibility
+  at the multihash level.
 
 ---
 
@@ -43,7 +49,8 @@ safe (ObjectStore put is idempotent).
 Retrieve bytes by hash. Always returns the original data regardless of
 storage encoding. Never exposes delta encoding to caller.
 
-1. If `hash.is_zero()`: return NotFound.
+1. If `hash.is_zero()`: return `Ok(Bytes::new())` — zero hash is always
+   present (empty).
 2. Three-layer lookup via ReadView:
    - L1: In-memory cache (TTL 60s).
    - L2: ObjectStore.
@@ -66,10 +73,11 @@ distinguish.
 
 ### 2.3 `stat(hash: Hash) -> Result<ObjectMeta>`
 
-Return metadata (payload_len, encoding). Encoding field is informational —
+Return metadata (len, encoding). Encoding field is informational —
 callers must NEVER make decisions based on it.
 
-1. If `hash.is_zero()`: return NotFound.
+1. If `hash.is_zero()`: return `Ok(ObjectMeta { len: 0, encoding: Full })` —
+   zero hash is always present.
 2. Check ObjectStore (lookup includes stored encoding), then journal
    fallback.
 3. Return NotFound if absent.
@@ -127,7 +135,7 @@ to replace Full bytes with delta-encoded bytes. Idempotent.
 **get(hash)**: Returns the stored bytes, regardless of encoding. The caller
 (ReadView) is responsible for reconstruction if encoding is Delta.
 
-**stat(hash)**: Returns payload_len (original content length) and encoding.
+**stat(hash)**: Returns len (original content length) and encoding.
 
 **delete(hash)**: Removes entry. Called by WAL consumer when processing a
 Delete entry. After this, get returns None, stat returns None.
@@ -144,6 +152,12 @@ deltas are re-materialized. See §8.
 
 The journal is the **only crash-safe commitment point**. ObjectStore and
 MetadataStore are derived — they can be rebuilt by replaying the journal.
+
+**The file-based journal is the primary implementation.** In-memory journal
+exists only for tests and ephemeral scratch use. Every production CAS instance
+must use a file-backed journal with crash-safe recovery. The format described
+below under "Versioned on-disk format" is the on-disk layout — not speculative
+future design.
 
 ### Entry types
 
@@ -172,11 +186,37 @@ MetadataStore:
   re-materialization guarantees).
 - **Constraint**: `MetadataStore.set(target, bases)`.
 
-After processing, entries are trimmed from the journal up to the last
+After processing, the checkpoint position is persisted atomically to a
+checkpoint file, and entries are trimmed from the journal up to the last
 processed position.
 
 **Idempotent reprocessing**: Re-consuming already-processed entries is safe.
 Puts overwrite, deletes are no-op if already removed.
+
+### Versioned on-disk format
+
+Journal artifacts that persist to disk carry version markers (per the
+universal on-disk versioning policy, §12):
+
+- **Journal segments**: Magic prefix `b"CASJNL"` (6 bytes) + 2-byte LE u16
+  version. Version 1 (`\x01\x00`) is the initial format: len-prefixed entries
+  with `[hash: multihash-encoded (varint prefix + 32-byte digest)][op_type: 1 byte][payload_len: 4-byte LE][payload: bytes]`.
+  The object hash uses the official `multihash` crate's varint-based
+  encoding (see §1) so the entry format is self-describing and extensible
+  — currently only blake3 is supported, but multihash varints enable
+  future hash function adoption without a journal wire-format bump.
+- **Checkpoint file**: Magic prefix `b"CASCKP"` (6 bytes) + 2-byte LE u16
+  version. Version 1 (`\x01\x00`) records the last fully-consumed journal
+  position and an integrity hash. The integrity hash is a bare 32-byte blake3
+  digest (not multihash-encoded) — it is an integrity checksum over checkpoint
+  file content, not an object address.
+
+Version dispatch follows the same `versions/mod.rs` + `versions/vX.rs`
+pattern as delta envelopes (§7). See Phase 7 for the full policy guard list.
+
+On startup, the journal reads the checkpoint file to find the last
+fully-consumed position, replays sealed and active segments from that
+position, and resumes appending.
 
 ---
 
@@ -288,7 +328,11 @@ set = "full or any base delta allowed."
 
 ### Versioned envelopes
 
-V3 format: `[magic(6)][version(2)][base_hash(34)][diff_hash(32)][content_len(8)][payload(variable)]`
+- V1/V2 magic: `b"MDCASD"`. Legacy read-only formats (kept for migration
+  only; writers never emit V1/V2 envelopes).
+- V3+ magic: `b"CASDLT"`. Current wire format — writers always emit V3.
+
+V3 format: `[magic("CASDLT")(6)][version(2)][base_hash(34)][diff_hash(32)][content_len(8)][payload(variable)]`
 
 ### ObjectStore interaction
 
@@ -374,7 +418,7 @@ target T with effective bases:
 **Skip conditions**:
 
 - Target has no constraint or empty effective bases.
-- Target is `Hash::zero()` (never stored).
+- Target is `Hash::zero()` (empty — nothing to optimize).
 - Target's constraint contains `Hash::zero()` (full is acceptable per hint).
 
 ### Constraint pruning
@@ -424,7 +468,49 @@ CasApi::delete() materialized by the WAL consumer.
 
 ---
 
-## 12. Implementation Phases
+## 12. Versioning Policy — Universal On-Disk Rule
+
+**Every artifact persisted to disk carries a version marker.** There is no
+unversioned on-disk format. This prevents silent misread across software
+versions and enables safe forward migration.
+
+### Which artifacts are covered
+
+- **Journal segments** (§4): Magic `b"CASJNL"` + 2-byte LE u16 version.
+- **Checkpoint file** (§4): Magic `b"CASCKP"` + 2-byte LE u16 version.
+- **Delta envelopes** (§7): Magic `b"CASDLT"` + 2-byte LE u16 version
+  (V3+). Legacy V1/V2 use `b"MDCASD"`.
+- **ObjectStore payload** (file-system): Magic prefix + version (TBD when
+  a file-based ObjectStore is added).
+- **MetadataStore snapshot** (if persisted): Magic prefix + version (TBD).
+- **Constraint metadata** (if persisted): Same as MetadataStore.
+
+### Marker format
+
+All on-disk artifacts follow the same prefix pattern:
+
+```text
+[magic: 6 ASCII bytes ][version: 2-byte LE u16 ][payload...]
+```
+
+- Magic distinguishes artifact type (no accidental cross-read).
+- Version is `u16` in little-endian, starting at `1` (`\x01\x00`).
+- A decoder consuming an unknown version MUST refuse the read — never guess.
+
+### Migration
+
+When a format version changes:
+
+1. A new decoder is added alongside the old one (never replace in place).
+2. The dispatch layer (§7 `versions/mod.rs` pattern) peeks the magic +
+   version and routes to the correct decoder, migrating forward.
+3. Writers always emit the latest version.
+4. Old decoders are kept for at least one major version cycle unless the
+   on-disk data is provably ephemeral (e.g. in-memory-only caches).
+
+---
+
+## 13. Implementation Phases
 
 ### Phase 1: Wire delta into InMemoryObjectStore + ReadView
 
@@ -466,3 +552,46 @@ unused generic parameters.
 ### Phase 6: Update PLAN.md
 
 Replace with this comprehensive spec.
+
+### Phase 7: File-based journal and checkpoint
+
+**✅ Complete** — `FileJournal` implemented with:
+
+1. `FileJournal`: append-only WAL segment files under `<cas_dir>/journal/`
+   with rolling sealed segments + one active segment.
+   - Segment file layout per §4 versioned format: `b"CASJNL"` + version 1
+     - len-prefixed entries.
+   - Sealed segments are read-only; active segment is append-only.
+   - On startup, scan segment directory, replay entries after checkpoint position.
+2. `Checkpoint`: atomic checkpoint persistence.
+   - Checkpoint file layout per §4 versioned format: `b"CASCKP"` + version 1
+     - last-consumed position + integrity hash.
+   - Written atomically (write to `.tmp`, rename).
+3. `FileJournal` implements the full `Journal` trait used by `CasStore`:
+   - `append`, `append_batch`, `committed_position`, `pending_count`,
+     `check_pending`, `replay_from`, `trim`.
+4. Trim consumed segments: after checkpoint advances past a sealed segment's
+   end, delete the segment file.
+5. Magic prefix split: `CASDLT` for V3+ delta, `MDCASD` for legacy V1/V2.
+6. 10 new tests covering put/get, delete, replay, trim, batch, checkpoint
+   persistence, segment sealing, ordering, and committed_position.
+7. **Versioning mechanism** follows the same pattern as delta versions
+   (`delta/versions/mod.rs`, `delta/versions/vX.rs`):
+   - Each journal/checkpoint wire version gets its own `vX.rs` with
+     self-contained parse/validate/encode behavior and `From` conversions
+     to/from version-specific state types.
+   - The `versions/mod.rs` bridges latest-version state to unversioned runtime
+     state; it is the only file allowed to do so.
+   - Policy guards from `delta/versions/mod.rs` and `delta/versions/vX.rs`
+     apply identically:
+     - `vX.rs` must never import unversioned structs outside `versions/`.
+     - A `vX` module may reference only the most recent previous version, and
+       only for version-to-version migration.
+     - Files outside `versions/` must interact with versioned envelopes only
+       through `versions/mod.rs`, never through direct `versions::vX` imports.
+     - Do not directly re-export `versions::vX` structs/types from
+       `versions/mod.rs` — expose unversioned APIs and keep versioned
+       internals encapsulated.
+8. Accept a `cas_dir` path to select file-backed mode; keep
+   `InMemoryJournal` only for tests.
+9. Version-check on startup: refuse unknown segment/checkpoint versions.

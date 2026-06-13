@@ -1,377 +1,100 @@
-//! Command-line interface implementation for `mediapm-cas`.
+//! Command-line interface for `mediapm-cas`.
 //!
-//! This module owns argument parsing and command dispatch for the CAS CLI so
-//! callers can execute the same command surface in-process (for example from
-//! `mediapm` or `mediapm-conductor`) without requiring an external
-//! `mediapm-cas` executable binary.
+//! This module owns argument parsing and command dispatch for the CAS CLI.
 
-use std::collections::BTreeSet;
-use std::ffi::OsString;
-use std::io::Write;
-use std::path::PathBuf;
-use std::str::FromStr;
+use clap::{Parser, Subcommand};
+use std::io::{self, Read, Write};
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::Shell;
-
-use crate::{
-    CasApi, CasMaintenanceApi, CasVisualizeRequest, Constraint, FileSystemCas, Hash,
-    OptimizeOptions, run_visualize_command,
-};
+use crate::api::CasApi;
+use crate::error::CasError;
+use crate::hash::{HASH_SIZE, Hash};
+use crate::storage::in_memory::new_in_memory_cas;
 
 /// Top-level `mediapm-cas` CLI arguments.
 #[derive(Debug, Parser)]
 #[command(author, version, about = "mediapm CAS CLI")]
 struct Cli {
-    /// Top-level CAS command selector.
+    /// Subcommand to execute.
     #[command(subcommand)]
     command: CasCommand,
 }
 
-/// CAS subcommands.
+/// CAS CLI subcommands.
 #[derive(Debug, Subcommand)]
 enum CasCommand {
-    /// Stores a file in CAS and prints its BLAKE3 hash.
-    Store(CasStoreArgs),
-    /// Reconstructs data by hash and writes to stdout or file.
-    Get(CasGetArgs),
-    /// Constraint management commands.
-    Constraint {
-        /// Constraint-management subcommand selector.
-        #[command(subcommand)]
-        command: CasConstraintCommand,
+    /// Store data from stdin and print the hash.
+    Put,
+    /// Retrieve data by hash and write to stdout.
+    Get {
+        /// BLAKE3 hash of the object (hex).
+        hash: String,
     },
-    /// Runs one optimizer pass.
-    Optimize(CasRootArgs),
-    /// Prunes dangling constraint candidates.
-    Prune(CasRootArgs),
-    /// Rebuilds durable CAS index metadata from the object store.
-    RepairIndex(CasRootArgs),
-    /// Migrates durable CAS index metadata to one schema version.
-    MigrateIndex(CasMigrateIndexArgs),
-    /// Deletes one object from the CAS store.
-    Delete(CasDeleteArgs),
-    /// Visualizes object/base/constraint topology of a CAS repository.
-    Visualize(CasVisualizeArgs),
-    /// Generates shell completion scripts for the `mediapm-cas` CLI.
-    Completions {
-        /// Target shell for completion script generation.
-        shell: Shell,
+    /// Print metadata for an object.
+    Stat {
+        /// BLAKE3 hash of the object (hex).
+        hash: String,
+    },
+    /// Delete an object by hash.
+    Delete {
+        /// BLAKE3 hash of the object (hex).
+        hash: String,
     },
 }
 
-/// `cas store` arguments.
-#[derive(Debug, Args)]
-struct CasStoreArgs {
-    /// Input file path to import.
-    file: PathBuf,
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// `cas get` arguments.
-#[derive(Debug, Args)]
-struct CasGetArgs {
-    /// Hash string of the target object (for example `blake3:<hex>`).
-    hash: String,
-    /// Optional output file path. If omitted, bytes are written to stdout.
-    #[arg(long)]
-    output: Option<PathBuf>,
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// Shared root argument structure.
-#[derive(Debug, Args)]
-struct CasRootArgs {
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// `cas migrate-index` arguments.
-#[derive(Debug, Args)]
-struct CasMigrateIndexArgs {
-    /// Target schema version marker.
-    #[arg(long)]
-    version: u32,
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// Supported output formats for `cas visualize`.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-enum CasVisualizeFormat {
-    /// Mermaid flowchart markup.
-    Mermaid,
-    /// Pretty JSON topology snapshot.
-    Json,
-    /// Human-readable text report.
-    Text,
-}
-
-/// `cas visualize` arguments.
-#[derive(Debug, Args)]
-struct CasVisualizeArgs {
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-    /// Output visualization format.
-    #[arg(long, value_enum, default_value_t = CasVisualizeFormat::Mermaid)]
-    format: CasVisualizeFormat,
-    /// Include canonical empty-content object in output.
-    #[arg(long, default_value_t = false)]
-    include_empty: bool,
-    /// Optional output file path. If omitted, writes to stdout.
-    #[arg(long)]
-    output: Option<PathBuf>,
-}
-
-/// `cas delete` arguments.
-#[derive(Debug, Args)]
-struct CasDeleteArgs {
-    /// Hash string of the target object (for example `blake3:<hex>`).
-    hash: String,
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// `cas constraint` subcommands.
-#[derive(Debug, Subcommand)]
-enum CasConstraintCommand {
-    /// Adds/updates base candidates for a target hash.
-    Add(CasConstraintAddArgs),
-}
-
-/// `cas constraint add` arguments.
-#[derive(Debug, Args)]
-struct CasConstraintAddArgs {
-    /// Target object hash (for example `blake3:<hex>`).
-    hash: String,
-    /// Comma-separated base hash candidates.
-    #[arg(long)]
-    bases: String,
-    /// CAS root path (default: `.mediapm/cas`).
-    #[arg(long)]
-    root: Option<PathBuf>,
-}
-
-/// Parses process arguments and executes one CAS command.
-///
-/// # Errors
-///
-/// Returns any parsing, I/O, serialization, or CAS-runtime error surfaced while
-/// executing the selected command.
+/// Run the CLI from environment arguments and exit.
 pub async fn run_from_env() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    run_command(cli.command).await
+    run(cli).await
 }
 
-/// Parses one explicit argv sequence and executes one CAS command.
-///
-/// Callers should include a program-name placeholder as argv[0].
-///
-/// # Errors
-///
-/// Returns any clap parsing error or command execution failure.
-pub async fn run_from_argv<I, T>(argv: I) -> anyhow::Result<()>
-where
-    I: IntoIterator<Item = T>,
-    T: Into<OsString> + Clone,
-{
-    let cli = match Cli::try_parse_from(argv) {
-        Ok(cli) => cli,
-        Err(error) => return handle_clap_parse_error(&error),
-    };
-    run_command(cli.command).await
-}
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    let cas = new_in_memory_cas();
 
-/// Parses trailing passthrough arguments and executes one CAS command.
-///
-/// This helper prepends an internal argv[0] binary-name placeholder so parent
-/// CLIs can forward only trailing command arguments.
-///
-/// # Errors
-///
-/// Returns any clap parsing error or command execution failure.
-pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
-    let passthrough_argv = std::iter::once("mediapm-cas".to_string()).chain(args.iter().cloned());
-    run_from_argv(passthrough_argv).await
-}
-
-/// Prints clap parse diagnostics with formatting preserved and maps outcomes.
-fn handle_clap_parse_error(error: &clap::Error) -> anyhow::Result<()> {
-    use clap::error::ErrorKind;
-
-    let is_help_or_version =
-        matches!(error.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
-    let rendered = error.to_string();
-    error.print()?;
-
-    if is_help_or_version { Ok(()) } else { Err(anyhow::anyhow!(rendered)) }
-}
-
-/// Executes one CAS command variant.
-async fn run_command(command: CasCommand) -> anyhow::Result<()> {
-    match command {
-        CasCommand::Store(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let bytes = tokio::fs::read(&args.file).await?;
-            let hash = cas.put(bytes).await?;
+    match cli.command {
+        CasCommand::Put => {
+            let mut buf = Vec::new();
+            io::stdin().read_to_end(&mut buf)?;
+            let data = bytes::Bytes::from(buf);
+            let hash = cas.put(data).await?;
             println!("{hash}");
         }
-        CasCommand::Get(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let hash = Hash::from_str(&args.hash)?;
-            let bytes = cas.get(hash).await?;
-            if let Some(output) = args.output {
-                if let Some(parent) = output.parent() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
-                tokio::fs::write(output, &bytes).await?;
-            } else {
-                std::io::stdout().write_all(&bytes)?;
-            }
+        CasCommand::Get { hash } => {
+            let hash = parse_hex_hash(&hash)?;
+            let data = cas.get(hash).await.map_err(|e| match e {
+                CasError::NotFound(h) => anyhow::anyhow!("object {h} not found"),
+                other => anyhow::anyhow!("{other}"),
+            })?;
+            io::stdout().write_all(&data)?;
         }
-        CasCommand::Constraint { command } => match command {
-            CasConstraintCommand::Add(args) => {
-                let root = resolve_cas_root(args.root);
-                let cas = FileSystemCas::open(&root).await?;
-                let target_hash = Hash::from_str(&args.hash)?;
-                let potential_bases = parse_hash_list(&args.bases)?;
-                cas.set_constraint(Constraint { target_hash, potential_bases }).await?;
-                println!("updated constraint for {target_hash}");
-            }
-        },
-        CasCommand::Optimize(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let report = cas.optimize_once(OptimizeOptions::default()).await?;
-            println!("rewritten_objects={}", report.rewritten_objects);
+        CasCommand::Stat { hash } => {
+            let hash = parse_hex_hash(&hash)?;
+            let info = cas.stat(hash).await.map_err(|e| match e {
+                CasError::NotFound(h) => anyhow::anyhow!("object {h} not found"),
+                other => anyhow::anyhow!("{other}"),
+            })?;
+            println!("hash: {hash}");
+            println!("len: {}", info.len);
+            println!("encoding: {:?}", info.encoding);
         }
-        CasCommand::Prune(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let report = cas.prune_constraints().await?;
-            println!("removed_candidates={}", report.removed_candidates);
-        }
-        CasCommand::RepairIndex(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let report = cas.repair_index().await?;
-            println!(
-                concat!(
-                    "object_rows_rebuilt={} ",
-                    "explicit_constraint_rows_restored={} ",
-                    "scanned_object_files={} ",
-                    "skipped_object_files={} ",
-                    "backup_snapshots_considered={} ",
-                    "constraint_source={:?}"
-                ),
-                report.object_rows_rebuilt,
-                report.explicit_constraint_rows_restored,
-                report.scanned_object_files,
-                report.skipped_object_files,
-                report.backup_snapshots_considered,
-                report.constraint_source,
-            );
-        }
-        CasCommand::MigrateIndex(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            cas.migrate_index_to_version(args.version).await?;
-            println!("migrated_index_schema_version={}", args.version);
-        }
-        CasCommand::Visualize(args) => {
-            let request = CasVisualizeRequest {
-                root: resolve_cas_root(args.root),
-                format: args.format.into(),
-                include_empty: args.include_empty,
-                output: args.output,
-            };
-            run_visualize_command(request).await?;
-        }
-        CasCommand::Delete(args) => {
-            let root = resolve_cas_root(args.root);
-            let cas = FileSystemCas::open(&root).await?;
-            let hash = Hash::from_str(&args.hash)?;
+        CasCommand::Delete { hash } => {
+            let hash = parse_hex_hash(&hash)?;
             cas.delete(hash).await?;
             println!("deleted {hash}");
-        }
-        CasCommand::Completions { shell } => {
-            clap_complete::generate(
-                shell,
-                &mut Cli::command(),
-                "mediapm-cas",
-                &mut std::io::stdout(),
-            );
         }
     }
 
     Ok(())
 }
 
-impl From<CasVisualizeFormat> for crate::CasVisualizeFormat {
-    /// Converts CLI-local format flags to library visualization format enum.
-    fn from(value: CasVisualizeFormat) -> Self {
-        match value {
-            CasVisualizeFormat::Mermaid => Self::Mermaid,
-            CasVisualizeFormat::Json => Self::Json,
-            CasVisualizeFormat::Text => Self::Text,
-        }
+/// Parse a 64-char hex string into a [`Hash`].
+fn parse_hex_hash(s: &str) -> anyhow::Result<Hash> {
+    if s.len() != HASH_SIZE * 2 {
+        return Err(anyhow::anyhow!("invalid hash length: {}", s.len()));
     }
-}
-
-/// Resolves default filesystem CAS root.
-fn resolve_cas_root(root: Option<PathBuf>) -> PathBuf {
-    root.unwrap_or_else(|| PathBuf::from(".mediapm/cas"))
-}
-
-/// Parses comma-delimited hash list into stable set.
-fn parse_hash_list(input: &str) -> anyhow::Result<BTreeSet<Hash>> {
-    let values = input
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(Hash::from_str)
-        .collect::<Result<BTreeSet<_>, _>>()?;
-
-    if values.is_empty() {
-        anyhow::bail!("--bases must include at least one hash");
+    let mut arr = [0u8; HASH_SIZE];
+    for (i, byte) in arr.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
+            .map_err(|_| anyhow::anyhow!("invalid hash: {s}"))?;
     }
-
-    Ok(values)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::Hash;
-
-    use super::parse_hash_list;
-
-    /// Verifies comma-delimited hash parsing accepts multiple entries.
-    #[test]
-    fn parse_hash_list_accepts_comma_delimited_values() {
-        let a = Hash::from_content(b"a");
-        let b = Hash::from_content(b"b");
-        let input = format!("{a},{b}");
-
-        let parsed = parse_hash_list(&input).expect("parse hash list");
-        assert_eq!(parsed.len(), 2);
-        assert!(parsed.contains(&a));
-        assert!(parsed.contains(&b));
-    }
-
-    /// Verifies empty `--bases` input produces diagnostic error text.
-    #[test]
-    fn parse_hash_list_rejects_empty_input() {
-        let err = parse_hash_list(" , ").expect_err("empty values should fail");
-        assert!(err.to_string().contains("--bases must include at least one hash"));
-    }
+    Ok(Hash::from_bytes(arr))
 }

@@ -37,7 +37,6 @@ pub struct DeltaState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StoredObject {
     /// Full object payload (raw bytes only).
-    #[allow(dead_code)]
     Full { payload: Vec<u8> },
     /// Delta object payload stored in `.diff` files.
     Delta {
@@ -49,7 +48,7 @@ pub(crate) enum StoredObject {
 /// Constructors and encode/decode helpers for persisted object variants.
 impl StoredObject {
     /// Builds one full stored object wrapper.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) const fn full(payload: Vec<u8>) -> Self {
         Self::Full { payload }
     }
@@ -60,7 +59,7 @@ impl StoredObject {
     }
 
     /// Returns base hash when object is delta, otherwise `None`.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) const fn base_hash(&self) -> Option<Hash> {
         match self {
             Self::Delta { state } => Some(state.base_hash),
@@ -69,7 +68,6 @@ impl StoredObject {
     }
 
     /// Returns reconstructed content length.
-    #[allow(dead_code)]
     pub(crate) const fn content_len(&self) -> u64 {
         match self {
             Self::Full { payload } => payload.len() as u64,
@@ -78,7 +76,7 @@ impl StoredObject {
     }
 
     /// Returns payload byte length.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     pub(crate) fn payload_len(&self) -> u64 {
         match self {
             Self::Full { payload } => payload.len() as u64,

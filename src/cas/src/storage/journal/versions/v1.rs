@@ -1,218 +1,302 @@
-//! V1 on-disk format for journal segments and checkpoint files.
+//! V1 binary wire format for journal segments and checkpoints.
 //!
-//! ## Journal segment format (`CASJNL` + `\x01\x00`)
+//! V1 is the initial journal format. Each journal segment carries an 8-byte
+//! header (`CASJNL` + version 1), followed by len-prefixed entries. The
+//! checkpoint file carries a `CASCKP` header + last position + integrity hash.
 //!
-//! ```text
-//! [magic: 6 bytes "CASJNL"][version: 2-byte LE u16 1]
-//! [entry_count: 4-byte LE u32]
-//! [entry_1][entry_2]...[entry_N]
+//! ## DO NOT REMOVE: versions policy guard
 //!
-//! Each entry:
-//!   [op_type: 1 byte (0=Put, 1=Delete, 2=Constraint)]
-//!   [hash: 34 bytes (multihash storage bytes)]
-//!   [payload_len: 4-byte LE u32]
-//!   [payload: payload_len bytes]  // omitted for Delete
-//!
-//! For Constraint entries, payload is:
-//!   [base_count: 4-byte LE u32]
-//!   [base_1: 34 bytes]...[base_N: 34 bytes]
-//! ```
-//!
-//! ## Checkpoint format (`CASCKP` + `\x01\x00`)
-//!
-//! ```text
-//! [magic: 6 bytes "CASCKP"][version: 2-byte LE u16 1]
-//! [position: 8-byte LE u64]
-//! [integrity_hash: 34 bytes (multihash of checkpoint content)]
-//! ```
-//!
-//! ## Invariants
-//!
-//! - All multihash-length fields use fixed `34` bytes (blake3-256).
-//! - Entries are strictly append-only; no in-place mutation.
-//! - Segment files are created with read-write permissions and closed
-//!   atomically (tempfile + rename) on rotation.
+//! - This file must never import unversioned structs from outside `versions/`.
+//! - A `vX` module may reference only the most recent previous version module,
+//!   and only for version-to-version isomorphism/migration.
+//! - Latest-version bridging to unversioned runtime structs is owned by
+//!   `versions/mod.rs`.
+
+// TODO(phase8): remove when journal is wired into storage backends.
+#![allow(dead_code)]
 
 use std::collections::BTreeSet;
-use std::io::Read;
+
+use bytes::Bytes;
 
 use crate::error::CasError;
-use crate::hash::{Hash, STORAGE_BYTES_LEN};
-use crate::storage::journal::JournalEntry;
+use crate::hash::Hash;
+
+// ---------------------------------------------------------------------------
+// Version-specific types
+// ---------------------------------------------------------------------------
+
+/// V1 journal entry — mirrors [`JournalEntry`] but is self-contained within
+/// `versions/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum JournalEntryV1 {
+    /// Store data under hash.
+    Put { hash: Hash, data: Bytes },
+    /// Logically delete hash.
+    Delete { hash: Hash },
+    /// Set delta-compression hints.
+    Constraint { target: Hash, bases: BTreeSet<Hash> },
+}
+
+/// V1 checkpoint state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CheckpointV1 {
+    /// Last fully-consumed journal position.
+    pub(crate) last_position: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
 /// Magic prefix for journal segment files.
 pub(crate) const JOURNAL_MAGIC: &[u8; 6] = b"CASJNL";
+/// Current journal segment format version.
+pub(crate) const JOURNAL_VERSION: u16 = 1;
+
 /// Magic prefix for checkpoint files.
 pub(crate) const CHECKPOINT_MAGIC: &[u8; 6] = b"CASCKP";
-/// Version tag appended after magic.
-pub(crate) const VERSION_TAG: [u8; 2] = [0x01, 0x00];
-/// Total header size: magic (6) + version (2) + entry_count (4) = 12 bytes.
-pub(crate) const SEGMENT_HEADER_LEN: u32 = 12;
-/// Checkpoint file size: magic (6) + version (2) + position (8) + hash (34) = 50 bytes.
-pub(crate) const CHECKPOINT_LEN: u64 = 50;
-/// Op-type byte value for Put entries.
-const OP_PUT: u8 = 0;
-/// Op-type byte value for Delete entries.
-const OP_DELETE: u8 = 1;
-/// Op-type byte value for Constraint entries.
-const OP_CONSTRAINT: u8 = 2;
+/// Current checkpoint format version.
+pub(crate) const CHECKPOINT_VERSION: u16 = 1;
 
-/// Encodes a single journal entry to its V1 wire format.
-pub(crate) fn encode_entry(entry: &JournalEntry, buf: &mut Vec<u8>) {
-    match entry {
-        JournalEntry::Put { hash, data } => {
-            buf.push(OP_PUT);
-            buf.extend_from_slice(&hash.storage_bytes());
-            let len = data.len() as u32;
-            buf.extend_from_slice(&len.to_le_bytes());
-            buf.extend_from_slice(data);
-        }
-        JournalEntry::Delete { hash } => {
-            buf.push(OP_DELETE);
-            buf.extend_from_slice(&hash.storage_bytes());
-            // payload_len = 0
-            buf.extend_from_slice(&0u32.to_le_bytes());
-        }
-        JournalEntry::Constraint { target, bases } => {
-            buf.push(OP_CONSTRAINT);
-            buf.extend_from_slice(&target.storage_bytes());
-            let base_count = bases.len() as u32;
-            // payload = [base_count: 4] [base_1: 34]...
-            let payload_len = 4 + base_count as usize * STORAGE_BYTES_LEN;
-            buf.extend_from_slice(&(payload_len as u32).to_le_bytes());
-            buf.extend_from_slice(&base_count.to_le_bytes());
-            for base in bases {
-                buf.extend_from_slice(&base.storage_bytes());
+/// Maximum supported journal segment format version.
+pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
+/// Maximum supported checkpoint format version.
+pub(crate) const MAX_CHECKPOINT_VERSION: u16 = 1;
+
+// ---------------------------------------------------------------------------
+// Entry encoding / decoding
+// ---------------------------------------------------------------------------
+//
+// Each entry:
+//   [pos: 8-byte LE u64]
+//   [hash: 32 bytes]
+//   [op_type: 1 byte] — 0=Put, 1=Delete, 2=Constraint
+//   [payload_len: 4-byte LE u32]
+//   [payload: payload_len bytes]
+//
+// Payload per op_type:
+//   Put:        data bytes (the raw content)
+//   Delete:     (empty)
+//   Constraint: base_count(4-byte LE u32) + base_hashes(32 bytes each)
+
+impl JournalEntryV1 {
+    /// Encode a journal entry into bytes at the given position.
+    pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
+        match self {
+            JournalEntryV1::Put { hash, data } => {
+                let payload = data.as_ref();
+                let total = 8 + 34 + 1 + 4 + payload.len();
+                let mut buf = Vec::with_capacity(total);
+                buf.extend_from_slice(&pos.to_le_bytes());
+                buf.extend_from_slice(&hash.storage_bytes());
+                buf.push(0); // op_type Put
+                buf.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+                buf.extend_from_slice(payload);
+                buf
+            }
+            JournalEntryV1::Delete { hash } => {
+                let mut buf = Vec::with_capacity(8 + 34 + 1 + 4);
+                buf.extend_from_slice(&pos.to_le_bytes());
+                buf.extend_from_slice(&hash.storage_bytes());
+                buf.push(1); // op_type Delete
+                buf.extend_from_slice(&0u32.to_le_bytes()); // payload_len = 0
+                buf
+            }
+            JournalEntryV1::Constraint { target, bases } => {
+                // Payload: base_count(4) + base_hashes(34 each, multihash-encoded)
+                let payload_len = 4 + bases.len() * 34;
+                let total = 8 + 34 + 1 + 4 + payload_len;
+                let mut buf = Vec::with_capacity(total);
+                buf.extend_from_slice(&pos.to_le_bytes());
+                buf.extend_from_slice(&target.storage_bytes());
+                buf.push(2); // op_type Constraint
+                buf.extend_from_slice(&(payload_len as u32).to_le_bytes());
+                buf.extend_from_slice(&(bases.len() as u32).to_le_bytes());
+                for base in bases {
+                    buf.extend_from_slice(&base.storage_bytes());
+                }
+                buf
             }
         }
+    }
+
+    /// Decode a single journal entry from bytes.
+    ///
+    /// Returns `(entry, position, bytes_consumed)`.
+    pub(crate) fn decode(buf: &[u8]) -> Result<(Self, u64, usize), CasError> {
+        if buf.len() < 8 + 34 + 1 + 4 {
+            return Err(CasError::corrupt_object(
+                "journal entry: buffer too short for multihash entry (need 47)",
+            ));
+        }
+
+        let pos =
+            u64::from_le_bytes(buf[..8].try_into().map_err(|_| {
+                CasError::corrupt_object("journal entry: failed to parse position")
+            })?);
+
+        let (hash, hash_bytes) = Hash::from_storage_bytes_with_len(&buf[8..]).map_err(|e| {
+            CasError::corrupt_object(format!("journal entry: invalid multihash hash: {e}"))
+        })?;
+
+        let op_type_offset = 8 + hash_bytes;
+        let op_type = buf[op_type_offset];
+
+        let payload_len_offset = op_type_offset + 1;
+        let payload_len =
+            u32::from_le_bytes(buf[payload_len_offset..payload_len_offset + 4].try_into().map_err(
+                |_| CasError::corrupt_object("journal entry: failed to parse payload_len"),
+            )?) as usize;
+
+        let total = payload_len_offset + 4 + payload_len;
+        if buf.len() < total {
+            return Err(CasError::corrupt_object("journal entry: payload truncated"));
+        }
+
+        let payload = &buf[payload_len_offset + 4..total];
+
+        let entry = match op_type {
+            0 => {
+                // Put
+                JournalEntryV1::Put { hash, data: Bytes::copy_from_slice(payload) }
+            }
+            1 => {
+                // Delete
+                if !payload.is_empty() {
+                    return Err(CasError::corrupt_object(
+                        "journal entry: Delete with non-empty payload",
+                    ));
+                }
+                JournalEntryV1::Delete { hash }
+            }
+            2 => {
+                // Constraint
+                if payload.len() < 4 {
+                    return Err(CasError::corrupt_object(
+                        "journal entry: Constraint payload too short",
+                    ));
+                }
+                let base_count = u32::from_le_bytes(payload[..4].try_into().map_err(|_| {
+                    CasError::corrupt_object("journal entry: failed to parse base_count")
+                })?) as usize;
+                // Base hashes are multihash-encoded (34 bytes each)
+                const BASE_HASH_MH_SIZE: usize = 34;
+                let expected_payload = 4 + base_count * BASE_HASH_MH_SIZE;
+                if payload.len() < expected_payload {
+                    return Err(CasError::corrupt_object(format!(
+                        "journal entry: Constraint payload too short: \
+                         need {expected_payload}, have {}",
+                        payload.len()
+                    )));
+                }
+                let mut bases = BTreeSet::new();
+                for i in 0..base_count {
+                    let offset = 4 + i * BASE_HASH_MH_SIZE;
+                    let (base, _) =
+                        Hash::from_storage_bytes_with_len(&payload[offset..]).map_err(|e| {
+                            CasError::corrupt_object(format!(
+                                "journal entry: invalid constraint base hash: {e}"
+                            ))
+                        })?;
+                    bases.insert(base);
+                }
+                JournalEntryV1::Constraint { target: hash, bases }
+            }
+            _ => {
+                return Err(CasError::corrupt_object(format!(
+                    "journal entry: unknown op_type {op_type}"
+                )));
+            }
+        };
+
+        Ok((entry, pos, total))
     }
 }
 
-/// Decodes a single journal entry from a byte slice reader.
-/// Returns `None` if there are not enough bytes for a complete entry.
-pub(crate) fn decode_entry<R: Read>(reader: &mut R) -> Result<Option<JournalEntry>, CasError> {
-    let mut op_buf = [0u8; 1];
-    if reader.read_exact(&mut op_buf).is_err() {
-        return Ok(None); // EOF / incomplete
+// ---------------------------------------------------------------------------
+// Checkpoint encoding / decoding (version 1)
+// ---------------------------------------------------------------------------
+//
+// Checkpoint file layout:
+//   [header: 8 bytes (magic "CASCKP" + version)]
+//   [last_position: 8-byte LE u64]
+//   [integrity_hash: 32 bytes (blake3 of header + last_position)]
+
+impl CheckpointV1 {
+    /// Encode a checkpoint file (header + body).
+    pub(crate) fn encode(last_position: u64) -> Vec<u8> {
+        let header = encode_header(CHECKPOINT_MAGIC, CHECKPOINT_VERSION);
+        let last_pos_bytes = last_position.to_le_bytes();
+        let mut buf = Vec::with_capacity(8 + 8 + 32);
+        buf.extend_from_slice(&header);
+        buf.extend_from_slice(&last_pos_bytes);
+        // Integrity hash: blake3 of header + last_position
+        let integrity = blake3::hash(&buf);
+        buf.extend_from_slice(integrity.as_bytes());
+        buf
     }
-    let op_type = op_buf[0];
 
-    let mut hash_buf = [0u8; STORAGE_BYTES_LEN];
-    reader.read_exact(&mut hash_buf).map_err(|e| CasError::Io {
-        operation: "read journal entry hash".into(),
-        path: "(journal segment)".into(),
-        source: e,
-    })?;
-    let hash = Hash::from_storage_bytes(&hash_buf).map_err(|e| CasError::CorruptObject {
-        target: None,
-        current: None,
-        base: None,
-        detail: format!("journal entry: hash decode failed: {e}"),
-    })?;
-
-    let mut len_buf = [0u8; 4];
-    reader.read_exact(&mut len_buf).map_err(|e| CasError::Io {
-        operation: "read journal entry payload_len".into(),
-        path: "(journal segment)".into(),
-        source: e,
-    })?;
-    let payload_len = u32::from_le_bytes(len_buf) as usize;
-
-    match op_type {
-        OP_PUT => {
-            let mut payload = vec![0u8; payload_len];
-            if payload_len > 0 {
-                reader.read_exact(&mut payload).map_err(|e| CasError::Io {
-                    operation: "read journal entry payload".into(),
-                    path: "(journal segment)".into(),
-                    source: e,
-                })?;
-            }
-            Ok(Some(JournalEntry::Put { hash, data: payload.into() }))
+    /// Decode and verify a checkpoint file.
+    ///
+    /// Returns the last consumed position.
+    pub(crate) fn decode(buf: &[u8]) -> Result<u64, CasError> {
+        if buf.len() < 8 + 8 + 32 {
+            return Err(CasError::corrupt_object("checkpoint: file too short"));
         }
-        OP_DELETE => Ok(Some(JournalEntry::Delete { hash })),
-        OP_CONSTRAINT => {
-            let mut count_buf = [0u8; 4];
-            reader.read_exact(&mut count_buf).map_err(|e| CasError::Io {
-                operation: "read constraint base count".into(),
-                path: "(journal segment)".into(),
-                source: e,
-            })?;
-            let base_count = u32::from_le_bytes(count_buf) as usize;
-            let mut bases = BTreeSet::new();
-            for _ in 0..base_count {
-                let mut base_buf = [0u8; STORAGE_BYTES_LEN];
-                reader.read_exact(&mut base_buf).map_err(|e| CasError::Io {
-                    operation: "read constraint base hash".into(),
-                    path: "(journal segment)".into(),
-                    source: e,
-                })?;
-                bases.insert(Hash::from_storage_bytes(&base_buf).map_err(|e| {
-                    CasError::CorruptObject {
-                        target: None,
-                        current: None,
-                        base: None,
-                        detail: format!("journal entry: constraint base hash decode failed: {e}"),
-                    }
-                })?);
-            }
-            Ok(Some(JournalEntry::Constraint { target: hash, bases }))
+
+        // Verify header
+        let mut header = [0u8; 8];
+        header.copy_from_slice(&buf[..8]);
+        decode_header(&header, CHECKPOINT_MAGIC, MAX_CHECKPOINT_VERSION)?;
+
+        // Verify integrity hash
+        let body_end = 8 + 8; // header + last_position
+        let stored_hash = &buf[body_end..body_end + 32];
+        let computed = blake3::hash(&buf[..body_end]);
+        if computed.as_bytes() != stored_hash {
+            return Err(CasError::corrupt_object("checkpoint: integrity hash mismatch"));
         }
-        _ => Err(CasError::CorruptObject {
-            target: None,
-            current: None,
-            base: None,
-            detail: format!("unknown journal op_type: {op_type}"),
-        }),
+
+        let pos =
+            u64::from_le_bytes(buf[8..16].try_into().map_err(|_| {
+                CasError::corrupt_object("checkpoint: failed to parse last_position")
+            })?);
+        Ok(pos)
     }
 }
 
-/// Encodes a V1 checkpoint file.
-pub(crate) fn encode_checkpoint(position: u64, integrity_hash: &Hash) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(CHECKPOINT_LEN as usize);
-    buf.extend_from_slice(CHECKPOINT_MAGIC);
-    buf.extend_from_slice(&VERSION_TAG);
-    buf.extend_from_slice(&position.to_le_bytes());
-    buf.extend_from_slice(&integrity_hash.storage_bytes());
+// ---------------------------------------------------------------------------
+// Header helpers
+// ---------------------------------------------------------------------------
+
+/// Encode an 8-byte header: 6-byte magic + 2-byte LE version.
+pub(crate) fn encode_header(magic: &[u8; 6], version: u16) -> [u8; 8] {
+    let mut buf = [0u8; 8];
+    buf[..6].copy_from_slice(magic);
+    buf[6..8].copy_from_slice(&version.to_le_bytes());
     buf
 }
 
-/// Decodes a V1 checkpoint file.
-pub(crate) fn decode_checkpoint(data: &[u8]) -> Result<(u64, Hash), CasError> {
-    if data.len() < CHECKPOINT_LEN as usize {
-        return Err(CasError::CorruptObject {
-            target: None,
-            current: None,
-            base: None,
-            detail: format!("checkpoint too short: {} < {}", data.len(), CHECKPOINT_LEN),
-        });
+/// Decode and validate an 8-byte header.
+///
+/// Returns the decoded version on success.
+pub(crate) fn decode_header(
+    buf: &[u8; 8],
+    expected_magic: &[u8; 6],
+    max_version: u16,
+) -> Result<u16, CasError> {
+    if &buf[..6] != expected_magic {
+        return Err(CasError::corrupt_object(format!(
+            "expected magic {expected_magic:02x?}, got {:02x?}",
+            &buf[..6]
+        )));
     }
-    let magic = &data[..6];
-    if magic != CHECKPOINT_MAGIC {
-        return Err(CasError::CorruptObject {
-            target: None,
-            current: None,
-            base: None,
-            detail: "checkpoint magic mismatch".into(),
-        });
+    let version = u16::from_le_bytes([buf[6], buf[7]]);
+    if version == 0 || version > max_version {
+        return Err(CasError::corrupt_object(format!(
+            "unsupported version {version} (max {max_version})"
+        )));
     }
-    let version = u16::from_le_bytes([data[6], data[7]]);
-    if version != 1 {
-        return Err(CasError::CorruptObject {
-            target: None,
-            current: None,
-            base: None,
-            detail: format!("unsupported checkpoint version: {version}"),
-        });
-    }
-    let position = u64::from_le_bytes(data[8..16].try_into().unwrap());
-    let mut hash_buf = [0u8; STORAGE_BYTES_LEN];
-    hash_buf.copy_from_slice(&data[16..16 + STORAGE_BYTES_LEN]);
-    let hash = Hash::from_storage_bytes(&hash_buf).map_err(|e| CasError::CorruptObject {
-        target: None,
-        current: None,
-        base: None,
-        detail: format!("checkpoint: hash decode failed: {e}"),
-    })?;
-    Ok((position, hash))
+    Ok(version)
 }

@@ -9,7 +9,7 @@
 //!
 //! Hash encoding/decoding is delegated to `rust-multihash` through
 //! [`crate::Hash`] helpers. No manual varint parsing is performed here.
-#![allow(dead_code)]
+#![cfg_attr(not(test), expect(dead_code))]
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!

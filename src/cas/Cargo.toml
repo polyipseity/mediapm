@@ -17,39 +17,21 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true, optional = true }
 async-trait.workspace = true
-bitvec.workspace = true
 blake3.workspace = true
-bytemuck.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }
 clap_complete = { workspace = true, optional = true }
 dashmap.workspace = true
-fp-library.workspace = true
-fs4.workspace = true
-futures-util.workspace = true
-libc.workspace = true
-memmap2.workspace = true
-miette.workspace = true
 multihash.workspace = true
-multihash-derive.workspace = true
-oxidelta.workspace = true
-parking_lot.workspace = true
-postcard.workspace = true
-rand.workspace = true
-ractor.workspace = true
-redb.workspace = true
+oxidelta = { workspace = true, default-features = false }
 serde.workspace = true
-serde_json.workspace = true
-smallvec.workspace = true
-tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing.workspace = true
-url.workspace = true
-zerocopy.workspace = true
+zerocopy = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 proptest.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "mediapm-cas"
