@@ -7,7 +7,7 @@ use mediapm_cas::api::{CasApi, ConstraintApi};
 use mediapm_cas::error::CasError;
 use mediapm_cas::hash::Hash;
 use mediapm_cas::storage::in_memory::new_in_memory_cas;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,8 +52,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\nConstraint for {b}: {stored:?}");
 
     // Effective bases intersect with live hashes.
-    let live = [a, b].into_iter().collect();
-    let effective = cas.effective_bases(b, &live).await?;
+    let live = HashSet::from([a, b]);
+    let effective: BTreeSet<_> = cas
+        .get_constraint(b)
+        .await?
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|base| live.contains(base))
+        .collect();
     println!("Effective bases: {effective:?}");
 
     Ok(())

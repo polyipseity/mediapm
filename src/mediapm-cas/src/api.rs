@@ -11,7 +11,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -149,23 +149,6 @@ pub trait ConstraintApi: Send + Sync {
 
     /// Atomically modify the bases for `target`.
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
-
-    /// Compute effective bases: intersection of stored constraint bases
-    /// with `live` hashes.
-    ///
-    /// A base that doesn't exist in the store cannot be used for delta
-    /// reconstruction, so it is excluded from the effective set.
-    async fn effective_bases(
-        &self,
-        target: Hash,
-        live: &HashSet<Hash>,
-    ) -> Result<BTreeSet<Hash>, CasError> {
-        let bases = match self.get_constraint(target).await? {
-            Some(bases) => bases,
-            None => return Ok(BTreeSet::new()),
-        };
-        Ok(bases.into_iter().filter(|b| live.contains(b)).collect())
-    }
 }
 
 /// Describes an atomic modification to a constraint's base set.
