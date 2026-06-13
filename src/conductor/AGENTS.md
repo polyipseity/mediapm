@@ -1009,7 +1009,6 @@ All progress messages must fit within the terminal width; detected via `terminal
 - **Advisory lock**: The CAS store lock is advisory only. Cooperative processes that attempt `try_lock_exclusive()` will be serialized, but a process that bypasses the lock can still cause concurrent-access corruption.
 - **Index false negatives**: Index-backed existence checks may return `false` for objects that exist in storage (conservative by design). Callers must fall back to storage for a definitive answer.
 - **Manual filesystem modification**: Direct manipulation of files under the CAS store root is unsupported and may produce silently incorrect index state.
-- **Recovery scope**: `repair_index()` only verifies and rebuilds the index from existing storage objects. It does not detect or repair corrupted object content (bit rot).
 - **Parallel sync**: State documents are not designed for concurrent writers. Only one workflow execution at a time per workspace.
 - **Cross-workflow cache dedup**: The dependency-stream model dispatches ready steps from multiple workflows simultaneously via `FuturesUnordered`. Steps started in parallel do not see each other's in-flight cache entries, so identically-keyed outputs may both execute instead of one caching off the other. This is inherent to parallel dispatch, not a bug.
 - **Diagnostics metrics in dependency-stream mode**: `worker_pool_size` may report 0 because `begin_level_metrics()` is not called in dependency-stream dispatch. A fallback uses `worker_metrics.len()` as a proxy.
@@ -1241,16 +1240,6 @@ Three race scenarios in the tool content cache:
 4. **Field-level type mapping**: Nickel number deserialization uses custom `deserialize_option_integral_u64` for `Option<u64>` fields to accept both `N::PosInt` and `N::Float`. All `Option<u64>` fields in config structs must use this deserializer. The Nickel `Enum` maps to Rust `String` + validation, not Rust enum.
 5. **Test coverage**: Each schema version has round-trip tests (serialize → deserialize), migration tests (vN → vN+1), and rejection tests (invalid data).
 6. **CI guard**: Schema files include `DO NOT REMOVE` comments that CI enforces.
-
-### N.19 Index Repair & Recovery Scan
-
-The CAS `repair_index()` operation rebuilds the index from actual storage contents using a two-pass approach:
-
-**Pass 1 — Catalog scan**: Walk the storage backend and classify each object into a `ScannedObjectCatalog` with two maps: `full_objects` (metadata only, stream-verified, bytes discarded) and `delta_objects` (full bytes retained for chain reconstruction).
-
-**Pass 2 — Index reconstruction**: Walk delta chain roots reachable from `delta_objects`, reconstruct full content on demand, and insert entries into the rebuilt index.
-
-**Memory model**: Recovery memory is `O(delta_count × delta_size)` instead of `O(total_store_bytes)`. Full-object bytes are streamed and discarded; only delta-object bytes are held in memory for reconstruction.
 
 ### N.20 Two-Phase Input Resolution (Hash-First, Content-On-Demand)
 

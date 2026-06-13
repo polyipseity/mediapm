@@ -190,7 +190,6 @@ fully covered by dedicated e2e tests:
 | What does "fail-fast" mean exactly?                              | Errors raised before ANY side effects — validation in a separate pass before execution.                                                                                                             |
 | Are timestamps/permissions part of deterministic output?         | Yes — "deterministic" means byte-for-byte identical output, including all file metadata.                                                                                                            |
 | Is materialization cleanup on failure automatic?                 | Yes — failure during materialization triggers automatic, unconditional cleanup of files written during that sync. No manual `cleanup()` call needed.                                                |
-| What does `repair_index()` do?                                   | Updates on-disk index to current schema version, removes orphaned entries. Original object data untouched; no re-hashing.                                                                           |
 | When does config version bump?                                   | Required on field removal, rename, type change, or semantics change. NOT required for adding optional fields with defaults.                                                                         |
 
 ## File Structure Reference

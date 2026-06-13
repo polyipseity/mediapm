@@ -95,13 +95,11 @@ pub trait CasMaintenanceApi: Send + Sync {
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
 
     async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
-    async fn repair_index(&self) -> Result<IndexRepairReport, CasError>;
 }
 ```
 
 - **optimize_once**: Drain WAL consumer, run GC + optimizer.
 - **prune_constraints**: Remove constraint entries whose target or bases no longer exist.
-- **repair_index**: Rebuild index from storage contents.
 
 ### 2.5 Backend types
 
@@ -145,19 +143,16 @@ Created via `CasConfig::from_locator_with_options()` + `CasConfig::open()`.
 |------|------|
 | `CasConfig` | Single config object: `storage_locator` + `integrity` |
 | `CasStorageLocator` | `InMemory` or `FileSystem { path }` |
-| `CasIntegrityConfig` | `verify_on_read` strategies + `reconstructed_bytes_cache_ttl` |
+| `CasIntegrityConfig` | `verify_on_read` strategies |
 | `CasLocatorParseOptions` | Controls whether plain paths are accepted |
 | `VerifyTriggerStrategy` | `Always`, `Modified`, `Sample { denominator }`, `Stale { timeout }` |
 
 ### 2.7 Report types
 
-| Type                | Fields                                 |
-| ------------------- | -------------------------------------- |
 | `ObjectMeta`        | `len: u64`, `encoding: ObjectEncoding` |
 | `ObjectEncoding`    | `Full` or `Delta { base_hash }`        |
 | `OptimizeReport`    | (opaque stats from optimization pass)  |
 | `PruneReport`       | (deleted constraint entries)           |
-| `IndexRepairReport` | (repair stats)                         |
 
 ## 3. Crate structure
 
@@ -189,6 +184,7 @@ src/mediapm-cas/src/
     ├── blob_store.rs    — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore
     ├── index.rs         — Index trait + InMemoryIndex (unified metadata + constraints)
     ├── read_view.rs     — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
+    ├── delta_resolve.rs — Shared delta-chain resolution (extracted from read_view + bg_engine)
     ├── bg_engine.rs     — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
     ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
     └── file_system.rs   — FileSystemCas wrapper + open()
