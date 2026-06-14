@@ -42,7 +42,7 @@ pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
 
 impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Create a new engine, checkpointing at `start_pos`.
-    pub fn new(
+    pub(crate) fn new(
         wal: J,
         index: I,
         blob_store: B,
@@ -67,7 +67,10 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         let committed = self.wal.committed_position().await;
         let ckpt = WalPosition::from_u64(self.checkpoint.load(Ordering::SeqCst));
 
-        if committed <= ckpt {
+        // Checkpoint stores the next position to consume. Skip when
+        // committed hasn't reached the next unconsumed position yet,
+        // which correctly handles the first entry at position 0.
+        if committed.next() <= ckpt {
             return Ok(0);
         }
 
@@ -116,8 +119,8 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     self.index.set_constraint(*target, bases.clone()).await?;
                 }
             }
-            // Advance checkpoint after each entry (incremental).
-            self.checkpoint.store(pos.as_u64(), Ordering::SeqCst);
+            // Advance checkpoint to the next position after this entry.
+            self.checkpoint.store(pos.next().as_u64(), Ordering::SeqCst);
         }
 
         // Trim up to the last processed position.
@@ -190,7 +193,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             return Ok(None);
         };
 
-        super::delta_resolve::resolve_full_bytes(
+        super::read_view::resolve_full_bytes(
             hash,
             &entry,
             &self.index,

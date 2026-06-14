@@ -27,8 +27,6 @@ impl std::ops::Deref for FileSystemCas {
     }
 }
 
-impl_cas_wrapper_traits!(FileSystemCas);
-
 impl FileSystemCas {
     /// Open or create a file-system CAS store at `dir`.
     ///

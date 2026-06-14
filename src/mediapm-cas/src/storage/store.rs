@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::BTreeSet;
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::api::{
@@ -234,5 +235,70 @@ impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
         self.index.list_hashes().await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Blanket impls for Deref-to-CasStore wrappers
+//
+// InMemoryCas and FileSystemCas wrap CasStore<...> with Deref and
+// automatically implement all CAS traits through these blanket impls.
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl<T, J: Wal, I: Index, B: BlobStore> CasApi for T
+where
+    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+{
+    async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
+        self.deref().put(data).await
+    }
+
+    async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        self.deref().get(hash).await
+    }
+
+    async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {
+        self.deref().stat(hash).await
+    }
+
+    async fn delete(&self, hash: Hash) -> Result<(), CasError> {
+        self.deref().delete(hash).await
+    }
+}
+
+#[async_trait]
+impl<T, J: Wal, I: Index, B: BlobStore> ConstraintApi for T
+where
+    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+{
+    async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+        self.deref().set_constraint(target, bases).await
+    }
+
+    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
+        self.deref().get_constraint(target).await
+    }
+
+    async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
+        self.deref().patch_constraint(target, patch).await
+    }
+}
+
+#[async_trait]
+impl<T, J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for T
+where
+    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+{
+    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
+        self.deref().run_maintenance_cycle().await
+    }
+
+    async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
+        self.deref().prune_constraints().await
+    }
+
+    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        self.deref().list_hashes().await
     }
 }

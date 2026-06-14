@@ -53,13 +53,9 @@ pub(crate) const JOURNAL_VERSION: u16 = 1;
 
 /// Magic prefix for checkpoint files.
 pub(crate) const CHECKPOINT_MAGIC: &[u8; 6] = b"CASCKP";
-/// Current checkpoint format version.
-pub(crate) const CHECKPOINT_VERSION: u16 = 1;
 
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
-/// Maximum supported checkpoint format version.
-pub(crate) const MAX_CHECKPOINT_VERSION: u16 = 1;
 
 // ---------------------------------------------------------------------------
 // Entry encoding / decoding
@@ -223,7 +219,7 @@ impl WalEntryV1 {
 impl CheckpointV1 {
     /// Encode a checkpoint file (header + body).
     pub(crate) fn encode(last_position: u64) -> Vec<u8> {
-        let header = encode_header(CHECKPOINT_MAGIC, CHECKPOINT_VERSION);
+        let header = encode_header(CHECKPOINT_MAGIC, JOURNAL_VERSION);
         let last_pos_bytes = last_position.to_le_bytes();
         let mut buf = Vec::with_capacity(8 + 8 + 32);
         buf.extend_from_slice(&header);
@@ -245,7 +241,7 @@ impl CheckpointV1 {
         // Verify header
         let mut header = [0u8; 8];
         header.copy_from_slice(&buf[..8]);
-        decode_header(&header, CHECKPOINT_MAGIC, MAX_CHECKPOINT_VERSION)?;
+        decode_header(&header, CHECKPOINT_MAGIC, MAX_JOURNAL_VERSION)?;
 
         // Verify integrity hash
         let body_end = 8 + 8; // header + last_position
