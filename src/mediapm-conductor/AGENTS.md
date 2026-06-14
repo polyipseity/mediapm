@@ -6,13 +6,13 @@
 > config model (user/machine/state) with fail-fast validation, actor-based orchestration,
 > and template-expanded step inputs.
 
-This file defines crate-local guidance for `src/conductor/`.
+This file defines crate-local guidance for `src/mediapm-conductor/`.
 Follow this together with the workspace root `AGENTS.md` and relevant
 `.agents/instructions/*.instructions.md` files.
 
 ## Scope
 
-- Applies to all files under `src/conductor/`.
+- Applies to all files under `src/mediapm-conductor/`.
 - Treat this file as the primary implementation policy for conductor behavior,
   with root `AGENTS.md` as the workspace-wide baseline.
 - If rules conflict, prefer root `AGENTS.md` for global policy and this file for
@@ -33,17 +33,17 @@ Follow this together with the workspace root `AGENTS.md` and relevant
 
 Use concrete files as source of truth:
 
-- Crate manifest: `src/conductor/Cargo.toml`
-- Library entry: `src/conductor/src/lib.rs`
-- CLI entry: `src/conductor/src/main.rs`
-- CLI implementation: `src/conductor/src/cli.rs`
-- Runtime orchestration: `src/conductor/src/orchestration/coordinator.rs`,
-  `src/conductor/src/orchestration/actors/`,
-  `src/conductor/src/orchestration/protocol.rs`
-- Runtime model: `src/conductor/src/model/config/mod.rs`,
-  `src/conductor/src/model/state/mod.rs`
+- Crate manifest: `src/mediapm-conductor/Cargo.toml`
+- Library entry: `src/mediapm-conductor/src/lib.rs`
+- CLI entry: `src/mediapm-conductor/src/main.rs`
+- CLI implementation: `src/mediapm-conductor/src/cli.rs`
+- Runtime orchestration: `src/mediapm-conductor/src/orchestration/coordinator.rs`,
+  `src/mediapm-conductor/src/orchestration/actors/`,
+  `src/mediapm-conductor/src/orchestration/protocol.rs`
+- Runtime model: `src/mediapm-conductor/src/model/config/mod.rs`,
+  `src/mediapm-conductor/src/model/state/mod.rs`
 - Versioned config schema + migration bridge:
-  `src/conductor/src/model/config/versions/`
+  `src/mediapm-conductor/src/model/config/versions/`
 
 Key ecosystem (from `Cargo.toml`):
 
@@ -57,7 +57,7 @@ Key ecosystem (from `Cargo.toml`):
 ## CLI/API Parity Contract
 
 - Keep conductor CLI operations API-backed by default: command handlers in
-  `src/conductor/src/cli.rs` should call `ConductorApi` methods (through
+  `src/mediapm-conductor/src/cli.rs` should call `ConductorApi` methods (through
   `SimpleConductor`) instead of duplicating orchestration logic.
 - When adding or changing CLI commands, update `ConductorApi` and actor-client
   routing in the same change if behavior must be available programmatically.
@@ -145,7 +145,7 @@ Use `sd` for deterministic text rewrites where possible so workflow behavior
 stays consistent across Windows/Linux/macOS runners.
 
 Common executable tool presets must use one module file per preset under
-`src/conductor/src/tools/` (for example `tools/sd.rs`) with registry/dispatch
+`src/mediapm-conductor/src/tools/` (for example `tools/sd.rs`) with registry/dispatch
 kept in `tools/mod.rs`; avoid re-centralizing preset implementation logic in
 `api.rs`.
 
@@ -314,7 +314,7 @@ If adding validation, apply it both where practical:
 ## `${...}` Template Syntax Contract
 
 Template expansion behavior is implemented in
-`src/conductor/src/orchestration/actors/step_worker/template.rs`.
+`src/mediapm-conductor/src/orchestration/actors/step_worker/template.rs`.
 
 Supported token forms:
 
@@ -433,7 +433,7 @@ Guidance:
 - Keep builtin dispatch deterministic and explicitly version-gated.
 - Builtin runtime logic must live in `src/conductor-builtins/*` crates,
   including `echo`; do not re-implement builtin behavior inline inside
-  `src/conductor` runtime code.
+  `src/mediapm-conductor` runtime code.
 - Each builtin crate must expose both:
   - a library API for conductor dispatch, and
   - a standalone binary (`src/main.rs`) so builtin behavior can run
@@ -498,7 +498,7 @@ or `RuntimeStoragePaths.conductor_tools_dir` in the API).
 (`mediapm`, etc.) may read from or write to it.
 
 Design invariants (implemented in
-`src/conductor/src/tool_cache/mod.rs`):
+`src/mediapm-conductor/src/tool_cache/mod.rs`):
 
 - **Cache key**: the tool id from the conductor config (the map key in
   `tool_configs`), sanitized to a filesystem-safe name. One cache entry per
@@ -537,13 +537,13 @@ Design invariants (implemented in
 
 When modifying the cache implementation, keep all three public API methods
 (`materialize`, `link_to_sandbox`, `prune`) in
-`src/conductor/src/tool_cache/mod.rs` and their callers in
+`src/mediapm-conductor/src/tool_cache/mod.rs` and their callers in
 `step_worker/mod.rs`.
 
 ## Versioned Schema Editing Policy
 
 For config schema files under
-`src/conductor/src/model/config/versions/`:
+`src/mediapm-conductor/src/model/config/versions/`:
 
 - This repository may intentionally evolve `v1` directly when requested.
 - Do not add compatibility shims unless explicitly requested.
@@ -564,7 +564,7 @@ If schema shape changes, update together:
 
 ## Example Policy
 
-Examples live under `src/conductor/examples/`.
+Examples live under `src/mediapm-conductor/examples/`.
 
 - `demo.rs` may generate persistent inspectable artifacts under
   `.artifacts/demo/`.
@@ -730,7 +730,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 
 ### Conductor ↔ Builtins
 
-- **Dispatch**: Builtin tools are dispatched by kind (`kind = "builtin"`) via `dispatch_builtin()`. Builtin runtime logic lives in `src/conductor-builtins/*` crates, not in `src/conductor`.
+- **Dispatch**: Builtin tools are dispatched by kind (`kind = "builtin"`) via `dispatch_builtin()`. Builtin runtime logic lives in `src/conductor-builtins/*` crates, not in `src/mediapm-conductor`.
 - **API contract**: Builtin library API uses `BTreeMap<String, String>` args + optional raw payload bytes. CLI uses `--arg KEY VALUE` with all string values.
 - **Determinism**: Pure builtins (echo, archive) produce identical output for same input. Impure builtins (fs, import, export) may vary on retries.
 - **Fail-fast**: Builtins reject undeclared keys, missing required keys, and invalid combinations immediately.
@@ -746,7 +746,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 
 ## D. Orchestration State Decode Migration
 
-The `decode_state()` function at `src/conductor/src/model/state/mod.rs` handles V1→V2 migration of persisted `OrchestrationState` blobs:
+The `decode_state()` function at `src/mediapm-conductor/src/model/state/mod.rs` handles V1→V2 migration of persisted `OrchestrationState` blobs:
 
 ### V2 Schema Changes
 
@@ -886,13 +886,13 @@ The `gc_initialized` flag is an `Arc<AtomicBool>` on `ConductorActorState`, shar
 
 Conductor no longer renders progress bars internally. Instead, it emits workflow step completion events through an optional channel. The consumer (mediapm service layer) creates the channel, owns the `MultiProgress` and `ProgressBar` instances, and renders progress based on received events.
 
-### API Types (`src/conductor/src/api.rs`)
+### API Types (`src/mediapm-conductor/src/api.rs`)
 
 - **`WorkflowStepEvent`**: struct with fields: `total_steps: usize`, `completed_steps: usize`, `workflow_name: String`, `step_id: String`, `workflow_display_name: String`, `executed: bool`, `worker_index: usize`, `worker_count: usize`. Derives `Debug + Clone`.
 - **`WorkflowProgressSender`**: type alias `tokio::sync::mpsc::UnboundedSender<WorkflowStepEvent>`.
 - **`RunWorkflowOptions.progress_sender`**: `Option<WorkflowProgressSender>`.
 
-### Coordinator Emission (`src/conductor/src/orchestration/coordinator.rs`)
+### Coordinator Emission (`src/mediapm-conductor/src/orchestration/coordinator.rs`)
 
 - `execute_workflows` accepts `progress_sender: Option<WorkflowProgressSender>`.
 - Before the dispatch loop, `total_steps` is computed as the sum of `ds.step_outputs.len() + ds.ready_queue.len()` across all `dep_states`.
@@ -910,7 +910,7 @@ Conductor no longer renders progress bars internally. Instead, it emits workflow
 
 ## J. Tool Content Cache
 
-The `ToolContentCache<C>` struct at `src/conductor/src/tool_cache/mod.rs` is the sole authority over the `tools_dir/` directory tree. No external code creates, reads, writes, or deletes anything inside cache directories — all TTL checking, metadata management, locking, extraction, and pruning is internal to this module.
+The `ToolContentCache<C>` struct at `src/mediapm-conductor/src/tool_cache/mod.rs` is the sole authority over the `tools_dir/` directory tree. No external code creates, reads, writes, or deletes anything inside cache directories — all TTL checking, metadata management, locking, extraction, and pruning is internal to this module.
 
 ### Public API
 
@@ -995,14 +995,14 @@ All progress messages must fit within the terminal width; detected via `terminal
 | **Implementation** | `SimpleConductor` |
 | **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.machine.ncl`, state `state.ncl`) |
 | **Execution** | Actor-based (ractor), step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe |
-| **State model** | `src/conductor/src/model/config/mod.rs`, `src/conductor/src/model/state/mod.rs` |
-| **Versioned config schema** | `src/conductor/src/model/config/versions/` |
-| **Orchestration** | `src/conductor/src/orchestration/coordinator.rs`, `src/conductor/src/orchestration/actors/`, `src/conductor/src/orchestration/protocol.rs` |
-| **Tool content cache** | `src/conductor/src/tool_cache/mod.rs` |
-| **Template expansion** | `src/conductor/src/orchestration/actors/step_worker/template.rs` |
-| **CLI** | `src/conductor/src/main.rs`, `src/conductor/src/cli.rs` (API-backed) |
+| **State model** | `src/mediapm-conductor/src/model/config/mod.rs`, `src/mediapm-conductor/src/model/state/mod.rs` |
+| **Versioned config schema** | `src/mediapm-conductor/src/model/config/versions/` |
+| **Orchestration** | `src/mediapm-conductor/src/orchestration/coordinator.rs`, `src/mediapm-conductor/src/orchestration/actors/`, `src/mediapm-conductor/src/orchestration/protocol.rs` |
+| **Tool content cache** | `src/mediapm-conductor/src/tool_cache/mod.rs` |
+| **Template expansion** | `src/mediapm-conductor/src/orchestration/actors/step_worker/template.rs` |
+| **CLI** | `src/mediapm-conductor/src/main.rs`, `src/mediapm-conductor/src/cli.rs` (API-backed) |
 | **Builtin dispatch** | `src/conductor-builtins/*` (echo, fs, archive, import, export) |
-| **Progress events** | `WorkflowStepEvent` in `src/conductor/src/api.rs`, emission in coordinator, consumption in `src/mediapm/src/service.rs` |
+| **Progress events** | `WorkflowStepEvent` in `src/mediapm-conductor/src/api.rs`, emission in coordinator, consumption in `src/mediapm/src/service.rs` |
 
 ## M. Known Limitations (Conductor-Relevant)
 

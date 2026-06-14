@@ -8,7 +8,7 @@ sources, and materialize a content-addressed hierarchy on disk.
 | Crate | Role |
 | --- | --- |
 | `src/mediapm-cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
-| `src/conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
+| `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
 | `src/conductor-builtins/echo/` | Echo builtin |
 | `src/conductor-builtins/fs/` | Filesystem staging builtin |
 | `src/conductor-builtins/import/` | Source-ingest builtin (`file`/`folder`/`fetch`) |

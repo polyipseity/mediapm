@@ -32,7 +32,7 @@ applyTo: "src/**/*.rs"
   - CAS async API contracts
   - storage/index/constraint behavior
   - topology visualization rendering/execution helpers
-- `src/conductor/` (Conductor)
+- `src/mediapm-conductor/` (Conductor)
   - orchestration state model
   - deterministic instance-key and merge logic
   - workflow execution contracts
@@ -86,7 +86,7 @@ is a narrow, documented reason.
     consistent `FuturesUnordered` + index-ordering behavior across
     `exists_many`, `get_many`, `info_many`, and `get_constraint_many`.
 - `conductor` should keep deterministic planning/keying logic explicit and testable.
-  Conductor-specific invariants to preserve in `src/conductor/**`:
+  Conductor-specific invariants to preserve in `src/mediapm-conductor/**`:
   - `conductor.ncl` (user intent) and `conductor.machine.ncl`
     (machine-managed state) remain separate ownership surfaces,
   - persisted builtin tool entries stay strict (`kind`, `name`, `version` only),
@@ -448,7 +448,7 @@ is a narrow, documented reason.
     data remains machine-state-tracked/pruneable.
 - Built-ins should stay narrowly scoped and version-addressable.
 - Builtin runtime behavior must remain inside `src/conductor-builtins/*`
-  crates (not inline in `src/conductor`).
+  crates (not inline in `src/mediapm-conductor`).
 - Each builtin crate should expose both a library API and an independently
   runnable binary target.
 - Each builtin crate must use a uniform input contract:
@@ -553,7 +553,7 @@ or download-level progress that spans blocking awaits.
 
 **Specific invariants for conductor workflow progress:**
 
-- `execute_workflows` in `src/conductor/src/orchestration/coordinator.rs` must
+- `execute_workflows` in `src/mediapm-conductor/src/orchestration/coordinator.rs` must
   create a single `MultiProgress` at the top of the function and all workflow
   bars must be allocated via `multi.add_bar(...)`.
 - A settle delay (`tokio::time::sleep`) of at least one render interval (75 ms)

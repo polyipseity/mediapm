@@ -13,7 +13,7 @@
 - Every crate directory ships an `AGENTS.md` with crate-local guidance.
 - `src/` now contains workspace member crates:
   - `src/mediapm-cas/` (CAS)
-  - `src/conductor/` (Conductor)
+  - `src/mediapm-conductor/` (Conductor)
   - `src/conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
   - `src/conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
@@ -95,7 +95,7 @@ Get up and running in minutes:
 
 - `src/mediapm-cas/` provides the CAS identity model and async API contracts.
   CAS topology visualization implementation also belongs in this crate.
-- `src/conductor/` provides the orchestration state model and
+- `src/mediapm-conductor/` provides the orchestration state model and
   persistence-merge logic.
   Key cross-crate invariants:
   - `conductor.ncl` is user-owned intent; `conductor.machine.ncl` is
@@ -115,12 +115,12 @@ Get up and running in minutes:
     `retry_impure` is enabled (configurable via `runtime.retry_impure` in
     `conductor.ncl`/`mediapm.ncl`, `--retry-impure` CLI flag, or
     `RunWorkflowOptions.retry_impure`).
-  See `src/conductor/AGENTS.md` for the full configuration document model,
+  See `src/mediapm-conductor/AGENTS.md` for the full configuration document model,
   tool schema invariants, template syntax contract, and versioned schema policy.
 - `src/conductor-builtins/` provides versioned built-in tool contracts such as
   `echo`, `fs`, `import`, `export`, and `archive`.
   Builtin runtime behavior must live in these crates (not inline in
-  `src/conductor`), and each builtin crate should remain independently runnable
+  `src/mediapm-conductor`), and each builtin crate should remain independently runnable
   via its own binary target.
   Builtin contract stability rule: all builtins must share the same input
   conventions. CLI must use normal Rust flag/option conventions while keeping
@@ -395,7 +395,7 @@ Get up and running in minutes:
   linking to per-crate AGENTS.md for all specification and edge-case content
   (replaces the deleted `crate-specifications.md` and
   `elaboration-pass-edge-cases.md`)
-- `src/mediapm-cas/AGENTS.md`, `src/conductor/AGENTS.md`, `src/mediapm/AGENTS.md` —
+- `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` —
   crate-level detailed behavioral contracts
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`,
   `.agents/.markdownlint.jsonc` — formatting and line-ending rules

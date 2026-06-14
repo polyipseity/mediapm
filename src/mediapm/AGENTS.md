@@ -1049,7 +1049,7 @@ When channel closes: "all workflows complete", 75ms settle delay.
 
 ## J — Tool Content Cache
 
-`ToolContentCache<C>` at `src/conductor/src/tool_cache/mod.rs` is sole
+`ToolContentCache<C>` at `src/mediapm-conductor/src/tool_cache/mod.rs` is sole
 authority over `tools_dir/` directory tree.
 
 **Public API**: `sanitize_tool_id(name)`, `new(tools_dir, cas)`,

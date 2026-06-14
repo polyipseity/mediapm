@@ -1,7 +1,7 @@
 ---
 description: "Use when working with ToolContentCache in conductor or mediapm crate. Documents the refactoring that extracted tool content caching from StepWorkerExecutor into standalone ToolContentCache<C>."
 name: "ToolContentCache Architecture"
-applyTo: "src/conductor/src/tool_cache/**/*.rs, src/conductor/src/orchestration/**/*.rs, src/mediapm/src/conductor_bridge/**/*.rs"
+applyTo: "src/mediapm-conductor/src/tool_cache/**/*.rs, src/mediapm-conductor/src/orchestration/**/*.rs, src/mediapm/src/conductor_bridge/**/*.rs"
 ---
 
 # ToolContentCache Architecture

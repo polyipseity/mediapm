@@ -24,7 +24,7 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
   architecture and implementation contract.
 - `src/` workspace member crates for current module boundaries:
   - `src/mediapm-cas/` (CAS)
-  - `src/conductor/` (Conductor)
+  - `src/mediapm-conductor/` (Conductor)
   - `src/conductor-builtins/*/` (conductor built-ins)
   - `src/mediapm/` (mediapm application)
 

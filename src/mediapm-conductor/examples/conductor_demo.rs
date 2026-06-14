@@ -213,7 +213,7 @@ fn artifact_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join(".artifacts").join("demo")
 }
 
-/// Returns workspace root derived from `src/conductor` manifest location.
+/// Returns workspace root derived from `src/mediapm-conductor` manifest location.
 fn workspace_root() -> ExampleResult<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn artifact_root_is_stable() {
         let text = super::display_path(&super::artifact_root());
-        assert!(text.ends_with("src/conductor/examples/.artifacts/demo"));
+        assert!(text.ends_with("src/mediapm-conductor/examples/.artifacts/demo"));
     }
 
     /// Ensures the user document keeps all expected workflow names.

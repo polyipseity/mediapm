@@ -32,7 +32,7 @@ flate2.workspace = true
 fp-library.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
-mediapm-conductor = { path = "../conductor", default-features = false }
+mediapm-conductor = { path = "../mediapm-conductor", default-features = false }
 musicbrainz_rs = { workspace = true, features = ["async", "rustls"] }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
