@@ -170,6 +170,10 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             // Store as Full, replacing the delta-encoded entry.
             let result_bytes = Bytes::from(result);
             self.blob_store.write(dep_hash, ObjectEncoding::Full, result_bytes.clone()).await?;
+            // Clean up the stale .diff blob since it's now promoted to Full.
+            self.blob_store
+                .delete_encoding(dep_hash, ObjectEncoding::Delta { base_hash: *hash })
+                .await?;
             // Preserve constraint bases.
             let existing_bases = self.index.get_constraint(&dep_hash).await?;
             self.index
