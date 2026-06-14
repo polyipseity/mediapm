@@ -1,11 +1,13 @@
-//! V1 persistence format for the CAS index's constraint data.
+//! V1 persistence format for the CAS index.
 //!
-//! Stores the constraint map as a versioned JSON file, keyed by hex-encoded
-//! target hash to a sorted list of hex-encoded base hashes.
+//! Stores constraints and index entries together in a single versioned
+//! JSON file. The `entries` field uses `#[serde(default)]` so old files
+//! (constraints-only) remain loadable.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -16,73 +18,131 @@ struct ConstraintEntry {
     bases: Vec<String>,
 }
 
-/// On-disk representation of the V1 constraint file.
+/// On-disk representation of an index entry.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct ConstraintFile {
+struct EntryData {
+    len: u64,
+    /// `"full"` or `"delta:<hex_base_hash>"`
+    encoding: String,
+}
+
+/// On-disk representation of the V1 persistence file.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SnapshotFile {
     version: u32,
     /// Map from hex-encoded target hash → constraint entry.
     constraints: BTreeMap<String, ConstraintEntry>,
+    /// Index entries (hex-encoded hash → entry data).
+    /// Old files without this field still load correctly.
+    #[serde(default)]
+    entries: BTreeMap<String, EntryData>,
 }
 
-/// Load constraints from a V1 file.
+/// Load snapshot (constraints + entries) from a V1 file.
 ///
-/// Returns an empty map if the file does not exist.
-pub(crate) fn load(path: &Path) -> Result<BTreeMap<Hash, BTreeSet<Hash>>, CasError> {
+/// Returns an empty pair if the file does not exist.
+pub(crate) fn load(
+    path: &Path,
+) -> Result<
+    (
+        BTreeMap<Hash, BTreeSet<Hash>>,        // constraints
+        BTreeMap<Hash, (u64, ObjectEncoding)>, // hash → (len, encoding)
+    ),
+    CasError,
+> {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BTreeMap::new());
+            return Ok((BTreeMap::new(), BTreeMap::new()));
         }
         Err(e) => return Err(CasError::Io(e)),
     };
 
-    let file: ConstraintFile =
+    let file: SnapshotFile =
         serde_json::from_slice(&data).map_err(|e| CasError::CorruptObject {
             hash: None,
-            details: format!("failed to parse constraint file: {e}"),
+            details: format!("failed to parse snapshot file: {e}"),
         })?;
 
     if file.version != 1 {
         return Err(CasError::CorruptObject {
             hash: None,
-            details: format!("unsupported constraint file version: {}", file.version),
+            details: format!("unsupported snapshot file version: {}", file.version),
         });
     }
 
-    let mut result = BTreeMap::new();
-    for (target_hex, entry) in file.constraints {
+    // --- Constraints ---
+    let mut constraints = BTreeMap::new();
+    for (target_hex, entry) in &file.constraints {
         let target: Hash = target_hex.parse().map_err(|_| CasError::CorruptObject {
             hash: None,
-            details: format!("invalid target hash in constraint file: {target_hex}"),
+            details: format!("invalid target hash in snapshot file: {target_hex}"),
         })?;
         let bases: BTreeSet<Hash> = entry.bases.iter().filter_map(|h| h.parse().ok()).collect();
         if bases.len() != entry.bases.len() {
             return Err(CasError::CorruptObject {
                 hash: None,
-                details: "invalid base hash in constraint file".into(),
+                details: "invalid base hash in snapshot file".into(),
             });
         }
-        result.insert(target, bases);
+        constraints.insert(target, bases);
     }
-    Ok(result)
+
+    // --- Entries ---
+    let mut entries = BTreeMap::new();
+    for (hash_hex, data) in &file.entries {
+        let hash: Hash = hash_hex.parse().map_err(|_| CasError::CorruptObject {
+            hash: None,
+            details: format!("invalid hash in snapshot file entries: {hash_hex}"),
+        })?;
+        let encoding = match data.encoding.as_str() {
+            "full" => ObjectEncoding::Full,
+            s if s.starts_with("delta:") => {
+                let base: Hash = s[6..].parse().map_err(|_| CasError::CorruptObject {
+                    hash: None,
+                    details: format!("invalid delta base hash in snapshot file: {}", &s[6..]),
+                })?;
+                ObjectEncoding::Delta { base_hash: base }
+            }
+            other => {
+                return Err(CasError::CorruptObject {
+                    hash: None,
+                    details: format!("unknown encoding in snapshot file: {other}"),
+                });
+            }
+        };
+        entries.insert(hash, (data.len, encoding));
+    }
+
+    Ok((constraints, entries))
 }
 
-/// Save constraints to a V1 file.
+/// Save snapshot (constraints + entries) to a V1 file.
 ///
 /// Creates parent directories if needed. Writes atomically via temp+rename.
 pub(crate) fn save(
     path: &Path,
     constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
+    entries: &BTreeMap<Hash, (u64, ObjectEncoding)>,
 ) -> Result<(), CasError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(CasError::Io)?;
     }
 
-    let mut file = ConstraintFile { version: 1, constraints: BTreeMap::new() };
+    let mut file =
+        SnapshotFile { version: 1, constraints: BTreeMap::new(), entries: BTreeMap::new() };
 
     for (target, bases) in constraints {
         let entry = ConstraintEntry { bases: bases.iter().map(|h| h.to_string()).collect() };
         file.constraints.insert(target.to_string(), entry);
+    }
+
+    for (hash, (len, encoding)) in entries {
+        let encoding_str = match encoding {
+            ObjectEncoding::Full => "full".to_string(),
+            ObjectEncoding::Delta { base_hash } => format!("delta:{base_hash}"),
+        };
+        file.entries.insert(hash.to_string(), EntryData { len: *len, encoding: encoding_str });
     }
 
     // Atomic write via temp+rename.
