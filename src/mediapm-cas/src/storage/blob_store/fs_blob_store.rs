@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::io;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -145,11 +146,15 @@ impl BlobStore for FileSystemBlobStore {
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         let full_path = hash_to_path(&self.root, hash);
         let delta_path = hash_to_delta_path(&self.root, hash);
-        if let Err(e) = fs::remove_file(&full_path).await {
-            tracing::warn!(%hash, path = %full_path.display(), error = %e, "failed to remove full blob");
+
+        // Silently ignore NotFound on each path; propagate other errors.
+        match fs::remove_file(&full_path).await {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
+            _ => {}
         }
-        if let Err(e) = fs::remove_file(&delta_path).await {
-            tracing::warn!(%hash, path = %delta_path.display(), error = %e, "failed to remove delta blob");
+        match fs::remove_file(&delta_path).await {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(CasError::Io(e)),
+            _ => {}
         }
         Ok(())
     }

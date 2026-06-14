@@ -13,7 +13,33 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::blob_store::BlobStore;
-use super::index::Index;
+use super::index::{Index, IndexEntry};
+
+/// Given an index entry, read full bytes — either directly (Full) or by
+/// resolving the delta chain (Delta).
+pub(super) async fn resolve_full_bytes<I: Index, B: BlobStore>(
+    hash: &Hash,
+    entry: &IndexEntry,
+    index: &I,
+    blob_store: &B,
+    self_ref_msg: &str,
+    base_not_found_msg: &str,
+) -> Result<Bytes, CasError> {
+    match entry.encoding {
+        ObjectEncoding::Full => blob_store.read(hash).await,
+        ObjectEncoding::Delta { base_hash } => {
+            resolve_delta_chain(
+                hash,
+                base_hash,
+                index,
+                blob_store,
+                self_ref_msg,
+                base_not_found_msg,
+            )
+            .await
+        }
+    }
+}
 
 /// Reconstruct full bytes for `hash` by walking its delta chain.
 ///

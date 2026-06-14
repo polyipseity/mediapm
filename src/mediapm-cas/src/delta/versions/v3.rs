@@ -8,7 +8,7 @@
 //! `diff_hash = blake3(payload)`.
 //!
 //! Layout:
-//! `magic_with_embedded_version[8] | content_len[8] | payload_len[8] | diff_hash[32] | base_hash[...] | payload[...]`
+//! `magic_with_embedded_version[8] | content_len[8] | diff_hash[32] | base_hash[...] | payload[...]`
 //!
 //! Hash encoding/decoding is delegated to `rust-multihash` through
 //! [`crate::Hash`] helpers. No manual varint parsing is performed here.
@@ -65,8 +65,6 @@ pub(crate) struct V3Envelope {
     pub(crate) base_hash: Hash,
     /// Reconstructed content length.
     pub(crate) content_len: u64,
-    /// Encoded payload length.
-    pub(crate) payload_len: u64,
     /// blake3 hash of the diff payload.
     pub(crate) diff_hash: [u8; 32],
     /// VCDIFF payload bytes.
@@ -79,7 +77,6 @@ pub(crate) struct V3Envelope {
 struct V3Metadata {
     _magic: [u8; 8],
     content_len: Le64,
-    payload_len: Le64,
     diff_hash: [u8; 32],
 }
 
@@ -110,20 +107,15 @@ impl V3Envelope {
             .map_err(|_| CasError::corrupt_object("delta envelope: V3 metadata alignment error"))?;
 
         let content_len = meta.content_len.get();
-        let payload_len = meta.payload_len.get();
         let diff_hash = meta.diff_hash;
 
-        let header_size = V3Metadata::SIZE;
-        let remaining = &bytes[header_size..];
+        let remaining = &bytes[V3Metadata::SIZE..];
+        let (base_hash, hash_len) = parse_multihash_from_bytes(remaining)
+            .map_err(|e| CasError::corrupt_object(format!("delta envelope: V3 base_hash: {e}")))?;
 
-        let base_hash_len = remaining.len().saturating_sub(payload_len as usize);
-        let (base_hash_bytes, payload) = remaining.split_at(base_hash_len);
+        let payload = remaining[hash_len..].to_vec();
 
-        let base_hash = parse_multihash_from_bytes(base_hash_bytes)
-            .map_err(|e| CasError::corrupt_object(format!("delta envelope: V3 base_hash: {e}")))?
-            .0;
-
-        Ok(V3Envelope { base_hash, content_len, payload_len, diff_hash, payload: payload.to_vec() })
+        Ok(V3Envelope { base_hash, content_len, diff_hash, payload })
     }
 
     /// Validates the diff_hash: `blake3(payload) == diff_hash`.
@@ -144,7 +136,6 @@ impl V3Envelope {
         );
         buf.extend_from_slice(DIFF_STORAGE_MAGIC);
         buf.extend_from_slice(&self.content_len.to_le_bytes());
-        buf.extend_from_slice(&self.payload_len.to_le_bytes());
         buf.extend_from_slice(&self.diff_hash);
         buf.extend_from_slice(&self.base_hash.storage_bytes());
         buf.extend_from_slice(&self.payload);
@@ -153,9 +144,8 @@ impl V3Envelope {
 
     /// Builds an envelope from content parameters, computing diff_hash internally.
     pub(crate) fn from_parts(base_hash: Hash, content_len: u64, payload: Vec<u8>) -> Self {
-        let payload_len = payload.len() as u64;
         let diff_hash = *blake3::hash(&payload).as_bytes();
-        V3Envelope { base_hash, content_len, payload_len, diff_hash, payload }
+        V3Envelope { base_hash, content_len, diff_hash, payload }
     }
 }
 
@@ -186,11 +176,9 @@ impl From<V3Envelope> for DeltaStateV3 {
 
 impl From<DeltaStateV3> for V3Envelope {
     fn from(state: DeltaStateV3) -> Self {
-        let payload_len = state.payload.len() as u64;
         V3Envelope {
             base_hash: state.base_hash,
             content_len: state.content_len,
-            payload_len,
             diff_hash: state.diff_hash,
             payload: state.payload,
         }

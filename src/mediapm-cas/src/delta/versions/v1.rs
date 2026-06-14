@@ -21,6 +21,7 @@
 use zerocopy::little_endian::{U32 as Le32, U64 as Le64};
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
+use super::{check_payload_bounds, validate_payload_len};
 use crate::{CasError, Hash, HashParseError};
 
 /// Magic marker for diff-file integrity and versioning sanity checks.
@@ -62,8 +63,8 @@ pub(crate) struct V1Envelope {
     pub(crate) content_len: u64,
     /// Encoded payload length.
     pub(crate) payload_len: u64,
-    /// Envelope checksum.
-    #[allow(dead_code)]
+    /// Envelope checksum (read in test-only encode() path).
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) checksum: u32,
     /// VCDIFF payload bytes.
     pub(crate) payload: Vec<u8>,
@@ -125,21 +126,7 @@ impl V1Envelope {
             .checked_add(payload_len_usize)
             .ok_or_else(|| CasError::corrupt_object("delta envelope: payload bounds overflow"))?;
 
-        if bytes.len() < payload_end {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: buffer too short for payload (need {}, have {})",
-                payload_end,
-                bytes.len()
-            )));
-        }
-
-        if bytes.len() != payload_end {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: trailing bytes after payload (expected {}, have {})",
-                payload_end,
-                bytes.len()
-            )));
-        }
+        check_payload_bounds(bytes.len(), payload_end)?;
 
         let payload = bytes[payload_start..payload_end].to_vec();
 
@@ -150,13 +137,7 @@ impl V1Envelope {
     pub(crate) fn validate(&self) -> Result<(), CasError> {
         let actual_payload_len =
             u64::try_from(self.payload.len()).expect("payload length exceeds u64::MAX");
-        if self.payload_len != actual_payload_len {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: payload_len mismatch (field {}, actual {})",
-                self.payload_len, actual_payload_len
-            )));
-        }
-        Ok(())
+        validate_payload_len(self.payload_len, actual_payload_len)
     }
 
     /// Encodes V1 envelope to bytes.

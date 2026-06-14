@@ -80,18 +80,6 @@ pub(crate) fn parse_multihash_from_bytes(
     crate::Hash::from_storage_bytes_with_len(bytes)
 }
 
-/// ## DO NOT REMOVE: latest-first version dispatch guard
-///
-/// Version checks should always start checking from the latest version to ensure performance.
-fn dispatch_delta_wire_version(version: u16) -> Result<(), CasError> {
-    match version {
-        3 | 2 | 1 => Ok(()),
-        _ => {
-            Err(CasError::corrupt_object(format!("delta envelope: unsupported version {version}")))
-        }
-    }
-}
-
 /// Decodes versioned `.diff` bytes into version-agnostic [`DeltaState`].
 ///
 /// This function is the only version-dispatch entry point. It peeks at
@@ -105,7 +93,6 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
     }
 
     let version = decode_magic_embedded_version(bytes)?;
-    dispatch_delta_wire_version(version)?;
 
     match version {
         3 => {
@@ -141,8 +128,41 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
                 payload: state_v3.payload,
             })
         }
-        _ => unreachable!("dispatch_delta_wire_version validated the version"),
+        _ => {
+            Err(CasError::corrupt_object(format!("delta envelope: unsupported version {version}")))
+        }
     }
+}
+
+/// Shared payload-length validation for V1/V2 envelopes.
+pub(crate) fn validate_payload_len(
+    field_payload_len: u64,
+    actual_payload_len: u64,
+) -> Result<(), CasError> {
+    if field_payload_len != actual_payload_len {
+        return Err(CasError::corrupt_object(format!(
+            "delta envelope: payload_len mismatch (field {}, actual {})",
+            field_payload_len, actual_payload_len
+        )));
+    }
+    Ok(())
+}
+
+/// Shared trailing-bytes / truncation check for V1/V2 parsers.
+pub(crate) fn check_payload_bounds(bytes_len: usize, payload_end: usize) -> Result<(), CasError> {
+    if bytes_len < payload_end {
+        return Err(CasError::corrupt_object(format!(
+            "delta envelope: buffer too short for payload (need {}, have {})",
+            payload_end, bytes_len
+        )));
+    }
+    if bytes_len != payload_end {
+        return Err(CasError::corrupt_object(format!(
+            "delta envelope: trailing bytes after payload (expected {}, have {})",
+            payload_end, bytes_len
+        )));
+    }
+    Ok(())
 }
 
 /// Encodes unversioned runtime delta state using the latest wire version.

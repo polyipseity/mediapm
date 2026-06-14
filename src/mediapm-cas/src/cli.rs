@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::api::CasApi;
 use crate::config::{CasConfig, CasIntegrityConfig, CasLocatorParseOptions};
 use crate::error::CasError;
-use crate::hash::{HASH_SIZE, Hash};
+use crate::hash::Hash;
 
 /// Top-level `mediapm-cas` CLI arguments.
 #[derive(Debug, Parser)]
@@ -84,7 +84,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("{hash}");
         }
         CasCommand::Get { hash } => {
-            let hash = parse_hex_hash(&hash)?;
+            let hash: Hash = hash.parse()?;
             let data = cas.get(hash).await.map_err(|e| match e {
                 CasError::NotFound(h) => anyhow::anyhow!("object {h} not found"),
                 other => anyhow::anyhow!("{other}"),
@@ -92,7 +92,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             io::stdout().write_all(&data)?;
         }
         CasCommand::Stat { hash } => {
-            let hash = parse_hex_hash(&hash)?;
+            let hash: Hash = hash.parse()?;
             let info = cas.stat(hash).await.map_err(|e| match e {
                 CasError::NotFound(h) => anyhow::anyhow!("object {h} not found"),
                 other => anyhow::anyhow!("{other}"),
@@ -102,7 +102,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             println!("encoding: {:?}", info.encoding);
         }
         CasCommand::Delete { hash } => {
-            let hash = parse_hex_hash(&hash)?;
+            let hash: Hash = hash.parse()?;
             cas.delete(hash).await?;
             println!("deleted {hash}");
         }
@@ -123,17 +123,4 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Parse a 64-char hex string into a [`Hash`].
-fn parse_hex_hash(s: &str) -> anyhow::Result<Hash> {
-    if s.len() != HASH_SIZE * 2 {
-        return Err(anyhow::anyhow!("invalid hash length: {}", s.len()));
-    }
-    let mut arr = [0u8; HASH_SIZE];
-    for (i, byte) in arr.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16)
-            .map_err(|_| anyhow::anyhow!("invalid hash: {s}"))?;
-    }
-    Ok(Hash::from_bytes(arr))
 }

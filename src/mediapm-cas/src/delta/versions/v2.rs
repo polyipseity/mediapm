@@ -20,6 +20,7 @@
 use zerocopy::little_endian::U64 as Le64;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
+use super::{check_payload_bounds, validate_payload_len};
 use crate::{CasError, Hash, HashParseError};
 
 /// Magic marker for diff-file integrity and versioning sanity checks.
@@ -119,21 +120,7 @@ impl V2Envelope {
             .checked_add(payload_len_usize)
             .ok_or_else(|| CasError::corrupt_object("delta envelope: payload bounds overflow"))?;
 
-        if bytes.len() < payload_end {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: buffer too short for payload (need {}, have {})",
-                payload_end,
-                bytes.len()
-            )));
-        }
-
-        if bytes.len() != payload_end {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: trailing bytes after payload (expected {}, have {})",
-                payload_end,
-                bytes.len()
-            )));
-        }
+        check_payload_bounds(bytes.len(), payload_end)?;
 
         let payload = bytes[payload_start..payload_end].to_vec();
 
@@ -144,13 +131,7 @@ impl V2Envelope {
     pub(crate) fn validate(&self) -> Result<(), CasError> {
         let actual_payload_len =
             u64::try_from(self.payload.len()).expect("payload length exceeds u64::MAX");
-        if self.payload_len != actual_payload_len {
-            return Err(CasError::corrupt_object(format!(
-                "delta envelope: payload_len mismatch (field {}, actual {})",
-                self.payload_len, actual_payload_len
-            )));
-        }
-        Ok(())
+        validate_payload_len(self.payload_len, actual_payload_len)
     }
 
     /// Encodes V2 envelope to bytes.

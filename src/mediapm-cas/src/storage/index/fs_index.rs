@@ -8,7 +8,6 @@
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 use crate::error::CasError;
 use crate::hash::Hash;
@@ -27,12 +26,6 @@ use super::{Index, IndexEntry};
 pub struct FileSystemIndex {
     inner: InMemoryIndex,
     constraint_path: PathBuf,
-    /// Suppresses disk writes during `rebuild_from_wal`. Set to `true`
-    /// during replay to avoid redundant flushing.
-    suppress_persist: Arc<Mutex<bool>>,
-    /// Dirty flag: `true` when constraints have been modified since last
-    /// flush. Used for batched persistence.
-    dirty: Arc<Mutex<bool>>,
 }
 
 impl FileSystemIndex {
@@ -41,12 +34,7 @@ impl FileSystemIndex {
     /// The constraint file is not loaded until [`rebuild_from_wal`](Index::rebuild_from_wal)
     /// is called.
     pub fn new(constraint_path: PathBuf) -> Self {
-        Self {
-            inner: InMemoryIndex::new(),
-            constraint_path,
-            suppress_persist: Arc::new(Mutex::new(false)),
-            dirty: Arc::new(Mutex::new(false)),
-        }
+        Self { inner: InMemoryIndex::new(), constraint_path }
     }
 
     /// Persist all constraints to disk (JSON, V1 format).
@@ -63,16 +51,6 @@ impl FileSystemIndex {
             }
         } else {
             versions::save(&self.constraint_path, &map).await?;
-        }
-        *self.dirty.lock().unwrap() = false;
-        Ok(())
-    }
-
-    /// Flush to disk only if constraints have been modified since the
-    /// last flush. No-op when already clean.
-    pub(crate) async fn flush_if_dirty(&self) -> Result<(), CasError> {
-        if *self.dirty.lock().unwrap() {
-            self.flush_constraints().await?;
         }
         Ok(())
     }
@@ -102,20 +80,17 @@ impl Index for FileSystemIndex {
         self.inner.list_hashes().await
     }
 
-    fn len(&self) -> usize {
-        self.inner.len()
+    async fn len(&self) -> usize {
+        self.inner.len().await
     }
 
-    fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+    async fn is_empty(&self) -> bool {
+        self.inner.is_empty().await
     }
 
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.inner.set_constraint(target, bases).await?;
-        if !*self.suppress_persist.lock().unwrap() {
-            *self.dirty.lock().unwrap() = true;
-        }
-        Ok(())
+        self.flush_constraints().await
     }
 
     async fn get_constraint(&self, target: &Hash) -> Result<BTreeSet<Hash>, CasError> {
@@ -128,30 +103,18 @@ impl Index for FileSystemIndex {
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
         self.inner.prune_targets(live).await?;
-        *self.dirty.lock().unwrap() = true;
-        self.flush_if_dirty().await
+        self.flush_constraints().await
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
-        // 1. Replay WAL — populates metadata and any surviving constraint
-        //    entries (pre-trim).
-        {
-            let mut guard = self.suppress_persist.lock().unwrap();
-            *guard = true;
-        }
         self.inner.rebuild_from_wal(wal).await?;
 
-        // 2. Overlay persisted constraints (survive WAL trim).
+        // Overlay persisted constraints (survive WAL trim).
         if self.constraint_path.exists() {
             let persisted = versions::load(&self.constraint_path, FORMAT_VERSION).await?;
             for (target, bases) in persisted {
                 self.inner.set_constraint(target, bases).await?;
             }
-        }
-
-        {
-            let mut guard = self.suppress_persist.lock().unwrap();
-            *guard = false;
         }
 
         Ok(())
@@ -180,7 +143,7 @@ mod tests {
         let base = Hash::from_content(b"b");
         index.set_constraint(target, BTreeSet::from([base])).await.unwrap();
         // Flush so the new index can read the constraint from disk.
-        index.flush_if_dirty().await.unwrap();
+        index.flush_constraints().await.unwrap();
 
         // Create a new index from the same path and rebuild.
         let index2 = FileSystemIndex::new(path.clone());
@@ -205,7 +168,7 @@ mod tests {
             .await
             .unwrap();
         // Flush so the persisted constraint is readable by a new index.
-        index.flush_if_dirty().await.unwrap();
+        index.flush_constraints().await.unwrap();
 
         // Now rebuild with a fresh index and a WAL that has a Put + a different constraint.
         let journal = InMemoryWal::new();
@@ -237,7 +200,7 @@ mod tests {
         let index = FileSystemIndex::new(path);
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
-        assert!(index.is_empty());
+        assert!(index.is_empty().await);
     }
 
     #[tokio::test]

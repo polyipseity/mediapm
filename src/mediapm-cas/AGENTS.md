@@ -452,7 +452,7 @@ let sync = B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE;
 | Backend triplet | BlobStore | Index | Effective | Why |
 |-----------------|-----------|-------|-----------|-----|
 | `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryIndex` (true) | write-through | Both are DashMap inserts — instant |
-| `FileSystemCas` | `FileSystemBlobStore` (false) | `InMemoryIndex` (true) | **write-back** | File I/O on BlobStore is costly; WAL captures durability |
+| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemIndex` (false) | **write-back** | File I/O on BlobStore/Index is costly; WAL captures durability |
 
 **Write-through**: Caller pays WAL + BlobStore + Index latency. Data is immediately visible
 without WAL fallback. Used when all backends are in-memory.
@@ -479,7 +479,88 @@ correct re-materialization of delta dependents.
 **Contract**: Callers may call CAS concurrently (thread-safe). CAS doesn't reference
 Conductor/MediaPM types. Failures propagate as-is.
 
-## 10. Build & test
+## 11. Simplification opportunities
+
+This section catalogs code-smell patterns, dead code, duplicated logic, and
+over-engineering across the crate. Items marked (✅) are completed and kept as
+historical reference only; remaining items are still open.
+
+### 11.1 High impact
+
+#### ✅ `dispatch_delta_wire_version` was dead code
+
+Removed. The dispatch call preceded a match that already covered all valid
+versions, making it unreachable.
+
+#### ✅ `read_full_bytes` duplicated between `bg_engine.rs` and `read_view.rs`
+
+Extracted `resolve_full_bytes()` helper in `delta_resolve.rs`. Both callers
+now delegate through it.
+
+#### 🔺 `V1Envelope::checksum` stored but never read
+
+The `checksum: u32` field on `V1Envelope` is parsed from the wire format but
+all consumers go through `DeltaStateV1` (no checksum) → `DeltaStateV2` →
+`DeltaStateV3`. Currently `#[cfg_attr(not(test), expect(dead_code))]`.
+Could be a local variable in `parse()` instead.
+
+#### ✅ `V3Envelope::parse` handled truncation differently from V1/V2
+
+Fixed by removing `payload_len` from `V3Metadata`/`V3Envelope`. V3 now parses
+the multihash to determine its end, and all remaining bytes are payload —
+no saturating-subtract confusion.
+
+#### ✅ `FileSystemBlobStore::delete` swallowed non-NotFound errors
+
+Fixed: `delete()` now checks for `io::ErrorKind::NotFound` specifically and
+re-raises other errors instead of masking them.
+
+#### ✅ AGENTS.md write-through table was inaccurate
+
+Fixed: `FileSystemCas` row now correctly shows `FileSystemIndex (false)` instead
+of `InMemoryIndex (true)`.
+
+### 11.2 Medium impact
+
+#### `ObjectMeta::encoding` leaks delta internals to callers
+
+`ObjectEncoding::Delta { base_hash }` exposes internal delta-chain topology. The
+AGENTS.md documents "Callers must NOT make decisions based on encoding," which
+is a design tell — if callers shouldn't use it, consider making it opaque
+(e.g., `ObjectEncoding::Delta` without `base_hash`, or a boolean
+`is_delta()` method). This would be an API break.
+
+#### `wal/versions/` and `blob_store/versions/` over-engineered for single version
+
+Both modules define version-dispatch machinery (`mod.rs` + `versions/v1.rs`)
+but only have a single V1. The trait-based version dispatch adds file/module
+overhead (5 extra files) for no current benefit. If a second version is unlikely,
+these could be inlined.
+
+#### ✅ `FileSystemIndex` suppress_persist + dirty flag complexity
+
+Removed both `suppress_persist: Arc<Mutex<bool>>` and `dirty: Arc<Mutex<bool>>`.
+`set_constraint()` and `prune_targets()` now call `flush_constraints()` directly.
+`flush_if_dirty()` was removed (tests call `flush_constraints()` instead).
+
+### 11.3 Low impact
+
+#### ✅ `cli.rs` manual hex parsing
+
+Replaced three `parse_hex_hash(&hash)?` calls with `let hash: Hash = hash.parse()?`
+and removed the `parse_hex_hash()` function entirely.
+
+#### ✅ Index trait mixed sync and async methods
+
+Made `len()` and `is_empty()` async, matching the rest of the Index trait. All
+callers updated with `.await`.
+
+#### ✅ V1/V2 payload validation was duplicated
+
+Extracted `validate_payload_len()` and `check_payload_bounds()` shared helpers
+in `versions/mod.rs`. Both V1 and V2 delegate to them.
+
+## 12. Build & test
 
 - `cargo test -p mediapm-cas` — unit + integration + doctest.
 - `cargo clippy -p mediapm-cas` — lint.

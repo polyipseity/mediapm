@@ -112,23 +112,16 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
             PendingState::Present(_) | PendingState::NotPresent => {}
         }
 
-        match entry.encoding {
-            ObjectEncoding::Full => {
-                return self.blob_store.read(hash).await.map(Some);
-            }
-            ObjectEncoding::Delta { base_hash } => {
-                return super::delta_resolve::resolve_delta_chain(
-                    hash,
-                    base_hash,
-                    &self.index,
-                    &self.blob_store,
-                    "delta self-reference detected",
-                    "delta chain: base",
-                )
-                .await
-                .map(Some);
-            }
-        }
+        super::delta_resolve::resolve_full_bytes(
+            hash,
+            &entry,
+            &self.index,
+            &self.blob_store,
+            "delta self-reference detected",
+            "delta chain: base",
+        )
+        .await
+        .map(Some)
     }
 }
 

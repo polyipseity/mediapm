@@ -72,11 +72,11 @@ pub trait Index: Send + Sync {
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
 
     /// Number of entries.
-    fn len(&self) -> usize;
+    async fn len(&self) -> usize;
 
     /// Return `true` if the index is empty.
-    fn is_empty(&self) -> bool {
-        self.len() == 0
+    async fn is_empty(&self) -> bool {
+        self.len().await == 0
     }
 
     // -----------------------------------------------------------------------

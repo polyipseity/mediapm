@@ -94,7 +94,7 @@ impl Index for InMemoryIndex {
         Ok(self.data.iter().map(|r| *r.key()).collect())
     }
 
-    fn len(&self) -> usize {
+    async fn len(&self) -> usize {
         self.data.len()
     }
 
@@ -188,10 +188,10 @@ mod tests {
     #[tokio::test]
     async fn len_and_is_empty() {
         let index = InMemoryIndex::new();
-        assert!(index.is_empty());
+        assert!(index.is_empty().await);
         let hash = Hash::from_content(b"item");
         index.put(hash, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
-        assert_eq!(index.len(), 1);
+        assert_eq!(index.len().await, 1);
     }
 
     // --- Constraint tests ---

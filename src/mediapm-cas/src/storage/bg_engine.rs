@@ -190,26 +190,20 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             return Ok(None);
         };
 
-        match entry.encoding {
-            ObjectEncoding::Full => {
-                self.blob_store.read(hash).await.map(Some).or_else(|e| match e {
-                    CasError::NotFound(_) => Ok(None),
-                    other => Err(other),
-                })
-            }
-            ObjectEncoding::Delta { base_hash } => {
-                return super::delta_resolve::resolve_delta_chain(
-                    hash,
-                    base_hash,
-                    &self.index,
-                    &self.blob_store,
-                    "delta self-reference detected during optimizer reconstruction",
-                    "delta chain: base",
-                )
-                .await
-                .map(Some);
-            }
-        }
+        super::delta_resolve::resolve_full_bytes(
+            hash,
+            &entry,
+            &self.index,
+            &self.blob_store,
+            "delta self-reference detected during optimizer reconstruction",
+            "delta chain: base",
+        )
+        .await
+        .map(Some)
+        .or_else(|e| match e {
+            CasError::NotFound(_) => Ok(None),
+            other => Err(other),
+        })
     }
 
     /// Run maintenance: optimizer + constraint pruning.
