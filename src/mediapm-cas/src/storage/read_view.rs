@@ -59,13 +59,9 @@ pub use crate::api::ObjectMeta;
 /// hash simultaneously, only one performs the lookup while the other waits
 /// for the shared result (see [`PendingOps`]).
 pub(crate) struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
-    /// In-flight read deduplication.
     pending: PendingOps,
-    /// Metadata index (encoding, size, constraint bases).
     index: I,
-    /// WAL for pending-entry fallback.
     wal: J,
-    /// Blob store for persistent payload bytes.
     blob_store: B,
 }
 

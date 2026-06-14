@@ -212,16 +212,11 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Run maintenance: optimizer + constraint pruning.
     ///
     /// 1. **Optimizer**: build constraint map from Index, attempt delta
-    ///    rewrites. Skips sentinel targets.
-    ///    Computes VCDIFF delta for each constraint and stores the
+    ///    rewrites. Computes VCDIFF delta for each constraint and stores the
     ///    delta-encoded result if it is smaller than the full payload.
     /// 2. **Constraint pruning**: per-base prune so each entry converges
     ///    toward its effective constraint set (intersection of stored bases
-    ///    with live hashes). Never deletes objects — only prunes metadata.
-    ///
-    /// GC does NOT delete objects — objects are only removed by explicit
-    /// `delete()` operations (materialized by the WAL consumer). Constraints
-    /// are delta-compression hints and have no bearing on object liveness.
+    ///    with live hashes). Only prunes metadata, never objects.
     ///
     /// Returns `true` if any work was done.
     pub async fn run_maintenance(&self) -> Result<bool, CasError> {
@@ -298,16 +293,9 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             }
         }
 
-        // === Phase 2: Prune constraints to approach effective constraints ===
-        // GC never deletes objects — objects are only removed by explicit
-        // Delete operations (materialized by the WAL consumer). What GC does
-        // is prune constraint metadata: per-base pruning removes individual
-        // dead bases so each constraint entry converges toward the effective
-        // constraint set (intersection of stored bases with live hashes).
-        // Constraints are delta-compression hints and have no bearing on
-        // object liveness.
-        // `live` was built in Phase 1 and is still valid — the optimizer only
-        // changes encodings, not which hashes exist.
+        // === Phase 2: Constraint pruning ===
+        // Prune dead bases from constraint entries. The live set from Phase 1
+        // is still valid — the optimizer only changes encodings, not existence.
         let before = self.index.list_targets().await?.len();
         self.index.prune_targets(&live).await?;
         let after = self.index.list_targets().await?.len();

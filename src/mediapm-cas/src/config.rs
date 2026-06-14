@@ -41,31 +41,6 @@ impl CasIntegrityConfig {
     pub fn should_verify_on_read(&self) -> bool {
         !self.verify_on_read.is_empty()
     }
-
-    /// Create a config that verifies every read.
-    pub fn verify_always(reconstructed_bytes_cache_ttl: Duration) -> Self {
-        Self {
-            verify_on_read: vec![crate::api::VerifyTriggerStrategy::Always],
-            reconstructed_bytes_cache_ttl,
-        }
-    }
-
-    /// Create a config with no verification.
-    pub fn verify_none(reconstructed_bytes_cache_ttl: Duration) -> Self {
-        Self { verify_on_read: Vec::new(), reconstructed_bytes_cache_ttl }
-    }
-
-    /// Builder: add a verification strategy.
-    pub fn with_verify(mut self, strategy: crate::api::VerifyTriggerStrategy) -> Self {
-        self.verify_on_read.push(strategy);
-        self
-    }
-
-    /// Builder: set reconstructed bytes cache TTL.
-    pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
-        self.reconstructed_bytes_cache_ttl = ttl;
-        self
-    }
 }
 
 // ---------------------------------------------------------------------------

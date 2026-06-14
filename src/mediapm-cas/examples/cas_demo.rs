@@ -4,9 +4,8 @@
 
 use bytes::Bytes;
 use mediapm_cas::api::{CasApi, ConstraintApi};
-use mediapm_cas::error::CasError;
-use mediapm_cas::hash::Hash;
 use mediapm_cas::storage::in_memory::new_in_memory_cas;
+use mediapm_cas::{CasError, Hash};
 use std::collections::{BTreeSet, HashSet};
 
 #[tokio::main]

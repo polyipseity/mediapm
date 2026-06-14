@@ -36,10 +36,6 @@ pub(crate) const JOURNAL_MAGIC: &[u8; 6] = v1::JOURNAL_MAGIC;
 /// Current journal segment format version.
 pub(crate) const JOURNAL_VERSION: u16 = v1::JOURNAL_VERSION;
 
-/// Magic prefix for checkpoint files.
-#[allow(dead_code)]
-pub(crate) const CHECKPOINT_MAGIC: &[u8; 6] = v1::CHECKPOINT_MAGIC;
-
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = v1::MAX_JOURNAL_VERSION;
 
@@ -138,7 +134,7 @@ mod tests {
 
     #[test]
     fn header_rejects_wrong_magic() {
-        let header = encode_header(CHECKPOINT_MAGIC, 1);
+        let header = encode_header(v1::CHECKPOINT_MAGIC, 1);
         assert!(decode_header(&header, JOURNAL_MAGIC, 1).is_err());
     }
 

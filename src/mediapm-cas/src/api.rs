@@ -29,6 +29,15 @@ pub struct ObjectMeta {
     pub encoding: ObjectEncoding,
 }
 
+/// Encoding of an object payload.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ObjectEncoding {
+    /// Full (unencoded) payload.
+    Full,
+    /// Delta-encoded against a base hash.
+    Delta { base_hash: Hash },
+}
+
 // ---------------------------------------------------------------------------
 // VerifyTriggerStrategy
 // ---------------------------------------------------------------------------
@@ -44,19 +53,6 @@ pub enum VerifyTriggerStrategy {
     Sample { denominator: u32 },
     /// Verify only if the cache entry is older than a threshold.
     Stale { timeout: std::time::Duration },
-}
-
-// ---------------------------------------------------------------------------
-// ObjectMeta and ObjectEncoding
-// ---------------------------------------------------------------------------
-
-/// Encoding of an object payload.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ObjectEncoding {
-    /// Full (unencoded) payload.
-    Full,
-    /// Delta-encoded against a base hash.
-    Delta { base_hash: Hash },
 }
 
 // ---------------------------------------------------------------------------
