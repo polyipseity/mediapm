@@ -14,23 +14,15 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use dashmap::DashMap;
-use std::sync::Arc;
-use tokio::sync::Notify;
 
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::blob_store::BlobStore;
-use super::index::Index;
+use super::index::{Index, IndexEntry};
+use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
-
-/// A pending read result that other concurrent readers can wait on.
-struct PendingResult {
-    done: Notify,
-    result: std::sync::OnceLock<Option<Bytes>>,
-}
 
 // ---------------------------------------------------------------------------
 // ReadView trait
@@ -38,7 +30,7 @@ struct PendingResult {
 
 /// Fast read path backed by materialized storage + mandatory WAL fallback.
 #[async_trait]
-pub trait ReadView: Send + Sync {
+pub(crate) trait ReadView: Send + Sync {
     /// Get bytes. Falls back to WAL if not materialized.
     /// Returns [`CasError::NotFound`] if the hash was never stored or was
     /// deleted.
@@ -65,10 +57,10 @@ pub use crate::api::ObjectMeta;
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
 /// hash simultaneously, only one performs the lookup while the other waits
-/// on a [`Notify`].
-pub struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
-    /// In-flight read dedup: hash → shared pending result.
-    pending: DashMap<Hash, Arc<PendingResult>>,
+/// for the shared result (see [`PendingOps`]).
+pub(crate) struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
+    /// In-flight read deduplication.
+    pending: PendingOps,
     /// Metadata index (encoding, size, constraint bases).
     index: I,
     /// WAL for pending-entry fallback.
@@ -80,7 +72,7 @@ pub struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
 impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
     /// Create a new view.
     pub fn new(index: I, wal: J, blob_store: B) -> Self {
-        Self { pending: DashMap::new(), index, wal, blob_store }
+        Self { pending: PendingOps::new(), index, wal, blob_store }
     }
 
     /// Inner fetch: Index + BlobStore → WAL fallback with transparent delta
@@ -112,7 +104,7 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
             PendingState::Present(_) | PendingState::NotPresent => {}
         }
 
-        super::delta_resolve::resolve_full_bytes(
+        resolve_full_bytes(
             hash,
             &entry,
             &self.index,
@@ -130,58 +122,10 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
     for ComposedReadView<I, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
-        // 1. In-flight read dedup.
-        let pending_result =
-            Arc::new(PendingResult { done: Notify::new(), result: std::sync::OnceLock::new() });
-
-        use dashmap::mapref::entry::Entry;
-        match self.pending.entry(*hash) {
-            Entry::Occupied(e) => {
-                // Another thread is already fetching — wait for it.
-                let pr = e.get().clone();
-                drop(e);
-                pr.done.notified().await;
-                if let Some(result) = pr.result.get() {
-                    match result {
-                        Some(bytes) => return Ok(bytes.clone()),
-                        None => return Err(CasError::NotFound(*hash)),
-                    }
-                }
-                // No result set yet (shouldn't happen after notify).
-                return Err(CasError::NotFound(*hash));
-            }
-            Entry::Vacant(e) => {
-                e.insert(pending_result.clone());
-            }
-        }
-
-        // 2. Fetch from Index + BlobStore → WAL.
-        let fetch_result = self.fetch_inner(hash).await;
-
-        // Share result with waiters.
-        let shared = match fetch_result {
-            Ok(Some(ref data)) => {
-                let d = data.clone();
-                pending_result.result.set(Some(d)).ok();
-                data.clone()
-            }
-            Ok(None) => {
-                pending_result.result.set(None).ok();
-                pending_result.done.notify_waiters();
-                self.pending.remove(hash);
-                return Err(CasError::NotFound(*hash));
-            }
-            Err(e) => {
-                pending_result.result.set(None).ok();
-                pending_result.done.notify_waiters();
-                self.pending.remove(hash);
-                return Err(e);
-            }
-        };
-        pending_result.done.notify_waiters();
-        self.pending.remove(hash);
-
-        Ok(shared)
+        self.pending
+            .execute(*hash, || self.fetch_inner(hash))
+            .await?
+            .ok_or(CasError::NotFound(*hash))
     }
 
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError> {
@@ -204,5 +148,82 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
         }
 
         Err(CasError::NotFound(*hash))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared delta-chain resolution
+// ---------------------------------------------------------------------------
+
+/// Given an index entry, read full bytes — either directly (Full) or by
+/// resolving the delta chain (Delta).
+pub(super) async fn resolve_full_bytes<I: Index, B: BlobStore>(
+    hash: &Hash,
+    entry: &IndexEntry,
+    index: &I,
+    blob_store: &B,
+    self_ref_msg: &str,
+    base_not_found_msg: &str,
+) -> Result<Bytes, CasError> {
+    match entry.encoding {
+        ObjectEncoding::Full => blob_store.read(hash).await,
+        ObjectEncoding::Delta { base_hash } => {
+            resolve_delta_chain(
+                hash,
+                base_hash,
+                index,
+                blob_store,
+                self_ref_msg,
+                base_not_found_msg,
+            )
+            .await
+        }
+    }
+}
+
+/// Reconstruct full bytes for `hash` by walking its delta chain.
+///
+/// Callers provide the starting `base_hash` from the object's encoding and
+/// context strings for error messages. Returns `Ok(full_bytes)` on success.
+pub(super) async fn resolve_delta_chain<I: Index, B: BlobStore>(
+    hash: &Hash,
+    base_hash: Hash,
+    index: &I,
+    blob_store: &B,
+    self_ref_msg: &str,
+    base_not_found_msg: &str,
+) -> Result<Bytes, CasError> {
+    let mut chain: Vec<(Hash, Bytes)> = Vec::new();
+    let mut current = *hash;
+    let mut base = base_hash;
+
+    loop {
+        if current == base {
+            return Err(CasError::CorruptObject {
+                hash: Some(current),
+                details: self_ref_msg.into(),
+            });
+        }
+        let delta_data = blob_store.read_delta(&current).await?;
+        chain.push((current, delta_data));
+        current = base;
+
+        match index.get(&current).await? {
+            Some(base_entry) => match base_entry.encoding {
+                ObjectEncoding::Full => {
+                    let base_data = blob_store.read(&current).await?;
+                    return crate::delta::patch::apply_delta_chain(base_data, &mut chain, current);
+                }
+                ObjectEncoding::Delta { base_hash: next_base } => {
+                    base = next_base;
+                }
+            },
+            None => {
+                return Err(CasError::CorruptObject {
+                    hash: Some(current),
+                    details: format!("{base_not_found_msg}: base {current} not found"),
+                });
+            }
+        }
     }
 }

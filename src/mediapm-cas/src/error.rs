@@ -44,6 +44,22 @@ impl std::fmt::Display for CasError {
     }
 }
 
+// Manual Clone: `std::io::Error` does not implement Clone, so we
+// reconstruct it from its kind + display string.
+impl Clone for CasError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::NotFound(h) => Self::NotFound(*h),
+            Self::InvalidArgument(s) => Self::InvalidArgument(s.clone()),
+            Self::Internal(s) => Self::Internal(s.clone()),
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), format!("{e}"))),
+            Self::CorruptObject { hash, details } => {
+                Self::CorruptObject { hash: *hash, details: details.clone() }
+            }
+        }
+    }
+}
+
 impl CasError {
     /// Convenience constructor for internal errors.
     pub fn internal(msg: impl Into<String>) -> Self {

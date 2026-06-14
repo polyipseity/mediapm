@@ -198,33 +198,32 @@ src/mediapm-cas/src/
 │   ├── object.rs        — DeltaState + StoredObject (version-agnostic)
 │   └── versions/        — V1/V2/V3 delta envelope wire formats (mod.rs = canonical API)
 └── storage/
-    ├── mod.rs           — module root
-    ├── macros.rs        — impl_cas_wrapper_traits!($ty) macro
-    ├── store.rs         — CasStore<J,I,B> (composed handle, implements all traits)
-    ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + versions
-    │   ├── mod.rs       — Wal trait + entry types + re-exports
-    │   ├── mem_wal.rs   — InMemoryWal (VecDeque, ephemeral)
-    │   ├── file_wal.rs  — FileWal (segmented file-backed WAL)
-    │   └── versions/    — on-disk format V1+
+    ├── mod.rs             — module root
+    ├── store.rs           — CasStore<J,I,B> (composed handle, implements all traits)
+    ├── wal/               — Wal trait + InMemoryWal + FileWal + entry types + versions
+    │   ├── mod.rs         — Wal trait + entry types + re-exports
+    │   ├── mem_wal.rs     — InMemoryWal (VecDeque, ephemeral)
+    │   ├── file_wal.rs    — FileWal (segmented file-backed WAL)
+    │   └── versions/      — on-disk format V1+
     │       ├── mod.rs
     │       └── v1.rs
-    ├── blob_store/      — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
-    │   ├── mod.rs       — BlobStore trait + re-exports
+    ├── blob_store/        — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
+    │   ├── mod.rs         — BlobStore trait + re-exports
     │   ├── mem_blob_store.rs — InMemoryBlobStore (DashMap, ephemeral)
     │   ├── fs_blob_store.rs — FileSystemBlobStore (atomic hash-derived layout)
-    │   └── versions/    — path layout versions V1+
-    │       ├── mod.rs   — version dispatch
-    │       └── v1.rs    — V1 layout: v1/blake3/ab/cd/<hex>
-    ├── index/           — Index trait + InMemoryIndex + FileSystemIndex
-│   ├── mod.rs       — trait + IndexEntry + re-exports
-│   ├── mem_index.rs — InMemoryIndex (DashMap, separate constraint map)
-│   ├── fs_index.rs  — FileSystemIndex (persistent constraints via JSON)
-│   └── versions/    — V1 persistence format (versioned JSON constraint file)
-    ├── read_view.rs     — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
-    ├── delta_resolve.rs — Shared delta-chain walk (resolve_delta_chain wrapper for read_view + bg_engine)
-    ├── bg_engine.rs     — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
-    ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
-    └── file_system.rs   — FileSystemCas wrapper + open()
+    │   └── versions/      — path layout versions V1+
+    │       ├── mod.rs     — version dispatch
+    │       └── v1.rs      — V1 layout: v1/blake3/ab/cd/<hex>
+    ├── index/             — Index trait + InMemoryIndex + FileSystemIndex
+    │   ├── mod.rs         — trait + IndexEntry + re-exports
+    │   ├── mem_index.rs   — InMemoryIndex (DashMap, separate constraint map)
+    │   ├── fs_index.rs    — FileSystemIndex (persistent constraints via JSON)
+    │   └── versions/      — V1 persistence format (versioned JSON constraint file)
+    ├── read_view.rs       — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
+    ├── pending_ops.rs     — PendingOps (in-flight read dedup helper)
+    ├── bg_engine.rs       — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
+    ├── in_memory.rs       — InMemoryCas wrapper + seed_sentinel helper
+    └── file_system.rs     — FileSystemCas wrapper + open()
 ```
 
 ## 4. Data flow
@@ -494,10 +493,10 @@ versions, making it unreachable.
 
 #### ✅ `read_full_bytes` duplicated between `bg_engine.rs` and `read_view.rs`
 
-Extracted `resolve_full_bytes()` helper in `delta_resolve.rs`. Both callers
-now delegate through it.
+Extracted `resolve_full_bytes()` helper (previously in `delta_resolve.rs`,
+now inlined in `read_view.rs`). Both callers delegate through it.
 
-#### 🔺 `V1Envelope::checksum` stored but never read
+#### ✅ `V1Envelope::checksum` stored but never read
 
 The `checksum: u32` field on `V1Envelope` is parsed from the wire format but
 all consumers go through `DeltaStateV1` (no checksum) → `DeltaStateV2` →
@@ -520,7 +519,31 @@ re-raises other errors instead of masking them.
 Fixed: `FileSystemCas` row now correctly shows `FileSystemIndex (false)` instead
 of `InMemoryIndex (true)`.
 
+#### ✅ `InMemoryCas::new()` uses `block_in_place` + `block_on`
+
+Refactored to use `std::thread::scope` + per-call dedicated `Runtime::new()`,
+avoiding the single-threaded-runtime deadlock that broke `#[tokio::test]`.
+The constructor remains synchronous; empty-content sentinel seeding is
+extracted into a `seed_sentinel` helper function.
+
+#### ✅ `ComposedReadView::get()` in-flight read dedup complexity
+
+Extracted into `pending_ops.rs` (`PendingOps` struct). The DashMap entry API +
+`Notify` + `OnceLock` logic is now a ~40-line standalone helper with a
+single `execute(hash, work)` method, down from ~60 lines inline in
+`read_view.rs`.
+
 ### 11.2 Medium impact
+
+#### `CommittedPosition` semantics in WAL consumer
+
+The `BackgroundEngine::run_wal_consumer` comparison must account for
+`WalPosition::ZERO(0)` as a sentinel value. The WAL consumer uses
+`committed.next() <= ckpt` (not `committed <= ckpt`) to correctly handle the
+initial state where `committed == ZERO` and `ckpt == 0`. This means "has the
+consumer caught up to position N" is defined as `committed_position + 1 <= N`
+— a strictly-greater-than-after-advance check that avoids re-processing the
+first entry.
 
 #### `ObjectMeta::encoding` leaks delta internals to callers
 
@@ -530,18 +553,41 @@ is a design tell — if callers shouldn't use it, consider making it opaque
 (e.g., `ObjectEncoding::Delta` without `base_hash`, or a boolean
 `is_delta()` method). This would be an API break.
 
-#### `wal/versions/` and `blob_store/versions/` over-engineered for single version
+#### 🔺 Three `versions/` dirs with single-version dispatch
 
-Both modules define version-dispatch machinery (`mod.rs` + `versions/v1.rs`)
-but only have a single V1. The trait-based version dispatch adds file/module
-overhead (5 extra files) for no current benefit. If a second version is unlikely,
-these could be inlined.
+`storage/wal/versions/`, `storage/blob_store/versions/`, and
+`storage/index/versions/` each define version-dispatch infrastructure
+(`mod.rs` + `v1.rs`) but only have one active version each. That's ~6 extra
+files and ~160 lines of dispatch boilerplate (load/save/match-version wrappers,
+`spawn_blocking` bridges) for no current benefit. If a second version is
+unlikely, all three could be inlined into their parent modules:
+
+- `blob_store/versions/` → `blob_store/fs_blob_store.rs` (hash_to_path,
+  hash_to_delta_path are trivial path constructors)
+- `wal/versions/` → `wal/file_wal.rs` (journal encoding/checkpoint are
+  file-format details private to FileWal)
+- `index/versions/` → `index/fs_index.rs` (constraint persistence is a
+  JSON serialize/deserialize for one file)
 
 #### ✅ `FileSystemIndex` suppress_persist + dirty flag complexity
 
 Removed both `suppress_persist: Arc<Mutex<bool>>` and `dirty: Arc<Mutex<bool>>`.
 `set_constraint()` and `prune_targets()` now call `flush_constraints()` directly.
 `flush_if_dirty()` was removed (tests call `flush_constraints()` instead).
+
+#### ✅ Blanket impl duplication (macros.rs)
+
+Removed the `impl_cas_wrapper_traits!` macro. `CasApi`, `ConstraintApi`, and
+`CasMaintenanceApi` now provide blanket `impl<T: Deref<Target=CasStore<...>> + Send + Sync> Trait for T {}` blocks directly in `store.rs`, with explicit deref-based delegation matching `CasStore`'s own direct impls.
+
+#### 🔺 `impl_cas_wrapper_traits!` could be a `Deref` blanket impl
+
+The macro (70 lines in `storage/macros.rs`) generates identical delegating trait
+impls for each newtype wrapper. Both `InMemoryCas` and `FileSystemCas` impl
+`Deref` to `CasStore<J,I,B>` which already implements the three traits.
+A blanket impl like `impl<T: Deref<...>, J, I, B> CasApi for T where T::Target:
+CasApi` would eliminate the macro and all its expansions. Check trait-object
+safety if keeping `ConfiguredCas` dispatch.
 
 ### 11.3 Low impact
 
@@ -559,6 +605,23 @@ callers updated with `.await`.
 
 Extracted `validate_payload_len()` and `check_payload_bounds()` shared helpers
 in `versions/mod.rs`. Both V1 and V2 delegate to them.
+
+#### 🔺 `CHECKPOINT_MAGIC` is dead code
+
+`wal/versions/mod.rs` exports `CHECKPOINT_MAGIC` with `#[allow(dead_code)]`.
+It has no consumers. Remove it (or prefix with `_` if kept for documentation).
+
+#### 🔺 `ReadView` trait is `pub` but only used internally
+
+`ReadView` and `ComposedReadView` are `pub` (exported from `storage` module)
+but only consumed by `CasStore` and `BackgroundEngine`. Could be `pub(crate)`
+to reduce the public API surface.
+
+#### 🔺 `delta_resolve.rs` is a single-function file
+
+`storage/delta_resolve.rs` exists solely for `resolve_full_bytes()`, which has
+two callers. Could inline into `read_view.rs` and `bg_engine.rs`, or rename to
+`resolve.rs` for clarity.
 
 ## 12. Build & test
 
