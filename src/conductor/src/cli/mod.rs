@@ -517,6 +517,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
@@ -1410,7 +1411,10 @@ async fn open_cas(locator: &str) -> Result<ConfiguredCas, ConductorError> {
     let config = CasConfig::from_locator_with_options(
         locator,
         CasLocatorParseOptions { allow_plain_filesystem_path: true },
-        mediapm_cas::config::CasIntegrityConfig { verify_on_read: Vec::new() },
+        mediapm_cas::config::CasIntegrityConfig {
+            verify_on_read: Vec::new(),
+            reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
+        },
     )
     .map_err(|err| ConductorError::Workflow(format!("invalid CAS locator '{locator}': {err}")))?;
 

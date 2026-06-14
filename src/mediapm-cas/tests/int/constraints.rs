@@ -19,7 +19,7 @@ async fn set_and_get_constraint() {
     cas.set_constraint(target_hash, bases.clone()).await.unwrap();
 
     let retrieved = cas.get_constraint(target_hash).await.unwrap();
-    assert_eq!(retrieved, Some(bases));
+    assert_eq!(retrieved, bases);
 }
 
 #[tokio::test]
@@ -27,7 +27,7 @@ async fn get_constraint_missing() {
     let cas = new_in_memory_cas();
     let hash = mediapm_cas::Hash::from_content(b"nothing");
     let retrieved = cas.get_constraint(hash).await.unwrap();
-    assert_eq!(retrieved, None);
+    assert!(retrieved.is_empty());
 }
 
 #[tokio::test]
@@ -42,7 +42,7 @@ async fn patch_constraint_add() {
         ConstraintPatch { clear: false, add_bases: [b2].into(), remove_bases: BTreeSet::new() };
     cas.patch_constraint(target, patch).await.unwrap();
 
-    let bases = cas.get_constraint(target).await.unwrap().unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(bases.contains(&b1));
     assert!(bases.contains(&b2));
 }
@@ -59,7 +59,7 @@ async fn patch_constraint_remove() {
         ConstraintPatch { clear: false, add_bases: BTreeSet::new(), remove_bases: [b1].into() };
     cas.patch_constraint(target, patch).await.unwrap();
 
-    let bases = cas.get_constraint(target).await.unwrap().unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(!bases.contains(&b1));
     assert!(bases.contains(&b2));
 }
@@ -75,7 +75,7 @@ async fn patch_constraint_clear() {
         ConstraintPatch { clear: true, add_bases: BTreeSet::new(), remove_bases: BTreeSet::new() };
     cas.patch_constraint(target, patch).await.unwrap();
 
-    let bases = cas.get_constraint(target).await.unwrap().unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(bases.is_empty());
 }
 
@@ -102,11 +102,11 @@ async fn prune_one_base_preserves_others() {
     // Delete b2.
     cas.delete(b2).await.unwrap();
 
-    // After optimize_once (WAL consumer + maintenance), the constraint should
+    // After run_maintenance_cycle (WAL consumer + maintenance), the constraint should
     // still exist with only {b1, b3} — b2 was pruned individually.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
-    let bases = cas.get_constraint(target).await.unwrap().unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(bases.contains(&b1), "b1 should remain");
     assert!(bases.contains(&b3), "b3 should remain");
     assert!(!bases.contains(&b2), "b2 should be pruned");
@@ -122,12 +122,11 @@ async fn prune_target_removes_entire_entry() {
 
     cas.set_constraint(target, [base].into()).await.unwrap();
     cas.delete(target).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
-    assert_eq!(
-        cas.get_constraint(target).await.unwrap(),
-        None,
-        "constraint entry should be removed with target"
+    assert!(
+        cas.get_constraint(target).await.unwrap().is_empty(),
+        "constraint entry should be removed -> empty set"
     );
 }
 
@@ -141,9 +140,8 @@ async fn prune_all_bases_leaves_empty_entry() {
 
     cas.set_constraint(target, [base].into()).await.unwrap();
     cas.delete(base).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     let bases = cas.get_constraint(target).await.unwrap();
-    assert!(bases.is_some(), "constraint entry should survive with empty bases");
-    assert!(bases.unwrap().is_empty(), "all bases pruned -> empty effective set");
+    assert!(bases.is_empty(), "all bases pruned -> empty effective set, constraint entry removed");
 }

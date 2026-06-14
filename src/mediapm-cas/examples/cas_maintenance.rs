@@ -25,8 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     cas.set_constraint(hashes[1], bases).await?;
     println!("Constraint: {:?} → {:?}", hashes[1], hashes[0]);
 
-    // --- optimize_once ---
-    let opt = cas.optimize_once().await?;
+    // --- run_maintenance_cycle ---
+    let opt = cas.run_maintenance_cycle().await?;
     println!(
         "Optimize: {} WAL entries consumed, maintenance: {}",
         opt.wal_entries_consumed, opt.maintenance_done
@@ -36,8 +36,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pruned = cas.prune_constraints().await?;
     println!("Pruned {} constraint entries.", pruned.removed);
 
-    // --- list_all_hashes ---
-    let all = cas.list_all_hashes().await?;
+    // --- list_hashes ---
+    let all = cas.list_hashes().await?;
     println!("Current objects: {}", all.len());
 
     Ok(())

@@ -132,8 +132,7 @@ async fn concurrent_constraint_operations() {
 
     // Verify constraint exists.
     let retrieved = cas.get_constraint(target).await.unwrap();
-    assert!(retrieved.is_some(), "constraint should exist");
-    let bases = retrieved.unwrap();
+    let bases = retrieved;
     // At least some bases should be present (last concurrent set wins).
     assert!(!bases.is_empty(), "constraint should have bases");
 }
@@ -194,15 +193,15 @@ async fn bg_engine_cancellation_graceful() {
     cas.set_constraint(keep, BTreeSet::new()).await.unwrap();
 
     // Drain WAL and run maintenance normally.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
     assert!(cas.get(keep).await.is_ok());
 
     // Cancel before further maintenance.
     cas.bg_engine().request_cancel();
     assert!(cas.bg_engine().is_cancelled());
 
-    // Run optimize_once again — WAL empty, maintenance exits early.
-    let report = cas.optimize_once().await.unwrap();
+    // Run run_maintenance_cycle again — WAL empty, maintenance exits early.
+    let report = cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(report.wal_entries_consumed, 0);
     assert!(!report.maintenance_done);
 

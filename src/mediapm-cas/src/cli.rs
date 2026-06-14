@@ -5,6 +5,7 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use std::io::{self, Read, Write};
+use std::time::Duration;
 
 use crate::api::CasApi;
 use crate::config::{CasConfig, CasIntegrityConfig, CasLocatorParseOptions};
@@ -67,7 +68,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let config = CasConfig::from_locator_with_options(
         &cli.storage,
         CasLocatorParseOptions { allow_plain_filesystem_path: true },
-        CasIntegrityConfig { verify_on_read: Vec::new() },
+        CasIntegrityConfig {
+            verify_on_read: Vec::new(),
+            reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
+        },
     )?;
     let cas = config.open().await?;
 

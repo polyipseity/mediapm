@@ -4791,7 +4791,7 @@ mod tests {
         let constraint =
             cas.get_constraint(external_hash).await.expect("query full-save external constraint");
         eprintln!("=== TEST: after get_constraint, constraint={constraint:?} ===");
-        assert_eq!(constraint, Some(BTreeSet::from([Hash::zero()])));
+        assert_eq!(constraint, BTreeSet::from([Hash::zero()]));
     }
 
     /// Protects regular external-data save behavior by avoiding full-save hints
@@ -4839,7 +4839,7 @@ mod tests {
             cas.get_constraint(external_hash)
                 .await
                 .expect("query saved external constraint")
-                .is_none(),
+                .is_empty(),
             "save=true should not inject full-save CAS hint"
         );
     }

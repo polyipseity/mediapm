@@ -144,8 +144,9 @@ pub trait ConstraintApi: Send + Sync {
     /// Record that `target` may compress well against `bases`.
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
 
-    /// Retrieve the bases recorded for `target`, if any.
-    async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError>;
+    /// Retrieve the bases recorded for `target`. Returns an empty set when
+    /// no constraint exists (no `Option` wrapper).
+    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>;
 
     /// Atomically modify the bases for `target`.
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
@@ -173,22 +174,22 @@ pub struct ConstraintPatch {
 /// (e.g. from a background task or during idle periods).
 #[async_trait]
 pub trait CasMaintenanceApi: Send + Sync {
-    /// Run one round of optimization: drain the WAL consumer and run
+    /// Run one round of maintenance: drain the WAL consumer and run
     /// combined GC + optimizer.
-    async fn optimize_once(&self) -> Result<OptimizeReport, CasError>;
+    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>;
 
     /// Remove constraints whose target or bases no longer exist.
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
 
     /// List all hashes currently in the store (best-effort).
-    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
+    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
 }
 
 // ---------------------------------------------------------------------------
 // Report types
 // ---------------------------------------------------------------------------
 
-/// Result of [`CasMaintenanceApi::optimize_once`].
+/// Result of [`CasMaintenanceApi::run_maintenance_cycle`].
 #[derive(Debug, Clone, Default)]
 pub struct OptimizeReport {
     /// Number of WAL entries consumed.

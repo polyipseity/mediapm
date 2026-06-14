@@ -43,6 +43,6 @@ async fn put_get_constraint_works() {
 
     let constraint = cas.get_constraint(hash).await.expect("get_constraint should succeed");
     eprintln!("=== get_constraint returned {constraint:?} ===");
-    assert_eq!(constraint, Some(BTreeSet::from([Hash::zero()])));
+    assert_eq!(constraint, BTreeSet::from([Hash::zero()]));
     eprintln!("=== Test passed ===");
 }

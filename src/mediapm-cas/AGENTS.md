@@ -75,15 +75,16 @@ Blanket impl over `CasApi` (buffers through bytes). Override for zero-copy paths
 #[async_trait]
 pub trait ConstraintApi: Send + Sync {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
-    async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError>;
+    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError>;
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
 }
 ```
 
 Constraints are **non-binding hints** — the system never blocks on completeness or accuracy.
-Stored in Index (in-memory `DashMap`, rebuilt from WAL). There is no `effective_bases`
-method — callers that need live filtering must compose `get_constraint` with their own
-`live` set intersection.
+Stored in a separate constraint map (in-memory `DashMap<Hash, BTreeSet<Hash>>`, rebuilt
+from WAL), independent of object metadata. `get_constraint` returns an empty set when no
+constraint exists (no `Option`). There is no `effective_bases` method — callers that need
+live filtering must compose `get_constraint` with their own `live` set intersection.
 
 ```rust
 pub struct ConstraintPatch {
@@ -98,15 +99,15 @@ pub struct ConstraintPatch {
 ```rust
 #[async_trait]
 pub trait CasMaintenanceApi: Send + Sync {
-    async fn optimize_once(&self) -> Result<OptimizeReport, CasError>;
+    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError>;
     async fn prune_constraints(&self) -> Result<PruneReport, CasError>;
-
-    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError>;
+    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError>;
 }
 ```
 
-- **optimize_once**: Drain WAL consumer, run GC + optimizer.
+- **run_maintenance_cycle**: Drain WAL consumer, run GC + optimizer.
 - **prune_constraints**: Remove constraint entries whose target or bases no longer exist.
+- **list_hashes**: Enumerate all hashes in the store.
 
 ### 2.5 Backend types
 
@@ -128,9 +129,10 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<FileWal, InMemoryIndex, FileSystemBlobStore>`.
-Same trait impl pattern as `InMemoryCas`. WAL + blob store are persisted on disk;
-the index is in-memory (rebuilt from WAL on open).
+Wraps `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
+Same trait impl pattern as `InMemoryCas`. WAL + blob store + index constraints
+are persisted on disk; blob metadata is in-memory (rebuilt from WAL on open).
+Constraint data is saved to `<store_dir>/constraints.json` atomically.
 
 #### ConfiguredCas — dispatch enum
 
@@ -162,6 +164,10 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
   and integrity settings.
 - `from_locator(locator)` — convenience that defaults to
   `allow_plain_filesystem_path: true` and empty integrity config (no verification).
+
+**Integrity wiring**: `CasConfig::open()` passes `integrity.should_verify_on_read()` to
+`FileSystemCas::open()`. Rich trigger strategies (Modified, Sample, Stale) are treated as
+"always verify" for now; per-strategy logic is future work.
 
 ### 2.7 Report types
 
@@ -198,7 +204,11 @@ src/mediapm-cas/src/
     │       ├── mod.rs
     │       └── v1.rs
     ├── blob_store.rs    — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore
-    ├── index.rs         — Index trait + InMemoryIndex (unified metadata + constraints)
+    ├── index/           — Index trait + InMemoryIndex + FileSystemIndex
+│   ├── mod.rs       — trait + IndexEntry + re-exports
+│   ├── mem_index.rs — InMemoryIndex (DashMap, separate constraint map)
+│   ├── fs_index.rs  — FileSystemIndex (persistent constraints via JSON)
+│   └── versions/    — V1 persistence format (versioned JSON constraint file)
     ├── read_view.rs     — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
     ├── delta_resolve.rs — Shared delta-chain walk (resolve_delta_chain wrapper for read_view + bg_engine)
     ├── bg_engine.rs     — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
@@ -248,14 +258,30 @@ Pluggable payload backend.
 
 ### 5.3 Index
 
-Unified metadata + constraint index. `InMemoryIndex` uses `Arc<DashMap<Hash, IndexEntry>>`.
-`IndexEntry { len, encoding, bases }` — `len` is original payload length (before encoding),
-`bases` is `Option<BTreeSet<Hash>>`. Rebuilt from WAL via `rebuild_from_wal()`.
+Object metadata index. Implementations share the same trait with 12 methods
+(CRUD + constraint operations + rebuild).
 
-**Base preservation**: `Index::put` sets bases to `None` (no silent preservation).
-Only `rebuild_from_wal` merges bases from existing entries during replay — for Put entries
-it preserves the `bases` field from the previous entry, ensuring constraints survive
-WAL re-materialization.
+- **`InMemoryIndex`**: `Arc<DashMap<Hash, IndexEntry>>` for payload metadata
+  (`IndexEntry { len, encoding }`). Constraint data is stored in a separate map:
+  `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
+- **`FileSystemIndex`**: Wraps `InMemoryIndex` with constraint persistence.
+  On `set_constraint`, writes constraint data to a V1 JSON file atomically
+  (temp+rename). On `rebuild_from_wal`, replays WAL then overlays persisted
+  constraints.
+
+**Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data
+(`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL
+replay do not touch the constraint map; only `Constraint` WAL entries populate it. This
+keeps the data model clean and removes `Option` from constraint representation.
+
+**Versioned persistence** (`storage/index/versions/`): V1 JSON format:
+
+```json
+{ "version": 1, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }
+```
+
+Async wrappers use `tokio::task::spawn_blocking`; sync `load()`/`save()` functions
+are shared by both implementations.
 
 ### 5.4 ReadView
 
@@ -299,11 +325,23 @@ Drives WAL consumer and maintenance pass. GC never deletes objects — only prun
 metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
 
 **WAL consumer guarantees**: After a `run_wal_consumer` cycle completes, all entries up to the
-checkpoint position are materialized in BlobStore + Index. This means:
+checkpoint position are materialized in BlobStore + Index. After materialization, the checkpoint
+is advanced and `WAL::trim(checkpoint)` is called. This means:
 
-- L3 WAL fallback in ReadView is only exercised for entries appended after the last cycle.
+- Consumed WAL entries are **physically removed** from the WAL:
+  - `FileWal::trim()` deletes segment files whose `last_pos <= checkpoint` and prunes pending
+    HashMap entries with `pos <= checkpoint`.
+  - `InMemoryWal::trim()` pops entries from the VecDeque front.
+  - After trim, the only authoritative copies are in BlobStore + Index.
+- L3 WAL fallback in ReadView is only exercised for entries appended after the last cycle
+  (transient, before consumer materializes).
 - The tombstone check (always performed on every `get()` even on Index hit) is O(1) for FileWal
   (HashMap lookup) and cheap for InMemoryWal (small pending set after trimming).
+
+**Crash recovery**: On restart, `rebuild_from_wal()` replays all entries from the WAL (starting
+from `WalPosition::ZERO`), rebuilding Index + constraint map. The WAL contains the complete
+history since the last trim — the last checkpoint always points at or before the oldest
+surviving segment.
 
 ## 6. Delete semantics — no dangling deltas
 
@@ -375,10 +413,13 @@ Removed methods are replaced by composition of remaining primitives.
 
 ### 8.6 Constraint invariants
 
+- `get_constraint` returns `BTreeSet<Hash>` — empty set means no constraint (no `Option`).
 - `prune_constraints()` removes entries whose target or bases no longer exist.
 - No `effective_bases` method — callers compute live intersection themselves.
 - DAG validation at set time is future work.
 - Self-referencing constraint (target == base) is rejected at set/patch time.
+- Constraint data is stored independently from object metadata (separate `DashMap`).
+  Put/delete/stat operations do not affect constraint state.
 
 ### 8.7 Write-through vs write-back compile-time policy
 

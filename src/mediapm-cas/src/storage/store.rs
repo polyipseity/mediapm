@@ -115,14 +115,7 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
         if B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE {
             self.blob_store.write(hash, ObjectEncoding::Full, data.clone()).await?;
             self.index
-                .put(
-                    hash,
-                    IndexEntry {
-                        len: data.len() as u64,
-                        encoding: ObjectEncoding::Full,
-                        bases: None,
-                    },
-                )
+                .put(hash, IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
                 .await?;
         }
         // The ReadView L3 WAL fallback handles visibility for write-back
@@ -177,13 +170,13 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
         self.index.set_constraint(target, bases).await
     }
 
-    async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError> {
+    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         self.index.get_constraint(&target).await
     }
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
         // Read current state.
-        let mut bases = self.index.get_constraint(&target).await?.unwrap_or_default();
+        let mut bases = self.index.get_constraint(&target).await?;
 
         if patch.clear {
             bases.clear();
@@ -212,7 +205,7 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
 
 #[async_trait]
 impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
-    async fn optimize_once(&self) -> Result<OptimizeReport, CasError> {
+    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
         Ok(OptimizeReport { wal_entries_consumed: count, maintenance_done: maint_done })
@@ -227,7 +220,7 @@ impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
         Ok(PruneReport { removed: initial_count.saturating_sub(final_count) })
     }
 
-    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
+    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
         self.index.list_hashes().await
     }
 }

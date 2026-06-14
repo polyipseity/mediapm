@@ -87,17 +87,18 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     // Write payload to BlobStore as Full.
                     self.blob_store.write(*hash, ObjectEncoding::Full, data.clone()).await?;
                     // Preserve existing constraint bases, if any.
-                    let existing_bases = self.index.get(hash).await?.and_then(|e| e.bases);
+                    let existing_bases = self.index.get_constraint(hash).await?;
                     self.index
                         .put(
                             *hash,
-                            IndexEntry {
-                                len: data.len() as u64,
-                                encoding: ObjectEncoding::Full,
-                                bases: existing_bases,
-                            },
+                            IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
                         )
                         .await?;
+                    // Re-apply constraint bases (constraint is stored separately
+                    // from metadata, so we must explicitly set it after put).
+                    if !existing_bases.is_empty() {
+                        self.index.set_constraint(*hash, existing_bases).await?;
+                    }
                 }
                 WalEntry::Delete { hash } => {
                     // Before physical deletion, re-materialize any deltas
@@ -172,17 +173,16 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             let result_bytes = Bytes::from(result);
             self.blob_store.write(dep_hash, ObjectEncoding::Full, result_bytes.clone()).await?;
             // Preserve constraint bases.
-            let bases = entry.bases;
+            let existing_bases = self.index.get_constraint(&dep_hash).await?;
             self.index
                 .put(
                     dep_hash,
-                    IndexEntry {
-                        len: result_bytes.len() as u64,
-                        encoding: ObjectEncoding::Full,
-                        bases,
-                    },
+                    IndexEntry { len: result_bytes.len() as u64, encoding: ObjectEncoding::Full },
                 )
                 .await?;
+            if !existing_bases.is_empty() {
+                self.index.set_constraint(dep_hash, existing_bases).await?;
+            }
         }
 
         Ok(())
@@ -253,7 +253,8 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             if self.is_cancelled() {
                 break;
             }
-            if let Some(bases) = self.index.get_constraint(target).await? {
+            let bases = self.index.get_constraint(target).await?;
+            if !bases.is_empty() {
                 // Effective bases: intersection of stored bases with live
                 // hashes. Dead bases cannot be used for delta reconstruction.
                 let effective: Vec<&Hash> = bases.iter().filter(|b| live.contains(b)).collect();
@@ -288,17 +289,19 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                             )
                             .await?;
                         // Preserve constraint bases.
-                        let bases = self.index.get(target).await?.and_then(|e| e.bases);
+                        let existing_bases = self.index.get_constraint(target).await?;
                         self.index
                             .put(
                                 *target,
                                 IndexEntry {
                                     len: target_bytes.len() as u64,
                                     encoding: ObjectEncoding::Delta { base_hash: **best_base },
-                                    bases,
                                 },
                             )
                             .await?;
+                        if !existing_bases.is_empty() {
+                            self.index.set_constraint(*target, existing_bases).await?;
+                        }
                         did_work = true;
                     }
                 }

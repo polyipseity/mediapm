@@ -35,10 +35,10 @@ macro_rules! impl_cas_wrapper_traits {
 
         #[async_trait::async_trait]
         impl $crate::api::CasMaintenanceApi for $ty {
-            async fn optimize_once(
+            async fn run_maintenance_cycle(
                 &self,
             ) -> Result<$crate::api::OptimizeReport, $crate::error::CasError> {
-                self.0.optimize_once().await
+                self.0.run_maintenance_cycle().await
             }
 
             async fn prune_constraints(
@@ -47,10 +47,10 @@ macro_rules! impl_cas_wrapper_traits {
                 self.0.prune_constraints().await
             }
 
-            async fn list_all_hashes(
+            async fn list_hashes(
                 &self,
             ) -> Result<Vec<$crate::hash::Hash>, $crate::error::CasError> {
-                self.0.list_all_hashes().await
+                self.0.list_hashes().await
             }
         }
 
@@ -67,10 +67,8 @@ macro_rules! impl_cas_wrapper_traits {
             async fn get_constraint(
                 &self,
                 target: $crate::hash::Hash,
-            ) -> Result<
-                Option<::std::collections::BTreeSet<$crate::hash::Hash>>,
-                $crate::error::CasError,
-            > {
+            ) -> Result<::std::collections::BTreeSet<$crate::hash::Hash>, $crate::error::CasError>
+            {
                 self.0.get_constraint(target).await
             }
 

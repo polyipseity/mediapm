@@ -46,6 +46,18 @@ pub enum VerifyTriggerStrategy {
 pub struct CasIntegrityConfig {
     /// Ordered list of trigger strategies.
     pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    /// Time-to-live for the reconstructed bytes cache in the background
+    /// engine. Reconstructed deltas are cached for at most this duration;
+    /// after expiry they are evicted and re-computed on the next access.
+    pub reconstructed_bytes_cache_ttl: Duration,
+}
+
+impl CasIntegrityConfig {
+    /// Returns `true` when at least one verify-on-read strategy is
+    /// configured.
+    pub fn should_verify_on_read(&self) -> bool {
+        !self.verify_on_read.is_empty()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +135,10 @@ impl CasConfig {
         Self::from_locator_with_options(
             locator,
             CasLocatorParseOptions { allow_plain_filesystem_path: true },
-            CasIntegrityConfig { verify_on_read: Vec::new() },
+            CasIntegrityConfig {
+                verify_on_read: Vec::new(),
+                reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
+            },
         )
     }
 
@@ -185,16 +200,16 @@ impl CasApi for ConfiguredCas {
 
 #[async_trait]
 impl CasMaintenanceApi for ConfiguredCas {
-    async fn optimize_once(&self) -> Result<OptimizeReport, CasError> {
-        forward!(self.optimize_once().await)
+    async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
+        forward!(self.run_maintenance_cycle().await)
     }
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
         forward!(self.prune_constraints().await)
     }
 
-    async fn list_all_hashes(&self) -> Result<Vec<Hash>, CasError> {
-        forward!(self.list_all_hashes().await)
+    async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
+        forward!(self.list_hashes().await)
     }
 }
 
@@ -204,7 +219,7 @@ impl ConstraintApi for ConfiguredCas {
         forward!(self.set_constraint(target, bases).await)
     }
 
-    async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError> {
+    async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
         forward!(self.get_constraint(target).await)
     }
 

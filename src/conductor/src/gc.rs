@@ -22,8 +22,8 @@ pub async fn run_cas_gc_sweep<C>(cas: &C) -> Result<PruneReport, ConductorError>
 where
     C: CasApi + CasMaintenanceApi,
 {
-    tracing::info!("GC phase 1/3: optimize_once");
-    cas.optimize_once().await.map_err(ConductorError::Cas)?;
+    tracing::info!("GC phase 1/3: run_maintenance_cycle");
+    cas.run_maintenance_cycle().await.map_err(ConductorError::Cas)?;
     tracing::info!("GC phase 2/3: prune_constraints");
     let report = cas.prune_constraints().await.map_err(ConductorError::Cas)?;
     tracing::info!("GC phase 3/3: complete (removed={})", report.removed);

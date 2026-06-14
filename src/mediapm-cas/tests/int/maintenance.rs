@@ -7,14 +7,14 @@ use mediapm_cas::hash::Hash;
 use mediapm_cas::new_in_memory_cas;
 
 #[tokio::test]
-async fn optimize_once_wal_consumer() {
+async fn run_maintenance_cycle_wal_consumer() {
     let cas = new_in_memory_cas();
     // Perform some operations to generate WAL entries.
     let h1 = cas.put(Bytes::from_static(b"alpha")).await.unwrap();
     let h2 = cas.put(Bytes::from_static(b"beta")).await.unwrap();
     cas.delete(h1).await.unwrap();
 
-    let report = cas.optimize_once().await.unwrap();
+    let report = cas.run_maintenance_cycle().await.unwrap();
     // At least one WAL entry should have been consumed.
     assert!(report.wal_entries_consumed > 0);
     // h1 should be gone from the store after WAL replay.
@@ -31,7 +31,7 @@ async fn prune_constraints_no_orphans_after_materialized_delete() {
 
     // Delete and fully materialize the delete through the WAL consumer.
     cas.delete(target).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // In the unified Index architecture, constraints are embedded in the
     // index entry — deleting the entry also removes its constraint, so
@@ -41,12 +41,12 @@ async fn prune_constraints_no_orphans_after_materialized_delete() {
 }
 
 #[tokio::test]
-async fn optimize_once_runs_maintenance() {
+async fn run_maintenance_cycle_runs_maintenance() {
     let cas = new_in_memory_cas();
     // Put some objects to ensure WAL is non-empty.
     cas.put(Bytes::from_static(b"a")).await.unwrap();
     cas.put(Bytes::from_static(b"b")).await.unwrap();
-    let report = cas.optimize_once().await.unwrap();
+    let report = cas.run_maintenance_cycle().await.unwrap();
     // After consuming WAL entries, maintenance runs.
     assert!(report.wal_entries_consumed > 0);
 }
@@ -63,7 +63,7 @@ async fn gc_sweep_never_deletes_objects() {
     cas.set_constraint(target, [b1, b2].into()).await.unwrap();
 
     // Consume WAL so objects are in the object store.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // Prune_constraints runs without error and does NOT delete any object.
     let report = cas.prune_constraints().await.unwrap();
@@ -86,10 +86,10 @@ async fn prune_constraints_approaches_effective_constraints() {
 
     cas.set_constraint(target, [live, dead].into()).await.unwrap();
     cas.delete(dead).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // The constraint should now contain only the live base.
-    let bases = cas.get_constraint(target).await.unwrap().unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
     assert!(bases.contains(&live), "live base survives");
     assert!(!bases.contains(&dead), "dead base pruned");
     assert_eq!(bases.len(), 1, "only one effective base remains");
@@ -120,7 +120,7 @@ async fn optimize_delta_rewrite() {
 
     // Set constraint and run optimizer.
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
-    let maint_report = cas.optimize_once().await.unwrap();
+    let maint_report = cas.run_maintenance_cycle().await.unwrap();
 
     // Optimizer should have done work (WAL consumption + rewrite).
     assert!(maint_report.wal_entries_consumed > 0);
@@ -149,7 +149,7 @@ async fn optimize_skips_zero_hash_target() {
     cas.set_constraint(Hash::zero(), [base].into()).await.unwrap();
 
     // Must not panic or error.
-    let report = cas.optimize_once().await.unwrap();
+    let report = cas.run_maintenance_cycle().await.unwrap();
     assert!(report.wal_entries_consumed > 0);
 }
 
@@ -167,7 +167,7 @@ async fn optimize_skips_missing_base() {
     // Optimizer must not panic — read_full_bytes returns None for missing
     // base, which causes a `continue` in the optimizer loop. No delta
     // rewrite should occur.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // Stat must still report Full encoding (no rewrite happened).
     let meta = cas.stat(target).await.unwrap();
@@ -189,11 +189,11 @@ async fn optimize_skips_all_bases_deleted() {
     cas.set_constraint(target, [base].into()).await.unwrap();
     cas.delete(base).await.unwrap();
 
-    // First optimize_once consumes WAL (delete materialises, base removed).
-    cas.optimize_once().await.unwrap();
+    // First run_maintenance_cycle consumes WAL (delete materialises, base removed).
+    cas.run_maintenance_cycle().await.unwrap();
 
     // Second optimize runs maintenance with empty effective set.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // Stat must still report Full encoding (no rewrite occurred).
     let meta = cas.stat(target).await.unwrap();
@@ -231,7 +231,7 @@ async fn optimize_with_delta_chain() {
     cas.set_constraint(hb, [ha].into()).await.unwrap();
 
     // First optimize — should rewrite b→a and c→b to deltas.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // Both should be delta-encoded now.
     let meta_b = cas.stat(hb).await.unwrap();
@@ -253,7 +253,7 @@ async fn optimize_with_delta_chain() {
 
     // Delete the ultimate base a — re-materialization should fire first.
     cas.delete(ha).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     // After re-materialization: b should be Full (its base a was deleted).
     let meta_b2 = cas.stat(hb).await.unwrap();
@@ -285,7 +285,7 @@ async fn optimize_multi_base_picks_first_effective() {
 
     // Both b1 and b2 are valid bases.
     cas.set_constraint(target, [b1, b2].into()).await.unwrap();
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
 
     let meta = cas.stat(target).await.unwrap();
     // The optimizer should pick the first effective base from the BTreeSet.
@@ -318,14 +318,14 @@ async fn optimize_idempotent() {
     cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
 
     // First optimization: delta rewrite.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(cas.get(target_hash).await.unwrap(), target);
 
     // Second optimization: should be idempotent.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(cas.get(target_hash).await.unwrap(), target);
 
     // Third optimization: still idempotent.
-    cas.optimize_once().await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(cas.get(target_hash).await.unwrap(), target);
 }

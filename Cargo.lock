@@ -2034,6 +2034,7 @@ dependencies = [
  "oxidelta",
  "proptest",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

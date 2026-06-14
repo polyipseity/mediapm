@@ -53,13 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Effective bases intersect with live hashes.
     let live = HashSet::from([a, b]);
-    let effective: BTreeSet<_> = cas
-        .get_constraint(b)
-        .await?
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|base| live.contains(base))
-        .collect();
+    let effective: BTreeSet<_> =
+        cas.get_constraint(b).await?.into_iter().filter(|base| live.contains(base)).collect();
     println!("Effective bases: {effective:?}");
 
     Ok(())
