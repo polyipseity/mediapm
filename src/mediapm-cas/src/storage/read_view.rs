@@ -12,6 +12,8 @@
 //! In-flight read dedup prevents redundant blob-store reads when multiple
 //! concurrent `get()` calls miss Index simultaneously.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -192,12 +194,21 @@ pub(super) async fn resolve_delta_chain<I: Index, B: BlobStore>(
     let mut chain: Vec<(Hash, Bytes)> = Vec::new();
     let mut current = *hash;
     let mut base = base_hash;
+    let mut visited: HashSet<Hash> = HashSet::new();
+    visited.insert(*hash);
 
     loop {
         if current == base {
             return Err(CasError::CorruptObject {
                 hash: Some(current),
                 details: self_ref_msg.into(),
+            });
+        }
+        // Multi-step cycle detection: A → B → A
+        if !visited.insert(base) {
+            return Err(CasError::CorruptObject {
+                hash: Some(current),
+                details: format!("delta chain cycle detected: base {base} already visited"),
             });
         }
         let delta_data = blob_store.read_delta(&current).await?;
