@@ -207,7 +207,12 @@ src/mediapm-cas/src/
     │   └── versions/    — on-disk format V1+
     │       ├── mod.rs
     │       └── v1.rs
-    ├── blob_store.rs    — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore
+    ├── blob_store/      — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
+    │   ├── mod.rs       — BlobStore trait + InMemoryBlobStore
+    │   ├── fs_blob_store.rs — FileSystemBlobStore (atomic hash-derived layout)
+    │   └── versions/    — path layout versions V1+
+    │       ├── mod.rs   — version dispatch
+    │       └── v1.rs    — V1 layout: v1/blake3/ab/cd/<hex>
     ├── index/           — Index trait + InMemoryIndex + FileSystemIndex
 │   ├── mod.rs       — trait + IndexEntry + re-exports
 │   ├── mem_index.rs — InMemoryIndex (DashMap, separate constraint map)
