@@ -62,6 +62,11 @@ pub trait BlobStore: Send + Sync {
 
     /// Check whether any blob exists for `hash`.
     async fn exists(&self, hash: &Hash) -> Result<bool, CasError>;
+
+    /// Whether `put()` should materialize BlobStore + Index synchronously
+    /// (write-through), or defer to the WAL consumer (write-back).
+    /// InMemory impls return `true`; FileSystem impls return `false`.
+    const SYNC_MATERIALIZE: bool = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +176,7 @@ impl FileSystemBlobStore {
 
 #[async_trait]
 impl BlobStore for FileSystemBlobStore {
+    const SYNC_MATERIALIZE: bool = false;
     async fn write(
         &self,
         hash: Hash,

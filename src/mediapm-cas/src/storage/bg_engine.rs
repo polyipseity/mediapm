@@ -253,11 +253,6 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             if self.is_cancelled() {
                 break;
             }
-            // Skip zero hash (sentinel, never materialized).
-            if *target == Hash::zero() {
-                continue;
-            }
-
             if let Some(bases) = self.index.get_constraint(target).await? {
                 // Effective bases: intersection of stored bases with live
                 // hashes. Dead bases cannot be used for delta reconstruction.

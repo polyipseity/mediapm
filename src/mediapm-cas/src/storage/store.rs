@@ -103,25 +103,30 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
 impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
-        // Empty hash is always valid but never stored.
+        // Zero hash is always valid but never stored.
         if hash == Hash::zero() {
             return Ok(hash);
         }
         // Append to WAL (the crash-safe commitment).
         self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
-        // Write through to BlobStore and Index so data is immediately
-        // visible via get/stat.  The background WAL consumer (if running)
-        // is idempotent — it will re-process the entry harmlessly.
-        self.blob_store.write(hash, ObjectEncoding::Full, data.clone()).await?;
-        self.index
-            .put(
-                hash,
-                IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full, bases: None },
-            )
-            .await?;
-        // Update the read-view cache so a subsequent get sees the data.
-        // The read-view fallback path uses the Index + BlobStore directly,
-        // which are already updated above.
+        // Materialize BlobStore + Index immediately (write-through) when
+        // both backends prefer synchronous materialization.  Otherwise
+        // defer to the WAL consumer (write-back).
+        if B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE {
+            self.blob_store.write(hash, ObjectEncoding::Full, data.clone()).await?;
+            self.index
+                .put(
+                    hash,
+                    IndexEntry {
+                        len: data.len() as u64,
+                        encoding: ObjectEncoding::Full,
+                        bases: None,
+                    },
+                )
+                .await?;
+        }
+        // The ReadView L3 WAL fallback handles visibility for write-back
+        // entries until the consumer materializes them.
         Ok(hash)
     }
 

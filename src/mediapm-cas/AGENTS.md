@@ -3,13 +3,16 @@
 > `mediapm-cas` — content-addressable blob store with delta-compression hints.
 > `put(bytes)` → hash; `get(hash)` → bytes. Deduplicates identical content via
 > Blake3-256. Foundation for deterministic workflows used by Conductor and MediaPM.
+>
+> **Note**: this crate is at `src/mediapm-cas/`. The name "mediapm-cas" is the
+> canonical Cargo package name; there is no separate "conductor-cas" crate.
 
 ## 1. Hash
 
 `Hash([u8; 32])` — blake3-256 content address.
 
 - **Content-addressed**: `Hash::from_content(data)` = blake3(data). Same data → same hash.
-- **Zero sentinel**: `Hash::zero()` = `[0u8; 32]`. Never stored: put is no-op, get/stat always succeed (empty data), delete is no-op.
+- **Zero sentinel**: `Hash::zero()` = `[0u8; 32]`. Always stored as empty sentinel. put/get/stat use normal paths; delete is a no-op (never removed).
 - **Wire format**: Multihash-encoded (`multihash` crate): `[code: varint(0x1e)][length: varint(0x20)][32-byte digest]`.
   `storage_bytes()` / `from_storage_bytes_with_len()` use `Multihash::wrap` / `Multihash::read`.
 - **Serialization**: Derives `Serialize`/`Deserialize` (serde) and `Ord` (lexicographic on bytes).
@@ -39,10 +42,12 @@ Guarantees (within a single async task):
 No standalone `exists()` method — use `stat()` or `get()`. Both return `NotFound` on miss,
 eliminating TOCTOU.
 
-**put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL, hint cache.
-Zero hash returns immediately — nothing stored.
+**put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL.
+Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`:
+write-through materializes BlobStore + Index synchronously (immediate visibility);
+write-back defers to the WAL consumer. Zero hash goes through the same path, storing empty bytes.
 
-**get**: Two-layer lookup (ObjectIndex → WAL fallback).
+**get**: Three-layer lookup (Index → BlobStore → WAL fallback) via `ComposedReadView`.
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only
@@ -50,6 +55,7 @@ Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **delete**: Append `WalEntry::Delete` to WAL. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
+Zero hash is a no-op — never appended to WAL.
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
 
@@ -71,12 +77,13 @@ pub trait ConstraintApi: Send + Sync {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError>;
     async fn get_constraint(&self, target: Hash) -> Result<Option<BTreeSet<Hash>>, CasError>;
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError>;
-    async fn effective_bases(&self, target: Hash, live: &HashSet<Hash>) -> Result<BTreeSet<Hash>, CasError>;
 }
 ```
 
 Constraints are **non-binding hints** — the system never blocks on completeness or accuracy.
-`effective_bases = stored_bases ∩ live`. Stored in MetadataIndex (in-memory `DashMap`, rebuilt from WAL).
+Stored in Index (in-memory `DashMap`, rebuilt from WAL). There is no `effective_bases`
+method — callers that need live filtering must compose `get_constraint` with their own
+`live` set intersection.
 
 ```rust
 pub struct ConstraintPatch {
@@ -134,8 +141,10 @@ pub enum ConfiguredCas {
 }
 ```
 
-Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner `cas.0`.
-Created via `CasConfig::from_locator_with_options()` + `CasConfig::open()`.
+Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
+`cas.deref()` via the local `forward!` macro (defined in `config.rs`). Created via
+`CasConfig::from_locator_with_options()` + `CasConfig::open()`, or via the convenience
+`CasConfig::from_locator()` for quick setup with default options and empty integrity config.
 
 ### 2.6 Config types
 
@@ -146,6 +155,13 @@ Created via `CasConfig::from_locator_with_options()` + `CasConfig::open()`.
 | `CasIntegrityConfig` | `verify_on_read` strategies |
 | `CasLocatorParseOptions` | Controls whether plain paths are accepted |
 | `VerifyTriggerStrategy` | `Always`, `Modified`, `Sample { denominator }`, `Stale { timeout }` |
+
+`CasConfig` provides two constructors:
+
+- `from_locator_with_options(locator, opts, integrity)` — full control over parsing
+  and integrity settings.
+- `from_locator(locator)` — convenience that defaults to
+  `allow_plain_filesystem_path: true` and empty integrity config (no verification).
 
 ### 2.7 Report types
 
@@ -168,13 +184,13 @@ src/mediapm-cas/src/
 
 ├── delta/
 │   ├── mod.rs           — module root, versioning boundary guard
-│   ├── delta.rs         — DeltaPatch (VCDIFF via oxidelta) + resolve_delta_chain
+│   ├── delta.rs         — DeltaPatch (VCDIFF via oxidelta) + apply_delta_chain
 │   ├── object.rs        — DeltaState + StoredObject (version-agnostic)
 │   └── versions/        — V1/V2/V3 delta envelope wire formats (mod.rs = canonical API)
 └── storage/
-    ├── mod.rs           — module root + #[macro_use] macros
+    ├── mod.rs           — module root
     ├── macros.rs        — impl_cas_wrapper_traits!($ty) macro
-    ├── store.rs         — CasStore<J,S,M> (composed handle, implements all traits)
+    ├── store.rs         — CasStore<J,I,B> (composed handle, implements all traits)
     ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + versions
     │   ├── mod.rs       — trait definitions + InMemoryWal
     │   ├── file_wal.rs  — FileWal (segmented file-backed WAL)
@@ -184,7 +200,7 @@ src/mediapm-cas/src/
     ├── blob_store.rs    — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore
     ├── index.rs         — Index trait + InMemoryIndex (unified metadata + constraints)
     ├── read_view.rs     — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
-    ├── delta_resolve.rs — Shared delta-chain resolution (extracted from read_view + bg_engine)
+    ├── delta_resolve.rs — Shared delta-chain walk (resolve_delta_chain wrapper for read_view + bg_engine)
     ├── bg_engine.rs     — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
     ├── in_memory.rs     — InMemoryCas wrapper + new_in_memory_cas()
     └── file_system.rs   — FileSystemCas wrapper + open()
@@ -194,10 +210,10 @@ src/mediapm-cas/src/
 
 ```text
 put(data) → Hash(data) → Wal.append(Put{hash, data})
-                                                                    ↓
+                          ↓ (write-through: inline) │ (write-back: deferred)
 WAL consumer (bg_engine) → BlobStore.write(hash) + Index.put(hash) → checkpoint
                                                                     ↓
-get(hash) → ReadView: Index → BlobStore.read/read_delta → WAL fallback
+get(hash) → ReadView: Index → BlobStore.read/read_delta → WAL fallback (tombstone check)
                                                                     ↓
 delete(hash) → Wal.append(Delete{hash})
                                                                     ↓
@@ -212,6 +228,7 @@ The only crash-safe commitment point. Index and BlobStore are derived —
 rebuildable by WAL replay.
 
 **Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
+Only single-entry `append` is exposed — `append_batch` was removed to keep the trait minimal.
 
 **PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
 
@@ -223,19 +240,26 @@ position is persisted atomically. Idempotent.
 
 Pluggable payload backend.
 
-- `InMemoryBlobStore`: `DashMap<Hash, Bytes>`. Ignores Full/Delta distinction.
+- `InMemoryBlobStore`: `DashMap<Hash, (Bytes, ObjectEncoding)>`. Ignores Full/Delta distinction.
 - `FileSystemBlobStore`: Hash-derived paths `<root>/v1/blake3/ab/cd/<remaining>` (full)
   or `<remaining>.diff` (delta). Atomic write via temp+rename. Hash verification on read.
+  `delete` uses `tracing::warn!` on `remove_file` failures (never returns I/O error —
+  missing files are treated as already-deleted).
 
 ### 5.3 Index
 
 Unified metadata + constraint index. `InMemoryIndex` uses `Arc<DashMap<Hash, IndexEntry>>`.
-`IndexEntry { size, encoding, bases }` — `bases` is `Option<BTreeSet<Hash>>`.
-Rebuilt from WAL via `rebuild_from_wal()`.
+`IndexEntry { len, encoding, bases }` — `len` is original payload length (before encoding),
+`bases` is `Option<BTreeSet<Hash>>`. Rebuilt from WAL via `rebuild_from_wal()`.
+
+**Base preservation**: `Index::put` sets bases to `None` (no silent preservation).
+Only `rebuild_from_wal` merges bases from existing entries during replay — for Put entries
+it preserves the `bases` field from the previous entry, ensuring constraints survive
+WAL re-materialization.
 
 ### 5.4 ReadView
 
-Three-layer lookup for get/stat:
+Three-layer lookup for get/stat.
 
 1. **Index**. Check entry encoding. If `Full` → BlobStore.read(). If `Delta { base_hash }` → iterative walk.
 2. **BlobStore**. Read payload bytes (full or delta envelope). Walk delta chains via `read_delta`/`read`.
@@ -244,15 +268,26 @@ Three-layer lookup for get/stat:
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
 
-**Delta reconstruction**: Index → BlobStore.read_delta(hash) → walk base chain via Index
-
-- BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`. If base not found → `CasError::CorruptObject`.
+**Delta reconstruction**: Index → `delta_resolve::resolve_delta_chain` → BlobStore.read_delta(hash)
+→ walk base chain via Index → BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`.
+If base not found → `CasError::CorruptObject`.
 
 ### 5.5 Delta Codec
 
 - **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
-- **resolve_delta_chain**: Shared `pub(crate)` function in `delta/delta.rs`. Takes base bytes + collected delta envelopes, applies deltas inner-to-outer, returns fully reconstructed payload. Used by both `read_view.rs` and `bg_engine.rs`.
+- Two functions for chain resolution:
+  - `apply_delta_chain` in `delta/delta.rs`: Pure `pub(crate)` function that takes base bytes
+    - collected delta envelopes, applies VCDIFF patches innermost-first, returns fully
+  reconstructed payload. Used by `delta_resolve::resolve_delta_chain`.
+  - `resolve_delta_chain` in `storage/delta_resolve.rs`: `pub(super)` async walker that
+    reads delta blobs from BlobStore and builds the chain, then calls `apply_delta_chain`.
+    Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
+- **Asymmetry note**: The shared pure function was renamed from `resolve_delta_chain` to
+  `apply_delta_chain` (S10). The delta_resolve walker kept the old name for minimal diff
+  surface. Both names appear in the codebase.
 - **StoredObject**: `Full { payload }` or `Delta { state }`. Encode/decode to/from versioned envelopes.
+  The `Full` variant and its constructor use `#[allow(dead_code)]`; accessor methods
+  (`base_hash`, `payload_len`) use `#[expect(dead_code)]` with explicit reasons.
 - **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer, magic `b"CASDLT"`).
 
 **Versioning boundary guard**: Code outside `delta/versions/` must interact with versioned
@@ -262,6 +297,13 @@ envelopes only through `delta::versions` module APIs (`mod.rs`), never via `delt
 
 Drives WAL consumer and maintenance pass. GC never deletes objects — only prunes constraint
 metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
+
+**WAL consumer guarantees**: After a `run_wal_consumer` cycle completes, all entries up to the
+checkpoint position are materialized in BlobStore + Index. This means:
+
+- L3 WAL fallback in ReadView is only exercised for entries appended after the last cycle.
+- The tombstone check (always performed on every `get()` even on Index hit) is O(1) for FileWal
+  (HashMap lookup) and cheap for InMemoryWal (small pending set after trimming).
 
 ## 6. Delete semantics — no dangling deltas
 
@@ -289,39 +331,93 @@ impl_cas_wrapper_traits!(InMemoryCas);  // CasApi + CasMaintenanceApi + Constrai
 ```
 
 The `impl_cas_wrapper_traits!` macro (defined in `storage/macros.rs`, uses `paste` crate)
-generates trait impls that delegate to `self.0`. This avoids manual forwarding.
-`ConfiguredCas` uses the `forward!` macro (defined in `config.rs`) to delegate trait methods to the inner `cas.0`.
+generates trait impls that delegate to `self.0` (direct field access on the newtype).
+`ConfiguredCas` uses the `forward!` macro (defined in `config.rs`) to delegate trait methods
+to the inner variant via `cas.deref()`, not `cas.0` — this routes through the `Deref` impl
+to reach the shared `CasStore` methods.
 
 ## 8. Invariants & edge cases
 
 ### 8.1 Content identity
 
-- Same bytes → same hash. Deterministic. Zero hash is sentinel-only, never stored.
+- Same bytes → same hash. Deterministic. Zero hash is sentinel-only (no real content produces it).
 
-### 8.2 Crash safety
+### 8.2 Zero-hash sentinel
+
+- `Hash::zero()` (`[0u8; 32]`) is a built-in sentinel. No real content hashes to it — it is
+  always stored as an explicit empty-bytes entry.
+- All operations use the normal code paths:
+  - `put(zero)`: Normal path (WAL → compiled write-through/write-back policy). Stores empty bytes.
+  - `get(zero)`: Normal path — ReadView finds Index entry, reads empty bytes from BlobStore.
+  - `stat(zero)`: Normal path — returns `ObjectMeta { len: 0, encoding: Full }` from Index.
+  - `delete(zero)`: **No-op**. Never appended to WAL. Returns `Ok(())` immediately.
+- **Indelible**: Because `delete(zero)` is a no-op, the zero entry persists in BlobStore + Index
+  forever. No special seeding or re-seeding logic is needed on init or WAL replay.
+- BackgroundEngine has no special zero-hash skip; the WAL consumer processes zero `Put` entries
+  normally.
+
+### 8.3 Crash safety
 
 - WAL is the single crash-safe commitment point. All operations append before acknowledging.
 - Index and BlobStore are derived — rebuilt by WAL replay.
 
-### 8.3 No TOCTOU
+### 8.4 No TOCTOU
 
 No standalone `exists()` method. Use `get()` or `stat()` (both return `NotFound` on miss).
 No `exists_many()`, no `set_constraint_batch()`, no `materialize_to_path()`, no `compact_index()`.
 Removed methods are replaced by composition of remaining primitives.
 
-### 8.4 Delta chain integrity
+### 8.5 Delta chain integrity
 
 - Iterative `get(base_hash)` for reconstruction goes through Index → BlobStore walk.
 - If base_hash not found → `CorruptObject`.
 - Cyclic references prevented by `check_no_cycle()` during chain traversal.
 
-### 8.5 Constraint invariants
+### 8.6 Constraint invariants
 
-- `effective_bases = stored_bases ∩ live`. Dead bases are excluded.
 - `prune_constraints()` removes entries whose target or bases no longer exist.
+- No `effective_bases` method — callers compute live intersection themselves.
 - DAG validation at set time is future work.
+- Self-referencing constraint (target == base) is rejected at set/patch time.
 
-### 8.6 Codec versioning
+### 8.7 Write-through vs write-back compile-time policy
+
+`CasStore::put()` uses compile-time dispatch via associated consts:
+
+```rust
+trait BlobStore: Send + Sync {
+    /// true → write-through (synchronous materialization on put).
+    /// false → write-back (WAL-only; consumer materializes later).
+    const SYNC_MATERIALIZE: bool = true;
+}
+
+trait Index: Send + Sync {
+    const SYNC_MATERIALIZE: bool = true;
+}
+```
+
+In `CasStore::put()`, the effective policy is:
+
+```rust
+let sync = B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE;
+```
+
+| Backend triplet | BlobStore | Index | Effective | Why |
+|-----------------|-----------|-------|-----------|-----|
+| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryIndex` (true) | write-through | Both are DashMap inserts — instant |
+| `FileSystemCas` | `FileSystemBlobStore` (false) | `InMemoryIndex` (true) | **write-back** | File I/O on BlobStore is costly; WAL captures durability |
+
+**Write-through**: Caller pays WAL + BlobStore + Index latency. Data is immediately visible
+without WAL fallback. Used when all backends are in-memory.
+
+**Write-back**: Caller pays only WAL latency. Data is visible via L3 WAL fallback until the
+consumer materializes it. Used when at least one backend has costly I/O.
+
+**`delete()`** remains unconditionally write-back (WAL-only) regardless of
+`SYNC_MATERIALIZE` values — physical removal is always deferred to the WAL consumer for
+correct re-materialization of delta dependents.
+
+### 8.8 Codec versioning
 
 - V1/V2 are read-only legacy. Writers always emit V3.
 - New versions go in `delta/versions/vN.rs`. Keep the `DO NOT REMOVE` boundary guard.
