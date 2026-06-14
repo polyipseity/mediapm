@@ -570,18 +570,10 @@ impl MediaRuntimeStorage {
             .collect();
 
         if verify_on_read.is_empty() {
-            return CasIntegrityConfig {
-                verify_on_read: vec![],
-                reconstructed_bytes_cache_ttl: Duration::from_secs(300),
-            };
+            return CasIntegrityConfig { verify_on_read: vec![] };
         }
 
-        CasIntegrityConfig {
-            verify_on_read,
-            reconstructed_bytes_cache_ttl: Duration::from_secs(
-                self.reconstructed_bytes_cache_ttl_secs(),
-            ),
-        }
+        CasIntegrityConfig { verify_on_read }
     }
 }
 

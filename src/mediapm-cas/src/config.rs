@@ -2,7 +2,6 @@
 //! [`ConfiguredCas`] dispatcher enum.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -29,10 +28,6 @@ use crate::storage::in_memory::InMemoryCas;
 pub struct CasIntegrityConfig {
     /// Ordered list of trigger strategies.
     pub verify_on_read: Vec<crate::api::VerifyTriggerStrategy>,
-    /// Time-to-live for the reconstructed bytes cache in the background
-    /// engine. Reconstructed deltas are cached for at most this duration;
-    /// after expiry they are evicted and re-computed on the next access.
-    pub reconstructed_bytes_cache_ttl: Duration,
 }
 
 impl CasIntegrityConfig {
@@ -118,10 +113,7 @@ impl CasConfig {
         Self::from_locator_with_options(
             locator,
             CasLocatorParseOptions { allow_plain_filesystem_path: true },
-            CasIntegrityConfig {
-                verify_on_read: Vec::new(),
-                reconstructed_bytes_cache_ttl: Duration::from_secs(3600),
-            },
+            CasIntegrityConfig { verify_on_read: Vec::new() },
         )
     }
 
