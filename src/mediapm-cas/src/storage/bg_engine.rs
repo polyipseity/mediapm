@@ -149,7 +149,9 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             // Read delta envelope from blob store.
             let delta_data = self.blob_store.read_delta(&dep_hash).await?;
             // Base bytes are still in BlobStore (not yet deleted).
-            let base_bytes = self.blob_store.read(hash).await?;
+            // Use read_full_bytes so delta-encoded bases are reconstructed.
+            let base_bytes =
+                self.read_full_bytes(hash).await?.ok_or_else(|| CasError::NotFound(*hash))?;
 
             let stored_obj =
                 StoredObject::decode_delta(&delta_data).map_err(|e| CasError::CorruptObject {
@@ -182,6 +184,15 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         }
 
         Ok(())
+    }
+
+    /// Select the best base for delta compression of `target`.
+    ///
+    /// Currently picks the first effective base. Future optimizations may
+    /// evaluate multiple candidates (e.g., smallest VCDIFF, lowest chain depth).
+    fn select_best_base<'a>(_target: &Hash, effective: &[&'a Hash]) -> Option<&'a Hash> {
+        // TODO: evaluate all candidates and pick optimal base
+        effective.first().copied()
     }
 
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
@@ -244,7 +255,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                 // hashes. Dead bases cannot be used for delta reconstruction.
                 let effective: Vec<&Hash> = bases.iter().filter(|b| live.contains(b)).collect();
 
-                if let Some(best_base) = effective.first() {
+                if let Some(best_base) = Self::select_best_base(target, &effective) {
                     // Reconstruct full bytes for target and base.
                     let Some(target_bytes) = self.read_full_bytes(target).await? else {
                         continue;
@@ -261,7 +272,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     // the full payload. Otherwise keep the full encoding.
                     if (delta_payload.len() as u64) < target_bytes.len() as u64 {
                         let stored = StoredObject::delta(
-                            **best_base,
+                            *best_base,
                             target_bytes.len() as u64,
                             delta_payload.to_vec(),
                         );
@@ -269,7 +280,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                         self.blob_store
                             .write(
                                 *target,
-                                ObjectEncoding::Delta { base_hash: **best_base },
+                                ObjectEncoding::Delta { base_hash: *best_base },
                                 envelope,
                             )
                             .await?;
@@ -280,7 +291,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                                 *target,
                                 IndexEntry {
                                     len: target_bytes.len() as u64,
-                                    encoding: ObjectEncoding::Delta { base_hash: **best_base },
+                                    encoding: ObjectEncoding::Delta { base_hash: *best_base },
                                 },
                             )
                             .await?;
