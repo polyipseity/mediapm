@@ -36,7 +36,7 @@ applyTo: "src/**/*.rs"
   - orchestration state model
   - deterministic instance-key and merge logic
   - workflow execution contracts
-- `src/conductor-builtins/*/` (conductor built-ins)
+- `src/mediapm-conductor-builtins/*/` (conductor built-ins)
   - versioned built-in tool contracts and runtime implementations such as
     `echo`, `fs`, `import`, `export`, `archive`
 - `src/mediapm/` (mediapm application crate)
@@ -447,7 +447,7 @@ is a narrow, documented reason.
     metadata-application sequencing, and permanent-transcode safety external
     data remains machine-state-tracked/pruneable.
 - Built-ins should stay narrowly scoped and version-addressable.
-- Builtin runtime behavior must remain inside `src/conductor-builtins/*`
+- Builtin runtime behavior must remain inside `src/mediapm-conductor-builtins/*`
   crates (not inline in `src/mediapm-conductor`).
 - Each builtin crate should expose both a library API and an independently
   runnable binary target.
@@ -474,7 +474,7 @@ is a narrow, documented reason.
   - with built-ins consumed by conductor runtime contracts,
   - and no circular crate dependencies.
 - `src/mediapm` should not depend directly on individual
-  `src/conductor-builtins/*` crates; use conductor exports/APIs for builtin
+  `src/mediapm-conductor-builtins/*` crates; use conductor exports/APIs for builtin
   identity or behavior.
 
 ## Identity and storage invariants

@@ -40,7 +40,7 @@ Core dependency boundary:
 
 - Compose CAS and Conductor via `mediapm-cas` and `mediapm-conductor`.
 - Do not add direct dependencies from `src/mediapm/` to
-  `src/conductor-builtins/*` crates.
+  `src/mediapm-conductor-builtins/*` crates.
 
 ## Runtime paths and resolution invariants
 

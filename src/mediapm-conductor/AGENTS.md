@@ -431,7 +431,7 @@ Execution dispatch is decided per tool:
 Guidance:
 
 - Keep builtin dispatch deterministic and explicitly version-gated.
-- Builtin runtime logic must live in `src/conductor-builtins/*` crates,
+- Builtin runtime logic must live in `src/mediapm-conductor-builtins/*` crates,
   including `echo`; do not re-implement builtin behavior inline inside
   `src/mediapm-conductor` runtime code.
 - Each builtin crate must expose both:
@@ -730,7 +730,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 
 ### Conductor ↔ Builtins
 
-- **Dispatch**: Builtin tools are dispatched by kind (`kind = "builtin"`) via `dispatch_builtin()`. Builtin runtime logic lives in `src/conductor-builtins/*` crates, not in `src/mediapm-conductor`.
+- **Dispatch**: Builtin tools are dispatched by kind (`kind = "builtin"`) via `dispatch_builtin()`. Builtin runtime logic lives in `src/mediapm-conductor-builtins/*` crates, not in `src/mediapm-conductor`.
 - **API contract**: Builtin library API uses `BTreeMap<String, String>` args + optional raw payload bytes. CLI uses `--arg KEY VALUE` with all string values.
 - **Determinism**: Pure builtins (echo, archive) produce identical output for same input. Impure builtins (fs, import, export) may vary on retries.
 - **Fail-fast**: Builtins reject undeclared keys, missing required keys, and invalid combinations immediately.
@@ -1001,7 +1001,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 | **Tool content cache** | `src/mediapm-conductor/src/tool_cache/mod.rs` |
 | **Template expansion** | `src/mediapm-conductor/src/orchestration/actors/step_worker/template.rs` |
 | **CLI** | `src/mediapm-conductor/src/main.rs`, `src/mediapm-conductor/src/cli.rs` (API-backed) |
-| **Builtin dispatch** | `src/conductor-builtins/*` (echo, fs, archive, import, export) |
+| **Builtin dispatch** | `src/mediapm-conductor-builtins/*` (echo, fs, archive, import, export) |
 | **Progress events** | `WorkflowStepEvent` in `src/mediapm-conductor/src/api.rs`, emission in coordinator, consumption in `src/mediapm/src/service.rs` |
 
 ## M. Known Limitations (Conductor-Relevant)

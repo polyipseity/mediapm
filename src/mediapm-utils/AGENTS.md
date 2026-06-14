@@ -1,6 +1,6 @@
 # Mediapm Utils Crate
 
-> **mediapm-utils** provides shared type aliases (`StringMap`, `BinaryInputMap`), path-resolution utilities (`PathMode`), and builtin descriptor/CLI helpers (`describe`, `BuiltinCliArgs`). Used by all `src/conductor-builtins/*/` crates.
+> **mediapm-utils** provides shared type aliases (`StringMap`, `BinaryInputMap`), path-resolution utilities (`PathMode`), and builtin descriptor/CLI helpers (`describe`, `BuiltinCliArgs`). Used by all `src/mediapm-conductor-builtins/*/` crates.
 
 Crate: `mediapm-utils`
 

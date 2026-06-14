@@ -2114,7 +2114,7 @@ where
     /// Executes one builtin implementation and returns synthetic stdout/stderr.
     /// Executes one builtin tool by delegating to standalone builtin crates.
     ///
-    /// Builtin runtime logic lives under `src/conductor-builtins/*`; the
+    /// Builtin runtime logic lives under `src/mediapm-conductor-builtins/*`; the
     /// conductor worker only translates orchestration inputs and dispatches.
     ///
     /// Builtin crates expose one uniform contract shape:

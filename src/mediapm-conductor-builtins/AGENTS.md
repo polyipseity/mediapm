@@ -4,13 +4,13 @@
 > sharing a common CLI/API contract: `BTreeMap<String, String>` args, fail-fast validation,
 > deterministic payloads for pure tools, clean side effects for impure ones.
 
-This file defines crate-local guidance for `src/conductor-builtins/`.
+This file defines crate-local guidance for `src/mediapm-conductor-builtins/`.
 Follow this together with workspace-wide policy in `AGENTS.md` and focused
 instruction files in `.agents/instructions/`.
 
 ## Scope
 
-- Applies to all files under `src/conductor-builtins/`.
+- Applies to all files under `src/mediapm-conductor-builtins/`.
 - Sub-crates under this directory each ship their own `AGENTS.md` for
   builtin-specific details.
 
@@ -321,7 +321,7 @@ Builtins provide both CLI (spawned process) and library API (in-process). Conduc
 
 ### H.5 Implementation Checklist: New Builtin Tool
 
-- [ ] Create `src/conductor-builtins/<name>/` with `Cargo.toml` (package + binary target)
+- [ ] Create `src/mediapm-conductor-builtins/<name>/` with `Cargo.toml` (package + binary target)
 - [ ] Implement `lib.rs`: `async fn(BTreeMap<String, String>, Option<&[u8]>) -> Result<String, String>`
 - [ ] Implement `main.rs` with CLI `--arg KEY VALUE` parsing
 - [ ] Reject undeclared `--arg` keys immediately

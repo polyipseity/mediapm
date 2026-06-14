@@ -9,11 +9,11 @@ sources, and materialize a content-addressed hierarchy on disk.
 | --- | --- |
 | `src/mediapm-cas/` (`mediapm-cas`) | Content-addressed storage — identity types, hash codec, async API |
 | `src/mediapm-conductor/` (`mediapm-conductor`) | Declarative workflow orchestration — state model, persistence merge |
-| `src/conductor-builtins/echo/` | Echo builtin |
-| `src/conductor-builtins/fs/` | Filesystem staging builtin |
-| `src/conductor-builtins/import/` | Source-ingest builtin (`file`/`folder`/`fetch`) |
-| `src/conductor-builtins/export/` | Filesystem materialization builtin (`file`/`folder`) |
-| `src/conductor-builtins/archive/` | Archive transform builtin (ZIP) |
+| `src/mediapm-conductor-builtins/echo/` | Echo builtin |
+| `src/mediapm-conductor-builtins/fs/` | Filesystem staging builtin |
+| `src/mediapm-conductor-builtins/import/` | Source-ingest builtin (`file`/`folder`/`fetch`) |
+| `src/mediapm-conductor-builtins/export/` | Filesystem materialization builtin (`file`/`folder`) |
+| `src/mediapm-conductor-builtins/archive/` | Archive transform builtin (ZIP) |
 | `src/mediapm/` (`mediapm`) | Media API + CLI — composes CAS and Conductor |
 | `scripts/cargo-bin/` | Repository tooling helper binary |
 

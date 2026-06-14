@@ -6,11 +6,11 @@ members = [
 	"src/mediapm-cas",
 	"src/mediapm-conductor",
 	"src/mediapm-conductor/examples/support/concat-tool",
-	"src/conductor-builtins/archive",
-	"src/conductor-builtins/echo",
-	"src/conductor-builtins/export",
-	"src/conductor-builtins/fs",
-	"src/conductor-builtins/import",
+	"src/mediapm-conductor-builtins/archive",
+	"src/mediapm-conductor-builtins/echo",
+	"src/mediapm-conductor-builtins/export",
+	"src/mediapm-conductor-builtins/fs",
+	"src/mediapm-conductor-builtins/import",
 	"src/mediapm-utils",
 ]
 

@@ -46,7 +46,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
   responsibilities from real files:
   - `src/mediapm-cas/` as CAS,
   - `src/mediapm-conductor/` as orchestration,
-  - `src/conductor-builtins/*/` as builtin runtime crates,
+  - `src/mediapm-conductor-builtins/*/` as builtin runtime crates,
   - `src/mediapm/` as media-facing composition.
 
 ## Evidence standards

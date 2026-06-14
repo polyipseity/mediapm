@@ -14,8 +14,8 @@
 - `src/` now contains workspace member crates:
   - `src/mediapm-cas/` (CAS)
   - `src/mediapm-conductor/` (Conductor)
-  - `src/conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
-  - `src/conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
+  - `src/mediapm-conductor-builtins/` (conductor-builtins parent — has its own `AGENTS.md`)
+  - `src/mediapm-conductor-builtins/*/` (conductor built-ins, each with an `AGENTS.md`)
   - `src/mediapm/` (mediapm application)
   - `src/mediapm-utils/` (shared utilities for builtins)
 - Integration tests currently live with workspace crates (for example,
@@ -117,7 +117,7 @@ Get up and running in minutes:
     `RunWorkflowOptions.retry_impure`).
   See `src/mediapm-conductor/AGENTS.md` for the full configuration document model,
   tool schema invariants, template syntax contract, and versioned schema policy.
-- `src/conductor-builtins/` provides versioned built-in tool contracts such as
+- `src/mediapm-conductor-builtins/` provides versioned built-in tool contracts such as
   `echo`, `fs`, `import`, `export`, and `archive`.
   Builtin runtime behavior must live in these crates (not inline in
   `src/mediapm-conductor`), and each builtin crate should remain independently runnable
@@ -143,7 +143,7 @@ Get up and running in minutes:
   and CLI scaffold.
   `src/mediapm/` should depend directly on `mediapm-cas` and
   `mediapm-conductor`; do not add direct dependencies on individual
-  `src/conductor-builtins/*` crates.
+  `src/mediapm-conductor-builtins/*` crates.
   Key cross-crate invariants:
   - Runtime state root defaults to `.mediapm/`; `mediapm.ncl` `runtime` may
     optionally override `mediapm_dir`, paths, and `inherited_env_vars`.
