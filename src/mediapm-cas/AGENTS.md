@@ -134,7 +134,11 @@ cas.put(bytes).await?;
 
 Newtype around `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
 WAL + blob store + index constraints persisted on disk; blob metadata in-memory
-(rebuilt from WAL on open). Constraint data saved to `<store_dir>/constraints.json`.
+(rebuilt from WAL on open). Index data (entries + constraints) saved to
+`<store_dir>/index.json`.
+
+Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>`
+(returns `None` for in-memory stores, `Some(path)` for filesystem stores).
 
 #### ConfiguredCas — dispatch enum
 
@@ -250,6 +254,12 @@ Pluggable payload backend.
   or `<remaining>.diff` (delta). Atomic write via temp+rename. Hash verification on read.
   `delete` uses `tracing::warn!` on `remove_file` failures (never returns I/O error —
   missing files are treated as already-deleted).
+  `materialized_path(&self, hash) -> Option<PathBuf>` returns the on-disk path for `hash`
+  (overrides the trait default of `None`).
+
+**`materialized_path`**: non-async method on `BlobStore` trait (default `None`). Returns
+`Some(path)` for filesystem-backed stores, `None` for in-memory. Used by
+`FileSystemCas::object_path_for_hash`.
 
 ### 5.3 Index
 
@@ -258,10 +268,10 @@ Object metadata index. Both implementations share the same trait.
 - **`InMemoryIndex`**: `Arc<DashMap<Hash, IndexEntry>>` for payload metadata
   (`IndexEntry { len, encoding }`). Constraint data is stored in a separate map:
   `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
-- **`FileSystemIndex`**: Wraps `InMemoryIndex` with constraint persistence.
-  On `set_constraint`, writes constraint data to a V1 JSON file atomically
-  (temp+rename). On `rebuild_from_wal`, replays WAL then overlays persisted
-  constraints.
+- **`FileSystemIndex`**: Wraps `InMemoryIndex` with persistent snapshot.
+  On mutation (`put`/`delete`/`set_constraint`), writes full snapshot (entries +
+  constraints) to a V1 JSON file atomically (temp+rename). On `rebuild_from_wal`,
+  replays WAL then overlays persisted state.
 
 **Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data
 (`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL
@@ -271,8 +281,11 @@ keeps the data model clean and removes `Option` from constraint representation.
 **Versioned persistence** (`storage/index/versions/`): V1 JSON format:
 
 ```json
-{ "version": 1, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }
+{ "version": 1, "entries": { "hash_hex": { "len": 123, "encoding": "Full" } }, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }
 ```
+
+`entries` field uses `#[serde(default)]` for backward compatibility with snapshots
+that predate entry persistence.
 
 Async wrappers use `tokio::task::spawn_blocking`; sync `load()`/`save()` functions
 are shared by both implementations.
@@ -315,7 +328,9 @@ metadata. Objects are removed solely by `CasApi::delete` materialized through th
 
 **WAL consumer guarantees**: After a `run_wal_consumer` cycle completes, all entries up to the
 checkpoint position are materialized in BlobStore + Index. After materialization, the checkpoint
-is advanced and `WAL::trim(checkpoint)` is called. This means:
+is advanced and `WAL::trim(checkpoint)` is called. The checkpoint starts from `consumed_position()`
+(passed as `start_pos` to `CasStore::new` and `BackgroundEngine::new`), not from
+`WalPosition::ZERO`, so already-consumed entries are skipped on restart. This means:
 
 - Consumed WAL entries are **physically removed** from the WAL:
   - `FileWal::trim()` deletes segment files whose `last_pos <= checkpoint` and prunes pending
