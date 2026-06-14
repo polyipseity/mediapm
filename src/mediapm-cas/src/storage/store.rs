@@ -25,6 +25,7 @@ use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::api::{
     CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
@@ -64,6 +65,8 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
     /// Create a new composed store.  `start_pos` tells the background
     /// engine which WAL position to begin consuming from (e.g., the
     /// last checkpoint on restart).
+    ///
+    /// The reconstructed-bytes cache uses a 60-second TTL by default.
     pub fn new(wal: J, index: I, blob_store: B, start_pos: WalPosition) -> Self
     where
         J: 'static,
@@ -78,6 +81,7 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
             blob_store.clone(),
             start_pos,
             read_view.clone(),
+            Duration::from_secs(60),
         );
         Self { wal, index, blob_store, read_view, bg_engine }
     }

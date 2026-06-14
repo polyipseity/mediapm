@@ -13,9 +13,11 @@
 //! entries so orphaned bases (for deleted objects) are removed individually,
 //! not all-or-nothing.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
@@ -38,16 +40,25 @@ pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
     cancelled: Arc<AtomicBool>,
+    /// Cache for reconstructed full bytes (avoids repeated delta-chain walks).
+    /// Shared across clones via `Arc`.
+    reconstructed_cache: Arc<Mutex<HashMap<Hash, (Bytes, Instant)>>>,
+    /// TTL for cache entries (default 60s). Pushed to constructor boundary.
+    reconstructed_cache_ttl: Duration,
 }
 
 impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Create a new engine, checkpointing at `start_pos`.
+    ///
+    /// `cache_ttl` controls how long reconstructed full bytes remain cached
+    /// (default 60s). Pass `Duration::ZERO` to disable caching.
     pub(crate) fn new(
         wal: J,
         index: I,
         blob_store: B,
         start_pos: WalPosition,
         read_view: Arc<dyn ReadView>,
+        cache_ttl: Duration,
     ) -> Self {
         Self {
             wal,
@@ -56,6 +67,8 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
             cancelled: Arc::new(AtomicBool::new(false)),
+            reconstructed_cache: Arc::new(Mutex::new(HashMap::new())),
+            reconstructed_cache_ttl: cache_ttl,
         }
     }
 
@@ -202,13 +215,28 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
     /// any delta chain present in the Index + BlobStore.
     ///
+    /// Uses an internal time-based cache (TTL configurable via constructor)
+    /// to avoid repeated delta-chain walks during maintenance cycles.
+    ///
     /// Returns `None` if the hash does not exist in the store.
     async fn read_full_bytes(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+        // Check the time-based cache first.
+        if self.reconstructed_cache_ttl > Duration::ZERO {
+            let cache = self.reconstructed_cache.lock().unwrap();
+            if let Some((cached_bytes, expiry)) = cache.get(hash) {
+                if expiry.elapsed() < self.reconstructed_cache_ttl {
+                    return Ok(Some(cached_bytes.clone()));
+                }
+            }
+            // Don't hold the lock while doing I/O below.
+            drop(cache);
+        }
+
         let Some(entry) = self.index.get(hash).await? else {
             return Ok(None);
         };
 
-        super::read_view::resolve_full_bytes(
+        let result = super::read_view::resolve_full_bytes(
             hash,
             &entry,
             &self.index,
@@ -221,7 +249,17 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         .or_else(|e| match e {
             CasError::NotFound(_) => Ok(None),
             other => Err(other),
-        })
+        })?;
+
+        // Cache the result if TTL is non-zero.
+        if let Some(ref bytes) = result {
+            if self.reconstructed_cache_ttl > Duration::ZERO {
+                let mut cache = self.reconstructed_cache.lock().unwrap();
+                cache.insert(*hash, (bytes.clone(), Instant::now()));
+            }
+        }
+
+        Ok(result)
     }
 
     /// Run maintenance: optimizer + constraint pruning.
@@ -358,6 +396,8 @@ where
             read_view: self.read_view.clone(),
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
             cancelled: self.cancelled.clone(),
+            reconstructed_cache: self.reconstructed_cache.clone(),
+            reconstructed_cache_ttl: self.reconstructed_cache_ttl,
         }
     }
 }
