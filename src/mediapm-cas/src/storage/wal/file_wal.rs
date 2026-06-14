@@ -24,7 +24,7 @@
 //!    in-memory pending state for all entries from the checkpoint forward.
 //! 4. Resumes appending to the active segment (or creates one).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -234,6 +234,9 @@ struct FileWalInner {
     /// In-memory pending state for fast `check_pending`.
     /// Maps hash → (position, state). Retains only entries > checkpoint.
     pending: Mutex<HashMap<Hash, (WalPosition, PendingState)>>,
+    /// In-memory pending constraint state for fast `check_pending_constraint`.
+    /// Maps target hash → (position, bases). Retains only entries > checkpoint.
+    pending_constraints: Mutex<HashMap<Hash, (WalPosition, BTreeSet<Hash>)>>,
 }
 
 struct JournalWriterState {
@@ -312,18 +315,22 @@ impl FileWal {
 
         // Build pending state from checkpoint forward.
         let mut pending = HashMap::new();
+        let mut pending_constraints = HashMap::new();
         let all_entries =
             Self::collect_entries_from_checkpoint(&sealed, &active_entries, &[], checkpoint_pos)?;
         for (pos, entry) in &all_entries {
-            // Constraint entries don't affect check_pending (only Put/Delete).
             match entry {
                 WalEntry::Put { hash, data } => {
                     pending.insert(*hash, (*pos, PendingState::Present(data.clone())));
+                    pending_constraints.remove(hash);
                 }
                 WalEntry::Delete { hash } => {
                     pending.insert(*hash, (*pos, PendingState::Tombstone));
+                    pending_constraints.remove(hash);
                 }
-                WalEntry::Constraint { .. } => {}
+                WalEntry::Constraint { target, bases } => {
+                    pending_constraints.insert(*target, (*pos, bases.clone()));
+                }
             }
         }
 
@@ -336,6 +343,7 @@ impl FileWal {
                 sealed: Mutex::new(sealed),
                 next_pos: AtomicU64::new(next_pos),
                 pending: Mutex::new(pending),
+                pending_constraints: Mutex::new(pending_constraints),
             }),
         })
     }
@@ -484,11 +492,15 @@ impl Wal for FileWal {
                     .lock()
                     .unwrap()
                     .insert(*hash, (pos, PendingState::Present(data.clone())));
+                inner.pending_constraints.lock().unwrap().remove(hash);
             }
             WalEntry::Delete { hash } => {
                 inner.pending.lock().unwrap().insert(*hash, (pos, PendingState::Tombstone));
+                inner.pending_constraints.lock().unwrap().remove(hash);
             }
-            WalEntry::Constraint { .. } => {}
+            WalEntry::Constraint { target, bases } => {
+                inner.pending_constraints.lock().unwrap().insert(*target, (pos, bases.clone()));
+            }
         }
 
         Ok(pos)
@@ -510,6 +522,11 @@ impl Wal for FileWal {
     async fn check_pending(&self, hash: &Hash) -> PendingState {
         let map = self.inner.pending.lock().unwrap();
         map.get(hash).map(|(_, state)| state.clone()).unwrap_or(PendingState::NotPresent)
+    }
+
+    async fn check_pending_constraint(&self, target: &Hash) -> Option<BTreeSet<Hash>> {
+        let map = self.inner.pending_constraints.lock().unwrap();
+        map.get(target).map(|(_, bases)| bases.clone())
     }
 
     async fn replay_from(&self, pos: WalPosition) -> Vec<(WalPosition, WalEntry)> {
@@ -596,6 +613,7 @@ impl Wal for FileWal {
 
         // Prune pending entries whose position ≤ up_to.
         inner.pending.lock().unwrap().retain(|_, (pos, _)| *pos > up_to);
+        inner.pending_constraints.lock().unwrap().retain(|_, (pos, _)| *pos > up_to);
 
         Ok(())
     }

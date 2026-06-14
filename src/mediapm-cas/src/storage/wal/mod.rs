@@ -102,6 +102,14 @@ pub trait Wal: Send + Sync {
     /// Check whether a hash has a pending entry.
     async fn check_pending(&self, hash: &Hash) -> PendingState;
 
+    /// Check whether a hash has a pending Constraint entry.
+    ///
+    /// Returns the constraint bases if the most recent pending entry for
+    /// `target` is a `Constraint`. Returns `None` if there is no pending
+    /// `Constraint` for `target` (either no entry, or a Put/Delete entry
+    /// is more recent).
+    async fn check_pending_constraint(&self, target: &Hash) -> Option<BTreeSet<Hash>>;
+
     /// Replay entries from (and including) `pos`.
     async fn replay_from(&self, pos: WalPosition) -> Vec<(WalPosition, WalEntry)>;
 

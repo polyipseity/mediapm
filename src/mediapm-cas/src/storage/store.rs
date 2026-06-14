@@ -166,11 +166,15 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
             ));
         }
 
-        // Write the constraint to WAL first.
+        // Write the constraint to WAL first (crash-safe commitment).
         self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
 
-        // Then update the index.
-        self.index.set_constraint(target, bases).await
+        // Materialize Index immediately when SYNC_MATERIALIZE is true.
+        // Otherwise, the WAL consumer (BackgroundEngine) will apply it.
+        if I::SYNC_MATERIALIZE {
+            self.index.set_constraint(target, bases).await?;
+        }
+        Ok(())
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
@@ -178,7 +182,17 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
         if target == Hash::empty() {
             return Ok(BTreeSet::new());
         }
-        self.index.get_constraint(&target).await
+        // Check the Index first (committed state).
+        let result = self.index.get_constraint(&target).await?;
+        if !result.is_empty() {
+            return Ok(result);
+        }
+        // WAL fallback: check for a pending Constraint entry that hasn't
+        // been consumed yet (write-back mode).
+        match self.wal.check_pending_constraint(&target).await {
+            Some(bases) => Ok(bases),
+            None => Ok(result), // whatever the index returned (possibly empty)
+        }
     }
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
@@ -186,8 +200,8 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
         if target == Hash::empty() {
             return Ok(());
         }
-        // Read current state.
-        let mut bases = self.index.get_constraint(&target).await?;
+        // Read current state (considers WAL fallback).
+        let mut bases = self.get_constraint(target).await?;
 
         if patch.clear {
             bases.clear();
@@ -204,9 +218,14 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
             bases.remove(remove);
         }
 
-        // Write the full updated constraint to WAL.
+        // Write the full updated constraint to WAL first.
         self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
-        self.index.set_constraint(target, bases).await
+
+        // Materialize Index immediately when SYNC_MATERIALIZE is true.
+        if I::SYNC_MATERIALIZE {
+            self.index.set_constraint(target, bases).await?;
+        }
+        Ok(())
     }
 }
 

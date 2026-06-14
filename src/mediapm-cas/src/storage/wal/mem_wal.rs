@@ -6,7 +6,7 @@
 //! Cloning shares the underlying state (all clones see the same entries).
 
 use async_trait::async_trait;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +82,21 @@ impl Wal for InMemoryWal {
             }
         }
         PendingState::NotPresent
+    }
+
+    async fn check_pending_constraint(&self, target: &Hash) -> Option<BTreeSet<Hash>> {
+        let guard = self.inner.entries.lock().unwrap();
+        for (_, entry) in guard.iter().rev() {
+            match entry {
+                WalEntry::Put { hash: h, .. } if h == target => return None,
+                WalEntry::Delete { hash: h } if h == target => return None,
+                WalEntry::Constraint { target: t, bases } if t == target => {
+                    return Some(bases.clone());
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     async fn replay_from(&self, pos: WalPosition) -> Vec<(WalPosition, WalEntry)> {
