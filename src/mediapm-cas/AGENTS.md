@@ -202,13 +202,15 @@ src/mediapm-cas/src/
     ├── macros.rs        — impl_cas_wrapper_traits!($ty) macro
     ├── store.rs         — CasStore<J,I,B> (composed handle, implements all traits)
     ├── wal/             — Wal trait + InMemoryWal + FileWal + entry types + versions
-    │   ├── mod.rs       — trait definitions + InMemoryWal
+    │   ├── mod.rs       — Wal trait + entry types + re-exports
+    │   ├── mem_wal.rs   — InMemoryWal (VecDeque, ephemeral)
     │   ├── file_wal.rs  — FileWal (segmented file-backed WAL)
     │   └── versions/    — on-disk format V1+
     │       ├── mod.rs
     │       └── v1.rs
     ├── blob_store/      — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
-    │   ├── mod.rs       — BlobStore trait + InMemoryBlobStore
+    │   ├── mod.rs       — BlobStore trait + re-exports
+    │   ├── mem_blob_store.rs — InMemoryBlobStore (DashMap, ephemeral)
     │   ├── fs_blob_store.rs — FileSystemBlobStore (atomic hash-derived layout)
     │   └── versions/    — path layout versions V1+
     │       ├── mod.rs   — version dispatch
