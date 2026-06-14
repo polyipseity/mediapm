@@ -10,7 +10,8 @@ pub(crate) mod versions;
 
 pub use fs_blob_store::FileSystemBlobStore;
 pub use mem_blob_store::InMemoryBlobStore;
-pub(crate) use versions::hash_to_path;
+
+use std::path::PathBuf;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -59,6 +60,13 @@ pub trait BlobStore: Send + Sync {
 
     /// Check whether any blob exists for `hash`.
     async fn exists(&self, hash: &Hash) -> Result<bool, CasError>;
+
+    /// Return the on-disk path for `hash`'s full blob, if this is a
+    /// filesystem-backed store. In-memory stores return `None`.
+    fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {
+        let _ = hash;
+        None
+    }
 
     /// Whether `put()` should materialize BlobStore + Index synchronously
     /// (write-through), or defer to the WAL consumer (write-back).

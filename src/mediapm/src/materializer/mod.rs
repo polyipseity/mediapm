@@ -213,7 +213,7 @@ mod tests {
         .await
         .expect("materialize with preferred hardlink");
 
-        let source_path = cas.object_path_for_hash(hash);
+        let source_path = cas.object_path_for_hash(hash).expect("FileSystemCas materialized path");
         assert_hardlinked_paths(&source_path, &destination_path);
         assert_eq!(std::fs::read(&destination_path).expect("read destination"), payload);
         assert!(notices.is_empty(), "hardlink-first success should not emit fallback notices");
@@ -1162,7 +1162,7 @@ mod tests {
         assert_eq!(record.hash, hash.to_string());
 
         let cas = FileSystemCas::open(&cas_root).await.expect("open cas");
-        let source_path = cas.object_path_for_hash(hash);
+        let source_path = cas.object_path_for_hash(hash).expect("FileSystemCas materialized path");
         let output_path = paths.hierarchy_root_dir.join("library/media-a.bin");
         assert_hardlinked_paths(&source_path, &output_path);
     }

@@ -186,8 +186,7 @@ pub(super) async fn materialize_file_from_cas_with_order(
     methods: &[MaterializationMethod],
     notices: &mut Vec<String>,
 ) -> Result<(), MediaPmError> {
-    let source_path = cas.object_path_for_hash(hash);
-    let source_path = source_path.is_file().then_some(source_path);
+    let source_path = cas.object_path_for_hash(hash).filter(|p| p.is_file());
     let mut failures = Vec::new();
 
     for (method_index, method) in methods.iter().enumerate() {

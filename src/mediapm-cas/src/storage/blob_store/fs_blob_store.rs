@@ -165,6 +165,10 @@ impl BlobStore for FileSystemBlobStore {
         Ok(fs::try_exists(full_path).await.unwrap_or(false)
             || fs::try_exists(delta_path).await.unwrap_or(false))
     }
+
+    fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {
+        Some(hash_to_path(&self.root, hash))
+    }
 }
 
 #[cfg(test)]
