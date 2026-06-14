@@ -14,21 +14,6 @@ use super::index::InMemoryIndex;
 use super::store::CasStore;
 use super::wal::InMemoryWal;
 
-/// Seed the empty-content sentinel from any calling context.
-///
-/// Uses [`std::thread::scope`] to run the async init on a dedicated thread
-/// with its own tokio runtime, avoiding tokio re-entrancy panics that occur
-/// when calling `Runtime::block_on` or `Handle::block_on` from inside an
-/// active runtime.
-fn seed_sentinel(store: &CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>) {
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let rt = tokio::runtime::Runtime::new().expect("create seed runtime");
-            rt.block_on(store.seed_sentinel()).unwrap();
-        });
-    });
-}
-
 /// Fully-assembled in-memory CAS store.
 ///
 /// Wraps [`CasStore`] with the in-memory backend triplet for convenient
@@ -38,14 +23,8 @@ pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryB
 
 impl InMemoryCas {
     /// Create a new empty in-memory CAS store.
-    ///
-    /// The empty-content sentinel is seeded during construction so
-    /// [`Hash::empty()`] always resolves as an empty object.
     pub fn new() -> Self {
-        let store =
-            CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new());
-        seed_sentinel(&store);
-        Self(store)
+        Self(CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new()))
     }
 }
 

@@ -46,7 +46,6 @@ impl FileSystemCas {
         let index = FileSystemIndex::new(constraint_path);
         index.rebuild_from_wal(&wal).await?;
         let store = CasStore::new(wal, index, blob_store);
-        store.seed_sentinel().await?;
         Ok(Self(store))
     }
 

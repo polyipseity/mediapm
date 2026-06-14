@@ -12,7 +12,7 @@
 `Hash([u8; 32])` — blake3-256 content address.
 
 - **Content-addressed**: `Hash::from_content(data)` = blake3(data). Same data → same hash.
-- **Empty-content sentinel**: `Hash::empty()` = blake3(b"") (hash of empty content). Seeded on init as empty content in Index + BlobStore directly (skips WAL). get/stat use normal paths; delete is a no-op (sentinel is indelible); constraints are always empty (set/get/patch succeed but no-op).
+- **Empty-content sentinel**: `Hash::empty()` = blake3(b"") (hash of empty content). API-level special-casing: `get`/`stat` return empty content immediately without backend lookups; `delete` is a no-op (indelible); constraints are always empty (set/get/patch succeed but no-op).
 - **Wire format**: Multihash-encoded (`multihash` crate): `[code: varint(0x1e)][length: varint(0x20)][32-byte digest]`.
   `storage_bytes()` / `from_storage_bytes_with_len()` use `Multihash::wrap` / `Multihash::read`.
 - **Serialization**: Derives `Serialize`/`Deserialize` (serde) and `Ord` (lexicographic on bytes).
@@ -55,7 +55,7 @@ Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **delete**: Append `WalEntry::Delete` to WAL. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
-Empty-content sentinel is a no-op — never appended to WAL (seeded on every init via `seed_sentinel`).
+Empty-content sentinel is a no-op — never appended to WAL.
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
 
@@ -222,7 +222,7 @@ src/mediapm-cas/src/
     ├── read_view.rs       — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
     ├── pending_ops.rs     — PendingOps (in-flight read dedup helper)
     ├── bg_engine.rs       — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
-    ├── in_memory.rs       — InMemoryCas wrapper + seed_sentinel helper
+    ├── in_memory.rs       — InMemoryCas wrapper
     └── file_system.rs     — FileSystemCas wrapper + open()
 ```
 

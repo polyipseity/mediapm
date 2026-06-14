@@ -94,18 +94,6 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
     pub fn bg_engine(&self) -> &BackgroundEngine<J, I, B> {
         &self.bg_engine
     }
-
-    /// Seed the empty-content sentinel into BlobStore and Index.
-    ///
-    /// Called once during initialization to ensure [`Hash::empty()`]
-    /// always resolves as an empty object. Skips WAL (re-seeded on
-    /// every init).
-    pub async fn seed_sentinel(&self) -> Result<(), CasError> {
-        let empty = Hash::empty();
-        self.blob_store.write(empty, ObjectEncoding::Full, Bytes::new()).await?;
-        self.index.put(empty, IndexEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
-        Ok(())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -133,10 +121,18 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     }
 
     async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
+        // Empty-content sentinel is always immediately available.
+        if hash == Hash::empty() {
+            return Ok(Bytes::new());
+        }
         self.read_view.get(&hash).await
     }
 
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {
+        // Empty-content sentinel is always immediately available.
+        if hash == Hash::empty() {
+            return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
+        }
         self.read_view.stat(&hash).await
     }
 
