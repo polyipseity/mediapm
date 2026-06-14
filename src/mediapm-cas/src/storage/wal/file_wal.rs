@@ -494,6 +494,10 @@ impl Wal for FileWal {
         Ok(pos)
     }
 
+    async fn consumed_position(&self) -> WalPosition {
+        self.inner.checkpoint.position()
+    }
+
     async fn committed_position(&self) -> WalPosition {
         let next = self.inner.next_pos.load(Ordering::SeqCst);
         if next == 0 { WalPosition::ZERO } else { WalPosition::from_u64(next - 1) }

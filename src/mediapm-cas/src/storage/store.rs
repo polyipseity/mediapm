@@ -61,8 +61,10 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> Clone for CasStore<
 }
 
 impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
-    /// Create a new composed store.
-    pub fn new(wal: J, index: I, blob_store: B) -> Self
+    /// Create a new composed store.  `start_pos` tells the background
+    /// engine which WAL position to begin consuming from (e.g., the
+    /// last checkpoint on restart).
+    pub fn new(wal: J, index: I, blob_store: B, start_pos: WalPosition) -> Self
     where
         J: 'static,
         I: 'static,
@@ -74,7 +76,7 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
             wal.clone(),
             index.clone(),
             blob_store.clone(),
-            WalPosition::ZERO,
+            start_pos,
             read_view.clone(),
         );
         Self { wal, index, blob_store, read_view, bg_engine }

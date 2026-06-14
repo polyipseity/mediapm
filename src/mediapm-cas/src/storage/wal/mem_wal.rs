@@ -60,6 +60,10 @@ impl Wal for InMemoryWal {
         if n == 0 { WalPosition::ZERO } else { WalPosition(n - 1) }
     }
 
+    async fn consumed_position(&self) -> WalPosition {
+        WalPosition::ZERO
+    }
+
     async fn pending_count(&self) -> u64 {
         self.inner.entries.lock().unwrap().len() as u64
     }

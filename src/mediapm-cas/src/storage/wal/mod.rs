@@ -89,6 +89,13 @@ pub trait Wal: Send + Sync {
     /// Return the highest committed position.
     async fn committed_position(&self) -> WalPosition;
 
+    /// Return the highest consumed (checkpointed) position.
+    ///
+    /// For persistent WALs this is the position recovered from the
+    /// checkpoint file on startup. For in-memory WALs it is ZERO
+    /// (no persistence).
+    async fn consumed_position(&self) -> WalPosition;
+
     /// Return the number of entries not yet consumed.
     async fn pending_count(&self) -> u64;
 

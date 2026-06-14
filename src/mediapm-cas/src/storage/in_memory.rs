@@ -12,7 +12,7 @@
 use super::blob_store::InMemoryBlobStore;
 use super::index::InMemoryIndex;
 use super::store::CasStore;
-use super::wal::InMemoryWal;
+use super::wal::{InMemoryWal, WalPosition};
 
 /// Fully-assembled in-memory CAS store.
 ///
@@ -24,7 +24,12 @@ pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryB
 impl InMemoryCas {
     /// Create a new empty in-memory CAS store.
     pub fn new() -> Self {
-        Self(CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new()))
+        Self(CasStore::new(
+            InMemoryWal::new(),
+            InMemoryIndex::new(),
+            InMemoryBlobStore::new(),
+            WalPosition::ZERO,
+        ))
     }
 }
 
