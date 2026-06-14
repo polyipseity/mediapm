@@ -62,9 +62,14 @@ impl FileSystemBlobStore {
         Self::create(root, Vec::new()).await
     }
 
-    /// Returns `true` when at least one verify-on-read strategy is configured.
+    /// Returns `true` when the read-path should verify the content hash
+    /// against the stored hash.
+    ///
+    /// Only [`VerifyTriggerStrategy::Always`] triggers inline verification;
+    /// `Modified`, `Sample`, and `Stale` are not yet implemented and
+    /// silently treated as off.
     fn should_verify(&self) -> bool {
-        !self.verify_strategies.is_empty()
+        self.verify_strategies.iter().any(|s| matches!(s, VerifyTriggerStrategy::Always))
     }
 
     /// Return the root path.
@@ -159,11 +164,16 @@ impl BlobStore for FileSystemBlobStore {
         Ok(())
     }
 
-    async fn exists(&self, hash: &Hash) -> Result<bool, CasError> {
-        let full_path = hash_to_path(&self.root, hash);
-        let delta_path = hash_to_delta_path(&self.root, hash);
-        Ok(fs::try_exists(full_path).await.unwrap_or(false)
-            || fs::try_exists(delta_path).await.unwrap_or(false))
+    async fn delete_encoding(&self, hash: Hash, encoding: ObjectEncoding) -> Result<(), CasError> {
+        let path = match encoding {
+            ObjectEncoding::Full => hash_to_path(&self.root, &hash),
+            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
+        };
+        match fs::remove_file(&path).await {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CasError::Io(e)),
+            Ok(()) => Ok(()),
+        }
     }
 
     fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {
@@ -277,8 +287,12 @@ mod tests {
         store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
         store.write(hash, ObjectEncoding::Delta { base_hash: base }, data).await.unwrap();
 
-        assert!(store.exists(&hash).await.unwrap());
+        // Both paths exist before delete.
+        assert!(store.read(&hash).await.is_ok());
+        assert!(store.read_delta(&hash).await.is_ok());
         store.delete(&hash).await.unwrap();
-        assert!(!store.exists(&hash).await.unwrap());
+        // Both paths gone after delete.
+        assert!(store.read(&hash).await.is_err());
+        assert!(store.read_delta(&hash).await.is_err());
     }
 }

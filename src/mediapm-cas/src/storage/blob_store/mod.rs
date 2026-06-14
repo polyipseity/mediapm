@@ -58,8 +58,15 @@ pub trait BlobStore: Send + Sync {
     /// Delete all blobs for `hash` (both full and delta).
     async fn delete(&self, hash: &Hash) -> Result<(), CasError>;
 
-    /// Check whether any blob exists for `hash`.
-    async fn exists(&self, hash: &Hash) -> Result<bool, CasError>;
+    /// Delete only a specific encoding of `hash`.
+    ///
+    /// Used for eventual cleanup during optimization (e.g., removing a
+    /// stale `.diff` blob after promoting it to full).
+    async fn delete_encoding(&self, hash: Hash, encoding: ObjectEncoding) -> Result<(), CasError> {
+        // Default: ignore (in-memory and simple impls).
+        let _ = (hash, encoding);
+        Ok(())
+    }
 
     /// Return the on-disk path for `hash`'s full blob, if this is a
     /// filesystem-backed store. In-memory stores return `None`.

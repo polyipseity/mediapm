@@ -54,10 +54,6 @@ impl BlobStore for InMemoryBlobStore {
         self.data.remove(hash);
         Ok(())
     }
-
-    async fn exists(&self, hash: &Hash) -> Result<bool, CasError> {
-        Ok(self.data.contains_key(hash))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,16 +94,5 @@ mod tests {
         assert!(store.read(&hash).await.is_ok());
         store.delete(&hash).await.unwrap();
         assert!(store.read(&hash).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn in_memory_exists_works() {
-        let store = InMemoryBlobStore::new();
-        let data = Bytes::from_static(b"exists check");
-        let hash = Hash::from_content(&data);
-
-        assert!(!store.exists(&hash).await.unwrap());
-        store.write(hash, ObjectEncoding::Full, data).await.unwrap();
-        assert!(store.exists(&hash).await.unwrap());
     }
 }
