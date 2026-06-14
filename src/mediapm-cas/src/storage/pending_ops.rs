@@ -19,6 +19,22 @@ struct PendingSlot {
     result: std::sync::OnceLock<Result<Option<Bytes>, CasError>>,
 }
 
+/// Drop guard that ensures waiters are notified even if the leader panics.
+struct PendingGuard<'a> {
+    hash: Hash,
+    ops: &'a PendingOps,
+    slot: &'a Arc<PendingSlot>,
+}
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        // On panic, store an error result so waiters don't block forever.
+        self.slot.result.get_or_init(|| Err(CasError::internal("leader panicked")));
+        self.slot.done.notify_waiters();
+        self.ops.inner.remove(&self.hash);
+    }
+}
+
 /// Deduplicates concurrent operations keyed by [`Hash`].
 ///
 /// Lock-free for the fast path — the [`DashMap`] entry is only held during
@@ -64,8 +80,12 @@ impl PendingOps {
             Entry::Vacant(e) => {
                 // We are the leader — do the work.
                 e.insert(slot.clone());
+                let guard = PendingGuard { hash, ops: self, slot: &slot };
                 let result = work().await;
-                // Store result for waiters before waking them.
+                // Prevent the guard from overwriting our result on drop.
+                // On the happy path, the guard must not fire, so we take
+                // ownership back via forget + manual cleanup.
+                std::mem::forget(guard);
                 slot.result.set(result.clone()).ok();
                 slot.done.notify_waiters();
                 self.inner.remove(&hash);
