@@ -11,13 +11,11 @@
 //!
 //! ## DO NOT REMOVE: external versions boundary guard
 //!
-//! This file is outside `delta/versions/` and must consume versioned envelope
-//! behavior only through `delta::versions` (`versions/mod.rs`) entry points,
-//! never by importing `delta::versions::vX` modules directly.
+//! See `delta/versions/mod.rs` for the canonical versions boundary policy. This file
+//! must consume versioned envelope behavior only through `delta::versions`
+//! entry points, never via `delta::versions::vX` imports.
 //!
-//! All wire-format logic (magic bytes, checksums, binary layout, multihash
-//! parsing details) is delegated to versioned modules in `delta/versions/`.
-//! No Unicode normalization (including NFD) is applied in this module.
+//! All wire-format logic is delegated to `delta/versions/`.
 
 use crate::delta::versions::{decode_delta_state, encode_delta_state};
 use crate::{CasError, Hash};

@@ -15,17 +15,14 @@
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!
-//! - This file must never import unversioned structs from outside `versions/`.
-//! - A `vX` module may reference only the most recent previous version module,
-//!   and only for version-to-version isomorphism/migration.
-//! - Latest-version bridging to unversioned runtime structs is owned by
-//!   `delta/versions/mod.rs`.
+//! See `versions/mod.rs` for the canonical versions policy. This file must not
+//! import unversioned structs from outside `versions/`.
 
 use zerocopy::little_endian::U64 as Le64;
 use zerocopy::{FromBytes, Immutable, KnownLayout};
 
 use crate::delta::versions::v2::DeltaStateV2;
-use crate::{CasError, Hash, HashParseError};
+use crate::{CasError, Hash};
 
 /// Magic marker for diff-file integrity and versioning sanity checks.
 ///
@@ -51,11 +48,6 @@ pub(crate) struct DeltaStateV3 {
     pub(crate) diff_hash: [u8; 32],
     /// Encoded patch payload (VCDIFF bytes).
     pub(crate) payload: Vec<u8>,
-}
-
-/// Parses a multihash from bytes, returning both hash and consumed byte count.
-fn parse_multihash_from_bytes(bytes: &[u8]) -> Result<(Hash, usize), HashParseError> {
-    super::parse_multihash_from_bytes(bytes)
 }
 
 /// On-disk V3 envelope model.
@@ -110,7 +102,7 @@ impl V3Envelope {
         let diff_hash = meta.diff_hash;
 
         let remaining = &bytes[V3Metadata::SIZE..];
-        let (base_hash, hash_len) = parse_multihash_from_bytes(remaining)
+        let (base_hash, hash_len) = super::parse_multihash_from_bytes(remaining)
             .map_err(|e| CasError::corrupt_object(format!("delta envelope: V3 base_hash: {e}")))?;
 
         let payload = remaining[hash_len..].to_vec();
