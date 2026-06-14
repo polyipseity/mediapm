@@ -135,7 +135,7 @@ cas.put(bytes).await?;
 Newtype around `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
 WAL + blob store + index constraints persisted on disk; blob metadata in-memory
 (rebuilt from WAL on open). Index data (entries + constraints) saved to
-`<store_dir>/index.json`.
+`<store_dir>/constraints.json`.
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>`
 (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
@@ -301,7 +301,7 @@ Three-layer lookup for get/stat.
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
 
-**Delta reconstruction**: Index → `delta_resolve::resolve_delta_chain` → BlobStore.read_delta(hash)
+**Delta reconstruction**: Index → [`resolve_delta_chain`](crate::storage::read_view) → BlobStore.read_delta(hash)
 → walk base chain via Index → BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`.
 If base not found → `CasError::CorruptObject`.
 
@@ -312,9 +312,9 @@ If base not found → `CasError::CorruptObject`.
   - `apply_delta_chain` in `delta/patch.rs`: Pure `pub(crate)` function that takes base bytes,
     collected delta envelopes, applies VCDIFF patches innermost-first, returns fully
     reconstructed payload. Used by `delta_resolve::resolve_delta_chain`.
-  - `resolve_delta_chain` in `storage/delta_resolve.rs`: `pub(super)` async walker that
-    reads delta blobs from BlobStore and builds the chain, then calls `apply_delta_chain`.
-    Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
+- `resolve_delta_chain` in [`storage/read_view.rs`](crate::storage::read_view): `pub(super)` async walker that
+  reads delta blobs from BlobStore and builds the chain, then calls `apply_delta_chain`.
+  Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
 - **StoredObject**: Struct wrapping `DeltaState`. Encode/decode to/from versioned envelopes.
 - **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer, magic `b"CASDLT"`).
 
@@ -401,7 +401,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 
 - Iterative `get(base_hash)` for reconstruction goes through Index → BlobStore walk.
 - If base_hash not found → `CorruptObject`.
-- Cyclic references prevented by `check_no_cycle()` during chain traversal.
+- Cyclic references prevented by inline `HashSet` visitation during chain traversal.
 
 ### 8.6 Constraint invariants
 
