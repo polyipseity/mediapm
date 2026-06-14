@@ -101,8 +101,8 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     }
                 }
                 WalEntry::Delete { hash } => {
-                    // Zero hash is never physically stored; skip deletion.
-                    if *hash == Hash::zero() {
+                    // Empty-content sentinel is indelible; skip deletion.
+                    if *hash == Hash::empty() {
                         continue;
                     }
                     // Before physical deletion, re-materialize any deltas
@@ -215,7 +215,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Run maintenance: optimizer + constraint pruning.
     ///
     /// 1. **Optimizer**: build constraint map from Index, attempt delta
-    ///    rewrites. Skips zero-hash targets (sentinel).
+    ///    rewrites. Skips sentinel targets.
     ///    Computes VCDIFF delta for each constraint and stores the
     ///    delta-encoded result if it is smaller than the full payload.
     /// 2. **Constraint pruning**: per-base prune so each entry converges

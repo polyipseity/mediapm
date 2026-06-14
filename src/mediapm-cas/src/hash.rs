@@ -28,7 +28,7 @@ pub enum HashParseError {
 /// and tree structures but not for content priority.
 ///
 /// Serializes as a human-readable string `"blake3:hexdigest"` (e.g.
-/// `"blake3:0000000000000000000000000000000000000000000000000000000000000000"`)
+/// `"blake3:af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"`)
 /// for compatibility with Nickel config/state documents.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
@@ -55,9 +55,16 @@ impl Hash {
         blake3::Hash::from(self.0).to_hex().to_string()
     }
 
-    /// Return the zero hash (all zeros). Useful as a sentinel.
-    pub const fn zero() -> Self {
-        Self([0u8; HASH_SIZE])
+    /// Return the hash of empty content (`blake3(b"")`). A well-known sentinel:
+    /// always present in the store (seeded on init) and protected from deletion.
+    pub const fn empty() -> Self {
+        // Precomputed blake3-256 hash of the empty byte string.
+        const EMPTY_HASH_BYTES: [u8; HASH_SIZE] = [
+            0xaf, 0x13, 0x49, 0xb9, 0xf5, 0xf9, 0xa1, 0xa6, 0xa0, 0x40, 0x4d, 0xea, 0x36, 0xdc,
+            0xc9, 0x49, 0x9b, 0xcb, 0x25, 0xc9, 0xad, 0xc1, 0x12, 0xb7, 0xcc, 0x9a, 0x93, 0xca,
+            0xe4, 0x1f, 0x32, 0x62,
+        ];
+        Self(EMPTY_HASH_BYTES)
     }
 
     /// Composite hash from a sequence of hashes.
@@ -208,9 +215,17 @@ mod tests {
     }
 
     #[test]
-    fn zero_is_all_zeros() {
-        let z = Hash::zero();
-        assert_eq!(z.as_bytes(), &[0u8; 32]);
+    fn empty_equals_hash_of_empty_content() {
+        let z = Hash::empty();
+        assert_eq!(z, Hash::from_content(b""));
+    }
+
+    #[test]
+    fn empty_has_expected_hex() {
+        assert_eq!(
+            Hash::empty().to_hex(),
+            "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
+        );
     }
 
     #[test]

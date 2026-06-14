@@ -12,7 +12,7 @@
 `Hash([u8; 32])` — blake3-256 content address.
 
 - **Content-addressed**: `Hash::from_content(data)` = blake3(data). Same data → same hash.
-- **Zero sentinel**: `Hash::zero()` = `[0u8; 32]`. Seeded on init as empty content in Index + BlobStore directly (skips WAL). get/stat use normal paths; delete never appends to WAL (harmless no-op); constraints are always empty (set/get/patch succeed but no-op).
+- **Empty-content sentinel**: `Hash::empty()` = blake3(b"") (hash of empty content). Seeded on init as empty content in Index + BlobStore directly (skips WAL). get/stat use normal paths; delete is a no-op (sentinel is indelible); constraints are always empty (set/get/patch succeed but no-op).
 - **Wire format**: Multihash-encoded (`multihash` crate): `[code: varint(0x1e)][length: varint(0x20)][32-byte digest]`.
   `storage_bytes()` / `from_storage_bytes_with_len()` use `Multihash::wrap` / `Multihash::read`.
 - **Serialization**: Derives `Serialize`/`Deserialize` (serde) and `Ord` (lexicographic on bytes).
@@ -45,7 +45,7 @@ eliminating TOCTOU.
 **put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL.
 Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`:
 write-through materializes BlobStore + Index synchronously (immediate visibility);
-write-back defers to the WAL consumer. Zero hash cannot be produced by normal put (Hash::from_content never returns zero).
+write-back defers to the WAL consumer. Only `Hash::from_content(b"")` produces `Hash::empty()` — normal non-empty content never collides with it.
 
 **get**: Three-layer lookup (Index → BlobStore → WAL fallback) via `ComposedReadView`.
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
@@ -55,7 +55,7 @@ Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **delete**: Append `WalEntry::Delete` to WAL. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
-Zero hash is a no-op — never appended to WAL (seeded on every init).
+Empty-content sentinel is a no-op — never appended to WAL (seeded on every init via `seed_sentinel`).
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
 
@@ -86,7 +86,7 @@ from WAL), independent of object metadata. `get_constraint` returns an empty set
 constraint exists (no `Option`). There is no `effective_bases` method — callers that need
 live filtering must compose `get_constraint` with their own `live` set intersection.
 
-Zero hash exception: constraints on [`Hash::zero()`] are always empty. `set_constraint`,
+Empty-content sentinel exception: constraints on `Hash::empty()` are always empty. `set_constraint`,
 `get_constraint`, and `patch_constraint` all succeed but have no effect (always return
 or leave empty sets).
 
@@ -382,20 +382,20 @@ to reach the shared `CasStore` methods.
 
 ### 8.1 Content identity
 
-- Same bytes → same hash. Deterministic. Zero hash is sentinel-only (no real content produces it).
+- Same bytes → same hash. Deterministic. `Hash::empty()` (`blake3(b"")`) is a well-known sentinel; only empty content produces it.
 
-### 8.2 Zero-hash sentinel
+### 8.2 Empty-content sentinel
 
-- `Hash::zero()` (`[0u8; 32]`) is a built-in sentinel. No real content hashes to it — it is
-  always stored as an explicit empty-bytes entry.
+- `Hash::empty()` = `blake3(b"")` (hash of empty content) is a built-in sentinel.
+  It is always stored as an explicit empty-bytes entry (seeded on init).
 - All operations use the normal code paths:
-  - `put(zero)`: Normal path (WAL → compiled write-through/write-back policy). Stores empty bytes.
-  - `get(zero)`: Normal path — ReadView finds Index entry, reads empty bytes from BlobStore.
-  - `stat(zero)`: Normal path — returns `ObjectMeta { len: 0, encoding: Full }` from Index.
-  - `delete(zero)`: **No-op**. Never appended to WAL. Returns `Ok(())` immediately.
-- **Indelible**: Because `delete(zero)` is a no-op, the zero entry persists in BlobStore + Index
+  - `put(empty)`: Normal path (WAL → compiled write-through/write-back policy). Stores empty bytes.
+  - `get(empty)`: Normal path — ReadView finds Index entry, reads empty bytes from BlobStore.
+  - `stat(empty)`: Normal path — returns `ObjectMeta { len: 0, encoding: Full }` from Index.
+  - `delete(empty)`: **No-op**. Never appended to WAL. Returns `Ok(())` immediately.
+- **Indelible**: Because `delete(empty)` is a no-op, the empty entry persists in BlobStore + Index
   forever. No special seeding or re-seeding logic is needed on init or WAL replay.
-- BackgroundEngine has no special zero-hash skip; the WAL consumer processes zero `Put` entries
+- BackgroundEngine has no special sentinel skip; the WAL consumer processes empty `Put` entries
   normally.
 
 ### 8.3 Crash safety

@@ -82,52 +82,50 @@ async fn bulk_put_and_get() {
 }
 
 // ---------------------------------------------------------------------------
-// Empty hash (Hash::zero()) sentinel tests
+// Empty-content sentinel tests
 // ---------------------------------------------------------------------------
 
-/// Zero hash is a sentinel that always exists as empty content.
+/// Empty-content sentinel (`blake3(b"")`) always exists as empty content.
 ///
-/// - get(zero) → empty bytes
-/// - stat(zero) → {len: 0, encoding: Full}
-/// - delete(zero) → no-op (zero always present)
-/// - set_constraint(zero, …) → always empty constraints
-/// - get_constraint(zero) → always empty
-/// - patch_constraint(zero, …) → no-op
+/// - get(empty) → empty bytes
+/// - stat(empty) → {len: 0, encoding: Full}
+/// - delete(empty) → no-op (sentinel always present)
+/// - set_constraint(empty, …) → always empty constraints
+/// - get_constraint(empty) → always empty
+/// - patch_constraint(empty, …) → no-op
 #[tokio::test]
-async fn zero_hash_is_always_present() {
+async fn empty_sentinel_is_always_present() {
     let cas = new_in_memory_cas();
-    let zero = mediapm_cas::Hash::zero();
-    // It's a valid hash value.
-    assert_eq!(zero.as_bytes(), &[0u8; 32]);
-    // Not the hash of any real content (including empty).
-    assert_ne!(zero, mediapm_cas::Hash::from_content(b""));
+    let empty = mediapm_cas::Hash::empty();
+    // It's the hash of empty content.
+    assert_eq!(empty, mediapm_cas::Hash::from_content(b""));
 
     // Always present as empty content.
-    let data = cas.get(zero).await.unwrap();
-    assert!(data.is_empty(), "get(zero) should return empty bytes");
-    let meta = cas.stat(zero).await.unwrap();
-    assert_eq!(meta.len, 0, "stat(zero) len should be 0");
+    let data = cas.get(empty).await.unwrap();
+    assert!(data.is_empty(), "get(empty) should return empty bytes");
+    let meta = cas.stat(empty).await.unwrap();
+    assert_eq!(meta.len, 0, "stat(empty) len should be 0");
     assert_eq!(
         meta.encoding,
         mediapm_cas::ObjectEncoding::Full,
-        "stat(zero) encoding should be Full"
+        "stat(empty) encoding should be Full"
     );
 
-    // Deleting zero is harmless (no-op).
-    cas.delete(zero).await.unwrap();
-    // After delete, zero still exists.
-    let meta = cas.stat(zero).await.unwrap();
-    assert_eq!(meta.len, 0, "stat(zero) len should still be 0 after delete");
+    // Deleting empty is harmless (no-op).
+    cas.delete(empty).await.unwrap();
+    // After delete, empty still exists.
+    let meta = cas.stat(empty).await.unwrap();
+    assert_eq!(meta.len, 0, "stat(empty) len should still be 0 after delete");
 
-    // Constraints on zero are always empty.
+    // Constraints on empty are always empty.
     let base = mediapm_cas::Hash::from_content(b"some-base");
-    cas.set_constraint(zero, BTreeSet::from([base])).await.unwrap();
-    let got = cas.get_constraint(zero).await.unwrap();
-    assert!(got.is_empty(), "constraints on zero should always be empty");
+    cas.set_constraint(empty, BTreeSet::from([base])).await.unwrap();
+    let got = cas.get_constraint(empty).await.unwrap();
+    assert!(got.is_empty(), "constraints on empty should always be empty");
 
-    // Patch on zero is also a no-op.
+    // Patch on empty is also a no-op.
     cas.patch_constraint(
-        zero,
+        empty,
         ConstraintPatch {
             add_bases: BTreeSet::from([mediapm_cas::Hash::from_content(b"another")]),
             remove_bases: BTreeSet::new(),
@@ -136,6 +134,6 @@ async fn zero_hash_is_always_present() {
     )
     .await
     .unwrap();
-    let got = cas.get_constraint(zero).await.unwrap();
-    assert!(got.is_empty(), "patch_constraint on zero should have no effect");
+    let got = cas.get_constraint(empty).await.unwrap();
+    assert!(got.is_empty(), "patch_constraint on empty should have no effect");
 }

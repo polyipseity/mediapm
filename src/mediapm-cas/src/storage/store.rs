@@ -94,15 +94,15 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
         &self.bg_engine
     }
 
-    /// Seed the zero-hash sentinel into BlobStore and Index.
+    /// Seed the empty-content sentinel into BlobStore and Index.
     ///
-    /// Called once during initialization to ensure [`Hash::zero()`]
+    /// Called once during initialization to ensure [`Hash::empty()`]
     /// always resolves as an empty object. Skips WAL (re-seeded on
     /// every init).
-    pub async fn seed_zero(&self) -> Result<(), CasError> {
-        let zero = Hash::zero();
-        self.blob_store.write(zero, ObjectEncoding::Full, Bytes::new()).await?;
-        self.index.put(zero, IndexEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
+    pub async fn seed_sentinel(&self) -> Result<(), CasError> {
+        let empty = Hash::empty();
+        self.blob_store.write(empty, ObjectEncoding::Full, Bytes::new()).await?;
+        self.index.put(empty, IndexEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
         Ok(())
     }
 }
@@ -140,8 +140,8 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     }
 
     async fn delete(&self, hash: Hash) -> Result<(), CasError> {
-        // Zero hash can never be deleted (sentinel).
-        if hash == Hash::zero() {
+        // Empty-content sentinel is indelible.
+        if hash == Hash::empty() {
             return Ok(());
         }
         self.wal.append(WalEntry::Delete { hash }).await?;
@@ -156,8 +156,8 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
 #[async_trait]
 impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
-        // Zero hash always has empty constraints.
-        if target == Hash::zero() {
+        // Sentinel always has empty constraints.
+        if target == Hash::empty() {
             return Ok(());
         }
         // Validate: bases must be distinct and not include target.
@@ -175,16 +175,16 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
-        // Zero hash always has empty constraints.
-        if target == Hash::zero() {
+        // Sentinel always has empty constraints.
+        if target == Hash::empty() {
             return Ok(BTreeSet::new());
         }
         self.index.get_constraint(&target).await
     }
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
-        // Zero hash always has empty constraints.
-        if target == Hash::zero() {
+        // Sentinel always has empty constraints.
+        if target == Hash::empty() {
             return Ok(());
         }
         // Read current state.

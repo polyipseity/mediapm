@@ -604,11 +604,11 @@ where
                 }
                 continue;
             }
-            if merged.save.prefers_full() && output_ref.hash != Hash::zero() {
-                self.cas.set_constraint(output_ref.hash, BTreeSet::from([Hash::zero()])).await?;
+            if merged.save.prefers_full() && output_ref.hash != Hash::empty() {
+                self.cas.set_constraint(output_ref.hash, BTreeSet::from([Hash::empty()])).await?;
             }
             // Narrow delta-base selection: inputs → output diff hints.
-            let empty_hash = Hash::zero();
+            let empty_hash = Hash::empty();
             for (input_name, input_key) in &instance.inputs {
                 let input_hash = input_key.hash;
                 if input_hash == output_ref.hash || input_hash == empty_hash {
@@ -1023,7 +1023,7 @@ where
         // delta-encode the source against the compound rather than storing a
         // redundant full copy.
         if !segment_source_hashes.is_empty() {
-            let potential_bases = BTreeSet::from([hash, Hash::zero()]);
+            let potential_bases = BTreeSet::from([hash, Hash::empty()]);
             for source_hash in segment_source_hashes {
                 self.cas.set_constraint(source_hash, potential_bases.clone()).await?;
             }
@@ -1063,9 +1063,9 @@ where
                     };
                     let bytes = self.cas.get(hash).await?;
                     if reference.save.is_some_and(OutputSaveMode::prefers_full)
-                        && hash != Hash::zero()
+                        && hash != Hash::empty()
                     {
-                        self.cas.set_constraint(hash, BTreeSet::from([Hash::zero()])).await?;
+                        self.cas.set_constraint(hash, BTreeSet::from([Hash::empty()])).await?;
                     }
                     plain_content.extend_from_slice(bytes.as_ref());
                 }
@@ -4791,7 +4791,7 @@ mod tests {
         let constraint =
             cas.get_constraint(external_hash).await.expect("query full-save external constraint");
         eprintln!("=== TEST: after get_constraint, constraint={constraint:?} ===");
-        assert_eq!(constraint, BTreeSet::from([Hash::zero()]));
+        assert_eq!(constraint, BTreeSet::from([Hash::empty()]));
     }
 
     /// Protects regular external-data save behavior by avoiding full-save hints

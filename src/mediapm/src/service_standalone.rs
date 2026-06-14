@@ -350,7 +350,7 @@ mod tests {
             outputs: BTreeMap::from([(
                 "result".to_string(),
                 OutputRef {
-                    hash: Hash::zero(),
+                    hash: Hash::empty(),
                     persistence: PersistenceFlags::default(),
                     allow_empty_capture: false,
                 },

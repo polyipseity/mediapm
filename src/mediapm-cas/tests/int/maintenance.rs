@@ -138,15 +138,14 @@ async fn optimize_delta_rewrite() {
     assert_eq!(retrieved, target_content, "get must reconstruct original content");
 }
 
-/// Optimizer skips zero-hash targets (sentinel, never materialized) without
-/// error.
+/// Optimizer skips empty-content sentinel targets without error.
 #[tokio::test]
-async fn optimize_skips_zero_hash_target() {
+async fn optimize_skips_sentinel_target() {
     let cas = new_in_memory_cas();
 
     let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
-    // Set constraint with Hash::zero() as target.
-    cas.set_constraint(Hash::zero(), [base].into()).await.unwrap();
+    // Set constraint with Hash::empty() as target.
+    cas.set_constraint(Hash::empty(), [base].into()).await.unwrap();
 
     // Must not panic or error.
     let report = cas.run_maintenance_cycle().await.unwrap();

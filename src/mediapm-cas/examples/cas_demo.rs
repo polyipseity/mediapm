@@ -31,10 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(result, Err(CasError::NotFound(_))));
     println!("Deleted and confirmed gone.\n");
 
-    // --- zero hash sentinel ---
-    let zero = Hash::zero();
-    assert!(cas.get(zero).await?.is_empty());
-    println!("Zero hash: sentinel ok.");
+    // --- empty-content sentinel ---
+    let empty = Hash::empty();
+    assert!(cas.get(empty).await?.is_empty());
+    println!("Empty-content sentinel: ok.");
 
     // --- constraints ---
     let a = Hash::from_content(b"base data");
