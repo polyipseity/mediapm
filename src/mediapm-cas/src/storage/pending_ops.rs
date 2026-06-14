@@ -20,18 +20,27 @@ struct PendingSlot {
 }
 
 /// Drop guard that ensures waiters are notified even if the leader panics.
+///
+/// Uses an explicit `committed` flag instead of [`std::mem::forget`]: on the
+/// happy path the leader sets `committed = true` before cleaning up, so the
+/// `Drop` is a no-op. If the leader panics, `committed` stays `false` and
+/// the `Drop` signals an error to waiters.
 struct PendingGuard<'a> {
     hash: Hash,
     ops: &'a PendingOps,
     slot: &'a Arc<PendingSlot>,
+    committed: bool,
 }
 
 impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
-        // On panic, store an error result so waiters don't block forever.
-        self.slot.result.get_or_init(|| Err(CasError::internal("leader panicked")));
-        self.slot.done.notify_waiters();
-        self.ops.inner.remove(&self.hash);
+        if !self.committed {
+            // On panic (or early return without setting committed = true),
+            // store an error result so waiters don't block forever.
+            self.slot.result.get_or_init(|| Err(CasError::internal("leader panicked")));
+            self.slot.done.notify_waiters();
+            self.ops.inner.remove(&self.hash);
+        }
     }
 }
 
@@ -80,15 +89,14 @@ impl PendingOps {
             Entry::Vacant(e) => {
                 // We are the leader — do the work.
                 e.insert(slot.clone());
-                let guard = PendingGuard { hash, ops: self, slot: &slot };
+                let mut guard = PendingGuard { hash, ops: self, slot: &slot, committed: false };
                 let result = work().await;
-                // Prevent the guard from overwriting our result on drop.
-                // On the happy path, the guard must not fire, so we take
-                // ownership back via forget + manual cleanup.
-                std::mem::forget(guard);
+                guard.committed = true;
                 slot.result.set(result.clone()).ok();
                 slot.done.notify_waiters();
                 self.inner.remove(&hash);
+                // At this point `guard` drops with committed=true → no-op.
+                drop(guard);
                 result
             }
         }
