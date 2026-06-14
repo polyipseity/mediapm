@@ -194,7 +194,7 @@ src/mediapm-cas/src/
 
 ├── delta/
 │   ├── mod.rs           — module root, versioning boundary guard
-│   ├── delta.rs         — DeltaPatch (VCDIFF via oxidelta) + apply_delta_chain
+│   ├── patch.rs         — DeltaPatch (VCDIFF via oxidelta) + apply_delta_chain
 │   ├── object.rs        — DeltaState + StoredObject (version-agnostic)
 │   └── versions/        — V1/V2/V3 delta envelope wire formats (mod.rs = canonical API)
 └── storage/
@@ -313,18 +313,13 @@ If base not found → `CasError::CorruptObject`.
 
 - **DeltaPatch**: VCDIFF wrapper via `oxidelta`. `diff(base, target)` → patch; `apply(patch, base)` → reconstructed target.
 - Two functions for chain resolution:
-  - `apply_delta_chain` in `delta/delta.rs`: Pure `pub(crate)` function that takes base bytes
-    - collected delta envelopes, applies VCDIFF patches innermost-first, returns fully
-  reconstructed payload. Used by `delta_resolve::resolve_delta_chain`.
+  - `apply_delta_chain` in `delta/patch.rs`: Pure `pub(crate)` function that takes base bytes,
+    collected delta envelopes, applies VCDIFF patches innermost-first, returns fully
+    reconstructed payload. Used by `delta_resolve::resolve_delta_chain`.
   - `resolve_delta_chain` in `storage/delta_resolve.rs`: `pub(super)` async walker that
     reads delta blobs from BlobStore and builds the chain, then calls `apply_delta_chain`.
     Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
-- **Asymmetry note**: The shared pure function was renamed from `resolve_delta_chain` to
-  `apply_delta_chain` (S10). The delta_resolve walker kept the old name for minimal diff
-  surface. Both names appear in the codebase.
-- **StoredObject**: `Full { payload }` or `Delta { state }`. Encode/decode to/from versioned envelopes.
-  The `Full` variant and its constructor use `#[allow(dead_code)]`; accessor methods
-  (`base_hash`, `payload_len`) use `#[expect(dead_code)]` with explicit reasons.
+- **StoredObject**: Struct wrapping `DeltaState`. Encode/decode to/from versioned envelopes.
 - **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer, magic `b"CASDLT"`).
 
 **Versioning boundary guard**: Code outside `delta/versions/` must interact with versioned

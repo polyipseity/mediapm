@@ -19,8 +19,8 @@
 //! - Do not directly re-export `versions::vX` structs/types from this module.
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
-use crate::CasError;
 use crate::delta::object::DeltaState;
+use crate::{CasError, HashParseError};
 
 pub(crate) mod v1;
 pub(crate) mod v2;
@@ -33,10 +33,6 @@ const ENVELOPE_PREFIX_LEN: usize = 8;
 const DIFF_STORAGE_MAGIC_PREFIX_V3: &[u8; 6] = b"CASDLT";
 /// Legacy magic prefix for V1/V2 delta envelopes (`MDCASD` = Media Delta).
 const DIFF_STORAGE_MAGIC_PREFIX_LEGACY: &[u8; 6] = b"MDCASD";
-
-/// Latest supported wire version.
-#[expect(dead_code, reason = "available for external migration use")]
-pub(crate) const LATEST_WIRE_VERSION: u16 = 3;
 
 /// Decodes and validates the embedded wire version from envelope magic bytes.
 ///
@@ -77,9 +73,16 @@ fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
     Ok(version)
 }
 
+/// Parses a multihash from bytes, returning both hash and consumed byte count.
+pub(crate) fn parse_multihash_from_bytes(
+    bytes: &[u8],
+) -> Result<(crate::Hash, usize), HashParseError> {
+    crate::Hash::from_storage_bytes_with_len(bytes)
+}
+
 /// ## DO NOT REMOVE: latest-first version dispatch guard
 ///
-/// Version checks shoud always start checking from the latest version to ensure performance.
+/// Version checks should always start checking from the latest version to ensure performance.
 fn dispatch_delta_wire_version(version: u16) -> Result<(), CasError> {
     match version {
         3 | 2 | 1 => Ok(()),
@@ -144,13 +147,7 @@ pub(crate) fn decode_delta_state(bytes: &[u8]) -> Result<DeltaState, CasError> {
 
 /// Encodes unversioned runtime delta state using the latest wire version.
 pub(crate) fn encode_delta_state(state: DeltaState) -> Vec<u8> {
-    let state_v3 = v3::DeltaStateV3 {
-        base_hash: state.base_hash,
-        content_len: state.content_len,
-        diff_hash: *blake3::hash(&state.payload).as_bytes(),
-        payload: state.payload,
-    };
-    let envelope = v3::V3Envelope::from(state_v3);
+    let envelope = v3::V3Envelope::from_parts(state.base_hash, state.content_len, state.payload);
     envelope.encode()
 }
 
@@ -462,7 +459,7 @@ mod tests {
             .unwrap_or_else(|err| panic!("failed reading '{}': {err}", mod_file.display()));
 
         assert!(
-            content.contains("Version checks shoud always start checking from the latest version to ensure performance."),
+            content.contains("Version checks should always start checking from the latest version to ensure performance."),
             "{} must keep the latest-first version dispatch performance guard docstring",
             mod_file.display()
         );

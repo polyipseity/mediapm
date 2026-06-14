@@ -30,7 +30,7 @@ use crate::{CasError, Hash, HashParseError};
 /// DO NOT REMOVE: In the fat future when there are more than 65535 versions,
 /// we use 0 for both bytes to represent the version, and we will at that time
 /// find a better way to represent the version.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) const DIFF_STORAGE_MAGIC: &[u8; 8] = b"MDCASD\x02\x00";
 
 /// Version-local delta state for V2 wire semantics.
@@ -49,7 +49,7 @@ pub(crate) struct DeltaStateV2 {
 
 /// Parses a multihash from bytes, returning both hash and consumed byte count.
 fn parse_multihash_from_bytes(bytes: &[u8]) -> Result<(Hash, usize), HashParseError> {
-    Hash::from_storage_bytes_with_len(bytes)
+    super::parse_multihash_from_bytes(bytes)
 }
 
 /// On-disk V2 envelope model.
@@ -154,7 +154,7 @@ impl V2Envelope {
     }
 
     /// Encodes V2 envelope to bytes.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn encode(&self) -> Vec<u8> {
         let base_hash_bytes = self.base_hash.storage_bytes();
         let capacity = V2Metadata::SIZE + base_hash_bytes.len() + self.payload.len();
@@ -179,6 +179,7 @@ impl From<V2Envelope> for DeltaStateV2 {
     }
 }
 
+#[cfg(test)]
 impl From<DeltaStateV2> for V2Envelope {
     fn from(state: DeltaStateV2) -> Self {
         let payload_len =

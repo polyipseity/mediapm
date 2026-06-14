@@ -20,8 +20,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use bytes::Bytes;
 
 use crate::api::ObjectEncoding;
-use crate::delta::delta::DeltaPatch;
 use crate::delta::object::StoredObject;
+use crate::delta::patch::DeltaPatch;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -154,7 +154,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     details: format!("failed to decode delta envelope for re-materialization: {e}"),
                 })?;
             let vcdiff = stored_obj.payload();
-            let patch = crate::delta::delta::DeltaPatch::decode(vcdiff);
+            let patch = crate::delta::patch::DeltaPatch::decode(vcdiff);
             let result = patch.apply(&base_bytes, dep_hash, dep_hash, *hash).map_err(|e| {
                 CasError::CorruptObject {
                     hash: Some(dep_hash),

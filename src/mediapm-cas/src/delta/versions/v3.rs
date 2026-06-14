@@ -29,8 +29,8 @@ use crate::{CasError, Hash, HashParseError};
 
 /// Magic marker for diff-file integrity and versioning sanity checks.
 ///
-/// The `MD` prefix stands for **Media Delta**; the final two bytes are a
-/// little-endian `u16` version.
+/// The `CASDLT` prefix stands for **Content-Addressed Storage Delta**; the
+/// final two bytes are a little-endian `u16` version.
 ///
 /// DO NOT REMOVE: In the fat future when there are more than 65535 versions,
 /// we use 0 for both bytes to represent the version, and we will at that time
@@ -55,7 +55,7 @@ pub(crate) struct DeltaStateV3 {
 
 /// Parses a multihash from bytes, returning both hash and consumed byte count.
 fn parse_multihash_from_bytes(bytes: &[u8]) -> Result<(Hash, usize), HashParseError> {
-    Hash::from_storage_bytes_with_len(bytes)
+    super::parse_multihash_from_bytes(bytes)
 }
 
 /// On-disk V3 envelope model.
@@ -152,7 +152,6 @@ impl V3Envelope {
     }
 
     /// Builds an envelope from content parameters, computing diff_hash internally.
-    #[allow(dead_code)]
     pub(crate) fn from_parts(base_hash: Hash, content_len: u64, payload: Vec<u8>) -> Self {
         let payload_len = payload.len() as u64;
         let diff_hash = *blake3::hash(&payload).as_bytes();

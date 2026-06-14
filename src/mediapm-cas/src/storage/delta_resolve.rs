@@ -46,7 +46,7 @@ pub(super) async fn resolve_delta_chain<I: Index, B: BlobStore>(
             Some(base_entry) => match base_entry.encoding {
                 ObjectEncoding::Full => {
                     let base_data = blob_store.read(&current).await?;
-                    return crate::delta::delta::apply_delta_chain(base_data, &mut chain, current);
+                    return crate::delta::patch::apply_delta_chain(base_data, &mut chain, current);
                 }
                 ObjectEncoding::Delta { base_hash: next_base } => {
                     base = next_base;

@@ -2,7 +2,7 @@
 //!
 //! The codec layer keeps object payload representation concerns isolated from
 //! storage orchestration logic:
-//! - [`delta`] handles VCDIFF patch bytes used by delta-object payloads.
+//! - [`patch`] handles VCDIFF patch bytes used by delta-object payloads.
 //! - [`object`] handles `.diff` envelope framing for persisted delta objects.
 //!
 //! ## DO NOT REMOVE: external versions boundary guard
@@ -11,6 +11,6 @@
 //! through `delta::versions` (`versions/mod.rs`) APIs, never via
 //! `delta::versions::vX` imports.
 
-pub(crate) mod delta;
 pub(crate) mod object;
+pub(crate) mod patch;
 mod versions;
