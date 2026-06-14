@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
+use tempfile::tempdir;
 
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ObjectEncoding};
 use mediapm_cas::hash::Hash;
@@ -327,4 +328,114 @@ async fn optimize_idempotent() {
     // Third optimization: still idempotent.
     cas.run_maintenance_cycle().await.unwrap();
     assert_eq!(cas.get(target_hash).await.unwrap(), target);
+}
+
+/// After delta-to-full promotion, the stale `.diff` file is removed.
+///
+/// Uses `FileSystemCas` so we can inspect the filesystem directly.
+#[tokio::test]
+async fn stale_diff_removed_after_delta_to_full_promotion() {
+    let dir = tempdir().unwrap();
+    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+
+    // Two similar large buffers so VCDIFF delta makes sense.
+    let base_content = Bytes::from(vec![b'A'; 4096]);
+    let target_content = {
+        let mut v = vec![b'A'; 2048];
+        v.extend_from_slice(b"CHANGED");
+        v.extend_from_slice(&vec![b'A'; 2048 - 7]);
+        Bytes::from(v)
+    };
+
+    let base_hash = cas.put(base_content.clone()).await.unwrap();
+    let target_hash = cas.put(target_content.clone()).await.unwrap();
+
+    // Set constraint and run maintenance → optimizer creates delta.
+    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    // Target should now be delta-encoded (has .diff file).
+    let meta = cas.stat(target_hash).await.unwrap();
+    assert!(
+        matches!(meta.encoding, ObjectEncoding::Delta { .. }),
+        "target should be delta-encoded after optimization",
+    );
+
+    // Compute the .diff path from the object path.
+    let full_path = cas.object_path_for_hash(target_hash).unwrap();
+    let mut diff_path = full_path.clone();
+    diff_path.set_extension(
+        full_path
+            .extension()
+            .map(|e| {
+                let mut s = e.to_os_string();
+                s.push(".diff");
+                s
+            })
+            .unwrap_or_else(|| std::ffi::OsString::from("diff")),
+    );
+    assert!(diff_path.exists(), ".diff file should exist after delta rewrite");
+
+    // Delete the base — next maintenance will promote target to full.
+    cas.delete(base_hash).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    // After promotion, target should be full-encoded.
+    let meta = cas.stat(target_hash).await.unwrap();
+    assert_eq!(
+        meta.encoding,
+        ObjectEncoding::Full,
+        "target should be full-encoded after base deletion",
+    );
+
+    // Content must still match.
+    assert_eq!(cas.get(target_hash).await.unwrap(), target_content);
+
+    // The stale .diff file must be gone.
+    assert!(!diff_path.exists(), "stale .diff file should be removed after promotion");
+}
+
+/// Delta cache accelerates repeated read_full_bytes calls.
+///
+/// Uses `FileSystemCas` so that background engine operations are real.
+#[tokio::test]
+async fn delta_cache_repeated_reads_work() {
+    let dir = tempdir().unwrap();
+    let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+
+    let base_content = Bytes::from(vec![b'B'; 4096]);
+    let target_content = {
+        let mut v = vec![b'B'; 2048];
+        v.extend_from_slice(b"DELTA_CACHE");
+        v.extend_from_slice(&vec![b'B'; 2048 - 10]);
+        Bytes::from(v)
+    };
+
+    let base_hash = cas.put(base_content.clone()).await.unwrap();
+    let target_hash = cas.put(target_content.clone()).await.unwrap();
+
+    // Create a delta chain.
+    cas.set_constraint(target_hash, [base_hash].into()).await.unwrap();
+    cas.run_maintenance_cycle().await.unwrap();
+
+    // Verify target is delta-encoded.
+    let meta = cas.stat(target_hash).await.unwrap();
+    assert!(
+        matches!(meta.encoding, ObjectEncoding::Delta { .. }),
+        "target should be delta-encoded",
+    );
+
+    // Multiple reads must all return the correct content.
+    for _ in 0..10 {
+        let data = cas.get(target_hash).await.unwrap();
+        assert_eq!(data, target_content, "repeated reads must reconstruct correctly");
+    }
+
+    // Read via stat + get to stress the reconstructed path.
+    for _ in 0..10 {
+        let meta = cas.stat(target_hash).await.unwrap();
+        assert!(matches!(meta.encoding, ObjectEncoding::Delta { .. }));
+        let data = cas.get(target_hash).await.unwrap();
+        assert_eq!(data, target_content);
+    }
 }

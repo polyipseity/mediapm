@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
+use tempfile::tempdir;
 
 use mediapm_cas::api::{CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch};
 use mediapm_cas::new_in_memory_cas;
@@ -144,4 +145,35 @@ async fn prune_all_bases_leaves_empty_entry() {
 
     let bases = cas.get_constraint(target).await.unwrap();
     assert!(bases.is_empty(), "all bases pruned -> empty effective set, constraint entry removed");
+}
+
+/// Constraint written to WAL (write-back) is visible via WAL fallback
+/// before the WAL consumer materializes it into the index.
+///
+/// Uses `FileSystemCas` because `FileSystemIndex` has `SYNC_MATERIALIZE =
+/// false`, so constraints are WAL-only until consumed.
+#[tokio::test]
+async fn get_constraint_wal_fallback_before_consumption() {
+    let dir = tempdir().unwrap();
+    let cas =
+        mediapm_cas::FileSystemCas::open_with_strategies(dir.path(), Vec::new()).await.unwrap();
+
+    let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
+    let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
+
+    // set_constraint writes to WAL. With FileSystemIndex (SYNC_MATERIALIZE =
+    // false), it does NOT write to index yet.
+    cas.set_constraint(target, [base].into()).await.unwrap();
+
+    // get_constraint must find the constraint through WAL fallback.
+    let bases = cas.get_constraint(target).await.unwrap();
+    assert_eq!(bases.len(), 1, "WAL fallback should return the constraint");
+    assert!(bases.contains(&base), "WAL fallback should contain the base");
+
+    // After maintenance consumes the WAL, the constraint should be
+    // materialized in the index and still visible.
+    cas.run_maintenance_cycle().await.unwrap();
+    let bases = cas.get_constraint(target).await.unwrap();
+    assert_eq!(bases.len(), 1, "materialized constraint still visible");
+    assert!(bases.contains(&base), "materialized constraint still contains base");
 }
