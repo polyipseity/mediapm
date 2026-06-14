@@ -122,9 +122,8 @@ let cas = new_in_memory_cas(); // or InMemoryCas::new()
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>`.
-Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` via `impl_cas_wrapper_traits!` macro.
-`Deref` target is the inner `CasStore`.
+Newtype around `CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>`.
+Traits implemented via blanket `Deref` impls in `store.rs`.
 
 #### FileSystemCas — persistent store
 
@@ -133,10 +132,9 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Wraps `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
-Same trait impl pattern as `InMemoryCas`. WAL + blob store + index constraints
-are persisted on disk; blob metadata is in-memory (rebuilt from WAL on open).
-Constraint data is saved to `<store_dir>/constraints.json` atomically.
+Newtype around `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
+WAL + blob store + index constraints persisted on disk; blob metadata in-memory
+(rebuilt from WAL on open). Constraint data saved to `<store_dir>/constraints.json`.
 
 #### ConfiguredCas — dispatch enum
 
@@ -162,23 +160,10 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 | `CasLocatorParseOptions` | Controls whether plain paths are accepted |
 | `VerifyTriggerStrategy` | `Always`, `Modified`, `Sample { denominator }`, `Stale { timeout }` |
 
-`CasConfig` provides two constructors:
+`CasConfig` provides:
 
-- `from_locator_with_options(locator, opts, integrity)` — full control over parsing
-  and integrity settings.
-- `from_locator(locator)` — convenience that defaults to
-  `allow_plain_filesystem_path: true` and empty integrity config (no verification).
-
-**Integrity wiring**: `CasConfig::open()` passes `integrity.should_verify_on_read()` to
-`FileSystemCas::open()`. Rich trigger strategies (Modified, Sample, Stale) are treated as
-"always verify" for now; per-strategy logic is future work.
-
-### 2.7 Report types
-
-| `ObjectMeta`        | `len: u64`, `encoding: ObjectEncoding` |
-| `ObjectEncoding`    | `Full` or `Delta { base_hash }`        |
-| `OptimizeReport`    | (opaque stats from optimization pass)  |
-| `PruneReport`       | (deleted constraint entries)           |
+- `from_locator_with_options(locator, opts, integrity)` — full control.
+- `from_locator(locator)` — convenience with `allow_plain_filesystem_path: true` and no verification.
 
 ## 3. Crate structure
 
@@ -248,7 +233,7 @@ The only crash-safe commitment point. Index and BlobStore are derived —
 rebuildable by WAL replay.
 
 **Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
-Only single-entry `append` is exposed — `append_batch` was removed to keep the trait minimal.
+Only single-entry `append` is exposed.
 
 **PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
 
@@ -268,8 +253,7 @@ Pluggable payload backend.
 
 ### 5.3 Index
 
-Object metadata index. Implementations share the same trait with 12 methods
-(CRUD + constraint operations + rebuild).
+Object metadata index. Both implementations share the same trait.
 
 - **`InMemoryIndex`**: `Arc<DashMap<Hash, IndexEntry>>` for payload metadata
   (`IndexEntry { len, encoding }`). Constraint data is stored in a separate map:
@@ -364,20 +348,18 @@ against B, A's bytes live under A's content hash.
 
 ## 7. Wrapper pattern
 
-`InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>`:
+`InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>` with `Deref`:
 
 ```rust
 pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>);
 
 impl std::ops::Deref for InMemoryCas { /* → inner CasStore */ }
-impl_cas_wrapper_traits!(InMemoryCas);  // CasApi + CasMaintenanceApi + ConstraintApi
 ```
 
-The `impl_cas_wrapper_traits!` macro (defined in `storage/macros.rs`, uses `paste` crate)
-generates trait impls that delegate to `self.0` (direct field access on the newtype).
-`ConfiguredCas` uses the `forward!` macro (defined in `config.rs`) to delegate trait methods
-to the inner variant via `cas.deref()`, not `cas.0` — this routes through the `Deref` impl
-to reach the shared `CasStore` methods.
+All three CAS traits (`CasApi`, `CasMaintenanceApi`, `ConstraintApi`) are implemented
+via blanket impls in `store.rs` for any `T: Deref<Target = CasStore<J, I, B>>`.
+`ConfiguredCas` uses the local `forward!` macro (defined in `config.rs`) to delegate
+trait methods to the inner variant via `cas.deref()`.
 
 ## 8. Invariants & edge cases
 
@@ -387,17 +369,9 @@ to reach the shared `CasStore` methods.
 
 ### 8.2 Empty-content sentinel
 
-- `Hash::empty()` = `blake3(b"")` (hash of empty content) is a built-in sentinel.
-  It is always stored as an explicit empty-bytes entry (seeded on init).
-- All operations use the normal code paths:
-  - `put(empty)`: Normal path (WAL → compiled write-through/write-back policy). Stores empty bytes.
-  - `get(empty)`: Normal path — ReadView finds Index entry, reads empty bytes from BlobStore.
-  - `stat(empty)`: Normal path — returns `ObjectMeta { len: 0, encoding: Full }` from Index.
-  - `delete(empty)`: **No-op**. Never appended to WAL. Returns `Ok(())` immediately.
-- **Indelible**: Because `delete(empty)` is a no-op, the empty entry persists in BlobStore + Index
-  forever. No special seeding or re-seeding logic is needed on init or WAL replay.
-- BackgroundEngine has no special sentinel skip; the WAL consumer processes empty `Put` entries
-  normally.
+- `Hash::empty()` = `blake3(b"")` — always present, indelible.
+- All operations use normal code paths, except `delete(empty)` which is a no-op
+  (never appended to WAL).
 
 ### 8.3 Crash safety
 
@@ -406,9 +380,7 @@ to reach the shared `CasStore` methods.
 
 ### 8.4 No TOCTOU
 
-No standalone `exists()` method. Use `get()` or `stat()` (both return `NotFound` on miss).
-No `exists_many()`, no `set_constraint_batch()`, no `materialize_to_path()`, no `compact_index()`.
-Removed methods are replaced by composition of remaining primitives.
+No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFound` on miss.
 
 ### 8.5 Delta chain integrity
 
@@ -428,40 +400,16 @@ Removed methods are replaced by composition of remaining primitives.
 
 ### 8.7 Write-through vs write-back compile-time policy
 
-`CasStore::put()` uses compile-time dispatch via associated consts:
+`CasStore::put()` uses compile-time dispatch via associated consts (`BlobStore::SYNC_MATERIALIZE`,
+`Index::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`.
 
-```rust
-trait BlobStore: Send + Sync {
-    /// true → write-through (synchronous materialization on put).
-    /// false → write-back (WAL-only; consumer materializes later).
-    const SYNC_MATERIALIZE: bool = true;
-}
+| Backend triplet | BlobStore | Index | Effective |
+|-----------------|-----------|-------|-----------|
+| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryIndex` (true) | write-through |
+| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemIndex` (false) | write-back |
 
-trait Index: Send + Sync {
-    const SYNC_MATERIALIZE: bool = true;
-}
-```
-
-In `CasStore::put()`, the effective policy is:
-
-```rust
-let sync = B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE;
-```
-
-| Backend triplet | BlobStore | Index | Effective | Why |
-|-----------------|-----------|-------|-----------|-----|
-| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryIndex` (true) | write-through | Both are DashMap inserts — instant |
-| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemIndex` (false) | **write-back** | File I/O on BlobStore/Index is costly; WAL captures durability |
-
-**Write-through**: Caller pays WAL + BlobStore + Index latency. Data is immediately visible
-without WAL fallback. Used when all backends are in-memory.
-
-**Write-back**: Caller pays only WAL latency. Data is visible via L3 WAL fallback until the
-consumer materializes it. Used when at least one backend has costly I/O.
-
-**`delete()`** remains unconditionally write-back (WAL-only) regardless of
-`SYNC_MATERIALIZE` values — physical removal is always deferred to the WAL consumer for
-correct re-materialization of delta dependents.
+**`delete()`** is always write-back regardless of `SYNC_MATERIALIZE` — physical removal
+is deferred to the WAL consumer for correct delta-dependent re-materialization.
 
 ### 8.8 Codec versioning
 
