@@ -29,6 +29,27 @@ pub struct ObjectMeta {
     pub encoding: ObjectEncoding,
 }
 
+// ---------------------------------------------------------------------------
+// VerifyTriggerStrategy
+// ---------------------------------------------------------------------------
+
+/// Strategy for triggering CAS integrity verification on read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifyTriggerStrategy {
+    /// Verify every object.
+    Always,
+    /// Verify only if metadata suggests modification.
+    Modified,
+    /// Verify a 1-in-N sample of objects.
+    Sample { denominator: u32 },
+    /// Verify only if the cache entry is older than a threshold.
+    Stale { timeout: std::time::Duration },
+}
+
+// ---------------------------------------------------------------------------
+// ObjectMeta and ObjectEncoding
+// ---------------------------------------------------------------------------
+
 /// Encoding of an object payload.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ObjectEncoding {

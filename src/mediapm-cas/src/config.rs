@@ -19,23 +19,6 @@ use crate::storage::file_system::FileSystemCas;
 use crate::storage::in_memory::InMemoryCas;
 
 // ---------------------------------------------------------------------------
-// VerifyTriggerStrategy
-// ---------------------------------------------------------------------------
-
-/// Strategy for triggering CAS integrity verification on read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VerifyTriggerStrategy {
-    /// Verify every object.
-    Always,
-    /// Verify only if metadata suggests modification.
-    Modified,
-    /// Verify a 1-in-N sample of objects.
-    Sample { denominator: u32 },
-    /// Verify only if the cache entry is older than a threshold.
-    Stale { timeout: Duration },
-}
-
-// ---------------------------------------------------------------------------
 // CasIntegrityConfig
 // ---------------------------------------------------------------------------
 
@@ -45,7 +28,7 @@ pub enum VerifyTriggerStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CasIntegrityConfig {
     /// Ordered list of trigger strategies.
-    pub verify_on_read: Vec<VerifyTriggerStrategy>,
+    pub verify_on_read: Vec<crate::api::VerifyTriggerStrategy>,
     /// Time-to-live for the reconstructed bytes cache in the background
     /// engine. Reconstructed deltas are cached for at most this duration;
     /// after expiry they are evicted and re-computed on the next access.
@@ -57,6 +40,31 @@ impl CasIntegrityConfig {
     /// configured.
     pub fn should_verify_on_read(&self) -> bool {
         !self.verify_on_read.is_empty()
+    }
+
+    /// Create a config that verifies every read.
+    pub fn verify_always(reconstructed_bytes_cache_ttl: Duration) -> Self {
+        Self {
+            verify_on_read: vec![crate::api::VerifyTriggerStrategy::Always],
+            reconstructed_bytes_cache_ttl,
+        }
+    }
+
+    /// Create a config with no verification.
+    pub fn verify_none(reconstructed_bytes_cache_ttl: Duration) -> Self {
+        Self { verify_on_read: Vec::new(), reconstructed_bytes_cache_ttl }
+    }
+
+    /// Builder: add a verification strategy.
+    pub fn with_verify(mut self, strategy: crate::api::VerifyTriggerStrategy) -> Self {
+        self.verify_on_read.push(strategy);
+        self
+    }
+
+    /// Builder: set reconstructed bytes cache TTL.
+    pub fn with_cache_ttl(mut self, ttl: Duration) -> Self {
+        self.reconstructed_bytes_cache_ttl = ttl;
+        self
     }
 }
 
@@ -146,9 +154,10 @@ impl CasConfig {
     pub async fn open(&self) -> Result<ConfiguredCas, CasError> {
         match &self.storage_locator {
             CasStorageLocator::InMemory => Ok(ConfiguredCas::InMemory(InMemoryCas::new())),
-            CasStorageLocator::FileSystem { path } => {
-                Ok(ConfiguredCas::FileSystem(FileSystemCas::open(path).await?))
-            }
+            CasStorageLocator::FileSystem { path } => Ok(ConfiguredCas::FileSystem(
+                FileSystemCas::open_with_strategies(path, self.integrity.verify_on_read.clone())
+                    .await?,
+            )),
         }
     }
 }

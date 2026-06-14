@@ -30,6 +30,9 @@ pub struct FileSystemIndex {
     /// Suppresses disk writes during `rebuild_from_wal`. Set to `true`
     /// during replay to avoid redundant flushing.
     suppress_persist: Arc<Mutex<bool>>,
+    /// Dirty flag: `true` when constraints have been modified since last
+    /// flush. Used for batched persistence.
+    dirty: Arc<Mutex<bool>>,
 }
 
 impl FileSystemIndex {
@@ -42,24 +45,43 @@ impl FileSystemIndex {
             inner: InMemoryIndex::new(),
             constraint_path,
             suppress_persist: Arc::new(Mutex::new(false)),
+            dirty: Arc::new(Mutex::new(false)),
         }
     }
 
     /// Persist all constraints to disk (JSON, V1 format).
     async fn flush_constraints(&self) -> Result<(), CasError> {
-        // Collect the current constraint map.
         let targets = self.inner.list_targets().await?;
         let mut map = std::collections::BTreeMap::<Hash, BTreeSet<Hash>>::new();
         for t in targets {
             let bases = self.inner.get_constraint(&t).await?;
             map.insert(t, bases);
         }
-        versions::save(&self.constraint_path, &map).await
+        if map.is_empty() {
+            if self.constraint_path.exists() {
+                tokio::fs::remove_file(&self.constraint_path).await.map_err(CasError::Io)?;
+            }
+        } else {
+            versions::save(&self.constraint_path, &map).await?;
+        }
+        *self.dirty.lock().unwrap() = false;
+        Ok(())
+    }
+
+    /// Flush to disk only if constraints have been modified since the
+    /// last flush. No-op when already clean.
+    pub(crate) async fn flush_if_dirty(&self) -> Result<(), CasError> {
+        if *self.dirty.lock().unwrap() {
+            self.flush_constraints().await?;
+        }
+        Ok(())
     }
 }
 
 #[async_trait]
 impl Index for FileSystemIndex {
+    const SYNC_MATERIALIZE: bool = false;
+
     async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
         self.inner.put(hash, entry).await
     }
@@ -70,6 +92,10 @@ impl Index for FileSystemIndex {
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         self.inner.delete(hash).await
+    }
+
+    async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
+        self.inner.list_dependents(hash).await
     }
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
@@ -87,7 +113,7 @@ impl Index for FileSystemIndex {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.inner.set_constraint(target, bases).await?;
         if !*self.suppress_persist.lock().unwrap() {
-            self.flush_constraints().await?;
+            *self.dirty.lock().unwrap() = true;
         }
         Ok(())
     }
@@ -102,7 +128,8 @@ impl Index for FileSystemIndex {
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
         self.inner.prune_targets(live).await?;
-        self.flush_constraints().await
+        *self.dirty.lock().unwrap() = true;
+        self.flush_if_dirty().await
     }
 
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
@@ -152,6 +179,8 @@ mod tests {
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         index.set_constraint(target, BTreeSet::from([base])).await.unwrap();
+        // Flush so the new index can read the constraint from disk.
+        index.flush_if_dirty().await.unwrap();
 
         // Create a new index from the same path and rebuild.
         let index2 = FileSystemIndex::new(path.clone());
@@ -175,6 +204,8 @@ mod tests {
             .set_constraint(Hash::from_content(b"p"), BTreeSet::from([Hash::from_content(b"b")]))
             .await
             .unwrap();
+        // Flush so the persisted constraint is readable by a new index.
+        index.flush_if_dirty().await.unwrap();
 
         // Now rebuild with a fresh index and a WAL that has a Put + a different constraint.
         let journal = InMemoryWal::new();

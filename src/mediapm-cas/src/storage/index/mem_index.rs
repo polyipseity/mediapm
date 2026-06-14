@@ -23,12 +23,18 @@ use super::{Index, IndexEntry};
 ///
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
 /// See [`Index::get_constraint`] — returns empty set (no `Option`).
+///
+/// Delta-base reverse index (`dependents`) is maintained on [`put`](Index::put)
+/// and [`delete`](Index::delete) so [`list_dependents`](Index::list_dependents)
+/// is O(1) instead of O(N).
 #[derive(Clone, Default)]
 pub struct InMemoryIndex {
     /// Object metadata (payload size, encoding).
     data: Arc<DashMap<Hash, IndexEntry>>,
     /// Constraint data (target → bases), independent of metadata.
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
+    /// Reverse index: base hash → dependents (hashes with Delta { base_hash }).
+    dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
 
 impl InMemoryIndex {
@@ -41,6 +47,19 @@ impl InMemoryIndex {
 #[async_trait]
 impl Index for InMemoryIndex {
     async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
+        // Remove old dependent relation if hash previously had a delta base.
+        if let Some(old_entry) = self.data.get(&hash) {
+            if let ObjectEncoding::Delta { base_hash } = old_entry.encoding {
+                if let Some(mut list) = self.dependents.get_mut(&base_hash) {
+                    list.retain(|h| *h != *(&hash));
+                }
+            }
+        }
+        // Record new dependent relation if this is a delta-encoded entry.
+        if let ObjectEncoding::Delta { base_hash } = entry.encoding {
+            self.dependents.entry(base_hash).or_default().push(hash);
+        }
+
         self.data.insert(hash, entry);
         Ok(())
     }
@@ -50,10 +69,25 @@ impl Index for InMemoryIndex {
     }
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+        // Remove this hash from its base's dependents list.
+        if let Some(entry) = self.data.get(hash) {
+            if let ObjectEncoding::Delta { base_hash } = entry.encoding {
+                if let Some(mut list) = self.dependents.get_mut(&base_hash) {
+                    list.retain(|h| *h != *hash);
+                }
+            }
+        }
+        // Remove this hash as a base from the reverse index.
+        self.dependents.remove(hash);
+
         self.data.remove(hash);
         // Also clean up any associated constraint.
         self.constraints.remove(hash);
         Ok(())
+    }
+
+    async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
+        Ok(self.dependents.get(hash).as_deref().cloned().unwrap_or_default())
     }
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {

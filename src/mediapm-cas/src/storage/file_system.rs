@@ -7,6 +7,7 @@ use super::blob_store::{FileSystemBlobStore, hash_to_path};
 use super::index::{FileSystemIndex, Index};
 use super::store::CasStore;
 use super::wal::FileWal;
+use crate::api::VerifyTriggerStrategy;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -35,13 +36,26 @@ impl FileSystemCas {
     /// constraint persistence file if they don't exist. Rebuilds the index
     /// from the WAL on open. Constraint data persists at
     /// `<dir>/constraints.json`.
-    pub async fn open(dir: &Path) -> Result<Self, CasError> {
+    /// Open or create a file-system CAS store at `dir` with the given
+    /// verify strategies.
+    pub async fn open_with_strategies(
+        dir: &Path,
+        verify_strategies: Vec<VerifyTriggerStrategy>,
+    ) -> Result<Self, CasError> {
         let wal = FileWal::create(dir.to_path_buf()).await?;
-        let blob_store = FileSystemBlobStore::create(dir.join("blobs"), false).await?;
+        let blob_store = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
         let constraint_path = dir.join("constraints.json");
         let index = FileSystemIndex::new(constraint_path);
         index.rebuild_from_wal(&wal).await?;
-        Ok(Self(CasStore::new(wal, index, blob_store)))
+        let store = CasStore::new(wal, index, blob_store);
+        store.seed_zero().await?;
+        Ok(Self(store))
+    }
+
+    /// Open or create a file-system CAS store at `dir` with no
+    /// integrity verification enabled.
+    pub async fn open(dir: &Path) -> Result<Self, CasError> {
+        Self::open_with_strategies(dir, Vec::new()).await
     }
 
     /// Return the on-disk path for a hash's full blob (without `.diff`).

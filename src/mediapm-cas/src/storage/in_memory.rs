@@ -23,8 +23,17 @@ pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryB
 
 impl InMemoryCas {
     /// Create a new empty in-memory CAS store.
+    ///
+    /// The zero-hash sentinel is seeded during construction so
+    /// [`Hash::zero()`] always resolves as an empty object.
     pub fn new() -> Self {
-        Self(CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new()))
+        let store =
+            CasStore::new(InMemoryWal::new(), InMemoryIndex::new(), InMemoryBlobStore::new());
+        // seed_zero is infallible for in-memory backends; unwrap is safe.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(store.seed_zero()).unwrap();
+        });
+        Self(store)
     }
 }
 

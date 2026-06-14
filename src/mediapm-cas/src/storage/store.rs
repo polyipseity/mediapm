@@ -93,6 +93,18 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
     pub fn bg_engine(&self) -> &BackgroundEngine<J, I, B> {
         &self.bg_engine
     }
+
+    /// Seed the zero-hash sentinel into BlobStore and Index.
+    ///
+    /// Called once during initialization to ensure [`Hash::zero()`]
+    /// always resolves as an empty object. Skips WAL (re-seeded on
+    /// every init).
+    pub async fn seed_zero(&self) -> Result<(), CasError> {
+        let zero = Hash::zero();
+        self.blob_store.write(zero, ObjectEncoding::Full, Bytes::new()).await?;
+        self.index.put(zero, IndexEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -103,10 +115,6 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
 impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
-        // Zero hash is always valid but never stored.
-        if hash == Hash::zero() {
-            return Ok(hash);
-        }
         // Append to WAL (the crash-safe commitment).
         self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
         // Materialize BlobStore + Index immediately (write-through) when
@@ -124,23 +132,15 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
     }
 
     async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
-        // Zero hash is always present (empty sentinel).
-        if hash == Hash::zero() {
-            return Ok(Bytes::new());
-        }
         self.read_view.get(&hash).await
     }
 
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {
-        // Zero hash is always present (empty sentinel).
-        if hash == Hash::zero() {
-            return Ok(ObjectMeta { len: 0, encoding: ObjectEncoding::Full });
-        }
         self.read_view.stat(&hash).await
     }
 
     async fn delete(&self, hash: Hash) -> Result<(), CasError> {
-        // Deleting zero hash is a no-op (zero is never stored).
+        // Zero hash can never be deleted (sentinel).
         if hash == Hash::zero() {
             return Ok(());
         }
@@ -156,6 +156,10 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
 #[async_trait]
 impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
+        // Zero hash always has empty constraints.
+        if target == Hash::zero() {
+            return Ok(());
+        }
         // Validate: bases must be distinct and not include target.
         if bases.contains(&target) {
             return Err(CasError::InvalidArgument(
@@ -171,10 +175,18 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
     }
 
     async fn get_constraint(&self, target: Hash) -> Result<BTreeSet<Hash>, CasError> {
+        // Zero hash always has empty constraints.
+        if target == Hash::zero() {
+            return Ok(BTreeSet::new());
+        }
         self.index.get_constraint(&target).await
     }
 
     async fn patch_constraint(&self, target: Hash, patch: ConstraintPatch) -> Result<(), CasError> {
+        // Zero hash always has empty constraints.
+        if target == Hash::zero() {
+            return Ok(());
+        }
         // Read current state.
         let mut bases = self.index.get_constraint(&target).await?;
 

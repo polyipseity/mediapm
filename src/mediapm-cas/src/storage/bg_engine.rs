@@ -101,6 +101,10 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     }
                 }
                 WalEntry::Delete { hash } => {
+                    // Zero hash is never physically stored; skip deletion.
+                    if *hash == Hash::zero() {
+                        continue;
+                    }
                     // Before physical deletion, re-materialize any deltas
                     // that depend on this hash as their base. This prevents
                     // dangling-delta reconstruction failure.
@@ -132,28 +136,17 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// This is called by the WAL consumer **before** physically deleting
     /// `hash`.
     async fn rematerialize_deltas_for(&self, hash: &Hash) -> Result<(), CasError> {
-        let dependents: Vec<Hash> =
-            self.index.list_hashes().await?.into_iter().filter(|h| h != hash).collect();
+        let dependents = self.index.list_dependents(hash).await?;
 
         for dep_hash in dependents {
             if self.is_cancelled() {
                 break;
             }
-            // Get the dependent's current entry (delta or full).
-            let Some(entry) = self.index.get(&dep_hash).await? else {
-                continue;
-            };
-            let ObjectEncoding::Delta { base_hash } = entry.encoding else {
-                continue; // Not a delta, nothing to re-materialize.
-            };
-            if base_hash != *hash {
-                continue; // Depends on a different base.
-            }
 
             // Read delta envelope from blob store.
             let delta_data = self.blob_store.read_delta(&dep_hash).await?;
             // Base bytes are still in BlobStore (not yet deleted).
-            let base_bytes = self.blob_store.read(&base_hash).await?;
+            let base_bytes = self.blob_store.read(hash).await?;
 
             let stored_obj =
                 StoredObject::decode_delta(&delta_data).map_err(|e| CasError::CorruptObject {
@@ -162,7 +155,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                 })?;
             let vcdiff = stored_obj.payload();
             let patch = crate::delta::delta::DeltaPatch::decode(vcdiff);
-            let result = patch.apply(&base_bytes, dep_hash, dep_hash, base_hash).map_err(|e| {
+            let result = patch.apply(&base_bytes, dep_hash, dep_hash, *hash).map_err(|e| {
                 CasError::CorruptObject {
                     hash: Some(dep_hash),
                     details: format!("delta apply failed during re-materialization: {e}"),

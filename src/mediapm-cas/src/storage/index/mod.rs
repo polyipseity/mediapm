@@ -16,7 +16,7 @@ pub(crate) use mem_index::InMemoryIndex;
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashSet};
 
-use crate::api::ObjectMeta;
+use crate::api::{ObjectEncoding, ObjectMeta};
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -96,6 +96,23 @@ pub trait Index: Send + Sync {
 
     /// Remove constraints whose target or any base is not in `live`.
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError>;
+
+    /// List hashes that depend on `hash` as their delta base.
+    ///
+    /// Default O(N) implementation iterates all entries inline. In-memory
+    /// implementations should override with an O(1) reverse-index lookup.
+    async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
+        let mut dependents = Vec::new();
+        for h in self.list_hashes().await? {
+            if let Some(entry) = self.get(&h).await? {
+                if matches!(entry.encoding, ObjectEncoding::Delta { base_hash } if base_hash == *hash)
+                {
+                    dependents.push(h);
+                }
+            }
+        }
+        Ok(dependents)
+    }
 
     /// Rebuild state by replaying the journal.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError>;
