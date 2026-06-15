@@ -295,4 +295,59 @@ mod tests {
         assert!(store.read(&hash).await.is_err());
         assert!(store.read_delta(&hash).await.is_err());
     }
+
+    #[tokio::test]
+    async fn filesystem_delete_encoding_removes_specific_encoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
+
+        let base = Hash::from_content(b"base");
+        let data = Bytes::from_static(b"dual encoding blob");
+        let hash = Hash::from_content(&data);
+
+        // Write both full and delta.
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
+        store.write(hash, ObjectEncoding::Delta { base_hash: base }, data).await.unwrap();
+
+        assert!(store.read(&hash).await.is_ok());
+        assert!(store.read_delta(&hash).await.is_ok());
+
+        // Remove only the delta encoding.
+        store.delete_encoding(hash, ObjectEncoding::Delta { base_hash: base }).await.unwrap();
+
+        // Full must still be present, delta must be gone.
+        assert!(store.read(&hash).await.is_ok(), "full should remain after delta deletion");
+        assert!(
+            store.read_delta(&hash).await.is_err(),
+            "delta should be removed after delete_encoding"
+        );
+    }
+
+    #[tokio::test]
+    async fn filesystem_delete_encoding_missing_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
+
+        let hash = Hash::from_content(b"nonexistent");
+
+        // Deleting encoding for a hash that was never written must succeed.
+        store
+            .delete_encoding(hash, ObjectEncoding::Full)
+            .await
+            .expect("delete_encoding on missing hash must succeed");
+        store
+            .delete_encoding(hash, ObjectEncoding::Delta { base_hash: Hash::from_content(b"x") })
+            .await
+            .expect("delete_encoding on missing delta must succeed");
+    }
 }
