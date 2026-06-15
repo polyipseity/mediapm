@@ -1,4 +1,4 @@
-//! Versioned persistence for index constraint data and index entries.
+//! Versioned persistence for metadata constraint data and entries.
 //!
 //! Currently only V1 is supported. The module dispatches to the correct
 //! version handler based on the file format version marker.

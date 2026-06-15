@@ -150,7 +150,7 @@ async fn prune_all_bases_leaves_empty_entry() {
 /// Constraint written to WAL (write-back) is visible via WAL fallback
 /// before the WAL consumer materializes it into the index.
 ///
-/// Uses `FileSystemCas` because `FileSystemIndex` has `SYNC_MATERIALIZE =
+/// Uses `FileSystemCas` because `FileSystemMetadata` has `SYNC_MATERIALIZE =
 /// false`, so constraints are WAL-only until consumed.
 #[tokio::test]
 async fn get_constraint_wal_fallback_before_consumption() {
@@ -161,7 +161,7 @@ async fn get_constraint_wal_fallback_before_consumption() {
     let base = cas.put(Bytes::from_static(b"base")).await.unwrap();
     let target = cas.put(Bytes::from_static(b"target")).await.unwrap();
 
-    // set_constraint writes to WAL. With FileSystemIndex (SYNC_MATERIALIZE =
+    // set_constraint writes to WAL. With FileSystemMetadata (SYNC_MATERIALIZE =
     // false), it does NOT write to index yet.
     cas.set_constraint(target, [base].into()).await.unwrap();
 

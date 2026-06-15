@@ -5,7 +5,7 @@ pub mod bg_engine;
 pub mod blob_store;
 pub mod file_system;
 pub mod in_memory;
-pub mod index;
+pub mod metadata;
 pub(crate) mod pending_ops;
 pub(crate) mod read_view;
 pub mod store;

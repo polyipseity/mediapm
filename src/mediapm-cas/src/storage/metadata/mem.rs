@@ -1,7 +1,7 @@
-//! In-memory index — ephemeral, all data in DashMaps.
+//! In-memory metadata — ephemeral, all data in DashMaps.
 //!
 //! Used by [`InMemoryCas`](super::super::in_memory::InMemoryCas) and as the
-//! in-memory layer of [`FileSystemIndex`](super::fs_index::FileSystemIndex).
+//! in-memory layer of [`FileSystemMetadata`](super::fs::FileSystemMetadata).
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -13,40 +13,40 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::super::wal::{Wal, WalEntry, WalPosition};
-use super::{Index, IndexEntry};
+use super::{Metadata, MetadataEntry};
 
-/// An in-memory [`Index`] backed by `Arc<DashMap>` for both metadata and
-/// constraints.
+/// An in-memory [`Metadata`] backed by `Arc<DashMap>` for both entry and
+/// constraint data.
 ///
 /// Clones share the same backing data, so all references observe the same
 /// state — essential for concurrent access patterns.
 ///
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
-/// See [`Index::get_constraint`] — returns empty set (no `Option`).
+/// See [`Metadata::get_constraint`] — returns empty set (no `Option`).
 ///
-/// Delta-base reverse index (`dependents`) is maintained on [`put`](Index::put)
-/// and [`delete`](Index::delete) so [`list_dependents`](Index::list_dependents)
+/// Delta-base reverse index (`dependents`) is maintained on [`put`](Metadata::put)
+/// and [`delete`](Metadata::delete) so [`list_dependents`](Metadata::list_dependents)
 /// is O(1) instead of O(N).
 #[derive(Clone, Default)]
-pub struct InMemoryIndex {
+pub struct InMemoryMetadata {
     /// Object metadata (payload size, encoding).
-    data: Arc<DashMap<Hash, IndexEntry>>,
+    data: Arc<DashMap<Hash, MetadataEntry>>,
     /// Constraint data (target → bases), independent of metadata.
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
     /// Reverse index: base hash → dependents (hashes with Delta { base_hash }).
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
 
-impl InMemoryIndex {
-    /// Create an empty index.
+impl InMemoryMetadata {
+    /// Create an empty metadata store.
     pub fn new() -> Self {
         Self::default()
     }
 }
 
 #[async_trait]
-impl Index for InMemoryIndex {
-    async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
+impl Metadata for InMemoryMetadata {
+    async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
         // Remove old dependent relation if hash previously had a delta base.
         if let Some(old_entry) = self.data.get(&hash) {
             if let ObjectEncoding::Delta { base_hash } = old_entry.encoding {
@@ -64,7 +64,7 @@ impl Index for InMemoryIndex {
         Ok(())
     }
 
-    async fn get(&self, hash: &Hash) -> Result<Option<IndexEntry>, CasError> {
+    async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError> {
         Ok(self.data.get(hash).as_deref().cloned())
     }
 
@@ -131,7 +131,7 @@ impl Index for InMemoryIndex {
                 WalEntry::Put { hash, data } => {
                     self.data.insert(
                         hash,
-                        IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
+                        MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
                     );
                 }
                 WalEntry::Delete { hash } => {
@@ -160,9 +160,9 @@ mod tests {
 
     #[tokio::test]
     async fn put_and_get_roundtrip() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let hash = Hash::from_content(b"hello world");
-        let entry = IndexEntry { len: 11, encoding: ObjectEncoding::Full };
+        let entry = MetadataEntry { len: 11, encoding: ObjectEncoding::Full };
         index.put(hash, entry.clone()).await.unwrap();
         let retrieved = index.get(&hash).await.unwrap().unwrap();
         assert_eq!(retrieved.len, entry.len);
@@ -171,26 +171,26 @@ mod tests {
 
     #[tokio::test]
     async fn get_missing_returns_none() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let hash = Hash::from_content(b"missing");
         assert_eq!(index.get(&hash).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn delete_removes_entry() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let hash = Hash::from_content(b"delete me");
-        index.put(hash, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(hash, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.delete(&hash).await.unwrap();
         assert_eq!(index.get(&hash).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn len_and_is_empty() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         assert!(index.is_empty().await);
         let hash = Hash::from_content(b"item");
-        index.put(hash, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(hash, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         assert_eq!(index.len().await, 1);
     }
 
@@ -198,7 +198,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_and_get_constraint() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         let bases = BTreeSet::from([base]);
@@ -208,7 +208,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_get_constraint_roundtrip() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let target = Hash::from_content(b"t");
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
@@ -220,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn replace_constraint_clears_previous() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let target = Hash::from_content(b"t");
         index.set_constraint(target, BTreeSet::from([Hash::from_content(b"b")])).await.unwrap();
         // Replacing with empty set clears the constraint.
@@ -230,14 +230,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_constraint_missing_returns_empty() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let target = Hash::from_content(b"missing");
         assert_eq!(index.get_constraint(&target).await.unwrap(), BTreeSet::new());
     }
 
     #[tokio::test]
     async fn delete_removes_constraint() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let hash = Hash::from_content(b"h");
         let base = Hash::from_content(b"b");
         index.set_constraint(hash, BTreeSet::from([base])).await.unwrap();
@@ -263,18 +263,18 @@ mod tests {
             .await
             .unwrap();
 
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(!index.get_constraint(&target).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn list_targets_returns_constrained_only() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
 
-        index.put(a, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(a, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.set_constraint(b, BTreeSet::from([a])).await.unwrap();
 
         let targets = index.list_targets().await.unwrap();
@@ -283,14 +283,14 @@ mod tests {
 
     #[tokio::test]
     async fn prune_targets_removes_dead_bases() {
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         let live = Hash::from_content(b"live");
         let dead = Hash::from_content(b"dead");
         let base = Hash::from_content(b"base");
 
-        index.put(live, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
-        index.put(dead, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
-        index.put(base, IndexEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(live, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(dead, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
+        index.put(base, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.set_constraint(live, BTreeSet::from([base, dead])).await.unwrap();
 
         let live_set = HashSet::from([live, base]);
@@ -319,7 +319,7 @@ mod tests {
             .await
             .unwrap();
 
-        let index = InMemoryIndex::new();
+        let index = InMemoryMetadata::new();
         index.rebuild_from_wal(&journal).await.unwrap();
 
         let entry = index.get(&hash).await.unwrap().unwrap();

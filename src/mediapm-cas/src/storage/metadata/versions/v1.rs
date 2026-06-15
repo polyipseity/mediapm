@@ -1,6 +1,6 @@
-//! V1 persistence format for the CAS index.
+//! V1 persistence format for the CAS metadata store.
 //!
-//! Stores constraints and index entries together in a single versioned
+//! Stores constraints and metadata entries together in a single versioned
 //! JSON file. The `entries` field uses `#[serde(default)]` so old files
 //! (constraints-only) remain loadable.
 
@@ -18,7 +18,7 @@ struct ConstraintEntry {
     bases: Vec<String>,
 }
 
-/// On-disk representation of an index entry.
+/// On-disk representation of a metadata entry.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct EntryData {
     len: u64,

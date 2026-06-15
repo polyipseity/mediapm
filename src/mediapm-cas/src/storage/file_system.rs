@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use super::blob_store::{BlobStore, FileSystemBlobStore};
-use super::index::{FileSystemIndex, Index};
+use super::metadata::{FileSystemMetadata, Metadata};
 use super::store::CasStore;
 use super::wal::FileWal;
 use super::wal::Wal;
@@ -16,13 +16,13 @@ use crate::hash::Hash;
 ///
 /// Wraps [`CasStore`] with a [`FileWal`] for WAL persistence, a
 /// [`FileSystemBlobStore`] for payload persistence, and a
-/// [`FileSystemIndex`] for metadata + constraint lookup with persistent
-/// constraint storage at `<dir>/constraints.json`.
+/// [`FileSystemMetadata`] for metadata + constraint lookup with persistent
+/// snapshot storage at `<dir>/metadata.json`.
 #[derive(Clone)]
-pub struct FileSystemCas(pub(crate) CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>);
+pub struct FileSystemCas(pub(crate) CasStore<FileWal, FileSystemMetadata, FileSystemBlobStore>);
 
 impl std::ops::Deref for FileSystemCas {
-    type Target = CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>;
+    type Target = CasStore<FileWal, FileSystemMetadata, FileSystemBlobStore>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -32,9 +32,9 @@ impl FileSystemCas {
     /// Open or create a file-system CAS store at `dir`.
     ///
     /// Creates the journal directory, checkpoint, blob store root, and
-    /// constraint persistence file if they don't exist. Rebuilds the index
-    /// from the WAL on open. Constraint data persists at
-    /// `<dir>/constraints.json`.
+    /// metadata snapshot file if they don't exist. Rebuilds the metadata
+    /// store from the WAL on open. Metadata persists at
+    /// `<dir>/metadata.json`.
     /// Open or create a file-system CAS store at `dir` with the given
     /// verify strategies.
     pub async fn open_with_strategies(
@@ -44,10 +44,10 @@ impl FileSystemCas {
         let wal = FileWal::create(dir.to_path_buf()).await?;
         let start_pos = wal.consumed_position().await;
         let blob_store = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
-        let constraint_path = dir.join("constraints.json");
-        let index = FileSystemIndex::new(constraint_path);
-        index.rebuild_from_wal(&wal).await?;
-        let store = CasStore::new(wal, index, blob_store, start_pos);
+        let metadata_path = dir.join("metadata.json");
+        let metadata = FileSystemMetadata::new(metadata_path);
+        metadata.rebuild_from_wal(&wal).await?;
+        let store = CasStore::new(wal, metadata, blob_store, start_pos);
         Ok(Self(store))
     }
 

@@ -36,24 +36,24 @@ use crate::hash::Hash;
 
 use super::bg_engine::BackgroundEngine;
 use super::blob_store::BlobStore;
-use super::index::{Index, IndexEntry};
+use super::metadata::{Metadata, MetadataEntry};
 use super::read_view::{ComposedReadView, ReadView};
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Composed CAS store — primary handle for all CAS operations.
-pub struct CasStore<J: Wal, I: Index, B: BlobStore> {
+pub struct CasStore<J: Wal, M: Metadata, B: BlobStore> {
     wal: J,
-    index: I,
+    metadata: M,
     blob_store: B,
     read_view: Arc<dyn ReadView>,
-    bg_engine: BackgroundEngine<J, I, B>,
+    bg_engine: BackgroundEngine<J, M, B>,
 }
 
-impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> Clone for CasStore<J, I, B> {
+impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> Clone for CasStore<J, M, B> {
     fn clone(&self) -> Self {
         Self {
             wal: self.wal.clone(),
-            index: self.index.clone(),
+            metadata: self.metadata.clone(),
             blob_store: self.blob_store.clone(),
             read_view: self.read_view.clone(),
             bg_engine: self.bg_engine.clone(),
@@ -61,34 +61,34 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> Clone for CasStore<
     }
 }
 
-impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
+impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> CasStore<J, M, B> {
     /// Create a new composed store.  `start_pos` tells the background
     /// engine which WAL position to begin consuming from (e.g., the
     /// last checkpoint on restart).
     ///
     /// The reconstructed-bytes cache uses a 60-second TTL by default.
-    pub fn new(wal: J, index: I, blob_store: B, start_pos: WalPosition) -> Self
+    pub fn new(wal: J, metadata: M, blob_store: B, start_pos: WalPosition) -> Self
     where
         J: 'static,
-        I: 'static,
+        M: 'static,
         B: 'static,
     {
         let read_view: Arc<dyn ReadView> =
-            Arc::new(ComposedReadView::new(index.clone(), wal.clone(), blob_store.clone()));
+            Arc::new(ComposedReadView::new(metadata.clone(), wal.clone(), blob_store.clone()));
         let bg_engine = BackgroundEngine::new(
             wal.clone(),
-            index.clone(),
+            metadata.clone(),
             blob_store.clone(),
             start_pos,
             read_view.clone(),
             Duration::from_secs(60),
         );
-        Self { wal, index, blob_store, read_view, bg_engine }
+        Self { wal, metadata, blob_store, read_view, bg_engine }
     }
 
-    /// Rebuild index from WAL (for recovery after restart).
+    /// Rebuild metadata from WAL (for recovery after restart).
     pub async fn rebuild_index_from_wal(&self) -> Result<(), CasError> {
-        self.index.rebuild_from_wal(&self.wal).await
+        self.metadata.rebuild_from_wal(&self.wal).await
     }
 
     /// Return a reference to the blob store.
@@ -97,7 +97,7 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
     }
 
     /// Return a reference to the background engine.
-    pub fn bg_engine(&self) -> &BackgroundEngine<J, I, B> {
+    pub fn bg_engine(&self) -> &BackgroundEngine<J, M, B> {
         &self.bg_engine
     }
 }
@@ -107,7 +107,7 @@ impl<J: Wal + Clone, I: Index + Clone, B: BlobStore + Clone> CasStore<J, I, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
+impl<J: Wal, M: Metadata, B: BlobStore> CasApi for CasStore<J, M, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
         // Append to WAL (the crash-safe commitment).
@@ -115,10 +115,10 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
         // Materialize BlobStore + Index immediately (write-through) when
         // both backends prefer synchronous materialization.  Otherwise
         // defer to the WAL consumer (write-back).
-        if B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE {
+        if B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE {
             self.blob_store.write(hash, ObjectEncoding::Full, data.clone()).await?;
-            self.index
-                .put(hash, IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
+            self.metadata
+                .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
                 .await?;
         }
         // The ReadView L3 WAL fallback handles visibility for write-back
@@ -157,7 +157,7 @@ impl<J: Wal, I: Index, B: BlobStore> CasApi for CasStore<J, I, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
+impl<J: Wal, M: Metadata, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -175,8 +175,8 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
 
         // Materialize Index immediately when SYNC_MATERIALIZE is true.
         // Otherwise, the WAL consumer (BackgroundEngine) will apply it.
-        if I::SYNC_MATERIALIZE {
-            self.index.set_constraint(target, bases).await?;
+        if M::SYNC_MATERIALIZE {
+            self.metadata.set_constraint(target, bases).await?;
         }
         Ok(())
     }
@@ -187,7 +187,7 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
             return Ok(BTreeSet::new());
         }
         // Check the Index first (committed state).
-        let result = self.index.get_constraint(&target).await?;
+        let result = self.metadata.get_constraint(&target).await?;
         if !result.is_empty() {
             return Ok(result);
         }
@@ -226,8 +226,8 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
         self.wal.append(WalEntry::Constraint { target, bases: bases.clone() }).await?;
 
         // Materialize Index immediately when SYNC_MATERIALIZE is true.
-        if I::SYNC_MATERIALIZE {
-            self.index.set_constraint(target, bases).await?;
+        if M::SYNC_MATERIALIZE {
+            self.metadata.set_constraint(target, bases).await?;
         }
         Ok(())
     }
@@ -238,7 +238,7 @@ impl<J: Wal, I: Index, B: BlobStore> ConstraintApi for CasStore<J, I, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
+impl<J: Wal, M: Metadata, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
@@ -246,16 +246,16 @@ impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
     }
 
     async fn prune_constraints(&self) -> Result<PruneReport, CasError> {
-        let all_hashes: HashSet<Hash> = self.index.list_hashes().await?.into_iter().collect();
-        let targets = self.index.list_targets().await?;
+        let all_hashes: HashSet<Hash> = self.metadata.list_hashes().await?.into_iter().collect();
+        let targets = self.metadata.list_targets().await?;
         let initial_count = targets.len();
-        self.index.prune_targets(&all_hashes).await?;
-        let final_count = self.index.list_targets().await?.len();
+        self.metadata.prune_targets(&all_hashes).await?;
+        let final_count = self.metadata.list_targets().await?.len();
         Ok(PruneReport { removed: initial_count.saturating_sub(final_count) })
     }
 
     async fn list_hashes(&self) -> Result<Vec<Hash>, CasError> {
-        self.index.list_hashes().await
+        self.metadata.list_hashes().await
     }
 }
 
@@ -267,9 +267,9 @@ impl<J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for CasStore<J, I, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<T, J: Wal, I: Index, B: BlobStore> CasApi for T
+impl<T, J: Wal, M: Metadata, B: BlobStore> CasApi for T
 where
-    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+    T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         self.deref().put(data).await
@@ -289,9 +289,9 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, I: Index, B: BlobStore> ConstraintApi for T
+impl<T, J: Wal, M: Metadata, B: BlobStore> ConstraintApi for T
 where
-    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+    T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.deref().set_constraint(target, bases).await
@@ -307,9 +307,9 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, I: Index, B: BlobStore> CasMaintenanceApi for T
+impl<T, J: Wal, M: Metadata, B: BlobStore> CasMaintenanceApi for T
 where
-    T: Deref<Target = CasStore<J, I, B>> + Send + Sync,
+    T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
         self.deref().run_maintenance_cycle().await

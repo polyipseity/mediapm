@@ -44,10 +44,10 @@ eliminating TOCTOU.
 
 **put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL.
 Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`:
-write-through materializes BlobStore + Index synchronously (immediate visibility);
+write-through materializes BlobStore + Metadata synchronously (immediate visibility);
 write-back defers to the WAL consumer. Only `Hash::from_content(b"")` produces `Hash::empty()` — normal non-empty content never collides with it.
 
-**get**: Three-layer lookup (Index → BlobStore → WAL fallback) via `ComposedReadView`.
+**get**: Three-layer lookup (Metadata → BlobStore → WAL fallback) via `ComposedReadView`.
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only
@@ -122,7 +122,7 @@ let cas = new_in_memory_cas(); // or InMemoryCas::new()
 cas.put(bytes).await?;
 ```
 
-Newtype around `CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>`.
+Newtype around `CasStore<InMemoryWal, InMemoryMetadata, InMemoryBlobStore>`.
 Traits implemented via blanket `Deref` impls in `store.rs`.
 
 #### FileSystemCas — persistent store
@@ -132,10 +132,10 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Newtype around `CasStore<FileWal, FileSystemIndex, FileSystemBlobStore>`.
-WAL + blob store + index constraints persisted on disk; blob metadata in-memory
-(rebuilt from WAL on open). Index data (entries + constraints) saved to
-`<store_dir>/constraints.json`.
+Newtype around `CasStore<FileWal, FileSystemMetadata, FileSystemBlobStore>`.
+WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory
+(rebuilt from WAL on open). Metadata (entries + constraints) saved to
+`<store_dir>/metadata.json`.
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>`
 (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
@@ -203,14 +203,14 @@ src/mediapm-cas/src/
     │   └── versions/      — path layout versions V1+
     │       ├── mod.rs     — version dispatch
     │       └── v1.rs      — V1 layout: v1/blake3/ab/cd/<hex>
-    ├── index/             — Index trait + InMemoryIndex + FileSystemIndex
-    │   ├── mod.rs         — trait + IndexEntry + re-exports
-    │   ├── mem_index.rs   — InMemoryIndex (DashMap, separate constraint map)
-    │   ├── fs_index.rs    — FileSystemIndex (persistent constraints via JSON)
-    │   └── versions/      — V1 persistence format (versioned JSON constraint file)
-    ├── read_view.rs       — ComposedReadView (3-layer lookup: Index → BlobStore → WAL)
+    ├── metadata/          — Metadata trait + InMemoryMetadata + FileSystemMetadata
+    │   ├── mod.rs         — trait + MetadataEntry + re-exports
+    │   ├── mem.rs         — InMemoryMetadata (DashMap, separate constraint map)
+    │   ├── fs.rs          — FileSystemMetadata (persistent snapshot via JSON)
+    │   └── versions/      — V1 persistence format (versioned JSON metadata file)
+    ├── read_view.rs       — ComposedReadView (3-layer lookup: Metadata → BlobStore → WAL)
     ├── pending_ops.rs     — PendingOps (in-flight read dedup helper)
-    ├── bg_engine.rs       — BackgroundEngine (WAL consumer → BlobStore + Index, maintenance)
+    ├── bg_engine.rs       — BackgroundEngine (WAL consumer → BlobStore + Metadata, maintenance)
     ├── in_memory.rs       — InMemoryCas wrapper
     └── file_system.rs     — FileSystemCas wrapper + open()
 ```
@@ -220,20 +220,20 @@ src/mediapm-cas/src/
 ```text
 put(data) → Hash(data) → Wal.append(Put{hash, data})
                           ↓ (write-through: inline) │ (write-back: deferred)
-WAL consumer (bg_engine) → BlobStore.write(hash) + Index.put(hash) → checkpoint
+WAL consumer (bg_engine) → BlobStore.write(hash) + Metadata.put(hash) → checkpoint
                                                                     ↓
-get(hash) → ReadView: Index → BlobStore.read/read_delta → WAL fallback (tombstone check)
+get(hash) → ReadView: Metadata → BlobStore.read/read_delta → WAL fallback (tombstone check)
                                                                     ↓
 delete(hash) → Wal.append(Delete{hash})
                                                                     ↓
-WAL consumer → re-materialize dependents → BlobStore.delete(hash) + Index.delete(hash)
+WAL consumer → re-materialize dependents → BlobStore.delete(hash) + Metadata.delete(hash)
 ```
 
 ## 5. Internals
 
 ### 5.1 WAL
 
-The only crash-safe commitment point. Index and BlobStore are derived —
+The only crash-safe commitment point. Metadata and BlobStore are derived —
 rebuildable by WAL replay.
 
 **Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
@@ -242,7 +242,7 @@ Only single-entry `append` is exposed.
 **PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
 
 **WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays WAL entries from
-checkpoint position, materializing to BlobStore + Index. After processing,
+checkpoint position, materializing to BlobStore + Metadata. After processing,
 position is persisted atomically. Idempotent.
 
 ### 5.2 BlobStore
@@ -261,14 +261,14 @@ Pluggable payload backend.
 `Some(path)` for filesystem-backed stores, `None` for in-memory. Used by
 `FileSystemCas::object_path_for_hash`.
 
-### 5.3 Index
+### 5.3 Metadata
 
 Object metadata index. Both implementations share the same trait.
 
-- **`InMemoryIndex`**: `Arc<DashMap<Hash, IndexEntry>>` for payload metadata
-  (`IndexEntry { len, encoding }`). Constraint data is stored in a separate map:
+- **`InMemoryMetadata`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata
+  (`MetadataEntry { len, encoding }`). Constraint data is stored in a separate map:
   `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
-- **`FileSystemIndex`**: Wraps `InMemoryIndex` with persistent snapshot.
+- **`FileSystemMetadata`**: Wraps `InMemoryMetadata` with persistent snapshot.
   On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), writes full snapshot (entries +
   constraints) to a V1 JSON file atomically (temp+rename). Flushes are batched via an
   `AtomicBool` dirty flag: concurrent mutations coalesce into a single write, avoiding
@@ -279,7 +279,7 @@ Object metadata index. Both implementations share the same trait.
 replay do not touch the constraint map; only `Constraint` WAL entries populate it. This
 keeps the data model clean and removes `Option` from constraint representation.
 
-**Versioned persistence** (`storage/index/versions/`): V1 JSON format:
+**Versioned persistence** (`storage/metadata/versions/`): V1 JSON format:
 
 ```json
 { "version": 1, "entries": { "hash_hex": { "len": 123, "encoding": "Full" } }, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }
@@ -295,15 +295,15 @@ are shared by both implementations.
 
 Three-layer lookup for get/stat.
 
-1. **Index**. Check entry encoding. If `Full` → BlobStore.read(). If `Delta { base_hash }` → iterative walk.
+1. **Metadata**. Check entry encoding. If `Full` → BlobStore.read(). If `Delta { base_hash }` → iterative walk.
 2. **BlobStore**. Read payload bytes (full or delta envelope). Walk delta chains via `read_delta`/`read`.
 3. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
 
-**Delta reconstruction**: Index → [`resolve_delta_chain`](crate::storage::read_view) → BlobStore.read_delta(hash)
-→ walk base chain via Index → BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`.
+**Delta reconstruction**: Metadata → [`resolve_delta_chain`](crate::storage::read_view) → BlobStore.read_delta(hash)
+→ walk base chain via Metadata → BlobStore.read(base) → `DeltaPatch::apply(base_bytes, vcdiff)`.
 If base not found → `CasError::CorruptObject`.
 
 ### 5.5 Delta Codec
@@ -328,7 +328,7 @@ Drives WAL consumer and maintenance pass. GC never deletes objects — only prun
 metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
 
 **WAL consumer guarantees**: After a `run_wal_consumer` cycle completes, all entries up to the
-checkpoint position are materialized in BlobStore + Index. After materialization, the checkpoint
+checkpoint position are materialized in BlobStore + Metadata. After materialization, the checkpoint
 is advanced and `WAL::trim(checkpoint)` is called. The checkpoint starts from `consumed_position()`
 (passed as `start_pos` to `CasStore::new` and `BackgroundEngine::new`), not from
 `WalPosition::ZERO`, so already-consumed entries are skipped on restart. This means:
@@ -337,14 +337,14 @@ is advanced and `WAL::trim(checkpoint)` is called. The checkpoint starts from `c
   - `FileWal::trim()` deletes segment files whose `last_pos <= checkpoint` and prunes pending
     HashMap entries with `pos <= checkpoint`.
   - `InMemoryWal::trim()` pops entries from the VecDeque front.
-  - After trim, the only authoritative copies are in BlobStore + Index.
+  - After trim, the only authoritative copies are in BlobStore + Metadata.
 - L3 WAL fallback in ReadView is only exercised for entries appended after the last cycle
   (transient, before consumer materializes).
-- The tombstone check (always performed on every `get()` even on Index hit) is O(1) for FileWal
+- The tombstone check (always performed on every `get()` even on Metadata hit) is O(1) for FileWal
   (HashMap lookup) and cheap for InMemoryWal (small pending set after trimming).
 
 **Crash recovery**: On restart, `rebuild_from_wal()` replays all entries from the WAL (starting
-from `WalPosition::ZERO`), rebuilding Index + constraint map. The WAL contains the complete
+from `WalPosition::ZERO`), rebuilding Metadata + constraint map. The WAL contains the complete
 history since the last trim — the last checkpoint always points at or before the oldest
 surviving segment.
 
@@ -352,10 +352,10 @@ surviving segment.
 
 When the WAL consumer processes `Delete { hash }`:
 
-1. **Scan for dependents**: Find Index entries where `encoding == Delta { base_hash: hash }`.
+1. **Scan for dependents**: Find Metadata entries where `encoding == Delta { base_hash: hash }`.
 2. **Re-materialize each**: Read delta blob from BlobStore, decode V3 envelope, fetch base
-   (still available in BlobStore), apply VCDIFF, store result as Full in BlobStore + Index.
-3. **Physically remove**: `BlobStore.delete(hash)` + `Index.delete(hash)`.
+   (still available in BlobStore), apply VCDIFF, store result as Full in BlobStore + Metadata.
+3. **Physically remove**: `BlobStore.delete(hash)` + `Metadata.delete(hash)`.
 
 The WAL consumer doesn't advance the checkpoint until re-materialization is complete.
 
@@ -367,13 +367,13 @@ against B, A's bytes live under A's content hash.
 `InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>` with `Deref`:
 
 ```rust
-pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryIndex, InMemoryBlobStore>);
+pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryMetadata, InMemoryBlobStore>);
 
 impl std::ops::Deref for InMemoryCas { /* → inner CasStore */ }
 ```
 
 All three CAS traits (`CasApi`, `CasMaintenanceApi`, `ConstraintApi`) are implemented
-via blanket impls in `store.rs` for any `T: Deref<Target = CasStore<J, I, B>>`.
+via blanket impls in `store.rs` for any `T: Deref<Target = CasStore<J, M, B>>`.
 `ConfiguredCas` uses the local `forward!` macro (defined in `config.rs`) to delegate
 trait methods to the inner variant via `cas.deref()`.
 
@@ -392,7 +392,7 @@ trait methods to the inner variant via `cas.deref()`.
 ### 8.3 Crash safety
 
 - WAL is the single crash-safe commitment point. All operations append before acknowledging.
-- Index and BlobStore are derived — rebuilt by WAL replay.
+- Metadata and BlobStore are derived — rebuilt by WAL replay.
 
 ### 8.4 No TOCTOU
 
@@ -400,7 +400,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 
 ### 8.5 Delta chain integrity
 
-- Iterative `get(base_hash)` for reconstruction goes through Index → BlobStore walk.
+- Iterative `get(base_hash)` for reconstruction goes through Metadata → BlobStore walk.
 - If base_hash not found → `CorruptObject`.
 - Cyclic references prevented by inline `HashSet` visitation during chain traversal.
 
@@ -417,12 +417,12 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 ### 8.7 Write-through vs write-back compile-time policy
 
 `CasStore::put()` uses compile-time dispatch via associated consts (`BlobStore::SYNC_MATERIALIZE`,
-`Index::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`.
+`Metadata::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE`.
 
-| Backend triplet | BlobStore | Index | Effective |
+| Backend triplet | BlobStore | Metadata | Effective |
 |-----------------|-----------|-------|-----------|
-| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryIndex` (true) | write-through |
-| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemIndex` (false) | write-back |
+| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryMetadata` (true) | write-through |
+| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemMetadata` (false) | write-back |
 
 **`delete()`** is always write-back regardless of `SYNC_MATERIALIZE` — physical removal
 is deferred to the WAL consumer for correct delta-dependent re-materialization.

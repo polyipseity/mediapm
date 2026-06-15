@@ -3,7 +3,7 @@
 //! Drives two background tasks:
 //!
 //! - **WAL consumer** — drains pending WAL entries into the BlobStore and
-//!   Index, then trims them from the WAL.
+//!   Metadata, then trims them from the WAL.
 //! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
 //!   approach effective constraints (intersection of stored bases with live
 //!   hashes) and evaluates delta-compression opportunities.
@@ -28,14 +28,14 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::blob_store::BlobStore;
-use super::index::{Index, IndexEntry};
+use super::metadata::{Metadata, MetadataEntry};
 use super::read_view::ReadView;
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Background engine driving WAL consumption and maintenance.
-pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
+pub struct BackgroundEngine<J: Wal, M: Metadata, B: BlobStore> {
     wal: J,
-    index: I,
+    metadata: M,
     blob_store: B,
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
@@ -43,7 +43,7 @@ pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
     /// Cache for reconstructed full bytes (avoids repeated delta-chain walks).
     /// Shared across clones via `Arc`.
     ///
-    /// TODO: bound cache size based on `index.len()` to prevent unbounded
+    /// TODO: bound cache size based on `metadata.len()` to prevent unbounded
     /// growth under sustained maintenance pressure. Consider an LRU wrapper
     /// or periodic eviction of entries whose source hashes no longer exist.
     reconstructed_cache: Arc<Mutex<HashMap<Hash, (Bytes, Instant)>>>,
@@ -51,14 +51,14 @@ pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
     reconstructed_cache_ttl: Duration,
 }
 
-impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
+impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Create a new engine, checkpointing at `start_pos`.
     ///
     /// `cache_ttl` controls how long reconstructed full bytes remain cached
     /// (default 60s). Pass `Duration::ZERO` to disable caching.
     pub(crate) fn new(
         wal: J,
-        index: I,
+        metadata: M,
         blob_store: B,
         start_pos: WalPosition,
         read_view: Arc<dyn ReadView>,
@@ -66,7 +66,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     ) -> Self {
         Self {
             wal,
-            index,
+            metadata,
             blob_store,
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
@@ -77,7 +77,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     }
 
     /// Drain the WAL consumer once: drain WAL entries into BlobStore +
-    /// Index, advancing checkpoint after each entry.
+    /// Metadata, advancing checkpoint after each entry.
     ///
     /// Returns the number of entries consumed.
     pub async fn run_wal_consumer(&self) -> Result<u64, CasError> {
@@ -107,17 +107,20 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     // Write payload to BlobStore as Full.
                     self.blob_store.write(*hash, ObjectEncoding::Full, data.clone()).await?;
                     // Preserve existing constraint bases, if any.
-                    let existing_bases = self.index.get_constraint(hash).await?;
-                    self.index
+                    let existing_bases = self.metadata.get_constraint(hash).await?;
+                    self.metadata
                         .put(
                             *hash,
-                            IndexEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
+                            MetadataEntry {
+                                len: data.len() as u64,
+                                encoding: ObjectEncoding::Full,
+                            },
                         )
                         .await?;
                     // Re-apply constraint bases (constraint is stored separately
                     // from metadata, so we must explicitly set it after put).
                     if !existing_bases.is_empty() {
-                        self.index.set_constraint(*hash, existing_bases).await?;
+                        self.metadata.set_constraint(*hash, existing_bases).await?;
                     }
                 }
                 WalEntry::Delete { hash } => {
@@ -130,10 +133,10 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                     // dangling-delta reconstruction failure.
                     self.rematerialize_deltas_for(hash).await?;
                     self.blob_store.delete(hash).await?;
-                    self.index.delete(hash).await?;
+                    self.metadata.delete(hash).await?;
                 }
                 WalEntry::Constraint { target, bases } => {
-                    self.index.set_constraint(*target, bases.clone()).await?;
+                    self.metadata.set_constraint(*target, bases.clone()).await?;
                 }
             }
             // Advance checkpoint to the next position after this entry.
@@ -151,12 +154,12 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     /// Re-materialize all delta-encoded objects that depend on `hash` as
     /// their base. After this call, each dependent is stored as
     /// [`ObjectEncoding::Full`] so it remains reachable after `hash` is
-    /// physically removed from the BlobStore and Index.
+    /// physically removed from the BlobStore and Metadata.
     ///
     /// This is called by the WAL consumer **before** physically deleting
     /// `hash`.
     async fn rematerialize_deltas_for(&self, hash: &Hash) -> Result<(), CasError> {
-        let dependents = self.index.list_dependents(hash).await?;
+        let dependents = self.metadata.list_dependents(hash).await?;
 
         for dep_hash in dependents {
             if self.is_cancelled() {
@@ -192,15 +195,18 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                 .delete_encoding(dep_hash, ObjectEncoding::Delta { base_hash: *hash })
                 .await?;
             // Preserve constraint bases.
-            let existing_bases = self.index.get_constraint(&dep_hash).await?;
-            self.index
+            let existing_bases = self.metadata.get_constraint(&dep_hash).await?;
+            self.metadata
                 .put(
                     dep_hash,
-                    IndexEntry { len: result_bytes.len() as u64, encoding: ObjectEncoding::Full },
+                    MetadataEntry {
+                        len: result_bytes.len() as u64,
+                        encoding: ObjectEncoding::Full,
+                    },
                 )
                 .await?;
             if !existing_bases.is_empty() {
-                self.index.set_constraint(dep_hash, existing_bases).await?;
+                self.metadata.set_constraint(dep_hash, existing_bases).await?;
             }
         }
 
@@ -217,7 +223,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     }
 
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
-    /// any delta chain present in the Index + BlobStore.
+    /// any delta chain present in the Metadata + BlobStore.
     ///
     /// Uses an internal time-based cache (TTL configurable via constructor)
     /// to avoid repeated delta-chain walks during maintenance cycles.
@@ -236,14 +242,14 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
             drop(cache);
         }
 
-        let Some(entry) = self.index.get(hash).await? else {
+        let Some(entry) = self.metadata.get(hash).await? else {
             return Ok(None);
         };
 
         let result = super::read_view::resolve_full_bytes(
             hash,
             &entry,
-            &self.index,
+            &self.metadata,
             &self.blob_store,
             "delta self-reference detected during optimizer reconstruction",
             "delta chain: base",
@@ -268,7 +274,7 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
 
     /// Run maintenance: optimizer + constraint pruning.
     ///
-    /// 1. **Optimizer**: build constraint map from Index, attempt delta
+    /// 1. **Optimizer**: build constraint map from Metadata, attempt delta
     ///    rewrites. Computes VCDIFF delta for each constraint and stores the
     ///    delta-encoded result if it is smaller than the full payload.
     /// 2. **Constraint pruning**: per-base prune so each entry converges
@@ -289,13 +295,13 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         // === Phase 1: Optimizer ===
         // Build the live set once — it is reused for both the optimizer and
         // the pruning step that follows.
-        let live: HashSet<Hash> = self.index.list_hashes().await?.into_iter().collect();
-        let targets = self.index.list_targets().await?;
+        let live: HashSet<Hash> = self.metadata.list_hashes().await?.into_iter().collect();
+        let targets = self.metadata.list_targets().await?;
         for target in &targets {
             if self.is_cancelled() {
                 break;
             }
-            let bases = self.index.get_constraint(target).await?;
+            let bases = self.metadata.get_constraint(target).await?;
             if !bases.is_empty() {
                 // Effective bases: intersection of stored bases with live
                 // hashes. Dead bases cannot be used for delta reconstruction.
@@ -331,18 +337,18 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
                             )
                             .await?;
                         // Preserve constraint bases.
-                        let existing_bases = self.index.get_constraint(target).await?;
-                        self.index
+                        let existing_bases = self.metadata.get_constraint(target).await?;
+                        self.metadata
                             .put(
                                 *target,
-                                IndexEntry {
+                                MetadataEntry {
                                     len: target_bytes.len() as u64,
                                     encoding: ObjectEncoding::Delta { base_hash: *best_base },
                                 },
                             )
                             .await?;
                         if !existing_bases.is_empty() {
-                            self.index.set_constraint(*target, existing_bases).await?;
+                            self.metadata.set_constraint(*target, existing_bases).await?;
                         }
                         did_work = true;
                     }
@@ -353,9 +359,9 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
         // === Phase 2: Constraint pruning ===
         // Prune dead bases from constraint entries. The live set from Phase 1
         // is still valid — the optimizer only changes encodings, not existence.
-        let before = self.index.list_targets().await?.len();
-        self.index.prune_targets(&live).await?;
-        let after = self.index.list_targets().await?.len();
+        let before = self.metadata.list_targets().await?.len();
+        self.metadata.prune_targets(&live).await?;
+        let after = self.metadata.list_targets().await?.len();
         if after < before {
             did_work = true;
         }
@@ -386,16 +392,16 @@ impl<J: Wal, I: Index, B: BlobStore> BackgroundEngine<J, I, B> {
     }
 }
 
-impl<J: Wal, I: Index, B: BlobStore> Clone for BackgroundEngine<J, I, B>
+impl<J: Wal, M: Metadata, B: BlobStore> Clone for BackgroundEngine<J, M, B>
 where
     J: Clone,
-    I: Clone,
+    M: Clone,
     B: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             wal: self.wal.clone(),
-            index: self.index.clone(),
+            metadata: self.metadata.clone(),
             blob_store: self.blob_store.clone(),
             read_view: self.read_view.clone(),
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),

@@ -1,8 +1,8 @@
-//! Filesystem-backed index — in-memory with persistent snapshot file.
+//! Filesystem-backed metadata — in-memory with persistent snapshot file.
 //!
-//! [`FileSystemIndex`] wraps an [`InMemoryIndex`](super::mem_index::InMemoryIndex)
-//! and persists both index entries (hash → (len, encoding)) and constraint
-//! data (target → bases) to a single JSON file so the index survives WAL
+//! [`FileSystemMetadata`] wraps an [`InMemoryMetadata`](super::mem::InMemoryMetadata)
+//! and persists both metadata entries (hash → (len, encoding)) and constraint
+//! data (target → bases) to a single JSON file so the metadata store survives WAL
 //! trim and process restarts.
 
 use async_trait::async_trait;
@@ -16,43 +16,43 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::super::wal::Wal;
-use super::mem_index::InMemoryIndex;
+use super::mem::InMemoryMetadata;
 use super::versions::{self, FORMAT_VERSION};
-use super::{Index, IndexEntry};
+use super::{Metadata, MetadataEntry};
 
-/// In-memory index with persistent snapshot (entries + constraints) on disk.
+/// In-memory metadata with persistent snapshot (entries + constraints) on disk.
 ///
-/// Delegates all operations to an [`InMemoryIndex`]. Both entries and
+/// Delegates all operations to an [`InMemoryMetadata`]. Both entries and
 /// constraints are flushed to a JSON file after every mutation and loaded
-/// during [`rebuild_from_wal`](Index::rebuild_from_wal).
+/// during [`rebuild_from_wal`](Metadata::rebuild_from_wal).
 ///
 /// Flushes are batched via a dirty flag: concurrent mutations coalesce into
 /// a single write, avoiding redundant I/O. In the unlikely event of a stale
 /// snapshot file (from a racing write), the WAL is the true source of truth
 /// and recovers any lost data on process restart.
 #[derive(Clone)]
-pub struct FileSystemIndex {
-    inner: InMemoryIndex,
-    constraint_path: PathBuf,
+pub struct FileSystemMetadata {
+    inner: InMemoryMetadata,
+    metadata_path: PathBuf,
     /// Tracks whether in-memory state has diverged from the on-disk snapshot.
     /// Set `true` by every mutation; cleared by `flush_snapshot`.
     dirty: Arc<AtomicBool>,
 }
 
-impl FileSystemIndex {
-    /// Create a new `FileSystemIndex` backed by the given path.
+impl FileSystemMetadata {
+    /// Create a new `FileSystemMetadata` backed by the given path.
     ///
-    /// The snapshot file is not loaded until [`rebuild_from_wal`](Index::rebuild_from_wal)
+    /// The snapshot file is not loaded until [`rebuild_from_wal`](Metadata::rebuild_from_wal)
     /// is called.
-    pub fn new(constraint_path: PathBuf) -> Self {
+    pub fn new(metadata_path: PathBuf) -> Self {
         Self {
-            inner: InMemoryIndex::new(),
-            constraint_path,
+            inner: InMemoryMetadata::new(),
+            metadata_path,
             dirty: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Collect all entries from the inner index into a `BTreeMap`.
+    /// Collect all entries from the inner metadata store into a `BTreeMap`.
     async fn collect_entries(&self) -> Result<BTreeMap<Hash, (u64, ObjectEncoding)>, CasError> {
         let mut map = BTreeMap::new();
         for h in self.inner.list_hashes().await? {
@@ -84,27 +84,27 @@ impl FileSystemIndex {
         let entries = self.collect_entries().await?;
 
         if constraints.is_empty() && entries.is_empty() {
-            if self.constraint_path.exists() {
-                tokio::fs::remove_file(&self.constraint_path).await.map_err(CasError::Io)?;
+            if self.metadata_path.exists() {
+                tokio::fs::remove_file(&self.metadata_path).await.map_err(CasError::Io)?;
             }
         } else {
-            versions::save(&self.constraint_path, &constraints, &entries).await?;
+            versions::save(&self.metadata_path, &constraints, &entries).await?;
         }
         Ok(())
     }
 }
 
 #[async_trait]
-impl Index for FileSystemIndex {
+impl Metadata for FileSystemMetadata {
     const SYNC_MATERIALIZE: bool = false;
 
-    async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
+    async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
         self.inner.put(hash, entry).await?;
         self.dirty.store(true, Ordering::Release);
         self.flush_snapshot().await
     }
 
-    async fn get(&self, hash: &Hash) -> Result<Option<IndexEntry>, CasError> {
+    async fn get(&self, hash: &Hash) -> Result<Option<MetadataEntry>, CasError> {
         self.inner.get(hash).await
     }
 
@@ -154,14 +154,14 @@ impl Index for FileSystemIndex {
         self.inner.rebuild_from_wal(wal).await?;
 
         // Overlay persisted snapshot (entries + constraints survive WAL trim).
-        if self.constraint_path.exists() {
+        if self.metadata_path.exists() {
             let (persisted_constraints, persisted_entries) =
-                versions::load(&self.constraint_path, FORMAT_VERSION).await?;
+                versions::load(&self.metadata_path, FORMAT_VERSION).await?;
             for (target, bases) in persisted_constraints {
                 self.inner.set_constraint(target, bases).await?;
             }
             for (hash, (len, encoding)) in persisted_entries {
-                self.inner.put(hash, IndexEntry { len, encoding }).await?;
+                self.inner.put(hash, MetadataEntry { len, encoding }).await?;
             }
         }
 
@@ -184,16 +184,16 @@ mod tests {
     #[tokio::test]
     async fn persists_and_restores_constraint() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("constraints.v1.json");
-        let index = FileSystemIndex::new(path.clone());
+        let path = dir.path().join("metadata.v1.json");
+        let index = FileSystemMetadata::new(path.clone());
 
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         index.set_constraint(target, BTreeSet::from([base])).await.unwrap();
         // Already flushed by set_constraint.
 
-        // Create a new index from the same path and rebuild.
-        let index2 = FileSystemIndex::new(path.clone());
+        // Create a new metadata store from the same path and rebuild.
+        let index2 = FileSystemMetadata::new(path.clone());
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
 
@@ -206,17 +206,17 @@ mod tests {
     #[tokio::test]
     async fn rebuild_from_wal_merges_persisted() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("constraints.v1.json");
+        let path = dir.path().join("metadata.v1.json");
 
-        // Create an index, add constraint via WAL + persisted.
-        let index = FileSystemIndex::new(path.clone());
+        // Create a metadata store, add constraint via WAL + persisted.
+        let index = FileSystemMetadata::new(path.clone());
         index
             .set_constraint(Hash::from_content(b"p"), BTreeSet::from([Hash::from_content(b"b")]))
             .await
             .unwrap();
         // Already flushed by set_constraint.
 
-        // Now rebuild with a fresh index and a WAL that has a Put + a different constraint.
+        // Now rebuild with a fresh store and a WAL that has a Put + a different constraint.
         let journal = InMemoryWal::new();
         let target1 = Hash::from_content(b"w1");
         journal
@@ -231,7 +231,7 @@ mod tests {
             .await
             .unwrap();
 
-        let index2 = FileSystemIndex::new(path.clone());
+        let index2 = FileSystemMetadata::new(path.clone());
         index2.rebuild_from_wal(&journal).await.unwrap();
 
         // Assert both persisted and WAL constraints survive.
@@ -243,7 +243,7 @@ mod tests {
     async fn no_persist_file_starts_empty() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
-        let index = FileSystemIndex::new(path);
+        let index = FileSystemMetadata::new(path);
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(index.is_empty().await);
@@ -252,19 +252,19 @@ mod tests {
     #[tokio::test]
     async fn prune_also_flushes() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("constraints.v1.json");
-        let index = FileSystemIndex::new(path.clone());
+        let path = dir.path().join("metadata.v1.json");
+        let index = FileSystemMetadata::new(path.clone());
 
         let live = Hash::from_content(b"live");
         index.set_constraint(live, BTreeSet::from([Hash::from_content(b"dead")])).await.unwrap();
 
-        // Insert the base into metadata so it's in the index.
+        // Insert the base into the store so it's in the metadata.
         // (prune_targets checks base membership via the HashSet argument, not
-        // via the index, so this is fine.)
+        // via the store, so this is fine.)
         index.prune_targets(&HashSet::from([live])).await.unwrap();
 
         // Reload and verify.
-        let index2 = FileSystemIndex::new(path);
+        let index2 = FileSystemMetadata::new(path);
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
         // dead base is gone from the persisted constraint.

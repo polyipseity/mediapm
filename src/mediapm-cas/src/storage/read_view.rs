@@ -1,16 +1,16 @@
-//! Read-through view — provides coherent reads over Index + BlobStore +
+//! Read-through view — provides coherent reads over Metadata + BlobStore +
 //! WAL fallback.
 //!
 //! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
-//! 1. [`Index`](super::index::Index) — metadata (encoding, size, bases).
+//! 1. [`Metadata`](super::metadata::Metadata) — metadata (encoding, size, bases).
 //! 2. [`BlobStore`](super::blob_store::BlobStore) — payload bytes (full
 //!    or delta).
-//! 3. WAL fallback — entries not yet materialized into BlobStore/Index.
+//! 3. WAL fallback — entries not yet materialized into BlobStore/Metadata.
 //!
 //! In-flight read dedup prevents redundant blob-store reads when multiple
-//! concurrent `get()` calls miss Index simultaneously.
+//! concurrent `get()` calls miss Metadata simultaneously.
 
 use std::collections::HashSet;
 
@@ -22,7 +22,7 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::blob_store::BlobStore;
-use super::index::{Index, IndexEntry};
+use super::metadata::{Metadata, MetadataEntry};
 use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
 
@@ -50,30 +50,30 @@ pub use crate::api::ObjectMeta;
 // ComposedReadView
 // ---------------------------------------------------------------------------
 
-/// A read-through view backed by Index + BlobStore + WAL fallback.
+/// A read-through view backed by Metadata + BlobStore + WAL fallback.
 ///
 /// Implements a three-layer lookup:
-/// 1. `Index` for metadata (encoding, size).
+/// 1. `Metadata` for metadata (encoding, size).
 /// 2. `BlobStore` for payload bytes.
 /// 3. `Wal` fallback for entries not yet materialized.
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
 /// hash simultaneously, only one performs the lookup while the other waits
 /// for the shared result (see [`PendingOps`]).
-pub(crate) struct ComposedReadView<I: Index, J: Wal, B: BlobStore> {
+pub(crate) struct ComposedReadView<M: Metadata, J: Wal, B: BlobStore> {
     pending: PendingOps,
-    index: I,
+    metadata: M,
     wal: J,
     blob_store: B,
 }
 
-impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
+impl<M: Metadata, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
     /// Create a new view.
-    pub fn new(index: I, wal: J, blob_store: B) -> Self {
-        Self { pending: PendingOps::new(), index, wal, blob_store }
+    pub fn new(metadata: M, wal: J, blob_store: B) -> Self {
+        Self { pending: PendingOps::new(), metadata, wal, blob_store }
     }
 
-    /// Inner fetch: Index + BlobStore → WAL fallback with transparent delta
+    /// Inner fetch: Metadata + BlobStore → WAL fallback with transparent delta
     /// reconstruction.
     ///
     /// Returns `Ok(Some(data))` if found, `Ok(None)` if confirmed absent.
@@ -82,8 +82,8 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
     /// iteratively (not recursively) to avoid Rust async recursion
     /// restrictions.
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
-        // Check Index for metadata.
-        let entry = match self.index.get(hash).await? {
+        // Check Metadata for metadata.
+        let entry = match self.metadata.get(hash).await? {
             Some(e) => e,
             None => {
                 // WAL fallback: data may only exist as pending Put.
@@ -105,7 +105,7 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
         resolve_full_bytes(
             hash,
             &entry,
-            &self.index,
+            &self.metadata,
             &self.blob_store,
             "delta self-reference detected",
             "delta chain: base",
@@ -116,8 +116,8 @@ impl<I: Index, J: Wal, B: BlobStore> ComposedReadView<I, J, B> {
 }
 
 #[async_trait]
-impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> ReadView
-    for ComposedReadView<I, J, B>
+impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> ReadView
+    for ComposedReadView<M, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
         self.pending
@@ -127,8 +127,8 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
     }
 
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError> {
-        // Check Index first.
-        if let Some(entry) = self.index.get(hash).await? {
+        // Check Metadata first.
+        if let Some(entry) = self.metadata.get(hash).await? {
             // Before returning metadata, check the WAL for a pending Delete
             // (tombstone) that hasn't been consumed yet.
             match self.wal.check_pending(hash).await {
@@ -153,12 +153,12 @@ impl<I: Index + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> R
 // Shared delta-chain resolution
 // ---------------------------------------------------------------------------
 
-/// Given an index entry, read full bytes — either directly (Full) or by
+/// Given a metadata entry, read full bytes — either directly (Full) or by
 /// resolving the delta chain (Delta).
-pub(super) async fn resolve_full_bytes<I: Index, B: BlobStore>(
+pub(super) async fn resolve_full_bytes<M: Metadata, B: BlobStore>(
     hash: &Hash,
-    entry: &IndexEntry,
-    index: &I,
+    entry: &MetadataEntry,
+    metadata: &M,
     blob_store: &B,
     self_ref_msg: &str,
     base_not_found_msg: &str,
@@ -169,7 +169,7 @@ pub(super) async fn resolve_full_bytes<I: Index, B: BlobStore>(
             resolve_delta_chain(
                 hash,
                 base_hash,
-                index,
+                metadata,
                 blob_store,
                 self_ref_msg,
                 base_not_found_msg,
@@ -183,10 +183,10 @@ pub(super) async fn resolve_full_bytes<I: Index, B: BlobStore>(
 ///
 /// Callers provide the starting `base_hash` from the object's encoding and
 /// context strings for error messages. Returns `Ok(full_bytes)` on success.
-pub(super) async fn resolve_delta_chain<I: Index, B: BlobStore>(
+pub(super) async fn resolve_delta_chain<M: Metadata, B: BlobStore>(
     hash: &Hash,
     base_hash: Hash,
-    index: &I,
+    metadata: &M,
     blob_store: &B,
     self_ref_msg: &str,
     base_not_found_msg: &str,
@@ -215,7 +215,7 @@ pub(super) async fn resolve_delta_chain<I: Index, B: BlobStore>(
         chain.push((current, delta_data));
         current = base;
 
-        match index.get(&current).await? {
+        match metadata.get(&current).await? {
             Some(base_entry) => match base_entry.encoding {
                 ObjectEncoding::Full => {
                     let base_data = blob_store.read(&current).await?;
