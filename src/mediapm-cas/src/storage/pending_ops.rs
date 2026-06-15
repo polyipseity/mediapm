@@ -93,8 +93,13 @@ impl PendingOps {
                 let result = work().await;
                 guard.committed = true;
                 slot.result.set(result.clone()).ok();
-                slot.done.notify_waiters();
+                // Remove entry BEFORE notifying so new arrivals see Vacant
+                // instead of finding an Occupied entry whose notification
+                // already fired.  Otherwise the late-comer would call
+                // `notified().await` after the notification and block
+                // forever.
                 self.inner.remove(&hash);
+                slot.done.notify_waiters();
                 // At this point `guard` drops with committed=true → no-op.
                 drop(guard);
                 result
