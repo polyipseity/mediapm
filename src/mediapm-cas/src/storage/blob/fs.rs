@@ -8,7 +8,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::Blob;
 use super::versions::{hash_to_delta_path, hash_to_path};
@@ -77,6 +80,11 @@ impl FileSystemBlob {
         &self.root
     }
 
+    /// Buffer size for streaming I/O.
+    fn stream_buffer_size() -> usize {
+        crate::defaults::OBJECT_STREAM_BUFFER_SIZE as usize
+    }
+
     /// Ensure the parent directory for a hash exists.
     async fn ensure_parent(&self, hash: &Hash) -> Result<(), CasError> {
         let path = hash_to_path(&self.root, hash);
@@ -95,9 +103,19 @@ impl FileSystemBlob {
     }
 
     /// Verify that the content at `path` hashes to `expected`.
+    /// Uses incremental hashing to avoid loading the entire file.
     async fn verify_hash(path: &Path, expected: &Hash) -> Result<(), CasError> {
-        let data = fs::read(path).await.map_err(CasError::Io)?;
-        let actual = Hash::from_content(&data);
+        let mut file = fs::File::open(path).await.map_err(CasError::Io)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; Self::stream_buffer_size()];
+        loop {
+            let n = file.read(&mut buf).await.map_err(CasError::Io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        let actual = Hash::from_bytes(*hasher.finalize().as_bytes());
         if actual != *expected {
             return Err(CasError::CorruptObject {
                 hash: Some(*expected),
@@ -139,6 +157,92 @@ impl Blob for FileSystemBlob {
         Ok(Bytes::from(data))
     }
 
+    async fn read_to_writer(
+        &self,
+        hash: &Hash,
+        writer: &mut (dyn AsyncWrite + Send + Unpin),
+    ) -> Result<(), CasError> {
+        let path = hash_to_path(&self.root, hash);
+        let mut file = fs::File::open(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        if self.should_verify() {
+            // Verify hash while streaming: compute hash incrementally
+            let mut hasher = blake3::Hasher::new();
+            let mut buf = vec![0u8; Self::stream_buffer_size()];
+            loop {
+                let n = file.read(&mut buf).await.map_err(CasError::Io)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                writer.write_all(&buf[..n]).await.map_err(CasError::Io)?;
+            }
+            let actual = Hash::from_bytes(*hasher.finalize().as_bytes());
+            if actual != *hash {
+                return Err(CasError::CorruptObject {
+                    hash: Some(*hash),
+                    details: format!(
+                        "hash mismatch at {}: expected {hash}, found {actual}",
+                        path.display()
+                    ),
+                });
+            }
+        } else {
+            // No verification: simple copy
+            tokio::io::copy_buf(&mut tokio::io::BufReader::new(&mut file), writer)
+                .await
+                .map_err(CasError::Io)?;
+        }
+        Ok(())
+    }
+
+    async fn write_from_reader(
+        &self,
+        hash: Hash,
+        encoding: ObjectEncoding,
+        reader: &mut (dyn AsyncRead + Send + Unpin),
+        _content_len: u64,
+    ) -> Result<(), CasError> {
+        self.ensure_parent(&hash).await?;
+        let path = match encoding {
+            ObjectEncoding::Full => hash_to_path(&self.root, &hash),
+            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
+        };
+        let tmp_path = path.with_extension("tmp");
+
+        // Write to temp file in 64 KiB chunks while incrementally hashing
+        let mut tmp_file = fs::File::create(&tmp_path).await.map_err(CasError::Io)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; Self::stream_buffer_size()];
+        loop {
+            let n = reader.read(&mut buf).await.map_err(CasError::Io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            tmp_file.write_all(&buf[..n]).await.map_err(CasError::Io)?;
+        }
+        tmp_file.flush().await.map_err(CasError::Io)?;
+        tmp_file.sync_all().await.map_err(CasError::Io)?;
+        drop(tmp_file);
+
+        // Verify content hash
+        let computed_hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+        if computed_hash != hash {
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(CasError::CorruptObject {
+                hash: Some(hash),
+                details: format!(
+                    "content hash mismatch writing {}: expected {hash}, computed {computed_hash}",
+                    path.display()
+                ),
+            });
+        }
+
+        // Atomic rename
+        fs::rename(&tmp_path, &path).await.map_err(CasError::Io)?;
+        Ok(())
+    }
+
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_delta_path(&self.root, hash);
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
@@ -174,6 +278,49 @@ impl Blob for FileSystemBlob {
             Err(e) => Err(CasError::Io(e)),
             Ok(()) => Ok(()),
         }
+    }
+
+    async fn write_stream(
+        &self,
+        encoding: ObjectEncoding,
+        reader: &mut (dyn AsyncRead + Send + Unpin),
+    ) -> Result<(Hash, u64), CasError> {
+        // We don't know the hash yet — write to a temp file while hashing.
+        // Use a dedicated temp dir to avoid partial-file collisions.
+        static STREAM_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let tmp_dir = self.root.join(".tmp");
+        fs::create_dir_all(&tmp_dir).await.map_err(CasError::Io)?;
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+        let tmp_name = format!("stream-{ts}-{}", STREAM_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let tmp_path = tmp_dir.join(tmp_name);
+
+        let mut tmp_file = fs::File::create(&tmp_path).await.map_err(CasError::Io)?;
+        let mut hasher = blake3::Hasher::new();
+        let mut buf = vec![0u8; Self::stream_buffer_size()];
+        let mut total: u64 = 0;
+        loop {
+            let n = reader.read(&mut buf).await.map_err(CasError::Io)?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            tmp_file.write_all(&buf[..n]).await.map_err(CasError::Io)?;
+            total += n as u64;
+        }
+        tmp_file.flush().await.map_err(CasError::Io)?;
+        tmp_file.sync_all().await.map_err(CasError::Io)?;
+        drop(tmp_file);
+
+        let hash = Hash::from_bytes(*hasher.finalize().as_bytes());
+
+        // Rename temp to final path.
+        let final_path = match encoding {
+            ObjectEncoding::Full => hash_to_path(&self.root, &hash),
+            ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
+        };
+        self.ensure_parent(&hash).await?;
+        fs::rename(&tmp_path, &final_path).await.map_err(CasError::Io)?;
+        Ok((hash, total))
     }
 
     fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {

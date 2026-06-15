@@ -75,6 +75,9 @@ impl Wal for InMemoryWal {
                 WalEntry::Put { hash: h, data } if h == hash => {
                     return PendingState::Present(data.clone());
                 }
+                WalEntry::PutLarge { hash: h, content_len } if h == hash => {
+                    return PendingState::PresentExternal { content_len: *content_len };
+                }
                 WalEntry::Delete { hash: h } if h == hash => {
                     return PendingState::Tombstone;
                 }
@@ -89,6 +92,7 @@ impl Wal for InMemoryWal {
         for (_, entry) in guard.iter().rev() {
             match entry {
                 WalEntry::Put { hash: h, .. } if h == target => return None,
+                WalEntry::PutLarge { hash: h, .. } if h == target => return None,
                 WalEntry::Delete { hash: h } if h == target => return None,
                 WalEntry::Constraint { target: t, bases } if t == target => {
                     return Some(bases.clone());

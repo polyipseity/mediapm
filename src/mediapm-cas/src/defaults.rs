@@ -20,3 +20,17 @@ pub const CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Default maximum WAL segment size (64 MiB).
 pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
+
+/// Default threshold for inlining data in WAL entries (64 MiB).
+/// Objects larger than this use external payload storage.
+pub const WAL_INLINE_THRESHOLD: u64 = 64 * 1024 * 1024;
+
+/// Default buffer size for streaming I/O (64 KiB).
+pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 65536;
+
+/// Default threshold for delta compression (16 MiB).
+/// Objects larger than this are never delta-compressed.
+pub const DELTA_THRESHOLD: u64 = 16 * 1024 * 1024;
+
+/// Default maximum cache size as a fraction of total store size (10%).
+pub const CACHE_MAX_FRACTION_OF_TOTAL_SIZE: f64 = 0.10;

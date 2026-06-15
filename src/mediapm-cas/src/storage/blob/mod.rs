@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
@@ -79,4 +80,57 @@ pub trait Blob: Send + Sync {
     /// (write-through), or defer to the WAL consumer (write-back).
     /// InMemory impls return `true`; FileSystem impls return `false`.
     const SYNC_MATERIALIZE: bool = true;
+
+    /// Read blob data and write it to an async writer.
+    ///
+    /// Default impl reads into `Bytes` then writes. Backends override for
+    /// zero-copy streaming (e.g. `copy_buf` from a file).
+    async fn read_to_writer(
+        &self,
+        hash: &Hash,
+        writer: &mut (dyn AsyncWrite + Send + Unpin),
+    ) -> Result<(), CasError> {
+        use tokio::io::AsyncWriteExt;
+        let data = self.read(hash).await?;
+        writer.write_all(&data).await.map_err(CasError::Io)?;
+        Ok(())
+    }
+
+    /// Write blob data from an async reader, computing the content hash
+    /// incrementally.
+    ///
+    /// Default impl buffers the full reader then calls `write()`. Backends
+    /// override for streaming writes with hash verification.
+    async fn write_from_reader(
+        &self,
+        hash: Hash,
+        encoding: ObjectEncoding,
+        reader: &mut (dyn AsyncRead + Send + Unpin),
+        content_len: u64,
+    ) -> Result<(), CasError> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::with_capacity(content_len as usize);
+        reader.read_to_end(&mut buf).await.map_err(CasError::Io)?;
+        self.write(hash, encoding, Bytes::from(buf)).await
+    }
+
+    /// Write blob data from an async reader, returning the content hash and
+    /// length. Useful when the hash is not known upfront (e.g. streaming PUT).
+    ///
+    /// Default impl buffers the full reader, computes the hash, then calls
+    /// `write()`. Backends override for streaming writes with incremental
+    /// hashing (avoids double-buffering).
+    async fn write_stream(
+        &self,
+        encoding: ObjectEncoding,
+        reader: &mut (dyn AsyncRead + Send + Unpin),
+    ) -> Result<(Hash, u64), CasError> {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf).await.map_err(CasError::Io)?;
+        let len = buf.len() as u64;
+        let hash = Hash::from_content(&buf);
+        self.write(hash, encoding, Bytes::from(buf)).await?;
+        Ok((hash, len))
+    }
 }

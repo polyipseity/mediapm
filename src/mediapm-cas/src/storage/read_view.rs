@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::api::ObjectEncoding;
+use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -25,6 +26,10 @@ use super::blob::Blob;
 use super::metadata::{Metadata, MetadataEntry};
 use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
+
+/// Maximum number of delta chain hops before failing with
+/// [`CasError::TooLarge`]. Prevents unbounded recursive resolution.
+const MAX_DELTA_CHAIN_DEPTH: usize = 5;
 
 // ---------------------------------------------------------------------------
 // ReadView trait
@@ -37,6 +42,21 @@ pub(crate) trait ReadView: Send + Sync {
     /// Returns [`CasError::NotFound`] if the hash was never stored or was
     /// deleted.
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError>;
+
+    /// Write object contents into `writer` directly (streaming).
+    /// Returns [`CasError::NotFound`] if the object does not exist.
+    /// Returns [`CasError::TooLarge`] if the object exceeds the inline
+    /// threshold — callers should fall back to a file-based streaming path.
+    async fn get_to_writer(
+        &self,
+        hash: &Hash,
+        writer: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
+    ) -> Result<(), CasError> {
+        let data = self.get(hash).await?;
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(&data).await?;
+        Ok(())
+    }
 
     /// Get metadata without loading payload bytes.
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError>;
@@ -89,6 +109,12 @@ impl<M: Metadata, J: Wal, B: Blob> ComposedReadView<M, J, B> {
                 // WAL fallback: data may only exist as pending Put.
                 return match self.wal.check_pending(hash).await {
                     PendingState::Present(data) => Ok(Some(data)),
+                    PendingState::PresentExternal { .. } => {
+                        // Large object: immediately materialized to blob +
+                        // metadata during put(), so this path shouldn't
+                        // normally be hit. Fall through to blob read.
+                        Ok(None)
+                    }
                     PendingState::Tombstone | PendingState::NotPresent => Ok(None),
                 };
             }
@@ -99,7 +125,9 @@ impl<M: Metadata, J: Wal, B: Blob> ComposedReadView<M, J, B> {
         // WAL-only (background) deletes are visible immediately.
         match self.wal.check_pending(hash).await {
             PendingState::Tombstone => return Ok(None),
-            PendingState::Present(_) | PendingState::NotPresent => {}
+            PendingState::Present(_)
+            | PendingState::PresentExternal { .. }
+            | PendingState::NotPresent => {}
         }
 
         resolve_full_bytes(
@@ -120,10 +148,86 @@ impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: Blob + Send + Sync> Rea
     for ComposedReadView<M, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
+        // Check size: if object is large, require caller to use
+        // get_to_writer (streaming) instead.
+        if let Ok(Some(entry)) = self.metadata.get(hash).await {
+            if entry.len > defaults::WAL_INLINE_THRESHOLD {
+                return Err(CasError::TooLarge {
+                    hash: *hash,
+                    size: entry.len,
+                    limit: defaults::WAL_INLINE_THRESHOLD,
+                });
+            }
+        } else if let PendingState::PresentExternal { content_len } =
+            self.wal.check_pending(hash).await
+        {
+            if content_len > defaults::WAL_INLINE_THRESHOLD {
+                return Err(CasError::TooLarge {
+                    hash: *hash,
+                    size: content_len,
+                    limit: defaults::WAL_INLINE_THRESHOLD,
+                });
+            }
+        }
+
         self.pending
             .execute(*hash, || self.fetch_inner(hash))
             .await?
             .ok_or(CasError::NotFound(*hash))
+    }
+
+    async fn get_to_writer(
+        &self,
+        hash: &Hash,
+        writer: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
+    ) -> Result<(), CasError> {
+        // Streaming path: skip PendingOps dedup (only useful for small
+        // objects). Stream directly from Blob when the object is a full
+        // encoding; fall back to buffered resolution for deltas.
+        let entry = match self.metadata.get(hash).await? {
+            Some(e) => e,
+            None => {
+                return match self.wal.check_pending(hash).await {
+                    PendingState::Present(data) => {
+                        use tokio::io::AsyncWriteExt;
+                        writer.write_all(&data).await?;
+                        Ok(())
+                    }
+                    PendingState::PresentExternal { .. } => {
+                        // Materialized large object — stream from blob.
+                        self.blob.read_to_writer(hash, writer).await
+                    }
+                    PendingState::Tombstone | PendingState::NotPresent => {
+                        Err(CasError::NotFound(*hash))
+                    }
+                };
+            }
+        };
+
+        // Before streaming, check WAL for a pending Delete (tombstone).
+        match self.wal.check_pending(hash).await {
+            PendingState::Tombstone => return Err(CasError::NotFound(*hash)),
+            _ => {}
+        }
+
+        match entry.encoding {
+            ObjectEncoding::Full => self.blob.read_to_writer(hash, writer).await,
+            ObjectEncoding::Delta { base_hash } => {
+                // Delta resolution requires full bytes in memory.
+                let bytes = resolve_delta_chain(
+                    hash,
+                    base_hash,
+                    &self.metadata,
+                    &self.blob,
+                    "delta self-reference detected during get_to_writer",
+                    "delta chain: base",
+                )
+                .await?;
+                use tokio::io::AsyncWriteExt;
+                writer.write_all(&bytes).await?;
+                Ok(())
+            }
+        }
     }
 
     async fn stat(&self, hash: &Hash) -> Result<ObjectMeta, CasError> {
@@ -141,6 +245,9 @@ impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: Blob + Send + Sync> Rea
         match self.wal.check_pending(hash).await {
             PendingState::Present(data) => {
                 return Ok(ObjectMeta { len: data.len() as u64, encoding: ObjectEncoding::Full });
+            }
+            PendingState::PresentExternal { content_len } => {
+                return Ok(ObjectMeta { len: content_len, encoding: ObjectEncoding::Full });
             }
             PendingState::Tombstone | PendingState::NotPresent => {}
         }
@@ -191,6 +298,13 @@ pub(super) async fn resolve_delta_chain<M: Metadata, B: Blob>(
     visited.insert(*hash);
 
     loop {
+        if chain.len() >= MAX_DELTA_CHAIN_DEPTH {
+            return Err(CasError::TooLarge {
+                hash: *hash,
+                size: chain.len() as u64,
+                limit: MAX_DELTA_CHAIN_DEPTH as u64,
+            });
+        }
         if current == base {
             return Err(CasError::CorruptObject {
                 hash: Some(current),

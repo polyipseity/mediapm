@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::api::ObjectEncoding;
+use crate::defaults;
 use crate::delta::object::StoredObject;
 use crate::delta::patch::DeltaPatch;
 use crate::error::CasError;
@@ -43,12 +44,15 @@ pub struct BackgroundEngine<J: Wal, M: Metadata, B: Blob> {
     /// Cache for reconstructed full bytes (avoids repeated delta-chain walks).
     /// Shared across clones via `Arc`.
     ///
-    /// TODO: bound cache size based on `metadata.len()` to prevent unbounded
-    /// growth under sustained maintenance pressure. Consider an LRU wrapper
-    /// or periodic eviction of entries whose source hashes no longer exist.
+    /// Size-bounded: evicts entries when total cached bytes exceed
+    /// `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` of total store metadata size.
     reconstructed_cache: Arc<Mutex<HashMap<Hash, (Bytes, Instant)>>>,
-    /// TTL for cache entries (default 60s). Pushed to constructor boundary.
+    /// Total bytes currently held in `reconstructed_cache`.
+    cached_bytes: Arc<AtomicU64>,
+    /// TTL for cache entries (default 60s).
     reconstructed_cache_ttl: Duration,
+    /// Maximum bytes allowed in cache (computed from metadata store size).
+    cache_max_bytes: Arc<AtomicU64>,
 }
 
 impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
@@ -72,7 +76,9 @@ impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
             checkpoint: AtomicU64::new(start_pos.as_u64()),
             cancelled: Arc::new(AtomicBool::new(false)),
             reconstructed_cache: Arc::new(Mutex::new(HashMap::new())),
+            cached_bytes: Arc::new(AtomicU64::new(0)),
             reconstructed_cache_ttl: cache_ttl,
+            cache_max_bytes: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -119,6 +125,16 @@ impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
                         .await?;
                     // Re-apply constraint bases (constraint is stored separately
                     // from metadata, so we must explicitly set it after put).
+                    if !existing_bases.is_empty() {
+                        self.metadata.set_constraint(*hash, existing_bases).await?;
+                    }
+                }
+                WalEntry::PutLarge { hash, content_len: _ } => {
+                    // Large objects are immediately materialized during
+                    // put(), so the WAL consumer just advances checkpoint
+                    // and trims. The payload is already in Blob + Metadata.
+                    // Preserve existing constraint bases, if any.
+                    let existing_bases = self.metadata.get_constraint(hash).await?;
                     if !existing_bases.is_empty() {
                         self.metadata.set_constraint(*hash, existing_bases).await?;
                     }
@@ -262,8 +278,41 @@ impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
         // Cache the result if TTL is non-zero.
         if let Some(ref bytes) = result {
             if self.reconstructed_cache_ttl > Duration::ZERO {
-                let mut cache = self.reconstructed_cache.lock().unwrap();
-                cache.insert(*hash, (bytes.clone(), Instant::now()));
+                // Compute max bytes from metadata store size if not yet set.
+                if self.cache_max_bytes.load(Ordering::Relaxed) == 0 {
+                    let meta_size: u64 = self
+                        .metadata
+                        .list_hashes()
+                        .await
+                        .ok()
+                        .map(|hashes| hashes.len() as u64)
+                        .unwrap_or(0);
+                    let limit =
+                        (meta_size as f64 * defaults::CACHE_MAX_FRACTION_OF_TOTAL_SIZE) as u64;
+                    self.cache_max_bytes.store(limit.max(1), Ordering::Relaxed);
+                }
+                let max_bytes = self.cache_max_bytes.load(Ordering::Relaxed);
+                let entry_size = bytes.len() as u64;
+
+                // Skip caching if entry is disproportionately large.
+                if entry_size <= max_bytes / 4 {
+                    let mut cache = self.reconstructed_cache.lock().unwrap();
+                    let current = self.cached_bytes.load(Ordering::Relaxed);
+
+                    if current + entry_size > max_bytes {
+                        // Simple eviction: clear half the oldest entries.
+                        let half = (cache.len() / 2).max(1);
+                        let to_remove: Vec<Hash> = cache.keys().take(half).copied().collect();
+                        for h in &to_remove {
+                            if let Some((evicted, _)) = cache.remove(h) {
+                                self.cached_bytes
+                                    .fetch_sub(evicted.len() as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    cache.insert(*hash, (bytes.clone(), Instant::now()));
+                    self.cached_bytes.fetch_add(entry_size, Ordering::Relaxed);
+                }
             }
         }
 
@@ -313,6 +362,13 @@ impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
                     let Some(base_bytes) = self.read_full_bytes(best_base).await? else {
                         continue;
                     };
+
+                    // Skip delta compression for large objects (> 16 MiB).
+                    // VCDIFF operates in-memory, so multi-GB objects would
+                    // defeat the purpose of streaming.
+                    if target_bytes.len() as u64 > defaults::DELTA_THRESHOLD {
+                        continue;
+                    }
 
                     // Compute VCDIFF delta from base to target.
                     let patch = DeltaPatch::diff(&base_bytes, &target_bytes)?;
@@ -405,7 +461,9 @@ where
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
             cancelled: self.cancelled.clone(),
             reconstructed_cache: self.reconstructed_cache.clone(),
+            cached_bytes: self.cached_bytes.clone(),
             reconstructed_cache_ttl: self.reconstructed_cache_ttl,
+            cache_max_bytes: self.cache_max_bytes.clone(),
         }
     }
 }

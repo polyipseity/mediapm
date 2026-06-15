@@ -324,6 +324,13 @@ impl FileWal {
                     pending.insert(*hash, (*pos, PendingState::Present(data.clone())));
                     pending_constraints.remove(hash);
                 }
+                WalEntry::PutLarge { hash, content_len } => {
+                    pending.insert(
+                        *hash,
+                        (*pos, PendingState::PresentExternal { content_len: *content_len }),
+                    );
+                    pending_constraints.remove(hash);
+                }
                 WalEntry::Delete { hash } => {
                     pending.insert(*hash, (*pos, PendingState::Tombstone));
                     pending_constraints.remove(hash);
@@ -492,6 +499,13 @@ impl Wal for FileWal {
                     .lock()
                     .unwrap()
                     .insert(*hash, (pos, PendingState::Present(data.clone())));
+                inner.pending_constraints.lock().unwrap().remove(hash);
+            }
+            WalEntry::PutLarge { hash, content_len } => {
+                inner.pending.lock().unwrap().insert(
+                    *hash,
+                    (pos, PendingState::PresentExternal { content_len: *content_len }),
+                );
                 inner.pending_constraints.lock().unwrap().remove(hash);
             }
             WalEntry::Delete { hash } => {

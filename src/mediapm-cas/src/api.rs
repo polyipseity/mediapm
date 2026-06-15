@@ -2,10 +2,9 @@
 //!
 //! # Architecture
 //!
-//! - [`CasApi`] — minimal 5-method contract (`put`/`get`/`stat`/`delete`/`flush`).
+//! - [`CasApi`] — core contract (`put`/`get`/`stat`/`delete`/`flush`) plus
+//!   streaming variants `put_stream`/`get_to_writer`.
 //!   No `exists`, no `info` — TOCTOU discouraged.
-//! - [`CasApiStreaming`] — extension trait with blanket impl, provides
-//!   stream-based put/get.
 //! - [`ConstraintApi`] — separate trait for constraint hints.
 //! - [`CasMaintenanceApi`] — maintenance operations (GC, optimization, etc.).
 
@@ -123,19 +122,15 @@ pub trait CasApi: Send + Sync {
     async fn flush(&self) -> Result<u64, CasError> {
         Ok(0)
     }
-}
 
-// ---------------------------------------------------------------------------
-// CasApiStreaming — extension trait
-// ---------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // Streaming variants
+    // -----------------------------------------------------------------------
 
-/// Streaming I/O — built atop [`CasApi`] with default buffer-through impls.
-///
-/// Backends that can stream directly (e.g. file descriptors) should override
-/// for zero-copy paths.
-#[async_trait]
-pub trait CasApiStreaming: CasApi {
-    /// Read from an unbuffered reader, store contents, return hash.
+    /// Read from an async reader, store contents, return hash.
+    ///
+    /// Default impl buffers the reader then calls [`put`](Self::put).
+    /// Override for zero-copy paths.
     async fn put_stream<R: tokio::io::AsyncRead + Send + Unpin>(
         &self,
         mut reader: R,
@@ -146,8 +141,12 @@ pub trait CasApiStreaming: CasApi {
         self.put(Bytes::from(buf)).await
     }
 
-    /// Retrieve bytes and write to a writer.
-    async fn get_stream<W: tokio::io::AsyncWrite + Send + Unpin>(
+    /// Retrieve bytes by hash and write to an async writer.
+    ///
+    /// Returns [`CasError::NotFound`] if the object does not exist.
+    /// Returns [`CasError::TooLarge`] if the object exceeds the inline
+    /// threshold — override to handle large objects via streaming.
+    async fn get_to_writer<W: tokio::io::AsyncWrite + Send + Unpin>(
         &self,
         hash: Hash,
         mut writer: W,
@@ -158,9 +157,6 @@ pub trait CasApiStreaming: CasApi {
         Ok(())
     }
 }
-
-// Blanket impl: every CasApi automatically provides streaming methods.
-impl<T: CasApi> CasApiStreaming for T {}
 
 // ---------------------------------------------------------------------------
 // ConstraintApi — delta-compression hints

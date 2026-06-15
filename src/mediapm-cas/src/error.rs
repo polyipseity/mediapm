@@ -26,6 +26,19 @@ pub enum CasError {
         /// Human-readable corruption detail.
         details: String,
     },
+
+    /// Object too large for the requested operation.
+    ///
+    /// Returned by `get()` when the object exceeds the inline threshold.
+    /// Callers should use `get_to_writer()` instead.
+    TooLarge {
+        /// The hash of the object.
+        hash: Hash,
+        /// The actual size of the object.
+        size: u64,
+        /// The maximum size allowed for this operation.
+        limit: u64,
+    },
 }
 
 /// Display implementation for CasError.
@@ -39,6 +52,9 @@ impl std::fmt::Display for CasError {
             Self::NotFound(h) => write!(f, "object not found: {h}"),
             Self::InvalidArgument(msg) => write!(f, "invalid argument: {msg}"),
             Self::Internal(msg) => write!(f, "internal error: {msg}"),
+            Self::TooLarge { hash, size, limit } => {
+                write!(f, "object {hash} too large ({size} bytes, limit {limit})")
+            }
             Self::Io(inner) => write!(f, "I/O error: {inner}"),
         }
     }
@@ -52,6 +68,9 @@ impl Clone for CasError {
             Self::NotFound(h) => Self::NotFound(*h),
             Self::InvalidArgument(s) => Self::InvalidArgument(s.clone()),
             Self::Internal(s) => Self::Internal(s.clone()),
+            Self::TooLarge { hash, size, limit } => {
+                Self::TooLarge { hash: *hash, size: *size, limit: *limit }
+            }
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), format!("{e}"))),
             Self::CorruptObject { hash, details } => {
                 Self::CorruptObject { hash: *hash, details: details.clone() }

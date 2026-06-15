@@ -179,6 +179,27 @@ impl CasApi for ConfiguredCas {
     async fn delete(&self, hash: Hash) -> Result<(), CasError> {
         forward!(self.delete(hash).await)
     }
+
+    async fn put_stream<R: tokio::io::AsyncRead + Send + Unpin>(
+        &self,
+        reader: R,
+    ) -> Result<Hash, CasError> {
+        match self {
+            Self::InMemory(cas) => cas.deref().put_stream(reader).await,
+            Self::FileSystem(cas) => cas.deref().put_stream(reader).await,
+        }
+    }
+
+    async fn get_to_writer<W: tokio::io::AsyncWrite + Send + Unpin>(
+        &self,
+        hash: Hash,
+        writer: W,
+    ) -> Result<(), CasError> {
+        match self {
+            Self::InMemory(cas) => cas.deref().get_to_writer(hash, writer).await,
+            Self::FileSystem(cas) => cas.deref().get_to_writer(hash, writer).await,
+        }
+    }
 }
 
 #[async_trait]

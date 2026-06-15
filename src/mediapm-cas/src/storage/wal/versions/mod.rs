@@ -19,6 +19,7 @@
 //!   Expose unversioned APIs here and keep versioned internals encapsulated.
 
 pub(crate) mod v1;
+pub(crate) mod v2;
 
 use crate::error::CasError;
 
@@ -32,12 +33,12 @@ use super::{WalEntry, WalPosition};
 pub(crate) const HEADER_LEN: usize = 8;
 
 /// Magic prefix for journal segment files.
-pub(crate) const JOURNAL_MAGIC: &[u8; 6] = v1::JOURNAL_MAGIC;
+pub(crate) const JOURNAL_MAGIC: &[u8; 6] = v2::JOURNAL_MAGIC;
 /// Current journal segment format version.
-pub(crate) const JOURNAL_VERSION: u16 = v1::JOURNAL_VERSION;
+pub(crate) const JOURNAL_VERSION: u16 = v2::JOURNAL_VERSION;
 
 /// Maximum supported journal segment format version.
-pub(crate) const MAX_JOURNAL_VERSION: u16 = v1::MAX_JOURNAL_VERSION;
+pub(crate) const MAX_JOURNAL_VERSION: u16 = v2::MAX_JOURNAL_VERSION;
 
 // ---------------------------------------------------------------------------
 // Re-exported header helpers
@@ -46,20 +47,20 @@ pub(crate) const MAX_JOURNAL_VERSION: u16 = v1::MAX_JOURNAL_VERSION;
 pub(crate) use v1::{decode_header, encode_header};
 
 // ---------------------------------------------------------------------------
-// Entry encode/decode (bridge between unversioned WalEntry and V1 types)
+// Entry encode/decode (bridge between unversioned WalEntry and V2 types)
 // ---------------------------------------------------------------------------
 
 /// Encode a journal entry at the given position.
 pub(crate) fn encode_entry(entry: &WalEntry, pos: WalPosition) -> Vec<u8> {
-    entry_to_v1(entry).encode(pos.as_u64())
+    entry_to_v2(entry).encode(pos.as_u64())
 }
 
 /// Decode a single journal entry from bytes.
 ///
 /// Returns `(entry, position, bytes_consumed)`.
 pub(crate) fn decode_entry(buf: &[u8]) -> Result<(WalEntry, WalPosition, usize), CasError> {
-    let (v1_entry, pos_u64, consumed) = v1::WalEntryV1::decode(buf)?;
-    let entry = entry_from_v1(&v1_entry);
+    let (v2_entry, pos_u64, consumed) = v2::WalEntryV2::decode(buf)?;
+    let entry = entry_from_v2(&v2_entry);
     Ok((entry, WalPosition::from_u64(pos_u64), consumed))
 }
 
@@ -94,21 +95,27 @@ pub(crate) fn decode_checkpoint(buf: &[u8]) -> Result<WalPosition, CasError> {
 // Bridge conversions between versioned and unversioned entry types
 // ---------------------------------------------------------------------------
 
-fn entry_to_v1(entry: &WalEntry) -> v1::WalEntryV1 {
+fn entry_to_v2(entry: &WalEntry) -> v2::WalEntryV2 {
     match entry {
-        WalEntry::Put { hash, data } => v1::WalEntryV1::Put { hash: *hash, data: data.clone() },
-        WalEntry::Delete { hash } => v1::WalEntryV1::Delete { hash: *hash },
+        WalEntry::Put { hash, data } => v2::WalEntryV2::Put { hash: *hash, data: data.clone() },
+        WalEntry::PutLarge { hash, content_len } => {
+            v2::WalEntryV2::PutLarge { hash: *hash, content_len: *content_len }
+        }
+        WalEntry::Delete { hash } => v2::WalEntryV2::Delete { hash: *hash },
         WalEntry::Constraint { target, bases } => {
-            v1::WalEntryV1::Constraint { target: *target, bases: bases.clone() }
+            v2::WalEntryV2::Constraint { target: *target, bases: bases.clone() }
         }
     }
 }
 
-fn entry_from_v1(entry: &v1::WalEntryV1) -> WalEntry {
+fn entry_from_v2(entry: &v2::WalEntryV2) -> WalEntry {
     match entry {
-        v1::WalEntryV1::Put { hash, data } => WalEntry::Put { hash: *hash, data: data.clone() },
-        v1::WalEntryV1::Delete { hash } => WalEntry::Delete { hash: *hash },
-        v1::WalEntryV1::Constraint { target, bases } => {
+        v2::WalEntryV2::Put { hash, data } => WalEntry::Put { hash: *hash, data: data.clone() },
+        v2::WalEntryV2::PutLarge { hash, content_len } => {
+            WalEntry::PutLarge { hash: *hash, content_len: *content_len }
+        }
+        v2::WalEntryV2::Delete { hash } => WalEntry::Delete { hash: *hash },
+        v2::WalEntryV2::Constraint { target, bases } => {
             WalEntry::Constraint { target: *target, bases: bases.clone() }
         }
     }

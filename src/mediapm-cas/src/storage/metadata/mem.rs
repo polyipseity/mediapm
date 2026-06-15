@@ -134,6 +134,12 @@ impl Metadata for InMemoryMetadata {
                         MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
                     );
                 }
+                WalEntry::PutLarge { hash, content_len } => {
+                    self.data.insert(
+                        hash,
+                        MetadataEntry { len: content_len, encoding: ObjectEncoding::Full },
+                    );
+                }
                 WalEntry::Delete { hash } => {
                     self.data.remove(&hash);
                 }

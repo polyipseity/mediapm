@@ -31,6 +31,7 @@ use crate::api::{
     CasApi, CasMaintenanceApi, ConstraintApi, ConstraintPatch, ObjectEncoding, ObjectMeta,
     OptimizeReport, PruneReport,
 };
+use crate::defaults::WAL_INLINE_THRESHOLD;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -117,16 +118,25 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
 impl<J: Wal, M: Metadata, B: Blob> CasApi for CasStore<J, M, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
-        // Append to WAL (the crash-safe commitment).
-        self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
-        // Materialize Blob + metadata immediately (write-through) when
-        // both backends prefer synchronous materialization.  Otherwise
-        // defer to the WAL consumer (write-back).
-        if B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE {
+        if data.len() as u64 > WAL_INLINE_THRESHOLD {
+            // Large blob: write to blob store immediately, log PutLarge in WAL.
             self.blob.write(hash, ObjectEncoding::Full, data.clone()).await?;
             self.metadata
                 .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
                 .await?;
+            self.wal.append(WalEntry::PutLarge { hash, content_len: data.len() as u64 }).await?;
+        } else {
+            // Small blob: WAL-only commitment, materialize lazily.
+            self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
+            if B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE {
+                self.blob.write(hash, ObjectEncoding::Full, data.clone()).await?;
+                self.metadata
+                    .put(
+                        hash,
+                        MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
+                    )
+                    .await?;
+            }
         }
         // The ReadView L3 WAL fallback handles visibility for write-back
         // entries until the consumer materializes them.
@@ -139,6 +149,31 @@ impl<J: Wal, M: Metadata, B: Blob> CasApi for CasStore<J, M, B> {
             return Ok(Bytes::new());
         }
         self.read_view.get(&hash).await
+    }
+
+    async fn get_to_writer<W: tokio::io::AsyncWrite + Send + Unpin>(
+        &self,
+        hash: Hash,
+        writer: W,
+    ) -> Result<(), CasError> {
+        if hash == Hash::empty() {
+            return Ok(());
+        }
+        let mut writer = writer;
+        self.read_view.get_to_writer(&hash, &mut writer).await
+    }
+
+    async fn put_stream<R: tokio::io::AsyncRead + Send + Unpin>(
+        &self,
+        mut reader: R,
+    ) -> Result<Hash, CasError> {
+        // Stream directly to blob store, computing hash incrementally.
+        let (hash, _) = self.blob.write_stream(ObjectEncoding::Full, &mut reader).await?;
+        self.metadata.put(hash, MetadataEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
+        // TODO: compute content_len during write_stream and propagate it
+        // here.
+        self.wal.append(WalEntry::PutLarge { hash, content_len: 0 }).await?;
+        Ok(hash)
     }
 
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {
@@ -284,6 +319,21 @@ where
 
     async fn get(&self, hash: Hash) -> Result<Bytes, CasError> {
         self.deref().get(hash).await
+    }
+
+    async fn get_to_writer<W: tokio::io::AsyncWrite + Send + Unpin>(
+        &self,
+        hash: Hash,
+        writer: W,
+    ) -> Result<(), CasError> {
+        self.deref().get_to_writer(hash, writer).await
+    }
+
+    async fn put_stream<R: tokio::io::AsyncRead + Send + Unpin>(
+        &self,
+        reader: R,
+    ) -> Result<Hash, CasError> {
+        self.deref().put_stream(reader).await
     }
 
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError> {

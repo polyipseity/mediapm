@@ -63,8 +63,10 @@ impl WalPosition {
 /// An entry in the WAL.
 #[derive(Debug, Clone)]
 pub enum WalEntry {
-    /// Store `data` under `hash`.
+    /// Store `data` under `hash` (small: data inlined).
     Put { hash: Hash, data: Bytes },
+    /// Store large data at `hash` (payload immediately materialized to blob).
+    PutLarge { hash: Hash, content_len: u64 },
     /// Delete the object at `hash`.
     Delete { hash: Hash },
     /// A hint that `target` may compress well against `bases`.
@@ -78,6 +80,8 @@ pub enum PendingState {
     NotPresent,
     /// A `Put` entry exists; the data is available.
     Present(Bytes),
+    /// A `PutLarge` entry exists; data is materialized to blob store.
+    PresentExternal { content_len: u64 },
     /// A `Delete` tombstone exists; the object should be considered deleted.
     Tombstone,
 }
