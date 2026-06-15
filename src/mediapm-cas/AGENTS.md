@@ -212,7 +212,7 @@ Singular location for all tunable constants in [`defaults`](crate::defaults):
 | `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store consumed by bg_engine cache at most. |
 | `CACHE_TTL` | 60 s | TTL for cached entries in bg_engine. |
 | `WAL_MAX_SEGMENT_SIZE` | 64 MiB | Max bytes per FileWal segment before rotation. |
-| `OBJECT_STREAM_BUFFER_SIZE` | 65536 | Buffer size for streaming blob read/write. |
+| `OBJECT_STREAM_BUFFER_SIZE` | 262144 (256 KiB) | Buffer size for streaming blob read/write. |
 
 ## 3. Crate structure
 
@@ -542,3 +542,9 @@ Conductor/MediaPM types. Failures propagate as-is.
 - `cargo build -p mediapm-cas` — build with default features (cli).
 - `cargo build -p mediapm-cas --no-default-features` — minimal (no CLI binary).
 - Tests use `new_in_memory_cas()` — no filesystem dependencies.
+- Streaming/large-file tests (`tests/int/streaming_large.rs`) verify:
+  - `put_stream` propagates `content_len` through metadata.
+  - `put_stream` + `get_to_writer` round-trip with 1 MiB payload.
+  - `get()` returns `CasError::TooLarge` for objects > `WAL_INLINE_THRESHOLD`.
+  - `get_to_writer()` succeeds for objects > `WAL_INLINE_THRESHOLD`.
+  - Both `InMemoryCas` and `FileSystemCas` are exercised.

@@ -25,8 +25,8 @@ pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 /// Objects larger than this use external payload storage.
 pub const WAL_INLINE_THRESHOLD: u64 = 64 * 1024 * 1024;
 
-/// Default buffer size for streaming I/O (64 KiB).
-pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 65536;
+/// Default buffer size for streaming I/O (256 KiB).
+pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 262144;
 
 /// Default threshold for delta compression (16 MiB).
 /// Objects larger than this are never delta-compressed.

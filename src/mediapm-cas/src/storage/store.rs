@@ -168,11 +168,11 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> CasApi for CasStore<J, M, B> {
         mut reader: R,
     ) -> Result<Hash, CasError> {
         // Stream directly to blob store, computing hash incrementally.
-        let (hash, _) = self.blob.write_stream(ObjectEncoding::Full, &mut reader).await?;
-        self.metadata.put(hash, MetadataEntry { len: 0, encoding: ObjectEncoding::Full }).await?;
-        // TODO: compute content_len during write_stream and propagate it
-        // here.
-        self.wal.append(WalEntry::PutLarge { hash, content_len: 0 }).await?;
+        let (hash, content_len) = self.blob.write_stream(ObjectEncoding::Full, &mut reader).await?;
+        self.metadata
+            .put(hash, MetadataEntry { len: content_len, encoding: ObjectEncoding::Full })
+            .await?;
+        self.wal.append(WalEntry::PutLarge { hash, content_len }).await?;
         Ok(hash)
     }
 
