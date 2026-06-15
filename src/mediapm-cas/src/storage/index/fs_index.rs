@@ -8,6 +8,8 @@
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
@@ -23,10 +25,18 @@ use super::{Index, IndexEntry};
 /// Delegates all operations to an [`InMemoryIndex`]. Both entries and
 /// constraints are flushed to a JSON file after every mutation and loaded
 /// during [`rebuild_from_wal`](Index::rebuild_from_wal).
+///
+/// Flushes are batched via a dirty flag: concurrent mutations coalesce into
+/// a single write, avoiding redundant I/O. In the unlikely event of a stale
+/// snapshot file (from a racing write), the WAL is the true source of truth
+/// and recovers any lost data on process restart.
 #[derive(Clone)]
 pub struct FileSystemIndex {
     inner: InMemoryIndex,
     constraint_path: PathBuf,
+    /// Tracks whether in-memory state has diverged from the on-disk snapshot.
+    /// Set `true` by every mutation; cleared by `flush_snapshot`.
+    dirty: Arc<AtomicBool>,
 }
 
 impl FileSystemIndex {
@@ -35,7 +45,11 @@ impl FileSystemIndex {
     /// The snapshot file is not loaded until [`rebuild_from_wal`](Index::rebuild_from_wal)
     /// is called.
     pub fn new(constraint_path: PathBuf) -> Self {
-        Self { inner: InMemoryIndex::new(), constraint_path }
+        Self {
+            inner: InMemoryIndex::new(),
+            constraint_path,
+            dirty: Arc::new(AtomicBool::new(false)),
+        }
     }
 
     /// Collect all entries from the inner index into a `BTreeMap`.
@@ -50,7 +64,15 @@ impl FileSystemIndex {
     }
 
     /// Persist all entries + constraints to disk (JSON, V1 format).
+    ///
+    /// Skips the I/O when no mutations have occurred since the last flush
+    /// (dirty-flag batching). The snapshot is always written atomically via
+    /// temp+rename.
     async fn flush_snapshot(&self) -> Result<(), CasError> {
+        if !self.dirty.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
         let constraints = {
             let mut map = BTreeMap::<Hash, BTreeSet<Hash>>::new();
             for t in self.inner.list_targets().await? {
@@ -78,6 +100,7 @@ impl Index for FileSystemIndex {
 
     async fn put(&self, hash: Hash, entry: IndexEntry) -> Result<(), CasError> {
         self.inner.put(hash, entry).await?;
+        self.dirty.store(true, Ordering::Release);
         self.flush_snapshot().await
     }
 
@@ -87,6 +110,7 @@ impl Index for FileSystemIndex {
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         self.inner.delete(hash).await?;
+        self.dirty.store(true, Ordering::Release);
         self.flush_snapshot().await
     }
 
@@ -108,6 +132,7 @@ impl Index for FileSystemIndex {
 
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         self.inner.set_constraint(target, bases).await?;
+        self.dirty.store(true, Ordering::Release);
         self.flush_snapshot().await
     }
 
@@ -121,6 +146,7 @@ impl Index for FileSystemIndex {
 
     async fn prune_targets(&self, live: &HashSet<Hash>) -> Result<(), CasError> {
         self.inner.prune_targets(live).await?;
+        self.dirty.store(true, Ordering::Release);
         self.flush_snapshot().await
     }
 
