@@ -36,13 +36,13 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::bg_engine::BackgroundEngine;
-use super::blob_store::Blob;
-use super::metadata_store::{Metadata, MetadataEntry};
+use super::blob_store::BlobStore;
+use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::read_view::{ComposedReadView, ReadView};
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Composed CAS store — primary handle for all CAS operations.
-pub struct CasStore<J: Wal, M: Metadata, B: Blob> {
+pub struct CasStore<J: Wal, M: MetadataStore, B: BlobStore> {
     wal: J,
     metadata: M,
     blob: B,
@@ -50,7 +50,7 @@ pub struct CasStore<J: Wal, M: Metadata, B: Blob> {
     bg_engine: BackgroundEngine<J, M, B>,
 }
 
-impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> Clone for CasStore<J, M, B> {
+impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> Clone for CasStore<J, M, B> {
     fn clone(&self) -> Self {
         Self {
             wal: self.wal.clone(),
@@ -62,7 +62,7 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> Clone for CasStore<J,
     }
 }
 
-impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
+impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J, M, B> {
     /// Create a new composed store.  `start_pos` tells the background
     /// engine which WAL position to begin consuming from (e.g., the
     /// last checkpoint on restart).
@@ -115,7 +115,7 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: Blob> CasApi for CasStore<J, M, B> {
+impl<J: Wal, M: MetadataStore, B: BlobStore> CasApi for CasStore<J, M, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
         if data.len() as u64 > WAL_INLINE_THRESHOLD {
@@ -199,7 +199,7 @@ impl<J: Wal, M: Metadata, B: Blob> CasApi for CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: Blob> ConstraintApi for CasStore<J, M, B> {
+impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -280,7 +280,7 @@ impl<J: Wal, M: Metadata, B: Blob> ConstraintApi for CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: Blob> CasMaintenanceApi for CasStore<J, M, B> {
+impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
@@ -309,7 +309,7 @@ impl<J: Wal, M: Metadata, B: Blob> CasMaintenanceApi for CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: Blob> CasApi for T
+impl<T, J: Wal, M: MetadataStore, B: BlobStore> CasApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
@@ -350,7 +350,7 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: Blob> ConstraintApi for T
+impl<T, J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
@@ -368,7 +368,7 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: Blob> CasMaintenanceApi for T
+impl<T, J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {

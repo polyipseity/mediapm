@@ -152,7 +152,7 @@ let cas = new_in_memory_cas(); // or InMemoryCas::new()
 cas.put(bytes).await?;
 ```
 
-Newtype around `CasStore<InMemoryWal, InMemoryMetadata, InMemoryBlob>`.
+Newtype around `CasStore<InMemoryWal, InMemoryMetadataStore, InMemoryBlobStore>`.
 Traits implemented via blanket `Deref` impls in `store.rs`.
 
 #### FileSystemCas — persistent store
@@ -162,7 +162,7 @@ let cas = FileSystemCas::open(&Path::new("/path/to/store")).await?;
 cas.put(bytes).await?;
 ```
 
-Newtype around `CasStore<FileWal, FileSystemMetadata, FileSystemBlob>`.
+Newtype around `CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>`.
 WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory
 (rebuilt from WAL on open). Metadata (entries + constraints) saved to
 `<store_dir>/metadata.json`.
@@ -242,17 +242,17 @@ src/mediapm-cas/src/
     │       ├── mod.rs
     │       ├── v1.rs     — V1 format (legacy decode, V2 is now the active writer)
     │       └── v2.rs     — V2 format with PutLarge entry type
-    ├── blob/              — Blob trait + FileSystemBlob + InMemoryBlob + versioned path layout
+    ├── blob_store/        — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
     │   ├── mod.rs         — Blob trait + re-exports
-    │   ├── mem.rs         — InMemoryBlob (DashMap, ephemeral)
-    │   ├── fs.rs          — FileSystemBlob (atomic hash-derived layout)
+    │   ├── mem.rs         — InMemoryBlobStore (DashMap, ephemeral)
+    │   ├── fs.rs          — FileSystemBlobStore (atomic hash-derived layout)
     │   └── versions/      — path layout versions V1+
     │       ├── mod.rs     — version dispatch
     │       └── v1.rs      — V1 layout: v1/blake3/ab/cd/<hex>
-    ├── metadata/          — Metadata trait + InMemoryMetadata + FileSystemMetadata
+    ├── metadata_store/    — MetadataStore trait + InMemoryMetadataStore + FileSystemMetadataStore
     │   ├── mod.rs         — trait + MetadataEntry + re-exports
-    │   ├── mem.rs         — InMemoryMetadata (DashMap, separate constraint map)
-    │   ├── fs.rs          — FileSystemMetadata (persistent snapshot via JSON)
+    │   ├── mem.rs         — InMemoryMetadataStore (DashMap, separate constraint map)
+    │   ├── fs.rs          — FileSystemMetadataStore (persistent snapshot via JSON)
     │   └── versions/      — V1 persistence format (versioned JSON metadata file)
     ├── read_view.rs       — ComposedReadView (3-layer lookup: Metadata → Blob → WAL)
     ├── pending_ops.rs     — PendingOps (in-flight read dedup helper)
@@ -313,15 +313,15 @@ position is persisted atomically. Idempotent.
 
 Pluggable payload backend.
 
-- `InMemoryBlob`: `DashMap<Hash, (Bytes, ObjectEncoding)>`. Ignores Full/Delta distinction.
-- `FileSystemBlob`: Hash-derived paths `<root>/v1/blake3/ab/cd/<remaining>` (full)
+- `InMemoryBlobStore`: `DashMap<Hash, (Bytes, ObjectEncoding)>`. Ignores Full/Delta distinction.
+- `FileSystemBlobStore`: Hash-derived paths `<root>/v1/blake3/ab/cd/<remaining>` (full)
   or `<remaining>.diff` (delta). Atomic write via temp+rename. Hash verification on read.
   `delete` silently ignores `NotFound` errors (missing files are treated as already-deleted).
   `delete_encoding(hash, encoding)` removes a specific encoding variant without affecting others.
   `materialized_path(&self, hash) -> Option<PathBuf>` returns the on-disk path for `hash`
   (overrides the trait default of `None`).
 
-**`materialized_path`**: non-async method on `Blob` trait (default `None`). Returns
+**`materialized_path`**: non-async method on `BlobStore` trait (default `None`). Returns
 `Some(path)` for filesystem-backed stores, `None` for in-memory. Used by
 `FileSystemCas::object_path_for_hash`.
 
@@ -329,10 +329,10 @@ Pluggable payload backend.
 
 Object metadata index. Both implementations share the same trait.
 
-- **`InMemoryMetadata`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata
+- **`InMemoryMetadataStore`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata
   (`MetadataEntry { len, encoding }`). Constraint data is stored in a separate map:
   `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
-- **`FileSystemMetadata`**: Wraps `InMemoryMetadata` with persistent snapshot.
+- **`FileSystemMetadataStore`**: Wraps `InMemoryMetadataStore` with persistent snapshot.
   On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), writes full snapshot (entries +
   constraints) to a V1 JSON file atomically (temp+rename). Flushes are batched via an
   `AtomicBool` dirty flag: concurrent mutations coalesce into a single write, avoiding
@@ -364,7 +364,7 @@ Three-layer lookup for get/stat, plus streaming path.
 3. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
 
 **get_to_writer**: Streaming path. For Full objects, reads blob directly to
-writer via `Blob::read_to_writer` (chunked copy). For Delta objects,
+writer via `BlobStore::read_to_writer` (chunked copy). For Delta objects,
 reconstructs in memory then writes. Object-safe (`&mut (dyn AsyncWrite + Send + Unpin)`).
 
 **TooLarge enforcement**: If the resolved object exceeds `WAL_INLINE_THRESHOLD`,
@@ -448,7 +448,7 @@ against B, A's bytes live under A's content hash.
 `InMemoryCas` and `FileSystemCas` are newtype wrappers around `CasStore<...>` with `Deref`:
 
 ```rust
-pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryMetadata, InMemoryBlob>);
+pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryMetadataStore, InMemoryBlobStore>);
 
 impl std::ops::Deref for InMemoryCas { /* → inner CasStore */ }
 ```
@@ -509,13 +509,13 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 
 ### 8.8 Write-through vs write-back compile-time policy
 
-`CasStore::put()` uses compile-time dispatch via associated consts (`Blob::SYNC_MATERIALIZE`,
-`Metadata::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE`.
+`CasStore::put()` uses compile-time dispatch via associated consts (`BlobStore::SYNC_MATERIALIZE`,
+`MetadataStore::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE`.
 
 | Backend triplet | Blob | Metadata | Effective |
 |-----------------|------|----------|-----------|
-| `InMemoryCas` | `InMemoryBlob` (true) | `InMemoryMetadata` (true) | write-through |
-| `FileSystemCas` | `FileSystemBlob` (false) | `FileSystemMetadata` (false) | write-back |
+| `InMemoryCas` | `InMemoryBlobStore` (true) | `InMemoryMetadataStore` (true) | write-through |
+| `FileSystemCas` | `FileSystemBlobStore` (false) | `FileSystemMetadataStore` (false) | write-back |
 
 **`delete()`** is always write-back regardless of `SYNC_MATERIALIZE` — physical removal
 is deferred to the WAL consumer for correct delta-dependent re-materialization.

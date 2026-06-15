@@ -2,8 +2,8 @@
 //!
 //! Drives two background tasks:
 //!
-//! - **WAL consumer** — drains pending WAL entries into the Blob and
-//!   Metadata, then trims them from the WAL.
+//! - **WAL consumer** — drains pending WAL entries into the BlobStore and
+//!   MetadataStore, then trims them from the WAL.
 //! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
 //!   approach effective constraints (intersection of stored bases with live
 //!   hashes) and evaluates delta-compression opportunities.
@@ -28,13 +28,13 @@ use crate::delta::patch::DeltaPatch;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob_store::Blob;
-use super::metadata_store::{Metadata, MetadataEntry};
+use super::blob_store::BlobStore;
+use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::read_view::ReadView;
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Background engine driving WAL consumption and maintenance.
-pub struct BackgroundEngine<J: Wal, M: Metadata, B: Blob> {
+pub struct BackgroundEngine<J: Wal, M: MetadataStore, B: BlobStore> {
     wal: J,
     metadata: M,
     blob: B,
@@ -55,7 +55,7 @@ pub struct BackgroundEngine<J: Wal, M: Metadata, B: Blob> {
     cache_max_bytes: Arc<AtomicU64>,
 }
 
-impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
+impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Create a new engine, checkpointing at `start_pos`.
     ///
     /// `cache_ttl` controls how long reconstructed full bytes remain cached
@@ -446,7 +446,7 @@ impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
     }
 }
 
-impl<J: Wal, M: Metadata, B: Blob> Clone for BackgroundEngine<J, M, B>
+impl<J: Wal, M: MetadataStore, B: BlobStore> Clone for BackgroundEngine<J, M, B>
 where
     J: Clone,
     M: Clone,

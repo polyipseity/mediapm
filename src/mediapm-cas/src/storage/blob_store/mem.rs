@@ -13,15 +13,15 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::Blob;
+use super::BlobStore;
 
 /// Ephemeral in-memory blob storage backed by `DashMap`.
 #[derive(Clone, Default)]
-pub struct InMemoryBlob {
+pub struct InMemoryBlobStore {
     data: Arc<DashMap<Hash, (Bytes, ObjectEncoding)>>,
 }
 
-impl InMemoryBlob {
+impl InMemoryBlobStore {
     /// Create an empty blob store.
     pub fn new() -> Self {
         Self::default()
@@ -29,7 +29,7 @@ impl InMemoryBlob {
 }
 
 #[async_trait]
-impl Blob for InMemoryBlob {
+impl BlobStore for InMemoryBlobStore {
     async fn write(
         &self,
         hash: Hash,
@@ -67,7 +67,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_write_read_roundtrip() {
-        let store = InMemoryBlob::new();
+        let store = InMemoryBlobStore::new();
         let data = Bytes::from_static(b"hello blob store");
         let hash = Hash::from_content(&data);
 
@@ -78,7 +78,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_read_missing_returns_not_found() {
-        let store = InMemoryBlob::new();
+        let store = InMemoryBlobStore::new();
         let hash = Hash::from_content(b"missing");
         let result = store.read(&hash).await;
         assert!(matches!(result, Err(CasError::NotFound(h)) if h == hash));
@@ -86,7 +86,7 @@ mod tests {
 
     #[tokio::test]
     async fn in_memory_delete_removes_blob() {
-        let store = InMemoryBlob::new();
+        let store = InMemoryBlobStore::new();
         let data = Bytes::from_static(b"ephemeral");
         let hash = Hash::from_content(&data);
 

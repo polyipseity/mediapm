@@ -1,13 +1,13 @@
-//! Read-through view — provides coherent reads over Metadata + Blob +
+//! Read-through view — provides coherent reads over MetadataStore + BlobStore +
 //! WAL fallback.
 //!
 //! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
-//! 1. [`Metadata`](super::metadata_store::Metadata) — metadata (encoding, size, bases).
-//! 2. [`Blob`](super::blob_store::Blob) — payload bytes (full
+//! 1. [`MetadataStore`](super::metadata_store::MetadataStore) — metadata (encoding, size, bases).
+//! 2. [`BlobStore`](super::blob_store::BlobStore) — payload bytes (full
 //!    or delta).
-//! 3. WAL fallback — entries not yet materialized into Blob/Metadata.
+//! 3. WAL fallback — entries not yet materialized into BlobStore/MetadataStore.
 //!
 //! In-flight read dedup prevents redundant blob reads when multiple
 //! concurrent `get()` calls miss Metadata simultaneously.
@@ -22,8 +22,8 @@ use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob_store::Blob;
-use super::metadata_store::{Metadata, MetadataEntry};
+use super::blob_store::BlobStore;
+use super::metadata_store::{MetadataEntry, MetadataStore};
 use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
 
@@ -73,21 +73,21 @@ pub use crate::api::ObjectMeta;
 /// A read-through view backed by Metadata + Blob + WAL fallback.
 ///
 /// Implements a three-layer lookup:
-/// 1. `Metadata` for metadata (encoding, size).
-/// 2. `Blob` for payload bytes.
+/// 1. `MetadataStore` for metadata (encoding, size).
+/// 2. `BlobStore` for payload bytes.
 /// 3. `Wal` fallback for entries not yet materialized.
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
 /// hash simultaneously, only one performs the lookup while the other waits
 /// for the shared result (see [`PendingOps`]).
-pub(crate) struct ComposedReadView<M: Metadata, J: Wal, B: Blob> {
+pub(crate) struct ComposedReadView<M: MetadataStore, J: Wal, B: BlobStore> {
     pending: PendingOps,
     metadata: M,
     wal: J,
     blob: B,
 }
 
-impl<M: Metadata, J: Wal, B: Blob> ComposedReadView<M, J, B> {
+impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
     /// Create a new view.
     pub fn new(metadata: M, wal: J, blob: B) -> Self {
         Self { pending: PendingOps::new(), metadata, wal, blob }
@@ -144,7 +144,7 @@ impl<M: Metadata, J: Wal, B: Blob> ComposedReadView<M, J, B> {
 }
 
 #[async_trait]
-impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: Blob + Send + Sync> ReadView
+impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> ReadView
     for ComposedReadView<M, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
@@ -262,7 +262,7 @@ impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: Blob + Send + Sync> Rea
 
 /// Given a metadata entry, read full bytes — either directly (Full) or by
 /// resolving the delta chain (Delta).
-pub(super) async fn resolve_full_bytes<M: Metadata, B: Blob>(
+pub(super) async fn resolve_full_bytes<M: MetadataStore, B: BlobStore>(
     hash: &Hash,
     entry: &MetadataEntry,
     metadata: &M,
@@ -283,7 +283,7 @@ pub(super) async fn resolve_full_bytes<M: Metadata, B: Blob>(
 ///
 /// Callers provide the starting `base_hash` from the object's encoding and
 /// context strings for error messages. Returns `Ok(full_bytes)` on success.
-pub(super) async fn resolve_delta_chain<M: Metadata, B: Blob>(
+pub(super) async fn resolve_delta_chain<M: MetadataStore, B: BlobStore>(
     hash: &Hash,
     base_hash: Hash,
     metadata: &M,

@@ -1,6 +1,6 @@
 //! Filesystem-backed metadata — in-memory with persistent snapshot file.
 //!
-//! [`FileSystemMetadata`] wraps an [`InMemoryMetadata`](super::mem::InMemoryMetadata)
+//! [`FileSystemMetadataStore`] wraps an [`InMemoryMetadataStore`](super::mem::InMemoryMetadataStore)
 //! and persists both metadata entries (hash → (len, encoding)) and constraint
 //! data (target → bases) to a single JSON file so the metadata store survives WAL
 //! trim and process restarts.
@@ -16,37 +16,37 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::super::wal::Wal;
-use super::mem::InMemoryMetadata;
+use super::mem::InMemoryMetadataStore;
 use super::versions::{self, FORMAT_VERSION};
-use super::{Metadata, MetadataEntry};
+use super::{MetadataEntry, MetadataStore};
 
 /// In-memory metadata with persistent snapshot (entries + constraints) on disk.
 ///
-/// Delegates all operations to an [`InMemoryMetadata`]. Both entries and
+/// Delegates all operations to an [`InMemoryMetadataStore`]. Both entries and
 /// constraints are flushed to a JSON file after every mutation and loaded
-/// during [`rebuild_from_wal`](Metadata::rebuild_from_wal).
+/// during [`rebuild_from_wal`](MetadataStore::rebuild_from_wal).
 ///
 /// Flushes are batched via a dirty flag: concurrent mutations coalesce into
 /// a single write, avoiding redundant I/O. In the unlikely event of a stale
 /// snapshot file (from a racing write), the WAL is the true source of truth
 /// and recovers any lost data on process restart.
 #[derive(Clone)]
-pub struct FileSystemMetadata {
-    inner: InMemoryMetadata,
+pub struct FileSystemMetadataStore {
+    inner: InMemoryMetadataStore,
     metadata_path: PathBuf,
     /// Tracks whether in-memory state has diverged from the on-disk snapshot.
     /// Set `true` by every mutation; cleared by `flush_snapshot`.
     dirty: Arc<AtomicBool>,
 }
 
-impl FileSystemMetadata {
-    /// Create a new `FileSystemMetadata` backed by the given path.
+impl FileSystemMetadataStore {
+    /// Create a new `FileSystemMetadataStore` backed by the given path.
     ///
-    /// The snapshot file is not loaded until [`rebuild_from_wal`](Metadata::rebuild_from_wal)
+    /// The snapshot file is not loaded until [`rebuild_from_wal`](MetadataStore::rebuild_from_wal)
     /// is called.
     pub fn new(metadata_path: PathBuf) -> Self {
         Self {
-            inner: InMemoryMetadata::new(),
+            inner: InMemoryMetadataStore::new(),
             metadata_path,
             dirty: Arc::new(AtomicBool::new(false)),
         }
@@ -95,7 +95,7 @@ impl FileSystemMetadata {
 }
 
 #[async_trait]
-impl Metadata for FileSystemMetadata {
+impl MetadataStore for FileSystemMetadataStore {
     const SYNC_MATERIALIZE: bool = false;
 
     async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
@@ -185,7 +185,7 @@ mod tests {
     async fn persists_and_restores_constraint() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("metadata.v1.json");
-        let index = FileSystemMetadata::new(path.clone());
+        let index = FileSystemMetadataStore::new(path.clone());
 
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
@@ -193,7 +193,7 @@ mod tests {
         // Already flushed by set_constraint.
 
         // Create a new metadata store from the same path and rebuild.
-        let index2 = FileSystemMetadata::new(path.clone());
+        let index2 = FileSystemMetadataStore::new(path.clone());
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
 
@@ -209,7 +209,7 @@ mod tests {
         let path = dir.path().join("metadata.v1.json");
 
         // Create a metadata store, add constraint via WAL + persisted.
-        let index = FileSystemMetadata::new(path.clone());
+        let index = FileSystemMetadataStore::new(path.clone());
         index
             .set_constraint(Hash::from_content(b"p"), BTreeSet::from([Hash::from_content(b"b")]))
             .await
@@ -231,7 +231,7 @@ mod tests {
             .await
             .unwrap();
 
-        let index2 = FileSystemMetadata::new(path.clone());
+        let index2 = FileSystemMetadataStore::new(path.clone());
         index2.rebuild_from_wal(&journal).await.unwrap();
 
         // Assert both persisted and WAL constraints survive.
@@ -243,7 +243,7 @@ mod tests {
     async fn no_persist_file_starts_empty() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nonexistent.json");
-        let index = FileSystemMetadata::new(path);
+        let index = FileSystemMetadataStore::new(path);
         let journal = InMemoryWal::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(index.is_empty().await);
@@ -253,7 +253,7 @@ mod tests {
     async fn prune_also_flushes() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("metadata.v1.json");
-        let index = FileSystemMetadata::new(path.clone());
+        let index = FileSystemMetadataStore::new(path.clone());
 
         let live = Hash::from_content(b"live");
         index.set_constraint(live, BTreeSet::from([Hash::from_content(b"dead")])).await.unwrap();
@@ -264,7 +264,7 @@ mod tests {
         index.prune_targets(&HashSet::from([live])).await.unwrap();
 
         // Reload and verify.
-        let index2 = FileSystemMetadata::new(path);
+        let index2 = FileSystemMetadataStore::new(path);
         let journal = InMemoryWal::new();
         index2.rebuild_from_wal(&journal).await.unwrap();
         // dead base is gone from the persisted constraint.

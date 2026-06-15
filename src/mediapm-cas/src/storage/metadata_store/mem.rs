@@ -1,7 +1,7 @@
 //! In-memory metadata — ephemeral, all data in DashMaps.
 //!
 //! Used by [`InMemoryCas`](super::super::in_memory::InMemoryCas) and as the
-//! in-memory layer of [`FileSystemMetadata`](super::fs::FileSystemMetadata).
+//! in-memory layer of [`FileSystemMetadataStore`](super::fs::FileSystemMetadataStore).
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -13,22 +13,22 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::super::wal::{Wal, WalEntry, WalPosition};
-use super::{Metadata, MetadataEntry};
+use super::{MetadataEntry, MetadataStore};
 
-/// An in-memory [`Metadata`] backed by `Arc<DashMap>` for both entry and
+/// An in-memory [`MetadataStore`] backed by `Arc<DashMap>` for both entry and
 /// constraint data.
 ///
 /// Clones share the same backing data, so all references observe the same
 /// state — essential for concurrent access patterns.
 ///
 /// Constraint data is stored in a separate [`DashMap`] from object metadata.
-/// See [`Metadata::get_constraint`] — returns empty set (no `Option`).
+/// See [`MetadataStore::get_constraint`] — returns empty set (no `Option`).
 ///
-/// Delta-base reverse index (`dependents`) is maintained on [`put`](Metadata::put)
-/// and [`delete`](Metadata::delete) so [`list_dependents`](Metadata::list_dependents)
+/// Delta-base reverse index (`dependents`) is maintained on [`put`](MetadataStore::put)
+/// and [`delete`](MetadataStore::delete) so [`list_dependents`](MetadataStore::list_dependents)
 /// is O(1) instead of O(N).
 #[derive(Clone, Default)]
-pub struct InMemoryMetadata {
+pub struct InMemoryMetadataStore {
     /// Object metadata (payload size, encoding).
     data: Arc<DashMap<Hash, MetadataEntry>>,
     /// Constraint data (target → bases), independent of metadata.
@@ -37,7 +37,7 @@ pub struct InMemoryMetadata {
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
 
-impl InMemoryMetadata {
+impl InMemoryMetadataStore {
     /// Create an empty metadata store.
     pub fn new() -> Self {
         Self::default()
@@ -45,7 +45,7 @@ impl InMemoryMetadata {
 }
 
 #[async_trait]
-impl Metadata for InMemoryMetadata {
+impl MetadataStore for InMemoryMetadataStore {
     async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
         // Remove old dependent relation if hash previously had a delta base.
         if let Some(old_entry) = self.data.get(&hash) {
@@ -166,7 +166,7 @@ mod tests {
 
     #[tokio::test]
     async fn put_and_get_roundtrip() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let hash = Hash::from_content(b"hello world");
         let entry = MetadataEntry { len: 11, encoding: ObjectEncoding::Full };
         index.put(hash, entry.clone()).await.unwrap();
@@ -177,14 +177,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_missing_returns_none() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let hash = Hash::from_content(b"missing");
         assert_eq!(index.get(&hash).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn delete_removes_entry() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let hash = Hash::from_content(b"delete me");
         index.put(hash, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
         index.delete(&hash).await.unwrap();
@@ -193,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn len_and_is_empty() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         assert!(index.is_empty().await);
         let hash = Hash::from_content(b"item");
         index.put(hash, MetadataEntry { len: 1, encoding: ObjectEncoding::Full }).await.unwrap();
@@ -204,7 +204,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_and_get_constraint() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let target = Hash::from_content(b"t");
         let base = Hash::from_content(b"b");
         let bases = BTreeSet::from([base]);
@@ -214,7 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_get_constraint_roundtrip() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let target = Hash::from_content(b"t");
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
@@ -226,7 +226,7 @@ mod tests {
 
     #[tokio::test]
     async fn replace_constraint_clears_previous() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let target = Hash::from_content(b"t");
         index.set_constraint(target, BTreeSet::from([Hash::from_content(b"b")])).await.unwrap();
         // Replacing with empty set clears the constraint.
@@ -236,14 +236,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_constraint_missing_returns_empty() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let target = Hash::from_content(b"missing");
         assert_eq!(index.get_constraint(&target).await.unwrap(), BTreeSet::new());
     }
 
     #[tokio::test]
     async fn delete_removes_constraint() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let hash = Hash::from_content(b"h");
         let base = Hash::from_content(b"b");
         index.set_constraint(hash, BTreeSet::from([base])).await.unwrap();
@@ -269,14 +269,14 @@ mod tests {
             .await
             .unwrap();
 
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         index.rebuild_from_wal(&journal).await.unwrap();
         assert!(!index.get_constraint(&target).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn list_targets_returns_constrained_only() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let a = Hash::from_content(b"a");
         let b = Hash::from_content(b"b");
 
@@ -289,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn prune_targets_removes_dead_bases() {
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         let live = Hash::from_content(b"live");
         let dead = Hash::from_content(b"dead");
         let base = Hash::from_content(b"base");
@@ -325,7 +325,7 @@ mod tests {
             .await
             .unwrap();
 
-        let index = InMemoryMetadata::new();
+        let index = InMemoryMetadataStore::new();
         index.rebuild_from_wal(&journal).await.unwrap();
 
         let entry = index.get(&hash).await.unwrap().unwrap();

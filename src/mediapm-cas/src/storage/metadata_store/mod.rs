@@ -1,17 +1,17 @@
 //! Metadata trait and types for the CAS storage layer.
 //!
-//! Provides the [`Metadata`] trait (entry + constraint operations) and the
+//! Provides the [`MetadataStore`] trait (entry + constraint operations) and the
 //! [`MetadataEntry`] type. Implementations:
 //!
-//! - [`InMemoryMetadata`](self::mem::InMemoryMetadata) — ephemeral, all data in DashMaps
-//! - [`FileSystemMetadata`](self::fs::FileSystemMetadata) — in-memory with persisted snapshot file
+//! - [`InMemoryMetadataStore`](self::mem::InMemoryMetadataStore) — ephemeral, all data in DashMaps
+//! - [`FileSystemMetadataStore`](self::fs::FileSystemMetadataStore) — in-memory with persisted snapshot file
 
 mod fs;
 mod mem;
 pub(crate) mod versions;
 
-pub(crate) use fs::FileSystemMetadata;
-pub(crate) use mem::InMemoryMetadata;
+pub(crate) use fs::FileSystemMetadataStore;
+pub(crate) use mem::InMemoryMetadataStore;
 
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashSet};
@@ -28,7 +28,7 @@ use super::wal::Wal;
 
 /// Metadata for a stored object (payload info only).
 ///
-/// Constraint data is stored separately — see [`Metadata::get_constraint`].
+/// Constraint data is stored separately — see [`MetadataStore::get_constraint`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetadataEntry {
     /// Original payload length (before any encoding).
@@ -55,10 +55,10 @@ impl MetadataEntry {
 /// via [`set_constraint`]/[`get_constraint`] — see §8.6 in AGENTS.md.
 ///
 /// In-memory implementations are reconstructed from journal replay on startup.
-/// [`FileSystemMetadata`] additionally persists constraints to disk so they survive
+/// [`FileSystemMetadataStore`] additionally persists constraints to disk so they survive
 /// WAL trim and process restart.
 #[async_trait]
-pub trait Metadata: Send + Sync {
+pub trait MetadataStore: Send + Sync {
     /// Store metadata for a hash (replaces existing entry).
     async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError>;
 
@@ -117,7 +117,7 @@ pub trait Metadata: Send + Sync {
     /// Rebuild state by replaying the journal.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError>;
 
-    /// Whether `put()` should materialize Metadata + Blob synchronously
+    /// Whether `put()` should materialize MetadataStore + BlobStore synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
     /// InMemory impls return `true`.
     const SYNC_MATERIALIZE: bool = true;

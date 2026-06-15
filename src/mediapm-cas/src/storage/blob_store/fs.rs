@@ -13,13 +13,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::Blob;
+use super::BlobStore;
 use super::versions::{hash_to_delta_path, hash_to_path};
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
 
-/// Filesystem-backed [`Blob`] with hash-derived directory layout.
+/// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
 ///
 /// ## Storage layout
 ///
@@ -43,12 +43,12 @@ use crate::hash::Hash;
 /// All methods are safe for concurrent access. Directory creation uses
 /// `create_dir_all` underneath.
 #[derive(Clone, Debug)]
-pub struct FileSystemBlob {
+pub struct FileSystemBlobStore {
     root: PathBuf,
     verify_strategies: Vec<VerifyTriggerStrategy>,
 }
 
-impl FileSystemBlob {
+impl FileSystemBlobStore {
     /// Create a new blob store rooted at `root`.
     ///
     /// The root directory is created if it does not exist.
@@ -130,7 +130,7 @@ impl FileSystemBlob {
 }
 
 #[async_trait]
-impl Blob for FileSystemBlob {
+impl BlobStore for FileSystemBlobStore {
     const SYNC_MATERIALIZE: bool = false;
 
     async fn write(
@@ -336,10 +336,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_write_read_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
         let data = Bytes::from_static(b"hello fs blob store");
         let hash = Hash::from_content(&data);
 
@@ -360,10 +362,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_read_missing_returns_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
         let hash = Hash::from_content(b"missing");
 
         let result = store.read(&hash).await;
@@ -373,10 +377,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_delete_removes_blob() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
         let data = Bytes::from_static(b"delete me");
         let hash = Hash::from_content(&data);
 
@@ -389,10 +395,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_delta_path_works() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
 
         let base = Hash::from_content(b"base");
         let data = Bytes::from_static(b"delta envelope data");
@@ -411,10 +419,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_delete_removes_both_paths() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
 
         let base = Hash::from_content(b"base");
         let data = Bytes::from_static(b"dual blob");
@@ -436,10 +446,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_delete_encoding_removes_specific_encoding() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
 
         let base = Hash::from_content(b"base");
         let data = Bytes::from_static(b"dual encoding blob");
@@ -466,10 +478,12 @@ mod tests {
     #[tokio::test]
     async fn filesystem_delete_encoding_missing_is_noop() {
         let dir = tempfile::tempdir().unwrap();
-        let store =
-            FileSystemBlob::create(dir.path().to_path_buf(), vec![VerifyTriggerStrategy::Always])
-                .await
-                .unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Always],
+        )
+        .await
+        .unwrap();
 
         let hash = Hash::from_content(b"nonexistent");
 
