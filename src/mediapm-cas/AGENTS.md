@@ -252,8 +252,8 @@ Pluggable payload backend.
 - `InMemoryBlobStore`: `DashMap<Hash, (Bytes, ObjectEncoding)>`. Ignores Full/Delta distinction.
 - `FileSystemBlobStore`: Hash-derived paths `<root>/v1/blake3/ab/cd/<remaining>` (full)
   or `<remaining>.diff` (delta). Atomic write via temp+rename. Hash verification on read.
-  `delete` uses `tracing::warn!` on `remove_file` failures (never returns I/O error —
-  missing files are treated as already-deleted).
+  `delete` silently ignores `NotFound` errors (missing files are treated as already-deleted).
+  `delete_encoding(hash, encoding)` removes a specific encoding variant without affecting others.
   `materialized_path(&self, hash) -> Option<PathBuf>` returns the on-disk path for `hash`
   (overrides the trait default of `None`).
 
@@ -269,9 +269,10 @@ Object metadata index. Both implementations share the same trait.
   (`IndexEntry { len, encoding }`). Constraint data is stored in a separate map:
   `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
 - **`FileSystemIndex`**: Wraps `InMemoryIndex` with persistent snapshot.
-  On mutation (`put`/`delete`/`set_constraint`), writes full snapshot (entries +
-  constraints) to a V1 JSON file atomically (temp+rename). On `rebuild_from_wal`,
-  replays WAL then overlays persisted state.
+  On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), writes full snapshot (entries +
+  constraints) to a V1 JSON file atomically (temp+rename). Flushes are batched via an
+  `AtomicBool` dirty flag: concurrent mutations coalesce into a single write, avoiding
+  redundant I/O. On `rebuild_from_wal`, replays WAL then overlays persisted state.
 
 **Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data
 (`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL
