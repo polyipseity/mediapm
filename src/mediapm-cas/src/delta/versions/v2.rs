@@ -1,6 +1,6 @@
 //! V2 binary wire format for delta objects.
 //!
-//! V2 is V1 without the 4-byte CRC32 checksum field. All new writes use V2.
+//! V2 is V1 without the 4-byte CRC32 checksum field. All new writes use V3.
 //! V1 format is kept for reading legacy objects.
 //!
 //! Layout:

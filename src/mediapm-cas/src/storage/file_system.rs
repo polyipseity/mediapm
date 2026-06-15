@@ -29,12 +29,6 @@ impl std::ops::Deref for FileSystemCas {
 }
 
 impl FileSystemCas {
-    /// Open or create a file-system CAS store at `dir`.
-    ///
-    /// Creates the journal directory, checkpoint, blob store root, and
-    /// metadata snapshot file if they don't exist. Rebuilds the metadata
-    /// store from the WAL on open. Metadata persists at
-    /// `<dir>/metadata.json`.
     /// Open or create a file-system CAS store at `dir` with the given
     /// verify strategies.
     pub async fn open_with_strategies(
