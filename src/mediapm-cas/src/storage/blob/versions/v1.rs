@@ -19,7 +19,7 @@ use crate::hash::Hash;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// The path version segment used in blob store directory layout.
+/// The path version segment used in blob storage directory layout.
 pub(crate) const BLOB_PATH_VERSION: &str = "v1";
 
 // ---------------------------------------------------------------------------

@@ -1,15 +1,15 @@
-//! Blob store — eventual-consistent content-addressed blob storage.
+//! Blob storage — eventual-consistent content-addressed blob storage.
 //!
-//! Defines the [`BlobStore`] trait and its implementations:
-//! - [`FileSystemBlobStore`] — hash-derived directory layout on disk.
-//! - [`InMemoryBlobStore`] — ephemeral in-memory map (testing/CI).
+//! Defines the [`Blob`] trait and its implementations:
+//! - [`FileSystemBlob`] — hash-derived directory layout on disk.
+//! - [`InMemoryBlob`] — ephemeral in-memory map (testing/CI).
 
-mod fs_blob_store;
-pub(crate) mod mem_blob_store;
+mod fs;
+pub(crate) mod mem;
 pub(crate) mod versions;
 
-pub use fs_blob_store::FileSystemBlobStore;
-pub use mem_blob_store::InMemoryBlobStore;
+pub use fs::FileSystemBlob;
+pub use mem::InMemoryBlob;
 
 use std::path::PathBuf;
 
@@ -21,7 +21,7 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 // ---------------------------------------------------------------------------
-// BlobStore trait
+// Blob trait
 // ---------------------------------------------------------------------------
 
 /// Content-addressed blob storage.
@@ -31,7 +31,7 @@ use crate::hash::Hash;
 /// (`.diff` suffix for delta) so both can coexist safely during
 /// optimizer transitions.
 #[async_trait]
-pub trait BlobStore: Send + Sync {
+pub trait Blob: Send + Sync {
     /// Write data for `hash` with the given encoding.
     ///
     /// - [`ObjectEncoding::Full`]: stored at `<hash-path>`.
@@ -75,7 +75,7 @@ pub trait BlobStore: Send + Sync {
         None
     }
 
-    /// Whether `put()` should materialize BlobStore + Index synchronously
+    /// Whether `put()` should materialize Blob + metadata synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
     /// InMemory impls return `true`; FileSystem impls return `false`.
     const SYNC_MATERIALIZE: bool = true;

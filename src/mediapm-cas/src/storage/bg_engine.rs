@@ -2,7 +2,7 @@
 //!
 //! Drives two background tasks:
 //!
-//! - **WAL consumer** — drains pending WAL entries into the BlobStore and
+//! - **WAL consumer** — drains pending WAL entries into the Blob and
 //!   Metadata, then trims them from the WAL.
 //! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
 //!   approach effective constraints (intersection of stored bases with live
@@ -27,16 +27,16 @@ use crate::delta::patch::DeltaPatch;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob_store::BlobStore;
+use super::blob::Blob;
 use super::metadata::{Metadata, MetadataEntry};
 use super::read_view::ReadView;
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Background engine driving WAL consumption and maintenance.
-pub struct BackgroundEngine<J: Wal, M: Metadata, B: BlobStore> {
+pub struct BackgroundEngine<J: Wal, M: Metadata, B: Blob> {
     wal: J,
     metadata: M,
-    blob_store: B,
+    blob: B,
     read_view: Arc<dyn ReadView>,
     checkpoint: AtomicU64,
     cancelled: Arc<AtomicBool>,
@@ -51,7 +51,7 @@ pub struct BackgroundEngine<J: Wal, M: Metadata, B: BlobStore> {
     reconstructed_cache_ttl: Duration,
 }
 
-impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
+impl<J: Wal, M: Metadata, B: Blob> BackgroundEngine<J, M, B> {
     /// Create a new engine, checkpointing at `start_pos`.
     ///
     /// `cache_ttl` controls how long reconstructed full bytes remain cached
@@ -59,7 +59,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
     pub(crate) fn new(
         wal: J,
         metadata: M,
-        blob_store: B,
+        blob: B,
         start_pos: WalPosition,
         read_view: Arc<dyn ReadView>,
         cache_ttl: Duration,
@@ -67,7 +67,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
         Self {
             wal,
             metadata,
-            blob_store,
+            blob,
             read_view,
             checkpoint: AtomicU64::new(start_pos.as_u64()),
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -76,7 +76,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
         }
     }
 
-    /// Drain the WAL consumer once: drain WAL entries into BlobStore +
+    /// Drain the WAL consumer once: drain WAL entries into Blob +
     /// Metadata, advancing checkpoint after each entry.
     ///
     /// Returns the number of entries consumed.
@@ -104,8 +104,8 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
             }
             match entry {
                 WalEntry::Put { hash, data } => {
-                    // Write payload to BlobStore as Full.
-                    self.blob_store.write(*hash, ObjectEncoding::Full, data.clone()).await?;
+                    // Write payload to Blob as Full.
+                    self.blob.write(*hash, ObjectEncoding::Full, data.clone()).await?;
                     // Preserve existing constraint bases, if any.
                     let existing_bases = self.metadata.get_constraint(hash).await?;
                     self.metadata
@@ -132,7 +132,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
                     // that depend on this hash as their base. This prevents
                     // dangling-delta reconstruction failure.
                     self.rematerialize_deltas_for(hash).await?;
-                    self.blob_store.delete(hash).await?;
+                    self.blob.delete(hash).await?;
                     self.metadata.delete(hash).await?;
                 }
                 WalEntry::Constraint { target, bases } => {
@@ -154,7 +154,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
     /// Re-materialize all delta-encoded objects that depend on `hash` as
     /// their base. After this call, each dependent is stored as
     /// [`ObjectEncoding::Full`] so it remains reachable after `hash` is
-    /// physically removed from the BlobStore and Metadata.
+    /// physically removed from the Blob and Metadata.
     ///
     /// This is called by the WAL consumer **before** physically deleting
     /// `hash`.
@@ -167,8 +167,8 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
             }
 
             // Read delta envelope from blob store.
-            let delta_data = self.blob_store.read_delta(&dep_hash).await?;
-            // Base bytes are still in BlobStore (not yet deleted).
+            let delta_data = self.blob.read_delta(&dep_hash).await?;
+            // Base bytes are still in Blob (not yet deleted).
             // Use read_full_bytes so delta-encoded bases are reconstructed.
             let base_bytes =
                 self.read_full_bytes(hash).await?.ok_or_else(|| CasError::NotFound(*hash))?;
@@ -189,11 +189,9 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
 
             // Store as Full, replacing the delta-encoded entry.
             let result_bytes = Bytes::from(result);
-            self.blob_store.write(dep_hash, ObjectEncoding::Full, result_bytes.clone()).await?;
+            self.blob.write(dep_hash, ObjectEncoding::Full, result_bytes.clone()).await?;
             // Clean up the stale .diff blob since it's now promoted to Full.
-            self.blob_store
-                .delete_encoding(dep_hash, ObjectEncoding::Delta { base_hash: *hash })
-                .await?;
+            self.blob.delete_encoding(dep_hash, ObjectEncoding::Delta { base_hash: *hash }).await?;
             // Preserve constraint bases.
             let existing_bases = self.metadata.get_constraint(&dep_hash).await?;
             self.metadata
@@ -223,7 +221,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
     }
 
     /// Reconstruct the full (reconstructed) bytes for a hash by walking
-    /// any delta chain present in the Metadata + BlobStore.
+    /// any delta chain present in the Metadata + Blob.
     ///
     /// Uses an internal time-based cache (TTL configurable via constructor)
     /// to avoid repeated delta-chain walks during maintenance cycles.
@@ -250,7 +248,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
             hash,
             &entry,
             &self.metadata,
-            &self.blob_store,
+            &self.blob,
             "delta self-reference detected during optimizer reconstruction",
             "delta chain: base",
         )
@@ -329,7 +327,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
                             delta_payload.to_vec(),
                         );
                         let envelope = Bytes::from(stored.encode());
-                        self.blob_store
+                        self.blob
                             .write(
                                 *target,
                                 ObjectEncoding::Delta { base_hash: *best_base },
@@ -392,7 +390,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> BackgroundEngine<J, M, B> {
     }
 }
 
-impl<J: Wal, M: Metadata, B: BlobStore> Clone for BackgroundEngine<J, M, B>
+impl<J: Wal, M: Metadata, B: Blob> Clone for BackgroundEngine<J, M, B>
 where
     J: Clone,
     M: Clone,
@@ -402,7 +400,7 @@ where
         Self {
             wal: self.wal.clone(),
             metadata: self.metadata.clone(),
-            blob_store: self.blob_store.clone(),
+            blob: self.blob.clone(),
             read_view: self.read_view.clone(),
             checkpoint: AtomicU64::new(self.checkpoint.load(Ordering::SeqCst)),
             cancelled: self.cancelled.clone(),

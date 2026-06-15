@@ -2,7 +2,7 @@
 //!
 //! Each on-disk version owns its path layout. This module provides
 //! version-aware path derivation and bridges versioned internals to the
-//! unversioned [`BlobStore`](super::super::BlobStore) runtime.
+//! unversioned [`Blob`](super::super::Blob) runtime.
 //!
 //! ## DO NOT REMOVE: versions policy guard
 //!

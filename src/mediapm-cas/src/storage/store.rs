@@ -1,5 +1,5 @@
 //! Composed CAS store — the primary handle tying together WAL, read
-//! view, Index, BlobStore, and background engine.
+//! view, Metadata, Blob, and background engine.
 //!
 //! # Architecture
 //!
@@ -7,12 +7,12 @@
 //! +--------------------------------------------------+
 //! |                   CasStore                        |
 //! |  +----------+  +-----------+  +---------------+   |
-//! |  | Wal      |  | ReadView  |  | Index         |   |
-//! |  | (WAL)    |  | (index +  |  | (metadata +   |   |
+//! |  | Wal      |  | ReadView  |  | Metadata      |   |
+//! |  | (WAL)    |  | (meta +   |  | (metadata +   |   |
 //! |  |          |  |  blob +   |  |  constraints) |   |
 //! |  |          |  |  wal)     |  |               |   |
 //! |  +----------+  +-----------+  +---------------+   |
-//! |  | BlobStor |  | BgEngine  |  |               |   |
+//! |  | Blob     |  | BgEngine  |  |               |   |
 //! |  | (payload)|  |(consumer+ |  |               |   |
 //! |  |          |  | maint)    |  |               |   |
 //! |  +----------+  +-----------+  +---------------+   |
@@ -35,55 +35,55 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::bg_engine::BackgroundEngine;
-use super::blob_store::BlobStore;
+use super::blob::Blob;
 use super::metadata::{Metadata, MetadataEntry};
 use super::read_view::{ComposedReadView, ReadView};
 use super::wal::{Wal, WalEntry, WalPosition};
 
 /// Composed CAS store — primary handle for all CAS operations.
-pub struct CasStore<J: Wal, M: Metadata, B: BlobStore> {
+pub struct CasStore<J: Wal, M: Metadata, B: Blob> {
     wal: J,
     metadata: M,
-    blob_store: B,
+    blob: B,
     read_view: Arc<dyn ReadView>,
     bg_engine: BackgroundEngine<J, M, B>,
 }
 
-impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> Clone for CasStore<J, M, B> {
+impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> Clone for CasStore<J, M, B> {
     fn clone(&self) -> Self {
         Self {
             wal: self.wal.clone(),
             metadata: self.metadata.clone(),
-            blob_store: self.blob_store.clone(),
+            blob: self.blob.clone(),
             read_view: self.read_view.clone(),
             bg_engine: self.bg_engine.clone(),
         }
     }
 }
 
-impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> CasStore<J, M, B> {
+impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
     /// Create a new composed store.  `start_pos` tells the background
     /// engine which WAL position to begin consuming from (e.g., the
     /// last checkpoint on restart).
     ///
     /// The reconstructed-bytes cache uses a 60-second TTL by default.
-    pub fn new(wal: J, metadata: M, blob_store: B, start_pos: WalPosition) -> Self
+    pub fn new(wal: J, metadata: M, blob: B, start_pos: WalPosition) -> Self
     where
         J: 'static,
         M: 'static,
         B: 'static,
     {
         let read_view: Arc<dyn ReadView> =
-            Arc::new(ComposedReadView::new(metadata.clone(), wal.clone(), blob_store.clone()));
+            Arc::new(ComposedReadView::new(metadata.clone(), wal.clone(), blob.clone()));
         let bg_engine = BackgroundEngine::new(
             wal.clone(),
             metadata.clone(),
-            blob_store.clone(),
+            blob.clone(),
             start_pos,
             read_view.clone(),
             Duration::from_secs(60),
         );
-        Self { wal, metadata, blob_store, read_view, bg_engine }
+        Self { wal, metadata, blob, read_view, bg_engine }
     }
 
     /// Rebuild metadata from WAL (for recovery after restart).
@@ -92,8 +92,8 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> CasStore<J, M, B
     }
 
     /// Return a reference to the blob store.
-    pub(crate) fn blob_store(&self) -> &B {
-        &self.blob_store
+    pub(crate) fn blob(&self) -> &B {
+        &self.blob
     }
 
     /// Return a reference to the background engine.
@@ -107,16 +107,16 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: BlobStore + Clone> CasStore<J, M, B
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: BlobStore> CasApi for CasStore<J, M, B> {
+impl<J: Wal, M: Metadata, B: Blob> CasApi for CasStore<J, M, B> {
     async fn put(&self, data: Bytes) -> Result<Hash, CasError> {
         let hash = Hash::from_content(&data);
         // Append to WAL (the crash-safe commitment).
         self.wal.append(WalEntry::Put { hash, data: data.clone() }).await?;
-        // Materialize BlobStore + Index immediately (write-through) when
+        // Materialize Blob + metadata immediately (write-through) when
         // both backends prefer synchronous materialization.  Otherwise
         // defer to the WAL consumer (write-back).
         if B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE {
-            self.blob_store.write(hash, ObjectEncoding::Full, data.clone()).await?;
+            self.blob.write(hash, ObjectEncoding::Full, data.clone()).await?;
             self.metadata
                 .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
                 .await?;
@@ -157,7 +157,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> CasApi for CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
+impl<J: Wal, M: Metadata, B: Blob> ConstraintApi for CasStore<J, M, B> {
     async fn set_constraint(&self, target: Hash, bases: BTreeSet<Hash>) -> Result<(), CasError> {
         // Sentinel always has empty constraints.
         if target == Hash::empty() {
@@ -238,7 +238,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> ConstraintApi for CasStore<J, M, B> {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<J: Wal, M: Metadata, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
+impl<J: Wal, M: Metadata, B: Blob> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
@@ -267,7 +267,7 @@ impl<J: Wal, M: Metadata, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> 
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: BlobStore> CasApi for T
+impl<T, J: Wal, M: Metadata, B: Blob> CasApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
@@ -289,7 +289,7 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: BlobStore> ConstraintApi for T
+impl<T, J: Wal, M: Metadata, B: Blob> ConstraintApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {
@@ -307,7 +307,7 @@ where
 }
 
 #[async_trait]
-impl<T, J: Wal, M: Metadata, B: BlobStore> CasMaintenanceApi for T
+impl<T, J: Wal, M: Metadata, B: Blob> CasMaintenanceApi for T
 where
     T: Deref<Target = CasStore<J, M, B>> + Send + Sync,
 {

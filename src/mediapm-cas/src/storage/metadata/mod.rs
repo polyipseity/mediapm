@@ -117,7 +117,7 @@ pub trait Metadata: Send + Sync {
     /// Rebuild state by replaying the journal.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError>;
 
-    /// Whether `put()` should materialize Metadata + BlobStore synchronously
+    /// Whether `put()` should materialize Metadata + Blob synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
     /// InMemory impls return `true`.
     const SYNC_MATERIALIZE: bool = true;

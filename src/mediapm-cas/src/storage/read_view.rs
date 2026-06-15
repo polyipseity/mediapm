@@ -1,15 +1,15 @@
-//! Read-through view — provides coherent reads over Metadata + BlobStore +
+//! Read-through view — provides coherent reads over Metadata + Blob +
 //! WAL fallback.
 //!
 //! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
 //! 1. [`Metadata`](super::metadata::Metadata) — metadata (encoding, size, bases).
-//! 2. [`BlobStore`](super::blob_store::BlobStore) — payload bytes (full
+//! 2. [`Blob`](super::blob::Blob) — payload bytes (full
 //!    or delta).
-//! 3. WAL fallback — entries not yet materialized into BlobStore/Metadata.
+//! 3. WAL fallback — entries not yet materialized into Blob/Metadata.
 //!
-//! In-flight read dedup prevents redundant blob-store reads when multiple
+//! In-flight read dedup prevents redundant blob reads when multiple
 //! concurrent `get()` calls miss Metadata simultaneously.
 
 use std::collections::HashSet;
@@ -21,7 +21,7 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob_store::BlobStore;
+use super::blob::Blob;
 use super::metadata::{Metadata, MetadataEntry};
 use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
@@ -50,30 +50,30 @@ pub use crate::api::ObjectMeta;
 // ComposedReadView
 // ---------------------------------------------------------------------------
 
-/// A read-through view backed by Metadata + BlobStore + WAL fallback.
+/// A read-through view backed by Metadata + Blob + WAL fallback.
 ///
 /// Implements a three-layer lookup:
 /// 1. `Metadata` for metadata (encoding, size).
-/// 2. `BlobStore` for payload bytes.
+/// 2. `Blob` for payload bytes.
 /// 3. `Wal` fallback for entries not yet materialized.
 ///
 /// In-flight reads are deduplicated: if two tasks call `get` on the same
 /// hash simultaneously, only one performs the lookup while the other waits
 /// for the shared result (see [`PendingOps`]).
-pub(crate) struct ComposedReadView<M: Metadata, J: Wal, B: BlobStore> {
+pub(crate) struct ComposedReadView<M: Metadata, J: Wal, B: Blob> {
     pending: PendingOps,
     metadata: M,
     wal: J,
-    blob_store: B,
+    blob: B,
 }
 
-impl<M: Metadata, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
+impl<M: Metadata, J: Wal, B: Blob> ComposedReadView<M, J, B> {
     /// Create a new view.
-    pub fn new(metadata: M, wal: J, blob_store: B) -> Self {
-        Self { pending: PendingOps::new(), metadata, wal, blob_store }
+    pub fn new(metadata: M, wal: J, blob: B) -> Self {
+        Self { pending: PendingOps::new(), metadata, wal, blob }
     }
 
-    /// Inner fetch: Metadata + BlobStore → WAL fallback with transparent delta
+    /// Inner fetch: Metadata + Blob → WAL fallback with transparent delta
     /// reconstruction.
     ///
     /// Returns `Ok(Some(data))` if found, `Ok(None)` if confirmed absent.
@@ -106,7 +106,7 @@ impl<M: Metadata, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
             hash,
             &entry,
             &self.metadata,
-            &self.blob_store,
+            &self.blob,
             "delta self-reference detected",
             "delta chain: base",
         )
@@ -116,7 +116,7 @@ impl<M: Metadata, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
 }
 
 #[async_trait]
-impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync> ReadView
+impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: Blob + Send + Sync> ReadView
     for ComposedReadView<M, J, B>
 {
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
@@ -155,26 +155,19 @@ impl<M: Metadata + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send + Sync
 
 /// Given a metadata entry, read full bytes — either directly (Full) or by
 /// resolving the delta chain (Delta).
-pub(super) async fn resolve_full_bytes<M: Metadata, B: BlobStore>(
+pub(super) async fn resolve_full_bytes<M: Metadata, B: Blob>(
     hash: &Hash,
     entry: &MetadataEntry,
     metadata: &M,
-    blob_store: &B,
+    blob: &B,
     self_ref_msg: &str,
     base_not_found_msg: &str,
 ) -> Result<Bytes, CasError> {
     match entry.encoding {
-        ObjectEncoding::Full => blob_store.read(hash).await,
+        ObjectEncoding::Full => blob.read(hash).await,
         ObjectEncoding::Delta { base_hash } => {
-            resolve_delta_chain(
-                hash,
-                base_hash,
-                metadata,
-                blob_store,
-                self_ref_msg,
-                base_not_found_msg,
-            )
-            .await
+            resolve_delta_chain(hash, base_hash, metadata, blob, self_ref_msg, base_not_found_msg)
+                .await
         }
     }
 }
@@ -183,11 +176,11 @@ pub(super) async fn resolve_full_bytes<M: Metadata, B: BlobStore>(
 ///
 /// Callers provide the starting `base_hash` from the object's encoding and
 /// context strings for error messages. Returns `Ok(full_bytes)` on success.
-pub(super) async fn resolve_delta_chain<M: Metadata, B: BlobStore>(
+pub(super) async fn resolve_delta_chain<M: Metadata, B: Blob>(
     hash: &Hash,
     base_hash: Hash,
     metadata: &M,
-    blob_store: &B,
+    blob: &B,
     self_ref_msg: &str,
     base_not_found_msg: &str,
 ) -> Result<Bytes, CasError> {
@@ -211,14 +204,14 @@ pub(super) async fn resolve_delta_chain<M: Metadata, B: BlobStore>(
                 details: format!("delta chain cycle detected: base {base} already visited"),
             });
         }
-        let delta_data = blob_store.read_delta(&current).await?;
+        let delta_data = blob.read_delta(&current).await?;
         chain.push((current, delta_data));
         current = base;
 
         match metadata.get(&current).await? {
             Some(base_entry) => match base_entry.encoding {
                 ObjectEncoding::Full => {
-                    let base_data = blob_store.read(&current).await?;
+                    let base_data = blob.read(&current).await?;
                     return crate::delta::patch::apply_delta_chain(base_data, &mut chain, current);
                 }
                 ObjectEncoding::Delta { base_hash: next_base } => {
