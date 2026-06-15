@@ -245,7 +245,7 @@ struct JournalWriterState {
 
 impl FileWal {
     /// Default max segment size: 64 MiB.
-    pub const DEFAULT_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
+    pub const DEFAULT_MAX_SEGMENT_SIZE: u64 = crate::defaults::WAL_MAX_SEGMENT_SIZE;
 
     /// Create or open a file-based journal at `cas_dir`.
     ///

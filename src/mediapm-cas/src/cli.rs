@@ -7,7 +7,8 @@ use clap_complete::{Shell, generate};
 use std::io::{self, Read, Write};
 
 use crate::api::CasApi;
-use crate::config::{CasConfig, CasIntegrityConfig, CasLocatorParseOptions};
+use crate::config::CasConfig;
+use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -66,8 +67,8 @@ pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let config = CasConfig::from_locator_with_options(
         &cli.storage,
-        CasLocatorParseOptions { allow_plain_filesystem_path: true },
-        CasIntegrityConfig { verify_on_read: Vec::new() },
+        defaults::LOCATOR_PARSE_OPTIONS,
+        defaults::INTEGRITY_CONFIG,
     )?;
     let cas = config.open().await?;
 

@@ -23,8 +23,8 @@ use crate::storage::in_memory::InMemoryCas;
 
 /// Configuration for CAS integrity verification.
 ///
-/// No [`Default`] impl — default values are pushed to boundary callers.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Default is no verification (empty strategy list).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CasIntegrityConfig {
     /// Ordered list of trigger strategies.
     pub verify_on_read: Vec<crate::api::VerifyTriggerStrategy>,
@@ -56,11 +56,19 @@ pub enum CasStorageLocator {
 // ---------------------------------------------------------------------------
 
 /// Options for parsing CAS locator strings.
+///
+/// Default allows plain filesystem paths.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CasLocatorParseOptions {
     /// When true, a plain filesystem path (not prefixed with a scheme) is
     /// accepted as a [`CasStorageLocator::FileSystem`].
     pub allow_plain_filesystem_path: bool,
+}
+
+impl Default for CasLocatorParseOptions {
+    fn default() -> Self {
+        Self { allow_plain_filesystem_path: true }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -69,9 +77,8 @@ pub struct CasLocatorParseOptions {
 
 /// A single CAS configuration object.
 ///
-/// All fields are required; default values are pushed to boundary callers.
-/// No [`Default`] impl — construct explicitly or use
-/// [`from_locator_with_options`](Self::from_locator_with_options).
+/// Construct via [`from_locator_with_options`](Self::from_locator_with_options) or
+/// [`from_locator`](Self::from_locator).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CasConfig {
     /// Which storage backend to use.
@@ -112,8 +119,8 @@ impl CasConfig {
     pub fn from_locator(locator: &str) -> Result<Self, CasError> {
         Self::from_locator_with_options(
             locator,
-            CasLocatorParseOptions { allow_plain_filesystem_path: true },
-            CasIntegrityConfig { verify_on_read: Vec::new() },
+            CasLocatorParseOptions::default(),
+            CasIntegrityConfig::default(),
         )
     }
 

@@ -9,6 +9,7 @@ use super::store::CasStore;
 use super::wal::FileWal;
 use super::wal::Wal;
 use crate::api::VerifyTriggerStrategy;
+use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -41,7 +42,7 @@ impl FileSystemCas {
         let metadata_path = dir.join("metadata.json");
         let metadata = FileSystemMetadata::new(metadata_path);
         metadata.rebuild_from_wal(&wal).await?;
-        let store = CasStore::new(wal, metadata, blob, start_pos);
+        let store = CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL);
         Ok(Self(store))
     }
 

@@ -13,6 +13,7 @@ use super::blob::InMemoryBlob;
 use super::metadata::InMemoryMetadata;
 use super::store::CasStore;
 use super::wal::{InMemoryWal, WalPosition};
+use crate::defaults;
 
 /// Fully-assembled in-memory CAS store.
 ///
@@ -29,6 +30,7 @@ impl InMemoryCas {
             InMemoryMetadata::new(),
             InMemoryBlob::new(),
             WalPosition::ZERO,
+            defaults::CACHE_TTL,
         ))
     }
 }

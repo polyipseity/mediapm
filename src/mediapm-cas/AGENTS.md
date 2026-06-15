@@ -168,14 +168,16 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 |------|------|
 | `CasConfig` | Single config object: `storage_locator` + `integrity` |
 | `CasStorageLocator` | `InMemory` or `FileSystem { path }` |
-| `CasIntegrityConfig` | `verify_on_read` strategies |
-| `CasLocatorParseOptions` | Controls whether plain paths are accepted |
+| `CasIntegrityConfig` | `verify_on_read` strategies (`Default`: empty — no verification) |
+| `CasLocatorParseOptions` | Controls whether plain paths are accepted (`Default`: `true`) |
 | `VerifyTriggerStrategy` | `Always`, `Modified`, `Sample { denominator }`, `Stale { timeout }` |
 
 `CasConfig` provides:
 
 - `from_locator_with_options(locator, opts, integrity)` — full control.
-- `from_locator(locator)` — convenience with `allow_plain_filesystem_path: true` and no verification.
+- `from_locator(locator)` — convenience using [`default`](CasConfig::default) settings.
+
+`CasIntegrityConfig` and `CasLocatorParseOptions` implement `Default` (defined in [`defaults`](crate::defaults)).
 
 ## 3. Crate structure
 

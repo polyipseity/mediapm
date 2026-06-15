@@ -66,8 +66,10 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
     /// engine which WAL position to begin consuming from (e.g., the
     /// last checkpoint on restart).
     ///
-    /// The reconstructed-bytes cache uses a 60-second TTL by default.
-    pub fn new(wal: J, metadata: M, blob: B, start_pos: WalPosition) -> Self
+    /// `cache_ttl` controls the reconstructed-bytes cache lifetime.
+    /// Boundary callers should pass [`crate::defaults::CACHE_TTL`] unless
+    /// they need a custom value.
+    pub fn new(wal: J, metadata: M, blob: B, start_pos: WalPosition, cache_ttl: Duration) -> Self
     where
         J: 'static,
         M: 'static,
@@ -81,7 +83,7 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
             blob.clone(),
             start_pos,
             read_view.clone(),
-            Duration::from_secs(60),
+            cache_ttl,
         );
         Self { wal, metadata, blob, read_view, bg_engine }
     }

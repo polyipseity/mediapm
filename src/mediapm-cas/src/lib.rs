@@ -36,6 +36,7 @@
 
 pub mod api;
 pub mod config;
+pub mod defaults;
 pub(crate) mod delta;
 pub mod error;
 pub mod hash;
