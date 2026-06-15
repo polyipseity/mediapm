@@ -343,7 +343,7 @@ Object metadata index. Both implementations share the same trait.
 replay do not touch the constraint map; only `Constraint` WAL entries populate it. This
 keeps the data model clean and removes `Option` from constraint representation.
 
-**Versioned persistence** (`storage/metadata/versions/`): V1 JSON format:
+**Versioned persistence** (`storage/metadata_store/versions/`): V1 JSON format:
 
 ```json
 { "version": 1, "entries": { "hash_hex": { "len": 123, "encoding": "Full" } }, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }

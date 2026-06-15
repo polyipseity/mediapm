@@ -1,16 +1,16 @@
 //! In-memory CAS — ephemeral store using only memory backends.
 //!
 //! Composes [`InMemoryWal`](super::wal::InMemoryWal),
-//! [`InMemoryMetadata`](super::metadata::InMemoryMetadata), and
-//! [`InMemoryBlob`](super::blob::InMemoryBlob) into
+//! [`InMemoryMetadata`](super::metadata_store::InMemoryMetadata), and
+//! [`InMemoryBlob`](super::blob_store::InMemoryBlob) into
 //! a fully functional [`CasStore`](super::store::CasStore) that implements
 //! all CAS traits without any filesystem persistence.
 //!
 //! Useful for testing, benchmarks, and short-lived sessions where data does
 //! not need to survive process death.
 
-use super::blob::InMemoryBlob;
-use super::metadata::InMemoryMetadata;
+use super::blob_store::InMemoryBlob;
+use super::metadata_store::InMemoryMetadata;
 use super::store::CasStore;
 use super::wal::{InMemoryWal, WalPosition};
 use crate::defaults;

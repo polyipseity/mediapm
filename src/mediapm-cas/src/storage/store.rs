@@ -36,8 +36,8 @@ use crate::error::CasError;
 use crate::hash::Hash;
 
 use super::bg_engine::BackgroundEngine;
-use super::blob::Blob;
-use super::metadata::{Metadata, MetadataEntry};
+use super::blob_store::Blob;
+use super::metadata_store::{Metadata, MetadataEntry};
 use super::read_view::{ComposedReadView, ReadView};
 use super::wal::{Wal, WalEntry, WalPosition};
 

@@ -3,8 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::blob::{Blob, FileSystemBlob};
-use super::metadata::{FileSystemMetadata, Metadata};
+use super::blob_store::{Blob, FileSystemBlob};
+use super::metadata_store::{FileSystemMetadata, Metadata};
 use super::store::CasStore;
 use super::wal::FileWal;
 use super::wal::Wal;

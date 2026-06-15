@@ -4,8 +4,8 @@
 //! The [`ComposedReadView`] implements a three-layer lookup used by
 //! [`CasStore`](super::store::CasStore):
 //!
-//! 1. [`Metadata`](super::metadata::Metadata) — metadata (encoding, size, bases).
-//! 2. [`Blob`](super::blob::Blob) — payload bytes (full
+//! 1. [`Metadata`](super::metadata_store::Metadata) — metadata (encoding, size, bases).
+//! 2. [`Blob`](super::blob_store::Blob) — payload bytes (full
 //!    or delta).
 //! 3. WAL fallback — entries not yet materialized into Blob/Metadata.
 //!
@@ -22,8 +22,8 @@ use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
 
-use super::blob::Blob;
-use super::metadata::{Metadata, MetadataEntry};
+use super::blob_store::Blob;
+use super::metadata_store::{Metadata, MetadataEntry};
 use super::pending_ops::PendingOps;
 use super::wal::{PendingState, Wal};
 
