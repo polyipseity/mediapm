@@ -100,6 +100,11 @@ impl<J: Wal + Clone, M: Metadata + Clone, B: Blob + Clone> CasStore<J, M, B> {
     pub fn bg_engine(&self) -> &BackgroundEngine<J, M, B> {
         &self.bg_engine
     }
+
+    /// Materialize all committed WAL entries into blob + metadata.
+    pub async fn flush(&self) -> Result<u64, CasError> {
+        self.bg_engine.run_wal_consumer().await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +290,10 @@ where
 
     async fn delete(&self, hash: Hash) -> Result<(), CasError> {
         self.deref().delete(hash).await
+    }
+
+    async fn flush(&self) -> Result<u64, CasError> {
+        self.deref().flush().await
     }
 }
 

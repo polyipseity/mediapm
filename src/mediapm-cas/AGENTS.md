@@ -20,7 +20,7 @@
 
 ## 2. Public API
 
-### 2.1 CasApi — four-method contract
+### 2.1 CasApi — five-method contract
 
 ```rust
 #[async_trait]
@@ -29,6 +29,7 @@ pub trait CasApi: Send + Sync {
     async fn get(&self, hash: Hash) -> Result<Bytes, CasError>;
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError>;
     async fn delete(&self, hash: Hash) -> Result<(), CasError>;
+    async fn flush(&self) -> Result<u64, CasError>;
 }
 ```
 
@@ -56,6 +57,13 @@ Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
 **delete**: Append `WalEntry::Delete` to WAL. Physical removal is
 deferred to WAL consumer. Idempotent. Does not cascade.
 Empty-content sentinel is a no-op — never appended to WAL.
+
+**flush**: Materialize all committed WAL entries into the backing
+blob + metadata stores, making them visible to future `get`/`stat`
+calls without WAL fallback. Returns the number of WAL entries
+consumed. No-op for backends using write-through (e.g. `InMemoryCas`);
+write-back backends (e.g. `FileSystemCas`) materialize all deferred
+writes.
 
 ### 2.2 CasApiStreaming — blanket-impl streaming extension
 
@@ -174,7 +182,7 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 ```text
 src/mediapm-cas/src/
 ├── lib.rs               — crate root, re-exports
-├── api.rs               — CasApi, CasApiStreaming, ConstraintApi, CasMaintenanceApi, report types
+├── api.rs               — CasApi (+ flush), CasApiStreaming, ConstraintApi, CasMaintenanceApi, report types
 ├── hash.rs              — Hash type (blake3-256, multihash wire format)
 ├── error.rs             — CasError enum
 ├── config.rs            — CasConfig, ConfiguredCas, CasStorageLocator, integrity settings

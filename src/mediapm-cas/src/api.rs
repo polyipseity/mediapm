@@ -2,7 +2,7 @@
 //!
 //! # Architecture
 //!
-//! - [`CasApi`] — minimal 4-method contract (`put`/`get`/`stat`/`delete`).
+//! - [`CasApi`] — minimal 5-method contract (`put`/`get`/`stat`/`delete`/`flush`).
 //!   No `exists`, no `info` — TOCTOU discouraged.
 //! - [`CasApiStreaming`] — extension trait with blanket impl, provides
 //!   stream-based put/get.
@@ -62,7 +62,7 @@ pub enum VerifyTriggerStrategy {
 /// Minimal public CAS contract with intuitive postcondition guarantees.
 ///
 /// Everything else (constraints, streaming, materialize, batch) is built on
-/// top of these four methods.
+/// top of these five methods.
 ///
 /// # TOCTOU discouraged
 ///
@@ -108,6 +108,21 @@ pub trait CasApi: Send + Sync {
 
     /// Delete an object by hash. Idempotent.
     async fn delete(&self, hash: Hash) -> Result<(), CasError>;
+
+    /// Materialize all committed WAL entries into the backing blob and
+    /// metadata stores, making them visible to future `get`/`stat` calls.
+    ///
+    /// Returns the number of WAL entries consumed. No-op for backends that
+    /// use write-through semantics (e.g. [`InMemoryCas`]) or for callers
+    /// that never use write-back CAS stores.
+    ///
+    /// # Guarantees
+    ///
+    /// After `flush()` returns `Ok`, all `put`/`delete` calls that
+    /// completed before the flush are durably materialized.
+    async fn flush(&self) -> Result<u64, CasError> {
+        Ok(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
