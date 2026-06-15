@@ -39,7 +39,13 @@ impl WalPosition {
     pub const ZERO: WalPosition = WalPosition(0);
 
     /// Return the next consecutive position.
+    ///
+    /// Positions form a dense sequential sequence starting at 0. Each entry
+    /// appended to the WAL receives the next sequential position. Must not
+    /// overflow `u64::MAX` — callers are responsible for ensuring the WAL
+    /// is trimmed (checkpoint advanced) before exhausting the position space.
     pub fn next(self) -> Self {
+        debug_assert!(self.0 != u64::MAX, "WalPosition overflow");
         WalPosition(self.0 + 1)
     }
 
