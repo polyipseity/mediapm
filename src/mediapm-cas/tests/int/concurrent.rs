@@ -310,3 +310,33 @@ async fn concurrent_dedup_same_content() {
     let final_data = cas.get(final_hash).await.unwrap();
     assert_eq!(final_data, content_small);
 }
+
+/// PendingOps read dedup — many concurrent `get()` on the same hash.
+///
+/// Verifies that when N tasks simultaneously read the same hash, all
+/// receive the same bytes. This exercises the in-flight read dedup
+/// (PendingOps) where only one task performs the actual lookup while
+/// others wait for its result.
+#[tokio::test(flavor = "multi_thread")]
+async fn pending_ops_deduplicates_concurrent_gets() {
+    let cas = new_in_memory_cas();
+
+    // Put a single object.
+    let data = Bytes::from_static(b"shared dedup target");
+    let hash = cas.put(data.clone()).await.unwrap();
+
+    // Spawn N tasks all getting the same hash concurrently.
+    let task_count = 30;
+    let mut handles = Vec::with_capacity(task_count);
+    for _ in 0..task_count {
+        let cas_ref = cas.clone();
+        let h = hash;
+        handles.push(tokio::spawn(async move { cas_ref.get(h).await }));
+    }
+
+    // All must return the same data.
+    for (i, handle) in handles.into_iter().enumerate() {
+        let result = handle.await.unwrap().unwrap_or_else(|_| panic!("get task {i} failed"));
+        assert_eq!(result, data, "task {i}: data mismatch");
+    }
+}
