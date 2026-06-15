@@ -166,12 +166,12 @@ async fn attempt_materialization_method(
             if let Some(source) = source_path {
                 tokio::fs::copy(source, destination_path).await.map(|_| ())
             } else {
-                let bytes = cas.get(hash).await.map_err(|error| {
+                let dest_file = tokio::fs::File::create(destination_path).await?;
+                cas.get_to_writer(hash, dest_file).await.map_err(|error| {
                     io::Error::other(format!(
                         "reading CAS bytes for copy materialization failed: {error}"
                     ))
-                })?;
-                tokio::fs::write(destination_path, bytes.as_ref()).await
+                })
             }
         }
     }

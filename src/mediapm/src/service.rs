@@ -641,12 +641,12 @@ where
             ))
         })?;
 
-        let bytes = tokio::fs::read(&absolute).await.map_err(|source| MediaPmError::Io {
-            operation: "reading local media source for CAS import".to_string(),
+        let file = tokio::fs::File::open(&absolute).await.map_err(|source| MediaPmError::Io {
+            operation: "opening local media source for CAS import".to_string(),
             path: absolute.clone(),
             source,
         })?;
-        let hash = cas.put(bytes.into()).await.map_err(|source| {
+        let hash = cas.put_stream(file).await.map_err(|source| {
             MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
         })?;
 

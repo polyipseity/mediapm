@@ -64,39 +64,39 @@ pub(super) async fn import_tool_content_source_into_cas(
         return Ok(*hash);
     }
 
-    let bytes = match source {
+    let hash = match source {
         ContentMapSource::FilePath(absolute_path) => {
-            let path = absolute_path.clone();
-            tokio::task::spawn_blocking(move || {
-                fs::read(&path).map_err(|source| MediaPmError::Io {
+            let file =
+                tokio::fs::File::open(absolute_path).await.map_err(|source| MediaPmError::Io {
                     operation: format!(
-                        "reading tool payload file '{}' before CAS import",
-                        path.display()
+                        "opening tool payload file '{}' for CAS import",
+                        absolute_path.display()
                     ),
-                    path: path.clone(),
+                    path: absolute_path.clone(),
                     source,
-                })
-            })
-            .await
-            .map_err(|e| {
-                MediaPmError::Workflow(format!("tool payload file read task panicked: {e}"))
-            })??
+                })?;
+            cas.put_stream(file).await.map_err(|source| {
+                MediaPmError::Workflow(format!(
+                    "importing tool payload entry '{relative_path}' into CAS failed: {source}",
+                ))
+            })?
         }
         ContentMapSource::DirectoryZip { root_dir } => {
             let dir = root_dir.clone();
-            tokio::task::spawn_blocking(move || build_uncompressed_zip_bytes_from_directory(&dir))
-                .await
-                .map_err(|e| {
-                    MediaPmError::Workflow(format!("tool payload directory ZIP task panicked: {e}"))
-                })??
+            let bytes = tokio::task::spawn_blocking(move || {
+                build_uncompressed_zip_bytes_from_directory(&dir)
+            })
+            .await
+            .map_err(|e| {
+                MediaPmError::Workflow(format!("tool payload directory ZIP task panicked: {e}"))
+            })??;
+            cas.put(bytes.into()).await.map_err(|source| {
+                MediaPmError::Workflow(format!(
+                    "importing tool payload entry '{relative_path}' into CAS failed: {source}",
+                ))
+            })?
         }
     };
-
-    let hash = cas.put(bytes.into()).await.map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "importing tool payload entry '{relative_path}' into CAS failed: {source}",
-        ))
-    })?;
     source_hash_cache.insert(cache_key, hash);
 
     Ok(hash)

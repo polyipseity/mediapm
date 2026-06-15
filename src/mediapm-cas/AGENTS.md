@@ -1,8 +1,9 @@
 # CAS Agent Guide
 
 > `mediapm-cas` — content-addressable blob store with delta-compression hints.
-> `put(bytes)` → hash; `get(hash)` → bytes. Deduplicates identical content via
-> Blake3-256. Foundation for deterministic workflows used by Conductor and MediaPM.
+> `put(bytes)` → hash; `get(hash)` → bytes; `put_stream(reader)` → hash; `get_to_writer(hash, writer)` → ().
+> Deduplicates identical content via Blake3-256. Foundation for deterministic workflows
+> used by Conductor and MediaPM.
 >
 > **Note**: this crate is at `src/mediapm-cas/`. The name "mediapm-cas" is the
 > canonical Cargo package name; there is no separate "conductor-cas" crate.
@@ -20,7 +21,7 @@
 
 ## 2. Public API
 
-### 2.1 CasApi — five-method contract
+### 2.1 CasApi — seven-method contract
 
 ```rust
 #[async_trait]
@@ -30,8 +31,13 @@ pub trait CasApi: Send + Sync {
     async fn stat(&self, hash: Hash) -> Result<ObjectMeta, CasError>;
     async fn delete(&self, hash: Hash) -> Result<(), CasError>;
     async fn flush(&self) -> Result<u64, CasError>;
+    async fn put_stream(&self, reader: impl AsyncRead + Send + Unpin) -> Result<Hash, CasError>;
+    async fn get_to_writer(&self, hash: Hash, writer: &mut (dyn AsyncWrite + Send + Unpin)) -> Result<(), CasError>;
 }
 ```
+
+`put_stream` and `get_to_writer` have default impls that buffer through `put`/`get`.
+Stores may override for zero-copy streaming large objects.
 
 Guarantees (within a single async task):
 
@@ -43,13 +49,20 @@ Guarantees (within a single async task):
 No standalone `exists()` method — use `stat()` or `get()`. Both return `NotFound` on miss,
 eliminating TOCTOU.
 
-**put**: Hash data with `Hash::from_content`, append `WalEntry::Put` to WAL.
+**put**: Hash data with `Hash::from_content`. Dispatches by size:
+
+- **≤ WAL_INLINE_THRESHOLD (64 MiB)**: Append `WalEntry::Put` to WAL (inline data).
+- **> WAL_INLINE_THRESHOLD**: Immediately materialize to blob, then append
+  `WalEntry::PutLarge { content_len }` to WAL (external — already on disk).
+
 Write-through vs write-back is compile-time configured via `B::SYNC_MATERIALIZE && I::SYNC_MATERIALIZE`:
 write-through materializes Blob + Metadata synchronously (immediate visibility);
 write-back defers to the WAL consumer. Only `Hash::from_content(b"")` produces `Hash::empty()` — normal non-empty content never collides with it.
 
 **get**: Three-layer lookup (Metadata → Blob → WAL fallback) via `ComposedReadView`.
 Delta reconstruction is transparent. Returns `CasError::NotFound` if absent.
+Returns `CasError::TooLarge { hash, size, limit }` if the object exceeds
+`WAL_INLINE_THRESHOLD` — use `get_to_writer` instead for streaming large objects.
 
 **stat**: Returns `ObjectMeta { len, encoding }`. Encoding is informational only
 (Full or Delta { base_hash }). Callers must NOT make decisions based on encoding.
@@ -65,17 +78,26 @@ consumed. No-op for backends using write-through (e.g. `InMemoryCas`);
 write-back backends (e.g. `FileSystemCas`) materialize all deferred
 writes.
 
-### 2.2 CasApiStreaming — blanket-impl streaming extension
+**put_stream**: Stream content from an `AsyncRead`, hash incrementally,
+store to blob, and commit to WAL. Overridden by stores to bypass the
+in-memory buffering in the default impl.
+
+**get_to_writer**: Stream object content to an `AsyncWrite`.
+Overridden by stores to bypass the in-memory buffering in the default
+impl.
+
+### 2.2 CasError — TooLarge variant
 
 ```rust
-#[async_trait]
-pub trait CasApiStreaming: CasApi {
-    async fn put_stream<R: AsyncRead + Send + Unpin>(&self, reader: R) -> Result<Hash, CasError>;
-    async fn get_stream<W: AsyncWrite + Send + Unpin>(&self, hash: Hash, writer: W) -> Result<(), CasError>;
+pub enum CasError {
+    // ... existing variants ...
+    #[error("object {hash} too large for in-memory get: size={size} limit={limit}")]
+    TooLarge { hash: Hash, size: u64, limit: u64 },
 }
 ```
 
-Blanket impl over `CasApi` (buffers through bytes). Override for zero-copy paths.
+Returned by `get()` when the object exceeds `WAL_INLINE_THRESHOLD`.
+The caller should fall back to `get_to_writer()` for streaming.
 
 ### 2.3 ConstraintApi — delta-compression hints
 
@@ -179,6 +201,19 @@ Implements `CasApi`, `CasMaintenanceApi`, `ConstraintApi` by forwarding to inner
 
 `CasIntegrityConfig` and `CasLocatorParseOptions` implement `Default` (defined in [`defaults`](crate::defaults)).
 
+### 2.7 Defaults module
+
+Singular location for all tunable constants in [`defaults`](crate::defaults):
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `WAL_INLINE_THRESHOLD` | 64 MiB | Max object size inlined in WAL. Beyond this → `PutLarge` + external blob. |
+| `DELTA_THRESHOLD` | 16 MiB | Max object size eligible for delta compression. Larger objects stored as Full. |
+| `CACHE_MAX_FRACTION_OF_TOTAL_SIZE` | 0.10 | Fraction of total store consumed by bg_engine cache at most. |
+| `CACHE_TTL` | 60 s | TTL for cached entries in bg_engine. |
+| `WAL_MAX_SEGMENT_SIZE` | 64 MiB | Max bytes per FileWal segment before rotation. |
+| `OBJECT_STREAM_BUFFER_SIZE` | 65536 | Buffer size for streaming blob read/write. |
+
 ## 3. Crate structure
 
 ```text
@@ -205,7 +240,8 @@ src/mediapm-cas/src/
     │   ├── file_wal.rs    — FileWal (segmented file-backed WAL)
     │   └── versions/      — on-disk format V1+
     │       ├── mod.rs
-    │       └── v1.rs
+    │       ├── v1.rs     — V1 format (legacy decode, V2 is now the active writer)
+    │       └── v2.rs     — V2 format with PutLarge entry type
     ├── blob/              — Blob trait + FileSystemBlob + InMemoryBlob + versioned path layout
     │   ├── mod.rs         — Blob trait + re-exports
     │   ├── mem.rs         — InMemoryBlob (DashMap, ephemeral)
@@ -228,11 +264,22 @@ src/mediapm-cas/src/
 ## 4. Data flow
 
 ```text
-put(data) → Hash(data) → Wal.append(Put{hash, data})
-                          ↓ (write-through: inline) │ (write-back: deferred)
+put(data) → Hash(data)
+  │ ≤ WAL_INLINE_THRESHOLD → Wal.append(Put{hash, data})
+  │ > WAL_INLINE_THRESHOLD → Blob.write(hash, data) → Wal.append(PutLarge{hash, content_len})
+  ↓
 WAL consumer (bg_engine) → Blob.write(hash) + Metadata.put(hash) → checkpoint
+  (PutLarge: already materialized, just advance checkpoint + add metadata)
                                                                     ↓
 get(hash) → ReadView: Metadata → Blob.read/read_delta → WAL fallback (tombstone check)
+  ↓ (if size > WAL_INLINE_THRESHOLD)
+  returns TooLarge — caller should use get_to_writer() for streaming
+                                                                    ↓
+get_to_writer(hash, writer) → ReadView: Metadata → Blob.read_to_writer
+  (streams directly to writer, bypasses in-memory Bytes buffer)
+                                                                    ↓
+put_stream(reader) → hash incrementally → Blob.write_stream(hash, reader)
+  → Wal.append(PutLarge{hash, content_len})
                                                                     ↓
 delete(hash) → Wal.append(Delete{hash})
                                                                     ↓
@@ -246,10 +293,17 @@ WAL consumer → re-materialize dependents → Blob.delete(hash) + Metadata.dele
 The only crash-safe commitment point. Metadata and Blob are derived —
 rebuildable by WAL replay.
 
-**Entry types**: `Put { hash, data }`, `Delete { hash }`, `Constraint { target, bases }`.
-Only single-entry `append` is exposed.
+**Entry types**: `Put { hash, data }`, `PutLarge { hash, content_len }`, `Delete { hash }`,
+`Constraint { target, bases }`. Only single-entry `append` is exposed.
+`PutLarge` represents objects already materialized to blob (payload too
+large to inline in WAL).
 
-**PendingState**: `Present(Bytes)` / `Tombstone` / `NotPresent`. Used by ReadView's L3 WAL fallback.
+**PendingState**: `Present(Bytes)` / `PresentExternal { content_len }` / `Tombstone` / `NotPresent`.
+Used by ReadView's L3 WAL fallback. `PresentExternal` indicates the blob is on
+filesystem but not yet tracked in Metadata (WAL not yet consumed).
+
+**WAL wire format**: V2 binary (active writer). V1 preserved for backward-compatible
+decoding of legacy segments. V2 adds the `PutLarge` entry type with `content_len`.
 
 **WAL Consumer** (`BackgroundEngine::run_wal_consumer`): Replays WAL entries from
 checkpoint position, materializing to Blob + Metadata. After processing,
@@ -303,11 +357,20 @@ are shared by both implementations.
 
 ### 5.4 ReadView
 
-Three-layer lookup for get/stat.
+Three-layer lookup for get/stat, plus streaming path.
 
 1. **Metadata**. Check entry encoding. If `Full` → Blob.read(). If `Delta { base_hash }` → iterative walk.
 2. **Blob**. Read payload bytes (full or delta envelope). Walk delta chains via `read_delta`/`read`.
 3. **WAL fallback**. Pending entries not yet materialized. Respects tombstones.
+
+**get_to_writer**: Streaming path. For Full objects, reads blob directly to
+writer via `Blob::read_to_writer` (chunked copy). For Delta objects,
+reconstructs in memory then writes. Object-safe (`&mut (dyn AsyncWrite + Send + Unpin)`).
+
+**TooLarge enforcement**: If the resolved object exceeds `WAL_INLINE_THRESHOLD`,
+`get()` returns `CasError::TooLarge`. The caller should use `get_to_writer()`
+for streaming. Delta chain resolution enforces `MAX_DELTA_CHAIN_DEPTH = 5`;
+beyond that, `TooLarge` is returned to prevent unbounded recursion.
 
 **Concurrent read dedup**: First caller inserts `PendingResult` with `Notify`; subsequent
 callers wait for shared result.
@@ -336,6 +399,14 @@ envelopes only through `delta::versions` module APIs (`mod.rs`), never via `delt
 
 Drives WAL consumer and maintenance pass. GC never deletes objects — only prunes constraint
 metadata. Objects are removed solely by `CasApi::delete` materialized through the WAL consumer.
+
+**Bounded cache**: A size-bounded LRU-like cache holds recently read objects.
+Maximum size = `CACHE_MAX_FRACTION_OF_TOTAL_SIZE × total_store_size_on_disk`.
+When over budget, the oldest half of cached entries are evicted.
+
+**Delta threshold enforcement**: Objects > `DELTA_THRESHOLD` (16 MiB) are
+skipped by the optimizer — they are stored as Full encoding only, never
+delta-compressed.
 
 **WAL consumer guarantees**: After a `run_wal_consumer` cycle completes, all entries up to the
 checkpoint position are materialized in Blob + Metadata. After materialization, the checkpoint
@@ -403,6 +474,8 @@ trait methods to the inner variant via `cas.deref()`.
 
 - WAL is the single crash-safe commitment point. All operations append before acknowledging.
 - Metadata and Blob are derived — rebuilt by WAL replay.
+- PutLarge entries on restart: during WAL replay the WAL consumer skips
+  materialization (blob already on disk) and just inserts metadata.
 
 ### 8.4 No TOCTOU
 
@@ -413,8 +486,18 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 - Iterative `get(base_hash)` for reconstruction goes through Metadata → Blob walk.
 - If base_hash not found → `CorruptObject`.
 - Cyclic references prevented by inline `HashSet` visitation during chain traversal.
+- Max delta chain depth: 5 hops. Beyond that, `TooLarge` is returned (caller
+  should use `get_to_writer`).
 
-### 8.6 Constraint invariants
+### 8.6 Object size limits
+
+- **WAL_INLINE_THRESHOLD** (64 MiB): `get()` returns `TooLarge` for larger objects.
+  Use `get_to_writer()` for streaming retrieval.
+- **DELTA_THRESHOLD** (16 MiB): Objects above this size are never delta-compressed
+  (stored as Full only).
+- **TooLarge error**: Contains `hash`, `size`, and `limit` fields for diagnostics.
+
+### 8.7 Constraint invariants
 
 - `get_constraint` returns `BTreeSet<Hash>` — empty set means no constraint (no `Option`).
 - `prune_constraints()` removes entries whose target or bases no longer exist.
@@ -424,7 +507,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 - Constraint data is stored independently from object metadata (separate `DashMap`).
   Put/delete/stat operations do not affect constraint state.
 
-### 8.7 Write-through vs write-back compile-time policy
+### 8.8 Write-through vs write-back compile-time policy
 
 `CasStore::put()` uses compile-time dispatch via associated consts (`Blob::SYNC_MATERIALIZE`,
 `Metadata::SYNC_MATERIALIZE`). Effective policy: `B::SYNC_MATERIALIZE && M::SYNC_MATERIALIZE`.
