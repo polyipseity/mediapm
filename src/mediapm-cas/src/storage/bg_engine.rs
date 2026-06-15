@@ -42,6 +42,10 @@ pub struct BackgroundEngine<J: Wal, I: Index, B: BlobStore> {
     cancelled: Arc<AtomicBool>,
     /// Cache for reconstructed full bytes (avoids repeated delta-chain walks).
     /// Shared across clones via `Arc`.
+    ///
+    /// TODO: bound cache size based on `index.len()` to prevent unbounded
+    /// growth under sustained maintenance pressure. Consider an LRU wrapper
+    /// or periodic eviction of entries whose source hashes no longer exist.
     reconstructed_cache: Arc<Mutex<HashMap<Hash, (Bytes, Instant)>>>,
     /// TTL for cache entries (default 60s). Pushed to constructor boundary.
     reconstructed_cache_ttl: Duration,
