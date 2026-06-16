@@ -4,9 +4,6 @@
 > `put(bytes)` → hash; `get(hash)` → bytes; `put_stream(reader)` → hash; `get_to_writer(hash, writer)` → ().
 > Deduplicates identical content via Blake3-256. Foundation for deterministic workflows
 > used by Conductor and MediaPM.
->
-> **Note**: this crate is at `src/mediapm-cas/`. The name "mediapm-cas" is the
-> canonical Cargo package name; there is no separate "conductor-cas" crate.
 
 ## 1. Hash
 
@@ -240,7 +237,7 @@ src/mediapm-cas/src/
     │   ├── file_wal.rs    — FileWal (segmented file-backed WAL)
     │   └── versions/      — on-disk format V1+
     │       ├── mod.rs
-    │       ├── v1.rs     — V1 format (legacy decode, V2 is now the active writer)
+    │       ├── v1.rs     — V1 format (decode only)
     │       └── v2.rs     — V2 format with PutLarge entry type
     ├── blob_store/        — BlobStore trait + FileSystemBlobStore + InMemoryBlobStore + versioned path layout
     │   ├── mod.rs         — Blob trait + re-exports
@@ -341,7 +338,7 @@ Object metadata index. Both implementations share the same trait.
 **Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data
 (`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL
 replay do not touch the constraint map; only `Constraint` WAL entries populate it. This
-keeps the data model clean and removes `Option` from constraint representation.
+removes `Option` from constraint representation.
 
 **Versioned persistence** (`storage/metadata_store/versions/`): V1 JSON format:
 
@@ -349,8 +346,7 @@ keeps the data model clean and removes `Option` from constraint representation.
 { "version": 1, "entries": { "hash_hex": { "len": 123, "encoding": "Full" } }, "constraints": { "target_hex": { "bases": ["base1_hex"] } } }
 ```
 
-`entries` field uses `#[serde(default)]` for backward compatibility with snapshots
-that predate entry persistence.
+`entries` field uses `#[serde(default)]` for compatibility with snapshots without entry persistence.
 
 Async wrappers use `tokio::task::spawn_blocking`; sync `load()`/`save()` functions
 are shared by both implementations.
@@ -390,7 +386,7 @@ If base not found → `CasError::CorruptObject`.
   reads delta blobs from Blob and builds the chain, then calls `apply_delta_chain`.
   Shared by `ComposedReadView::fetch_inner` and `BgEngine::read_full_bytes`.
 - **StoredObject**: Struct wrapping `DeltaState`. Encode/decode to/from versioned envelopes.
-- **Versioned envelopes**: V1/V2 (read-only legacy, magic `b"MDCASD"`), V3+ (current writer, magic `b"CASDLT"`).
+- **Versioned envelopes**: V1/V2 (read-only, magic `b"MDCASD"`), V3+ (magic `b"CASDLT"`).
 
 **Versioning boundary guard**: Code outside `delta/versions/` must interact with versioned
 envelopes only through `delta::versions` module APIs (`mod.rs`), never via `delta::versions::vX` imports.
@@ -502,7 +498,6 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 - `get_constraint` returns `BTreeSet<Hash>` — empty set means no constraint (no `Option`).
 - `prune_constraints()` removes entries whose target or bases no longer exist.
 - No `effective_bases` method — callers compute live intersection themselves.
-- DAG validation at set time is future work.
 - Self-referencing constraint (target == base) is rejected at set/patch time.
 - Constraint data is stored independently from object metadata (separate `DashMap`).
   Put/delete/stat operations do not affect constraint state.
@@ -520,7 +515,7 @@ No standalone `exists()` method. Use `get()` or `stat()` — both return `NotFou
 **`delete()`** is always write-back regardless of `SYNC_MATERIALIZE` — physical removal
 is deferred to the WAL consumer for correct delta-dependent re-materialization.
 
-### 8.8 Codec versioning
+### 8.9 Codec versioning
 
 - V1/V2 are read-only legacy. Writers always emit V3.
 - New versions go in `delta/versions/vN.rs`. Keep the `DO NOT REMOVE` boundary guard.
