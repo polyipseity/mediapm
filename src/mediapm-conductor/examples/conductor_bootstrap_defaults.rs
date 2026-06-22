@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::FileSystemCas;
-use mediapm_conductor::{ConductorApi, SimpleConductor};
+use mediapm_conductor::{RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor};
 
 /// Convenient result type shared by this example.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
@@ -67,24 +67,25 @@ async fn run_bootstrap_demo() -> ExampleResult<()> {
     let run_dir = create_ephemeral_run_dir("bootstrap-defaults")?;
     let root = run_dir.path();
     let cas_root = root.join("cas-store");
-    let user_path = root.join("conductor.ncl");
+    let _user_path = root.join("conductor.ncl");
     let machine_path = root.join("conductor.machine.ncl");
 
-    let conductor = SimpleConductor::new(FileSystemCas::open(&cas_root).await?);
-    let run_summary = conductor.run_workflow(&user_path, &machine_path).await?;
+    let conductor =
+        SimpleConductor::new(RuntimeStoragePaths::new(root), FileSystemCas::open(&cas_root).await?);
+    let run_summary = conductor.run_workflow("default", RunWorkflowOptions::default()).await?;
     let state = conductor.get_state().await?;
-    let diagnostics = conductor.get_runtime_diagnostics().await?;
+    let _diagnostics = conductor.get_runtime_diagnostics().await?;
 
     println!("temporary run directory (auto-cleaned): {}", root.display());
     println!("conductor.machine.ncl persisted: {}", machine_path.exists());
     println!(
-        "run summary => executed: {}, cached: {}, rematerialized: {}",
-        run_summary.executed_instances,
-        run_summary.cached_instances,
-        run_summary.rematerialized_instances,
+        "run summary => total: {}, executed: {}, cached: {}, failed: {}",
+        run_summary.total_steps,
+        run_summary.executed_steps,
+        run_summary.cached_steps,
+        run_summary.failed_steps,
     );
-    println!("state instances: {}", state.instances.len());
-    println!("worker pool size: {}", diagnostics.worker_pool_size);
+    println!("state tool_call_instances: {}", state.tool_call_instances.len());
 
     Ok(())
 }

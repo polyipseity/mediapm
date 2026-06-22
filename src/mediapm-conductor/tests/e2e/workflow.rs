@@ -4,71 +4,74 @@ use std::collections::BTreeMap;
 
 use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
-    ConductorApi, MachineNickelDocument, OutputCaptureSpec, RuntimeStoragePaths, ToolKindSpec,
-    ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec, WorkflowStepSpec,
-    encode_machine_document, encode_user_document,
+    RuntimeStoragePaths, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    api::RunWorkflowOptions, model::config::versions::encode_document,
 };
 use tempfile::tempdir;
 
 /// Protects repeated-run cache behavior for one deterministic workflow.
 #[tokio::test]
 async fn deterministic_workflow_hits_cache_on_second_run() {
-    let conductor = mediapm_conductor::SimpleConductor::new(InMemoryCas::new());
     let dir = tempdir().expect("tempdir");
-    let user_path = dir.path().join("conductor.ncl");
-    let machine_path = dir.path().join("conductor.machine.ncl");
+    let conductor_dir = dir.path().join(".conductor");
+    std::fs::create_dir_all(&conductor_dir).expect("create conductor dir");
 
-    let user = UserNickelDocument {
+    let doc = mediapm_conductor::NickelDocument {
         tools: BTreeMap::from([(
             "echo@1.0.0".to_string(),
             ToolSpec {
-                is_impure: false,
                 kind: ToolKindSpec::Builtin {
                     name: "echo".to_string(),
                     version: "1.0.0".to_string(),
                 },
-                outputs: BTreeMap::from([(
-                    "result".to_string(),
-                    ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: false },
+                name: "echo@1.0.0".to_string(),
+                version: "1.0.0".to_string(),
+                inputs: BTreeMap::from([(
+                    "text".to_string(),
+                    mediapm_conductor::model::config::ToolInputSpec {
+                        kind: mediapm_conductor::model::config::ToolInputKind::String,
+                        description: String::new(),
+                        required: false,
+                    },
                 )]),
-                ..ToolSpec::default()
+                default_inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                runtime: ToolRuntime::default(),
             },
         )]),
-        workflows: BTreeMap::from([(
-            "default".to_string(),
-            WorkflowSpec {
-                name: None,
-                description: None,
-                steps: vec![WorkflowStepSpec {
-                    id: "s1".to_string(),
-                    tool: "echo@1.0.0".to_string(),
-                    inputs: BTreeMap::from([("text".to_string(), "hello".to_string().into())]),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::new(),
-                }],
-            },
-        )]),
-        ..UserNickelDocument::default()
+        workflows: vec![WorkflowSpec {
+            name: "default".to_string(),
+            display_name: String::new(),
+            description: String::new(),
+            impure: false,
+            steps: vec![WorkflowStepSpec {
+                id: "s1".to_string(),
+                tool: "echo@1.0.0".to_string(),
+                inputs: BTreeMap::from([("text".to_string(), "hello".to_string())]),
+                outputs: BTreeMap::new(),
+                max_retries: 0,
+                depends_on: Vec::new(),
+            }],
+        }],
+        ..mediapm_conductor::NickelDocument::default()
     };
 
-    std::fs::write(&user_path, encode_user_document(user).expect("encode user document"))
-        .expect("write user document");
-    std::fs::write(
-        &machine_path,
-        encode_machine_document(MachineNickelDocument::default()).expect("encode machine document"),
-    )
-    .expect("write machine document");
+    let user_path = dir.path().join("conductor.ncl");
+    std::fs::write(&user_path, encode_document(doc).expect("encode document"))
+        .expect("write document");
 
-    let first = conductor.run_workflow(&user_path, &machine_path).await.expect("first run");
-    assert_eq!(first.executed_instances, 1);
-    assert_eq!(first.cached_instances, 0);
+    let conductor = mediapm_conductor::SimpleConductor::new(
+        RuntimeStoragePaths::new(dir.path()),
+        InMemoryCas::new(),
+    );
 
-    let second = conductor.run_workflow(&user_path, &machine_path).await.expect("second run");
-    assert_eq!(second.executed_instances, 0);
-    assert_eq!(second.cached_instances, 1);
+    let first =
+        conductor.run_workflow("default", RunWorkflowOptions::default()).await.expect("first run");
+    assert_eq!(first.executed_steps, 1);
+    assert_eq!(first.cached_steps, 0);
 
-    let state_path = RuntimeStoragePaths::default()
-        .resolve_for(&user_path, &machine_path)
-        .conductor_state_config;
-    assert!(state_path.exists(), "state document should be persisted on run");
+    let second =
+        conductor.run_workflow("default", RunWorkflowOptions::default()).await.expect("second run");
+    assert_eq!(second.executed_steps, 0);
+    assert_eq!(second.cached_steps, 1);
 }
