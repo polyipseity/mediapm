@@ -1,19 +1,14 @@
 //! Cache-hit and re-materialization example for the conductor crate.
 //!
-//! IMPORTANT: This example was rewritten for the new unified `NickelDocument`
-//! API. The original old-document-model example is no longer applicable.
-//!
 //! This example demonstrates:
 //! - two workflows resolving to the same deterministic instance key,
-//! - one caller using defaults (save=true), the other using force_full,
+//! - one caller using capture=false, the other using capture=full,
 //! - cache-hit behavior on second run.
 
+mod support;
+
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
@@ -22,48 +17,7 @@ use mediapm_conductor::{
     model::config::versions::encode_document,
 };
 
-/// Convenient result type shared by this example.
-type ExampleResult<T> = Result<T, Box<dyn Error>>;
-
-/// Best-effort temporary directory guard for non-persistent examples.
-#[derive(Debug)]
-struct EphemeralRunDir {
-    path: PathBuf,
-}
-
-impl EphemeralRunDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for EphemeralRunDir {
-    fn drop(&mut self) {
-        if self.path.exists() {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-}
-
-fn create_ephemeral_run_dir(example_name: &str) -> ExampleResult<EphemeralRunDir> {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
-    let timestamp_ns =
-        SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let process_id = std::process::id();
-    let directory_name = format!("{example_name}-{process_id}-{timestamp_ns}-{sequence}");
-    let path = std::env::temp_dir().join("mediapm-conductor-examples").join(directory_name);
-    fs::create_dir_all(&path)?;
-    Ok(EphemeralRunDir { path })
-}
-
-fn write_text_file(path: &Path, content: &str) -> ExampleResult<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
+use support::*;
 
 fn build_document() -> NickelDocument {
     NickelDocument {

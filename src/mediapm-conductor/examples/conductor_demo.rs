@@ -6,12 +6,10 @@
 //! - runs it a second time to demonstrate cache reuse,
 //! - prints run summaries to stdout.
 
+mod support;
+
 use std::collections::BTreeMap;
-use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
@@ -20,45 +18,7 @@ use mediapm_conductor::{
     model::config::versions::encode_document,
 };
 
-type ExampleResult<T> = Result<T, Box<dyn Error>>;
-
-#[derive(Debug)]
-struct EphemeralRunDir {
-    path: PathBuf,
-}
-
-impl EphemeralRunDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for EphemeralRunDir {
-    fn drop(&mut self) {
-        if self.path.exists() {
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-}
-
-fn create_ephemeral_run_dir(example_name: &str) -> ExampleResult<EphemeralRunDir> {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
-    let timestamp_ns = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let seq = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let dir = format!("{example_name}-{pid}-{timestamp_ns}-{seq}");
-    let p = std::env::temp_dir().join("mediapm-conductor-examples").join(dir);
-    fs::create_dir_all(&p)?;
-    Ok(EphemeralRunDir { path: p })
-}
-
-fn write_text_file(path: &Path, content: &str) -> ExampleResult<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, content)?;
-    Ok(())
-}
+use support::*;
 
 fn build_document() -> NickelDocument {
     // Demo document with one echo tool and a simple workflow.
