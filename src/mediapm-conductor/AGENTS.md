@@ -760,7 +760,7 @@ The `decode_state()` function at `src/mediapm-conductor/src/model/state/mod.rs` 
 
 ### Migration Bridge (`versions/v2.rs`)
 
-- V1→V2 migration uses optics (fp-library) for type-safe field mapping.
+- V1→V2 migration uses manual serde conversion for type-safe field mapping.
 - `aux` entries lacking `last_unreachable` receive `ImpureTimestamp::now()` during migration.
 - The V2 ISO bridge maps `Option<ImpureTimestampV2>` (wire) to non-optional `ImpureTimestamp` (runtime), converting `None` to `now()`.
 - Post-processing inserts `AuxData { last_unreachable: now }` for any instance key that still lacks an entry (no `aux` record at all).
@@ -1236,7 +1236,7 @@ Three race scenarios in the tool content cache:
 
 1. **Typed envelope pattern**: Parent struct wraps child via `#[serde(flatten)]` with `deny_unknown_fields` on parent.
 2. **Versioned schemas**: Each schema version has a corresponding Rust struct in `versions/vN.rs`.
-3. **Migration bridges**: N→N+1 migrations use optics (fp-library) for type-safe conversion.
+3. **Migration bridges**: N→N+1 migrations use manual serde conversion.
 4. **Field-level type mapping**: Nickel number deserialization uses custom `deserialize_option_integral_u64` for `Option<u64>` fields to accept both `N::PosInt` and `N::Float`. All `Option<u64>` fields in config structs must use this deserializer. The Nickel `Enum` maps to Rust `String` + validation, not Rust enum.
 5. **Test coverage**: Each schema version has round-trip tests (serialize → deserialize), migration tests (vN → vN+1), and rejection tests (invalid data).
 6. **CI guard**: Schema files include `DO NOT REMOVE` comments that CI enforces.
@@ -1348,7 +1348,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 | 6.4 | Tool ID collision (builtin vs managed) | Builtin IDs are reserved; managed tools cannot use them. Check on config load via `registered_builtin_ids()`. |
 | 6.6 | Cache invalidation across tool versions | `retain_only()` removes old cache entries; `content_map` cleared on version change so stale references are not preserved. |
 | 6.7 | Instance key immutability | Instance key = `hash(tool_id + sorted_inputs + impure_timestamp)`. Immutable after first derivation. Changing tool_id or inputs produces a new key (no in-place mutation). |
-| 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via fp-library optics. All `Option<u64>` fields use `deserialize_option_integral_u64`. |
+| 6.8 | NCL↔Rust schema sync | Typed envelope pattern with `#[serde(flatten)]` + `deny_unknown_fields`. Versioned schemas in `versions/vN.rs`. Migration bridges via manual serde conversion. All `Option<u64>` fields use `deserialize_option_integral_u64`. |
 
 ### O.8 Ambiguities Resolved
 
@@ -1418,3 +1418,47 @@ stateDiagram-v2
     COMPLETED --> [*]
     FAILED --> [*]
 ```
+
+## Appendix: Architecture Rationale & Non-Goals
+
+### Simplified Actor Architecture
+
+- **Only the StepWorker pool uses `ractor` actors** for parallel isolation.
+- **DocumentLoader, Scheduler, StateStore** are plain async methods behind `Arc<RwLock<...>>` / `Mutex`, not separate actors.
+- **Rationale**: an actor-per-concern design added ~400 lines of boilerplate (typed clients, message enums, spawn functions, RPC error handling) with little benefit. Plain async helpers are simpler and easier to maintain.
+
+### API Trait Scope
+
+`ConductorApi` keeps exactly three essential methods:
+
+| Method | Purpose |
+|---|---|
+| `run_workflow(name)` | Run a workflow by name |
+| `run_workflow_with_options(name, options)` | Run with override options |
+| `get_runtime_diagnostics()` | Retrieve runtime diagnostic counters |
+
+Intentionally removed from the old 9-method trait:
+- `submit_workflow`, `poll_workflow`, `cancel_workflow` — synchronous execution, no async submission model.
+- `get_workflow_status` — status returned directly from run calls.
+- `export_state_to_path` — state persistence is internal; CLI commands handle export.
+- `add_tool_config`, `remove_tool_config` — replaced by CLI import/remove and document mutation.
+
+**Policy**: Do not add methods unless a concrete consumer demonstrates need.
+
+### Non-Goals (Preserve)
+
+These invariants must not be weakened:
+
+- **Deterministic caching** — core value proposition, keep intact.
+- **CAS integration** — fundamental design, do not bypass.
+- **Multi-doc config model** — keep user (`.ncl`) vs machine (`.machine.ncl`) vs state separation.
+- **Input binding interpolation** — `${external_data}`, `${step_output}`, `${env}` are essential.
+- **Content map materialization** — required for managed tool execution.
+- **GC** — important for long-running deployments.
+- **ProvisionCache** — already well-factored, leave untouched.
+- **ConductorError enum** — clean and minimal, do not expand unnecessarily.
+
+### Verified Gaps vs Original Plan
+
+1. **`state edit` subcommand** — planned (`$EDITOR` invocation) but never implemented. No `StateCommand::Edit` variant exists.
+2. **`retry_impure: Option<bool>`** — remains in `ConductorRuntimeConfig` despite plan to centralize all defaults to `defaults.rs`.
