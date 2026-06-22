@@ -154,22 +154,19 @@ let migrate_v1_to_v2 = fun data =>
   let config_runtime_map =
     if std.record.has_field "tool_configs" data then
       std.record.fields data.tool_configs
-      |> std.array.fold_left (fun acc key ->
+      |> std.array.fold_left (fun acc => fun key =>
         let tc = data.tool_configs."%{key}" in
         acc & {"%{key}" = {
           content_map =
-            try (tc | { content_map | { _ : String } }).content_map
-            else null,
+            if std.record.has_field "content_map" tc then tc.content_map else null,
           default_inputs =
-            try (tc | { input_defaults | { _ : String } }).input_defaults
-            else null,
+            if std.record.has_field "input_defaults" tc then tc.input_defaults else null,
           inherited_env_vars =
-            try (tc | { env_vars | { _ : String } }).env_vars
-            else null,
+            if std.record.has_field "env_vars" tc then tc.env_vars else null,
           max_concurrent_calls =
-            try (tc.max_concurrent_calls | Number) else null,
+            if std.record.has_field "max_concurrent_calls" tc then tc.max_concurrent_calls else null,
           max_retries =
-            try (tc.max_retries | Number) else null,
+            if std.record.has_field "max_retries" tc then tc.max_retries else null,
         }}
       ) {}
     else
@@ -178,10 +175,10 @@ let migrate_v1_to_v2 = fun data =>
   let tools_v2 =
     if std.record.has_field "tools" data then
       std.record.fields data.tools
-      |> std.array.fold_left (fun acc key ->
+      |> std.array.fold_left (fun acc => fun key =>
         let t = data.tools."%{key}" in
-        let kind = try ((t | { kind | String }).kind) else "executable" in
-        let config_rt = config_runtime_map."%{key}" | optional in
+        let kind = if std.record.has_field "kind" t then t.kind else "executable" in
+        let config_rt = std.record.get_or "%{key}" null config_runtime_map in
         let spec =
           if kind == "builtin" then
             # BuiltinToolSpecV1 — already has name + version
@@ -191,7 +188,7 @@ let migrate_v1_to_v2 = fun data =>
               version = t.version,
               inputs =
                 if std.record.has_field "inputs" t then
-                  t.inputs |> std.record.map (fun ik iv =>
+                  t.inputs |> std.record.map (fun ik => fun iv =>
                     if std.record.has_field "kind" iv then
                       { kind = iv.kind, description = iv.description, required = iv.required }
                     else
@@ -210,9 +207,9 @@ let migrate_v1_to_v2 = fun data =>
             }
           else
             # ExecutableToolSpecV1 — use map key as name
-            let cmd_arr = try (t | { command | Array String }).command else [] in
-            let base_env_vars = try (t | { env_vars | { _ : String } }).env_vars else {} in
-            let base_success_codes = try (t | { success_codes | Array Number }).success_codes else [] in
+            let cmd_arr = if std.record.has_field "command" t then t.command else [] in
+            let base_env_vars = if std.record.has_field "env_vars" t then t.env_vars else {} in
+            let base_success_codes = if std.record.has_field "success_codes" t then t.success_codes else [] in
             {
               kind = "executable",
               name = key,
@@ -222,7 +219,7 @@ let migrate_v1_to_v2 = fun data =>
               success_codes = base_success_codes,
               inputs =
                 if std.record.has_field "inputs" t then
-                  t.inputs |> std.record.map (fun ik iv =>
+                  t.inputs |> std.record.map (fun ik => fun iv =>
                     if std.record.has_field "kind" iv then
                       { kind = iv.kind, description = iv.description, required = iv.required }
                     else
@@ -232,7 +229,7 @@ let migrate_v1_to_v2 = fun data =>
                   {},
               default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : String }),
               runtime = {
-                impure = try (t.is_impure | Bool) else false,
+                impure = if std.record.has_field "is_impure" t then (t.is_impure | Bool) else false,
                 content_map = if config_rt == null then null else config_rt.content_map,
                 inherited_env_vars = if config_rt == null then null else config_rt.inherited_env_vars,
                 max_concurrent_calls = if config_rt == null then null else config_rt.max_concurrent_calls,
@@ -248,21 +245,21 @@ let migrate_v1_to_v2 = fun data =>
   let workflows_v2 =
     if std.record.has_field "workflows" data then
       std.record.fields data.workflows
-      |> std.array.map (fun key ->
+      |> std.array.map (fun key =>
         let w = data.workflows."%{key}" in
-        let w_name = try (w.name | String) else key in
+        let w_name = if std.record.has_field "name" w then w.name else key in
         {
           name = w_name,
           display_name = null,
-          description = try (w | { description | String }).description else null,
+          description = if std.record.has_field "description" w then w.description else null,
           impure = null,
           steps =
             if std.record.has_field "steps" w then
-              w.steps |> std.array.map (fun step ->
+              w.steps |> std.array.map (fun step =>
                 let mapped_outputs =
                   if std.record.has_field "outputs" step then
                     std.record.fields step.outputs
-                    |> std.array.fold_left (fun acc oname ->
+                    |> std.array.fold_left (fun acc => fun oname =>
                       acc & { "%{oname}" = { name = oname, capture = oname } }
                     ) {}
                   else
@@ -273,14 +270,14 @@ let migrate_v1_to_v2 = fun data =>
                   tool = step.tool,
                   inputs =
                     if std.record.has_field "inputs" step then
-                      step.inputs |> std.record.map (fun ik iv ->
+                      step.inputs |> std.record.map (fun ik => fun iv =>
                         if std.is_string iv then iv else ""
                       )
                     else
                       {},
                   outputs = mapped_outputs,
                   max_retries = null,
-                  depends_on = try (step | { depends_on | Array String }).depends_on else null,
+                  depends_on = if std.record.has_field "depends_on" step then step.depends_on else null,
                 }
               )
             else
@@ -294,10 +291,9 @@ let migrate_v1_to_v2 = fun data =>
     if std.record.has_field "runtime" data then
       let rt = data.runtime in
       {
-        retry_impure = try (rt.retry_impure | Bool) else null,
+        retry_impure = if std.record.has_field "retry_impure" rt then (rt.retry_impure | Bool) else null,
         platform_inherited_env_var_names =
-          try (rt | { inherited_env_vars | { _ : Array String } }).inherited_env_vars
-          else null,
+          if std.record.has_field "inherited_env_vars" rt then rt.inherited_env_vars else null,
       }
     else
       null

@@ -367,7 +367,7 @@ in
 let migrate_v2_to_v1 = fun data =>
   let tools_v1 =
     if std.is_array data.tools then
-      data.tools |> std.array.fold_left (fun acc t =>
+      data.tools |> std.array.fold_left (fun acc => fun t =>
         let kind_name = t.kind in
         if kind_name == "builtin" then
           acc & {"%{t.name}" = {
@@ -378,12 +378,12 @@ let migrate_v2_to_v1 = fun data =>
         else
           let cmds =
             if t.process != null then
-              [t.process.command] @ (try t.process.args else [])
+              [t.process.command] @ (if std.record.has_field "args" t.process then t.process.args else [])
             else
               []
           in
-          let impure_val = try (t.runtime.impure | Bool) else false in
-          let env_val = try (t.runtime.inherited_env_vars | { _ : String }) else {} in
+          let impure_val = if t.runtime != null && std.record.has_field "impure" t.runtime then (t.runtime.impure | Bool) else false in
+          let env_val = if t.runtime != null && std.record.has_field "inherited_env_vars" t.runtime then (t.runtime.inherited_env_vars | { _ : String }) else {} in
           acc & {"%{t.name}" = {
             kind = "executable",
             is_impure = impure_val,
@@ -399,7 +399,7 @@ let migrate_v2_to_v1 = fun data =>
   in
   let workflows_v1 =
     if std.is_array data.workflows then
-      data.workflows |> std.array.fold_left (fun acc w =>
+      data.workflows |> std.array.fold_left (fun acc => fun w =>
         let w_key = w.name in
         acc & {"%{w_key}" = {
           name = w.name,
@@ -409,7 +409,7 @@ let migrate_v2_to_v1 = fun data =>
               w.steps |> std.array.map (fun step =>
                 let old_outputs =
                   if std.is_array step.outputs then
-                    step.outputs |> std.array.fold_left (fun oacc o =>
+                    step.outputs |> std.array.fold_left (fun oacc => fun o =>
                       oacc & { "%{o.name}" = {} }
                     ) {}
                   else
@@ -437,7 +437,7 @@ let migrate_v2_to_v1 = fun data =>
   let tool_configs_v1 =
     if std.record.has_field "tool_runtimes" data then
       std.record.fields data.tool_runtimes
-      |> std.array.fold_left (fun acc key =>
+      |> std.array.fold_left (fun acc => fun key =>
         let rt = data.tool_runtimes."%{key}" in
         acc & {"%{key}" = {
           max_concurrent_calls = rt.max_concurrent_calls,
