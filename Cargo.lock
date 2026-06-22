@@ -2055,7 +2055,6 @@ dependencies = [
  "dirs",
  "dotenvy",
  "flate2",
- "fp-library",
  "futures-util",
  "mediapm-cas",
  "mediapm-conductor-builtin-archive",
