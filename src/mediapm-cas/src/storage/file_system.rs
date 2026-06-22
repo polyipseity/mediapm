@@ -8,10 +8,11 @@ use super::metadata_store::{FileSystemMetadataStore, MetadataStore};
 use super::store::CasStore;
 use super::wal::FileWal;
 use super::wal::Wal;
-use crate::api::VerifyTriggerStrategy;
+use crate::api::{CasApi, ObjectEncoding, VerifyTriggerStrategy};
 use crate::defaults;
 use crate::error::CasError;
 use crate::hash::Hash;
+use crate::storage::metadata_store::MetadataEntry;
 
 /// File-system backed CAS store.
 ///
@@ -63,5 +64,28 @@ impl FileSystemCas {
     /// concrete file.
     pub fn object_path_for_hash(&self, hash: Hash) -> Option<PathBuf> {
         self.0.blob().materialized_path(&hash)
+    }
+
+    /// Ensure the blob for `hash` is materialized in the blob store on
+    /// disk, even if it was originally committed as a WAL-only small blob.
+    ///
+    /// After calling this, [`object_path_for_hash`](Self::object_path_for_hash)
+    /// will return a path whose file exists and can be used for
+    /// hardlink/symlink/reflink materialization.
+    pub async fn ensure_blob_materialized(&self, hash: Hash) -> Result<(), CasError> {
+        // Fast path: already materialized in the blob store.
+        if self.0.blob().materialized_path(&hash).map_or(false, |p| p.is_file()) {
+            return Ok(());
+        }
+
+        // Slow path: read bytes from CAS (WAL fallback handles small
+        // blobs) and write them to the blob store + metadata.
+        let data = self.get(hash).await?;
+        self.0.blob().write(hash, ObjectEncoding::Full, data.clone()).await?;
+        self.0
+            .metadata_store()
+            .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
+            .await?;
+        Ok(())
     }
 }

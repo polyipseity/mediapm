@@ -99,6 +99,11 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
         &self.blob
     }
 
+    /// Return a reference to the metadata store.
+    pub(crate) fn metadata_store(&self) -> &M {
+        &self.metadata
+    }
+
     /// Return a reference to the background engine.
     pub fn bg_engine(&self) -> &BackgroundEngine<J, M, B> {
         &self.bg_engine

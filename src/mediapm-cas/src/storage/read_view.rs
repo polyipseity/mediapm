@@ -120,14 +120,15 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
             }
         };
 
-        // Before reading payload, check the WAL for a pending Delete
-        // (tombstone) that hasn't been consumed yet.  This ensures
-        // WAL-only (background) deletes are visible immediately.
+        // Before reading payload, check the WAL for a pending entry.
+        // A pending `Present` means the data was committed to the WAL but
+        // hasn't been materialized into Blob+Metadata yet (small blob
+        // WAL-only path). Return it directly to avoid a blob-store miss.
+        // A pending `Tombstone` means the data was deleted.
         match self.wal.check_pending(hash).await {
             PendingState::Tombstone => return Ok(None),
-            PendingState::Present(_)
-            | PendingState::PresentExternal { .. }
-            | PendingState::NotPresent => {}
+            PendingState::Present(data) => return Ok(Some(data)),
+            PendingState::PresentExternal { .. } | PendingState::NotPresent => {}
         }
 
         resolve_full_bytes(
@@ -204,10 +205,18 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
             }
         };
 
-        // Before streaming, check WAL for a pending Delete (tombstone).
+        // Before streaming, check WAL for a pending entry.
+        // A pending `Present` means the data was committed to the WAL but
+        // hasn't been materialized yet — write it directly to the stream.
+        // A pending `Tombstone` means the data was deleted.
         match self.wal.check_pending(hash).await {
             PendingState::Tombstone => return Err(CasError::NotFound(*hash)),
-            _ => {}
+            PendingState::Present(data) => {
+                use tokio::io::AsyncWriteExt;
+                writer.write_all(&data).await?;
+                return Ok(());
+            }
+            PendingState::PresentExternal { .. } | PendingState::NotPresent => {}
         }
 
         match entry.encoding {
