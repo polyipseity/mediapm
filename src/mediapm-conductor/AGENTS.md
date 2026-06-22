@@ -145,7 +145,7 @@ Use `sd` for deterministic text rewrites where possible so workflow behavior
 stays consistent across Windows/Linux/macOS runners.
 
 Common executable tool presets must use one module file per preset under
-`src/mediapm-conductor/src/tools/` (for example `tools/sd.rs`) with registry/dispatch
+`src/mediapm-conductor/src/tools/` (for example `tools/preset_sd.rs`) with registry/dispatch
 kept in `tools/mod.rs`; avoid re-centralizing preset implementation logic in
 `api.rs`.
 

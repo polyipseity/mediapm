@@ -18,14 +18,14 @@ pub use crate::cache_user_level::{
     UserLevelCache, default_mediapm_user_download_cache_root, default_user_download_cache_root,
 };
 #[cfg(feature = "tool-presets")]
-pub mod sd;
+pub mod preset_sd;
 
 // Builtin tool implementations (always compiled).
-pub mod archive;
-pub mod echo;
-pub mod export;
-pub mod fs;
-pub mod import;
+pub mod builtin_archive;
+pub mod builtin_echo;
+pub mod builtin_export;
+pub mod builtin_fs;
+pub mod builtin_import;
 
 #[cfg(all(feature = "cli", feature = "tool-presets"))]
 use clap::ValueEnum;
@@ -44,8 +44,8 @@ pub use crate::provision::ProvisionedTool;
 
 /// Static metadata for a registered builtin tool in this crate.
 ///
-/// Each entry corresponds to one subdirectory under `tools/` and is
-/// populated from that submodule's exposed constants.
+/// Each entry corresponds to one module file under `tools/` and is
+/// populated from that module's exposed constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinRegistration {
     /// Canonical qualified tool identifier (e.g. `"builtins.echo@1.0.0"`).
@@ -63,40 +63,40 @@ pub struct BuiltinRegistration {
 /// All builtin tools registered in this crate.
 ///
 /// Add a new entry here (and a corresponding `pub mod` declaration above)
-/// when wiring up a new builtin subdirectory.
+/// when wiring up a new builtin.
 pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
     BuiltinRegistration {
-        id: archive::TOOL_ID,
-        name: archive::TOOL_NAME,
-        version: archive::TOOL_VERSION,
+        id: builtin_archive::TOOL_ID,
+        name: builtin_archive::TOOL_NAME,
+        version: builtin_archive::TOOL_VERSION,
         is_impure: false,
         summary: "pure archive builtin runtime transforming bytes to bytes",
     },
     BuiltinRegistration {
-        id: echo::TOOL_ID,
-        name: echo::TOOL_NAME,
-        version: echo::TOOL_VERSION,
+        id: builtin_echo::TOOL_ID,
+        name: builtin_echo::TOOL_NAME,
+        version: builtin_echo::TOOL_VERSION,
         is_impure: false,
         summary: "echo-like builtin returning text as stdout/stderr string-map",
     },
     BuiltinRegistration {
-        id: export::TOOL_ID,
-        name: export::TOOL_NAME,
-        version: export::TOOL_VERSION,
+        id: builtin_export::TOOL_ID,
+        name: builtin_export::TOOL_NAME,
+        version: builtin_export::TOOL_VERSION,
         is_impure: true,
         summary: "export builtin runtime that writes file/folder payloads to host paths",
     },
     BuiltinRegistration {
-        id: fs::TOOL_ID,
-        name: fs::TOOL_NAME,
-        version: fs::TOOL_VERSION,
+        id: builtin_fs::TOOL_ID,
+        name: builtin_fs::TOOL_NAME,
+        version: builtin_fs::TOOL_VERSION,
         is_impure: true,
         summary: "filesystem operation builtin runtime with impure side-effecting behavior",
     },
     BuiltinRegistration {
-        id: import::TOOL_ID,
-        name: import::TOOL_NAME,
-        version: import::TOOL_VERSION,
+        id: builtin_import::TOOL_ID,
+        name: builtin_import::TOOL_NAME,
+        version: builtin_import::TOOL_VERSION,
         is_impure: true,
         summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
     },
@@ -142,7 +142,7 @@ impl CommonExecutableTool {
     #[must_use]
     pub const fn logical_tool_name(self) -> &'static str {
         match self {
-            Self::Sd => sd::LOGICAL_TOOL_NAME,
+            Self::Sd => preset_sd::LOGICAL_TOOL_NAME,
         }
     }
 
@@ -150,7 +150,7 @@ impl CommonExecutableTool {
     #[must_use]
     pub fn executable_file_name(self) -> String {
         match self {
-            Self::Sd => sd::executable_file_name(),
+            Self::Sd => preset_sd::executable_file_name(),
         }
     }
 }
@@ -164,9 +164,9 @@ impl CommonExecutableTool {
 #[cfg(feature = "tool-presets")]
 pub fn fetch_common_executable_tool_payload(
     tool: CommonExecutableTool,
-) -> Result<sd::CommonExecutablePayload, ConductorError> {
+) -> Result<preset_sd::CommonExecutablePayload, ConductorError> {
     match tool {
-        CommonExecutableTool::Sd => sd::fetch_payload(),
+        CommonExecutableTool::Sd => preset_sd::fetch_payload(),
     }
 }
 
