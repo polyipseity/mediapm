@@ -1,40 +1,48 @@
-//! Conductor crate error types.
+//! Conductor error taxonomy.
+//!
+//! All conductor-internal and public errors use the [`ConductorError`] enum.
+//! This keeps error handling uniform across API, CLI, and orchestration paths.
 
 use std::path::PathBuf;
 
 use mediapm_cas::CasError;
 use thiserror::Error;
 
-/// Conductor-level error category.
+/// Error type for all conductor operations.
 #[derive(Debug, Error)]
 pub enum ConductorError {
-    /// Workflow references could not be loaded or interpreted.
-    #[error("workflow file error: {0}")]
+    /// Workflow-level error (invalid config, missing tools, etc.).
+    #[error("{0}")]
     Workflow(String),
-    /// CAS operation failed while materializing state.
-    #[error("cas operation failed: {0}")]
+
+    /// CAS-level error forwarded from the CAS implementation.
+    #[error("CAS error: {0}")]
     Cas(#[from] CasError),
-    /// Serialization/deserialization failed.
+
+    /// Serialization error (JSON encode/decode, Nickel eval, etc.).
     #[error("serialization error: {0}")]
     Serialization(String),
-    /// Local filesystem I/O failed.
-    #[error("io error while {operation} at {path}: {source}")]
+
+    /// I/O error with context.
+    #[error("I/O error {operation:?} on `{path}`: {source}")]
     Io {
-        /// Operation name.
+        /// Description of the failed operation.
         operation: String,
-        /// Path involved.
+        /// Path involved in the I/O operation.
         path: PathBuf,
-        /// Underlying I/O source.
+        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
-    /// Internal synchronization or invariant failure.
+
+    /// Internal conductor error (unexpected state, invariants, etc.).
     #[error("internal conductor error: {0}")]
     Internal(String),
 }
 
 impl ConductorError {
-    /// Constructs an I/O error with operation name and path.
+    /// Builds an `Io` variant with the given operation description, path, and source.
+    #[must_use]
     pub fn io(
         operation: impl Into<String>,
         path: impl Into<PathBuf>,
@@ -43,8 +51,9 @@ impl ConductorError {
         Self::Io { operation: operation.into(), path: path.into(), source }
     }
 
-    /// Constructs an internal RPC error with operation name and underlying error.
-    pub(crate) fn rpc_error(operation: &'static str, err: impl std::fmt::Display) -> Self {
-        Self::Internal(format!("{operation} RPC failed: {err}"))
+    /// Builds an `Internal` variant with a formatted RPC error message.
+    #[must_use]
+    pub fn rpc_error(service: &str, err: impl std::fmt::Display) -> Self {
+        Self::Internal(format!("RPC call to '{service}' failed: {err}"))
     }
 }

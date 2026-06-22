@@ -244,6 +244,35 @@ fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
     }
 }
 
+/// Discovers the project root by walking up from the current working directory.
+///
+/// Looks for a `conductor.ncl` (or `mediapm.ncl`) file to determine the
+/// project boundary. Falls back to the current working directory when no
+/// marker is found.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the current working directory cannot be
+/// resolved.
+pub fn discover_project_root() -> Result<PathBuf, ConductorError> {
+    let cwd = std::env::current_dir().map_err(|source| ConductorError::Io {
+        operation: "resolving current working directory".to_string(),
+        path: PathBuf::from("."),
+        source,
+    })?;
+
+    let mut current = Some(cwd.as_path());
+    while let Some(dir) = current {
+        if dir.join("conductor.ncl").exists() || dir.join("mediapm.ncl").exists() {
+            return Ok(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+
+    // Fallback: return the original cwd
+    Ok(cwd)
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;

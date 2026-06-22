@@ -1,8 +1,4 @@
-//! Tool import/remove helpers and CAS passthrough injection for the conductor CLI.
-//!
-//! These standalone functions implement the core logic for tool import
-//! registration, content-map merging, external-data removal, tool removal,
-//! and CAS argument injection.
+//! Tool import helpers for the conductor CLI.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -10,105 +6,48 @@ use std::path::{Path, PathBuf};
 use mediapm_cas::Hash;
 
 use crate::error::ConductorError;
-use crate::model::config::{
-    AddToolOptions, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec,
-};
 
-use super::document_io::{load_machine_document, save_machine_document};
-use super::{RemoveArgs, RemoveCommand};
-
-/// Handles remove command variants.
-pub(super) fn handle_remove(
-    _user_ncl: &Path,
-    machine_ncl: &Path,
-    args: RemoveArgs,
-) -> Result<(), ConductorError> {
-    match args.command {
-        RemoveCommand::Data { hash } => remove_data(machine_ncl, &hash),
-        RemoveCommand::Tool { name, metadata } => remove_tool(machine_ncl, &name, metadata),
+/// Collects file list for tool import from a file or directory recursively.
+pub(crate) fn collect_tool_files(path: &Path) -> Result<Vec<PathBuf>, ConductorError> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
     }
+
+    if !path.is_dir() {
+        return Err(ConductorError::Workflow(format!(
+            "tool import path '{}' does not exist",
+            path.display()
+        )));
+    }
+
+    let mut files = Vec::new();
+    collect_files_recursive(path, &mut files)?;
+    if files.is_empty() {
+        return Err(ConductorError::Workflow(format!(
+            "tool import directory '{}' is empty",
+            path.display()
+        )));
+    }
+    Ok(files)
 }
 
-/// Registers imported tool metadata in the machine document when missing and
-/// merges imported content-map entries into machine runtime config.
-///
-/// Invariants:
-/// - all end-user automation mutates only `conductor.machine.ncl`,
-/// - a tool imported through this path is immediately runnable without
-///   duplicating metadata in `conductor.ncl`,
-/// - builtin tools never receive `content_map`.
-pub(super) fn register_or_merge_imported_tool(
-    machine: &mut MachineNickelDocument,
-    tool_name: &str,
-    import_path: &Path,
-    process_name: Option<&str>,
-    imported_content_map: BTreeMap<String, Hash>,
-    description_override: Option<&str>,
-) -> Result<(), ConductorError> {
-    if imported_content_map.is_empty() {
-        return Err(ConductorError::Workflow(format!(
-            "tool import for '{tool_name}' produced no files"
-        )));
+fn collect_files_recursive(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), ConductorError> {
+    for entry in
+        std::fs::read_dir(dir).map_err(|e| ConductorError::io("reading directory", dir, e))?
+    {
+        let entry = entry.map_err(|e| ConductorError::io("reading directory entry", dir, e))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_files_recursive(&path, files)?;
+        } else {
+            files.push(path);
+        }
     }
-
-    if !machine.tools.contains_key(tool_name) {
-        let resolved_process_name = resolve_import_process_name(
-            import_path,
-            process_name,
-            imported_content_map.keys().next().map(String::as_str),
-        )?;
-        machine.add_tool(
-            tool_name,
-            AddToolOptions::new(ToolSpec {
-                kind: ToolKindSpec::Executable {
-                    command: vec![resolved_process_name],
-                    env_vars: BTreeMap::new(),
-                    success_codes: vec![0],
-                },
-                ..ToolSpec::default()
-            })
-            .with_tool_config(ToolConfigSpec {
-                max_concurrent_calls: -1,
-                max_retries: -1,
-                description: Some(description_override.map_or_else(
-                    || format!("Imported by conductor CLI from '{}'", import_path.display()),
-                    std::string::ToString::to_string,
-                )),
-                input_defaults: BTreeMap::new(),
-                env_vars: BTreeMap::new(),
-                content_map: Some(imported_content_map),
-            }),
-        )?;
-        return Ok(());
-    }
-
-    if matches!(
-        machine.tools.get(tool_name).map(|spec| &spec.kind),
-        Some(ToolKindSpec::Builtin { .. })
-    ) {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' is builtin and cannot receive imported executable content_map"
-        )));
-    }
-
-    let map = machine
-        .tool_configs
-        .entry(tool_name.to_string())
-        .or_default()
-        .content_map
-        .get_or_insert_with(BTreeMap::new);
-    for (relative_path, hash) in imported_content_map {
-        map.insert(relative_path, hash);
-    }
-
-    machine.sync_tool_content_external_data_roots();
-
     Ok(())
 }
 
-/// Resolves executable process name used when import needs to bootstrap one
-/// missing machine tool definition.
-pub(super) fn resolve_import_process_name(
+/// Resolves executable process name for a tool import.
+pub(crate) fn resolve_import_process_name(
     import_path: &Path,
     process_name: Option<&str>,
     fallback_relative_file: Option<&str>,
@@ -123,131 +62,50 @@ pub(super) fn resolve_import_process_name(
     }
 
     if import_path.is_file() {
-        let Some(relative) = fallback_relative_file else {
-            return Err(ConductorError::Workflow(
+        let relative = fallback_relative_file.ok_or_else(|| {
+            ConductorError::Workflow(
                 "tool import expected at least one file when deriving process name".to_string(),
-            ));
-        };
+            )
+        })?;
         return Ok(relative.to_string());
     }
 
     Err(ConductorError::Workflow(
-        "tool import from a directory must specify --process-name when creating new machine tool metadata"
-            .to_string(),
+        "tool import from a directory must specify --process-name".to_string(),
     ))
 }
 
-/// Removes one external-data reference from the program-edited document.
-fn remove_data(machine_ncl: &Path, hash: &str) -> Result<(), ConductorError> {
-    let hash = hash.parse::<Hash>().map_err(|source| {
-        ConductorError::Workflow(format!(
-            "external data key '{hash}' is not a valid CAS hash: {source}"
-        ))
-    })?;
-    let mut machine = load_machine_document(machine_ncl)?;
-    let removed = machine.external_data.remove(&hash);
-    if removed.is_none() {
-        return Err(ConductorError::Workflow(format!(
-            "external data '{hash}' is not present in conductor.machine.ncl"
-        )));
-    }
+/// Imports a directory tree into a content map by hashing each file into CAS.
+///
+/// Returns the content map (relative_path → hash) and the total number of
+/// imported files.  Files whose names appear in `skip_names` are excluded.
+pub(crate) async fn import_directory_to_content_map<C: mediapm_cas::CasApi>(
+    cas: &C,
+    dir: &Path,
+    skip_names: &[&str],
+) -> Result<(BTreeMap<String, Hash>, usize), ConductorError> {
+    let files = collect_tool_files(dir)?;
+    let mut content_map = BTreeMap::new();
+    let mut count = 0usize;
 
-    machine.sync_tool_content_external_data_roots();
+    for file_path in &files {
+        let relative = file_path.strip_prefix(dir).unwrap_or(file_path);
+        let relative_str = relative.to_string_lossy().to_string();
 
-    save_machine_document(machine_ncl, &machine)
-}
-
-/// Removes one tool runtime config from the program-edited document.
-fn remove_tool(
-    machine_ncl: &Path,
-    name: &str,
-    remove_metadata: bool,
-) -> Result<(), ConductorError> {
-    let mut machine = load_machine_document(machine_ncl)?;
-    let removed = machine.tool_configs.remove(name);
-    let metadata_removed = if remove_metadata { machine.tools.remove(name) } else { None };
-    if removed.is_none() && metadata_removed.is_none() {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{name}' is not present in conductor.machine.ncl"
-        )));
-    }
-
-    machine.sync_tool_content_external_data_roots();
-
-    save_machine_document(machine_ncl, &machine)?;
-
-    Ok(())
-}
-
-/// Injects resolved conductor-owned CAS root for passthrough CAS commands when absent.
-pub(super) fn inject_cas_root_arg_if_missing(args: &[String], default_root: &Path) -> Vec<String> {
-    if args.iter().any(|arg| arg == "--root" || arg.starts_with("--root=")) {
-        return args.to_vec();
-    }
-
-    let mut injected = vec!["--root".to_string(), default_root.to_string_lossy().to_string()];
-    injected.extend(args.iter().cloned());
-    injected
-}
-
-/// Collects file list for tool import from one file or recursively from one directory.
-pub(super) fn collect_tool_files(path: &Path) -> Result<Vec<PathBuf>, ConductorError> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
-    if !path.is_dir() {
-        return Err(ConductorError::Workflow(format!(
-            "tool import path '{}' does not exist",
-            path.display()
-        )));
-    }
-
-    let mut files = Vec::new();
-    collect_tool_files_recursive(path, &mut files)?;
-    Ok(files)
-}
-
-/// Recursively collects all regular files under one directory.
-fn collect_tool_files_recursive(
-    path: &Path,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), ConductorError> {
-    let entries = std::fs::read_dir(path).map_err(|source| ConductorError::Io {
-        operation: "enumerating tool directory".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    for entry in entries {
-        let entry = entry.map_err(|source| ConductorError::Io {
-            operation: "reading tool directory entry".to_string(),
-            path: path.to_path_buf(),
-            source,
-        })?;
-
-        let entry_path = entry.path();
-        if entry_path.is_dir() {
-            collect_tool_files_recursive(&entry_path, files)?;
-        } else if entry_path.is_file() {
-            files.push(entry_path);
+        if skip_names
+            .iter()
+            .any(|n| relative_str == *n || file_path.file_name().map_or(false, |f| f == *n))
+        {
+            continue;
         }
+
+        let bytes = tokio::fs::read(file_path)
+            .await
+            .map_err(|e| ConductorError::io("reading tool file", file_path, e))?;
+        let hash = cas.put(bytes.into()).await?;
+        content_map.insert(relative_str, hash);
+        count += 1;
     }
 
-    Ok(())
-}
-
-/// Produces normalized `/`-separated relative path for tool content map keys.
-pub(super) fn normalized_relative_path(
-    base_dir: &Path,
-    file: &Path,
-) -> Result<String, ConductorError> {
-    let relative = file.strip_prefix(base_dir).map_err(|_| {
-        ConductorError::Workflow(format!(
-            "tool file '{}' is not under base directory '{}'",
-            file.display(),
-            base_dir.display()
-        ))
-    })?;
-    Ok(relative.to_string_lossy().replace('\\', "/"))
+    Ok((content_map, count))
 }

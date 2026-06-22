@@ -1,107 +1,81 @@
 //! Shared internal orchestration contracts.
 //!
-//! These structures are intentionally kept within the orchestration module so
-//! the actor-backed runtime can exchange rich execution data without leaking
-//! implementation details into the crate's public API.
+//! These types are the wire format between the coordinator, scheduler, step
+//! workers, and state-store actor.  They are intentionally kept within the
+//! orchestration module so the actor-backed runtime can exchange rich
+//! execution data without leaking implementation details into the crate's
+//! public API.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use mediapm_cas::Hash;
-
 use serde::{Deserialize, Serialize};
 
 use crate::model::config::{
-    ExternalContentRef, InputBinding, MachineNickelDocument, ProcessSpec, StateNickelDocument,
-    ToolInputSpec, ToolOutputSpec, WorkflowSpec, WorkflowStepSpec,
+    ImpureTimestamp, OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
 };
-use crate::model::state::ToolCallInstance;
-
-/// Re-exported types from model config/state that are part of the protocol
-/// surface for orchestration-internal consumers (e.g. execution hub).
-pub(super) use crate::model::config::ImpureTimestamp;
-pub(super) use crate::model::state::OrchestrationState;
+pub(super) use crate::model::state::{OrchestrationState, ToolCallInstance};
 
 /// Collected output hash slots keyed by producing step id and declared output name.
-///
-/// `Some(hash)` indicates a normally-captured output available in CAS.
-/// `None` indicates an intentionally-empty capture produced when the tool
-/// output declared `allow_empty = true` and the capture source was absent;
-/// downstream steps that reference an empty-capture output as a step input
-/// receive a workflow error at input-resolution time.
-pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Option<Hash>>>;
+pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Hash>>;
 
-/// One tool definition after user/machine document unification.
-#[derive(Debug, Clone)]
+/// One tool definition after document unification.
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct UnifiedToolSpec {
-    /// Whether the tool is treated as impure for instance-key invalidation.
+    /// Whether the tool is treated as impure for tool call instance-key invalidation.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.
     ///
-    /// `-1` means unlimited.
-    pub max_concurrent_calls: i32,
+    /// `0` means unlimited.
+    pub max_concurrent_calls: usize,
     /// Maximum retry count after the initial failed call.
-    ///
-    /// This value is already normalized to a non-negative integer in the
-    /// unified runtime view.
-    pub max_retries: i32,
+    pub max_retries: usize,
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
-    /// Per-tool default input bindings contributed by merged tool config.
-    pub default_inputs: BTreeMap<String, InputBinding>,
-    /// Fully merged process definition.
-    pub process: ProcessSpec,
-    /// Fully merged execution environment for executable tools.
-    ///
-    /// This map is runtime-only and intentionally separate from
-    /// `process.env_vars` so state metadata and instance-key identity can
-    /// continue to reflect only reusable tool declarations while execution
-    /// still receives merged tool-config environment overrides.
+    /// Per-tool default input values contributed by merged tool config.
+    pub default_inputs: BTreeMap<String, String>,
+    /// The command to execute split into parts (exe + args).
+    /// Empty for builtin-only tools.
+    pub command_parts: Vec<String>,
+    /// Expected success exit codes for executable tools.
+    pub success_codes: Vec<i32>,
+    /// Execution environment variables for executable tools.
     ///
     /// Builtin tools always carry an empty map here.
     pub execution_env_vars: BTreeMap<String, String>,
-    /// Declared output contract keyed by output name.
-    pub outputs: BTreeMap<String, ToolOutputSpec>,
+    /// Declared output capture specs keyed by output name.
+    pub outputs: BTreeMap<String, OutputCaptureSpec>,
     /// Per-tool content-map entries to materialize into the execution sandbox.
-    ///
-    /// Each key is interpreted as one sandbox-relative destination path:
-    /// - trailing `/` or `\\` means directory target and expects ZIP payload
-    ///   bytes at the mapped hash,
-    /// - `./` (or `.\\`) means unpack ZIP content directly at sandbox root,
-    /// - otherwise the key is a file target and bytes are written directly.
-    /// - runtime rejects conflicting entries when two separate keys would
-    ///   materialize the same file path.
-    pub tool_content_map: BTreeMap<String, Hash>,
+    pub tool_content_map: BTreeMap<String, String>,
 }
 
 /// The runtime view of the merged conductor documents.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub(crate) struct UnifiedNickelDocument {
-    /// External CAS-backed inputs keyed by CAS hash identity.
-    pub external_data: BTreeMap<Hash, ExternalContentRef>,
     /// Unified tool catalog keyed by immutable tool name.
     pub tools: BTreeMap<String, UnifiedToolSpec>,
     /// Unified workflow catalog keyed by workflow name.
     pub workflows: BTreeMap<String, WorkflowSpec>,
     /// Every tool-content hash referenced anywhere in the merged config.
     pub tool_content_hashes: BTreeSet<Hash>,
+    /// External data save policies keyed by CAS hash.
+    pub external_data_policies: BTreeMap<Hash, crate::model::state::OutputSaveMode>,
+    /// Conductor-level runtime configuration.
+    pub runtime: crate::model::config::ConductorRuntimeConfig,
 }
 
-/// Result of loading, evaluating, and unifying user/machine/state documents.
+/// Result of loading, evaluating, and unifying configuration documents.
 #[derive(Debug, Clone)]
 pub(super) struct LoadedDocuments {
-    /// Machine-editable document after merged runtime-owned fields are updated.
-    pub machine_document: MachineNickelDocument,
-    /// Volatile runtime state document.
-    pub state_document: StateNickelDocument,
-    /// Prior state pointer resolved across all three documents.
+    /// Prior state pointer resolved across all documents.
     pub prior_state_pointer: Option<Hash>,
     /// Effective configuration used for workflow execution.
     pub unified: UnifiedNickelDocument,
 }
 
-/// One step execution request sent from the execution hub to a worker actor.
+/// One step execution request sent from the coordinator to a worker actor.
 #[derive(Debug, Clone)]
 pub(crate) struct StepExecutionRequest {
     /// Unified configuration snapshot shared across one workflow run.
@@ -117,34 +91,26 @@ pub(crate) struct StepExecutionRequest {
     /// Absolute directory that directly contains the outermost conductor
     /// configuration file used for this run.
     ///
-    /// Builtin `import`, `export`, and `fs` resolve relative path values
-    /// against this directory.
+    /// Builtins resolve relative path values against this directory.
     pub outermost_config_dir: PathBuf,
-    /// Root path for per-step temporary directories (sandboxes, ZIP
-    /// extraction, regex capture staging).
-    ///
-    /// Derived from `RuntimeStoragePaths.conductor_tmp_dir`, defaulting to
-    /// `<os-temp>/mediapm-conductor-<conductor-dir-hash>`.
+    /// Root path for per-step temporary directories.
     pub conductor_tmp_dir: PathBuf,
     /// Output hashes already produced by earlier steps in the workflow.
     pub step_outputs: Arc<StepOutputs>,
     /// Declared output names from this step that are actually referenced by
-    /// downstream `${step_output...}` input bindings.
+    /// downstream `$step_output` input bindings.
     ///
-    /// This set drives cache-rematerialization checks: missing unreferenced
-    /// outputs do not force rerun of otherwise cache-hit instances.
+    /// This set drives rematerialization checks: missing unreferenced outputs
+    /// do not force rerun of otherwise cache-hit instances.
     pub required_output_names: BTreeSet<String>,
 }
 
 /// Fine-grained phase timings captured within one step execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
 pub(crate) struct StepPhaseTiming {
     /// Time spent resolving step/default input bindings.
     pub resolve_inputs_ms: f64,
-    /// Time spent resolving process and output specs from templates.
-    pub resolve_specs_ms: f64,
-    /// Time spent evaluating cache-hit/rematerialization requirements.
+    /// Time spent evaluating rematerialization requirements.
     pub cache_probe_ms: f64,
     /// Time spent preparing execution sandbox content before process start.
     pub materialization_ms: f64,
@@ -162,7 +128,7 @@ pub(crate) struct StepExecutionBundle {
     /// Completed step id.
     #[expect(
         dead_code,
-        reason = "fields are populated but not yet read by any consumer; kept for observability"
+        reason = "field is populated but not yet read by any consumer; kept for observability"
     )]
     pub step_id: String,
     /// Immutable tool name used by the step.
@@ -170,12 +136,12 @@ pub(crate) struct StepExecutionBundle {
     /// Worker index that produced the result.
     #[expect(
         dead_code,
-        reason = "fields are populated but not yet read by any consumer; kept for observability"
+        reason = "field is populated but not yet read by any consumer; kept for observability"
     )]
     pub worker_index: usize,
-    /// Deterministic instance key for deduplication and cache lookup.
+    /// Deterministic tool call instance key for deduplication and cache lookup.
     pub instance_key: String,
-    /// Final instance snapshot to merge into orchestration state.
+    /// Final tool call instance snapshot to merge into orchestration state.
     pub instance: ToolCallInstance,
     /// Outputs the caller asked to materialize for this run.
     pub requested_output_names: Vec<String>,

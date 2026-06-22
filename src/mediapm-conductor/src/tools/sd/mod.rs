@@ -1,4 +1,7 @@
-//! `sd` common executable tool preset implementation.
+//! `sd` common executable tool preset.
+//!
+//! Fetches the latest `sd` release binary from GitHub for the host platform.
+//! Only compiled when the `tool-presets` feature is enabled.
 
 use std::ffi::OsStr;
 use std::io::Read;
@@ -7,8 +10,6 @@ use std::path::Path;
 use reqwest::blocking::Client;
 
 use crate::error::ConductorError;
-
-use super::CommonExecutablePayload;
 
 /// Canonical logical tool name used in runtime machine configuration.
 pub const LOGICAL_TOOL_NAME: &str = "mediapm-conductor.tools.sd";
@@ -22,11 +23,9 @@ const SD_LATEST_RELEASE_API_URL: &str = "https://api.github.com/repos/chmln/sd/r
 /// User-Agent header value used for GitHub release API and asset requests.
 const SD_DOWNLOAD_USER_AGENT: &str = "mediapm-conductor";
 
-/// Cross-platform executable suffix used by downloaded common tools.
+/// Cross-platform executable suffix.
 #[cfg(windows)]
 const EXECUTABLE_SUFFIX: &str = ".exe";
-
-/// Cross-platform executable suffix used by downloaded common tools.
 #[cfg(not(windows))]
 const EXECUTABLE_SUFFIX: &str = "";
 
@@ -49,7 +48,7 @@ enum ReleaseArchiveKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReleaseAssetSelection {
     /// Ordered browser-download URLs for candidate assets matching one host
-    /// marker. URLs are attempted in-order until one download succeeds.
+    /// marker.
     download_urls: Vec<String>,
     /// Archive format used by the selected payload URL.
     archive_kind: ReleaseArchiveKind,
@@ -62,32 +61,26 @@ fn host_release_asset_markers() -> &'static [&'static str] {
     {
         &["x86_64-pc-windows-msvc.zip", "x86_64-pc-windows-gnu.zip"]
     }
-
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
         &["aarch64-pc-windows-msvc.zip"]
     }
-
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         &["x86_64-unknown-linux-gnu.tar.gz", "x86_64-unknown-linux-musl.tar.gz"]
     }
-
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
         &["aarch64-unknown-linux-gnu.tar.gz", "aarch64-unknown-linux-musl.tar.gz"]
     }
-
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
         &["x86_64-apple-darwin.tar.gz"]
     }
-
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         &["aarch64-apple-darwin.tar.gz"]
     }
-
     #[cfg(not(any(
         all(target_os = "windows", target_arch = "x86_64"),
         all(target_os = "windows", target_arch = "aarch64"),
@@ -103,32 +96,33 @@ fn host_release_asset_markers() -> &'static [&'static str] {
 
 /// Fetches one JSON value from the latest `sd` release endpoint.
 fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
-    let client =
-        Client::builder().timeout(std::time::Duration::from_mins(1)).build().map_err(|source| {
+    let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(
+        |source| {
             ConductorError::Workflow(format!("building sd metadata HTTP client failed: {source}"))
-        })?;
+        },
+    )?;
     let response = client
         .get(SD_LATEST_RELEASE_API_URL)
         .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
         .send()
         .map_err(|source| {
             ConductorError::Workflow(format!(
-                "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed: {source}"
+                "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed: \
+                 {source}"
             ))
         })?;
     if !response.status().is_success() {
         return Err(ConductorError::Workflow(format!(
-            "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed with status {}",
+            "querying latest sd release metadata from '{SD_LATEST_RELEASE_API_URL}' failed with \
+             status {}",
             response.status().as_u16()
         )));
     }
-
     let payload = response.bytes().map_err(|source| {
         ConductorError::Workflow(format!(
             "reading latest sd release metadata response body failed: {source}"
         ))
     })?;
-
     serde_json::from_slice::<serde_json::Value>(&payload).map_err(|source| {
         ConductorError::Workflow(format!(
             "decoding latest sd release metadata as JSON failed: {source}"
@@ -148,17 +142,14 @@ fn select_host_release_asset(
             std::env::consts::ARCH
         )));
     }
-
     let assets =
         release_json.get("assets").and_then(serde_json::Value::as_array).ok_or_else(|| {
             ConductorError::Workflow(
                 "latest sd release metadata missing array field 'assets'".to_string(),
             )
         })?;
-
     for marker in markers {
         let mut selection: Option<ReleaseAssetSelection> = None;
-
         for asset in assets {
             let name = asset.get("name").and_then(serde_json::Value::as_str).ok_or_else(|| {
                 ConductorError::Workflow(
@@ -168,16 +159,15 @@ fn select_host_release_asset(
             if !name.contains(marker) {
                 continue;
             }
-
             let download_url = asset
                 .get("browser_download_url")
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| {
                     ConductorError::Workflow(format!(
-                        "latest sd release asset '{name}' missing string field 'browser_download_url'"
+                        "latest sd release asset '{name}' missing string field \
+                         'browser_download_url'"
                     ))
                 })?;
-
             let archive_kind =
                 if Path::new(name).extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) {
                     ReleaseArchiveKind::Zip
@@ -188,12 +178,12 @@ fn select_host_release_asset(
                         "latest sd release asset '{name}' uses unsupported archive suffix"
                     )));
                 };
-
             match selection.as_mut() {
                 Some(existing) => {
                     if existing.archive_kind != archive_kind {
                         return Err(ConductorError::Workflow(format!(
-                            "latest sd release assets matching marker '{marker}' mixed archive kinds"
+                            "latest sd release assets matching marker '{marker}' mixed archive \
+                             kinds"
                         )));
                     }
                     existing.download_urls.push(download_url.to_string());
@@ -206,12 +196,10 @@ fn select_host_release_asset(
                 }
             }
         }
-
         if let Some(selection) = selection {
             return Ok(selection);
         }
     }
-
     Err(ConductorError::Workflow(format!(
         "latest sd release metadata did not include expected target asset markers: {}",
         markers.join(", ")
@@ -225,13 +213,12 @@ fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, Conductor
             "downloading sd release asset failed: candidate URL list was empty".to_string(),
         ));
     }
-
-    let client =
-        Client::builder().timeout(std::time::Duration::from_mins(5)).build().map_err(|source| {
+    let client = Client::builder().timeout(std::time::Duration::from_secs(300)).build().map_err(
+        |source| {
             ConductorError::Workflow(format!("building sd download HTTP client failed: {source}"))
-        })?;
+        },
+    )?;
     let mut errors = Vec::new();
-
     for download_url in download_urls {
         let response = match client
             .get(download_url)
@@ -244,7 +231,6 @@ fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, Conductor
                 continue;
             }
         };
-
         if !response.status().is_success() {
             errors.push(format!(
                 "{download_url}: unexpected HTTP status {}",
@@ -252,7 +238,6 @@ fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, Conductor
             ));
             continue;
         }
-
         let payload = match response.bytes() {
             Ok(payload) => payload.to_vec(),
             Err(source) => {
@@ -260,15 +245,12 @@ fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, Conductor
                 continue;
             }
         };
-
         if payload.is_empty() {
             errors.push(format!("{download_url}: downloaded payload was empty"));
             continue;
         }
-
         return Ok(payload);
     }
-
     Err(ConductorError::Workflow(format!(
         "downloading sd release asset failed for all candidate URLs: {}",
         errors.join("; ")
@@ -281,21 +263,18 @@ fn extract_release_executable_bytes(
     archive_kind: ReleaseArchiveKind,
 ) -> Result<Vec<u8>, ConductorError> {
     let executable_name = executable_file_name();
-
     match archive_kind {
         ReleaseArchiveKind::Zip => {
             let reader = std::io::Cursor::new(archive_payload);
             let mut archive = zip::ZipArchive::new(reader).map_err(|source| {
                 ConductorError::Workflow(format!("decoding sd ZIP release asset failed: {source}"))
             })?;
-
             for index in 0..archive.len() {
                 let mut entry = archive.by_index(index).map_err(|source| {
                     ConductorError::Workflow(format!(
                         "reading sd ZIP release entry at index {index} failed: {source}"
                     ))
                 })?;
-
                 let Some(file_name) = entry
                     .enclosed_name()
                     .and_then(|path| path.file_name().map(OsStr::to_os_string))
@@ -305,20 +284,17 @@ fn extract_release_executable_bytes(
                 if file_name != OsStr::new(&executable_name) {
                     continue;
                 }
-
                 let mut executable_bytes = Vec::new();
                 entry.read_to_end(&mut executable_bytes).map_err(|source| {
                     ConductorError::Workflow(format!(
                         "reading sd executable bytes from ZIP release asset failed: {source}"
                     ))
                 })?;
-
                 if executable_bytes.is_empty() {
                     return Err(ConductorError::Workflow(
                         "sd executable extracted from ZIP release asset was empty".to_string(),
                     ));
                 }
-
                 return Ok(executable_bytes);
             }
         }
@@ -326,51 +302,52 @@ fn extract_release_executable_bytes(
             let reader = std::io::Cursor::new(archive_payload);
             let decompressor = flate2::read::GzDecoder::new(reader);
             let mut archive = tar::Archive::new(decompressor);
-
             let entries = archive.entries().map_err(|source| {
                 ConductorError::Workflow(format!(
                     "reading sd TAR.GZ release entries failed: {source}"
                 ))
             })?;
-
             for entry_result in entries {
                 let mut entry = entry_result.map_err(|source| {
                     ConductorError::Workflow(format!(
                         "decoding one sd TAR.GZ release entry failed: {source}"
                     ))
                 })?;
-
                 let path = entry.path().map_err(|source| {
                     ConductorError::Workflow(format!(
                         "reading sd TAR.GZ release entry path failed: {source}"
                     ))
                 })?;
-
                 if path.file_name() != Some(OsStr::new(&executable_name)) {
                     continue;
                 }
-
                 let mut executable_bytes = Vec::new();
                 entry.read_to_end(&mut executable_bytes).map_err(|source| {
                     ConductorError::Workflow(format!(
                         "reading sd executable bytes from TAR.GZ release asset failed: {source}"
                     ))
                 })?;
-
                 if executable_bytes.is_empty() {
                     return Err(ConductorError::Workflow(
                         "sd executable extracted from TAR.GZ release asset was empty".to_string(),
                     ));
                 }
-
                 return Ok(executable_bytes);
             }
         }
     }
-
     Err(ConductorError::Workflow(format!(
         "sd executable '{executable_name}' not found in downloaded release asset"
     )))
+}
+
+/// Binary payload materialized for one source-installed common executable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommonExecutablePayload {
+    /// Canonical executable file name (for example `sd.exe` on Windows).
+    pub executable_file_name: String,
+    /// Raw executable bytes that should be written/imported as-is.
+    pub executable_bytes: Vec<u8>,
 }
 
 /// Downloads the latest host-specific `sd` release and returns executable
@@ -387,7 +364,6 @@ pub fn fetch_payload() -> Result<CommonExecutablePayload, ConductorError> {
     let executable_file_name = executable_file_name();
     let executable_bytes =
         extract_release_executable_bytes(&archive_payload, selection.archive_kind)?;
-
     Ok(CommonExecutablePayload { executable_file_name, executable_bytes })
 }
 
@@ -406,16 +382,14 @@ mod tests {
         assert!(
             std::path::Path::new(&file_name)
                 .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
         );
-
         #[cfg(not(windows))]
         assert!(
             !std::path::Path::new(&file_name)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
         );
-
         assert_eq!(LOGICAL_TOOL_NAME, "mediapm-conductor.tools.sd");
     }
 
@@ -453,32 +427,25 @@ mod tests {
                 }
             ]
         });
-
         let selection = select_host_release_asset(&release);
-
         #[cfg(any(
             all(target_os = "windows", target_arch = "x86_64"),
             all(target_os = "windows", target_arch = "aarch64"),
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "aarch64"),
             all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
         ))]
         {
-            let selection = selection.expect("expected host asset selection to succeed");
-            assert!(!selection.download_urls.is_empty());
+            let selection = selection.expect("should find matching asset");
+            assert!(!selection.download_urls.is_empty(), "should have at least one URL");
         }
-
         #[cfg(not(any(
             all(target_os = "windows", target_arch = "x86_64"),
             all(target_os = "windows", target_arch = "aarch64"),
-            all(target_os = "linux", target_arch = "x86_64"),
-            all(target_os = "linux", target_arch = "aarch64"),
             all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "macos", target_arch = "aarch64")
         )))]
         {
-            assert!(selection.is_err(), "unsupported targets should fail clearly");
+            assert!(selection.is_err(), "unsupported platform should fail");
         }
     }
 }

@@ -1,1787 +1,1721 @@
-//! Template rendering and ZIP-selector parsing helpers for step workers.
+//! Full template interpolation engine for step input resolution.
 //!
-//! This module isolates `${...}` interpolation mechanics from process
-//! execution plumbing so `step_worker.rs` can stay focused on actor/runtime
-//! orchestration.
+//! Supports `${step_output.<id>.<name>}`, `${external_data.<hash>}`,
+//! `${env.<VAR>}`, `${*<token>}`, `${inputs.<name>}`, platform conditionals,
+//! exists ternaries (`${ref ? true | false}`), comparison operators, escape
+//! sequences, and post-processing selectors (`:zip(member)`, `:file(path)`,
+//! `:folder(path)`).
 //!
-//! # Module structure note
+//! # Resolution order
 //!
-//! This file intentionally remains as a single module despite exceeding 1 400
-//! lines. Every function belongs to one `impl<C> StepWorkerExecutor<C>` block
-//! and takes `&self`, so a child-module split would require `include!()` or a
-//! structural refactor that goes beyond the splitting goal. The cohesion of the
-//! template-rendering concern (parsing, conditionals, zip selectors, JS string
-//! decoding) also argues for keeping this file whole.
+//! 1. Escape `\${` → literal `$`.
+//! 2. Extract `${...}` segments with proper brace nesting.
+//! 3. For each segment, determine whether it is a:
+//!    - **Platform conditional** — `context.os <op> "value" ? ... : ...`
+//!    - **Exists ternary** — `ref_expr ? true | false`
+//!    - **Base reference** — `step_output.<id>.<name>`, `external_data.<hash>`,
+//!      `env.<VAR>`, `*<token>`, or `inputs.<name>`.
+//! 4. Apply chained post-processing selectors (`:zip`, `:file`, `:folder`)
+//!    from right to left.
+//! 5. Resolve and stringify (for [`resolve_template`]) or preserve as bytes
+//!    (for [`resolve_content`]).
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
-use bytes::Bytes;
 use mediapm_cas::Hash;
 
-use mediapm_cas::{CasApi, ConstraintApi};
-
 use crate::error::ConductorError;
-use crate::model::state::ResolvedInput;
 
-use super::{ExtractedZipSelection, StepWorkerExecutor, TemplateFileWrite, TemplateSelectorSource};
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
-/// Supported comparison operators for `${<left> <op> <right> ? ... | ...}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateComparisonOperator {
-    /// Equality (`==`).
-    Equal,
-    /// Inequality (`!=`).
-    NotEqual,
-    /// Lexicographic less-than (`<`).
-    LessThan,
-    /// Lexicographic less-than-or-equal (`<=`).
-    LessThanOrEqual,
-    /// Lexicographic greater-than (`>`).
-    GreaterThan,
-    /// Lexicographic greater-than-or-equal (`>=`).
-    GreaterThanOrEqual,
+/// Context injected into every template resolution call.
+///
+/// Generic parameter `C` is the concrete CAS type (see [`mediapm_cas::CasApi`]).
+pub struct TemplateContext<'a, C> {
+    /// Optional CAS handle for fetching external data and step-output content.
+    pub cas: Option<&'a C>,
+    /// Step outputs: map from step_id → (output_name → content hash).
+    pub step_outputs: &'a BTreeMap<String, BTreeMap<String, Hash>>,
+    /// Host environment variables.
+    pub env_vars: &'a BTreeMap<String, String>,
+    /// Unpack tokens: token name → raw binary data (archives, blobs).
+    pub tokens: &'a BTreeMap<String, Vec<u8>>,
+    /// Sandbox directory for materialization directives (`:file`, `:folder`).
+    pub sandbox_dir: Option<&'a Path>,
+    /// Host OS string for platform conditional evaluation
+    /// (e.g. `"macos"`, `"linux"`, `"windows"`).
+    pub host_os: &'a str,
+    /// Resolved input values for the current step.
+    /// Populated for command-parts resolution; empty during input resolution.
+    pub inputs: &'a BTreeMap<String, String>,
 }
 
-/// One optional trailing materialization directive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateMaterializationDirective<'a> {
-    /// Defer materialization to one concrete file path.
-    File(&'a str),
-    /// Defer materialization to one concrete directory path.
-    Folder(&'a str),
+/// Result of resolving a single template reference.
+#[derive(Debug, Clone)]
+pub enum ResolvedValue {
+    /// Plain string value (most common — step output, env var, etc.).
+    String(String),
+    /// Binary data (from external_data, zip extraction, or unpack token).
+    Bytes(Vec<u8>),
+    /// File materialized to the sandbox at the given path.
+    MaterializedFile(PathBuf),
+    /// Folder materialized to the sandbox at the given path.
+    MaterializedFolder(PathBuf),
 }
 
-impl<C: CasApi + ConstraintApi + Send + Sync + 'static> StepWorkerExecutor<C> {
-    /// Parses one standalone command-argument unpack token.
-    ///
-    /// Supported form is exactly `${*<token>}` where `<token>` is either:
-    /// - one selector that resolves to an input key, or
-    /// - one conditional expression in `${<condition>?<true>|<false>}` form.
-    ///
-    /// The token must occupy the entire command argument. Selector unpack
-    /// tokens expand list inputs to multiple arguments and scalar inputs to one
-    /// argument when non-empty. Conditional unpack tokens evaluate to one
-    /// rendered branch argument when non-empty.
-    #[expect(
-        clippy::unused_self,
-        reason = "instance method form keeps parser helpers consistent across template operations"
-    )]
-    fn parse_command_unpack_token<'a>(&self, template: &'a str) -> Option<&'a str> {
-        let prefix = "${*";
-        if !template.starts_with(prefix) || !template.ends_with('}') {
-            return None;
+impl ResolvedValue {
+    /// Convert to `String` for interpolation into a template result.
+    fn into_string(self) -> Result<String, ConductorError> {
+        match self {
+            ResolvedValue::String(s) => Ok(s),
+            ResolvedValue::Bytes(b) => String::from_utf8(b).map_err(|e| {
+                ConductorError::Workflow(format!(
+                    "template: binary content is not valid UTF-8: {e}",
+                ))
+            }),
+            ResolvedValue::MaterializedFile(p) | ResolvedValue::MaterializedFolder(p) => {
+                Ok(p.to_string_lossy().to_string())
+            }
         }
-        let selector = &template[prefix.len()..template.len() - 1];
-        if selector.trim().is_empty() {
-            return None;
-        }
-        Some(selector)
     }
 
-    /// Renders a map of template values using the resolved input scope.
-    pub(super) fn render_templates(
-        &self,
-        templates: &BTreeMap<String, String>,
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<BTreeMap<String, String>, ConductorError> {
-        templates
-            .iter()
-            .map(|(key, value)| {
-                self.render_template_value(value, inputs, pending_file_writes)
-                    .map(|rendered| (key.clone(), rendered))
-            })
-            .collect()
+    /// Convert to `Vec<u8>` for binary content resolution.
+    fn into_bytes(self) -> Result<Vec<u8>, ConductorError> {
+        match self {
+            ResolvedValue::String(s) => Ok(s.into_bytes()),
+            ResolvedValue::Bytes(b) => Ok(b),
+            ResolvedValue::MaterializedFile(_) | ResolvedValue::MaterializedFolder(_) => {
+                Err(ConductorError::Workflow(
+                    "template: cannot convert materialized path to raw bytes".to_string(),
+                ))
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsed reference types
+// ---------------------------------------------------------------------------
+
+/// The kind of a base reference (before post-processing selectors).
+#[derive(Debug, Clone, PartialEq)]
+enum BaseRef {
+    /// `${step_output.<step_id>.<output_name>}`
+    StepOutput { step_id: String, output: String },
+    /// `${external_data.<hash>}`
+    ExternalData(Hash),
+    /// `${env.<VAR>}`
+    Env(String),
+    /// `${*<token>}` — unpack token for archive expansion.
+    UnpackToken(String),
+    /// `${inputs.<name>}` — resolved step input value.
+    Input(String),
+    /// `${*inputs.<name>}` — splat a string_list input into multiple command
+    /// parts (JSON-decodes `Vec<String>` from the resolved value).
+    UnpackInput(String),
+}
+
+/// A post-processing selector applied to a resolved value.
+#[derive(Debug, Clone, PartialEq)]
+enum PostSelector {
+    /// `:zip(<member>)` — extract a member from ZIP binary data.
+    Zip(String),
+    /// `:file(<path>)` — write resolved content to sandbox, return path.
+    File(String),
+    /// `:folder(<path>)` — extract archive to sandbox folder, return path.
+    Folder(String),
+}
+
+/// A fully parsed reference expression.
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedReference {
+    /// Optional conditional guard (comparison or exists).
+    conditional: Option<ConditionalExpr>,
+    /// Base reference (filled when there is no conditional).
+    base: Option<BaseRef>,
+    /// Chained post-processing selectors (applied left-to-right).
+    selectors: Vec<PostSelector>,
+}
+
+/// A parsed platform conditional `context.os <op> "value" ? <true_val> : <false_val>`.
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedConditional {
+    /// Left-hand side of the comparison (e.g. `context.os`).
+    lhs: String,
+    /// Comparison operator.
+    op: ComparisonOp,
+    /// Right-hand side literal value (quoted string).
+    rhs: String,
+    /// True branch expression (may contain nested `${}`, resolved recursively).
+    true_expr: String,
+    /// False branch expression.
+    false_expr: String,
+}
+
+/// A parsed exists ternary `${ref_expr ? true_branch | false_branch}`.
+///
+/// The `ref_expr` is resolved; if non-empty, the true branch is used,
+/// otherwise the false branch.
+#[derive(Debug, Clone, PartialEq)]
+struct ParsedExistsTernary {
+    /// Reference expression to check for existence (may include selectors).
+    ref_expr: String,
+    /// Expression when the reference resolves to a non-empty value.
+    true_expr: String,
+    /// Expression when the reference is empty or absent.
+    false_expr: String,
+}
+
+/// Types of conditional expressions in templates.
+#[derive(Debug, Clone, PartialEq)]
+enum ConditionalExpr {
+    /// Comparison conditional: `context.os == "value" ? true_branch : false_branch`.
+    Comparison(ParsedConditional),
+    /// Exists ternary: `ref_expr ? true_branch | false_branch`.
+    Exists(ParsedExistsTernary),
+}
+
+/// Supported comparison operators.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ComparisonOp {
+    Eq,  // ==
+    Neq, // !=
+    Lt,  // <
+    Le,  // <=
+    Gt,  // >
+    Ge,  // >=
+}
+
+impl ComparisonOp {
+    fn evaluate(&self, lhs: &str, rhs: &str) -> bool {
+        match self {
+            ComparisonOp::Eq => lhs == rhs,
+            ComparisonOp::Neq => lhs != rhs,
+            ComparisonOp::Lt => lhs < rhs,
+            ComparisonOp::Le => lhs <= rhs,
+            ComparisonOp::Gt => lhs > rhs,
+            ComparisonOp::Ge => lhs >= rhs,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing constants
+// ---------------------------------------------------------------------------
+
+/// Sentinel used to represent escaped `\${` during interpolation.
+const ESCAPED_SENTINEL: &str = "\x00ESC_DOLLAR_BRACE\x00";
+
+// ---------------------------------------------------------------------------
+// Main entry points
+// ---------------------------------------------------------------------------
+
+/// Resolves a template string, returning the fully interpolated result.
+///
+/// All references are resolved and stringified. Binary content from CAS is
+/// decoded as UTF-8.
+pub async fn resolve_template<C: mediapm_cas::CasApi + Send + Sync>(
+    template: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<String, ConductorError> {
+    // 1. Handle escape sequences.
+    let processed = template.replace("\\${", ESCAPED_SENTINEL);
+
+    // 2. Parse into segments.
+    let segments = parse_into_segments(&processed)?;
+
+    // 3. Resolve each reference segment.
+    let mut result = String::new();
+    for segment in &segments {
+        match segment {
+            Segment::Text(text) => result.push_str(text),
+            Segment::Reference(parsed) => {
+                let value = resolve_parsed_reference(parsed, ctx).await?;
+                result.push_str(&value.into_string()?);
+            }
+        }
     }
 
-    /// Renders one template string using JavaScript-like `${...}` interpolation
-    /// rules over the step input scope.
-    pub(super) fn render_template_value(
-        &self,
-        template: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<String, ConductorError> {
-        let mut rendered = String::with_capacity(template.len());
-        let mut index = 0usize;
+    // 4. Restore escape sentinels.
+    Ok(result.replace(ESCAPED_SENTINEL, "${"))
+}
 
-        while index < template.len() {
-            let tail = &template[index..];
-            if tail.starts_with(r"\${") {
-                rendered.push_str("${");
-                index += 3;
-                continue;
-            }
-            if tail.starts_with("${") {
-                let after = &template[index + 2..];
-                let Some(end) = after.find('}') else {
-                    return Err(ConductorError::Workflow(format!(
-                        "unterminated template expression in '{template}'"
-                    )));
-                };
-                let token = &after[..end];
-                rendered.push_str(&self.resolve_template_token(
-                    token,
-                    inputs,
-                    pending_file_writes,
-                )?);
-                index += 2 + end + 1;
-                continue;
-            }
-            if tail.starts_with('\\') {
-                let (decoded, consumed) =
-                    self.decode_js_escape(&template[index + 1..], template)?;
-                rendered.push_str(&decoded);
-                index += 1 + consumed;
-                continue;
-            }
+/// Resolves a template string into raw binary content.
+///
+/// For references that resolve to binary (external_data, zip members, unpack
+/// tokens), the raw bytes are returned. For string values, UTF-8 encoding
+/// is used.
+pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
+    template: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<Vec<u8>, ConductorError> {
+    let processed = template.replace("\\${", ESCAPED_SENTINEL);
+    let segments = parse_into_segments(&processed)?;
 
-            let Some(ch) = tail.chars().next() else {
-                return Err(ConductorError::Workflow(format!(
-                    "invalid template scanning state for '{template}'"
-                )));
-            };
-            rendered.push(ch);
-            index += ch.len_utf8();
+    // If the template is a single reference, return its bytes directly.
+    if segments.len() == 1 {
+        if let Segment::Reference(parsed) = &segments[0] {
+            let value = resolve_parsed_reference(parsed, ctx).await?;
+            return value.into_bytes();
         }
-
-        Ok(rendered)
     }
 
-    /// Resolves one `${...}` token body against the current input scope.
-    ///
-    /// Supported trailing directives are:
-    /// - `:zip(<entry>)` to select a ZIP entry from input bytes,
-    /// - `:file(<relative_path>)` to defer writing selected bytes as one file,
-    /// - `:folder(<relative_path>)` to defer writing selected ZIP-directory
-    ///   descendants as files under one destination folder.
-    ///
-    /// `:folder(...)` is only valid when combined with `:zip(...)`, and ZIP
-    /// selectors that resolve to directories must use `:folder(...)`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-    )]
-    fn resolve_template_token(
-        &self,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<String, ConductorError> {
-        if token.starts_with('*') {
-            return Err(ConductorError::Workflow(format!(
-                "unpack expression '${{{token}}}' is only valid as a standalone executable command argument token"
-            )));
-        }
+    // Otherwise, resolve as string and encode.
+    let string_result = resolve_template(template, ctx).await?;
+    Ok(string_result.into_bytes())
+}
 
-        let token = token.trim();
-        if token.is_empty() {
-            return Err(ConductorError::Workflow(
-                "template expression cannot be empty".to_string(),
-            ));
-        }
+/// Resolves a slice of command parts, expanding splat references
+/// (`${*inputs.<name>}`) into their constituent elements.
+///
+/// Each part is resolved as a template.  If the raw part matches the splat
+/// pattern `${*inputs.<name>}`, the named input is JSON-decoded as
+/// `Vec<String>` and its elements are inserted in place.
+pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
+    command_parts: &[String],
+    ctx: &TemplateContext<'_, C>,
+) -> Result<Vec<String>, ConductorError> {
+    let mut resolved = Vec::with_capacity(command_parts.len());
 
-        if let Some(conditional_rendered) =
-            self.resolve_comparison_conditional_token(token, inputs, pending_file_writes)?
+    for part in command_parts {
+        let trimmed = part.trim();
+
+        // Detect splat reference: `${*inputs.<name>}` (possibly with
+        // whitespace around the braces).
+        if let Some(splat_inner) = trimmed
+            .strip_prefix("${")
+            .and_then(|s| s.strip_suffix('}'))
+            .map(|s| s.trim())
+            .and_then(|s| s.strip_prefix("*inputs."))
         {
-            return Ok(conditional_rendered);
-        }
-
-        let mut selector = token;
-        let mut materialization_directive: Option<TemplateMaterializationDirective<'_>> = None;
-        if let Some((selector_prefix, argument)) =
-            self.split_trailing_template_directive(selector, "file")?
-        {
-            materialization_directive = Some(TemplateMaterializationDirective::File(argument));
-            selector = selector_prefix;
-        } else if let Some((selector_prefix, argument)) =
-            self.split_trailing_template_directive(selector, "folder")?
-        {
-            materialization_directive = Some(TemplateMaterializationDirective::Folder(argument));
-            selector = selector_prefix;
-        }
-
-        if self.split_trailing_template_directive(selector, "file")?.is_some()
-            || self.split_trailing_template_directive(selector, "folder")?.is_some()
-        {
-            return Err(ConductorError::Workflow(format!(
-                "template expression '${{{token}}}' supports at most one trailing materialization directive"
-            )));
-        }
-
-        let mut zip_entry_path: Option<&str> = None;
-        if let Some((selector_prefix, argument)) =
-            self.split_trailing_template_directive(selector, "zip")?
-        {
-            zip_entry_path = Some(argument);
-            selector = selector_prefix;
-        }
-
-        let mut cas_hash: Option<Hash> = None;
-        let plain_content = match self.resolve_template_selector(selector)? {
-            TemplateSelectorSource::Input(input_key) => {
-                let input = inputs.get(&input_key).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "template references missing input '{input_key}'"
-                    ))
-                })?;
-
-                if input.string_list.is_some() {
-                    return Err(ConductorError::Workflow(format!(
-                        "template expression '${{{token}}}' references list input '{input_key}', but list inputs are only valid in standalone command unpack tokens like '${{*inputs.{input_key}}}'"
-                    )));
-                }
-
-                if let Some(entry_path) = zip_entry_path {
-                    match self.extract_zip_entry_from_input(
-                        &input_key,
-                        &input.plain_content,
-                        entry_path,
-                    )? {
-                        ExtractedZipSelection::File(file_content) => {
-                            if let Some(TemplateMaterializationDirective::Folder(_)) =
-                                materialization_directive
-                            {
-                                return Err(ConductorError::Workflow(format!(
-                                    "template zip selector for input '{input_key}' resolved '{entry_path}' to a file; expected a directory for :folder(...)"
-                                )));
-                            }
-                            file_content
-                        }
-                        ExtractedZipSelection::Directory(directory_files) => {
-                            let Some(TemplateMaterializationDirective::Folder(relative_path)) =
-                                materialization_directive
-                            else {
-                                return Err(ConductorError::Workflow(format!(
-                                    "template zip selector for input '{input_key}' resolved '{entry_path}' to a directory; use :folder(<relative_path>) to materialize directory entries"
-                                )));
-                            };
-
-                            let normalized_relative = self.normalized_relative_tool_path(
-                                relative_path,
-                                "template folder materialization",
-                            )?;
-                            for (entry_relative_path, entry_content) in directory_files {
-                                pending_file_writes.push(TemplateFileWrite {
-                                    relative_path: normalized_relative.join(entry_relative_path),
-                                    plain_content: entry_content,
-                                    cas_hash: None,
-                                });
-                            }
-                            return Ok(normalized_relative.to_string_lossy().to_string());
-                        }
-                    }
-                } else {
-                    cas_hash = Some(input.hash);
-                    input.plain_content.clone()
-                }
-            }
-            TemplateSelectorSource::ContextOs => {
-                if zip_entry_path.is_some() {
-                    return Err(ConductorError::Workflow(format!(
-                        "template expression '${{{token}}}' cannot apply :zip(...) to 'context.os'"
-                    )));
-                }
-                Bytes::from(self.current_os_text().as_bytes().to_vec())
-            }
-            TemplateSelectorSource::ContextWorkingDirectory => {
-                if zip_entry_path.is_some() {
-                    return Err(ConductorError::Workflow(format!(
-                        "template expression '${{{token}}}' cannot apply :zip(...) to 'context.working_directory'"
-                    )));
-                }
-                Bytes::from(self.current_working_directory_text()?.into_bytes())
-            }
-        };
-
-        if let Some(TemplateMaterializationDirective::Folder(_)) = materialization_directive {
-            return Err(ConductorError::Workflow(format!(
-                "template folder materialization only supports ZIP selectors on input values, not '${{{token}}}'"
-            )));
-        }
-
-        if let Some(TemplateMaterializationDirective::File(relative_path)) =
-            materialization_directive
-        {
-            let normalized_relative =
-                self.normalized_relative_tool_path(relative_path, "template file materialization")?;
-            pending_file_writes.push(TemplateFileWrite {
-                relative_path: normalized_relative.clone(),
-                plain_content,
-                cas_hash,
-            });
-            Ok(normalized_relative.to_string_lossy().to_string())
-        } else {
-            Ok(String::from_utf8_lossy(&plain_content).to_string())
-        }
-    }
-
-    /// Splits one token suffix formatted as `:<directive>(<argument>)`.
-    ///
-    /// Returns the token prefix before the directive plus the trimmed argument
-    /// when the trailing suffix matches exactly; otherwise returns `None`.
-    #[expect(
-        clippy::unused_self,
-        reason = "kept as method to mirror other parser helpers and error-context style"
-    )]
-    fn split_trailing_template_directive<'a>(
-        &self,
-        token: &'a str,
-        directive: &str,
-    ) -> Result<Option<(&'a str, &'a str)>, ConductorError> {
-        let token = token.trim_end();
-        if !token.ends_with(')') {
-            return Ok(None);
-        }
-
-        let mut depth = 0usize;
-        let mut open_index = None;
-        for (index, character) in token.char_indices().rev() {
-            match character {
-                ')' => depth = depth.saturating_add(1),
-                '(' => {
-                    if depth == 0 {
-                        return Err(ConductorError::Workflow(format!(
-                            "invalid template expression '${{{token}}}'"
-                        )));
-                    }
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        open_index = Some(index);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let Some(open_index) = open_index else {
-            return Err(ConductorError::Workflow(format!(
-                "invalid template expression '${{{token}}}'"
-            )));
-        };
-
-        let prefix_with_directive = token[..open_index].trim_end();
-        let directive_prefix = format!(":{directive}");
-        if !prefix_with_directive.ends_with(&directive_prefix) {
-            return Ok(None);
-        }
-
-        let argument = token[open_index + 1..token.len() - 1].trim();
-        if argument.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "template directive '{directive}' requires one non-empty argument in '${{{token}}}'"
-            )));
-        }
-
-        let selector = prefix_with_directive
-            [..prefix_with_directive.len() - directive_prefix.len()]
-            .trim_end();
-        if selector.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "template directive '{directive}' requires one selector in '${{{token}}}'"
-            )));
-        }
-
-        Ok(Some((selector, argument)))
-    }
-
-    /// Resolves one `${<condition> ? <true> | <false>}` conditional token.
-    ///
-    /// Conditions use a recursive-descent grammar with the following rules:
-    ///
-    /// - Logical `&&` and `||` combine sub-conditions; `&&` binds tighter
-    ///   than `||`.
-    /// - Parentheses `(…)` group sub-conditions.
-    /// - A leading `!` negates one primary.
-    /// - Leaf expressions are either one comparison (`<left> <op> <right>`)
-    ///   with operators `==`, `!=`, `<`, `<=`, `>`, `>=`, or one truthiness
-    ///   check (`<operand>`). Comparison operands use lexicographic ordering.
-    ///
-    /// The `|` branch separator is always distinct from the `||` logical-or
-    /// operator: `||` inside the condition is consumed by the recursive-descent
-    /// parser, while a lone `|` outside any depth-tracked delimiter ends the
-    /// condition and begins the false branch.
-    fn resolve_comparison_conditional_token(
-        &self,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<Option<String>, ConductorError> {
-        let Some((condition_expression, true_branch, false_branch)) =
-            self.split_conditional_token_branches(token)?
-        else {
-            return Ok(None);
-        };
-
-        let matches = self.evaluate_condition_expression(condition_expression, token, inputs)?;
-
-        let selected_branch = if matches { true_branch } else { false_branch };
-        self.resolve_conditional_branch_value(selected_branch, inputs, pending_file_writes)
-            .map(Some)
-    }
-
-    /// Evaluates one full condition expression with `&&`, `||`, `!`, and
-    /// parentheses using recursive descent.
-    ///
-    /// Grammar:
-    /// ```text
-    /// condition  ::= or_expr
-    /// or_expr    ::= and_expr ("||" and_expr)*
-    /// and_expr   ::= primary ("&&" primary)*
-    /// primary    ::= "(" condition ")"
-    ///              | "!" primary
-    ///              | leaf_expression
-    /// ```
-    /// A `leaf_expression` is either a comparison (`<left> <op> <right>`) or a
-    /// truthiness check (`<operand>`), using the existing
-    /// [`parse_conditional_comparison`] and [`resolve_conditional_truthiness`]
-    /// helpers. Leaf extraction stops at any `&&`, `||`, or `)` that is
-    /// outside depth-tracked quotes, parentheses, brackets, and braces.
-    fn evaluate_condition_expression(
-        &self,
-        expression: &str,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<bool, ConductorError> {
-        let trimmed = expression.trim();
-        let (value, remaining) = self.parse_condition_or_expr(trimmed, token, inputs)?;
-        let remaining_trimmed = remaining.trim();
-        if !remaining_trimmed.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "unexpected content in condition expression '${{{token}}}': '{remaining_trimmed}'"
-            )));
-        }
-        Ok(value)
-    }
-
-    /// Parses `or_expr ::= and_expr ("||" and_expr)*`.
-    ///
-    /// Returns the evaluated boolean and the unconsumed remainder of `expression`
-    /// so the caller can continue parsing at the enclosing grammar level.
-    fn parse_condition_or_expr<'a>(
-        &self,
-        expression: &'a str,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<(bool, &'a str), ConductorError> {
-        let (mut result, mut remaining) =
-            self.parse_condition_and_expr(expression, token, inputs)?;
-        loop {
-            let trimmed = remaining.trim_start();
-            if let Some(rest) = trimmed.strip_prefix("||") {
-                let (rhs, new_remaining) =
-                    self.parse_condition_and_expr(rest.trim_start(), token, inputs)?;
-                result = result || rhs;
-                remaining = new_remaining;
-            } else {
-                break;
-            }
-        }
-        Ok((result, remaining))
-    }
-
-    /// Parses `and_expr ::= primary ("&&" primary)*`.
-    ///
-    /// Returns the evaluated boolean and the unconsumed remainder of `expression`
-    /// so the caller can continue parsing at the enclosing grammar level.
-    fn parse_condition_and_expr<'a>(
-        &self,
-        expression: &'a str,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<(bool, &'a str), ConductorError> {
-        let (mut result, mut remaining) =
-            self.parse_condition_primary(expression, token, inputs)?;
-        loop {
-            let trimmed = remaining.trim_start();
-            if let Some(rest) = trimmed.strip_prefix("&&") {
-                let (rhs, new_remaining) =
-                    self.parse_condition_primary(rest.trim_start(), token, inputs)?;
-                result = result && rhs;
-                remaining = new_remaining;
-            } else {
-                break;
-            }
-        }
-        Ok((result, remaining))
-    }
-
-    /// Parses `primary ::= "(" condition ")" | "!" primary | leaf_expression`.
-    ///
-    /// Parenthesised groups delegate back to [`parse_condition_or_expr`] so
-    /// the full grammar is supported recursively. A leading `!` negates the
-    /// next primary. All other input is treated as a leaf and extracted by
-    /// [`Self::extract_condition_leaf`].
-    fn parse_condition_primary<'a>(
-        &self,
-        expression: &'a str,
-        token: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<(bool, &'a str), ConductorError> {
-        let expression = expression.trim_start();
-
-        // Parenthesised sub-expression.
-        if let Some(inner) = expression.strip_prefix('(') {
-            let (value, after_inner) = self.parse_condition_or_expr(inner, token, inputs)?;
-            let after_trimmed = after_inner.trim_start();
-            if let Some(rest) = after_trimmed.strip_prefix(')') {
-                return Ok((value, rest));
-            }
-            return Err(ConductorError::Workflow(format!(
-                "unclosed parenthesis in condition expression '${{{token}}}'"
-            )));
-        }
-
-        // Logical negation: `!primary`.
-        if let Some(rest) = expression.strip_prefix('!') {
-            let (value, remaining) =
-                self.parse_condition_primary(rest.trim_start(), token, inputs)?;
-            return Ok((!value, remaining));
-        }
-
-        // Leaf: comparison or truthiness.
-        let (leaf, remaining) = Self::extract_condition_leaf(expression);
-        let leaf = leaf.trim();
-        if leaf.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "empty primary expression in condition '${{{token}}}'"
-            )));
-        }
-
-        let value =
-            if let Some((left, op, right)) = self.parse_conditional_comparison(leaf, token)? {
-                let left_value = self.resolve_conditional_operand(left, inputs)?;
-                let right_value = self.resolve_conditional_operand(right, inputs)?;
-                match op {
-                    TemplateComparisonOperator::Equal => left_value == right_value,
-                    TemplateComparisonOperator::NotEqual => left_value != right_value,
-                    TemplateComparisonOperator::LessThan => left_value < right_value,
-                    TemplateComparisonOperator::LessThanOrEqual => left_value <= right_value,
-                    TemplateComparisonOperator::GreaterThan => left_value > right_value,
-                    TemplateComparisonOperator::GreaterThanOrEqual => left_value >= right_value,
-                }
-            } else {
-                self.resolve_conditional_truthiness(leaf, inputs)?
-            };
-
-        Ok((value, remaining))
-    }
-
-    /// Extracts one leaf condition token, stopping at `&&`, `||`, or a `)` at
-    /// depth zero outside any depth-tracked quotes, parentheses, brackets, or
-    /// braces.
-    ///
-    /// Returns `(leaf, remaining)` where `remaining` starts at the first
-    /// stopping delimiter. Depth tracking mirrors
-    /// [`split_conditional_token_branches`].
-    fn extract_condition_leaf(expression: &str) -> (&str, &str) {
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        let mut paren_depth = 0usize;
-        let mut bracket_depth = 0usize;
-        let mut brace_depth = 0usize;
-        let chars: Vec<(usize, char)> = expression.char_indices().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            let (index, character) = chars[i];
-
-            if let Some(active_quote) = quote {
-                if escaped {
-                    escaped = false;
-                    i += 1;
-                    continue;
-                }
-                if character == '\\' {
-                    escaped = true;
-                    i += 1;
-                    continue;
-                }
-                if character == active_quote {
-                    quote = None;
-                }
-                i += 1;
-                continue;
-            }
-
-            match character {
-                '\'' | '"' => {
-                    quote = Some(character);
-                    i += 1;
-                    continue;
-                }
-                '(' => paren_depth = paren_depth.saturating_add(1),
-                ')' if paren_depth > 0 => paren_depth = paren_depth.saturating_sub(1),
-                ')' => return (&expression[..index], &expression[index..]),
-                '[' => bracket_depth = bracket_depth.saturating_add(1),
-                ']' if bracket_depth > 0 => bracket_depth = bracket_depth.saturating_sub(1),
-                '{' => brace_depth = brace_depth.saturating_add(1),
-                '}' if brace_depth > 0 => brace_depth = brace_depth.saturating_sub(1),
-                '&' if paren_depth == 0
-                    && bracket_depth == 0
-                    && brace_depth == 0
-                    && i + 1 < chars.len()
-                    && chars[i + 1].1 == '&' =>
-                {
-                    return (&expression[..index], &expression[index..]);
-                }
-                '|' if paren_depth == 0
-                    && bracket_depth == 0
-                    && brace_depth == 0
-                    && i + 1 < chars.len()
-                    && chars[i + 1].1 == '|' =>
-                {
-                    return (&expression[..index], &expression[index..]);
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-
-        (expression, "")
-    }
-
-    /// Returns host platform value used by `context.os` selectors.
-    #[must_use]
-    #[expect(
-        clippy::unused_self,
-        reason = "method keeps context selectors grouped on the executor helper surface"
-    )]
-    fn current_os_text(&self) -> &'static str {
-        match std::env::consts::OS {
-            "windows" => "windows",
-            "linux" => "linux",
-            "macos" => "macos",
-            other => other,
-        }
-    }
-
-    /// Returns current process working-directory text used by
-    /// `context.working_directory` selectors.
-    #[expect(
-        clippy::unused_self,
-        reason = "instance-scoped helper for consistent template-context access pattern"
-    )]
-    fn current_working_directory_text(&self) -> Result<String, ConductorError> {
-        std::env::current_dir().map(|path| path.to_string_lossy().to_string()).map_err(|source| {
-            ConductorError::Io {
-                operation: "resolving current working directory for template context".to_string(),
-                path: Path::new(".").to_path_buf(),
-                source,
-            }
-        })
-    }
-
-    /// Splits one conditional token into condition + true/false branches.
-    #[expect(
-        clippy::unused_self,
-        reason = "kept as method to maintain cohesive conditional-parser API on executor"
-    )]
-    fn split_conditional_token_branches<'a>(
-        &self,
-        token: &'a str,
-    ) -> Result<Option<(&'a str, &'a str, &'a str)>, ConductorError> {
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        let mut paren_depth = 0usize;
-        let mut bracket_depth = 0usize;
-        let mut brace_depth = 0usize;
-        let mut condition_separator_index = None;
-        let mut branch_separator_index = None;
-
-        let chars: Vec<(usize, char)> = token.char_indices().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            let (index, character) = chars[i];
-            if let Some(active_quote) = quote {
-                if escaped {
-                    escaped = false;
-                    i += 1;
-                    continue;
-                }
-                if character == '\\' {
-                    escaped = true;
-                    i += 1;
-                    continue;
-                }
-                if character == active_quote {
-                    quote = None;
-                }
-                i += 1;
-                continue;
-            }
-
-            match character {
-                '\'' | '"' => quote = Some(character),
-                '(' => paren_depth = paren_depth.saturating_add(1),
-                ')' => paren_depth = paren_depth.saturating_sub(1),
-                '[' => bracket_depth = bracket_depth.saturating_add(1),
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '{' => brace_depth = brace_depth.saturating_add(1),
-                '}' => brace_depth = brace_depth.saturating_sub(1),
-                '?' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    condition_separator_index.get_or_insert(index);
-                }
-                '|' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
-                    // Skip `||` (logical-or in condition) — treat lone `|` as branch separator.
-                    if i + 1 < chars.len() && chars[i + 1].1 == '|' {
-                        i += 2;
-                        continue;
-                    }
-                    if condition_separator_index.is_some() {
-                        branch_separator_index = Some(index);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-
-        let Some(condition_separator_index) = condition_separator_index else {
-            return Ok(None);
-        };
-        let Some(branch_separator_index) = branch_separator_index else {
-            return Err(ConductorError::Workflow(format!(
-                "invalid conditional template expression '${{{token}}}'; expected '${{<condition>?<true>|<false>}}'"
-            )));
-        };
-
-        let condition = token[..condition_separator_index].trim();
-        let true_branch = token[condition_separator_index + 1..branch_separator_index].trim();
-        let false_branch = token[branch_separator_index + 1..].trim();
-
-        if condition.is_empty() || true_branch.is_empty() || false_branch.is_empty() {
-            return Err(ConductorError::Workflow(format!(
-                "invalid conditional template expression '${{{token}}}'; condition and both branches must be non-empty"
-            )));
-        }
-
-        Ok(Some((condition, true_branch, false_branch)))
-    }
-
-    /// Parses one conditional comparison expression into operands + operator.
-    ///
-    /// Returns `Ok(None)` when no comparison operator is present so callers can
-    /// fall back to truthiness evaluation.
-    #[expect(
-        clippy::unused_self,
-        reason = "method-style parser helper keeps comparison parsing colocated with related evaluators"
-    )]
-    fn parse_conditional_comparison<'a>(
-        &self,
-        condition_expression: &'a str,
-        token: &str,
-    ) -> Result<Option<(&'a str, TemplateComparisonOperator, &'a str)>, ConductorError> {
-        let mut quote: Option<char> = None;
-        let mut escaped = false;
-        let mut paren_depth = 0usize;
-        let mut bracket_depth = 0usize;
-        let mut brace_depth = 0usize;
-
-        for (index, character) in condition_expression.char_indices() {
-            if let Some(active_quote) = quote {
-                if escaped {
-                    escaped = false;
-                    continue;
-                }
-                if character == '\\' {
-                    escaped = true;
-                    continue;
-                }
-                if character == active_quote {
-                    quote = None;
-                }
-                continue;
-            }
-
-            match character {
-                '\'' | '"' => {
-                    quote = Some(character);
-                    continue;
-                }
-                '(' => {
-                    paren_depth = paren_depth.saturating_add(1);
-                    continue;
-                }
-                ')' => {
-                    paren_depth = paren_depth.saturating_sub(1);
-                    continue;
-                }
-                '[' => {
-                    bracket_depth = bracket_depth.saturating_add(1);
-                    continue;
-                }
-                ']' => {
-                    bracket_depth = bracket_depth.saturating_sub(1);
-                    continue;
-                }
-                '{' => {
-                    brace_depth = brace_depth.saturating_add(1);
-                    continue;
-                }
-                '}' => {
-                    brace_depth = brace_depth.saturating_sub(1);
-                    continue;
-                }
-                _ => {}
-            }
-
-            if paren_depth != 0 || bracket_depth != 0 || brace_depth != 0 {
-                continue;
-            }
-
-            let tail = &condition_expression[index..];
-            let (operator_token, operator) = if tail.starts_with("==") {
-                ("==", TemplateComparisonOperator::Equal)
-            } else if tail.starts_with("!=") {
-                ("!=", TemplateComparisonOperator::NotEqual)
-            } else if tail.starts_with(">=") {
-                (">=", TemplateComparisonOperator::GreaterThanOrEqual)
-            } else if tail.starts_with("<=") {
-                ("<=", TemplateComparisonOperator::LessThanOrEqual)
-            } else if tail.starts_with('>') {
-                (">", TemplateComparisonOperator::GreaterThan)
-            } else if tail.starts_with('<') {
-                ("<", TemplateComparisonOperator::LessThan)
-            } else {
-                continue;
-            };
-
-            let left_operand = condition_expression[..index].trim();
-            let right_operand = condition_expression[index + operator_token.len()..].trim();
-            if left_operand.is_empty() || right_operand.is_empty() {
-                return Err(ConductorError::Workflow(format!(
-                    "invalid conditional template expression '${{{token}}}'; comparison operands must be non-empty"
-                )));
-            }
-
-            return Ok(Some((left_operand, operator, right_operand)));
-        }
-
-        let contains_operator_like_character = condition_expression
-            .chars()
-            .any(|character| matches!(character, '=' | '!' | '<' | '>'));
-        if contains_operator_like_character {
-            return Err(ConductorError::Workflow(format!(
-                "invalid conditional template expression '${{{token}}}'; expected one comparison operator among ==, !=, <, <=, >, >="
-            )));
-        }
-
-        Ok(None)
-    }
-
-    /// Evaluates one non-comparison conditional expression using truthiness.
-    ///
-    /// Truthy operands are non-empty string payloads, non-empty string lists,
-    /// and non-empty literal values. A leading `!` negates that truthiness.
-    fn resolve_conditional_truthiness(
-        &self,
-        condition_expression: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<bool, ConductorError> {
-        let expression = condition_expression.trim();
-        if expression.is_empty() {
-            return Err(ConductorError::Workflow(
-                "conditional truthiness expression cannot be empty".to_string(),
-            ));
-        }
-
-        if let Some(operand) = expression.strip_prefix('!') {
-            let operand = operand.trim();
-            if operand.is_empty() {
+            let name = splat_inner.trim().to_string();
+            if name.is_empty() {
                 return Err(ConductorError::Workflow(
-                    "conditional truthiness negation requires one operand".to_string(),
+                    "template: empty inputs splat in command parts '${{*inputs.}}'".to_string(),
                 ));
             }
-            return self
-                .resolve_conditional_truthiness_operand(operand, inputs)
-                .map(|value| !value);
-        }
-
-        self.resolve_conditional_truthiness_operand(expression, inputs)
-    }
-
-    /// Resolves one conditional truthiness operand into a boolean value.
-    fn resolve_conditional_truthiness_operand(
-        &self,
-        operand: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<bool, ConductorError> {
-        if (operand.starts_with('"') && operand.ends_with('"'))
-            || (operand.starts_with('\'') && operand.ends_with('\''))
-        {
-            return self.decode_js_quoted_string(operand, operand).map(|value| !value.is_empty());
-        }
-
-        if operand == "context.os" {
-            return Ok(!self.current_os_text().is_empty());
-        }
-        if operand == "context.working_directory" {
-            return Ok(!self.current_working_directory_text()?.is_empty());
-        }
-
-        let should_attempt_selector = operand.starts_with("inputs.")
-            || operand.starts_with("inputs[")
-            || inputs.contains_key(operand);
-        if !should_attempt_selector {
-            return Ok(!operand.is_empty());
-        }
-
-        match self.resolve_template_selector(operand)? {
-            TemplateSelectorSource::Input(input_key) => {
-                let input = inputs.get(&input_key).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "conditional expression references missing input '{input_key}'"
-                    ))
-                })?;
-
-                if let Some(values) = input.string_list.as_ref() {
-                    Ok(!values.is_empty())
-                } else {
-                    Ok(!input.plain_content.is_empty())
-                }
-            }
-            TemplateSelectorSource::ContextOs => Ok(!self.current_os_text().is_empty()),
-            TemplateSelectorSource::ContextWorkingDirectory => {
-                Ok(!self.current_working_directory_text()?.is_empty())
-            }
-        }
-    }
-
-    /// Resolves one conditional operand into its comparable string value.
-    fn resolve_conditional_operand(
-        &self,
-        operand: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-    ) -> Result<String, ConductorError> {
-        if (operand.starts_with('"') && operand.ends_with('"'))
-            || (operand.starts_with('\'') && operand.ends_with('\''))
-        {
-            return self.decode_js_quoted_string(operand, operand);
-        }
-
-        if operand == "context.os" {
-            return Ok(self.current_os_text().to_string());
-        }
-        if operand == "context.working_directory" {
-            return self.current_working_directory_text();
-        }
-
-        let should_attempt_selector = operand.starts_with("inputs.")
-            || operand.starts_with("inputs[")
-            || inputs.contains_key(operand);
-        if !should_attempt_selector {
-            return Ok(operand.to_string());
-        }
-
-        match self.resolve_template_selector(operand)? {
-            TemplateSelectorSource::Input(input_key) => {
-                let input = inputs.get(&input_key).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "conditional expression references missing input '{input_key}'"
-                    ))
-                })?;
-                if let Some(values) = input.string_list.as_ref() {
-                    if values.len() > 1 {
-                        return Err(ConductorError::Workflow(format!(
-                            "conditional expression references list input '{input_key}' with {} items, but comparisons support at most one list item",
-                            values.len()
-                        )));
-                    }
-                    return Ok(values.first().cloned().unwrap_or_default());
-                }
-                Ok(String::from_utf8_lossy(&input.plain_content).to_string())
-            }
-            TemplateSelectorSource::ContextOs => Ok(self.current_os_text().to_string()),
-            TemplateSelectorSource::ContextWorkingDirectory => {
-                self.current_working_directory_text()
-            }
-        }
-    }
-
-    /// Resolves one conditional branch into rendered output content.
-    fn resolve_conditional_branch_value(
-        &self,
-        branch: &str,
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<String, ConductorError> {
-        if branch.contains("${") || branch.contains(r"\${") {
-            return self.render_template_value(branch, inputs, pending_file_writes);
-        }
-
-        if (branch.starts_with('"') && branch.ends_with('"'))
-            || (branch.starts_with('\'') && branch.ends_with('\''))
-        {
-            return self.decode_js_quoted_string(branch, branch);
-        }
-
-        let should_attempt_selector_resolution = branch.contains(':')
-            || branch.contains('.')
-            || branch.contains('[')
-            || branch.contains(']')
-            || branch.contains('(')
-            || branch.contains(')')
-            || branch.chars().any(char::is_whitespace)
-            || branch == "context.os"
-            || branch == "context.working_directory"
-            || inputs.contains_key(branch);
-
-        if !should_attempt_selector_resolution {
-            return Ok(branch.to_string());
-        }
-
-        match self.resolve_template_token(branch, inputs, pending_file_writes) {
-            Ok(rendered) => Ok(rendered),
-            Err(ConductorError::Workflow(message))
-                if message.contains("unsupported template expression") =>
-            {
-                Ok(branch.to_string())
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Extracts one ZIP entry from bytes provided by one resolved input.
-    ///
-    /// Extraction is delegated to the builtin archive runtime so workflow
-    /// behavior stays aligned with builtin ZIP semantics.
-    fn extract_zip_entry_from_input(
-        &self,
-        input_key: &str,
-        input_bytes: &[u8],
-        entry_path: &str,
-    ) -> Result<ExtractedZipSelection, ConductorError> {
-        let normalized_entry =
-            self.normalized_relative_tool_path(entry_path, "template zip entry selector")?;
-
-        let zip_workspace = tempfile::Builder::new()
-            .prefix("zip-entry-")
-            .tempdir_in(&self.conductor_tmp_dir)
-            .map_err(|source| ConductorError::Io {
-                operation: "creating temporary ZIP extraction workspace".to_string(),
-                path: self.conductor_tmp_dir.clone(),
-                source,
+            let raw = ctx.inputs.get(&name).ok_or_else(|| {
+                ConductorError::Workflow(format!(
+                    "template: input '${{*inputs.{name}}}' in command parts not found",
+                ))
             })?;
-
-        let extraction_root = zip_workspace.path().join("extracted");
-        std::fs::create_dir_all(&extraction_root).map_err(|source| ConductorError::Io {
-            operation: "creating temporary ZIP extraction directory".to_string(),
-            path: extraction_root.clone(),
-            source,
-        })?;
-
-        mediapm_conductor_builtin_archive::unpack_zip_bytes_to_directory(
-            input_bytes,
-            &extraction_root,
-        )
-        .map_err(|err| {
-            ConductorError::Workflow(format!(
-                "template zip extraction for input '{input_key}' failed: {err}"
-            ))
-        })?;
-
-        let selected_entry = extraction_root.join(&normalized_entry);
-        if !selected_entry.exists() {
-            return Err(ConductorError::Workflow(format!(
-                "template zip selector for input '{input_key}' could not find entry '{}': extracted archive has no such entry",
-                normalized_entry.to_string_lossy()
-            )));
-        }
-
-        if selected_entry.is_dir() {
-            let directory_files = self.collect_directory_file_payloads(&selected_entry)?;
-            return Ok(ExtractedZipSelection::Directory(directory_files));
-        }
-
-        std::fs::read(&selected_entry).map(|v| ExtractedZipSelection::File(Bytes::from(v))).map_err(
-            |source| ConductorError::Io {
-                operation: format!(
-                    "reading extracted ZIP entry '{}' from template input",
-                    normalized_entry.to_string_lossy()
-                ),
-                path: selected_entry,
-                source,
-            },
-        )
-    }
-
-    /// Collects all regular descendant files under one extracted ZIP directory.
-    fn collect_directory_file_payloads(
-        &self,
-        directory_path: &Path,
-    ) -> Result<BTreeMap<std::path::PathBuf, Bytes>, ConductorError> {
-        let mut file_payloads = BTreeMap::new();
-        self.collect_directory_file_payloads_recursive(
-            directory_path,
-            directory_path,
-            &mut file_payloads,
-        )?;
-        Ok(file_payloads)
-    }
-
-    /// Recursively collects one directory tree into relative-file payloads.
-    #[expect(
-        clippy::self_only_used_in_recursion,
-        reason = "recursive traversal helper intentionally remains method-scoped with sibling ZIP helpers"
-    )]
-    fn collect_directory_file_payloads_recursive(
-        &self,
-        root_directory: &Path,
-        current_directory: &Path,
-        file_payloads: &mut BTreeMap<std::path::PathBuf, Bytes>,
-    ) -> Result<(), ConductorError> {
-        for entry in std::fs::read_dir(current_directory).map_err(|source| ConductorError::Io {
-            operation: "enumerating extracted ZIP directory entries".to_string(),
-            path: current_directory.to_path_buf(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| ConductorError::Io {
-                operation: "reading extracted ZIP directory entry".to_string(),
-                path: current_directory.to_path_buf(),
-                source,
+            let parts: Vec<String> = serde_json::from_str(raw).map_err(|e| {
+                ConductorError::Workflow(format!(
+                    "template: input '${{*inputs.{name}}}' is not a valid \
+                     JSON array of strings: {e}",
+                ))
             })?;
-            let entry_path = entry.path();
-            let entry_type = entry.file_type().map_err(|source| ConductorError::Io {
-                operation: "reading extracted ZIP entry type".to_string(),
-                path: entry_path.clone(),
-                source,
-            })?;
-
-            if entry_type.is_dir() {
-                self.collect_directory_file_payloads_recursive(
-                    root_directory,
-                    &entry_path,
-                    file_payloads,
-                )?;
-                continue;
-            }
-
-            if !entry_type.is_file() {
-                return Err(ConductorError::Workflow(format!(
-                    "template zip directory extraction encountered unsupported entry '{}'; expected regular files only",
-                    entry_path.to_string_lossy()
-                )));
-            }
-
-            let relative_path = entry_path
-                .strip_prefix(root_directory)
-                .map_err(|_| {
-                    ConductorError::Internal(format!(
-                        "failed deriving relative ZIP directory entry for '{}' under '{}'",
-                        entry_path.to_string_lossy(),
-                        root_directory.to_string_lossy()
-                    ))
-                })?
-                .to_path_buf();
-
-            let entry_path_for_error = entry_path.clone();
-            let payload = std::fs::read(&entry_path).map_err(|source| ConductorError::Io {
-                operation: "reading extracted ZIP directory file".to_string(),
-                path: entry_path_for_error,
-                source,
-            })?;
-            file_payloads.insert(relative_path, Bytes::from(payload));
-        }
-
-        Ok(())
-    }
-
-    /// Resolves one interpolation selector to an input key or context value.
-    fn resolve_template_selector(
-        &self,
-        selector: &str,
-    ) -> Result<TemplateSelectorSource, ConductorError> {
-        let selector = selector.trim();
-        if selector.is_empty() {
-            return Err(ConductorError::Workflow("template selector cannot be empty".to_string()));
-        }
-        if let Some(key) = selector.strip_prefix("inputs.") {
-            let key = key.trim();
-            if key.is_empty() {
-                return Err(ConductorError::Workflow(format!(
-                    "unsupported template expression '{selector}'"
-                )));
-            }
-            return Ok(TemplateSelectorSource::Input(key.to_string()));
-        }
-        if let Some(index) = selector.strip_prefix("inputs[") {
-            if let Some(inner) = index.strip_suffix(']') {
-                let inner = inner.trim();
-                if (inner.starts_with('"') && inner.ends_with('"'))
-                    || (inner.starts_with('\'') && inner.ends_with('\''))
-                {
-                    let key = self.decode_js_quoted_string(inner, selector)?;
-                    if !key.is_empty() {
-                        return Ok(TemplateSelectorSource::Input(key));
-                    }
-                }
-            }
-            return Err(ConductorError::Workflow(format!(
-                "unsupported template expression '{selector}'"
-            )));
-        }
-
-        if selector == "context.os" {
-            return Ok(TemplateSelectorSource::ContextOs);
-        }
-        if selector == "context.working_directory" {
-            return Ok(TemplateSelectorSource::ContextWorkingDirectory);
-        }
-
-        let looks_like_expression = selector.contains('.')
-            || selector.contains('(')
-            || selector.contains(')')
-            || selector.contains('[')
-            || selector.contains(']')
-            || selector.contains(':')
-            || selector.chars().any(char::is_whitespace);
-        if looks_like_expression {
-            return Err(ConductorError::Workflow(format!(
-                "unsupported template expression '{selector}'"
-            )));
-        }
-        Ok(TemplateSelectorSource::Input(selector.to_string()))
-    }
-
-    /// Decodes one quoted JavaScript-like selector string.
-    fn decode_js_quoted_string(
-        &self,
-        quoted: &str,
-        selector: &str,
-    ) -> Result<String, ConductorError> {
-        let quote = quoted.chars().next().ok_or_else(|| {
-            ConductorError::Workflow(format!("unsupported template expression '{selector}'"))
-        })?;
-        let Some(body) = quoted.strip_prefix(quote).and_then(|text| text.strip_suffix(quote))
-        else {
-            return Err(ConductorError::Workflow(format!(
-                "unsupported template expression '{selector}'"
-            )));
-        };
-
-        let mut decoded = String::with_capacity(body.len());
-        let mut index = 0usize;
-        while index < body.len() {
-            let tail = &body[index..];
-            if tail.starts_with('\\') {
-                let (part, consumed) = self.decode_js_escape(&body[index + 1..], selector)?;
-                decoded.push_str(&part);
-                index += 1 + consumed;
-                continue;
-            }
-            let Some(ch) = tail.chars().next() else {
-                break;
-            };
-            decoded.push(ch);
-            index += ch.len_utf8();
-        }
-        Ok(decoded)
-    }
-
-    /// Decodes one JavaScript-like escape sequence from a template or selector.
-    #[expect(
-        clippy::unused_self,
-        reason = "kept instance-scoped to align with the template parser helper surface"
-    )]
-    fn decode_js_escape(
-        &self,
-        escaped_tail: &str,
-        context: &str,
-    ) -> Result<(String, usize), ConductorError> {
-        let Some(first) = escaped_tail.chars().next() else {
-            return Err(ConductorError::Workflow(format!(
-                "trailing escape in template expression '{context}'"
-            )));
-        };
-        let first_len = first.len_utf8();
-        match first {
-            '\\' => Ok(("\\".to_string(), first_len)),
-            '\'' => Ok(("'".to_string(), first_len)),
-            '"' => Ok(("\"".to_string(), first_len)),
-            '`' => Ok(("`".to_string(), first_len)),
-            '$' => Ok(("$".to_string(), first_len)),
-            'n' => Ok(("\n".to_string(), first_len)),
-            'r' => Ok(("\r".to_string(), first_len)),
-            't' => Ok(("\t".to_string(), first_len)),
-            'b' => Ok(("\u{0008}".to_string(), first_len)),
-            'f' => Ok(("\u{000C}".to_string(), first_len)),
-            'v' => Ok(("\u{000B}".to_string(), first_len)),
-            '0' => {
-                if let Some(next) = escaped_tail[first_len..].chars().next()
-                    && next.is_ascii_digit()
-                {
-                    return Err(ConductorError::Workflow(format!(
-                        "unsupported octal escape in template expression '{context}'"
-                    )));
-                }
-                Ok(("\0".to_string(), first_len))
-            }
-            '\n' => Ok((String::new(), first_len)),
-            '\r' => {
-                if escaped_tail[first_len..].starts_with('\n') {
-                    Ok((String::new(), first_len + 1))
-                } else {
-                    Ok((String::new(), first_len))
-                }
-            }
-            'x' => {
-                let hex = escaped_tail[first_len..].get(..2).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "invalid hex escape in template expression '{context}'"
-                    ))
-                })?;
-                let value = u8::from_str_radix(hex, 16).map_err(|_| {
-                    ConductorError::Workflow(format!(
-                        "invalid hex escape in template expression '{context}'"
-                    ))
-                })?;
-                Ok(((value as char).to_string(), first_len + 2))
-            }
-            'u' => {
-                let rest = &escaped_tail[first_len..];
-                if let Some(braced) = rest.strip_prefix('{') {
-                    let end = braced.find('}').ok_or_else(|| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    let digits = &braced[..end];
-                    if digits.is_empty() || digits.len() > 6 {
-                        return Err(ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        )));
-                    }
-                    let value = u32::from_str_radix(digits, 16).map_err(|_| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    let ch = char::from_u32(value).ok_or_else(|| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    Ok((ch.to_string(), first_len + 1 + end + 1))
-                } else {
-                    let hex = rest.get(..4).ok_or_else(|| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    let value = u32::from_str_radix(hex, 16).map_err(|_| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    let ch = char::from_u32(value).ok_or_else(|| {
-                        ConductorError::Workflow(format!(
-                            "invalid unicode escape in template expression '{context}'"
-                        ))
-                    })?;
-                    Ok((ch.to_string(), first_len + 4))
-                }
-            }
-            other => Err(ConductorError::Workflow(format!(
-                "unsupported escape sequence '\\{other}' in template expression '{context}'"
-            ))),
-        }
-    }
-
-    /// Renders a command template list and removes empty conditional results.
-    pub(super) fn render_template_command(
-        &self,
-        templates: &[String],
-        inputs: &BTreeMap<String, ResolvedInput>,
-        pending_file_writes: &mut Vec<TemplateFileWrite>,
-    ) -> Result<Vec<String>, ConductorError> {
-        let mut rendered = Vec::new();
-        for template in templates {
-            if let Some(selector) = self.parse_command_unpack_token(template) {
-                if let Some(conditional_value) = self.resolve_comparison_conditional_token(
-                    selector,
-                    inputs,
-                    pending_file_writes,
-                )? {
-                    if !conditional_value.is_empty() {
-                        rendered.push(conditional_value);
-                    }
-                    continue;
-                }
-
-                let input_key = match self.resolve_template_selector(selector)? {
-                    TemplateSelectorSource::Input(input_key) => input_key,
-                    TemplateSelectorSource::ContextOs
-                    | TemplateSelectorSource::ContextWorkingDirectory => {
-                        return Err(ConductorError::Workflow(format!(
-                            "command unpack token '${{*{selector}}}' only supports step inputs, not context selectors"
-                        )));
-                    }
-                };
-                let input = inputs.get(&input_key).ok_or_else(|| {
-                    ConductorError::Workflow(format!(
-                        "command unpack token '${{*{selector}}}' references missing input '{input_key}'"
-                    ))
-                })?;
-                if let Some(values) = input.string_list.as_ref() {
-                    rendered.extend(values.iter().cloned());
-                } else {
-                    let scalar = String::from_utf8_lossy(&input.plain_content).to_string();
-                    if !scalar.is_empty() {
-                        rendered.push(scalar);
-                    }
-                }
-                continue;
-            }
-
-            let value = self.render_template_value(template, inputs, pending_file_writes)?;
-            if !value.is_empty() {
-                rendered.push(value);
-            }
-        }
-        Ok(rendered)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Template-input reference scanner
-//
-// Standalone functions that scan template strings for `${...}` input
-// references without needing a StepWorkerExecutor instance or CAS access.
-// ---------------------------------------------------------------------------
-
-/// Scans template strings for input key references.
-///
-/// Extracts input key names from template interpolation expressions:
-/// - `${inputs.key}` → `"key"`
-/// - `${inputs["key"]}` or `${inputs['key']}` → `"key"`
-/// - `${bare_word}` → `"bare_word"` (unless it's `context.*`)
-/// - `${*inputs.key}` (unpack) → `"key"`
-/// - `${*bare_word}` (unpack) → `"bare_word"`
-/// - `${condition ? true_branch | false_branch}` → scan both branches
-///
-/// Trailing materialization directives (`:file(...)`, `:folder(...)`,
-/// `:zip(...)`) are stripped before extracting the selector.
-///
-/// # Errors
-///
-/// Returns [`ConductorError::Workflow`] when a template expression has an
-/// unclosed `${}`.
-///
-pub(super) fn scan_template_referenced_inputs(
-    templates: &[String],
-) -> Result<BTreeSet<String>, ConductorError> {
-    let mut referenced = BTreeSet::new();
-    for template in templates {
-        scan_template_for_inputs(template, &mut referenced)?;
-    }
-    Ok(referenced)
-}
-
-/// Scans one template string for `${...}` input key references.
-fn scan_template_for_inputs(
-    template: &str,
-    referenced: &mut BTreeSet<String>,
-) -> Result<(), ConductorError> {
-    let chars: Vec<char> = template.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        // Skip escaped dollar sign (\${) to avoid false positives.
-        if i + 1 < chars.len() && chars[i] == '\\' && chars[i + 1] == '$' {
-            i += 2;
-            continue;
-        }
-        if chars[i] == '$' && i + 1 < chars.len() && chars[i + 1] == '{' {
-            let start = i + 2;
-            match find_matching_brace(&chars, start) {
-                Some(end) => {
-                    let body: String = chars[start..end].iter().collect();
-                    let body = body.trim();
-                    if !body.is_empty() {
-                        extract_input_keys_from_body(body, referenced);
-                    }
-                    i = end + 1;
-                }
-                None => {
-                    return Err(ConductorError::Workflow(format!(
-                        "template has unclosed '${{}}' at or near position {i}"
-                    )));
-                }
-            }
+            resolved.extend(parts);
         } else {
-            i += 1;
+            let value = resolve_template(part, ctx).await?;
+            resolved.push(value);
         }
     }
-    Ok(())
+
+    Ok(resolved)
 }
 
-/// Walks forward from `start` to find the matching `}`, handling nested
-/// `{...}` pairs.
-fn find_matching_brace(chars: &[char], start: usize) -> Option<usize> {
-    let mut depth: u32 = 1;
-    let mut i = start;
-    while i < chars.len() && depth > 0 {
-        match chars[i] {
-            '{' => depth += 1,
-            '}' => depth -= 1,
+// ---------------------------------------------------------------------------
+// Segment parsing
+// ---------------------------------------------------------------------------
+
+/// A segment of a parsed template.
+#[derive(Debug, Clone)]
+enum Segment {
+    /// Literal text (pass through).
+    Text(String),
+    /// A `${...}` reference.
+    Reference(ParsedReference),
+}
+
+/// Parses a template string into segments of text and `${...}` references.
+fn parse_into_segments(template: &str) -> Result<Vec<Segment>, ConductorError> {
+    let bytes = template.as_bytes();
+    let len = bytes.len();
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut pos = 0;
+
+    while pos < len {
+        // Look for `${`
+        if pos + 1 < len && bytes[pos] == b'$' && bytes[pos + 1] == b'{' {
+            let open = pos;
+            pos += 2; // skip past `${`
+
+            // Find matching `}` with proper nesting.
+            let mut depth: u32 = 1;
+            let start = pos;
+            while pos < len && depth > 0 {
+                match bytes[pos] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                if depth > 0 {
+                    pos += 1;
+                }
+            }
+
+            if depth != 0 {
+                return Err(ConductorError::Workflow(format!(
+                    "template: unclosed '${{' at position {open}",
+                )));
+            }
+
+            let expr = &template[start..pos];
+            let parsed = parse_reference_expr(expr)?;
+            segments.push(Segment::Reference(parsed));
+            pos += 1; // skip past `}`
+        } else {
+            // Accumulate literal text.
+            let text_start = pos;
+            while pos < len && !(bytes[pos] == b'$' && pos + 1 < len && bytes[pos + 1] == b'{') {
+                pos += 1;
+            }
+            segments.push(Segment::Text(template[text_start..pos].to_string()));
+        }
+    }
+
+    Ok(segments)
+}
+
+// ---------------------------------------------------------------------------
+// Expression parsing
+// ---------------------------------------------------------------------------
+
+/// Parses the content inside `${...}` (after the opening `${` and before the
+/// matching `}`).
+fn parse_reference_expr(expr: &str) -> Result<ParsedReference, ConductorError> {
+    let expr = expr.trim();
+
+    // Check for platform conditional: `context.os <op> "value" ? ... : ...`
+    if let Some(cond) = try_parse_conditional(expr) {
+        return Ok(ParsedReference {
+            conditional: Some(ConditionalExpr::Comparison(cond)),
+            base: None,
+            selectors: Vec::new(),
+        });
+    }
+
+    // Check for exists ternary: `ref_expr ? true_branch | false_branch`
+    if let Some(exists) = try_parse_exists_ternary(expr) {
+        return Ok(ParsedReference {
+            conditional: Some(ConditionalExpr::Exists(exists)),
+            base: None,
+            selectors: Vec::new(),
+        });
+    }
+
+    // Split off post-processing selectors (`:zip(...)`, `:file(...)`, `:folder(...)`).
+    let (base_str, selectors) = parse_selectors(expr)?;
+
+    // Parse the base reference.
+    let base = parse_base_ref(&base_str)?;
+
+    Ok(ParsedReference { conditional: None, base: Some(base), selectors })
+}
+
+/// Tries to parse an exists ternary expression.
+///
+/// Format: `<ref_expr> ? <true_branch> | <false_branch>`
+///
+/// The `<ref_expr>` is resolved and checked for non-empty existence.  If the
+/// reference expression contains a `?` at depth zero (from selectors like
+/// `:file(...)`) this returns `None` and the caller falls through to normal
+/// reference parsing.
+fn try_parse_exists_ternary(expr: &str) -> Option<ParsedExistsTernary> {
+    let trimmed = expr.trim();
+
+    // Must not start with `context.` (that's a comparison conditional).
+    if trimmed.starts_with("context.") {
+        return None;
+    }
+
+    // Find the first unbraced `?`.
+    let bytes = trimmed.as_bytes();
+    let _len = bytes.len();
+    let mut depth = 0u32;
+    let mut q_pos = None;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'?' if depth == 0 => {
+                q_pos = Some(i);
+                break;
+            }
             _ => {}
         }
-        if depth == 0 {
-            return Some(i);
+    }
+
+    let q_pos = q_pos?;
+
+    // No `?` at position 0 — there must be a ref expression before it.
+    if q_pos == 0 {
+        return None;
+    }
+
+    let ref_expr = trimmed[..q_pos].trim().to_string();
+    let rest = trimmed[q_pos + 1..].trim();
+
+    // Find the first unbraced `|` in the rest (branch separator).
+    let bytes2 = rest.as_bytes();
+    let _len2 = bytes2.len();
+    let mut depth2 = 0u32;
+    let mut pipe_pos = None;
+
+    for (i, &b) in bytes2.iter().enumerate() {
+        match b {
+            b'{' => depth2 += 1,
+            b'}' => depth2 = depth2.saturating_sub(1),
+            b'|' if depth2 == 0 => {
+                pipe_pos = Some(i);
+                break;
+            }
+            _ => {}
         }
-        i += 1;
+    }
+
+    let pipe_pos = pipe_pos?;
+    let true_expr = rest[..pipe_pos].trim().to_string();
+    let false_expr = rest[pipe_pos + 1..].trim().to_string();
+
+    Some(ParsedExistsTernary { ref_expr, true_expr, false_expr })
+}
+
+/// Tries to parse a platform conditional expression.
+///
+/// Format: `context.os <op> "value" ? <true_expr> : <false_expr>`
+fn try_parse_conditional(expr: &str) -> Option<ParsedConditional> {
+    let trimmed = expr.trim();
+    if !trimmed.starts_with("context.") {
+        return None;
+    }
+
+    // Find the `?` that separates condition from branches.
+    let bytes = trimmed.as_bytes();
+    let len = bytes.len();
+    let mut q_pos = None;
+    let mut depth = 0u32;
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'?' if depth == 0 => {
+                q_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let q_pos = q_pos?;
+    if q_pos + 1 >= len {
+        return None;
+    }
+
+    // Split condition from the rest.
+    let condition_part = trimmed[..q_pos].trim();
+    let rest = trimmed[q_pos + 1..].trim();
+
+    // Find the `:` that separates true/false branches (with brace awareness).
+    let bytes2 = rest.as_bytes();
+    let mut colon_pos = None;
+    let mut depth2 = 0u32;
+
+    for (i, &b) in bytes2.iter().enumerate() {
+        match b {
+            b'{' => depth2 += 1,
+            b'}' => depth2 = depth2.saturating_sub(1),
+            b':' if depth2 == 0 => {
+                colon_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let colon_pos = colon_pos?;
+    let true_expr = rest[..colon_pos].trim().to_string();
+    let false_expr = rest[colon_pos + 1..].trim().to_string();
+
+    // Parse the condition part: `lhs <op> "rhs"`
+    let (lhs, op_str, quoted_rhs) = parse_condition_expression(condition_part)?;
+    let rhs = unquote_string(quoted_rhs)?;
+
+    let op = match op_str {
+        "==" => ComparisonOp::Eq,
+        "!=" => ComparisonOp::Neq,
+        "<" => ComparisonOp::Lt,
+        "<=" => ComparisonOp::Le,
+        ">" => ComparisonOp::Gt,
+        ">=" => ComparisonOp::Ge,
+        _ => return None,
+    };
+
+    Some(ParsedConditional {
+        lhs: lhs.to_string(),
+        op,
+        rhs: rhs.to_string(),
+        true_expr,
+        false_expr,
+    })
+}
+
+/// Parses the condition part `context.os == "value"` into (lhs, op, quoted_rhs).
+fn parse_condition_expression(s: &str) -> Option<(&str, &str, &str)> {
+    // Try each operator in descending length order to match `<=`, `>=`, `!=` first.
+    for op_str in &["<=", ">=", "!=", "==", "<", ">"] {
+        if let Some(pos) = s.find(op_str) {
+            let lhs = s[..pos].trim();
+            let rhs = s[pos + op_str.len()..].trim();
+            if !lhs.is_empty() && !rhs.is_empty() {
+                return Some((lhs, op_str, rhs));
+            }
+        }
     }
     None
 }
 
-/// Extracts input key references from one `${...}` body.
-fn extract_input_keys_from_body(body: &str, referenced: &mut BTreeSet<String>) {
-    debug_assert!(!body.is_empty(), "body must be non-empty");
-
-    // Strip leading `*` (unpack token like `${*inputs.list}`).
-    let body = match body.strip_prefix('*') {
-        Some(stripped) => stripped.trim(),
-        None => body,
-    };
-    if body.is_empty() {
-        return;
-    }
-
-    // Handle conditional: `<condition> ? <true_branch> | <false_branch>`
-    if let Some((condition, after_question)) = split_conditional(body) {
-        extract_input_keys_from_condition(condition, referenced);
-        if let Some((true_branch, false_branch)) = split_branches(after_question) {
-            if let Some(sel) = strip_template_directives(true_branch) {
-                extract_input_keys_from_selector(&sel, referenced);
-            }
-            if let Some(sel) = strip_template_directives(false_branch) {
-                extract_input_keys_from_selector(&sel, referenced);
-            }
-        }
-        return;
-    }
-
-    // Simple (non-conditional) selector — strip directives and extract.
-    if let Some(selector) = strip_template_directives(body) {
-        extract_input_keys_from_selector(&selector, referenced);
-    }
-}
-
-/// If `body` contains a ` ? ` separator at the top level (outside quotes,
-/// brackets, and parentheses), returns `(condition_text, rest_after_?)`.
-fn split_conditional(body: &str) -> Option<(&str, &str)> {
-    let pos = find_top_level_pattern(body, '?')?;
-    let rest_start = pos + 3; // skip " ? "
-    if rest_start < body.len() { Some((&body[..pos], &body[rest_start..])) } else { None }
-}
-
-/// Splits `after_question` at the first ` | ` at the top level.
-fn split_branches(after_question: &str) -> Option<(&str, &str)> {
-    let pos = find_top_level_pattern(after_question, '|')?;
-    let false_start = pos + 3; // skip " | "
-    if false_start <= after_question.len() {
-        Some((&after_question[..pos], &after_question[false_start..]))
+/// Strips surrounding quotes from a string value. Returns `None` if not quoted.
+fn unquote_string(s: &str) -> Option<&str> {
+    let s = s.trim();
+    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
+        Some(&s[1..s.len() - 1])
     } else {
         None
     }
 }
 
-/// Finds the first occurrence of ` <ch> ` (space, ch, space) that is not
-/// inside quotes, brackets, or parentheses.
-fn find_top_level_pattern(s: &str, ch: char) -> Option<usize> {
-    let bytes = s.as_bytes();
-    if bytes.len() < 3 {
-        return None;
-    }
-    let mut in_double_quote = false;
-    let mut in_single_quote = false;
-    let mut bracket_depth: u32 = 0;
-    let mut paren_depth: u32 = 0;
+// ---------------------------------------------------------------------------
+// Selector parsing
+// ---------------------------------------------------------------------------
 
-    // Start at index 1 because the pattern ` <ch> ` needs a char before.
-    for i in 1..bytes.len().saturating_sub(1) {
-        let c = bytes[i] as char;
-        let prev_was_backslash = i > 0 && bytes[i - 1] == b'\\';
+/// Splits an expression into a base reference string and a list of post-processing
+/// selectors (parsed right-to-left).  Returns `("base_expr", [PostSelector])`.
+fn parse_selectors(expr: &str) -> Result<(String, Vec<PostSelector>), ConductorError> {
+    let expr = expr.trim();
+    let mut remaining = expr;
+    let mut selectors: Vec<PostSelector> = Vec::new();
 
-        // Check for pattern before updating state for this character, since
-        // `?` and `|` are not quote/bracket/paren characters.
-        if !in_single_quote
-            && !in_double_quote
-            && bracket_depth == 0
-            && paren_depth == 0
-            && c == ch
-            && bytes[i - 1] == b' '
-            && bytes[i + 1] == b' '
-        {
-            return Some(i - 1);
-        }
-
-        // Update tracking state.
-        if !in_single_quote && !in_double_quote {
-            match c {
-                '"' => in_double_quote = true,
-                '\'' => in_single_quote = true,
-                '[' => bracket_depth += 1,
-                ']' => bracket_depth = bracket_depth.saturating_sub(1),
-                '(' => paren_depth += 1,
-                ')' => paren_depth = paren_depth.saturating_sub(1),
-                _ => {}
-            }
-        } else if c == '"' && in_double_quote && !prev_was_backslash {
-            in_double_quote = false;
-        } else if c == '\'' && in_single_quote && !prev_was_backslash {
-            in_single_quote = false;
-        }
-    }
-    None
-}
-
-/// Extracts input key references from the condition part of a conditional
-/// template expression.
-///
-/// The condition may be a bare selector or a comparison like
-/// `inputs.key == "value"`.  Operator characters are replaced with spaces,
-/// then each whitespace-delimited token is checked for input references.
-fn extract_input_keys_from_condition(condition: &str, referenced: &mut BTreeSet<String>) {
-    let condition = condition.trim();
-    if condition.is_empty() {
-        return;
-    }
-
-    // Replace operator characters with spaces so split_whitespace yields
-    // clean candidate tokens.
-    let sanitized: String = condition
-        .chars()
-        .map(|c| if matches!(c, '=' | '!' | '&' | '|' | '<' | '>' | '(' | ')') { ' ' } else { c })
-        .collect();
-
-    for token in sanitized.split_whitespace() {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
-        }
-        extract_input_keys_from_selector(token, referenced);
-    }
-}
-
-/// Strips trailing `:file(...)`, `:folder(...)`, and `:zip(...)` directives
-/// from a selector body.
-///
-/// Returns `None` if nothing remains after stripping.
-fn strip_template_directives(selector: &str) -> Option<String> {
-    let mut s = selector.trim().to_string();
-    if s.is_empty() {
-        return None;
-    }
+    // Selectors are appended right-to-left: `base:zip(a):file(b)`.
     loop {
-        let before = s.clone();
-        if let Some(prefix) = strip_one_directive(&s, "file") {
-            s = prefix;
-        }
-        if let Some(prefix) = strip_one_directive(&s, "folder") {
-            s = prefix;
-        }
-        if let Some(prefix) = strip_one_directive(&s, "zip") {
-            s = prefix;
-        }
-        if s == before {
+        let trimmed = remaining.trim_end();
+        if let Some((sel, rest)) = split_last_selector(trimmed) {
+            selectors.push(sel);
+            remaining = rest;
+        } else {
             break;
         }
     }
-    let s = s.trim().to_string();
-    if s.is_empty() { None } else { Some(s) }
+
+    selectors.reverse(); // Restore application order (leftmost selector first).
+    Ok((remaining.to_string(), selectors))
 }
 
-/// Strips one `:<name>(<argument>)` suffix if present at the end of `s`.
-fn strip_one_directive(s: &str, name: &str) -> Option<String> {
-    let pattern = format!(":{name}(");
-    if let Some(pos) = s.rfind(&pattern)
-        && s.ends_with(')')
-    {
-        return Some(s[..pos].to_string());
+/// Parses the last `:name(args)` suffix from an expression.
+fn split_last_selector(expr: &str) -> Option<(PostSelector, &str)> {
+    for (prefix, ctor) in &SEL_PREFIXES {
+        if let Some((arg, remaining)) = split_suffix_by_prefix(expr, prefix) {
+            let selector = ctor(arg.to_string());
+            return Some((selector, remaining));
+        }
     }
     None
 }
 
-/// Extracts an input key reference from a selector string.
+/// Static list of supported selector prefixes and their constructors.
+static SEL_PREFIXES: [(&str, fn(String) -> PostSelector); 3] = [
+    (":zip(", |s| PostSelector::Zip(s)),
+    (":file(", |s| PostSelector::File(s)),
+    (":folder(", |s| PostSelector::Folder(s)),
+];
+
+/// Splits `expr` at the last occurrence of `prefix`, returning the argument
+/// inside `prefix...)` and the expression before `prefix`.
 ///
-/// Handles:
-/// - `inputs.key` → inserts `key`
-/// - `inputs["key"]` or `inputs['key']` → inserts `key`
-/// - bare word (alphanumeric/underscore, no punctuation, not `context.*`)
-///   → inserts word
-///
-/// Does nothing for `context.*`, quoted literals, or complex expressions.
-fn extract_input_keys_from_selector(selector: &str, referenced: &mut BTreeSet<String>) {
-    let selector = selector.trim();
-    if selector.is_empty() {
-        return;
+/// Handles nested parentheses by tracking depth from the end.
+fn split_suffix_by_prefix<'a>(expr: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    if !expr.ends_with(')') {
+        return None;
     }
 
-    // Skip quoted string literals (branches like `''` or `"literal"`).
-    if (selector.starts_with('"') && selector.ends_with('"'))
-        || (selector.starts_with('\'') && selector.ends_with('\''))
-    {
-        return;
-    }
+    // Find the matching '(' by scanning backwards from the end.
+    let bytes = expr.as_bytes();
+    let len = bytes.len();
+    let mut depth = 0u32;
+    let mut paren_open = None;
 
-    // Skip tokens containing partial quotes (fragments from multi-word
-    // quoted strings in condition comparisons).
-    if selector.contains('"') || selector.contains('\'') {
-        return;
-    }
-
-    // Skip operator-like tokens that may appear in condition expressions.
-    if matches!(selector, "==" | "!=" | "&&" | "||" | "!" | "<" | ">" | "<=" | ">=") {
-        return;
-    }
-
-    // `inputs.key` → inserts `key`.
-    if let Some(key) = selector.strip_prefix("inputs.") {
-        let key = key.trim();
-        if !key.is_empty() {
-            referenced.insert(key.to_string());
-        }
-        return;
-    }
-
-    // `inputs["key"]` or `inputs['key']` → inserts `key`.
-    if let Some(index) = selector.strip_prefix("inputs[") {
-        if let Some(inner) = index.strip_suffix(']') {
-            let inner = inner.trim();
-            if (inner.starts_with('"') && inner.ends_with('"'))
-                || (inner.starts_with('\'') && inner.ends_with('\''))
-            {
-                let key = &inner[1..inner.len() - 1];
-                if !key.is_empty() {
-                    referenced.insert(key.to_string());
+    for i in (0..len).rev() {
+        match bytes[i] {
+            b')' => depth += 1,
+            b'(' => {
+                if depth == 0 {
+                    return None; // unbalanced
+                }
+                depth -= 1;
+                if depth == 0 {
+                    paren_open = Some(i);
+                    break;
                 }
             }
+            _ => {}
         }
-        return;
     }
 
-    // `context.*` → not an input reference.
-    if selector.starts_with("context.") {
-        return;
+    let open_pos = paren_open?;
+
+    // Check that the prefix immediately precedes the '('.
+    let prefix_len = prefix.len();
+    if open_pos + 1 < prefix_len {
+        return None;
+    }
+    let prefix_start = open_pos + 1 - prefix_len; // position of ':' in `:name(`
+    if expr[prefix_start..=open_pos] != *prefix {
+        return None;
     }
 
-    // Bare word — starts with ASCII letter or underscore and contains no
-    // punctuation or whitespace.
-    let first_byte = selector.as_bytes().first().copied();
-    let starts_ident = matches!(first_byte, Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'));
-    let has_punctuation = selector.contains('.')
-        || selector.contains('(')
-        || selector.contains(')')
-        || selector.contains('[')
-        || selector.contains(']')
-        || selector.contains(':')
-        || selector.chars().any(|c| c.is_ascii_whitespace());
+    let arg = &expr[open_pos + 1..len - 1]; // inside the parens
+    let remaining = &expr[..prefix_start];
+    Some((arg, remaining))
+}
 
-    if starts_ident && !has_punctuation {
-        referenced.insert(selector.to_string());
+// ---------------------------------------------------------------------------
+// Base reference parsing
+// ---------------------------------------------------------------------------
+
+fn parse_base_ref(s: &str) -> Result<BaseRef, ConductorError> {
+    let s = s.trim();
+
+    // `${step_output.<step_id>.<output_name>}`
+    if let Some(rest) = s.strip_prefix("step_output.") {
+        let parts: Vec<&str> = rest.splitn(2, '.').collect();
+        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(ConductorError::Workflow(format!(
+                "template: invalid step_output reference '${{step_output.{rest}}}' — \
+                 expected 'step_output.<step_id>.<output_name>'",
+            )));
+        }
+        return Ok(BaseRef::StepOutput {
+            step_id: parts[0].to_string(),
+            output: parts[1].to_string(),
+        });
+    }
+
+    // `${external_data.<hash>}`
+    if let Some(rest) = s.strip_prefix("external_data.") {
+        let hash = rest.trim().parse::<Hash>().map_err(|e| {
+            ConductorError::Workflow(format!(
+                "template: invalid external_data hash '${{external_data.{rest}}}': {e}",
+            ))
+        })?;
+        return Ok(BaseRef::ExternalData(hash));
+    }
+
+    // `${env.<VAR>}`
+    if let Some(var_name) = s.strip_prefix("env.") {
+        if var_name.is_empty() {
+            return Err(ConductorError::Workflow(
+                "template: empty env variable name '${{env.}}'".to_string(),
+            ));
+        }
+        return Ok(BaseRef::Env(var_name.to_string()));
+    }
+
+    // `${*inputs.<name>}` — must check before generic `*` to avoid misparse.
+    if let Some(name) = s.strip_prefix("*inputs.") {
+        if name.is_empty() {
+            return Err(ConductorError::Workflow(
+                "template: empty inputs splat '${{*inputs.}}'".to_string(),
+            ));
+        }
+        return Ok(BaseRef::UnpackInput(name.to_string()));
+    }
+
+    // `${*<token>}`
+    if let Some(token) = s.strip_prefix('*') {
+        if token.is_empty() {
+            return Err(ConductorError::Workflow(
+                "template: empty unpack token '${{*}}'".to_string(),
+            ));
+        }
+        return Ok(BaseRef::UnpackToken(token.to_string()));
+    }
+
+    // `${inputs.<name>}`
+    if let Some(name) = s.strip_prefix("inputs.") {
+        if name.is_empty() {
+            return Err(ConductorError::Workflow(
+                "template: empty inputs reference '${{inputs.}}'".to_string(),
+            ));
+        }
+        return Ok(BaseRef::Input(name.to_string()));
+    }
+
+    Err(ConductorError::Workflow(format!(
+        "template: unrecognized reference '${{{s}}}' — expected step_output, \
+         external_data, env, inputs, or *token",
+    )))
+}
+
+// ---------------------------------------------------------------------------
+// Reference resolution
+// ---------------------------------------------------------------------------
+
+/// Resolves a parsed reference to a [`ResolvedValue`].
+async fn resolve_parsed_reference<C: mediapm_cas::CasApi + Send + Sync>(
+    parsed: &ParsedReference,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    // Handle conditional first (comparison or exists ternary).
+    if let Some(cond) = &parsed.conditional {
+        let resolved = match cond {
+            ConditionalExpr::Comparison(c) => evaluate_comparison_conditional(c, ctx).await?,
+            ConditionalExpr::Exists(e) => evaluate_exists_ternary(e, ctx).await?,
+        };
+        return Ok(ResolvedValue::String(resolved));
+    }
+
+    // Resolve base reference.
+    let base = parsed.base.as_ref().ok_or_else(|| {
+        ConductorError::Internal(
+            "template: parsed reference without conditional or base".to_string(),
+        )
+    })?;
+
+    let mut value = resolve_base_ref(base, ctx).await?;
+
+    // Apply post-processing selectors in order.
+    for selector in &parsed.selectors {
+        value = apply_selector(value, selector, ctx).await?;
+    }
+
+    Ok(value)
+}
+
+/// Resolves a base reference to a [`ResolvedValue`].
+async fn resolve_base_ref<C: mediapm_cas::CasApi + Send + Sync>(
+    base: &BaseRef,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    match base {
+        BaseRef::StepOutput { step_id, output } => resolve_step_output(step_id, output, ctx),
+        BaseRef::ExternalData(hash) => resolve_external_data(*hash, ctx).await,
+        BaseRef::Env(var_name) => resolve_env(var_name, ctx),
+        BaseRef::UnpackToken(token) => resolve_unpack_token(token, ctx),
+        BaseRef::Input(name) => resolve_input(name, ctx),
+        BaseRef::UnpackInput(name) => resolve_unpack_input(name, ctx),
+    }
+}
+
+/// Resolves `${step_output.<step_id>.<output>}`.
+fn resolve_step_output<C: mediapm_cas::CasApi + Send + Sync>(
+    step_id: &str,
+    output: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let hash =
+        ctx.step_outputs.get(step_id).and_then(|outputs| outputs.get(output)).ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "template: step output '${{step_output.{step_id}.{output}}}' not found \
+                 (step id '{step_id}' or output '{output}' missing)",
+            ))
+        })?;
+
+    Ok(ResolvedValue::String(hash.to_string()))
+}
+
+/// Resolves `${external_data.<hash>}` by fetching from CAS.
+async fn resolve_external_data<C: mediapm_cas::CasApi + Send + Sync>(
+    hash: Hash,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let cas = ctx.cas.ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "template: external_data reference '${{external_data.{hash}}}' requires \
+             a CAS handle but none was provided",
+        ))
+    })?;
+
+    let data = cas.get(hash).await.map_err(|e| {
+        ConductorError::Workflow(format!(
+            "template: external_data hash '{hash}' not found in CAS: {e}",
+        ))
+    })?;
+
+    Ok(ResolvedValue::Bytes(data.to_vec()))
+}
+
+/// Resolves `${env.<VAR>}` from host environment variables.
+fn resolve_env<C: mediapm_cas::CasApi + Send + Sync>(
+    var_name: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let value = ctx.env_vars.get(var_name).ok_or_else(|| {
+        ConductorError::Workflow(format!(
+            "template: environment variable '${{env.{var_name}}}' not found",
+        ))
+    })?;
+
+    Ok(ResolvedValue::String(value.clone()))
+}
+
+/// Resolves `${*<token>}` from the tokens map.
+fn resolve_unpack_token<C: mediapm_cas::CasApi + Send + Sync>(
+    token: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let data = ctx.tokens.get(token).ok_or_else(|| {
+        ConductorError::Workflow(format!("template: unpack token '${{*{token}}}' not found",))
+    })?;
+
+    Ok(ResolvedValue::Bytes(data.clone()))
+}
+
+/// Resolves `${inputs.<name>}` from the resolved step inputs.
+fn resolve_input<C: mediapm_cas::CasApi + Send + Sync>(
+    name: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let value = ctx.inputs.get(name).ok_or_else(|| {
+        ConductorError::Workflow(format!("template: input '${{inputs.{name}}}' not found",))
+    })?;
+
+    Ok(ResolvedValue::String(value.clone()))
+}
+
+/// Resolves `${*inputs.<name>}` — fetches the input value and JSON-decodes it
+/// as `Vec<String>` for command-part splatting.
+fn resolve_unpack_input<C: mediapm_cas::CasApi + Send + Sync>(
+    name: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let raw = ctx.inputs.get(name).ok_or_else(|| {
+        ConductorError::Workflow(format!("template: input '${{*inputs.{name}}}' not found",))
+    })?;
+
+    // Parse as JSON array of strings.
+    let parts: Vec<String> = serde_json::from_str(raw).map_err(|e| {
+        ConductorError::Workflow(format!(
+            "template: input '${{*inputs.{name}}}' is not a valid JSON array of strings: {e}",
+        ))
+    })?;
+
+    Ok(ResolvedValue::String(serde_json::to_string(&parts).map_err(|e| {
+        ConductorError::Workflow(format!(
+            "template: failed to serialize splat parts for '${{*inputs.{name}}}': {e}",
+        ))
+    })?))
+}
+
+// ---------------------------------------------------------------------------
+// Conditional evaluation
+// ---------------------------------------------------------------------------
+
+/// Evaluates an exists ternary and returns the resolved branch value.
+///
+/// Format: `ref_expr ? true_branch | false_branch`.
+/// The `ref_expr` is resolved as a template; if the result is non-empty,
+/// `true_branch` is used, otherwise `false_branch`.
+async fn evaluate_exists_ternary<C: mediapm_cas::CasApi + Send + Sync>(
+    cond: &ParsedExistsTernary,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<String, ConductorError> {
+    // Resolve the reference expression.
+    // Box::pin breaks the async recursion cycle.
+    let resolved_ref = Box::pin(resolve_template(&cond.ref_expr, ctx)).await?;
+
+    let branch = if resolved_ref.is_empty() { &cond.false_expr } else { &cond.true_expr };
+
+    // The branch may itself contain `${...}` references — resolve recursively.
+    Box::pin(resolve_template(branch, ctx)).await
+}
+
+/// Evaluates a parsed comparison conditional and returns the resolved branch value.
+async fn evaluate_comparison_conditional<C: mediapm_cas::CasApi + Send + Sync>(
+    cond: &ParsedConditional,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<String, ConductorError> {
+    // Determine the left-hand side value.
+    let lhs_value = resolve_conditional_operand(&cond.lhs, ctx).await?;
+
+    // The right-hand side is always a quoted string literal.
+    let rhs_value = &cond.rhs;
+
+    let branch =
+        if cond.op.evaluate(&lhs_value, rhs_value) { &cond.true_expr } else { &cond.false_expr };
+
+    // The branch may itself contain `${...}` references — resolve recursively.
+    // Box::pin breaks the async recursion cycle:
+    // evaluate_comparison_conditional -> resolve_template -> resolve_parsed_reference
+    // -> evaluate_comparison_conditional -> ...
+    Box::pin(resolve_template(branch, ctx)).await
+}
+
+/// Resolves a conditional operand to a string for comparison.
+///
+/// Supports `context.os` (maps to ctx.host_os) and literal strings.
+async fn resolve_conditional_operand<C: mediapm_cas::CasApi + Send + Sync>(
+    operand: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<String, ConductorError> {
+    let operand = operand.trim();
+
+    // Check for context properties.
+    if operand == "context.os" {
+        return Ok(ctx.host_os.to_string());
+    }
+
+    // Check for quoted string literal.
+    if (operand.starts_with('"') && operand.ends_with('"'))
+        || (operand.starts_with('\'') && operand.ends_with('\''))
+    {
+        return Ok(operand[1..operand.len() - 1].to_string());
+    }
+
+    // Check for nested template reference.
+    if operand.starts_with("${") && operand.ends_with('}') {
+        // Use Box::pin to break the async recursion cycle:
+        // resolve_template -> resolve_parsed_reference -> evaluate_conditional
+        // -> resolve_conditional_operand -> resolve_template.
+        return Box::pin(resolve_template(operand, ctx)).await;
+    }
+
+    // Fallback: treat as literal string.
+    Ok(operand.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Post-processing selectors
+// ---------------------------------------------------------------------------
+
+/// Applies a single post-processing selector to a resolved value.
+async fn apply_selector<C: mediapm_cas::CasApi + Send + Sync>(
+    value: ResolvedValue,
+    selector: &PostSelector,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    match selector {
+        PostSelector::Zip(member) => apply_zip_selector(value, member).await,
+        PostSelector::File(path) => apply_file_selector(value, path, ctx).await,
+        PostSelector::Folder(path) => apply_folder_selector(value, path, ctx).await,
+    }
+}
+
+/// `:zip(member)` — extracts a member from ZIP binary content.
+async fn apply_zip_selector(
+    value: ResolvedValue,
+    member: &str,
+) -> Result<ResolvedValue, ConductorError> {
+    let data = value.into_bytes()?;
+    let extracted = extract_zip_member(&data, member)?;
+    Ok(ResolvedValue::Bytes(extracted))
+}
+
+/// `:file(path)` — writes resolved content to sandbox and returns the path.
+async fn apply_file_selector<C: mediapm_cas::CasApi + Send + Sync>(
+    value: ResolvedValue,
+    path: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let sandbox = ctx.sandbox_dir.ok_or_else(|| {
+        ConductorError::Workflow(
+            "template: ':file' selector requires a sandbox directory".to_string(),
+        )
+    })?;
+
+    let data = value.into_bytes()?;
+    let target_path = sandbox.join(path);
+
+    // Create parent directories if needed.
+    if let Some(parent) = target_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|source| {
+            ConductorError::io("template: create parent directory for :file", parent, source)
+        })?;
+    }
+
+    tokio::fs::write(&target_path, &data).await.map_err(|source| {
+        ConductorError::io("template: write :file content", &target_path, source)
+    })?;
+
+    Ok(ResolvedValue::MaterializedFile(target_path))
+}
+
+/// `:folder(path)` — extracts archive content to sandbox folder and returns path.
+async fn apply_folder_selector<C: mediapm_cas::CasApi + Send + Sync>(
+    value: ResolvedValue,
+    path: &str,
+    ctx: &TemplateContext<'_, C>,
+) -> Result<ResolvedValue, ConductorError> {
+    let sandbox = ctx.sandbox_dir.ok_or_else(|| {
+        ConductorError::Workflow(
+            "template: ':folder' selector requires a sandbox directory".to_string(),
+        )
+    })?;
+
+    let data = value.into_bytes()?;
+    let target_dir = sandbox.join(path);
+
+    tokio::fs::create_dir_all(&target_dir).await.map_err(|source| {
+        ConductorError::io("template: create target directory for :folder", &target_dir, source)
+    })?;
+
+    extract_archive_to_folder(&data, &target_dir).await?;
+
+    Ok(ResolvedValue::MaterializedFolder(target_dir))
+}
+
+// ---------------------------------------------------------------------------
+// ZIP extraction
+// ---------------------------------------------------------------------------
+
+/// Extracts a single member from ZIP archive data.
+fn extract_zip_member(data: &[u8], member: &str) -> Result<Vec<u8>, ConductorError> {
+    #[cfg(feature = "tool-presets")]
+    {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| {
+            ConductorError::Workflow(format!(
+                "template: failed to open ZIP archive for ':zip({member})': {e}",
+            ))
+        })?;
+
+        let mut file = archive.by_name(member).map_err(|e| {
+            ConductorError::Workflow(format!("template: ZIP member '{member}' not found: {e}",))
+        })?;
+
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).map_err(|e| {
+            ConductorError::Workflow(
+                format!("template: failed to read ZIP member '{member}': {e}",),
+            )
+        })?;
+        Ok(buf)
+    }
+
+    #[cfg(not(feature = "tool-presets"))]
+    {
+        let _ = (data, member);
+        Err(ConductorError::Workflow(
+            "template: ZIP extraction requires the 'tool-presets' feature".to_string(),
+        ))
+    }
+}
+
+/// Extracts an entire archive (ZIP) into a target directory.
+async fn extract_archive_to_folder(data: &[u8], target_dir: &Path) -> Result<(), ConductorError> {
+    #[cfg(feature = "tool-presets")]
+    {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| {
+            ConductorError::Workflow(format!(
+                "template: failed to open ZIP archive for folder extraction: {e}",
+            ))
+        })?;
+
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| {
+                ConductorError::Workflow(format!("template: failed to access ZIP entry #{i}: {e}",))
+            })?;
+
+            let name = file.mangled_name().to_string_lossy().to_string();
+
+            // Skip directory entries.
+            if file.is_dir() || name.ends_with('/') {
+                let dir_path = target_dir.join(&name);
+                tokio::fs::create_dir_all(&dir_path).await.map_err(|source| {
+                    ConductorError::io(
+                        "template: create directory for ZIP entry",
+                        &dir_path,
+                        source,
+                    )
+                })?;
+                continue;
+            }
+
+            let entry_path = target_dir.join(&name);
+            if let Some(parent) = entry_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|source| {
+                    ConductorError::io("template: create parent for ZIP entry", parent, source)
+                })?;
+            }
+
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).map_err(|e| {
+                ConductorError::Workflow(format!(
+                    "template: failed to read ZIP entry '{name}': {e}",
+                ))
+            })?;
+
+            tokio::fs::write(&entry_path, &buf).await.map_err(|source| {
+                ConductorError::io("template: write ZIP entry", &entry_path, source)
+            })?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(feature = "tool-presets"))]
+    {
+        let _ = (data, target_dir);
+        Err(ConductorError::Workflow(
+            "template: archive extraction requires the 'tool-presets' feature".to_string(),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mediapm_cas::CasApi;
+    use mediapm_cas::storage::in_memory::InMemoryCas;
+    use std::sync::LazyLock;
+
+    /// Helper to build a context with CAS + env + tokens + inputs.
+    fn full_ctx<'a>(
+        cas: Option<&'a InMemoryCas>,
+        step_outputs: &'a BTreeMap<String, BTreeMap<String, Hash>>,
+        env_vars: &'a BTreeMap<String, String>,
+        tokens: &'a BTreeMap<String, Vec<u8>>,
+        sandbox_dir: Option<&'a Path>,
+        host_os: &'a str,
+    ) -> TemplateContext<'a, InMemoryCas> {
+        static EMPTY_INPUTS: LazyLock<BTreeMap<String, String>> = LazyLock::new(BTreeMap::new);
+        TemplateContext {
+            cas,
+            step_outputs,
+            env_vars,
+            tokens,
+            sandbox_dir,
+            host_os,
+            inputs: &EMPTY_INPUTS,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Basic resolution: step_output
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_step_output_simple() {
+        let mut step_outputs = BTreeMap::new();
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), Hash::from_content(b"hello"));
+        step_outputs.insert("step-1".to_string(), outputs);
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${step_output.step-1.result}", &ctx).await.unwrap();
+        assert_eq!(result, Hash::from_content(b"hello").to_string());
+    }
+
+    #[tokio::test]
+    async fn resolve_step_output_missing_step_id() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${step_output.missing.output}", &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn resolve_step_output_missing_output() {
+        let mut step_outputs = BTreeMap::new();
+        step_outputs.insert("step-1".to_string(), BTreeMap::new());
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${step_output.step-1.output}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Basic resolution: env
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_env_var() {
+        let env_vars = BTreeMap::from([("HOME".to_string(), "/home/user".to_string())]);
+        let step_outputs = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${env.HOME}", &ctx).await.unwrap();
+        assert_eq!(result, "/home/user");
+    }
+
+    #[tokio::test]
+    async fn resolve_env_missing() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${env.MISSING_VAR}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Basic resolution: external_data
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_external_data_with_cas() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"hello from CAS";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(Some(&cas), &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template(&format!("${{external_data.{hash}}}"), &ctx).await.unwrap();
+        assert_eq!(result, "hello from CAS");
+    }
+
+    #[tokio::test]
+    async fn resolve_external_data_no_cas() {
+        let hash = Hash::from_content(b"data");
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template(&format!("${{external_data.{hash}}}"), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Basic resolution: unpack token
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_unpack_token() {
+        let tokens = BTreeMap::from([("my-token".to_string(), b"token-data".to_vec())]);
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${*my-token}", &ctx).await.unwrap();
+        assert_eq!(result, "token-data");
+    }
+
+    #[tokio::test]
+    async fn resolve_unpack_token_missing() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${*missing}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Escape sequences
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn escape_literal_dollar_brace() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("\\${not_a_reference}", &ctx).await.unwrap();
+        assert_eq!(result, "${not_a_reference}");
+    }
+
+    #[tokio::test]
+    async fn mixed_escaped_and_real() {
+        let mut step_outputs = BTreeMap::new();
+        let mut outputs = BTreeMap::new();
+        outputs.insert("val".to_string(), Hash::from_content(b"42"));
+        step_outputs.insert("s1".to_string(), outputs);
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result =
+            resolve_template("\\${escaped} and ${step_output.s1.val}", &ctx).await.unwrap();
+        assert_eq!(result, format!("${{escaped}} and {}", Hash::from_content(b"42")));
+    }
+
+    // -----------------------------------------------------------------------
+    // Platform conditionals
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn conditional_macos_true() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result =
+            resolve_template("${context.os == \"macos\" ? hello : world}", &ctx).await.unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[tokio::test]
+    async fn conditional_macos_false() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "linux",
+            inputs: &BTreeMap::new(),
+        };
+        let result =
+            resolve_template("${context.os == \"macos\" ? hello : world}", &ctx).await.unwrap();
+        assert_eq!(result, "world");
+    }
+
+    #[tokio::test]
+    async fn conditional_not_equal() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "linux",
+            inputs: &BTreeMap::new(),
+        };
+        let result =
+            resolve_template("${context.os != \"macos\" ? hello : world}", &ctx).await.unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[tokio::test]
+    async fn conditional_with_step_output_branches() {
+        let mut step_outputs = BTreeMap::new();
+        let mut outs = BTreeMap::new();
+        outs.insert("a".to_string(), Hash::from_content(b"apple"));
+        outs.insert("b".to_string(), Hash::from_content(b"banana"));
+        step_outputs.insert("s1".to_string(), outs);
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template(
+            "${context.os == \"macos\" ? ${step_output.s1.a} : ${step_output.s1.b}}",
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, Hash::from_content(b"apple").to_string());
+    }
+
+    #[tokio::test]
+    async fn conditional_nested_braces() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "windows",
+            inputs: &BTreeMap::new(),
+        };
+        let result =
+            resolve_template("${context.os == \"windows\" ? win : other}", &ctx).await.unwrap();
+        assert_eq!(result, "win");
+    }
+
+    // -----------------------------------------------------------------------
+    // Comparison operators
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn comparison_less_than() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${context.os <= \"macos\" ? yes : no}", &ctx).await.unwrap();
+        // "macos" <= "macos" → true
+        assert_eq!(result, "yes");
+    }
+
+    #[tokio::test]
+    async fn comparison_greater_than() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${context.os > \"linux\" ? yes : no}", &ctx).await.unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    // -----------------------------------------------------------------------
+    // Template with mixed content
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mixed_text_and_references() {
+        let mut step_outputs = BTreeMap::new();
+        let mut outs = BTreeMap::new();
+        outs.insert("val".to_string(), Hash::from_content(b"42"));
+        step_outputs.insert("step-1".to_string(), outs);
+
+        let env_vars = BTreeMap::from([("USER".to_string(), "alice".to_string())]);
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("user=${env.USER}, result=${step_output.step-1.val}", &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result, format!("user=alice, result={}", Hash::from_content(b"42")),);
+    }
+
+    #[tokio::test]
+    async fn no_references_passthrough() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("hello world", &ctx).await.unwrap();
+        assert_eq!(result, "hello world");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn unclosed_brace_error() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${unclosed", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn unrecognized_reference_error() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("${foo.bar}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Content resolution (resolve_content)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_content_from_cas() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"binary data";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(Some(&cas), &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_content(&format!("${{external_data.{hash}}}"), &ctx).await.unwrap();
+        assert_eq!(result, b"binary data");
+    }
+
+    #[tokio::test]
+    async fn resolve_content_string_is_utf8() {
+        let env_vars = BTreeMap::from([("MSG".to_string(), "hello".to_string())]);
+        let step_outputs = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_content("${env.MSG}", &ctx).await.unwrap();
+        assert_eq!(result, b"hello");
+    }
+
+    // -----------------------------------------------------------------------
+    // :file materialization selector
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn file_selector_materializes_content() {
+        let cas = mediapm_cas::storage::in_memory::new_in_memory_cas();
+        let data = b"hello file content";
+        let hash = cas.put(bytes::Bytes::from_static(data)).await.unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx =
+            full_ctx(Some(&cas), &step_outputs, &env_vars, &tokens, Some(tmp.path()), "macos");
+        let result = resolve_template(&format!("${{external_data.{hash}:file(output.txt)}}"), &ctx)
+            .await
+            .unwrap();
+
+        // Result should be the materialized file path as string.
+        let expected_path = tmp.path().join("output.txt").to_string_lossy().to_string();
+        assert_eq!(result, expected_path);
+
+        // File content should be on disk.
+        let on_disk = tokio::fs::read(tmp.path().join("output.txt")).await.unwrap();
+        assert_eq!(on_disk, b"hello file content");
+    }
+
+    #[tokio::test]
+    async fn file_selector_no_sandbox_error() {
+        let env_vars = BTreeMap::from([("X".to_string(), "val".to_string())]);
+        let step_outputs = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${env.X:file(test.txt)}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn empty_template() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = TemplateContext::<InMemoryCas> {
+            cas: None,
+            step_outputs: &step_outputs,
+            env_vars: &env_vars,
+            tokens: &tokens,
+            sandbox_dir: None,
+            host_os: "macos",
+            inputs: &BTreeMap::new(),
+        };
+        let result = resolve_template("", &ctx).await.unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[tokio::test]
+    async fn empty_env_var_name_error() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${env.}", &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_unpack_token_name_error() {
+        let step_outputs = BTreeMap::new();
+        let env_vars = BTreeMap::new();
+        let tokens = BTreeMap::new();
+        let ctx = full_ctx(None, &step_outputs, &env_vars, &tokens, None, "macos");
+        let result = resolve_template("${*}", &ctx).await;
+        assert!(result.is_err());
     }
 }

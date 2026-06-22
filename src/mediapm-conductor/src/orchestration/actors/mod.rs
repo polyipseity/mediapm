@@ -1,10 +1,6 @@
-//! Internal actor modules for conductor orchestration.
+//! Actor definitions for the orchestration layer.
 //!
-//! Each file in this directory owns one runtime service boundary so the
-//! coordinator can remain deterministic while side effects stay isolated behind
-//! actor mailboxes.
+//! This module groups actor-backed execution units such as the step-worker
+//! pool that the coordinator delegates tool execution to.
 
-pub(super) mod documents;
-pub(super) mod scheduler;
-pub(super) mod state_store;
 pub(crate) mod step_worker;

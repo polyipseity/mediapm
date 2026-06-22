@@ -1,69 +1,47 @@
-//! Conductor orchestration contracts and deterministic runtime.
+//! # mediapm-conductor
 //!
-//! The crate is organized in CAS-inspired modules:
-//! - `api` for public contracts,
-//! - `error` for error taxonomy,
-//! - `model` for persisted schemas,
-//! - `orchestration` for runtime execution behavior,
-//! - `tools` for common executable tool presets.
+//! Orchestration contracts and state model for mediapm.
+//!
+//! This crate provides the runtime configuration model, the orchestration
+//! state model, and the deterministic workflow coordinator that drives
+//! step execution across a pool of actor-backed workers.
+//!
+//! Allow dead code during incremental implementation — most orchestration
+//! scaffolding will be wired as feature implementation progresses.
+#![allow(dead_code)]
 
 pub mod api;
-#[cfg(feature = "cli")]
-pub mod cli;
+pub mod cache;
+pub mod defaults;
 pub mod error;
 pub mod gc;
 pub mod model;
 pub mod orchestration;
+pub mod provision;
 pub mod runtime_env;
-pub mod tool_cache;
+pub mod simple_conductor;
 pub mod tools;
 
-#[cfg(feature = "tool-presets")]
+#[cfg(feature = "cli")]
+pub mod cli;
+
+// Re-exports for the public API surface.
 pub use api::{
-    CommonExecutablePayload, CommonExecutableTool, fetch_common_executable_tool_payload,
-};
-pub use api::{
-    ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths,
-    SchedulerDiagnostics, SchedulerTraceEvent, SchedulerTraceKind, StateMutationOptions,
-    ToolRuntimeEstimate, WorkerQueueDiagnostics, WorkflowProgressSender, WorkflowStepEvent,
-    default_state_paths, export_nickel_config_schemas,
-    resolve_managed_tool_executable_with_filesystem_cas, schema_export_dir,
+    ConductorApi, ManagedToolExecutableResolution, RunSummary, RunWorkflowOptions,
+    RuntimeDiagnostics, RuntimeStoragePaths, resolve_managed_tool_executable_with_filesystem_cas,
 };
 pub use error::ConductorError;
+pub use model::config::documents::NickelDocument;
+pub use model::config::versions::{decode_document, encode_document};
 pub use model::config::{
-    AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef, ImpureTimestamp,
-    InputBinding, MachineNickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec,
-    OutputPolicy, ProcessSpec, RuntimeStorageConfig, StateNickelDocument, ToolConfigSpec,
-    ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, UserNickelDocument, WorkflowSpec,
-    WorkflowStepSpec, decode_machine_document, decode_state_document, decode_user_document,
-    default_runtime_inherited_env_vars_for_host, encode_machine_document, encode_state_document,
-    encode_user_document, evaluate_total_configuration_sources,
+    ImpureTimestamp, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, OutputPolicy,
+    ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
+    WorkflowStepSpec, default_runtime_inherited_env_vars,
 };
+pub use model::state::OrchestrationState;
+pub use model::state::versions::{decode_state_json, encode_state_json};
 pub use model::state::{
-    AuxData, OrchestrationState, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput,
-    ResolvedInputKey, ToolCallInstance, decode_state, decode_state_from_slice, encode_state,
-    merge_persistence_flags, persisted_state_json_pretty, persisted_state_json_value,
+    AuxData, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
 };
-pub use orchestration::SimpleConductor;
-pub use orchestration::config::ENV_PROFILE_OUTPUT_PATH;
-pub use orchestration::print_profile_timing;
-pub use tools::downloader::{
-    UserDownloadCache, UserDownloadCachePruneReport, default_mediapm_user_download_cache_root,
-    default_user_download_cache_root,
-};
-
-/// Returns built-in tool ids known by the conductor runtime.
-///
-/// This exposes builtin identity from the conductor so higher layers (such as
-/// `mediapm`) can inspect builtin registration without depending directly on
-/// individual builtin crates.
-#[must_use]
-pub const fn registered_builtin_ids() -> [&'static str; 5] {
-    [
-        mediapm_conductor_builtin_echo::TOOL_ID,
-        mediapm_conductor_builtin_fs::TOOL_ID,
-        mediapm_conductor_builtin_import::TOOL_ID,
-        mediapm_conductor_builtin_archive::TOOL_ID,
-        mediapm_conductor_builtin_export::TOOL_ID,
-    ]
-}
+pub use simple_conductor::SimpleConductor;
+pub use tools::registered_builtin_ids;

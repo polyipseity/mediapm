@@ -1,344 +1,97 @@
-//! Top-level conductor node actor and typed client.
+//! Actor-based client for conductor orchestration.
 //!
-//! This module groups the user-facing actor shell in one place: command
-//! messages, typed RPC client, actor marker, spawn helper, and the concrete
-//! `ractor::Actor` implementation that delegates to the workflow coordinator.
+//! [`ConductorActorClient`] wraps the [`WorkflowCoordinator`] behind a
+//! `ractor` actor, providing a message-passing interface for workflow
+//! execution, diagnostics, and GC operations.
 
-use mediapm_cas::Hash;
-
-use mediapm_cas::{CasApi, CasMaintenanceApi, ConstraintApi};
-use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort, call_t};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::marker::PhantomData;
 use std::sync::Arc;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+
+use ractor::rpc::CallResult;
+use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::time::Duration;
-use tokio::task::JoinHandle;
 
-use crate::gc::run_cas_gc_sweep;
-use crate::orchestration::actors::state_store::StateStoreClient;
+use mediapm_cas::{CasApi, CasMaintenanceApi};
 
-use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics, StateMutationOptions};
+use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
 use crate::model::state::OrchestrationState;
-use crate::orchestration::config::rpc_timeout_ms;
-use crate::orchestration::coordinator::WorkflowCoordinator;
 
-/// Conductor node actor command envelope.
+use super::coordinator::WorkflowCoordinator;
+use super::protocol::UnifiedNickelDocument;
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+/// Messages accepted by the conductor actor.
 #[derive(Debug)]
-pub(super) enum ConductorNodeMessage {
-    /// Submits a workflow for background execution, returning a handle ID.
-    SubmitWorkflow(
-        PathBuf,
-        PathBuf,
-        Box<RunWorkflowOptions>,
-        RpcReplyPort<Result<u64, ConductorError>>,
-    ),
-    /// Polls a previously submitted workflow by handle ID.
-    PollWorkflow(
-        u64,
-        RpcReplyPort<Result<Option<Result<RunSummary, ConductorError>>, ConductorError>>,
-    ),
-    /// Returns the current in-memory orchestration-state snapshot.
-    GetState(RpcReplyPort<Result<OrchestrationState, ConductorError>>),
-    /// Returns runtime diagnostics and scheduler traces.
-    GetRuntimeDiagnostics(RpcReplyPort<Result<RuntimeDiagnostics, ConductorError>>),
-    /// Loads effective orchestration state resolved from user/machine/state
-    /// documents.
-    LoadResolvedState(
-        PathBuf,
-        PathBuf,
-        Box<StateMutationOptions>,
-        RpcReplyPort<Result<OrchestrationState, ConductorError>>,
-    ),
-    /// Replaces effective orchestration state and updates only volatile
-    /// `state_pointer` + CAS state blob.
-    ReplaceResolvedState(
-        PathBuf,
-        PathBuf,
-        Box<OrchestrationState>,
-        Box<StateMutationOptions>,
-        RpcReplyPort<Result<Hash, ConductorError>>,
-    ),
-    /// Runs instance GC with an optional TTL override.
-    RunGc(Option<u64>, RpcReplyPort<Result<(), ConductorError>>),
-}
-
-/// Typed client for interacting with the conductor node actor.
-#[derive(Debug, Clone)]
-pub struct ConductorActorClient {
-    /// Actor reference used for top-level conductor RPC calls.
-    actor: ActorRef<ConductorNodeMessage>,
-}
-
-impl ConductorActorClient {
-    /// Creates a typed client from one node actor reference.
-    #[must_use]
-    fn new(actor: ActorRef<ConductorNodeMessage>) -> Self {
-        Self { actor }
-    }
-
-    /// Submits a workflow for background execution, returning a handle ID.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails.
-    pub async fn submit_workflow(
-        &self,
-        user_ncl: &Path,
-        machine_ncl: &Path,
+pub(crate) enum ConductorMessage {
+    /// Run a workflow by name.
+    RunWorkflow {
+        /// Workflow name to execute.
+        workflow_name: String,
+        /// Run options.
         options: RunWorkflowOptions,
-    ) -> Result<u64, ConductorError> {
-        call_t!(
-            self.actor,
-            ConductorNodeMessage::SubmitWorkflow,
-            rpc_timeout_ms(),
-            user_ncl.to_path_buf(),
-            machine_ncl.to_path_buf(),
-            Box::new(options)
-        )
-        .map_err(|err| {
-            ConductorError::Internal(format!("conductor actor submit_workflow RPC failed: {err}"))
-        })?
-    }
-
-    /// Polls a previously submitted workflow by handle ID.
-    ///
-    /// Returns `None` if the workflow is still running, `Some(Ok(...))` on
-    /// success, or `Some(Err(...))` on failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or the handle ID is
-    /// not found.
-    pub async fn poll_workflow(
-        &self,
-        handle_id: u64,
-    ) -> Result<Option<Result<RunSummary, ConductorError>>, ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::PollWorkflow, rpc_timeout_ms(), handle_id)
-            .map_err(|err| {
-                ConductorError::Internal(format!("conductor actor poll_workflow RPC failed: {err}"))
-            })?
-    }
-
-    /// Polls in a loop until a previously submitted workflow completes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails, the handle ID is not
-    /// found, or the workflow itself failed.
-    pub async fn wait_workflow(&self, handle_id: u64) -> Result<RunSummary, ConductorError> {
-        loop {
-            match self.poll_workflow(handle_id).await? {
-                Some(result) => return result,
-                None => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
-            }
-        }
-    }
-
-    /// Returns the actor's current in-memory orchestration-state snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or state retrieval fails
-    /// in the coordinator.
-    pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::GetState, rpc_timeout_ms()).map_err(|err| {
-            ConductorError::Internal(format!("conductor actor get_state RPC failed: {err}"))
-        })?
-    }
-
-    /// Returns runtime diagnostics including worker queue metrics and scheduler traces.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or diagnostics collection
-    /// fails in the coordinator.
-    pub async fn get_runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::GetRuntimeDiagnostics, rpc_timeout_ms()).map_err(
-            |err| {
-                ConductorError::Internal(format!(
-                    "conductor actor get_runtime_diagnostics RPC failed: {err}"
-                ))
-            },
-        )?
-    }
-
-    /// Loads effective orchestration state resolved from user/machine/state
-    /// documents.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or when state loading
-    /// fails in the coordinator.
-    pub async fn load_resolved_state(
-        &self,
-        user_ncl: &Path,
-        machine_ncl: &Path,
-        options: StateMutationOptions,
-    ) -> Result<OrchestrationState, ConductorError> {
-        call_t!(
-            self.actor,
-            ConductorNodeMessage::LoadResolvedState,
-            rpc_timeout_ms(),
-            user_ncl.to_path_buf(),
-            machine_ncl.to_path_buf(),
-            Box::new(options)
-        )
-        .map_err(|err| {
-            ConductorError::Internal(format!(
-                "conductor actor load_resolved_state RPC failed: {err}"
-            ))
-        })?
-    }
-
-    /// Replaces effective orchestration state and updates only volatile
-    /// `state_pointer` + CAS state blob.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or state replacement
-    /// fails in the coordinator.
-    pub async fn replace_resolved_state(
-        &self,
-        user_ncl: &Path,
-        machine_ncl: &Path,
+        /// Unified configuration documents.
+        unified: UnifiedNickelDocument,
+        /// Current orchestration state (cloned, actor owns its copy).
         state: OrchestrationState,
-        options: StateMutationOptions,
-    ) -> Result<Hash, ConductorError> {
-        call_t!(
-            self.actor,
-            ConductorNodeMessage::ReplaceResolvedState,
-            rpc_timeout_ms(),
-            user_ncl.to_path_buf(),
-            machine_ncl.to_path_buf(),
-            Box::new(state),
-            Box::new(options)
-        )
-        .map_err(|err| {
-            ConductorError::Internal(format!(
-                "conductor actor replace_resolved_state RPC failed: {err}"
-            ))
-        })?
-    }
-
-    /// Runs instance GC with an optional TTL override.
-    ///
-    /// When `ttl_override` is `None`, the state store's configured TTL is used;
-    /// if neither is set the call is a no-op.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when actor RPC delivery fails or GC/persistence fails
-    /// in the state store.
-    pub async fn run_gc(&self, ttl_override: Option<u64>) -> Result<(), ConductorError> {
-        call_t!(self.actor, ConductorNodeMessage::RunGc, rpc_timeout_ms(), ttl_override).map_err(
-            |err| ConductorError::Internal(format!("conductor actor run_gc RPC failed: {err}")),
-        )?
-    }
+        /// Reply channel.
+        reply: RpcReplyPort<Result<RunSummary, ConductorError>>,
+    },
+    /// Returns the current runtime diagnostics snapshot.
+    GetRuntimeDiagnostics {
+        /// Reply channel.
+        reply: RpcReplyPort<RuntimeDiagnostics>,
+    },
+    /// Runs garbage collection on the orchestration state.
+    RunGc {
+        /// Set of referenced instance keys to retain.
+        referenced_keys: std::collections::BTreeSet<String>,
+        /// Current orchestration state (cloned, actor owns its copy).
+        state: OrchestrationState,
+        /// Unified configuration whose hashes protect blobs from reclamation.
+        unified: UnifiedNickelDocument,
+        /// Reply channel.
+        reply: RpcReplyPort<Result<OrchestrationState, ConductorError>>,
+    },
 }
 
-/// Actor state wrapping the workflow coordinator with background task tracking.
-struct ConductorActorState<C: CasApi + ConstraintApi + Send + Sync + 'static> {
-    /// Core workflow coordinator.
-    coordinator: WorkflowCoordinator<C>,
-    /// Background workflow tasks keyed by handle ID.
-    workflow_handles: HashMap<u64, JoinHandle<Result<RunSummary, ConductorError>>>,
-    /// Monotonically increasing handle ID counter.
-    next_handle_id: u64,
-    /// Whether the first GC cycle (with loaded `external_data` roots) has been
-    /// performed. Used by the background GC loop to defer startup GC.
-    gc_initialized: Arc<AtomicBool>,
-    /// Shared `OnceLock` for the state store client, populated by
-    /// `ensure_runtime_support` in the `SubmitWorkflow` handler. Read by the
-    /// background GC task.
-    shared_state_store: Arc<OnceLock<StateStoreClient>>,
+// ---------------------------------------------------------------------------
+// Actor implementation
+// ---------------------------------------------------------------------------
+
+/// Actor that owns a [`WorkflowCoordinator`] in its state and handles
+/// [`ConductorMessage`] requests.
+struct ConductorActor<C: CasApi> {
+    /// Phantom marker for CAS type.
+    _marker: PhantomData<C>,
 }
 
-/// Interval in seconds between background GC sweep cycles.
-const GC_INTERVAL_SECONDS: u64 = 3600;
-
-/// Marker actor for top-level conductor node command dispatch.
-#[derive(Debug, Clone, Copy)]
-struct ConductorNodeActor<C> {
-    /// Type marker for the CAS implementation shared with the workflow coordinator.
-    _phantom: std::marker::PhantomData<C>,
-}
-
-impl<C> Default for ConductorNodeActor<C> {
-    /// Builds one marker actor with no local fields.
+impl<C: CasApi + CasMaintenanceApi> Default for ConductorActor<C> {
     fn default() -> Self {
-        Self { _phantom: std::marker::PhantomData }
+        Self { _marker: PhantomData }
     }
 }
 
-impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Actor
-    for ConductorNodeActor<C>
+impl<C> Actor for ConductorActor<C>
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
 {
-    type Msg = ConductorNodeMessage;
-    type State = ConductorActorState<C>;
-    type Arguments = Arc<C>;
+    type Msg = ConductorMessage;
+    type State = WorkflowCoordinator<C>;
+    type Arguments = WorkflowCoordinator<C>;
 
-    /// Initializes the node actor with a workflow coordinator bound to the shared CAS handle.
-    ///
-    /// Also spawns the background GC loop: waits until the first successful
-    /// [`LoadResolvedState`] or [`ReplaceResolvedState`] populates
-    /// `external_data` roots, then enters the periodic cycle at
-    /// [`GC_INTERVAL_SECONDS`] between cycles.
     async fn pre_start(
         &self,
         _myself: ActorRef<Self::Msg>,
-        args: Self::Arguments,
+        mut args: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        // Shared state for the background GC task — populated by handlers.
-        let state_gc_initialized = Arc::new(AtomicBool::new(false));
-        let state_shared_state_store: Arc<OnceLock<StateStoreClient>> = Arc::new(OnceLock::new());
-
-        let bg_cas = args.clone();
-        let bg_initialized = state_gc_initialized.clone();
-        let bg_state_store = state_shared_state_store.clone();
-        tokio::spawn(async move {
-            // Phase 1: Wait for initial state load before first GC.
-            while !bg_initialized.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-
-            // Phase 2: Periodic GC at fixed interval, directly calling
-            // run_cas_gc_sweep through the state store rather than sending
-            // RunGc through the actor mailbox.
-            loop {
-                let Some(state_store) = bg_state_store.get() else {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                };
-                let _state_pointer = state_store.get_state_pointer().await.unwrap_or(None);
-                let _current_state = match state_store.current_state().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("background GC: failed to get current state: {e}");
-                        tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
-                        continue;
-                    }
-                };
-                if let Err(e) = run_cas_gc_sweep(bg_cas.as_ref()).await {
-                    tracing::warn!("background GC failed: {e}");
-                }
-                tokio::time::sleep(Duration::from_secs(GC_INTERVAL_SECONDS)).await;
-            }
-        });
-
-        Ok(ConductorActorState {
-            coordinator: WorkflowCoordinator::new(args),
-            workflow_handles: HashMap::new(),
-            next_handle_id: 0,
-            gc_initialized: state_gc_initialized,
-            shared_state_store: state_shared_state_store,
-        })
+        args.start_background_gc(crate::defaults::DEFAULT_CONDUCTOR_GC_INTERVAL_SECONDS);
+        Ok(args)
     }
 
-    /// Handles top-level conductor RPC calls by delegating into the workflow coordinator.
-    #[allow(clippy::too_many_lines)]
     async fn handle(
         &self,
         _myself: ActorRef<Self::Msg>,
@@ -346,145 +99,159 @@ impl<C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static> Acto
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            ConductorNodeMessage::SubmitWorkflow(user_ncl, machine_ncl, options, reply) => {
-                let handle_id = state.next_handle_id;
-                state.next_handle_id += 1;
-
-                // Pre-ensure runtime support so the main coordinator has a
-                // state_store that the background task can share.  When the bg
-                // coordinator uses the same state_store actor, commit_run
-                // directly updates the in-memory current_state — no
-                // post-hoc load_resolved_state is needed.
-                let main_state_store =
-                    if let Err(e) = state.coordinator.ensure_runtime_support().await {
-                        tracing::warn!("failed to ensure main coordinator runtime support: {e}");
-                        None
-                    } else {
-                        state.coordinator.state_store()
-                    };
-
-                // Populate the shared state store OnceLock so the background
-                // GC task can access the state store independently.
-                if let Some(ref store) = main_state_store {
-                    let _ = state.shared_state_store.set(store.clone());
-                }
-
-                let cas = state.coordinator.cas.clone();
-                let join_handle = tokio::spawn(async move {
-                    let mut coord = WorkflowCoordinator::new(cas);
-                    if let Some(store) = main_state_store {
-                        coord.set_state_store(store);
-                    }
-                    if *options == RunWorkflowOptions::default() {
-                        coord.run_workflow(&user_ncl, &machine_ncl).await
-                    } else {
-                        coord.run_workflow_with_options(&user_ncl, &machine_ncl, *options).await
-                    }
-                });
-                state.workflow_handles.insert(handle_id, join_handle);
-                let _ = reply.send(Ok(handle_id));
-            }
-            ConductorNodeMessage::PollWorkflow(handle_id, reply) => {
-                if let Some(handle) = state.workflow_handles.get(&handle_id) {
-                    if handle.is_finished() {
-                        let handle = state.workflow_handles.remove(&handle_id).unwrap();
-                        let result = handle.await;
-                        let _ = reply.send(Ok(Some(result.unwrap_or_else(|join_err| {
-                            Err(ConductorError::Internal(format!(
-                                "workflow background task panicked: {join_err}"
-                            )))
-                        }))));
-                    } else {
-                        let _ = reply.send(Ok(None));
-                    }
-                } else {
-                    let _ = reply.send(Err(ConductorError::Internal(format!(
-                        "workflow handle {handle_id} not found"
-                    ))));
-                }
-            }
-            ConductorNodeMessage::GetState(reply) => {
-                let _ = reply.send(state.coordinator.current_state().await);
-            }
-            ConductorNodeMessage::GetRuntimeDiagnostics(reply) => {
-                let _ = reply.send(state.coordinator.runtime_diagnostics().await);
-            }
-            ConductorNodeMessage::LoadResolvedState(user_ncl, machine_ncl, options, reply) => {
-                let result = state
-                    .coordinator
-                    .load_resolved_state_with_options(&user_ncl, &machine_ncl, *options)
-                    .await;
-                if result.is_ok() {
-                    state.gc_initialized.store(true, Ordering::Release);
-                    if let Some(store) = state.coordinator.state_store() {
-                        let _ = state.shared_state_store.set(store);
-                    }
-                }
-                let _ = reply.send(result);
-            }
-            ConductorNodeMessage::ReplaceResolvedState(
-                user_ncl,
-                machine_ncl,
-                next_state,
-                options,
+            ConductorMessage::RunWorkflow {
+                workflow_name,
+                options: _,
+                unified,
+                state: mut ws_state,
                 reply,
-            ) => {
-                let result = state
-                    .coordinator
-                    .replace_resolved_state_with_options(
-                        &user_ncl,
-                        &machine_ncl,
-                        *next_state,
-                        *options,
-                    )
-                    .await;
-                if result.is_ok() {
-                    state.gc_initialized.store(true, Ordering::Release);
-                    if let Some(store) = state.coordinator.state_store() {
-                        let _ = state.shared_state_store.set(store);
-                    }
-                }
-                let _ = reply.send(result);
+            } => {
+                let summary = state.run_workflow(&workflow_name, &unified, &mut ws_state).await;
+                let _ = reply.send(summary);
             }
-            ConductorNodeMessage::RunGc(ttl_override, reply) => {
-                let result = async {
-                    // 1. Instance GC (TTL-based pruning of stale instances).
-                    state.coordinator.run_gc(ttl_override).await?;
-
-                    // 2. CAS sweep using state's external_data.
-                    let cas = state.coordinator.cas.clone();
-                    let _state_pointer = match state.coordinator.state_store() {
-                        Some(store) => store.get_state_pointer().await?,
-                        None => None,
-                    };
-                    run_cas_gc_sweep(cas.as_ref()).await?;
-
-                    Ok::<_, ConductorError>(())
-                }
-                .await;
-                if result.is_ok() {
-                    state.gc_initialized.store(true, Ordering::Release);
-                }
-                let _ = reply.send(result);
+            ConductorMessage::GetRuntimeDiagnostics { reply } => {
+                let diagnostics = state.runtime_diagnostics().await;
+                let _ = reply.send(diagnostics);
+            }
+            ConductorMessage::RunGc { referenced_keys, state: mut gc_state, unified, reply } => {
+                let result = state.run_gc(&mut gc_state, &referenced_keys, &unified).await;
+                let _ = reply.send(result.map(|_| gc_state));
             }
         }
         Ok(())
     }
 }
 
-/// Spawns a conductor node actor and returns a typed client.
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+/// Typed client handle to a spawned [`ConductorActor`].
+///
+/// Clients send messages through this handle and await typed replies.
+#[derive(Debug, Clone)]
+pub(crate) struct ConductorActorClient {
+    /// Reference to the spawned actor.
+    actor_ref: ActorRef<ConductorMessage>,
+    /// RPC timeout duration.
+    rpc_timeout: std::time::Duration,
+}
+
+impl ConductorActorClient {
+    /// Creates a new client from an existing actor reference.
+    #[must_use]
+    pub(crate) fn new(actor_ref: ActorRef<ConductorMessage>) -> Self {
+        Self {
+            rpc_timeout: std::time::Duration::from_millis(super::config::rpc_timeout_ms()),
+            actor_ref,
+        }
+    }
+
+    /// Sends a `RunWorkflow` request and awaits the reply.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Internal`] when the actor is unreachable or
+    /// the RPC times out.
+    pub(crate) async fn run_workflow(
+        &self,
+        workflow_name: &str,
+        options: RunWorkflowOptions,
+        unified: UnifiedNickelDocument,
+        state: OrchestrationState,
+    ) -> Result<RunSummary, ConductorError> {
+        match self
+            .actor_ref
+            .call(
+                |reply| ConductorMessage::RunWorkflow {
+                    workflow_name: workflow_name.to_string(),
+                    options,
+                    unified,
+                    state,
+                    reply,
+                },
+                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+            )
+            .await
+        {
+            Ok(CallResult::Success(Ok(summary))) => Ok(summary),
+            Ok(CallResult::Success(Err(e))) => Err(e),
+            Ok(CallResult::Timeout) => {
+                Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"))
+            }
+            Ok(_) => Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed")),
+            Err(e) => Err(ConductorError::rpc_error("ConductorActor", e)),
+        }
+    }
+
+    /// Sends a `GetRuntimeDiagnostics` request and awaits the reply.
+    pub(crate) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
+        match self
+            .actor_ref
+            .call(
+                |reply| ConductorMessage::GetRuntimeDiagnostics { reply },
+                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+            )
+            .await
+        {
+            Ok(CallResult::Success(diag)) => Ok(diag),
+            Ok(CallResult::Timeout) => {
+                Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"))
+            }
+            Ok(_) => Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed")),
+            Err(e) => Err(ConductorError::rpc_error("ConductorActor", e)),
+        }
+    }
+
+    /// Sends a `RunGc` request and awaits the updated orchestration state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConductorError::Internal`] when the actor is unreachable or
+    /// the RPC times out.
+    pub(crate) async fn run_gc(
+        &self,
+        referenced_keys: std::collections::BTreeSet<String>,
+        state: OrchestrationState,
+        unified: UnifiedNickelDocument,
+    ) -> Result<OrchestrationState, ConductorError> {
+        match self
+            .actor_ref
+            .call(
+                |reply| ConductorMessage::RunGc { referenced_keys, state, unified, reply },
+                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+            )
+            .await
+        {
+            Ok(CallResult::Success(Ok(gc_state))) => Ok(gc_state),
+            Ok(CallResult::Success(Err(e))) => Err(e),
+            Ok(CallResult::Timeout) => {
+                Err(ConductorError::rpc_error("ConductorActor", "RPC timeout"))
+            }
+            Ok(_) => Err(ConductorError::rpc_error("ConductorActor", "RPC channel closed")),
+            Err(e) => Err(ConductorError::rpc_error("ConductorActor", e)),
+        }
+    }
+}
+
+/// Spawns a new conductor actor and returns a client handle.
 ///
 /// # Errors
 ///
-/// Returns an error when the node actor cannot be spawned.
-pub async fn spawn_conductor_actor<
-    C: CasApi + CasMaintenanceApi + ConstraintApi + Send + Sync + 'static,
->(
+/// Returns [`ConductorError::Internal`] when actor spawn fails.
+pub(crate) async fn spawn_conductor_actor<C>(
     cas: Arc<C>,
-) -> Result<ConductorActorClient, ConductorError> {
-    let (actor_ref, _join_handle) =
-        Actor::spawn(None, ConductorNodeActor::<C>::default(), cas).await.map_err(|err| {
-            ConductorError::Internal(format!("failed spawning conductor actor: {err}"))
-        })?;
+) -> Result<ConductorActorClient, ConductorError>
+where
+    C: CasApi + CasMaintenanceApi + Send + Sync + 'static,
+{
+    let coordinator = WorkflowCoordinator::new(cas);
+    let (actor_ref, _handle) =
+        ractor::spawn_named::<ConductorActor<C>>("conductor".to_string(), coordinator)
+            .await
+            .map_err(|e| {
+                ConductorError::Internal(format!("failed to spawn conductor actor: {e}"))
+            })?;
+
     Ok(ConductorActorClient::new(actor_ref))
 }
