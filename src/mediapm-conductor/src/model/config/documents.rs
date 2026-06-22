@@ -1,183 +1,62 @@
-//! Machine and state Nickel document types and mutation helpers.
+//! Multi-document configuration model.
 //!
-//! These types carry the full persisted conductor configuration surface for
-//! machine-managed and volatile-state documents, together with the document
-//! mutation helpers that keep user and machine document semantics aligned.
+//! In the simplified multi-doc model, conductor accepts zero to many user
+//! configuration documents plus one volatile state document.  Each document is
+//! a [`NickelDocument`] parsed independently by its embedded schema version
+//! marker and merged in declaration order (conflicts produce errors).
+//!
+//! This replaces the old three-document model (`UserNickelDocument`,
+//! `MachineNickelDocument`, `StateNickelDocument`) with a single unified type.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AddExternalDataOptions, AddToolConfigMode, AddToolOptions, ExternalContentRef, ImpureTimestamp,
-    NickelDocumentMetadata, RuntimeStorageConfig, ToolConfigSpec, ToolKindSpec, ToolSpec,
-    UserNickelDocument, WorkflowSpec,
+    ConductorRuntimeConfig, NickelDocumentMetadata, ToolKindSpec, ToolSpec, WorkflowSpec,
+    default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
-use crate::model::state::OutputSaveMode;
+use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 
-/// Validates one external-data save mode for machine-document insertion.
-fn validate_external_data_save_mode(
-    save_mode: Option<OutputSaveMode>,
-) -> Result<(), ConductorError> {
-    if matches!(save_mode, Some(OutputSaveMode::Unsaved)) {
-        return Err(ConductorError::Workflow(
-            "external_data save policy cannot be false/unsaved; use true/saved or \"full\""
-                .to_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-/// Nickel document loaded from `conductor.machine.ncl`.
+/// A single evaluated Nickel configuration document.
 ///
-/// This document shares the same schema surface as `conductor.ncl`. The only
-/// special behavior is that runtime writes flow back to this file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct MachineNickelDocument {
-    /// Runtime-only metadata (not persisted in `v1.ncl`).
-    #[serde(default)]
+/// In the multi-doc model, each user config file and the volatile state
+/// document produce one `NickelDocument`.  These are merged in order during
+/// configuration loading.
+///
+/// Runtime-only fields (concurrency, retries, content_map, env overrides)
+/// live inline on each [`ToolSpec`] via its [`ToolRuntime`] — there is no
+/// separate `tool_runtimes` map.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NickelDocument {
+    /// Document metadata (identity, version marker).
     pub metadata: NickelDocumentMetadata,
-    /// Grouped runtime storage path configuration persisted under `runtime`.
-    #[serde(default, skip_serializing_if = "RuntimeStorageConfig::is_empty")]
-    pub runtime: RuntimeStorageConfig,
-    /// External content metadata keyed by CAS hash identity.
-    #[serde(default)]
-    pub external_data: BTreeMap<Hash, ExternalContentRef>,
-    /// Tool definitions keyed by logical tool name.
-    #[serde(default)]
+    /// Tool definitions in this document keyed by tool name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, ToolSpec>,
-    /// Workflow DAG definitions keyed by workflow id.
+    /// Workflow definitions in this document.
     #[serde(default)]
-    pub workflows: BTreeMap<String, WorkflowSpec>,
-    /// Runtime-only tool execution configuration (`tool_name -> config`).
+    pub workflows: Vec<WorkflowSpec>,
+    /// Conductor-level runtime configuration.
     #[serde(default)]
-    pub tool_configs: BTreeMap<String, ToolConfigSpec>,
-    /// Machine-injected timestamps for impure tool calls.
-    ///
-    /// Layout: `workflow_id -> (step_id -> timestamp)`.
-    #[serde(default)]
-    pub impure_timestamps: BTreeMap<String, BTreeMap<String, ImpureTimestamp>>,
-    /// Current orchestration-state CAS pointer.
-    #[serde(default)]
-    pub state_pointer: Option<Hash>,
+    pub runtime: ConductorRuntimeConfig,
+    /// External data entries keyed by CAS hash.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub external_data: BTreeMap<Hash, super::ExternalDataEntry>,
 }
 
-/// Nickel document loaded from `.conductor/state.ncl`.
-///
-/// This document stores volatile runtime-managed state only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct StateNickelDocument {
-    /// Machine-injected timestamps for impure tool calls.
-    ///
-    /// Layout: `workflow_id -> (step_id -> timestamp)`.
-    #[serde(default)]
-    pub impure_timestamps: BTreeMap<String, BTreeMap<String, ImpureTimestamp>>,
-    /// Current orchestration-state CAS pointer.
-    #[serde(default)]
-    pub state_pointer: Option<Hash>,
-}
-
-impl UserNickelDocument {
-    /// Adds one tool definition (and optional tool config) to user document state.
-    ///
-    /// Validation rules:
-    /// - `tool_name` must be non-empty after trimming,
-    /// - duplicates fail unless `overwrite_existing = true`,
-    /// - builtin tools cannot end up with `content_map` in effective config,
-    /// - content-map hashes are reconciled into managed `external_data` roots.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation fails (for example empty tool names,
-    /// conflicting entries without overwrite mode, or invalid builtin/config
-    /// combinations).
-    pub fn add_tool(
-        &mut self,
-        tool_name: impl Into<String>,
-        options: AddToolOptions,
-    ) -> Result<(), ConductorError> {
-        add_tool_to_maps(
-            &mut self.tools,
-            &mut self.tool_configs,
-            &mut self.external_data,
-            tool_name.into(),
-            options,
-        )
-    }
-
-    /// Reconciles managed external-data CAS roots with current tool content maps.
-    ///
-    /// This helper guarantees that every hash referenced from
-    /// `tool_configs.<tool>.content_map` appears in `external_data` and removes
-    /// stale managed tool-content root entries when no configured tool refers
-    /// to those hashes anymore.
-    pub fn sync_tool_content_external_data_roots(&mut self) {
-        sync_tool_content_external_data_roots(&mut self.external_data, &self.tool_configs);
-    }
-}
-
-impl MachineNickelDocument {
-    /// Adds one tool definition (and optional tool config) to machine document state.
-    ///
-    /// Validation rules mirror [`UserNickelDocument::add_tool`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when validation fails (for example empty tool names,
-    /// conflicting entries without overwrite mode, or invalid builtin/config
-    /// combinations).
-    pub fn add_tool(
-        &mut self,
-        tool_name: impl Into<String>,
-        options: AddToolOptions,
-    ) -> Result<(), ConductorError> {
-        add_tool_to_maps(
-            &mut self.tools,
-            &mut self.tool_configs,
-            &mut self.external_data,
-            tool_name.into(),
-            options,
-        )
-    }
-
-    /// Reconciles managed external-data CAS roots with current tool content maps.
-    ///
-    /// This helper guarantees that every hash referenced from
-    /// `tool_configs.<tool>.content_map` appears in `external_data` and removes
-    /// stale managed tool-content root entries when no configured tool refers
-    /// to those hashes anymore.
-    pub fn sync_tool_content_external_data_roots(&mut self) {
-        sync_tool_content_external_data_roots(&mut self.external_data, &self.tool_configs);
-    }
-
-    /// Adds one external-data entry to machine document state.
-    ///
-    /// Validation rules:
-    /// - `hash` is the external-data map key,
-    /// - duplicates fail unless `overwrite_existing = true`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `hash` already exists and overwrite mode is not
-    /// enabled.
-    pub fn add_external_data(
-        &mut self,
-        hash: Hash,
-        options: AddExternalDataOptions,
-    ) -> Result<(), ConductorError> {
-        validate_external_data_save_mode(options.reference.save)?;
-
-        if !options.overwrite_existing && self.external_data.contains_key(&hash) {
-            return Err(ConductorError::Workflow(format!(
-                "external data '{hash}' already exists in machine config; set overwrite_existing=true to replace it"
-            )));
+impl Default for NickelDocument {
+    fn default() -> Self {
+        Self {
+            metadata: NickelDocumentMetadata::default(),
+            tools: BTreeMap::new(),
+            workflows: Vec::new(),
+            runtime: ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
         }
-
-        self.external_data.insert(hash, options.reference);
-        Ok(())
     }
 }
 
@@ -185,139 +64,321 @@ impl MachineNickelDocument {
 /// content-map CAS hashes against pruning.
 const MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX: &str = "managed tool content CAS root for";
 
-/// Collects all CAS hashes referenced by configured tool content maps.
-fn collect_tool_content_map_hashes(
-    tool_configs: &BTreeMap<String, ToolConfigSpec>,
+/// Collects all CAS hashes referenced by tool content maps AND external data
+/// entries in one document.
+///
+/// Returns a set of every CAS hash value found in any tool's
+/// `runtime.content_map` entries plus the keys of the `external_data` map.
+#[must_use]
+pub fn collect_config_content_hashes(
+    tools: &BTreeMap<String, ToolSpec>,
+    external_data: &BTreeMap<Hash, super::ExternalDataEntry>,
 ) -> BTreeSet<Hash> {
-    tool_configs
+    let mut hashes: BTreeSet<Hash> = tools
         .values()
-        .flat_map(|config| config.content_map.iter().flat_map(|map| map.values().copied()))
-        .collect()
+        .flat_map(|spec| spec.runtime.content_map.values())
+        .filter_map(|value| {
+            // Attempt to parse each content_map value as a CAS hash.
+            // Non-hash values (inline descriptions, base64) are skipped.
+            value.parse::<Hash>().ok()
+        })
+        .collect();
+    // Include external data entry keys directly.
+    hashes.extend(external_data.keys().copied());
+    hashes
+}
+
+/// A NickelDocument paired with its source file path.
+///
+/// Used during configuration loading to track which file each document
+/// originated from — critical for error reporting on merge conflicts.
+#[derive(Debug, Clone)]
+pub struct SourceDocument {
+    /// Absolute path to the `.ncl` file this document was loaded from.
+    pub path: PathBuf,
+    /// The parsed document.
+    pub document: NickelDocument,
+}
+
+/// A conflict between two source documents during merge.
+#[derive(Debug, Clone)]
+pub enum MergeConflict {
+    /// Two documents declare the same tool name with incompatible specs.
+    DuplicateTool { name: String, first_path: PathBuf, second_path: PathBuf },
+    /// Two documents declare the same workflow name.
+    DuplicateWorkflow { name: String, first_path: PathBuf, second_path: PathBuf },
+}
+
+/// Merges multiple source documents into one unified document.
+///
+/// Documents are merged in declaration order. If two documents define the same
+/// tool name, workflow name, or tool-runtime key, the merge fails with a
+/// [`MergeConflict`] error.
+///
+/// # Errors
+///
+/// Returns `ConductorError::Workflow` containing all merge conflicts found.
+pub fn merge_documents(docs: &[SourceDocument]) -> Result<NickelDocument, ConductorError> {
+    let mut merged = NickelDocument::default();
+    // Track which path each merged name was first seen in.
+    let mut tool_sources: BTreeMap<String, &PathBuf> = BTreeMap::new();
+    let mut workflow_sources: BTreeMap<String, &PathBuf> = BTreeMap::new();
+    let mut conflicts: Vec<MergeConflict> = Vec::new();
+
+    for source in docs {
+        for (tool_name, tool_spec) in &source.document.tools {
+            if let Some(first_path) = tool_sources.get(tool_name) {
+                conflicts.push(MergeConflict::DuplicateTool {
+                    name: tool_name.clone(),
+                    first_path: (*first_path).clone(),
+                    second_path: source.path.clone(),
+                });
+            } else {
+                tool_sources.insert(tool_name.clone(), &source.path);
+                merged.tools.insert(tool_name.clone(), tool_spec.clone());
+            }
+        }
+
+        for workflow in &source.document.workflows {
+            if let Some(first_path) = workflow_sources.get(&workflow.name) {
+                conflicts.push(MergeConflict::DuplicateWorkflow {
+                    name: workflow.name.clone(),
+                    first_path: (*first_path).clone(),
+                    second_path: source.path.clone(),
+                });
+            } else {
+                workflow_sources.insert(workflow.name.clone(), &source.path);
+                merged.workflows.push(workflow.clone());
+            }
+        }
+    }
+
+    if conflicts.is_empty() {
+        Ok(merged)
+    } else {
+        let detail: Vec<String> = conflicts
+            .iter()
+            .map(|c| match c {
+                MergeConflict::DuplicateTool { name, first_path, second_path } => format!(
+                    "tool '{name}' defined in '{}' and '{}'",
+                    first_path.display(),
+                    second_path.display()
+                ),
+                MergeConflict::DuplicateWorkflow { name, first_path, second_path } => format!(
+                    "workflow '{name}' defined in '{}' and '{}'",
+                    first_path.display(),
+                    second_path.display()
+                ),
+            })
+            .collect();
+        Err(ConductorError::Workflow(format!(
+            "merge conflicts in config documents: {}",
+            detail.join("; ")
+        )))
+    }
+}
+
+impl NickelDocument {
+    /// Converts this document into a [`UnifiedNickelDocument`] for the
+    /// orchestration runtime.
+    ///
+    /// Each tool spec is mapped to a [`UnifiedToolSpec`] by combining the
+    /// tool definition with its runtime configuration. Content-map hashes
+    /// and external-data hashes are collected into a deduplicated set.
+    #[must_use]
+    pub(crate) fn to_unified(&self) -> UnifiedNickelDocument {
+        let config_content_hashes = collect_config_content_hashes(&self.tools, &self.external_data);
+
+        let tools: BTreeMap<String, UnifiedToolSpec> = self
+            .tools
+            .values()
+            .map(|spec| {
+                let id = spec.id();
+                let (command_parts, success_codes) = match &spec.kind {
+                    ToolKindSpec::Executable { command, env_vars: _, success_codes } => {
+                        (command.clone(), success_codes.clone())
+                    }
+                    ToolKindSpec::Builtin { .. } => (Vec::new(), vec![0]),
+                };
+
+                let unified = UnifiedToolSpec {
+                    is_impure: spec.runtime.impure,
+                    max_concurrent_calls: spec.runtime.max_concurrent_calls,
+                    max_retries: spec.runtime.max_retries,
+                    command_parts,
+                    success_codes,
+                    inputs: spec.inputs.clone(),
+                    default_inputs: spec.default_inputs.clone(),
+                    execution_env_vars: {
+                        // 1. Hardcoded platform defaults
+                        let mut env_vars = default_runtime_inherited_env_vars();
+
+                        // 2. Inherit additional env var names from host, selected by current platform
+                        let current_platform = if cfg!(target_os = "windows") {
+                            "windows"
+                        } else if cfg!(target_os = "linux") {
+                            "linux"
+                        } else if cfg!(target_os = "macos") {
+                            "macos"
+                        } else {
+                            "unknown"
+                        };
+                        if let Some(platform_names) =
+                            self.runtime.platform_inherited_env_var_names.get(current_platform)
+                        {
+                            for name in platform_names {
+                                if let Ok(val) = std::env::var(name) {
+                                    env_vars.insert(name.clone(), val);
+                                }
+                            }
+                        }
+
+                        // 3. Tool-level overrides
+                        env_vars.extend(spec.runtime.inherited_env_vars.clone());
+                        env_vars
+                    },
+                    outputs: BTreeMap::new(),
+                    tool_content_map: spec.runtime.content_map.clone(),
+                };
+                (id, unified)
+            })
+            .collect();
+
+        let workflows: BTreeMap<String, WorkflowSpec> =
+            self.workflows.iter().map(|w| (w.name.clone(), w.clone())).collect();
+
+        let external_data_policies =
+            self.external_data.iter().map(|(hash, entry)| (*hash, entry.save_mode)).collect();
+
+        UnifiedNickelDocument {
+            tools,
+            workflows,
+            tool_content_hashes: config_content_hashes,
+            external_data_policies,
+            runtime: self.runtime.clone(),
+        }
+    }
 }
 
 /// Returns true when one external-data description marks managed tool content.
-fn is_managed_tool_content_description(description: Option<&str>) -> bool {
+#[must_use]
+pub fn is_tool_content_description(description: Option<&str>) -> bool {
     description.is_some_and(|text| text.starts_with(MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX))
 }
 
-/// Reconciles managed external-data roots against current tool content-map hashes.
-///
-/// Behavior:
-/// - ensures each referenced content-map hash appears at least once in
-///   `external_data`,
-/// - removes stale managed tool-content entries whose hash no longer appears
-///   in any configured tool content map,
-/// - preserves non-managed `external_data` entries even when their hashes are
-///   unrelated to tool content maps.
-fn sync_tool_content_external_data_roots(
-    external_data: &mut BTreeMap<Hash, ExternalContentRef>,
-    tool_configs: &BTreeMap<String, ToolConfigSpec>,
-) {
-    let referenced_hashes = collect_tool_content_map_hashes(tool_configs);
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
 
-    external_data.retain(|hash, reference| {
-        referenced_hashes.contains(hash)
-            || !is_managed_tool_content_description(reference.description.as_deref())
-    });
+    use mediapm_cas::Hash;
 
-    for hash in referenced_hashes {
-        external_data.entry(hash).or_insert_with(|| ExternalContentRef {
-            description: Some(format!("{MANAGED_TOOL_CONTENT_DESCRIPTION_PREFIX} {hash}")),
-            save: None,
-        });
+    use super::*;
+    use crate::model::config::ToolRuntime;
+
+    /// Verifies `collect_config_content_hashes` collects hashes from tool
+    /// content maps and external data entries.
+    #[test]
+    fn collect_config_content_hashes_finds_referenced_hashes() {
+        let hash_a = Hash::from_content(b"payload-a");
+        let hash_b = Hash::from_content(b"payload-b");
+
+        let tools = BTreeMap::from([
+            (
+                "tool-a".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-a".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-a".to_string(),
+                    version: "1.0.0".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([
+                            ("file-a.bin".to_string(), hash_a.to_string()),
+                            ("file-b.bin".to_string(), hash_b.to_string()),
+                        ]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            ),
+            (
+                "tool-b".to_string(),
+                ToolSpec {
+                    kind: ToolKindSpec::Executable {
+                        command: vec!["tool-b".to_string()],
+                        env_vars: BTreeMap::new(),
+                        success_codes: vec![0],
+                    },
+                    name: "tool-b".to_string(),
+                    version: "2.0.0".to_string(),
+                    inputs: BTreeMap::new(),
+                    default_inputs: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "file-c.bin".to_string(),
+                            hash_a.to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
+                },
+            ),
+        ]);
+
+        let hashes = collect_config_content_hashes(&tools, &BTreeMap::new());
+        assert!(hashes.contains(&hash_a));
+        assert!(hashes.contains(&hash_b));
+        assert_eq!(hashes.len(), 2);
     }
-}
 
-/// Validates and applies one add-tool request against document maps.
-///
-/// This helper keeps user/machine document add-tool semantics identical.
-fn add_tool_to_maps(
-    tools: &mut BTreeMap<String, ToolSpec>,
-    tool_configs: &mut BTreeMap<String, ToolConfigSpec>,
-    external_data: &mut BTreeMap<Hash, ExternalContentRef>,
-    tool_name: String,
-    options: AddToolOptions,
-) -> Result<(), ConductorError> {
-    if tool_name.trim().is_empty() {
-        return Err(ConductorError::Workflow(
-            "tool name cannot be empty when adding a tool".to_string(),
-        ));
+    /// Verifies `collect_config_content_hashes` skips non-hash values.
+    #[test]
+    fn collect_config_content_hashes_skips_inline_values() {
+        let tools = BTreeMap::from([(
+            "echo".to_string(),
+            ToolSpec {
+                kind: ToolKindSpec::Builtin {
+                    name: "echo".to_string(),
+                    version: "1.0.0".to_string(),
+                },
+                name: "echo".to_string(),
+                version: "1.0.0".to_string(),
+                inputs: BTreeMap::new(),
+                default_inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "payload.txt".to_string(),
+                        "not-a-hash".to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
+            },
+        )]);
+
+        let hashes = collect_config_content_hashes(&tools, &BTreeMap::new());
+        assert!(hashes.is_empty());
     }
 
-    if !options.overwrite_existing
-        && (tools.contains_key(&tool_name) || tool_configs.contains_key(&tool_name))
-    {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' already exists; set overwrite_existing=true to replace it"
+    /// Verifies `is_tool_content_description` matches the expected prefix.
+    #[test]
+    fn is_tool_content_description_matches_prefix() {
+        assert!(is_tool_content_description(Some(
+            "managed tool content CAS root for 00000000000000000000000000000000"
         )));
+        assert!(!is_tool_content_description(Some("user-provided content")));
+        assert!(!is_tool_content_description(None));
     }
 
-    validate_add_tool_config_mode(&tool_name, &options.spec, &options.config_mode, tool_configs)?;
-
-    tools.insert(tool_name.clone(), options.spec);
-    match options.config_mode {
-        AddToolConfigMode::KeepExisting => {}
-        AddToolConfigMode::Replace(config) => {
-            tool_configs.insert(tool_name, config);
-        }
-        AddToolConfigMode::Remove => {
-            tool_configs.remove(&tool_name);
-        }
+    /// Verifies `NickelDocument::default` produces an empty document.
+    #[test]
+    fn nickel_document_default_is_empty() {
+        let doc = NickelDocument::default();
+        assert!(doc.tools.is_empty());
+        assert!(doc.workflows.is_empty());
     }
-
-    sync_tool_content_external_data_roots(external_data, tool_configs);
-
-    Ok(())
-}
-
-/// Validates builtin/content-map invariants for one add-tool request.
-fn validate_add_tool_config_mode(
-    tool_name: &str,
-    spec: &ToolSpec,
-    config_mode: &AddToolConfigMode,
-    existing_configs: &BTreeMap<String, ToolConfigSpec>,
-) -> Result<(), ConductorError> {
-    let has_content_map = match config_mode {
-        AddToolConfigMode::KeepExisting => existing_configs
-            .get(tool_name)
-            .is_some_and(|config| config.content_map.as_ref().is_some()),
-        AddToolConfigMode::Replace(config) => config.content_map.as_ref().is_some(),
-        AddToolConfigMode::Remove => false,
-    };
-
-    if has_content_map && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' is builtin and cannot have tool_configs.content_map"
-        )));
-    }
-
-    let has_input_defaults = match config_mode {
-        AddToolConfigMode::KeepExisting => {
-            existing_configs.get(tool_name).is_some_and(|config| !config.input_defaults.is_empty())
-        }
-        AddToolConfigMode::Replace(config) => !config.input_defaults.is_empty(),
-        AddToolConfigMode::Remove => false,
-    };
-
-    if has_input_defaults && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' is builtin and cannot have tool_configs.input_defaults"
-        )));
-    }
-
-    let has_env_vars = match config_mode {
-        AddToolConfigMode::KeepExisting => {
-            existing_configs.get(tool_name).is_some_and(|config| !config.env_vars.is_empty())
-        }
-        AddToolConfigMode::Replace(config) => !config.env_vars.is_empty(),
-        AddToolConfigMode::Remove => false,
-    };
-
-    if has_env_vars && matches!(&spec.kind, ToolKindSpec::Builtin { .. }) {
-        return Err(ConductorError::Workflow(format!(
-            "tool '{tool_name}' is builtin and cannot have tool_configs.env_vars"
-        )));
-    }
-
-    Ok(())
 }

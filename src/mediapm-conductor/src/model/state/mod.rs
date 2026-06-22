@@ -1,504 +1,193 @@
-//! Runtime orchestration-state model.
+//! Runtime orchestration state (volatile + CAS-persisted).
 //!
-//! Runtime structs in this module are version-agnostic. Persisted representation
-//! is handled by `versions/` modules and bridged through fp-library optics.
+//! The orchestration state tracks every tool-call instance, its persistence
+//! status, and the auxiliary metadata needed for GC and diagnostics.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
-use bytes::Bytes;
-use mediapm_cas::{CasApi, Hash};
+use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ConductorError;
-use crate::model::config::{ExternalContentRef, ImpureTimestamp, ToolSpec};
+use crate::model::config::ImpureTimestamp;
 
-pub(crate) mod versions;
+pub mod versions;
 
-/// Effective persistence mode for one captured output.
+/// Current orchestration-state schema version.
 ///
-/// Ordering is intentional and semantic:
-/// - `Unsaved < Saved < Full`.
-///
-/// This allows merge behavior to be expressed as a simple maximum across
-/// equivalent callers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+/// Must be bumped when the persisted JSON layout changes. Backward
+/// compatibility is handled via the `state/versions/` module.
+pub(crate) const STATE_VERSION: u32 = 2;
+
+/// Persistence status for one output within a tool-call instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OutputSaveMode {
-    /// Output can be dropped after execution when no equivalent caller requires
-    /// persistence.
+    /// Output has not been persisted to CAS.
     Unsaved,
-    /// Output is persisted with regular incremental behavior.
-    #[default]
+    /// Output has been persisted to CAS.
     Saved,
-    /// Output is persisted and treated as full-data preferred.
+    /// Output was persisted with full-data preference.
     Full,
 }
 
-impl OutputSaveMode {
-    /// Returns whether this mode keeps output bytes persisted.
-    #[must_use]
-    pub const fn should_persist(self) -> bool {
-        !matches!(self, Self::Unsaved)
-    }
-
-    /// Returns whether this mode requires full-data persistence hints.
-    #[must_use]
-    pub const fn prefers_full(self) -> bool {
-        matches!(self, Self::Full)
-    }
-}
-
-/// User/machine merged persistence flags for one output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Flags controlling output persistence behavior for one tool call instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PersistenceFlags {
-    /// Effective tri-state persistence mode.
-    pub save: OutputSaveMode,
+    /// Whether outputs are saved to CAS (`true`) or kept only in volatile
+    /// state (`false`).
+    pub save: bool,
+    /// Whether to force full data persistence instead of hash-only.
+    #[serde(default)]
+    pub force_full: bool,
 }
 
-impl Default for PersistenceFlags {
-    fn default() -> Self {
-        Self { save: OutputSaveMode::Saved }
-    }
-}
-
-/// Merges persistence flags from multiple equivalent tool-call references.
-///
-/// Invariants:
-/// - merge uses maximum ordering over `OutputSaveMode` where
-///   `Unsaved < Saved < Full`.
+/// Merges two `PersistenceFlags` into one: `save` uses AND, `force_full` uses OR.
 #[must_use]
-pub fn merge_persistence_flags(
-    flags: impl IntoIterator<Item = PersistenceFlags>,
-) -> PersistenceFlags {
-    let mut merged = OutputSaveMode::Unsaved;
-    let mut seen = false;
-
-    for flag in flags {
-        merged = merged.max(flag.save);
-        seen = true;
-    }
-
-    if seen { PersistenceFlags { save: merged } } else { PersistenceFlags::default() }
+pub fn merge_persistence_flags(a: PersistenceFlags, b: PersistenceFlags) -> PersistenceFlags {
+    PersistenceFlags { save: a.save && b.save, force_full: a.force_full || b.force_full }
 }
 
-/// Fully resolved input vector item used in deterministic instance keys.
+/// A resolved input key-value pair for a tool-call instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedInput {
-    /// CAS hash identity for this resolved input payload.
-    pub hash: Hash,
-    /// Plain content consumed by the current in-memory invocation.
-    ///
-    /// This field is runtime-only execution cache and is intentionally omitted
-    /// from persisted orchestration-state snapshots.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub plain_content: Bytes,
-    /// Optional list-of-strings runtime payload.
-    ///
-    /// This field is runtime-only and omitted from persisted state snapshots.
-    /// It is populated for executable inputs declared with
-    /// `ToolInputKind::StringList` so command rendering can expand standalone
-    /// unpack tokens into multiple argv entries.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub string_list: Option<Vec<String>>,
-    /// Per-element CAS hashes for string-list inputs.
-    ///
-    /// This field is runtime-only and omitted from persisted state snapshots.
-    /// Each element of the original string list is stored as an individual CAS
-    /// object; this vec tracks those hashes so constraint propagation can
-    /// attach reverse-delta constraints per element rather than on the
-    /// non-object composite hash.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub element_hashes: Vec<Hash>,
+    /// Input key name.
+    pub key: String,
+    /// Resolved string value (may be a CAS hash reference or literal).
+    pub value: String,
 }
 
-impl ResolvedInput {
-    /// Builds one runtime input from in-memory bytes.
-    ///
-    /// This helper computes the deterministic hash identity directly from the
-    /// provided content and is intended for tests and transient runtime values.
+/// Reference to one persisted tool-step output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputRef {
+    /// Logical output name.
+    pub name: String,
+    /// CAS hash of the output content.
+    pub hash: Hash,
+    /// Persistence mode for this output.
+    pub save_mode: OutputSaveMode,
+}
+
+/// A completed tool-call instance with its resolved inputs and outputs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallInstance {
+    /// Unique tool call instance key derived from tool id + resolved inputs + timestamp.
+    pub instance_key: String,
+    /// Tool identifier (`name@version`).
+    pub tool_id: String,
+    /// Resolved input values.
+    pub inputs: Vec<ResolvedInput>,
+    /// Produced output references.
+    pub outputs: Vec<OutputRef>,
+    /// Worker index that executed this tool call instance.
+    pub worker_index: usize,
+    /// Whether this tool call instance was executed (vs. cache-hit reuse).
+    pub executed: bool,
+    /// Whether this tool call instance was rematerialized from cache.
+    pub rematerialized: bool,
+    /// Conductor GC timestamp: refreshed to `aux.conductor_gc_epoch`
+    /// whenever this instance is referenced during step execution.
+    /// Used for grace-period comparisons during GC sweep.
+    #[serde(default = "default_impure_timestamp_zero")]
+    pub conductor_gc_last_referenced_at: ImpureTimestamp,
+}
+
+fn default_impure_timestamp_zero() -> ImpureTimestamp {
+    ImpureTimestamp::default()
+}
+
+/// Auxiliary metadata attached to the orchestration state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AuxData {
+    /// Monotonic tool call instance counter.
+    pub tool_call_instance_counter: u64,
+    /// Conductor GC reference clock — updated to now() on every state
+    /// commit. Used by `run_conductor_gc()` for grace-period comparisons
+    /// and CAS blob reclamation. Distinct from CAS GC.
+    pub conductor_gc_epoch: ImpureTimestamp,
+}
+
+/// Full orchestration state snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrchestrationState {
+    /// Schema version marker.
+    pub version: u32,
+    /// Declared tool call instance store (instance_key → instance).
+    pub tool_call_instances: BTreeMap<String, ToolCallInstance>,
+    /// Auxiliary metadata.
+    pub aux: AuxData,
+}
+
+impl OrchestrationState {
+    /// Creates an empty initial state with the current version marker.
     #[must_use]
-    pub fn from_plain_content(plain_content: Bytes) -> Self {
+    pub fn new_empty() -> Self {
         Self {
-            hash: Hash::from_content(plain_content.as_ref()),
-            plain_content,
-            string_list: None,
-            element_hashes: Vec::new(),
+            version: STATE_VERSION,
+            tool_call_instances: BTreeMap::new(),
+            aux: AuxData::default(),
         }
     }
 
-    /// Builds one runtime input from an existing CAS hash.
+    /// Checks whether this state carries a known schema version.
     ///
-    /// Persisted state decoding typically uses this constructor because
-    /// snapshots record only hash identities.
-    #[must_use]
-    pub fn from_hash(hash: Hash) -> Self {
-        Self { hash, plain_content: Bytes::new(), string_list: None, element_hashes: Vec::new() }
+    /// Returns `Ok(())` if `version` matches `STATE_VERSION`, or if the
+    /// version points to a known format that can be migrated forward.
+    /// Unknown / unsupported versions produce `ConductorError::Serialization`.
+    pub(crate) fn check_version(&self) -> Result<(), ConductorError> {
+        check_and_migrate_state(self)
     }
 
-    /// Builds one runtime list input from ordered string values.
+    /// Runs conductor GC on instances: refreshes `conductor_gc_last_referenced_at`
+    /// for referenced instances, evicts unreferenced instances past the TTL
+    /// grace period, then updates `conductor_gc_epoch`.
     ///
-    /// Hash identity is a deterministic composite of per-element Blake3
-    /// hashes (concatenated in order). The `plain_content` stores the
-    /// canonical JSON encoding for materialization, but the hash that
-    /// appears in `ResolvedInputKey` is the composite value.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the ordered list cannot be serialized into its
-    /// canonical JSON byte representation.
-    pub fn from_string_list(string_list: Vec<String>) -> Result<Self, ConductorError> {
-        let plain_content_vec = serde_json::to_vec(&string_list)
-            .map_err(|err| ConductorError::Serialization(err.to_string()))?;
-        // Compute per-element hashes deterministically (same as what
-        // persist_resolved_list_input stores in CAS) so constraint
-        // propagation can reference individual elements.
-        let element_hashes: Vec<Hash> =
-            string_list.iter().map(|element| Hash::from_content(element.as_bytes())).collect();
-        let hash = Hash::composite(&element_hashes);
-        Ok(Self {
-            hash,
-            plain_content: Bytes::from(plain_content_vec),
-            string_list: Some(string_list),
-            element_hashes,
-        })
+    /// This is CONDUCTOR GC — prunes stale tool call instances and reclaims
+    /// unreachable CAS blobs. Distinct from CAS GC which is a separate
+    /// mechanism.
+    pub fn run_conductor_gc(&mut self, referenced_keys: &BTreeSet<String>, ttl_seconds: u64) {
+        let ttl = std::time::Duration::from_secs(ttl_seconds);
+        let epoch = self.aux.conductor_gc_epoch;
+        let epoch_nanos = epoch.as_unix_nanos();
+
+        self.tool_call_instances.retain(|key, instance| {
+            if referenced_keys.contains(key) {
+                instance.conductor_gc_last_referenced_at = epoch;
+                true
+            } else {
+                let last_ref = instance.conductor_gc_last_referenced_at.as_unix_nanos();
+                // Evict if last reference was more than TTL ago
+                let deadline = last_ref.saturating_add(ttl.as_nanos());
+                deadline >= epoch_nanos
+            }
+        });
+        self.aux.conductor_gc_epoch = ImpureTimestamp::now();
     }
-}
-
-/// Hash-only reference to a resolved step input.
-///
-/// Intentionally excludes `plain_content` and `string_list` — this type is
-/// used inside `ToolCallInstance` so that runtime content bytes cannot
-/// accidentally be retained across the state boundary.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedInputKey {
-    /// CAS hash identity for this resolved input payload.
-    pub hash: Hash,
-    /// Whether this input is a string list (composite hash, not a CAS object).
-    ///
-    /// When `true`, the hash is a deterministic composite derived from
-    /// individual element hashes and does not correspond to any single CAS
-    /// object. Downstream consumers (e.g. constraint propagation) must use
-    /// per-element hashes instead of the composite hash.
-    ///
-    /// Defaults to `false` for backward-compatibility with persisted state
-    /// written before this field was introduced (all existing persisted
-    /// inputs are scalars).
-    #[serde(default)]
-    pub is_list: bool,
-}
-
-impl From<ResolvedInput> for ResolvedInputKey {
-    fn from(input: ResolvedInput) -> Self {
-        Self { hash: input.hash, is_list: input.string_list.is_some() }
-    }
-}
-
-/// Output map entry for an executed instance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutputRef {
-    /// CAS hash for this output value.
-    ///
-    /// When `allow_empty_capture` is `true`, this hash is the blake3 hash of
-    /// zero bytes, representing an empty capture rather than real content.
-    pub hash: Hash,
-    /// Effective merged persistence policy for this output.
-    ///
-    /// This value is persisted after deduplicating equivalent tool-call
-    /// instances and combining duplicate caller output policies via
-    /// [`merge_persistence_flags`].
-    pub persistence: PersistenceFlags,
-    /// Whether this output was captured as intentionally empty via the
-    /// tool output spec's `allow_empty = true` policy.
-    ///
-    /// When `true`, the hash is the empty-bytes hash and the output must not
-    /// be used as a step input. Downstream steps that reference this output
-    /// receive a workflow error at input-resolution time.
-    ///
-    /// Defaults to `false` for backward-compatibility with persisted state
-    /// written before this field was introduced.
-    #[serde(default)]
-    pub allow_empty_capture: bool,
-}
-
-/// State record for one deterministic tool-call instance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCallInstance {
-    /// Immutable tool map key used by the workflow step.
-    pub tool_name: String,
-    /// Metadata used to identify tool code and behavior.
-    ///
-    /// Persistence semantics:
-    /// - executable metadata remains shape-compatible with reusable config
-    ///   `ToolSpec`,
-    /// - builtin metadata is normalized to identity-only
-    ///   (`kind`/`name`/`version`) when persisted.
-    ///
-    /// Runtime still uses `ToolSpec` for ergonomic internal handling.
-    pub metadata: ToolSpec,
-    /// Optional machine-managed timestamp for impure calls.
-    ///
-    /// Stored outside `metadata` so metadata remains byte-identical to tool
-    /// config declarations.
-    #[serde(default)]
-    pub impure_timestamp: Option<ImpureTimestamp>,
-    /// Resolved inputs participating in cache identity.
-    ///
-    /// Uses [`ResolvedInputKey`] (hash-only) so that runtime content bytes
-    /// cannot accidentally be retained across the state boundary. Full
-    /// [`ResolvedInput`] values live only in the hot execution path
-    /// (`step_worker`).
-    pub inputs: BTreeMap<String, ResolvedInputKey>,
-    /// Captured output CAS refs and effective persistence policies.
-    pub outputs: BTreeMap<String, OutputRef>,
-}
-
-/// Runtime auxiliary metadata for one tool-call instance.
-///
-/// `last_unreachable` is guaranteed non-null at the type level — the decode
-/// path injects `now()` for any instance that lacks a value, and all
-/// runtime construction paths provide a value directly. This eliminates
-/// `None`-checking from GC and other runtime logic.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuxData {
-    /// When this instance was determined unreachable (start of its TTL clock
-    /// for GC eviction). Set at creation time or when GC first notices an
-    /// unreferenced instance without an aux entry.
-    pub last_unreachable: ImpureTimestamp,
-}
-
-/// Immutable orchestration-state value stored as a CAS blob.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OrchestrationState {
-    /// Explicit runtime schema version marker.
-    ///
-    /// This mirrors the persisted envelope marker so tooling can perform
-    /// explicit optics/migration orchestration against in-memory snapshots.
-    pub version: u32,
-    /// Deterministic instance table keyed by derived instance key.
-    #[serde(default)]
-    pub instances: BTreeMap<String, ToolCallInstance>,
-    /// Envelope-level auxiliary metadata keyed by instance key.
-    #[serde(default)]
-    pub aux: BTreeMap<String, AuxData>,
-    /// CAS hashes of V2-encoded instance blobs referenced by the envelope.
-    ///
-    /// Populated during V2 `decode_state` so GC root computation can protect
-    /// these blobs from sweep. Empty for inline-only state (V1, slice decode,
-    /// synthetic state). Not serialized.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub instance_blob_hashes: BTreeSet<Hash>,
-    /// Instance keys referenced by the current planning pass.
-    ///
-    /// Populated during planning by the coordinator. Instances in this set
-    /// are never evicted by GC regardless of `last_unreachable`.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub referenced_instance_keys: HashSet<String>,
-    /// External-data content-blob hashes referenced by the current merged
-    /// config.
-    ///
-    /// Populated from the unified document's `external_data` after every
-    /// state load so that GC root computation can protect these hashes
-    /// from sweep.  Runtime-only — never serialized.
-    #[serde(default, skip_serializing, skip_deserializing)]
-    pub external_data: BTreeMap<Hash, ExternalContentRef>,
 }
 
 impl Default for OrchestrationState {
     fn default() -> Self {
-        Self {
-            version: versions::latest_state_version(),
-            instances: BTreeMap::new(),
-            aux: BTreeMap::new(),
-            instance_blob_hashes: BTreeSet::new(),
-            referenced_instance_keys: HashSet::new(),
-            external_data: BTreeMap::new(),
-        }
+        Self::new_empty()
     }
 }
 
-impl OrchestrationState {
-    /// Garbage-collects instances not referenced by the current planning pass.
-    ///
-    /// ## Semantics
-    ///
-    /// 1. **Reachability is primary**: instances in `referenced_instance_keys`
-    ///    are never evicted regardless of their `last_unreachable` value.
-    /// 2. **Unreferenced instances** without `last_unreachable` get it initialised
-    ///    to `now` (TTL clock starts when GC first notices them).
-    /// 3. **Unreferenced instances** whose `last_unreachable < cutoff` are evicted,
-    ///    along with their `aux` metadata.
-    /// 4. **Unreferenced instances** with `last_unreachable >= cutoff` (or `None`
-    ///    before this pass runs) are preserved until a subsequent pass.
-    pub fn gc_instances(&mut self, cutoff: ImpureTimestamp) {
-        let now = ImpureTimestamp::now();
-        // Phase 1: initialise aux for unreferenced instances that lack an
-        // entry, so the TTL clock starts ticking from this GC pass onward.
-        for key in self.instances.keys() {
-            if self.referenced_instance_keys.contains(key) {
-                continue;
-            }
-            self.aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
-        }
-        // Phase 2: evict unreferenced instances past the cutoff.
-        let evict_keys: Vec<String> = self
-            .instances
-            .keys()
-            .filter(|key| {
-                if self.referenced_instance_keys.contains(*key) {
-                    return false;
-                }
-                self.aux.get(*key).is_some_and(|a| a.last_unreachable < cutoff)
-            })
-            .cloned()
-            .collect();
-        for key in &evict_keys {
-            self.instances.remove(key);
-            self.aux.remove(key);
-        }
+/// Checks the version of an `OrchestrationState` and migrates it if necessary.
+///
+/// Currently only the latest version (`STATE_VERSION`) is supported; older
+/// persisted formats (v0, v1) are rejected with a migration hint. This
+/// function serves as the hook where forward-migration logic would be added
+/// when old JSON formats need to be supported.
+fn check_and_migrate_state(state: &OrchestrationState) -> Result<(), ConductorError> {
+    match state.version {
+        v if v == STATE_VERSION => Ok(()),
+        0 | 1 => Err(ConductorError::Serialization(format!(
+            "orchestration state version {} is no longer supported. \
+             Reset the state by removing the state file, or implement \
+             a forward migration in the `state/versions/` module.",
+            state.version
+        ))),
+        v => Err(ConductorError::Serialization(format!(
+            "unsupported orchestration state version: {v} (expected {})",
+            STATE_VERSION
+        ))),
     }
-}
-
-/// Converts runtime orchestration state into V2 wire-envelope JSON without CAS.
-///
-/// Uses V2 types directly via optics to serialize inline instance data.
-/// This is the non-CAS path used by CLI export (state files with inline
-/// instance payloads).
-///
-/// # Errors
-///
-/// Returns an error when V2 type conversion or JSON serialization fails.
-pub fn persisted_state_json_value(
-    state: &OrchestrationState,
-) -> Result<serde_json::Value, ConductorError> {
-    let mut instances_json = BTreeMap::new();
-    for (key, instance) in &state.instances {
-        let v2_instance = versions::v2::tool_call_instance_v2_iso().to(instance.clone());
-        let instance_value = serde_json::to_value(&v2_instance)
-            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        instances_json.insert(key.clone(), instance_value);
-    }
-    let aux_json = state
-        .aux
-        .iter()
-        .map(|(key, aux)| {
-            let v2_aux = versions::v2::aux_data_v2_iso().to(aux.clone());
-            let value = serde_json::to_value(v2_aux)
-                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-            Ok((key.clone(), value))
-        })
-        .collect::<Result<BTreeMap<_, _>, ConductorError>>()?;
-    Ok(serde_json::json!({
-        "version": versions::latest_state_version(),
-        "instances": instances_json,
-        "aux": aux_json,
-    }))
-}
-
-/// Parses a V2 inline orchestration-state JSON slice into a runtime state.
-///
-/// The input must be in the V2 inline format (instances serialized as full
-/// `ToolCallInstanceV2` values, not CAS refs). This is the non-CAS file
-/// format produced by [`persisted_state_json_value`].
-///
-/// # Errors
-///
-/// Returns an error when JSON deserialization or V2 instance conversion
-/// fails.
-pub fn decode_state_from_slice(bytes: &[u8]) -> Result<OrchestrationState, ConductorError> {
-    let json: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))?;
-    let instances_json =
-        json.get("instances").and_then(serde_json::Value::as_object).ok_or_else(|| {
-            ConductorError::Serialization("missing 'instances' field in state JSON".to_string())
-        })?;
-    let mut instances = BTreeMap::new();
-    for (key, instance_value) in instances_json {
-        let v2_instance: versions::v2::ToolCallInstanceV2 =
-            serde_json::from_value(instance_value.clone())
-                .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        let runtime_instance = versions::v2::tool_call_instance_v2_iso().from(v2_instance);
-        instances.insert(key.clone(), runtime_instance);
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let version = json
-        .get("version")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(u64::from(versions::latest_state_version())) as u32;
-    let mut aux = json
-        .get("aux")
-        .and_then(serde_json::Value::as_object)
-        .map(|aux_obj| {
-            aux_obj
-                .iter()
-                .map(|(key, aux_value)| {
-                    let v2_aux: versions::v2::AuxDataV2 = serde_json::from_value(aux_value.clone())
-                        .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-                    let runtime_aux = versions::v2::aux_data_v2_iso().from(v2_aux);
-                    Ok((key.clone(), runtime_aux))
-                })
-                .collect::<Result<BTreeMap<_, _>, ConductorError>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-
-    // Ensure every instance has an aux entry. The bridge above injects
-    // now() for any last_unreachable: None in the input, so only completely
-    // missing entries need handling here.
-    let now = ImpureTimestamp::now();
-    for key in instances.keys() {
-        aux.entry(key.clone()).or_insert(AuxData { last_unreachable: now });
-    }
-
-    Ok(OrchestrationState {
-        version,
-        instances,
-        aux,
-        instance_blob_hashes: BTreeSet::new(),
-        referenced_instance_keys: HashSet::new(),
-        external_data: BTreeMap::new(),
-    })
-}
-
-/// Renders runtime orchestration state as pretty persisted wire-envelope JSON.
-///
-/// This is equivalent to `serde_json::to_string_pretty` over
-/// [`persisted_state_json_value`].
-///
-/// # Errors
-///
-/// Returns an error when persisted-state projection fails or when pretty JSON
-/// serialization fails.
-pub fn persisted_state_json_pretty(state: &OrchestrationState) -> Result<String, ConductorError> {
-    let json = persisted_state_json_value(state)?;
-    serde_json::to_string_pretty(&json)
-        .map_err(|err| ConductorError::Serialization(err.to_string()))
-}
-
-/// Encodes orchestration state using V2 CAS-backed persistence.
-///
-/// Each instance is individually CAS-stored; the envelope hash is returned.
-///
-/// # Errors
-///
-/// Returns an error when instance encoding, CAS put, or envelope
-/// serialization fails.
-pub async fn encode_state<C: CasApi>(
-    cas: &C,
-    state: OrchestrationState,
-) -> Result<Hash, ConductorError> {
-    versions::encode_state(cas, state).await
-}
-
-/// Decodes orchestration state from a CAS-backed V2 envelope pointer.
-///
-/// Reads envelope and individual instance blobs from CAS.
-///
-/// # Errors
-///
-/// Returns an error when CAS get, envelope deserialization, or instance
-/// decode fails.
-pub async fn decode_state<C: CasApi>(
-    cas: &C,
-    pointer: Hash,
-) -> Result<OrchestrationState, ConductorError> {
-    versions::decode_state(cas, pointer).await
 }

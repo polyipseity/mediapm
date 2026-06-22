@@ -362,6 +362,107 @@ let NickelDocumentV1 = {
 }
 in
 
+# ||| v2 → v1:  Convert array-indexed tools/workflows back to maps,
+# ||| adapt tool_runtimes back to tool_configs, add empty v1-only fields.
+let migrate_v2_to_v1 = fun data =>
+  let tools_v1 =
+    if std.is_array data.tools then
+      data.tools |> std.array.fold_left (fun acc t =>
+        let kind_name = t.kind in
+        if kind_name == "builtin" then
+          acc & {"%{t.name}" = {
+            kind = "builtin",
+            name = t.name,
+            version = t.version,
+          }}
+        else
+          let cmds =
+            if t.process != null then
+              [t.process.command] @ (try t.process.args else [])
+            else
+              []
+          in
+          let impure_val = try (t.runtime.impure | Bool) else false in
+          let env_val = try (t.runtime.inherited_env_vars | { _ : String }) else {} in
+          acc & {"%{t.name}" = {
+            kind = "executable",
+            is_impure = impure_val,
+            inputs = {},
+            command = cmds,
+            env_vars = env_val,
+            success_codes = null,
+            outputs = {},
+          }}
+      ) {}
+    else
+      {}
+  in
+  let workflows_v1 =
+    if std.is_array data.workflows then
+      data.workflows |> std.array.fold_left (fun acc w =>
+        let w_key = w.name in
+        acc & {"%{w_key}" = {
+          name = w.name,
+          description = w.description,
+          steps =
+            if std.is_array w.steps then
+              w.steps |> std.array.map (fun step =>
+                let old_outputs =
+                  if std.is_array step.outputs then
+                    step.outputs |> std.array.fold_left (fun oacc o =>
+                      oacc & { "%{o.name}" = {} }
+                    ) {}
+                  else
+                    {}
+                in
+                {
+                  id = step.id,
+                  tool = step.tool,
+                  inputs =
+                    if std.record.has_field "inputs" step then
+                      step.inputs
+                    else
+                      {},
+                  depends_on = step.depends_on,
+                  outputs = old_outputs,
+                }
+              )
+            else
+              [],
+        }}
+      ) {}
+    else
+      {}
+  in
+  let tool_configs_v1 =
+    if std.record.has_field "tool_runtimes" data then
+      std.record.fields data.tool_runtimes
+      |> std.array.fold_left (fun acc key =>
+        let rt = data.tool_runtimes."%{key}" in
+        acc & {"%{key}" = {
+          max_concurrent_calls = rt.max_concurrent_calls,
+          max_retries = rt.max_retries,
+          description = null,
+          input_defaults = {},
+          env_vars = rt.inherited_env_vars,
+          content_map = rt.content_map,
+        }}
+      ) {}
+    else
+      {}
+  in
+  {
+    version = 1,
+    runtime = null,
+    external_data = {},
+    tools = tools_v1,
+    workflows = workflows_v1,
+    tool_configs = tool_configs_v1,
+    impure_timestamps = {},
+    state_pointer = null,
+  }
+in
+
 {
   # ||| Validates one Nickel value as schema v1.
   # ||| Use this for explicit version-locked validation in tests.
@@ -370,4 +471,7 @@ in
   # ||| Exposes the v1 envelope contract directly.
   # ||| Rust bridge may inspect this contract shape for diagnostics.
   envelope_contract_v1 = NickelDocumentV1,
+
+  # ||| Migrates a v2 document to schema v1.
+  migrate_v2_to_v1,
 }

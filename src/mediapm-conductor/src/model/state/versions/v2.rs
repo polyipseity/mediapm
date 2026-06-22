@@ -1,427 +1,140 @@
-//! Version 2 persistence envelopes for orchestration state.
+//! V2 wire format for orchestration state persistence.
 //!
-//! ## DO NOT REMOVE: versions policy guard
+//! V2 is the inline JSON-based format (no CAS envelope). The entire state
+//! is serialized as a single JSON object with a `version` marker.
 //!
-//! - This module owns only V2 persisted shapes.
-//! - It must not import unversioned runtime orchestration-state structs.
-//! - Cross-version migration (when added) may only reference adjacent versions
-//!   via optic composition.
+//! This module owns the V2 version marker, wire-format types, and the
+//! V1→V2 migration function (migration from vX to vX+1 always belongs to
+//! the vX+1 module). It must not import unversioned runtime state from
+//! `super::super`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use fp_library::brands::RcBrand;
-use fp_library::types::optics::IsoPrime;
-use mediapm_cas::Hash;
+use mediapm_cas::{CasApi, Hash};
 use serde::{Deserialize, Serialize};
 
+use super::v1;
 use crate::error::ConductorError;
-use crate::model::config::{ToolKindSpec, ToolSpec};
-use crate::{impl_output_save_mode_serde, impl_tool_metadata_deserialize};
 
-/// V2 orchestration-state schema marker.
-pub const ORCHESTRATION_STATE_VERSION_V2: u32 = 2;
+/// V2 schema version marker.
+pub(crate) const ORCHESTRATION_STATE_VERSION_V2: u32 = 2;
 
-/// Returns whether `marker` matches orchestration-state V2 schema marker.
+/// Returns whether `marker` matches V2.
 #[must_use]
-pub const fn is_orchestration_state_version_v2(marker: u32) -> bool {
+pub(crate) const fn is_orchestration_state_version_v2(marker: u32) -> bool {
     marker == ORCHESTRATION_STATE_VERSION_V2
 }
 
 // ---------------------------------------------------------------------------
-// Helper types
+// V2 wire format types
 // ---------------------------------------------------------------------------
+// These mirror the runtime `OrchestrationState` struct but live in the
+// version module so the version boundary is explicit.  The `mod.rs` bridge
+// converts between V2 wire types and the unversioned runtime representation.
 
-/// V2 persistence flags.
+/// V2 persistence save-mode (serde round-trips identically to runtime
+/// [`super::super::OutputSaveMode`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PersistenceFlagsV2 {
-    /// Effective tri-state save policy.
-    pub save: OutputSaveModeV2,
-}
-
-/// V2 persisted tri-state save mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputSaveModeV2 {
-    /// Boolean save policy (`false` or `true`).
-    Bool(bool),
-    /// Full-save policy keyword.
+pub(crate) enum OutputSaveModeV2 {
+    #[serde(rename = "Unsaved")]
+    Unsaved,
+    #[serde(rename = "Saved")]
+    Saved,
+    #[serde(rename = "Full")]
     Full,
 }
 
-impl_output_save_mode_serde!(OutputSaveModeV2, OutputSaveModeV2Visitor);
-
-/// Structured timezone-independent impure timestamp used by the V2 wire shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ImpureTimestampV2 {
-    /// Whole UTC seconds since Unix epoch.
-    pub epoch_seconds: u64,
-    /// Nanoseconds within the current second.
-    pub subsec_nanos: u32,
+/// V2 resolved input key-value pair.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ResolvedInputV2 {
+    pub key: String,
+    pub value: String,
 }
 
-/// V2 CAS pointer to a resolved input payload.
+/// V2 output reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResolvedInputV2 {
-    /// CAS hash identity for the resolved input payload.
+pub(crate) struct OutputRefV2 {
+    pub name: String,
     pub hash: Hash,
+    pub save_mode: OutputSaveModeV2,
 }
 
-/// V2 output reference record.
+/// V2 tool-call instance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ToolCallInstanceV2 {
+    pub instance_key: String,
+    pub tool_id: String,
+    pub inputs: Vec<ResolvedInputV2>,
+    pub outputs: Vec<OutputRefV2>,
+    pub worker_index: usize,
+    pub executed: bool,
+    pub rematerialized: bool,
+    /// Conductor GC last-referenced-at clock.
+    #[serde(default)]
+    pub conductor_gc_last_referenced_at: ImpureTimestampV2,
+}
+
+/// V2 impure timestamp (nanoseconds since Unix epoch, matching runtime
+/// [`ImpureTimestamp`](crate::model::config::ImpureTimestamp) wire repr).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ImpureTimestampV2(
+    /// Nanoseconds since Unix epoch.
+    pub u64,
+);
+
+/// V2 auxiliary metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OutputRefV2 {
-    /// Output hash.
-    pub hash: Hash,
-    /// Effective persistence flags.
-    pub persistence: PersistenceFlagsV2,
-    /// Whether this output was captured as intentionally empty.
-    ///
-    /// Defaults to `false` for compatibility with state written before this
-    /// field was introduced.
-    #[serde(default)]
-    pub allow_empty_capture: bool,
+pub(crate) struct AuxDataV2 {
+    pub tool_call_instance_counter: u64,
+    pub conductor_gc_epoch: ImpureTimestampV2,
 }
 
-/// V2 CAS pointer to one tool-call instance blob.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InstanceRefV2 {
-    /// CAS hash of the encoded `ToolCallInstanceV2` blob.
-    pub hash: Hash,
+impl Default for AuxDataV2 {
+    fn default() -> Self {
+        Self { tool_call_instance_counter: 0, conductor_gc_epoch: ImpureTimestampV2(0) }
+    }
 }
 
-/// V2 envelope-level auxiliary metadata for one tool-call instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AuxDataV2 {
-    /// When this instance was last confirmed unreachable from GC roots.
-    #[serde(default)]
-    pub last_unreachable: Option<ImpureTimestampV2>,
-}
-
-/// Builtin metadata kind marker used by orchestration-state V2 wire format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuiltinMetadataKindV2 {
-    /// Builtin tool metadata projection marker.
-    Builtin,
-}
-
-/// V2 state metadata shape.
-///
-/// Builtins persist only identity fields (`kind`/`name`/`version`).
-/// Executables retain full `ToolSpec` shape.
-///
-/// Decode invariants:
-/// - builtin metadata must be exactly `{ kind, name, version }`,
-/// - any additional builtin fields are rejected,
-/// - executable metadata continues to decode through `ToolSpec`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(untagged)]
-pub enum ToolMetadataV2 {
-    /// Identity-only metadata for builtin tools.
-    Builtin {
-        /// Builtin-kind marker (`"builtin"`).
-        kind: BuiltinMetadataKindV2,
-        /// Builtin name.
-        name: String,
-        /// Builtin semantic version.
-        version: String,
-    },
-    /// Full metadata payload for executable tools.
-    Executable(ToolSpec),
-}
-
-impl_tool_metadata_deserialize!(ToolMetadataV2, BuiltinMetadataKindV2, BuiltinMetadataWireV2);
-
-// ---------------------------------------------------------------------------
-// Core V2 types
-// ---------------------------------------------------------------------------
-
-/// V2 tool-call instance record.
-///
-/// Differs from V1 by omitting the `last_used` field — GC metadata moves to
-/// the envelope level in future versions.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolCallInstanceV2 {
-    /// Immutable tool map key used by the workflow step.
-    pub tool_name: String,
-    /// Tool metadata persisted in normalized V2 shape.
-    pub metadata: ToolMetadataV2,
-    /// Optional machine-managed impurity timestamp.
-    #[serde(default)]
-    pub impure_timestamp: Option<ImpureTimestampV2>,
-    /// Resolved inputs.
-    #[serde(default)]
-    pub inputs: BTreeMap<String, ResolvedInputV2>,
-    /// Output references.
-    #[serde(default)]
-    pub outputs: BTreeMap<String, OutputRefV2>,
-}
-
-/// V2 orchestration-state persistence envelope.
-///
-/// Stores only instance refs (CAS pointers) instead of inline instance data.
-/// Individual instance blobs are stored separately and loaded on demand.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OrchestrationStateEnvelopeV2 {
-    /// Schema marker.
+/// V2 inline orchestration state (plain JSON, no CAS envelope).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct OrchestrationStateV2 {
     pub version: u32,
-    /// Deterministic instance table of CAS refs.
-    #[serde(default)]
-    pub instances: BTreeMap<String, InstanceRefV2>,
-    /// Envelope-level auxiliary metadata keyed by instance key.
-    #[serde(default)]
-    pub aux: BTreeMap<String, AuxDataV2>,
+    pub tool_call_instances: BTreeMap<String, ToolCallInstanceV2>,
+    pub aux: AuxDataV2,
 }
 
 // ---------------------------------------------------------------------------
-// Optics bridges (V2 persistence ↔ runtime types)
+// V1 → V2 migration
 // ---------------------------------------------------------------------------
+// Migration from vX to vX+1 lives in the vX+1 module.  This function
+// converts a CAS-backed V1 envelope into a V2 inline state by fetching
+// each instance blob from CAS and assembling the flat JSON payload.
 
-/// Isomorphism between `InstanceRefV2` and `Hash`.
-#[must_use]
-#[expect(dead_code, reason = "Available for V2 optics consumers")]
-pub fn instance_ref_v2_iso() -> IsoPrime<'static, RcBrand, InstanceRefV2, Hash> {
-    IsoPrime::new(|ref_: InstanceRefV2| ref_.hash, |hash: Hash| InstanceRefV2 { hash })
-}
-
-/// Isomorphism between `AuxDataV2` and runtime `crate::model::state::AuxData`.
-#[must_use]
-pub fn aux_data_v2_iso() -> IsoPrime<'static, RcBrand, AuxDataV2, crate::model::state::AuxData> {
-    IsoPrime::new(
-        |versioned: AuxDataV2| crate::model::state::AuxData {
-            // Inject now() for None — old state predating the aux envelope
-            // or instances created before the non-null guarantee may carry
-            // last_unreachable: None on the wire. Decode is the only boundary
-            // where None is handled; the runtime type is non-optional.
-            last_unreachable: match versioned.last_unreachable {
-                Some(ts) => crate::model::config::ImpureTimestamp {
-                    epoch_seconds: ts.epoch_seconds,
-                    subsec_nanos: ts.subsec_nanos,
-                },
-                None => crate::model::config::ImpureTimestamp::now(),
-            },
-        },
-        |runtime: crate::model::state::AuxData| AuxDataV2 {
-            last_unreachable: Some(ImpureTimestampV2 {
-                epoch_seconds: runtime.last_unreachable.epoch_seconds,
-                subsec_nanos: runtime.last_unreachable.subsec_nanos,
-            }),
-        },
-    )
-}
-
-/// Isomorphism between `ResolvedInputV2` and runtime `crate::model::state::ResolvedInputKey`.
-#[must_use]
-pub fn resolved_input_v2_iso()
--> IsoPrime<'static, RcBrand, ResolvedInputV2, crate::model::state::ResolvedInputKey> {
-    IsoPrime::new(
-        |versioned: ResolvedInputV2| crate::model::state::ResolvedInputKey {
-            hash: versioned.hash,
-            is_list: false,
-        },
-        |runtime: crate::model::state::ResolvedInputKey| ResolvedInputV2 { hash: runtime.hash },
-    )
-}
-
-/// Isomorphism between `OutputRefV2` and runtime `crate::model::state::OutputRef`.
-#[must_use]
-pub fn output_ref_v2_iso() -> IsoPrime<'static, RcBrand, OutputRefV2, crate::model::state::OutputRef>
-{
-    IsoPrime::new(
-        |versioned: OutputRefV2| {
-            let save = match versioned.persistence.save {
-                OutputSaveModeV2::Bool(false) => crate::model::state::OutputSaveMode::Unsaved,
-                OutputSaveModeV2::Bool(true) => crate::model::state::OutputSaveMode::Saved,
-                OutputSaveModeV2::Full => crate::model::state::OutputSaveMode::Full,
-            };
-            crate::model::state::OutputRef {
-                hash: versioned.hash,
-                persistence: crate::model::state::PersistenceFlags { save },
-                allow_empty_capture: versioned.allow_empty_capture,
-            }
-        },
-        |runtime: crate::model::state::OutputRef| {
-            let save = match runtime.persistence.save {
-                crate::model::state::OutputSaveMode::Unsaved => OutputSaveModeV2::Bool(false),
-                crate::model::state::OutputSaveMode::Saved => OutputSaveModeV2::Bool(true),
-                crate::model::state::OutputSaveMode::Full => OutputSaveModeV2::Full,
-            };
-            OutputRefV2 {
-                hash: runtime.hash,
-                persistence: PersistenceFlagsV2 { save },
-                allow_empty_capture: runtime.allow_empty_capture,
-            }
-        },
-    )
-}
-
-/// Bridges V2 tool metadata wire shape with runtime `ToolSpec` state.
+/// Migrates a V1 CAS-backed envelope into V2 inline representation.
 ///
-/// Builtins are persisted as identity-only fields (`kind`/`name`/`version`) and
-/// decoded into runtime `ToolSpec` values with empty optional maps. Executables
-/// round-trip through the full `ToolSpec` wire shape.
-#[must_use]
-pub fn tool_metadata_v2_iso() -> IsoPrime<'static, RcBrand, ToolMetadataV2, ToolSpec> {
-    IsoPrime::new(
-        |versioned: ToolMetadataV2| match versioned {
-            ToolMetadataV2::Builtin { kind: _, name, version } => ToolSpec {
-                is_impure: false,
-                inputs: BTreeMap::new(),
-                kind: ToolKindSpec::Builtin { name, version },
-                outputs: BTreeMap::new(),
-            },
-            ToolMetadataV2::Executable(spec) => spec,
+/// Each instance reference in the V1 envelope is resolved through CAS,
+/// deserialized as a V2 instance, and collected into a flat
+/// `OrchestrationStateV2` with the V2 version marker.
+pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
+    cas: &C,
+    envelope: v1::OrchestrationStateEnvelopeV1,
+) -> Result<OrchestrationStateV2, ConductorError> {
+    let mut instances = BTreeMap::new();
+    for (key, instance_ref) in envelope.instances {
+        let instance_bytes = cas.get(instance_ref.hash).await?;
+        let instance: ToolCallInstanceV2 = serde_json::from_slice(&instance_bytes)
+            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
+        instances.insert(key, instance);
+    }
+
+    Ok(OrchestrationStateV2 {
+        version: ORCHESTRATION_STATE_VERSION_V2,
+        tool_call_instances: instances,
+        aux: AuxDataV2 {
+            tool_call_instance_counter: envelope.aux.tool_call_instance_counter,
+            conductor_gc_epoch: ImpureTimestampV2(
+                envelope.aux.conductor_gc_epoch.as_unix_nanos() as u64
+            ),
         },
-        |runtime: ToolSpec| match runtime.kind {
-            ToolKindSpec::Builtin { name, version } => {
-                ToolMetadataV2::Builtin { kind: BuiltinMetadataKindV2::Builtin, name, version }
-            }
-            ToolKindSpec::Executable { .. } => ToolMetadataV2::Executable(runtime),
-        },
-    )
-}
-
-/// Isomorphism between `ToolCallInstanceV2` and runtime `crate::model::state::ToolCallInstance`.
-#[must_use]
-pub fn tool_call_instance_v2_iso()
--> IsoPrime<'static, RcBrand, ToolCallInstanceV2, crate::model::state::ToolCallInstance> {
-    IsoPrime::new(
-        |versioned: ToolCallInstanceV2| {
-            let metadata = tool_metadata_v2_iso().from(versioned.metadata);
-            let impure_timestamp =
-                versioned.impure_timestamp.map(|ts| crate::model::config::ImpureTimestamp {
-                    epoch_seconds: ts.epoch_seconds,
-                    subsec_nanos: ts.subsec_nanos,
-                });
-            let inputs = versioned
-                .inputs
-                .into_iter()
-                .map(|(name, input)| (name, resolved_input_v2_iso().from(input)))
-                .collect();
-            let outputs = versioned
-                .outputs
-                .into_iter()
-                .map(|(name, output)| (name, output_ref_v2_iso().from(output)))
-                .collect();
-
-            crate::model::state::ToolCallInstance {
-                tool_name: versioned.tool_name,
-                metadata,
-                impure_timestamp,
-                inputs,
-                outputs,
-            }
-        },
-        |runtime: crate::model::state::ToolCallInstance| {
-            let impure_timestamp = runtime.impure_timestamp.map(|ts| ImpureTimestampV2 {
-                epoch_seconds: ts.epoch_seconds,
-                subsec_nanos: ts.subsec_nanos,
-            });
-            let inputs = runtime
-                .inputs
-                .into_iter()
-                .map(|(name, input)| (name, resolved_input_v2_iso().to(input)))
-                .collect();
-            let outputs = runtime
-                .outputs
-                .into_iter()
-                .map(|(name, output)| (name, output_ref_v2_iso().to(output)))
-                .collect();
-
-            ToolCallInstanceV2 {
-                tool_name: runtime.tool_name,
-                metadata: tool_metadata_v2_iso().to(runtime.metadata),
-                impure_timestamp,
-                inputs,
-                outputs,
-            }
-        },
-    )
-}
-
-/// Isomorphism between `OrchestrationStateEnvelopeV2` and
-/// `(BTreeMap<String, Hash>, crate::model::state::OrchestrationState)`.
-///
-/// The envelope's `instances` map is split into a separate ref-map and runtime
-/// state.  Instances stored in the returned runtime state are eagerly
-/// constructed with [`tool_call_instance_v2_iso`]; callers needing lazy
-/// loading must handle instance blob fetch + decode themselves.
-#[must_use]
-#[expect(dead_code, reason = "Available for V2 optics consumers")]
-pub fn orchestration_state_v2_iso() -> IsoPrime<
-    'static,
-    RcBrand,
-    OrchestrationStateEnvelopeV2,
-    (BTreeMap<String, Hash>, crate::model::state::OrchestrationState),
-> {
-    IsoPrime::new(
-        |envelope: OrchestrationStateEnvelopeV2| {
-            let refs: BTreeMap<String, Hash> =
-                envelope.instances.iter().map(|(key, ref_)| (key.clone(), ref_.hash)).collect();
-            let runtime_state = crate::model::state::OrchestrationState {
-                version: envelope.version,
-                instances: BTreeMap::new(),
-                aux: envelope
-                    .aux
-                    .into_iter()
-                    .map(|(k, v)| (k, aux_data_v2_iso().from(v)))
-                    .collect(),
-                instance_blob_hashes: BTreeSet::new(),
-                referenced_instance_keys: std::collections::HashSet::new(),
-                external_data: BTreeMap::new(),
-            };
-            (refs, runtime_state)
-        },
-        |(refs, runtime_state): (
-            BTreeMap<String, Hash>,
-            crate::model::state::OrchestrationState,
-        )| {
-            let instances: BTreeMap<String, InstanceRefV2> =
-                refs.into_iter().map(|(key, hash)| (key, InstanceRefV2 { hash })).collect();
-            OrchestrationStateEnvelopeV2 {
-                version: runtime_state.version,
-                instances,
-                aux: runtime_state
-                    .aux
-                    .into_iter()
-                    .map(|(k, v)| (k, aux_data_v2_iso().to(v)))
-                    .collect(),
-            }
-        },
-    )
-}
-
-// ---------------------------------------------------------------------------
-// Encode/decode helpers for individual instance blobs
-// ---------------------------------------------------------------------------
-
-/// Encodes one `ToolCallInstanceV2` into a serialized byte blob suitable for
-/// CAS storage.
-///
-/// # Errors
-///
-/// Returns an error when JSON serialization fails.
-pub fn encode_instance_v2(instance: &ToolCallInstanceV2) -> Result<Vec<u8>, ConductorError> {
-    serde_json::to_vec(instance).map_err(|e| ConductorError::Serialization(e.to_string()))
-}
-
-/// Decodes one `ToolCallInstanceV2` from serialized CAS blob bytes.
-///
-/// # Errors
-///
-/// Returns an error when JSON deserialization fails.
-pub fn decode_instance_v2(bytes: &[u8]) -> Result<ToolCallInstanceV2, ConductorError> {
-    serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))
-}
-
-/// Computes the CAS hash of one encoded `ToolCallInstanceV2`.
-///
-/// This is equivalent to `Hash::from_content(encode_instance_v2(instance)?)` but
-/// avoids a clone.
-#[must_use]
-#[allow(dead_code)]
-pub fn instance_v2_hash(instance: &ToolCallInstanceV2) -> Hash {
-    // SAFETY: encoding an in-memory struct should never fail; unwrap is safe.
-    let bytes = serde_json::to_vec(instance)
-        .expect("ToolCallInstanceV2 serialization should not fail for in-memory data");
-    Hash::from_content(&bytes)
+    })
 }
