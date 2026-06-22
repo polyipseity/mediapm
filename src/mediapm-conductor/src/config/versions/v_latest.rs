@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::config::{
+use crate::config::{
     ConductorRuntimeConfig, NickelDocument, NickelDocumentMetadata, NickelIdentity,
     OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
     WorkflowSpec, WorkflowStepSpec,
@@ -286,14 +286,12 @@ impl From<NickelEnvelopeLatest> for NickelDocument {
                             description: entry.description,
                             save_mode: match entry.save_mode {
                                 OutputPolicyLatest::Bool(true) => {
-                                    crate::model::state::OutputSaveMode::Saved
+                                    crate::state::OutputSaveMode::Saved
                                 }
                                 OutputPolicyLatest::Bool(false) => {
-                                    crate::model::state::OutputSaveMode::Unsaved
+                                    crate::state::OutputSaveMode::Unsaved
                                 }
-                                OutputPolicyLatest::Full => {
-                                    crate::model::state::OutputSaveMode::Full
-                                }
+                                OutputPolicyLatest::Full => crate::state::OutputSaveMode::Full,
                             },
                         },
                     )
@@ -331,15 +329,13 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
                             hash,
                             description: entry.description,
                             save_mode: match entry.save_mode {
-                                crate::model::state::OutputSaveMode::Saved => {
+                                crate::state::OutputSaveMode::Saved => {
                                     OutputPolicyLatest::Bool(true)
                                 }
-                                crate::model::state::OutputSaveMode::Unsaved => {
+                                crate::state::OutputSaveMode::Unsaved => {
                                     OutputPolicyLatest::Bool(false)
                                 }
-                                crate::model::state::OutputSaveMode::Full => {
-                                    OutputPolicyLatest::Full
-                                }
+                                crate::state::OutputSaveMode::Full => OutputPolicyLatest::Full,
                             },
                         },
                     )

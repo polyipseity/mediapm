@@ -10,7 +10,7 @@ use mediapm_cas::InMemoryCas;
 use mediapm_conductor::{
     NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolInputKind, ToolInputSpec,
     ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-    model::config::versions::encode_document,
+    config::versions::encode_document,
 };
 
 mod e2e;

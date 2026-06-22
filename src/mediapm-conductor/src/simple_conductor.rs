@@ -15,12 +15,12 @@ use tokio::sync::OnceCell;
 use crate::api::{
     ConductorApi, RunSummary, RunWorkflowOptions, RuntimeDiagnostics, RuntimeStoragePaths,
 };
+use crate::config::documents::{NickelDocument, SourceDocument, merge_documents};
+use crate::config::versions;
 use crate::error::ConductorError;
-use crate::model::config::documents::{NickelDocument, SourceDocument, merge_documents};
-use crate::model::config::versions;
-use crate::model::state::OrchestrationState;
 use crate::orchestration::node::ConductorActorClient;
 use crate::orchestration::protocol::UnifiedNickelDocument;
+use crate::state::OrchestrationState;
 
 /// Concrete facade over the conductor orchestration runtime.
 ///
@@ -204,8 +204,8 @@ where
 
         let command_parts = executable.map_or(vec![], |cmd| vec![cmd.to_string()]);
 
-        let tool = crate::model::config::ToolSpec {
-            kind: crate::model::config::ToolKindSpec::Executable {
+        let tool = crate::config::ToolSpec {
+            kind: crate::config::ToolKindSpec::Executable {
                 command: command_parts.clone(),
                 env_vars: BTreeMap::new(),
                 success_codes: vec![0],
@@ -215,9 +215,9 @@ where
             inputs: BTreeMap::new(),
             default_inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
-            runtime: crate::model::config::ToolRuntime {
+            runtime: crate::config::ToolRuntime {
                 content_map,
-                ..crate::model::config::ToolRuntime::default()
+                ..crate::config::ToolRuntime::default()
             },
         };
         doc.tools.insert(name.to_string(), tool);

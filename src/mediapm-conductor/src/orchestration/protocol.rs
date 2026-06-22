@@ -13,10 +13,10 @@ use std::sync::Arc;
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::model::config::{
+use crate::config::{
     ImpureTimestamp, OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
 };
-pub(super) use crate::model::state::{OrchestrationState, ToolCallInstance};
+pub(super) use crate::state::{OrchestrationState, ToolCallInstance};
 
 /// Collected output hash slots keyed by producing step id and declared output name.
 pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Hash>>;
@@ -61,9 +61,9 @@ pub(crate) struct UnifiedNickelDocument {
     /// Every tool-content hash referenced anywhere in the merged config.
     pub tool_content_hashes: BTreeSet<Hash>,
     /// External data save policies keyed by CAS hash.
-    pub external_data_policies: BTreeMap<Hash, crate::model::state::OutputSaveMode>,
+    pub external_data_policies: BTreeMap<Hash, crate::state::OutputSaveMode>,
     /// Conductor-level runtime configuration.
-    pub runtime: crate::model::config::ConductorRuntimeConfig,
+    pub runtime: crate::config::ConductorRuntimeConfig,
 }
 
 /// Result of loading, evaluating, and unifying configuration documents.

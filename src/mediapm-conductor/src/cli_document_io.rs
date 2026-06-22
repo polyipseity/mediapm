@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
+use crate::config::documents::NickelDocument;
 use crate::error::ConductorError;
-use crate::model::config::documents::NickelDocument;
 
 /// Loads a `NickelDocument` from a `.ncl` file path.
 ///
@@ -25,7 +25,7 @@ pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorErro
         source,
     })?;
     let bytes = source.as_bytes();
-    crate::model::config::versions::decode_document(bytes)
+    crate::config::versions::decode_document(bytes)
 }
 
 /// Saves a `NickelDocument` to a `.ncl` file.
@@ -38,7 +38,7 @@ pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorErro
 /// Returns [`ConductorError::Io`] when the file cannot be written, or wraps
 /// any encoding error.
 pub(crate) fn save_document(path: &Path, document: &NickelDocument) -> Result<(), ConductorError> {
-    let bytes = crate::model::config::versions::encode_document(document.clone())?;
+    let bytes = crate::config::versions::encode_document(document.clone())?;
     std::fs::write(path, &bytes).map_err(|source| ConductorError::Io {
         operation: "writing config document".to_string(),
         path: path.to_path_buf(),

@@ -273,7 +273,7 @@ mod tests {
     use mediapm_cas::Hash;
 
     use super::*;
-    use crate::model::config::ToolRuntime;
+    use crate::config::ToolRuntime;
 
     /// Verifies `collect_config_content_hashes` collects hashes from tool
     /// content maps and external data entries.

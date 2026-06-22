@@ -13,14 +13,15 @@
 pub mod api;
 pub mod cache;
 pub mod cache_user_level;
+pub mod config;
 pub mod defaults;
 pub mod error;
 pub mod gc;
-pub mod model;
 pub mod orchestration;
 pub mod provision;
 pub mod runtime_env;
 pub mod simple_conductor;
+pub mod state;
 pub mod tools;
 
 // CLI sub-modules (flattened from cli/ directory).
@@ -35,18 +36,18 @@ pub use api::{
     ConductorApi, ManagedToolExecutableResolution, RunSummary, RunWorkflowOptions,
     RuntimeDiagnostics, RuntimeStoragePaths, resolve_managed_tool_executable_with_filesystem_cas,
 };
-pub use error::ConductorError;
-pub use model::config::documents::NickelDocument;
-pub use model::config::versions::{decode_document, encode_document};
-pub use model::config::{
+pub use config::documents::NickelDocument;
+pub use config::versions::{decode_document, encode_document};
+pub use config::{
     ImpureTimestamp, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, OutputPolicy,
     ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
     WorkflowStepSpec, default_runtime_inherited_env_vars,
 };
-pub use model::state::OrchestrationState;
-pub use model::state::versions::{decode_state_json, encode_state_json};
-pub use model::state::{
+pub use error::ConductorError;
+pub use simple_conductor::SimpleConductor;
+pub use state::OrchestrationState;
+pub use state::versions::{decode_state_json, encode_state_json};
+pub use state::{
     AuxData, OutputRef, OutputSaveMode, PersistenceFlags, ResolvedInput, ToolCallInstance,
 };
-pub use simple_conductor::SimpleConductor;
 pub use tools::registered_builtin_ids;

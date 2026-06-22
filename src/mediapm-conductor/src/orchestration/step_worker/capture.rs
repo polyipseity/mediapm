@@ -4,9 +4,9 @@ use std::path::Path;
 
 use mediapm_cas::CasApi;
 
+use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::model::config::OutputCaptureSpec;
-use crate::model::state::{OutputRef, OutputSaveMode, PersistenceFlags};
+use crate::state::{OutputRef, OutputSaveMode, PersistenceFlags};
 
 use super::process::ExecutionResult;
 

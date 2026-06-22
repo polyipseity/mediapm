@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
+use crate::config::ImpureTimestamp;
 use crate::error::ConductorError;
-use crate::model::config::ImpureTimestamp;
 
 pub mod versions;
 

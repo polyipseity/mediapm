@@ -75,7 +75,7 @@ pub(crate) struct ToolCallInstanceV2 {
 }
 
 /// V2 impure timestamp (nanoseconds since Unix epoch, matching runtime
-/// [`ImpureTimestamp`](crate::model::config::ImpureTimestamp) wire repr).
+/// [`ImpureTimestamp`](crate::config::ImpureTimestamp) wire repr).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ImpureTimestampV2(
     /// Nanoseconds since Unix epoch.

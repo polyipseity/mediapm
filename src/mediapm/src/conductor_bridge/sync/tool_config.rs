@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 use mediapm_cas::Hash;
-use mediapm_conductor::model::config::documents::NickelDocument;
+use mediapm_conductor::config::documents::NickelDocument;
 use mediapm_conductor::provision::PAYLOAD_DIR_NAME;
 use mediapm_conductor::{ToolKindSpec, ToolRuntime};
 

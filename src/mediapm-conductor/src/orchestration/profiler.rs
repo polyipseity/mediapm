@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use super::protocol::StepPhaseTiming;
 
 use crate::api::{RunSummary, RuntimeDiagnostics};
+use crate::config::ImpureTimestamp;
 use crate::error::ConductorError;
-use crate::model::config::ImpureTimestamp;
 
 /// Wire-format version for serialized workflow profiler reports.
 pub(crate) const WORKFLOW_RUN_PROFILE_VERSION: u32 = 2;

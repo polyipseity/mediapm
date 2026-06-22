@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
-use crate::model::state::AuxData;
+use crate::state::AuxData;
 
 /// V1 schema version marker.
 pub(crate) const ORCHESTRATION_STATE_VERSION_V1: u32 = 1;

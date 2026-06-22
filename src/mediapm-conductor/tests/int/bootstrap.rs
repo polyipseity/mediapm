@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::{TestConductor, echo_tool, echo_workflow};
 use mediapm_conductor::{
-    NickelDocument, api::RunWorkflowOptions, model::config::versions::encode_document,
+    NickelDocument, api::RunWorkflowOptions, config::versions::encode_document,
 };
 
 /// Protects bootstrap behavior when the config document is missing.

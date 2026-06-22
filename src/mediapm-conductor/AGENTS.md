@@ -40,10 +40,10 @@ Use concrete files as source of truth:
 - Runtime orchestration: `src/mediapm-conductor/src/orchestration/coordinator.rs`,
   `src/mediapm-conductor/src/orchestration/actors/`,
   `src/mediapm-conductor/src/orchestration/protocol.rs`
-- Runtime model: `src/mediapm-conductor/src/model/config/mod.rs`,
-  `src/mediapm-conductor/src/model/state/mod.rs`
+- Config model: `src/mediapm-conductor/src/config/mod.rs`
+- State model: `src/mediapm-conductor/src/state/mod.rs`
 - Versioned config schema + migration bridge:
-  `src/mediapm-conductor/src/model/config/versions/`
+  `src/mediapm-conductor/src/config/versions/`
 
 Key ecosystem (from `Cargo.toml`):
 
@@ -307,7 +307,7 @@ Instance-key rationale to preserve:
 
 If adding validation, apply it both where practical:
 
-- schema bridge validation (`model/config/versions/mod.rs`)
+- schema bridge validation (`config/versions/mod.rs`)
 - runtime unification/execution checks (`orchestration/coordinator.rs` and
   `orchestration/actors/step_worker/mod.rs`)
 
@@ -543,7 +543,7 @@ When modifying the cache implementation, keep all three public API methods
 ## Versioned Schema Editing Policy
 
 For config schema files under
-`src/mediapm-conductor/src/model/config/versions/`:
+`src/mediapm-conductor/src/config/versions/`:
 
 - This repository may intentionally evolve `v1` directly when requested.
 - Do not add compatibility shims unless explicitly requested.
@@ -625,7 +625,7 @@ For touched Rust code in this crate:
 ## Change Discipline
 
 - Keep edits scoped and coherent; avoid unrelated refactors.
-- Preserve actor/runtime boundaries (`orchestration/` vs `model/`).
+- Preserve actor/runtime boundaries (`orchestration/` vs `config/` and `state/`).
 - Prefer explicit errors over silent coercion.
 - When conflicts are possible, fail with actionable messages including field or
   tool names.
@@ -746,7 +746,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 
 ## D. Orchestration State Decode Migration
 
-The `decode_state()` function at `src/mediapm-conductor/src/model/state/mod.rs` handles V1→V2 migration of persisted `OrchestrationState` blobs:
+The `decode_state()` function at `src/mediapm-conductor/src/state/mod.rs` handles V1→V2 migration of persisted `OrchestrationState` blobs:
 
 ### V2 Schema Changes
 
@@ -995,8 +995,8 @@ All progress messages must fit within the terminal width; detected via `terminal
 | **Implementation** | `SimpleConductor` |
 | **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.machine.ncl`, state `state.ncl`) |
 | **Execution** | Actor-based (ractor), step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe |
-| **State model** | `src/mediapm-conductor/src/model/config/mod.rs`, `src/mediapm-conductor/src/model/state/mod.rs` |
-| **Versioned config schema** | `src/mediapm-conductor/src/model/config/versions/` |
+| **State model** | `src/mediapm-conductor/src/config/mod.rs`, `src/mediapm-conductor/src/state/mod.rs` |
+| **Versioned config schema** | `src/mediapm-conductor/src/config/versions/` |
 | **Orchestration** | `src/mediapm-conductor/src/orchestration/coordinator.rs`, `src/mediapm-conductor/src/orchestration/actors/`, `src/mediapm-conductor/src/orchestration/protocol.rs` |
 | **Tool content cache** | `src/mediapm-conductor/src/tool_cache/mod.rs` |
 | **Template expansion** | `src/mediapm-conductor/src/orchestration/actors/step_worker/template.rs` |

@@ -8,10 +8,10 @@ use std::time::Instant;
 
 use mediapm_cas::CasApi;
 
+use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::model::config::OutputCaptureSpec;
-use crate::model::state::{PersistenceFlags, ToolCallInstance};
 use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest, StepPhaseTiming};
+use crate::state::{PersistenceFlags, ToolCallInstance};
 
 use super::cache::{derive_instance_key, probe_cache};
 use super::capture::capture_outputs;
@@ -138,7 +138,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         worker_index: 0,
         executed: true,
         rematerialized: false,
-        conductor_gc_last_referenced_at: crate::model::config::ImpureTimestamp::default(),
+        conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::default(),
     };
 
     Ok(StepExecutionBundle {

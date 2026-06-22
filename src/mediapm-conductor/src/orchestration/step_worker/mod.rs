@@ -131,9 +131,9 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::config::ImpureTimestamp;
-    use crate::model::state::{OutputRef, OutputSaveMode, ResolvedInput, ToolCallInstance};
+    use crate::config::ImpureTimestamp;
     use crate::orchestration::protocol::{OrchestrationState, StepOutputs, UnifiedToolSpec};
+    use crate::state::{OutputRef, OutputSaveMode, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
     use std::collections::{BTreeMap, BTreeSet};
 

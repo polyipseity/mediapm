@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_cas::Hash;
-use mediapm_conductor::model::config::ToolInputKind;
+use mediapm_conductor::config::ToolInputKind;
 use mediapm_conductor::{ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec};
 
 use super::legacy::{InputBinding, OutputCaptureKind, ToolConfigSpec, ToolOutputSpec};

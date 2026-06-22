@@ -15,7 +15,7 @@ use mediapm_cas::FileSystemCas;
 use mediapm_conductor::{
     NickelDocument, RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor, ToolInputKind,
     ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-    model::config::versions::encode_document,
+    config::versions::encode_document,
 };
 
 use support::*;

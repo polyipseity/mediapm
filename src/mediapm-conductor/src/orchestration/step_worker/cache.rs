@@ -2,9 +2,9 @@
 
 use std::collections::BTreeSet;
 
-use crate::model::config::ImpureTimestamp;
-use crate::model::state::{ResolvedInput, ToolCallInstance};
+use crate::config::ImpureTimestamp;
 use crate::orchestration::protocol::{OrchestrationState, UnifiedToolSpec};
+use crate::state::{ResolvedInput, ToolCallInstance};
 
 /// Derives a deterministic tool call instance key from tool + inputs + optional impure timestamp.
 pub(super) fn derive_instance_key(

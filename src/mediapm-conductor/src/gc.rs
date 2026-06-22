@@ -12,7 +12,7 @@ use tracing;
 use crate::error::ConductorError;
 use crate::orchestration::protocol::UnifiedNickelDocument;
 
-use crate::model::state::OrchestrationState;
+use crate::state::OrchestrationState;
 
 /// Aggregate report from one full conductor GC cycle.
 #[derive(Debug, Clone, Default)]

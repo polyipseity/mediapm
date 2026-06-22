@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use mediapm_cas::CasApi;
 
 use crate::error::ConductorError;
-use crate::model::state::ResolvedInput;
 use crate::orchestration::protocol::{StepExecutionRequest, StepOutputs};
+use crate::state::ResolvedInput;
 
 use super::template::{TemplateContext, resolve_template};
 

@@ -4,10 +4,10 @@
 //!
 //! - Each `v<N>.rs` file owns one wire-format version.
 //! - Version modules must **never** directly import unversioned runtime state
-//!   structs from `super::super` (the parent `model/state` module).
+//!   structs from `super::super` (the parent `state` module).
 //! - This `mod.rs` is the **only** bridge between the latest wire version and
 //!   unversioned runtime state.
-//! - Consumers outside `model/state/versions/` must use only the APIs
+//! - Consumers outside `state/versions/` must use only the APIs
 //!   re-exported from this module, never `versions::v<N>` directly.
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use mediapm_cas::{CasApi, Hash};
 
 use crate::error::ConductorError;
-use crate::model::state::{OrchestrationState, ToolCallInstance};
+use crate::state::{OrchestrationState, ToolCallInstance};
 
 mod v1;
 mod v2;
@@ -30,19 +30,19 @@ pub(crate) const fn latest_state_version() -> u32 {
 // Bridge: V2 wire types ↔ runtime types
 // ---------------------------------------------------------------------------
 
-impl From<v2::AuxDataV2> for crate::model::state::AuxData {
+impl From<v2::AuxDataV2> for crate::state::AuxData {
     fn from(aux: v2::AuxDataV2) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: crate::model::config::ImpureTimestamp::from_unix_nanos(
+            conductor_gc_epoch: crate::config::ImpureTimestamp::from_unix_nanos(
                 aux.conductor_gc_epoch.0 as u128,
             ),
         }
     }
 }
 
-impl From<crate::model::state::AuxData> for v2::AuxDataV2 {
-    fn from(aux: crate::model::state::AuxData) -> Self {
+impl From<crate::state::AuxData> for v2::AuxDataV2 {
+    fn from(aux: crate::state::AuxData) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
             conductor_gc_epoch: v2::ImpureTimestampV2(aux.conductor_gc_epoch.as_unix_nanos() as u64),
@@ -50,7 +50,7 @@ impl From<crate::model::state::AuxData> for v2::AuxDataV2 {
     }
 }
 
-impl From<v2::OutputSaveModeV2> for crate::model::state::OutputSaveMode {
+impl From<v2::OutputSaveModeV2> for crate::state::OutputSaveMode {
     fn from(mode: v2::OutputSaveModeV2) -> Self {
         match mode {
             v2::OutputSaveModeV2::Unsaved => Self::Unsaved,
@@ -60,36 +60,36 @@ impl From<v2::OutputSaveModeV2> for crate::model::state::OutputSaveMode {
     }
 }
 
-impl From<crate::model::state::OutputSaveMode> for v2::OutputSaveModeV2 {
-    fn from(mode: crate::model::state::OutputSaveMode) -> Self {
+impl From<crate::state::OutputSaveMode> for v2::OutputSaveModeV2 {
+    fn from(mode: crate::state::OutputSaveMode) -> Self {
         match mode {
-            crate::model::state::OutputSaveMode::Unsaved => Self::Unsaved,
-            crate::model::state::OutputSaveMode::Saved => Self::Saved,
-            crate::model::state::OutputSaveMode::Full => Self::Full,
+            crate::state::OutputSaveMode::Unsaved => Self::Unsaved,
+            crate::state::OutputSaveMode::Saved => Self::Saved,
+            crate::state::OutputSaveMode::Full => Self::Full,
         }
     }
 }
 
-impl From<v2::ResolvedInputV2> for crate::model::state::ResolvedInput {
+impl From<v2::ResolvedInputV2> for crate::state::ResolvedInput {
     fn from(input: v2::ResolvedInputV2) -> Self {
         Self { key: input.key, value: input.value }
     }
 }
 
-impl From<crate::model::state::ResolvedInput> for v2::ResolvedInputV2 {
-    fn from(input: crate::model::state::ResolvedInput) -> Self {
+impl From<crate::state::ResolvedInput> for v2::ResolvedInputV2 {
+    fn from(input: crate::state::ResolvedInput) -> Self {
         Self { key: input.key, value: input.value }
     }
 }
 
-impl From<v2::OutputRefV2> for crate::model::state::OutputRef {
+impl From<v2::OutputRefV2> for crate::state::OutputRef {
     fn from(out: v2::OutputRefV2) -> Self {
         Self { name: out.name, hash: out.hash, save_mode: out.save_mode.into() }
     }
 }
 
-impl From<crate::model::state::OutputRef> for v2::OutputRefV2 {
-    fn from(out: crate::model::state::OutputRef) -> Self {
+impl From<crate::state::OutputRef> for v2::OutputRefV2 {
+    fn from(out: crate::state::OutputRef) -> Self {
         Self { name: out.name, hash: out.hash, save_mode: out.save_mode.into() }
     }
 }
@@ -104,7 +104,7 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
             worker_index: inst.worker_index,
             executed: inst.executed,
             rematerialized: inst.rematerialized,
-            conductor_gc_last_referenced_at: crate::model::config::ImpureTimestamp::from_unix_nanos(
+            conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::from_unix_nanos(
                 inst.conductor_gc_last_referenced_at.0 as u128,
             ),
         }

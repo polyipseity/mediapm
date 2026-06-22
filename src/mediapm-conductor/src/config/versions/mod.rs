@@ -53,9 +53,7 @@ pub(crate) const fn latest_config_version() -> u32 {
 ///
 /// The document is first converted to a latest-schema envelope, validated,
 /// then rendered as Nickel source.
-pub fn encode_document(
-    document: crate::model::config::NickelDocument,
-) -> Result<Vec<u8>, ConductorError> {
+pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8>, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest = document.into();
     render_document_as_nickel(&envelope, "configuration document")
 }
@@ -65,9 +63,7 @@ pub fn encode_document(
 ///
 /// The input bytes are interpreted as UTF-8 Nickel source, evaluated through
 /// the versioned migration pipeline, and deserialized into a `NickelDocument`.
-pub fn decode_document(
-    bytes: &[u8],
-) -> Result<crate::model::config::NickelDocument, ConductorError> {
+pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, ConductorError> {
     let source = std::str::from_utf8(bytes).map_err(|err| {
         ConductorError::Serialization(format!("document source is not valid UTF-8: {err}"))
     })?;
@@ -85,7 +81,7 @@ pub fn decode_document(
 /// deserializes into the runtime config type.
 pub(crate) fn compile_configuration_source(
     source: &str,
-) -> Result<crate::model::config::NickelDocument, ConductorError> {
+) -> Result<crate::config::NickelDocument, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest =
         evaluate_document_source(source, "configuration document")?;
     let marker = envelope.version;

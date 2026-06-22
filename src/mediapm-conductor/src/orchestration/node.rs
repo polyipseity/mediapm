@@ -15,7 +15,7 @@ use mediapm_cas::{CasApi, CasMaintenanceApi};
 
 use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::error::ConductorError;
-use crate::model::state::OrchestrationState;
+use crate::state::OrchestrationState;
 
 use super::coordinator::WorkflowCoordinator;
 use super::protocol::UnifiedNickelDocument;

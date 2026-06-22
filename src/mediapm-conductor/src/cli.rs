@@ -11,9 +11,9 @@ use tokio::sync::OnceCell;
 use crate::api::{PathOverrides, RunWorkflowOptions, RuntimeStoragePaths};
 use crate::defaults;
 use crate::error::ConductorError;
-use crate::model::state::OrchestrationState;
-use crate::model::state::versions::decode_state_json;
 use crate::simple_conductor::SimpleConductor;
+use crate::state::OrchestrationState;
+use crate::state::versions::decode_state_json;
 
 // ---------------------------------------------------------------------------
 // CLI structure

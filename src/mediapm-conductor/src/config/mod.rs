@@ -125,7 +125,7 @@ pub struct ExternalDataEntry {
     /// Human-readable description of this external data.
     pub description: String,
     /// Save policy governing this blob.
-    pub save_mode: crate::model::state::OutputSaveMode,
+    pub save_mode: crate::state::OutputSaveMode,
 }
 
 /// Kind of tool input.
