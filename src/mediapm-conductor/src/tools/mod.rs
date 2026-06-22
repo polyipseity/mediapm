@@ -14,7 +14,7 @@
 //! ([`ProvisionCache`], [`ProvisionedTool`]) and the user-level download
 //! cache ([`UserLevelCache`]) for caller convenience.
 
-pub use crate::cache::user_level::{
+pub use crate::cache_user_level::{
     UserLevelCache, default_mediapm_user_download_cache_root, default_user_download_cache_root,
 };
 #[cfg(feature = "tool-presets")]

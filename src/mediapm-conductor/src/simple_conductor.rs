@@ -184,7 +184,7 @@ where
             let source_docs: Vec<SourceDocument> = config_paths
                 .into_iter()
                 .map(|path| {
-                    let document = crate::cli::document_io::load_document(&path)?;
+                    let document = crate::cli_document_io::load_document(&path)?;
                     Ok(SourceDocument { path, document })
                 })
                 .collect::<Result<Vec<_>, ConductorError>>()?;
@@ -197,7 +197,7 @@ where
         }
 
         let mut doc = if config_path.exists() {
-            crate::cli::document_io::load_document(&config_path)?
+            crate::cli_document_io::load_document(&config_path)?
         } else {
             NickelDocument::default()
         };
@@ -221,7 +221,7 @@ where
             },
         };
         doc.tools.insert(name.to_string(), tool);
-        crate::cli::document_io::save_document(&config_path, &doc)
+        crate::cli_document_io::save_document(&config_path, &doc)
     }
 
     /// Removes external data by hash.
@@ -255,11 +255,11 @@ where
             ConductorError::Workflow("no config document found to remove from".to_string())
         })?;
 
-        let mut doc = crate::cli::document_io::load_document(&config_path)?;
+        let mut doc = crate::cli_document_io::load_document(&config_path)?;
         if doc.tools.remove(name).is_none() {
             return Err(ConductorError::Workflow(format!("tool '{name}' not found in config")));
         }
-        crate::cli::document_io::save_document(&config_path, &doc)
+        crate::cli_document_io::save_document(&config_path, &doc)
     }
 
     /// Runs a managed tool with passthrough arguments.
@@ -433,7 +433,7 @@ pub(crate) async fn load_unified_config_and_state(
     let source_docs: Vec<SourceDocument> = config_paths
         .into_iter()
         .map(|path| {
-            let document = crate::cli::document_io::load_document(&path)?;
+            let document = crate::cli_document_io::load_document(&path)?;
             Ok(SourceDocument { path, document })
         })
         .collect::<Result<Vec<_>, ConductorError>>()?;

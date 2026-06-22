@@ -10,8 +10,7 @@
 //! workspace cache, project cache, etc.).
 //!
 //! Eviction policy: entries older than 30 days are pruned automatically.
-
-pub mod user_level;
+//! The user-level cache wrapper is in [`crate::cache_user_level`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;

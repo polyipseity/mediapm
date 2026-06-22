@@ -5,8 +5,8 @@
 //! cache root is `<os-cache-dir>/mediapm/cache/`.
 
 pub(crate) use mediapm_conductor::cache::CachePruneReport as ToolCachePruneReport;
-pub(crate) use mediapm_conductor::cache::user_level::UserLevelCache as ToolDownloadCache;
-pub(crate) use mediapm_conductor::cache::user_level::default_mediapm_user_download_cache_root as default_global_tool_cache_root;
+pub(crate) use mediapm_conductor::cache_user_level::UserLevelCache as ToolDownloadCache;
+pub(crate) use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root as default_global_tool_cache_root;
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
-use mediapm_conductor::cache::user_level::default_mediapm_user_download_cache_root;
+use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
 
 /// Canonical global directory paths for one user profile.
 #[derive(Debug, Clone, PartialEq, Eq)]

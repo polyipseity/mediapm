@@ -12,6 +12,7 @@
 
 pub mod api;
 pub mod cache;
+pub mod cache_user_level;
 pub mod defaults;
 pub mod error;
 pub mod gc;
@@ -22,8 +23,12 @@ pub mod runtime_env;
 pub mod simple_conductor;
 pub mod tools;
 
+// CLI sub-modules (flattened from cli/ directory).
 #[cfg(feature = "cli")]
 pub mod cli;
+pub mod cli_document_io;
+#[cfg(feature = "cli")]
+pub mod cli_tools;
 
 // Re-exports for the public API surface.
 pub use api::{

@@ -1,8 +1,5 @@
 //! Command-line interface for `mediapm-conductor`.
 
-pub mod document_io;
-pub mod tools;
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -323,7 +320,7 @@ async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
     match args.command {
         ImportCommand::Tool { path: Some(p), name, process_name, preset: None } => {
             let conductor = ensure_conductor().await?;
-            let (hash_map, _count) = crate::cli::tools::import_directory_to_content_map(
+            let (hash_map, _count) = crate::cli_tools::import_directory_to_content_map(
                 conductor.cas().as_ref(),
                 &p,
                 &["metadata.json"],
@@ -333,7 +330,7 @@ async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
                 hash_map.into_iter().map(|(k, v)| (k, v.to_string())).collect();
             let process_name = process_name.as_deref();
             let executable =
-                crate::cli::tools::resolve_import_process_name(&p, process_name, None).ok();
+                crate::cli_tools::resolve_import_process_name(&p, process_name, None).ok();
             conductor
                 .add_tool_config(
                     &name.unwrap_or_else(|| {

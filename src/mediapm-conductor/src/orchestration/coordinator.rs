@@ -18,9 +18,9 @@ use crate::model::state::OrchestrationState;
 
 use ractor::rpc::CallResult;
 
-use super::actors::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 use super::config::{default_worker_pool_size, rpc_timeout_ms};
 use super::protocol::{StepExecutionRequest, StepOutputs, UnifiedNickelDocument};
+use super::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 
 // ---------------------------------------------------------------------------
 // Topological sort
