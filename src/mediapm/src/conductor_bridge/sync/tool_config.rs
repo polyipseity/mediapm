@@ -5,8 +5,9 @@ use std::path::{Path, PathBuf};
 use std::fs;
 
 use mediapm_cas::Hash;
-use mediapm_conductor::tool_cache::PAYLOAD_DIR_NAME;
-use mediapm_conductor::{InputBinding, MachineNickelDocument, ToolKindSpec};
+use mediapm_conductor::model::config::documents::NickelDocument;
+use mediapm_conductor::provision::PAYLOAD_DIR_NAME;
+use mediapm_conductor::{ToolKindSpec, ToolRuntime};
 
 use crate::config::MediaPmState;
 use crate::config::{ToolRequirement, normalize_selector_compare_value, normalize_selector_value};
@@ -28,16 +29,9 @@ const GENERATED_RUNTIME_ENV_HEADER: &str = concat!(
 );
 
 /// Returns resolved conductor runtime root for generated dotenv files.
-pub(super) fn resolve_conductor_runtime_dir(
-    paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
-) -> PathBuf {
-    if let Some(raw) = machine.runtime.conductor_dir.as_deref() {
-        let candidate = PathBuf::from(raw);
-        if candidate.is_absolute() { candidate } else { paths.root_dir.join(candidate) }
-    } else {
-        paths.runtime_root.clone()
-    }
+#[allow(dead_code)]
+pub(super) fn resolve_conductor_runtime_dir(paths: &MediaPmPaths) -> PathBuf {
+    paths.runtime_root.clone()
 }
 
 /// Returns true when managed sync should inject a resolved yt-dlp
@@ -47,16 +41,13 @@ pub(super) fn resolve_conductor_runtime_dir(
 /// generic fallback (`ffmpeg` / empty). Explicit non-fallback values are
 /// preserved.
 #[must_use]
-pub(super) fn should_set_yt_dlp_ffmpeg_location(
-    input_defaults: &BTreeMap<String, InputBinding>,
-) -> bool {
-    match input_defaults.get("ffmpeg_location") {
+pub(super) fn should_set_yt_dlp_ffmpeg_location(default_inputs: &BTreeMap<String, String>) -> bool {
+    match default_inputs.get("ffmpeg_location") {
         None => true,
-        Some(InputBinding::String(value)) => {
+        Some(value) => {
             let trimmed = value.trim();
             trimmed.is_empty() || trimmed.eq_ignore_ascii_case("ffmpeg")
         }
-        Some(_) => false,
     }
 }
 
@@ -64,11 +55,9 @@ pub(super) fn should_set_yt_dlp_ffmpeg_location(
 /// `<conductor_dir>/.env.generated`.
 pub(super) fn write_generated_runtime_env_file(
     paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
     generated_env_vars: &BTreeMap<String, String>,
 ) -> Result<(), MediaPmError> {
-    let conductor_dir = resolve_conductor_runtime_dir(paths, machine);
-    let generated_path = conductor_dir.join(".env.generated");
+    let generated_path = &paths.env_generated_file;
 
     let mut content = String::from(GENERATED_RUNTIME_ENV_HEADER);
     for (name, value) in generated_env_vars {
@@ -90,28 +79,23 @@ pub(super) fn write_generated_runtime_env_file(
 
 /// Ensures machine runtime inherited-env names include generated keys.
 pub(super) fn ensure_machine_runtime_inherits_generated_env_vars(
-    machine: &mut MachineNickelDocument,
+    machine: &mut NickelDocument,
     generated_env_vars: &BTreeMap<String, String>,
 ) {
     if generated_env_vars.is_empty() {
         return;
     }
 
-    let platform = std::env::consts::OS.to_ascii_lowercase();
-    let inherited_map = machine.runtime.inherited_env_vars.get_or_insert_with(BTreeMap::new);
-    let inherited_names = inherited_map.entry(platform).or_default();
-
-    for name in generated_env_vars.keys() {
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            continue;
+    for tool in machine.tools.values_mut() {
+        for (name, value) in generated_env_vars {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                tool.runtime
+                    .inherited_env_vars
+                    .entry(trimmed.to_string())
+                    .or_insert_with(|| value.clone());
+            }
         }
-
-        if inherited_names.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
-            continue;
-        }
-
-        inherited_names.push(trimmed.to_string());
     }
 }
 
@@ -132,12 +116,12 @@ fn render_dotenv_quoted_value(value: &str) -> String {
 ///
 /// This keeps managed tool configs focused on tool-specific overrides and
 /// avoids duplicating baseline host environment names under
-/// `tool_configs.<tool>.env_vars`.
+/// `tool_configs.<tool>.inherited_env_vars`.
 pub(super) fn remove_redundant_inherited_env_vars_from_tool_config(
-    tool_config: &mut mediapm_conductor::ToolConfigSpec,
+    tool_config: &mut ToolRuntime,
     inherited_env_vars: &[String],
 ) {
-    if inherited_env_vars.is_empty() || tool_config.env_vars.is_empty() {
+    if inherited_env_vars.is_empty() || tool_config.inherited_env_vars.is_empty() {
         return;
     }
 
@@ -152,7 +136,7 @@ pub(super) fn remove_redundant_inherited_env_vars_from_tool_config(
     }
 
     tool_config
-        .env_vars
+        .inherited_env_vars
         .retain(|name, _| !inherited_lower.contains(&name.trim().to_ascii_lowercase()));
 }
 
@@ -221,7 +205,7 @@ fn absolutize_path_string(path: &str) -> Option<String> {
 #[must_use]
 fn resolve_host_ffmpeg_executable_path_from_machine_tool(
     paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     tool_id: &str,
 ) -> Option<String> {
     let selector_path = resolve_host_command_selector_path_from_machine_tool(machine, tool_id)?;
@@ -272,13 +256,10 @@ pub(super) fn resolve_yt_dlp_js_runtime_path(
 
 /// Returns whether managed yt-dlp should receive a synthesized `js_runtimes` default.
 #[must_use]
-pub(super) fn should_set_yt_dlp_js_runtimes(
-    input_defaults: &BTreeMap<String, InputBinding>,
-) -> bool {
-    match input_defaults.get("js_runtimes") {
+pub(super) fn should_set_yt_dlp_js_runtimes(default_inputs: &BTreeMap<String, String>) -> bool {
+    match default_inputs.get("js_runtimes") {
         None => true,
-        Some(InputBinding::String(value)) => value.trim().is_empty(),
-        Some(_) => false,
+        Some(value) => value.trim().is_empty(),
     }
 }
 
@@ -535,7 +516,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<MediaTaggerFfmpegSelection, MediaPmError> {
     let requested_selector = requirement.normalized_ffmpeg_selector().filter(|selector| {
         !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
@@ -559,7 +540,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
             .filter_map(|(tool_id, record)| {
                 let selector = normalize_selector_value(Some(&record.version))?;
                 if normalize_selector_compare_value(&selector) == normalized_requested
-                    && machine.tools.contains_key(tool_id)
+                    && machine.tools.values().any(|t| t.name == *tool_id)
                 {
                     Some((tool_id.clone(), selector))
                 } else {
@@ -635,7 +616,7 @@ pub(super) fn resolve_media_tagger_ffmpeg_selection(
         )
     })?;
 
-    if !machine.tools.contains_key(active_ffmpeg_tool_id) {
+    if !machine.tools.values().any(|t| t.name == *active_ffmpeg_tool_id) {
         return Err(MediaPmError::Workflow(format!(
             "active ffmpeg tool '{active_ffmpeg_tool_id}' is missing from conductor machine config"
         )));
@@ -673,7 +654,7 @@ pub(super) fn resolve_companion_ffmpeg_selection(
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<CompanionFfmpegSelection, MediaPmError> {
     resolve_companion_dependency_selection(
         logical_tool_name,
@@ -694,7 +675,7 @@ pub(super) fn resolve_companion_deno_selection(
     requirement: &ToolRequirement,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<CompanionDenoSelection, MediaPmError> {
     resolve_companion_dependency_selection(
         logical_tool_name,
@@ -716,7 +697,7 @@ fn resolve_companion_dependency_selection(
     requested_selector: Option<String>,
     provisioned_snapshot: &BTreeMap<String, ProvisionedToolPayload>,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<CompanionFfmpegSelection, MediaPmError> {
     let requested_selector = requested_selector.filter(|selector| {
         !selector.eq_ignore_ascii_case("inherit") && !selector.eq_ignore_ascii_case("global")
@@ -747,7 +728,7 @@ fn resolve_companion_dependency_selection(
             .filter_map(|(tool_id, record)| {
                 let selector = normalize_selector_value(Some(&record.version))?;
                 if normalize_selector_compare_value(&selector) == normalized_requested
-                    && machine.tools.contains_key(tool_id)
+                    && machine.tools.values().any(|t| t.name == *tool_id)
                 {
                     Some((tool_id.clone(), selector))
                 } else {
@@ -816,7 +797,7 @@ fn resolve_companion_dependency_selection(
     }
 
     if let Some(active_dependency_tool_id) = lock.active_tools.get(dependency_name)
-        && machine.tools.contains_key(active_dependency_tool_id)
+        && machine.tools.values().any(|t| t.name == *active_dependency_tool_id)
     {
         let selector = selector_from_registry_or_tool_id(active_dependency_tool_id, lock, dependency_name)
             .ok_or_else(|| {
@@ -858,34 +839,43 @@ fn resolve_companion_dependency_selection(
 /// selection falls back to `None` so sync can ignore the malformed companion
 /// record instead of failing the entire reconciliation pass.
 fn resolve_same_step_companion_content_map(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     dependency_tool_id: &str,
 ) -> Option<BTreeMap<String, Hash>> {
-    let content_map = machine
-        .tool_configs
-        .get(dependency_tool_id)
-        .and_then(|config| config.content_map.as_ref())?;
+    let content_map =
+        &machine.tools.values().find(|t| t.name == dependency_tool_id)?.runtime.content_map;
 
-    if content_map.is_empty() { None } else { Some(content_map.clone()) }
+    if content_map.is_empty() {
+        return None;
+    }
+
+    let result: BTreeMap<String, Hash> = content_map
+        .iter()
+        .filter_map(|(key, value)| {
+            let hash: Hash = value.parse().ok()?;
+            Some((key.clone(), hash))
+        })
+        .collect();
+
+    if result.is_empty() { None } else { Some(result) }
 }
 
 /// Resolves host ffmpeg command selector path from one machine-managed tool spec.
 #[must_use]
 fn resolve_host_command_selector_path_from_machine_tool(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     tool_id: &str,
 ) -> Option<String> {
-    let tool_spec = machine.tools.get(tool_id)?;
+    let tool_spec = machine.tools.values().find(|t| t.name == tool_id)?;
     let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
         return None;
     };
-
-    let selector = command.first()?.trim();
-    if selector.is_empty() {
+    let selector = command.first()?;
+    if selector.trim().is_empty() {
         return None;
     }
 
-    resolve_host_command_selector_path(selector)
+    resolve_host_command_selector_path(selector.trim())
 }
 
 fn ffmpeg_selector_from_identity(identity: &ResolvedToolIdentity) -> Option<String> {

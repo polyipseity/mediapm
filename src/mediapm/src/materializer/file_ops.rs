@@ -186,6 +186,15 @@ pub(super) async fn materialize_file_from_cas_with_order(
     methods: &[MaterializationMethod],
     notices: &mut Vec<String>,
 ) -> Result<(), MediaPmError> {
+    // Ensure the blob is materialized in the CAS blob store so that
+    // filesystem-based methods (hardlink, symlink, reflink) can work.
+    // For WAL-only small blobs, this reads the bytes from the WAL and
+    // writes them to the blob store + metadata.
+    // If the blob doesn't exist in CAS (e.g. testing with a dummy hash),
+    // silently fall through — the individual methods will fail with their
+    // own errors.
+    let _ = cas.ensure_blob_materialized(hash).await;
+
     let source_path = cas.object_path_for_hash(hash).filter(|p| p.is_file());
     let mut failures = Vec::new();
 

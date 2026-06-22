@@ -15,11 +15,9 @@ use std::process::Command as ProcessCommand;
 use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
 use mediapm_conductor::{
-    ConductorApi, SimpleConductor, StateMutationOptions, ToolKindSpec, WorkflowStepEvent,
+    RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor,
     resolve_managed_tool_executable_with_filesystem_cas,
 };
-use pulsebar::{MultiProgress, ProgressBar};
-use tokio::sync::mpsc;
 use url::Url;
 
 use crate::conductor_bridge::ConductorToolRow;
@@ -47,10 +45,10 @@ use crate::{
     MediaStepInvalidationSummary, SyncSummary, ToolsSyncSummary,
 };
 use crate::{
-    build_local_default_description, conductor_run_workflow_options,
-    export_mediapm_nickel_config_schemas, load_runtime_dotenv, local_default_title,
-    local_extension_with_dot, local_source_default_steps, media_id_from_local_path,
-    media_id_from_uri, merge_runtime_storage, normalize_source_uri, validate_source_uri,
+    build_local_default_description, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
+    local_default_title, local_extension_with_dot, local_source_default_steps,
+    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
+    validate_source_uri,
 };
 use crate::{conductor_bridge, config, materializer, tools};
 
@@ -67,25 +65,19 @@ pub trait MediaPmApi: Send + Sync {
 }
 
 /// Generic media service over a pluggable conductor implementation.
-pub struct MediaPmService<C>
-where
-    C: ConductorApi,
-{
+pub struct MediaPmService<Cas: CasApi + Send + Sync + 'static> {
     /// Conductor backend used for workflow execution and state coordination.
-    conductor: C,
+    conductor: SimpleConductor<Cas>,
     /// Canonical path set for this service instance.
     paths: MediaPmPaths,
     /// Optional runtime-storage overrides applied after `mediapm.ncl` values.
     runtime_storage_overrides: MediaRuntimeStorage,
 }
 
-impl<C> MediaPmService<C>
-where
-    C: ConductorApi,
-{
+impl<Cas: CasApi + Send + Sync + 'static> MediaPmService<Cas> {
     /// Creates a media service with explicit workspace paths.
     #[must_use]
-    pub fn new(conductor: C, paths: MediaPmPaths) -> Self {
+    pub fn new(conductor: SimpleConductor<Cas>, paths: MediaPmPaths) -> Self {
         Self { conductor, paths, runtime_storage_overrides: MediaRuntimeStorage::default() }
     }
 
@@ -95,7 +87,7 @@ where
     /// `mediapm.ncl` and is primarily used for CLI-level path flags.
     #[must_use]
     pub fn new_with_runtime_storage_overrides(
-        conductor: C,
+        conductor: SimpleConductor<Cas>,
         paths: MediaPmPaths,
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
@@ -135,7 +127,7 @@ where
         tool_name: &str,
         requirement: &ToolRequirement,
         lock: &MediaPmState,
-        machine: &mediapm_conductor::MachineNickelDocument,
+        machine: &mediapm_conductor::NickelDocument,
     ) -> bool {
         if tools::catalog::tool_catalog_entry(tool_name).is_err() {
             return false;
@@ -153,7 +145,7 @@ where
             return true;
         }
 
-        let Some(tool_spec) = machine.tools.get(active_tool_id) else {
+        let Some(tool_spec) = machine.tools.values().find(|t| t.name == *active_tool_id) else {
             return true;
         };
 
@@ -164,12 +156,12 @@ where
             return true;
         }
 
-        if matches!(&tool_spec.kind, ToolKindSpec::Executable { .. }) {
-            let has_content_map = machine
-                .tool_configs
-                .get(active_tool_id)
-                .and_then(|tool_config| tool_config.content_map.as_ref())
-                .is_some_and(|content_map| !content_map.is_empty());
+        if !tool_spec.runtime.content_map.is_empty() {
+            let has_content_map = tool_spec
+                .runtime
+                .content_map
+                .values()
+                .any(|v| v.parse::<mediapm_cas::Hash>().is_ok());
             if !has_content_map {
                 return true;
             }
@@ -183,7 +175,7 @@ where
     fn collect_tools_requiring_sync(
         document: &MediaPmDocument,
         lock: &MediaPmState,
-        machine: &mediapm_conductor::MachineNickelDocument,
+        machine: &mediapm_conductor::NickelDocument,
     ) -> Vec<String> {
         let mut names = document
             .tools
@@ -289,11 +281,17 @@ where
             let machine =
                 conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
             let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
+            let yt_dlp_fs_cas =
+                FileSystemCas::open(&conductor_cas_root).await.map_err(|error| {
+                    MediaPmError::Workflow(format!(
+                        "opening conductor CAS store '{}' for yt-dlp resolution: {error}",
+                        conductor_cas_root.display()
+                    ))
+                })?;
             match resolve_managed_tool_executable_with_filesystem_cas(
-                &effective_paths.conductor_machine_ncl,
-                &conductor_cas_root,
-                &effective_paths.tools_dir,
                 "yt-dlp",
+                &effective_paths.tools_dir,
+                &yt_dlp_fs_cas,
             )
             .await
             {
@@ -970,23 +968,10 @@ where
             &tools_without_timestamp,
         );
 
-        let workflow_options =
-            conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
-        let state_options = StateMutationOptions {
-            runtime_storage_paths: workflow_options.runtime_storage_paths.clone(),
-            runtime_inherited_env_vars: workflow_options.runtime_inherited_env_vars.clone(),
-        };
-        let mut state = self
-            .conductor
-            .load_resolved_state(
-                &effective_paths.conductor_user_ncl,
-                &effective_paths.conductor_machine_ncl,
-                state_options.clone(),
-            )
-            .await?;
+        let mut state = self.conductor.get_state().await?;
 
         let mut removed_instances = 0usize;
-        state.instances.retain(|_instance_key, instance| {
+        state.tool_call_instances.retain(|_instance_key, instance| {
             let remove_instance = should_invalidate_instance(instance, &invalidation_rules);
             if remove_instance {
                 removed_instances = removed_instances.saturating_add(1);
@@ -997,14 +982,7 @@ where
         });
 
         if removed_instances > 0 {
-            self.conductor
-                .replace_resolved_state(
-                    &effective_paths.conductor_user_ncl,
-                    &effective_paths.conductor_machine_ncl,
-                    state,
-                    state_options,
-                )
-                .await?;
+            self.conductor.replace_resolved_state(state).await?;
         }
 
         save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
@@ -1168,13 +1146,39 @@ where
         let machine =
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
+
+        // Helper to open FileSystemCas in either current or temporary runtime.
+        let open_tool_cas = |cas_root: &Path| -> Result<FileSystemCas, MediaPmError> {
+            let cas_fut = FileSystemCas::open(cas_root);
+            if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| runtime_handle.block_on(cas_fut))
+            } else {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|source| {
+                        MediaPmError::Workflow(format!(
+                            "creating temporary runtime for managed tool execution failed: \
+                             {source}"
+                        ))
+                    })?;
+                runtime.block_on(cas_fut)
+            }
+            .map_err(|error| {
+                MediaPmError::Workflow(format!(
+                    "opening conductor CAS store '{}' for managed tool resolution: {error}",
+                    cas_root.display()
+                ))
+            })
+        };
+        let tool_fs_cas = open_tool_cas(&conductor_cas_root)?;
+
         let resolved_tool = if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(|| {
                 runtime_handle.block_on(resolve_managed_tool_executable_with_filesystem_cas(
-                    &effective_paths.conductor_machine_ncl,
-                    &conductor_cas_root,
-                    &effective_paths.tools_dir,
                     tool_selector,
+                    &effective_paths.tools_dir,
+                    &tool_fs_cas,
                 ))
             })
         } else {
@@ -1188,10 +1192,9 @@ where
                 })?;
 
             runtime.block_on(resolve_managed_tool_executable_with_filesystem_cas(
-                &effective_paths.conductor_machine_ncl,
-                &conductor_cas_root,
-                &effective_paths.tools_dir,
                 tool_selector,
+                &effective_paths.tools_dir,
+                &tool_fs_cas,
             ))
         }
         .map_err(MediaPmError::from)?;
@@ -1200,7 +1203,10 @@ where
             .args(args)
             .status()
             .map_err(|source| MediaPmError::Io {
-                operation: format!("running managed tool '{}' executable", resolved_tool.tool_id),
+                operation: format!(
+                    "running managed tool '{}' executable",
+                    resolved_tool.executable_path.display()
+                ),
                 path: resolved_tool.executable_path.clone(),
                 source,
             })?;
@@ -1208,7 +1214,7 @@ where
         status.code().ok_or_else(|| {
             MediaPmError::Workflow(format!(
                 "managed tool '{}' terminated without a numeric exit code",
-                resolved_tool.tool_id
+                resolved_tool.executable_path.display()
             ))
         })
     }
@@ -1284,7 +1290,7 @@ where
         load_runtime_dotenv(&effective_paths)?;
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
         export_mediapm_nickel_config_schemas(&effective_paths)?;
-        mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
+        self.conductor.export_schemas(&effective_paths.conductor_schema_dir).await?;
 
         let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         let resolved_inherited_env_vars =
@@ -1335,7 +1341,7 @@ where
         ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
         conductor_bridge::ensure_conductor_documents(&effective_paths)?;
         export_mediapm_nickel_config_schemas(&effective_paths)?;
-        mediapm_conductor::export_nickel_config_schemas(&effective_paths.conductor_schema_dir)?;
+        self.conductor.export_schemas(&effective_paths.conductor_schema_dir).await?;
 
         let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
         conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
@@ -1347,73 +1353,11 @@ where
             conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
         let tools_requiring_sync = Self::collect_tools_requiring_sync(&document, &lock, &machine);
         let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-        // Conductor workflow progress bars.
-        let (tx, mut rx) = mpsc::unbounded_channel::<WorkflowStepEvent>();
-
-        let receiver_handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
-            let mp = MultiProgress::new();
-            let mut total_steps: usize = 0;
-            let mut overall_bar: Option<ProgressBar> = None;
-            let mut worker_bars: Vec<ProgressBar> = Vec::new();
-            let mut per_worker_count: Vec<usize> = Vec::new();
-            while let Some(event) = rx.recv().await {
-                if total_steps == 0 {
-                    total_steps = event.total_steps;
-                    for _wi in 0..event.worker_count {
-                        worker_bars.push(mp.add_bar(0).with_format("{msg}"));
-                        per_worker_count.push(0);
-                    }
-                    overall_bar = Some(
-                        mp.add_bar(total_steps as u64)
-                            .with_format("{msg}  [{bar:20}]  {pos}/{total}")
-                            .with_message("overall"),
-                    );
-                }
-                if event.worker_index >= per_worker_count.len() {
-                    per_worker_count.resize(event.worker_index + 1, 0);
-                    worker_bars
-                        .resize_with(event.worker_index + 1, || mp.add_bar(0).with_format("{msg}"));
-                }
-                per_worker_count[event.worker_index] =
-                    per_worker_count[event.worker_index].saturating_add(1);
-                if let Some(ref bar) = overall_bar {
-                    bar.set_position(event.completed_steps as u64);
-                    bar.set_message(&format!(
-                        "completed {}/{} steps",
-                        event.completed_steps, total_steps,
-                    ));
-                }
-                if let Some(worker_bar) = worker_bars.get(event.worker_index) {
-                    let wi = event.worker_index;
-                    worker_bar.set_message(&format!(
-                        "worker {wi}: {}: {}  ({})",
-                        event.workflow_display_name, event.step_id, per_worker_count[wi],
-                    ));
-                }
-            }
-            if let Some(ref bar) = overall_bar {
-                bar.set_message("all workflows complete");
-                bar.set_position(total_steps as u64);
-            }
-            for (wi, bar) in worker_bars.iter().enumerate() {
-                bar.set_message(&format!("worker {wi}: done  ({})", per_worker_count[wi]));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
-            // mp dropped here → render thread joins.
-        });
-
-        let mut workflow_options =
-            conductor_run_workflow_options(&effective_paths, &effective_runtime_storage);
-        workflow_options.progress_sender = Some(tx.clone());
 
         eprintln!("[mediapm::sync] running conductor workflows...");
         let conductor_summary = match self
             .conductor
-            .run_workflow_with_options(
-                &effective_paths.conductor_user_ncl,
-                &effective_paths.conductor_machine_ncl,
-                workflow_options,
-            )
+            .run_workflow("mediapm.sync", RunWorkflowOptions::default())
             .await
         {
             Ok(summary) => summary,
@@ -1421,9 +1365,6 @@ where
                 return Err(primary_error.into());
             }
         };
-        // Drop sender so receiver task can complete.
-        drop(tx);
-        receiver_handle.await.ok();
 
         eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
         let hierarchy_start = std::time::Instant::now();
@@ -1457,9 +1398,9 @@ where
         save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
 
         Ok(SyncSummary {
-            executed_instances: conductor_summary.executed_instances,
-            cached_instances: conductor_summary.cached_instances,
-            rematerialized_instances: conductor_summary.rematerialized_instances,
+            executed_instances: conductor_summary.executed_steps,
+            cached_instances: conductor_summary.cached_steps,
+            rematerialized_instances: 0,
             materialized_paths: materialize_report.materialized_paths,
             removed_paths: materialize_report.removed_paths,
             removed_empty_dirs: materialize_report.removed_empty_dirs,
@@ -1470,7 +1411,7 @@ where
     }
 }
 
-impl MediaPmService<SimpleConductor<FileSystemCas>> {
+impl MediaPmService<FileSystemCas> {
     /// Creates a filesystem-backed conductor stack rooted at the given directory.
     ///
     /// This is the production constructor used by the `mediapm` CLI.
@@ -1491,12 +1432,13 @@ impl MediaPmService<SimpleConductor<FileSystemCas>> {
                 cas_store_root.display()
             ))
         })?;
-        let conductor = SimpleConductor::new(file_system_cas);
+        let conductor =
+            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), file_system_cas);
         Ok(Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides))
     }
 }
 
-impl MediaPmService<SimpleConductor<InMemoryCas>> {
+impl MediaPmService<InMemoryCas> {
     /// Creates a media service with an in-memory conductor and paths from the
     /// current directory.
     ///
@@ -1505,7 +1447,8 @@ impl MediaPmService<SimpleConductor<InMemoryCas>> {
     #[must_use]
     pub fn new_in_memory() -> Self {
         let paths = MediaPmPaths::from_current_dir();
-        let conductor = SimpleConductor::new(InMemoryCas::new());
+        let conductor =
+            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
         Self::new(conductor, paths)
     }
 
@@ -1517,7 +1460,8 @@ impl MediaPmService<SimpleConductor<InMemoryCas>> {
     #[must_use]
     pub fn new_in_memory_at(root_dir: &Path) -> Self {
         let paths = MediaPmPaths::from_root(root_dir);
-        let conductor = SimpleConductor::new(InMemoryCas::new());
+        let conductor =
+            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
         Self::new(conductor, paths)
     }
 
@@ -1529,15 +1473,13 @@ impl MediaPmService<SimpleConductor<InMemoryCas>> {
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Self {
         let paths = MediaPmPaths::from_root(root_dir);
-        let conductor = SimpleConductor::new(InMemoryCas::new());
+        let conductor =
+            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
         Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides)
     }
 }
 
-impl<C> MediaPmApi for MediaPmService<C>
-where
-    C: ConductorApi,
-{
+impl<Cas: CasApi + Send + Sync + 'static> MediaPmApi for MediaPmService<Cas> {
     async fn process_source(
         &self,
         uri: Url,

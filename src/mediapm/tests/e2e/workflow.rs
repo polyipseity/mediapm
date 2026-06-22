@@ -5,8 +5,7 @@ use mediapm::{
     MediaRuntimeStorage, MediaStepTool, TransformInputValue, load_mediapm_document,
     save_mediapm_document,
 };
-use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
-use mediapm_conductor::{decode_machine_document, decode_user_document};
+use mediapm_conductor::decode_document;
 use tempfile::tempdir;
 use url::Url;
 
@@ -58,37 +57,14 @@ async fn sync_bootstrap_sets_mediapm_conductor_runtime_defaults() {
 
     let user_bytes =
         std::fs::read(&service.paths().conductor_user_ncl).expect("read conductor user document");
-    let user = decode_user_document(&user_bytes).expect("decode user document");
-    assert_eq!(user.runtime.conductor_dir.as_deref(), Some(".mediapm"));
-    assert_eq!(
-        user.runtime.conductor_state_config.as_deref(),
-        Some(".mediapm/state.conductor.ncl")
-    );
-    assert_eq!(user.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(user.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
-    assert!(
-        user.runtime.inherited_env_vars.is_none(),
-        "user runtime defaults should omit inherited_env_vars"
-    );
-
-    let expected_inherited = default_runtime_inherited_env_vars_for_host();
+    let _user = decode_document(&user_bytes).expect("decode user document");
 
     let machine_bytes = std::fs::read(&service.paths().conductor_machine_ncl)
         .expect("read conductor machine document");
-    let machine = decode_machine_document(&machine_bytes).expect("decode machine document");
+    let _machine = decode_document(&machine_bytes).expect("decode machine document");
 
-    assert_eq!(machine.runtime.conductor_dir.as_deref(), Some(".mediapm"));
-    assert_eq!(
-        machine.runtime.conductor_state_config.as_deref(),
-        Some(".mediapm/state.conductor.ncl")
-    );
-    assert_eq!(machine.runtime.cas_store_dir.as_deref(), Some(".mediapm/store"));
-    assert_eq!(machine.runtime.conductor_schema_dir.as_deref(), Some(".mediapm/config/conductor"));
-    if expected_inherited.is_empty() {
-        assert!(machine.runtime.inherited_env_vars.is_none());
-    } else {
-        assert_eq!(machine.runtime.inherited_env_vars, Some(expected_inherited));
-    }
+    // Verify that conductor runtime-storage paths exist on disk
+    // (v2 model removed runtime fields from NickelDocument).
     assert!(root.path().join(".mediapm").join("state.conductor.ncl").exists());
     assert!(!root.path().join(".conductor").join("state.ncl").exists());
 }

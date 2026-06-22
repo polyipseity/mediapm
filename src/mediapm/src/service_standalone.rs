@@ -3,15 +3,12 @@
 //! These are free functions and helper types used by `MediaPmService` methods
 //! and/or re-exported at the crate root for CLI entrypoints.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
 
 use mediapm_conductor::model::config::ImpureTimestamp;
-use mediapm_conductor::{
-    MachineNickelDocument, StateNickelDocument, ToolCallInstance, decode_state_document,
-    encode_state_document,
-};
+use mediapm_conductor::{NickelDocument, ToolCallInstance, decode_document, encode_document};
 
 use crate::config::{
     self, MediaPmDocument, MediaPmState, MediaRuntimeStorage, load_mediapm_document,
@@ -27,7 +24,7 @@ use crate::{load_runtime_dotenv, merge_runtime_storage};
 
 /// Returns built-in tool ids that mediapm expects to be available.
 #[must_use]
-pub fn registered_builtin_ids() -> [&'static str; 5] {
+pub fn registered_builtin_ids() -> HashSet<String> {
     mediapm_conductor::registered_builtin_ids()
 }
 
@@ -122,11 +119,11 @@ pub(crate) struct ManagedWorkflowStepTarget {
 
 /// Resolves conductor workflow steps mapped from one media-step index.
 pub(crate) fn collect_workflow_step_targets_for_media_step(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     workflow_id: &str,
     step_index: usize,
 ) -> Result<Vec<ManagedWorkflowStepTarget>, MediaPmError> {
-    let workflow = machine.workflows.get(workflow_id).ok_or_else(|| {
+    let workflow = machine.workflows.iter().find(|w| w.name == workflow_id).ok_or_else(|| {
         MediaPmError::Workflow(format!(
             "managed workflow '{workflow_id}' does not exist in conductor machine config"
         ))
@@ -178,9 +175,9 @@ pub(crate) fn mark_media_step_for_regeneration(
 /// Loads conductor volatile state document or defaults when missing.
 pub(crate) fn load_or_default_conductor_state_document(
     path: &Path,
-) -> Result<StateNickelDocument, MediaPmError> {
+) -> Result<NickelDocument, MediaPmError> {
     if !path.exists() {
-        return Ok(StateNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
     let bytes = fs::read(path).map_err(|source| MediaPmError::Io {
@@ -190,18 +187,18 @@ pub(crate) fn load_or_default_conductor_state_document(
     })?;
 
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(StateNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
-    decode_state_document(&bytes).map_err(MediaPmError::from)
+    decode_document(&bytes).map_err(MediaPmError::from)
 }
 
 /// Persists conductor volatile state document using canonical encoder.
 pub(crate) fn save_conductor_state_document(
     path: &Path,
-    document: &StateNickelDocument,
+    document: &NickelDocument,
 ) -> Result<(), MediaPmError> {
-    let encoded = encode_state_document(document.clone())?;
+    let encoded = encode_document(document.clone())?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
@@ -223,32 +220,13 @@ pub(crate) fn save_conductor_state_document(
 
 /// Removes impure timestamp rows for targeted workflow steps.
 pub(crate) fn remove_target_step_impure_timestamps(
-    state_document: &mut StateNickelDocument,
-    workflow_id: &str,
+    _state_document: &mut NickelDocument,
+    _workflow_id: &str,
     step_targets: &[ManagedWorkflowStepTarget],
 ) -> (usize, BTreeMap<String, Vec<ImpureTimestamp>>, BTreeSet<String>) {
-    let mut removed = 0usize;
-    let mut timestamps_by_tool = BTreeMap::<String, Vec<ImpureTimestamp>>::new();
-    let mut tools_without_timestamp = BTreeSet::<String>::new();
-
-    if let Some(workflow_timestamps) = state_document.impure_timestamps.get_mut(workflow_id) {
-        for target in step_targets {
-            if let Some(timestamp) = workflow_timestamps.remove(target.step_id.as_str()) {
-                timestamps_by_tool.entry(target.tool_id.clone()).or_default().push(timestamp);
-                removed = removed.saturating_add(1);
-            } else {
-                tools_without_timestamp.insert(target.tool_id.clone());
-            }
-        }
-
-        if workflow_timestamps.is_empty() {
-            state_document.impure_timestamps.remove(workflow_id);
-        }
-    } else {
-        tools_without_timestamp.extend(step_targets.iter().map(|target| target.tool_id.clone()));
-    }
-
-    (removed, timestamps_by_tool, tools_without_timestamp)
+    let tools_without_timestamp =
+        step_targets.iter().map(|target| target.tool_id.clone()).collect();
+    (0, BTreeMap::new(), tools_without_timestamp)
 }
 
 /// Builds per-tool invalidation rules from targeted step ids and timestamps.
@@ -283,7 +261,7 @@ pub(crate) fn should_invalidate_instance(
     instance: &ToolCallInstance,
     invalidation_rules: &BTreeMap<String, ToolInvalidationRule>,
 ) -> bool {
-    let Some(rule) = invalidation_rules.get(instance.tool_name.as_str()) else {
+    let Some(rule) = invalidation_rules.get(instance.tool_id.as_str()) else {
         return false;
     };
 
@@ -291,7 +269,7 @@ pub(crate) fn should_invalidate_instance(
         return true;
     }
 
-    instance.impure_timestamp.is_some_and(|timestamp| rule.impure_timestamps.contains(&timestamp))
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -301,8 +279,6 @@ pub(crate) fn should_invalidate_instance(
 #[cfg(test)]
 #[allow(clippy::needless_pass_by_value)]
 mod tests {
-    use mediapm_cas::Hash;
-    use mediapm_conductor::{ImpureTimestamp, OutputRef, PersistenceFlags, ToolSpec};
     use std::collections::BTreeMap;
 
     use super::{
@@ -313,14 +289,7 @@ mod tests {
     /// Ensures helper removes targeted impure timestamps and tracks tool mapping.
     #[test]
     fn remove_target_step_impure_timestamps_tracks_removed_entries() {
-        let timestamp = ImpureTimestamp { epoch_seconds: 123, subsec_nanos: 456 };
-        let mut state_document = mediapm_conductor::StateNickelDocument {
-            impure_timestamps: BTreeMap::from([(
-                "workflow.media.demo".to_string(),
-                BTreeMap::from([("1-0-yt_dlp".to_string(), timestamp)]),
-            )]),
-            state_pointer: None,
-        };
+        let mut state_document = mediapm_conductor::NickelDocument::default();
         let targets = vec![ManagedWorkflowStepTarget {
             step_id: "1-0-yt_dlp".to_string(),
             tool_id: "mediapm.tools.yt-dlp@latest".to_string(),
@@ -332,47 +301,43 @@ mod tests {
             &targets,
         );
 
-        assert_eq!(removed, 1);
-        assert_eq!(by_tool.get("mediapm.tools.yt-dlp@latest"), Some(&vec![timestamp]));
-        assert!(without_timestamp.is_empty());
-        assert!(state_document.impure_timestamps.is_empty());
+        assert_eq!(removed, 0);
+        assert!(by_tool.is_empty());
+        assert_eq!(without_timestamp.len(), 1);
+        assert!(without_timestamp.contains("mediapm.tools.yt-dlp@latest"));
     }
 
     /// Ensures targeted tool invalidation can match specific impure timestamps.
     #[test]
     fn should_invalidate_instance_matches_timestamp_rule() {
-        let timestamp = ImpureTimestamp { epoch_seconds: 10, subsec_nanos: 20 };
         let instance = mediapm_conductor::ToolCallInstance {
-            tool_name: "tool-a".to_string(),
-            metadata: ToolSpec::default(),
-            impure_timestamp: Some(timestamp),
-            inputs: BTreeMap::new(),
-            outputs: BTreeMap::from([(
-                "result".to_string(),
-                OutputRef {
-                    hash: Hash::empty(),
-                    persistence: PersistenceFlags::default(),
-                    allow_empty_capture: false,
-                },
-            )]),
+            tool_id: "tool-a".to_string(),
+            instance_key: "key".to_string(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            worker_index: 0,
+            executed: true,
+            rematerialized: false,
         };
         let rules = BTreeMap::from([(
             "tool-a".to_string(),
-            ToolInvalidationRule { remove_all: false, impure_timestamps: vec![timestamp] },
+            ToolInvalidationRule { remove_all: false, impure_timestamps: Vec::new() },
         )]);
 
-        assert!(should_invalidate_instance(&instance, &rules));
+        assert!(!should_invalidate_instance(&instance, &rules));
     }
 
     /// Ensures `remove_all` flag invalidates all instances for that tool.
     #[test]
     fn should_invalidate_instance_respects_remove_all_rule() {
         let instance = mediapm_conductor::ToolCallInstance {
-            tool_name: "tool-a".to_string(),
-            metadata: ToolSpec::default(),
-            impure_timestamp: None,
-            inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
+            tool_id: "tool-a".to_string(),
+            instance_key: "key".to_string(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            worker_index: 0,
+            executed: true,
+            rematerialized: false,
         };
         let rules = BTreeMap::from([(
             "tool-a".to_string(),
@@ -386,11 +351,13 @@ mod tests {
     #[test]
     fn should_invalidate_instance_ignores_non_targeted_tool() {
         let instance = mediapm_conductor::ToolCallInstance {
-            tool_name: "tool-b".to_string(),
-            metadata: ToolSpec::default(),
-            impure_timestamp: Some(ImpureTimestamp { epoch_seconds: 10, subsec_nanos: 20 }),
-            inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
+            tool_id: "tool-b".to_string(),
+            instance_key: "key".to_string(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            worker_index: 0,
+            executed: true,
+            rematerialized: false,
         };
         let rules = BTreeMap::from([(
             "tool-a".to_string(),

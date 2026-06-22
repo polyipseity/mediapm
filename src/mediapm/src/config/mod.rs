@@ -18,7 +18,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use mediapm_cas::{CasIntegrityConfig, Hash, VerifyTriggerStrategy};
-use mediapm_conductor::default_runtime_inherited_env_vars_for_host;
+use mediapm_conductor::default_runtime_inherited_env_vars;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -657,9 +657,16 @@ impl MediaRuntimeStorage {
         let host_platform = std::env::consts::OS.to_ascii_lowercase();
         let mut merged = Vec::new();
 
+        // Convert conductor's flat default map to platform-keyed format.
+        let defaults = default_runtime_inherited_env_vars();
+        let default_platform_keyed: PlatformInheritedEnvVars = {
+            let mut map = BTreeMap::new();
+            map.insert(host_platform.clone(), defaults.into_keys().collect());
+            map
+        };
         append_platform_inherited_env_var_names_for_host(
             &mut merged,
-            &default_runtime_inherited_env_vars_for_host(),
+            &default_platform_keyed,
             &host_platform,
         );
 

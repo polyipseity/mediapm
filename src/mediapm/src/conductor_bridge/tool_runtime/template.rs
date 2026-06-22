@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use mediapm_cas::Hash;
 use mediapm_conductor::{ToolKindSpec, ToolSpec};
 
 use crate::error::MediaPmError;
@@ -44,10 +43,10 @@ pub(super) fn media_tagger_launcher_mediapm_env_var_for_os(
 /// For platform-conditional selectors, every declared platform branch must map
 /// to at least one `content_map` key so planned tool payloads stay
 /// cross-platform complete.
-pub(in crate::conductor_bridge) fn validate_tool_command(
+pub(in crate::conductor_bridge) fn validate_tool_command<V>(
     tool_name: &str,
     command_vector: &[String],
-    content_map: &BTreeMap<String, Hash>,
+    content_map: &BTreeMap<String, V>,
 ) -> Result<(), MediaPmError> {
     let Some(binary) = command_vector.first() else {
         return Err(MediaPmError::Workflow(format!("tool '{tool_name}' command is empty")));
@@ -82,8 +81,8 @@ pub(in crate::conductor_bridge) fn validate_tool_command(
 /// - directory ZIP keys ending with `/` or `\\` where `target` is under that
 ///   directory,
 /// - root ZIP keys (`./` or `.\\`) that materialize all relative paths.
-pub(super) fn content_map_contains_command_target(
-    content_map: &BTreeMap<String, Hash>,
+pub(super) fn content_map_contains_command_target<V>(
+    content_map: &BTreeMap<String, V>,
     target: &str,
 ) -> bool {
     if content_map.contains_key(target) {
@@ -217,11 +216,10 @@ pub(super) fn parse_quoted_selector_value(value: &str) -> Option<String> {
 /// Returns whether one stored tool specification currently points to a
 /// workspace-local executable binary that exists on disk.
 pub(in crate::conductor_bridge) fn tool_spec_has_binary(spec: &ToolSpec) -> bool {
-    let ToolKindSpec::Executable { command, .. } = &spec.kind else {
-        return false;
-    };
-    let Some(first) = command.first() else {
-        return false;
-    };
-    Path::new(first).exists()
+    match &spec.kind {
+        ToolKindSpec::Executable { command, .. } => {
+            command.first().map_or(false, |cmd| Path::new(cmd).exists())
+        }
+        ToolKindSpec::Builtin { .. } => false,
+    }
 }

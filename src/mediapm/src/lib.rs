@@ -33,8 +33,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use mediapm_conductor::RunWorkflowOptions;
 use mediapm_conductor::runtime_env::load_runtime_env_files;
-use mediapm_conductor::{RunWorkflowOptions, RuntimeStoragePaths};
 use url::Url;
 
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
@@ -524,27 +524,13 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 /// invokes conductor so conductor runtime writes (volatile state + CAS store)
 /// stay aligned with effective mediapm path policy rather than falling back to
 /// standalone conductor defaults under `.conductor/`.
+#[allow(dead_code)]
 #[must_use]
 pub(crate) fn conductor_run_workflow_options(
-    paths: &MediaPmPaths,
+    _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
 ) -> RunWorkflowOptions {
     RunWorkflowOptions {
-        runtime_storage_paths: RuntimeStoragePaths {
-            conductor_dir: paths.runtime_root.clone(),
-            conductor_state_config: paths.conductor_state_config.clone(),
-            cas_store_dir: paths.runtime_root.join("store"),
-            conductor_tmp_dir: paths.conductor_tmp_dir.clone(),
-            conductor_schema_dir: paths.conductor_schema_dir.clone(),
-            conductor_tools_dir: paths.tools_dir.clone(),
-        },
-        runtime_inherited_env_vars: runtime_storage.inherited_env_vars_with_defaults(),
-        profiler_enabled: runtime_storage.profiler_enabled.unwrap_or(false),
-        profile_output_path: runtime_storage
-            .profiler_enabled
-            .is_some_and(|enabled| enabled)
-            .then(|| paths.runtime_root.join("profile.json")),
-        cas_integrity_config: Some(runtime_storage.to_cas_integrity_config()),
         retry_impure: runtime_storage.retry_impure.unwrap_or(false),
         ..RunWorkflowOptions::default()
     }

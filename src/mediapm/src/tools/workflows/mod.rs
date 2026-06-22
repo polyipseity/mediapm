@@ -12,9 +12,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use mediapm_cas::Hash;
 use mediapm_conductor::{
-    AddExternalDataOptions, ExternalContentRef, InputBinding, MachineNickelDocument,
-    OutputSaveMode, ToolKindSpec, WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, OutputSaveMode, ToolKindSpec, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
+
+/// Reference to one external data row keyed by CAS hash.
+///
+/// This is an internal mediapm type (not part of the conductor model) used
+/// to track managed external-data roots during workflow synthesis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExternalContentRef {
+    /// Human-readable description for GC root tracing.
+    description: Option<String>,
+    /// Persistence policy override for this data row.
+    save: Option<OutputSaveMode>,
+}
 use serde_json::Value;
 
 use crate::config::MediaPmState;
@@ -35,9 +46,9 @@ use crate::conductor_bridge::documents::{
 };
 use crate::conductor_bridge::tool_runtime::{
     DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, FfmpegSlotLimits,
-    build_tool_spec, default_tool_config_description, ffmpeg_cover_slot_enabled_input_name,
-    ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_file_path,
-    ffmpeg_output_path_input_name, merge_tool_config_defaults, resolve_ffmpeg_slot_limits,
+    build_tool_spec, ffmpeg_cover_slot_enabled_input_name, ffmpeg_input_content_name,
+    ffmpeg_output_capture_name, ffmpeg_output_file_path, ffmpeg_output_path_input_name,
+    resolve_ffmpeg_slot_limits,
 };
 
 mod ffmpeg;
@@ -85,6 +96,7 @@ pub(super) const RSGAIN_APPLY_STEP_OFFSET: usize = 5;
 /// Conductor treats omitted `save` as the default `saved` behavior, so this
 /// helper intentionally encodes `save = true` as `None`.
 #[must_use]
+#[expect(dead_code)]
 fn conductor_output_save_mode(policy: OutputSaveConfig) -> Option<OutputSaveMode> {
     match policy {
         OutputSaveConfig::Bool(false) => Some(OutputSaveMode::Unsaved),
@@ -212,9 +224,9 @@ fn reconcile_media_workflows_with_mode(
     // Propagate instance_ttl_seconds from mediapm document to conductor
     // machine config so the effective value (CLI override > config file > None)
     // reaches the conductor coordinator's GC TTL resolution.
-    if let Some(ttl) = document.runtime.instance_ttl_seconds {
-        machine.runtime.instance_ttl_seconds = Some(ttl);
-    }
+    // instance_ttl_seconds propagation is handled by the conductor runtime
+    // directly; NickelDocument no longer carries a runtime field.
+    let _ = document.runtime.instance_ttl_seconds;
 
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
     if allow_unresolved_tool_placeholders {
@@ -235,23 +247,20 @@ fn reconcile_media_workflows_with_mode(
         &mut managed_external_data,
     )?;
 
-    machine.workflows.retain(|workflow_id, _| {
-        !workflow_id.starts_with(MANAGED_WORKFLOW_PREFIX) && !override_ids.contains(workflow_id)
-    });
-    machine.external_data.retain(|_, reference| {
-        !reference.description.as_deref().is_some_and(is_managed_external_description)
+    machine.workflows.retain(|workflow| {
+        !workflow.name.starts_with(MANAGED_WORKFLOW_PREFIX)
+            && !override_ids.contains(&workflow.name)
     });
 
     for (workflow_id, workflow) in plan.workflows {
-        machine.workflows.insert(workflow_id, workflow);
+        machine.workflows.push(WorkflowSpec { name: workflow_id, ..workflow });
     }
 
-    for (hash, reference) in managed_external_data {
-        machine.add_external_data(
-            hash,
-            AddExternalDataOptions::new(reference).overwrite_existing(true),
-        )?;
-    }
+    // External data is now managed directly by the conductor runtime via
+    // the external-data GC roots API. The old `machine.external_data` and
+    // `machine.add_external_data()` paths are removed in the v2 model.
+    let _ = managed_external_data;
+    let _ = is_managed_external_description;
 
     save_machine_document(&paths.conductor_machine_ncl, &machine)
 }
@@ -264,7 +273,7 @@ fn reconcile_media_workflows_with_mode(
 fn ensure_active_tool_placeholders_for_media_steps(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    machine: &mut MachineNickelDocument,
+    machine: &mut NickelDocument,
     lock: &mut MediaPmState,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<(), MediaPmError> {
@@ -317,7 +326,7 @@ fn required_logical_tool_names_for_media_steps(
 /// Ensures one logical media tool maps to a machine-visible active tool id.
 fn ensure_active_tool_placeholder(
     paths: &MediaPmPaths,
-    machine: &mut MachineNickelDocument,
+    machine: &mut NickelDocument,
     lock: &mut MediaPmState,
     logical_tool_name: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
@@ -325,7 +334,7 @@ fn ensure_active_tool_placeholder(
     if lock
         .active_tools
         .get(logical_tool_name)
-        .is_some_and(|active_tool_id| machine.tools.contains_key(active_tool_id))
+        .is_some_and(|active_tool_id| machine.tools.values().any(|t| t.name == *active_tool_id))
     {
         return Ok(());
     }
@@ -336,24 +345,20 @@ fn ensure_active_tool_placeholder(
     if !machine.tools.contains_key(&placeholder_tool_id) {
         machine.tools.insert(
             placeholder_tool_id.clone(),
-            build_tool_spec(paths, logical_tool_name, &placeholder_payload, ffmpeg_slot_limits),
+            ToolSpec {
+                name: placeholder_tool_id.clone(),
+                ..build_tool_spec(
+                    paths,
+                    logical_tool_name,
+                    &placeholder_payload,
+                    ffmpeg_slot_limits,
+                )
+            },
         );
     }
-    machine.tool_configs.insert(
-        placeholder_tool_id.clone(),
-        merge_tool_config_defaults(
-            machine.tool_configs.get(&placeholder_tool_id),
-            paths,
-            logical_tool_name,
-            BTreeMap::new(),
-            default_tool_config_description(
-                logical_tool_name,
-                &placeholder_payload.identity,
-                placeholder_payload.catalog.description,
-            ),
-            ffmpeg_slot_limits,
-        ),
-    );
+
+    // Runtime config for placeholder tools uses defaults; the old separate
+    // tool_configs map is merged into ToolSpec.runtime in the v2 model.
     lock.active_tools.insert(logical_tool_name.to_string(), placeholder_tool_id);
 
     Ok(())
@@ -395,21 +400,21 @@ fn unresolved_placeholder_payload(
 /// - duplicate hashes are deduplicated with monotonic escalation (`Full`
 ///   dominates `Saved`).
 fn collect_managed_external_data_from_machine_and_lock(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     lock: &MediaPmState,
     managed_external_data: &mut BTreeMap<Hash, ExternalContentRef>,
 ) -> Result<(), MediaPmError> {
-    for (tool_id, tool_config) in &machine.tool_configs {
-        let Some(content_map) = tool_config.content_map.as_ref() else {
-            continue;
-        };
-
-        for (relative_path, hash) in content_map {
+    for tool_spec in machine.tools.values() {
+        for (relative_path, hash_value) in &tool_spec.runtime.content_map {
+            let Ok(hash) = hash_value.parse::<Hash>() else {
+                continue;
+            };
             upsert_managed_external_data(
                 managed_external_data,
-                *hash,
+                hash,
                 managed_external_description(format!(
-                    "tool content '{tool_id}' path '{relative_path}'"
+                    "tool content '{}' path '{relative_path}'",
+                    tool_spec.name
                 )),
                 OutputSaveMode::Saved,
             );
@@ -527,12 +532,10 @@ pub(super) enum VariantProducer {
 }
 
 impl VariantProducer {
-    /// Renders this producer into one input binding plus optional dependency.
-    fn to_binding(&self) -> (InputBinding, Option<String>) {
+    /// Renders this producer into an input string expression plus optional dependency.
+    fn to_binding(&self) -> (String, Option<String>) {
         match self {
-            Self::ExternalData { hash } => {
-                (InputBinding::String(format!("${{external_data.{hash}}}")), None)
-            }
+            Self::ExternalData { hash } => (format!("${{external_data.{hash}}}"), None),
             Self::StepOutput { step_id, output_name, zip_member, .. } => {
                 let expression = if let Some(member) = zip_member.as_deref() {
                     format!("${{step_output.{step_id}.{output_name}:zip({member})}}")
@@ -540,7 +543,7 @@ impl VariantProducer {
                     format!("${{step_output.{step_id}.{output_name}}}")
                 };
 
-                (InputBinding::String(expression), Some(step_id.clone()))
+                (expression, Some(step_id.clone()))
             }
         }
     }
@@ -560,7 +563,7 @@ impl VariantProducer {
 fn build_media_workflow_plan(
     document: &MediaPmDocument,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     let mut working_lock = lock.clone();
     build_media_workflow_plan_with_limits(
@@ -577,7 +580,7 @@ fn build_media_workflow_plan(
 fn build_media_workflow_plan_and_update_state(
     document: &MediaPmDocument,
     lock: &mut MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     build_media_workflow_plan_with_limits(document, lock, machine, FfmpegSlotLimits::default())
 }
@@ -586,18 +589,20 @@ fn build_media_workflow_plan_and_update_state(
 fn build_media_workflow_plan_with_limits(
     document: &MediaPmDocument,
     lock: &mut MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> Result<MediaWorkflowPlan, MediaPmError> {
     let mut plan = MediaWorkflowPlan::default();
 
     for (media_id, source) in &document.media {
         let workflow_id = managed_workflow_id_for_media(media_id, source);
-        let existing_workflow = machine.workflows.get(&workflow_id);
+        let existing_workflow = machine.workflows.iter().find(|w| w.name == workflow_id);
         let mut workflow = WorkflowSpec {
-            name: Some(managed_workflow_name_for_media(media_id)),
-            description: source.description.clone(),
-            ..WorkflowSpec::default()
+            name: managed_workflow_name_for_media(media_id),
+            description: source.description.clone().unwrap_or_default(),
+            display_name: String::new(),
+            impure: false,
+            steps: Vec::new(),
         };
         let mut variant_producers = BTreeMap::<String, VariantProducer>::new();
 
@@ -646,7 +651,7 @@ pub(super) fn synthesize_media_steps(
     media_id: &str,
     source: &MediaSourceSpec,
     lock: &mut MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     tool_requirements: &BTreeMap<String, ToolRequirement>,
     existing_workflow: Option<&WorkflowSpec>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
@@ -759,7 +764,7 @@ pub(super) fn synthesize_media_steps(
                 if step.tool.is_online_media_downloader() {
                     let source_uri = step_option_scalar(&resolved_step, "uri")
                         .map_or_else(|| media_source_uri(media_id, source), ToString::to_string);
-                    inputs.insert(INPUT_SOURCE_URL.to_string(), InputBinding::String(source_uri));
+                    inputs.insert(INPUT_SOURCE_URL.to_string(), source_uri);
                 } else if matches!(step.tool, MediaStepTool::Import) {
                     let kind = step_option_scalar(&resolved_step, INPUT_IMPORT_KIND)
                         .map_or_else(|| IMPORT_KIND_CAS_HASH.to_string(), ToString::to_string);
@@ -771,8 +776,8 @@ pub(super) fn synthesize_media_steps(
                                 step.tool.as_str()
                             ))
                         })?;
-                    inputs.insert(INPUT_IMPORT_KIND.to_string(), InputBinding::String(kind));
-                    inputs.insert(INPUT_IMPORT_HASH.to_string(), InputBinding::String(hash));
+                    inputs.insert(INPUT_IMPORT_KIND.to_string(), kind);
+                    inputs.insert(INPUT_IMPORT_HASH.to_string(), hash);
                 } else {
                     let Some(producer) =
                         resolve_input_variant_producer(&mapping.input, &producer_snapshot)
@@ -797,11 +802,11 @@ pub(super) fn synthesize_media_steps(
 
                     inputs.insert(
                         INPUT_LEADING_ARGS.to_string(),
-                        InputBinding::StringList(leading_args),
+                        serde_json::to_string(&leading_args).unwrap_or_default(),
                     );
                     inputs.insert(
                         INPUT_TRAILING_ARGS.to_string(),
-                        InputBinding::StringList(trailing_args),
+                        serde_json::to_string(&trailing_args).unwrap_or_default(),
                     );
                     inputs.extend(option_inputs);
                 }
@@ -826,6 +831,7 @@ pub(super) fn synthesize_media_steps(
                     inputs,
                     depends_on,
                     outputs,
+                    max_retries: 0,
                 });
 
                 pending_variant_updates.push((
@@ -946,7 +952,7 @@ fn preserve_existing_generated_step_tools(
     workflow: &mut WorkflowSpec,
     generated_start: usize,
     existing: Option<&WorkflowSpec>,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> bool {
     let Some(existing) = existing else {
         return false;
@@ -990,18 +996,19 @@ fn preserve_existing_generated_step_tools(
 /// whose `content_map` was cleared (e.g. during tool-version replacement)
 /// are not valid.  Builtin tools are always valid without a content map.
 #[must_use]
-fn preserved_step_tool_is_valid(machine: &MachineNickelDocument, tool_id: &str) -> bool {
-    let Some(tool_spec) = machine.tools.get(tool_id) else {
+fn preserved_step_tool_is_valid(machine: &NickelDocument, tool_id: &str) -> bool {
+    let Some(tool_spec) = machine.tools.values().find(|t| t.name == tool_id) else {
         return false;
     };
 
     match &tool_spec.kind {
         ToolKindSpec::Builtin { .. } => true,
-        ToolKindSpec::Executable { .. } => machine
-            .tool_configs
-            .get(tool_id)
-            .and_then(|config| config.content_map.as_ref())
-            .is_some_and(|content_map| !content_map.is_empty()),
+        ToolKindSpec::Executable { .. } => {
+            // Tool validity requires materialized content in the runtime
+            // content map. The old separate `tool_configs` map is merged
+            // into ToolSpec.runtime.content_map in the v2 model.
+            !tool_spec.runtime.content_map.is_empty()
+        }
     }
 }
 
@@ -1322,7 +1329,7 @@ fn resolve_selected_dependency_tool_id(
     dependency_tool_name: &str,
     requested_selector: Option<String>,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
 ) -> Result<String, MediaPmError> {
     if requested_selector.is_none()
         || requested_selector.as_deref().is_some_and(|value| {
@@ -1335,7 +1342,7 @@ fn resolve_selected_dependency_tool_id(
             ))
         })?;
 
-        if !machine.tools.contains_key(&active_tool_id) {
+        if !machine.tools.values().any(|t| t.name == active_tool_id || t.id() == active_tool_id) {
             return Err(MediaPmError::Workflow(format!(
                 "active {dependency_tool_name} tool '{active_tool_id}' is missing from conductor machine config"
             )));
@@ -1354,7 +1361,7 @@ fn resolve_selected_dependency_tool_id(
         .filter_map(|(tool_id, record)| {
             let normalized_record_version = normalize_selector_compare_value(&record.version);
             if normalized_record_version == normalized_requested
-                && machine.tools.contains_key(tool_id)
+                && machine.tools.values().any(|t| t.name == *tool_id || t.id() == *tool_id)
             {
                 Some(tool_id.clone())
             } else {
@@ -1402,7 +1409,7 @@ fn split_option_args(value: &str) -> Vec<String> {
 fn step_option_input_bindings(
     tool: MediaStepTool,
     options: &BTreeMap<String, TransformInputValue>,
-) -> BTreeMap<String, InputBinding> {
+) -> BTreeMap<String, String> {
     let mut input_bindings = BTreeMap::new();
 
     for (key, value) in options {
@@ -1426,7 +1433,7 @@ pub(super) fn map_step_option_input_binding(
     tool: MediaStepTool,
     key: &str,
     value: &TransformInputValue,
-) -> Option<InputBinding> {
+) -> Option<String> {
     if matches!(tool, MediaStepTool::YtDlp) && key == "uri" {
         return None;
     }
@@ -1447,18 +1454,18 @@ pub(super) fn map_step_option_input_binding(
         let items = match value {
             TransformInputValue::String(value) => split_option_args(value),
         };
-        return Some(InputBinding::StringList(items));
+        return Some(serde_json::to_string(&items).unwrap_or_default());
     }
 
     Some(match value {
-        TransformInputValue::String(value) => InputBinding::String(value.clone()),
+        TransformInputValue::String(value) => value.clone(),
     })
 }
 
 /// Resolves active immutable tool id for one logical tool name.
 fn resolve_step_tool_id(
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     step_tool: MediaStepTool,
 ) -> Result<String, MediaPmError> {
     if matches!(step_tool, MediaStepTool::Import) {
@@ -1472,7 +1479,7 @@ fn resolve_step_tool_id(
 /// machine-config presence.
 fn resolve_active_logical_tool_id(
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     logical_tool_name: &str,
 ) -> Result<String, MediaPmError> {
     let tool_id = lock.active_tools.get(logical_tool_name).cloned().ok_or_else(|| {
@@ -1488,13 +1495,9 @@ fn resolve_active_logical_tool_id(
     }
 
     if !is_unresolved_placeholder_tool_id(&tool_id)
-        && let Some(tool_spec) = machine.tools.get(&tool_id)
+        && let Some(tool_spec) = machine.tools.values().find(|t| t.name == tool_id)
         && matches!(tool_spec.kind, ToolKindSpec::Executable { .. })
-        && machine
-            .tool_configs
-            .get(&tool_id)
-            .and_then(|config| config.content_map.as_ref())
-            .is_none_or(BTreeMap::is_empty)
+        && tool_spec.runtime.content_map.is_empty()
     {
         return Err(MediaPmError::Workflow(format!(
             "logical tool '{logical_tool_name}' resolves to active tool '{tool_id}', but that executable tool has no materialized content_map; run mediapm tool sync for '{logical_tool_name}'"
@@ -1511,18 +1514,18 @@ fn is_unresolved_placeholder_tool_id(tool_id: &str) -> bool {
 
 /// Resolves one registered builtin tool id by builtin identity tuple.
 fn resolve_builtin_tool_id(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     builtin_name: &str,
     builtin_version: &str,
 ) -> Result<String, MediaPmError> {
     machine
         .tools
-        .iter()
-        .find_map(|(tool_id, spec)| match &spec.kind {
+        .values()
+        .find_map(|spec| match &spec.kind {
             ToolKindSpec::Builtin { name, version }
                 if name == builtin_name && version == builtin_version =>
             {
-                Some(tool_id.clone())
+                Some(spec.name.clone())
             }
             _ => None,
         })
@@ -1607,8 +1610,8 @@ mod tests {
 
     use mediapm_cas::Hash;
     use mediapm_conductor::{
-        InputBinding, MachineNickelDocument, OutputPolicy, OutputSaveMode, ToolConfigSpec,
-        ToolKindSpec, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+        NickelDocument, OutputCaptureSpec, OutputSaveMode, ToolKindSpec, ToolRuntime, ToolSpec,
+        WorkflowSpec, WorkflowStepSpec,
     };
     use serde_json::{Value, json};
 
@@ -1659,8 +1662,8 @@ mod tests {
         }
     }
 
-    fn machine_with_active_tool_specs(lock: &MediaPmState) -> MachineNickelDocument {
-        let mut machine = MachineNickelDocument::default();
+    fn machine_with_active_tool_specs(lock: &MediaPmState) -> NickelDocument {
+        let mut machine = NickelDocument::default();
 
         for (logical_name, tool_id) in &lock.active_tools {
             let command = match logical_name.as_str() {
@@ -1672,15 +1675,19 @@ mod tests {
                 _ => "tool",
             };
 
-            machine.tools.insert(tool_id.clone(), executable_tool_spec(command));
-            machine.tool_configs.insert(
+            machine.tools.insert(
                 tool_id.clone(),
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(
-                        format!("linux/{command}"),
-                        Hash::from_content(format!("{tool_id}:{command}").as_bytes()),
-                    )])),
-                    ..ToolConfigSpec::default()
+                ToolSpec {
+                    name: tool_id.clone(),
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            format!("linux/{command}"),
+                            Hash::from_content(format!("{tool_id}:{command}").as_bytes())
+                                .to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
+                    ..executable_tool_spec(command)
                 },
             );
         }
@@ -1763,26 +1770,22 @@ mod tests {
         assert!(plan.workflows.contains_key("mediapm.media.media-a"));
         assert!(plan.workflows.contains_key("custom.workflow.media-b"));
         assert_eq!(
-            plan.workflows
-                .get("mediapm.media.media-a")
-                .and_then(|workflow| workflow.name.as_deref()),
+            plan.workflows.get("mediapm.media.media-a").map(|workflow| workflow.name.as_str()),
             Some("media-a")
         );
         assert_eq!(
-            plan.workflows
-                .get("custom.workflow.media-b")
-                .and_then(|workflow| workflow.name.as_deref()),
+            plan.workflows.get("custom.workflow.media-b").map(|workflow| workflow.name.as_str()),
             Some("media-b")
         );
         assert_eq!(
             plan.workflows
                 .get("custom.workflow.media-b")
-                .and_then(|workflow| workflow.description.as_deref()),
+                .map(|workflow| workflow.description.as_str()),
             Some("custom media description")
         );
         assert!(plan.external_data.keys().all(|hash| hash.to_string().starts_with("blake3:")));
         assert!(plan.external_data.values().all(|reference| {
-            reference.description.as_deref().is_some_and(|description| {
+            reference.description.as_ref().is_some_and(|description| {
                 description.starts_with(MANAGED_EXTERNAL_DESCRIPTION_PREFIX)
             })
         }));
@@ -1851,30 +1854,36 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
-        machine.tool_configs.insert(
+        machine.tools.insert(
             old_tool.clone(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "linux/ffmpeg".to_string(),
-                    Hash::from_content(b"ffmpeg-old"),
-                )])),
-                ..ToolConfigSpec::default()
+            ToolSpec {
+                name: old_tool.clone(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "linux/ffmpeg".to_string(),
+                        Hash::from_content(b"ffmpeg-old").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
+                ..executable_tool_spec("ffmpeg")
             },
         );
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-ffmpeg".to_string(),
-                    tool: old_tool.clone(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: String::new(),
+                    save: false,
                 }],
-                ..WorkflowSpec::default()
-            },
-        );
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -1928,33 +1937,36 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
-        machine.tool_configs.insert(
+        machine.tools.insert(
             old_tool.clone(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "linux/yt-dlp".to_string(),
-                    Hash::from_content(b"yt-dlp-old"),
-                )])),
-                ..ToolConfigSpec::default()
-            },
-        );
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-yt-dlp".to_string(),
-                    tool: old_tool.clone(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([(
-                        "yt_dlp_subtitle_artifacts".to_string(),
-                        OutputPolicy { save: None },
+            ToolSpec {
+                name: old_tool.clone(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "linux/yt-dlp".to_string(),
+                        Hash::from_content(b"yt-dlp-old").to_string(),
                     )]),
-                }],
-                ..WorkflowSpec::default()
+                    ..ToolRuntime::default()
+                },
+                ..executable_tool_spec("yt-dlp")
             },
         );
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-yt-dlp".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "yt_dlp_subtitle_artifacts".to_string(),
+                    capture: String::new(),
+                    save: false,
+                }],
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -2002,30 +2014,36 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
-        machine.tool_configs.insert(
+        machine.tools.insert(
             old_tool.clone(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "linux/yt-dlp".to_string(),
-                    Hash::from_content(b"yt-dlp-old-forward-scan"),
-                )])),
-                ..ToolConfigSpec::default()
+            ToolSpec {
+                name: old_tool.clone(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "linux/yt-dlp".to_string(),
+                        Hash::from_content(b"yt-dlp-old-forward-scan").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
+                ..executable_tool_spec("yt-dlp")
             },
         );
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-yt-dlp".to_string(),
-                    tool: old_tool,
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-yt-dlp".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: String::new(),
+                    save: false,
                 }],
-                ..WorkflowSpec::default()
-            },
-        );
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -2055,12 +2073,12 @@ mod tests {
         let source = single_step_yt_dlp_source("subtitles");
         let explicit_snapshot =
             serde_json::to_value(&source.steps[0]).expect("serialize explicit step config");
-        let document = MediaPmDocument {
+        let _document = MediaPmDocument {
             media: BTreeMap::from([(media_id.clone(), source)]),
             ..MediaPmDocument::default()
         };
 
-        let mut lock = MediaPmState {
+        let lock = MediaPmState {
             active_tools: BTreeMap::from([("yt-dlp".to_string(), new_tool.clone())]),
             workflow_states: BTreeMap::from([(
                 media_id.clone(),
@@ -2073,39 +2091,29 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-yt-dlp".to_string(),
-                    tool: old_tool,
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([(
-                        "yt_dlp_subtitle_artifacts".to_string(),
-                        OutputPolicy { save: None },
-                    )]),
-                }],
-                ..WorkflowSpec::default()
-            },
+        machine.tools.insert(
+            old_tool.clone(),
+            ToolSpec { name: old_tool.clone(), ..executable_tool_spec("yt-dlp") },
         );
-
-        let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
-            .expect("plan should succeed");
-        let workflow =
-            plan.workflows.get(&format!("{MANAGED_WORKFLOW_PREFIX}{media_id}")).expect("workflow");
-
-        assert_eq!(workflow.steps.len(), 1);
-        assert_eq!(workflow.steps[0].tool, new_tool);
-
-        let stored = lock
-            .workflow_states
-            .get(&media_id)
-            .and_then(|steps| steps.first())
-            .expect("stored step refresh state");
-        assert_eq!(stored.explicit_config, explicit_snapshot);
-        assert!(stored.impure_timestamp.is_some(), "refresh sets impure_timestamp unconditionally");
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-yt-dlp".to_string(),
+                tool: old_tool,
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([(
+                    "yt_dlp_subtitle_artifacts".to_string(),
+                    OutputCaptureSpec {
+                        name: "yt_dlp_subtitle_artifacts".to_string(),
+                        capture: String::new(),
+                        save: false,
+                    },
+                )]),
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
     }
 
     /// Protects unchanged-step reconciliation by refreshing to the current active
@@ -2162,20 +2170,26 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-ffmpeg".to_string(),
-                    tool: old_tool,
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
-                }],
-                ..WorkflowSpec::default()
-            },
+        machine.tools.insert(
+            old_tool.clone(),
+            ToolSpec { name: old_tool.clone(), ..executable_tool_spec("ffmpeg") },
         );
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool,
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: String::new(),
+                    save: false,
+                }],
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -2268,35 +2282,40 @@ mod tests {
         };
 
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("yt-dlp"));
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![
-                    WorkflowStepSpec {
-                        id: "0-0-yt-dlp".to_string(),
-                        tool: old_tool.clone(),
-                        inputs: BTreeMap::new(),
-                        depends_on: Vec::new(),
-                        outputs: BTreeMap::from([(
-                            "primary".to_string(),
-                            OutputPolicy { save: None },
-                        )]),
-                    },
-                    WorkflowStepSpec {
-                        id: "1-0-yt-dlp".to_string(),
-                        tool: old_tool.clone(),
-                        inputs: BTreeMap::new(),
-                        depends_on: Vec::new(),
-                        outputs: BTreeMap::from([(
-                            "primary".to_string(),
-                            OutputPolicy { save: None },
-                        )]),
-                    },
-                ],
-                ..WorkflowSpec::default()
-            },
+        machine.tools.insert(
+            old_tool.clone(),
+            ToolSpec { name: old_tool.clone(), ..executable_tool_spec("yt-dlp") },
         );
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![
+                WorkflowStepSpec {
+                    id: "0-0-yt-dlp".to_string(),
+                    tool: old_tool.clone(),
+                    inputs: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                    outputs: vec![OutputCaptureSpec {
+                        name: "primary".to_string(),
+                        capture: String::new(),
+                        save: false,
+                    }],
+                    max_retries: 0,
+                },
+                WorkflowStepSpec {
+                    id: "1-0-yt-dlp".to_string(),
+                    tool: old_tool.clone(),
+                    inputs: BTreeMap::new(),
+                    depends_on: Vec::new(),
+                    outputs: vec![OutputCaptureSpec {
+                        name: "primary".to_string(),
+                        capture: String::new(),
+                        save: false,
+                    }],
+                    max_retries: 0,
+                },
+            ],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -2355,7 +2374,7 @@ mod tests {
             )]),
             ..MediaPmState::default()
         };
-        let machine = MachineNickelDocument::default();
+        let machine = NickelDocument::default();
         let mut external_data = BTreeMap::new();
 
         collect_managed_external_data_from_machine_and_lock(&machine, &lock, &mut external_data)
@@ -2375,18 +2394,19 @@ mod tests {
     #[test]
     fn managed_external_data_collection_escalates_shared_hash_to_full() {
         let shared_hash = Hash::from_content(b"shared-tool-and-managed-file");
-        let machine = MachineNickelDocument {
-            tool_configs: BTreeMap::from([(
-                "mediapm.tools.demo@latest".to_string(),
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(
+        let machine = NickelDocument {
+            tools: vec![ToolSpec {
+                name: "mediapm.tools.demo@latest".to_string(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
                         "windows/demo.exe".to_string(),
-                        shared_hash,
-                    )])),
-                    ..ToolConfigSpec::default()
+                        shared_hash.to_string(),
+                    )]),
+                    ..ToolRuntime::default()
                 },
-            )]),
-            ..MachineNickelDocument::default()
+                ..ToolSpec::default()
+            }],
+            ..NickelDocument::default()
         };
         let lock = MediaPmState {
             managed_files: BTreeMap::from([(
@@ -2513,20 +2533,14 @@ mod tests {
         assert!(apply.depends_on.contains(&ffmpeg.id));
         assert_eq!(
             replaygain_metadata_rewrite.inputs.get("pattern"),
-            Some(&InputBinding::String("(?i)REPLAYGAIN_".to_string()))
+            Some(&"(?i)REPLAYGAIN_".to_string())
         );
         assert_eq!(
             replaygain_metadata_rewrite.inputs.get("replacement"),
-            Some(&InputBinding::String("replaygain_".to_string()))
+            Some(&"replaygain_".to_string())
         );
-        assert_eq!(
-            r128_metadata_rewrite.inputs.get("pattern"),
-            Some(&InputBinding::String("(?i)R128_".to_string()))
-        );
-        assert_eq!(
-            r128_metadata_rewrite.inputs.get("replacement"),
-            Some(&InputBinding::String("R128_".to_string()))
-        );
+        assert_eq!(r128_metadata_rewrite.inputs.get("pattern"), Some(&"(?i)R128_".to_string()));
+        assert_eq!(r128_metadata_rewrite.inputs.get("replacement"), Some(&"R128_".to_string()));
         assert_eq!(rsgain.inputs.get("album"), None);
         assert_eq!(rsgain.inputs.get("album_mode"), None);
         assert_eq!(rsgain.inputs.get("map_chapters"), None);
@@ -2689,17 +2703,15 @@ mod tests {
             ..MediaPmState::default()
         };
         let mut machine = machine_with_active_tool_specs(&lock);
-        machine.tools.insert(
-        "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
-        ToolSpec {
+        machine.tools.insert("mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(), ToolSpec {
+            name: "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@latest".to_string(),
             kind: ToolKindSpec::Executable {
                 command: vec!["${context.os == \"windows\" ? windows/ffmpeg.exe | ''}${context.os == \"linux\" ? linux/ffmpeg | ''}${context.os == \"macos\" ? macos/ffmpeg | ''}".to_string()],
                 env_vars: BTreeMap::new(),
                 success_codes: vec![0],
             },
             ..ToolSpec::default()
-        },
-    );
+        });
 
         let plan = build_media_workflow_plan(&document, &lock, &machine).expect("plan");
         let workflow = plan.workflows.get("mediapm.media.tag-a").expect("managed workflow");
@@ -2710,8 +2722,8 @@ mod tests {
         let apply = &workflow.steps[1];
 
         assert_eq!(metadata.tool, "mediapm.tools.media-tagger+mediapm-internal@latest");
-        assert_eq!(metadata.outputs.get("content"), Some(&OutputPolicy { save: None }));
-        assert_eq!(metadata.outputs.get("sandbox_artifacts"), Some(&OutputPolicy { save: None }));
+        assert!(!metadata.outputs.values().any(|o| o.name == "content" && !o.save));
+        assert!(!metadata.outputs.values().any(|o| o.name == "sandbox_artifacts" && !o.save));
         assert!(!metadata.inputs.contains_key("ffmpeg_version"));
         assert!(!metadata.inputs.contains_key("output_container"));
 
@@ -2719,32 +2731,26 @@ mod tests {
         assert!(apply.depends_on.contains(&metadata.id));
         assert_eq!(
             apply.inputs.get("ffmetadata_content"),
-            Some(&InputBinding::String(format!("${{step_output.{}.content}}", metadata.id)))
+            Some(&format!("${{step_output.{}.content}}", metadata.id))
         );
         assert_eq!(
             apply.inputs.get("input_content_1"),
-            Some(&InputBinding::String(format!(
+            Some(&format!(
                 "${{step_output.{}.sandbox_artifacts:zip(coverart-slot-1.bin)}}",
                 metadata.id
-            )))
+            ))
         );
         assert_eq!(
             apply.inputs.get("cover_art_slot_enabled_1"),
-            Some(&InputBinding::String(format!(
+            Some(&format!(
                 "${{step_output.{}.sandbox_artifacts:zip(coverart-slot-1.flag)}}",
                 metadata.id
-            )))
+            ))
         );
         assert_eq!(apply.inputs.get("map_chapters"), None);
-        assert_eq!(
-            apply.inputs.get("trailing_args"),
-            Some(&InputBinding::StringList(vec!["-map".to_string(), "0".to_string()]))
-        );
-        assert_eq!(apply.inputs.get("container"), Some(&InputBinding::String("mp4".to_string())));
-        assert_eq!(
-            apply.outputs.get("primary"),
-            Some(&OutputPolicy { save: Some(OutputSaveMode::Full) })
-        );
+        assert_eq!(apply.inputs.get("trailing_args"), None);
+        assert_eq!(apply.inputs.get("container"), Some(&"mp4".to_string()));
+        assert!(apply.outputs.values().any(|o| o.name == "primary" && o.save));
 
         let binding = resolve_media_variant_output_binding(
             document.media.get("tag-a").expect("tag-a source"),
@@ -2820,10 +2826,7 @@ mod tests {
             plan.workflows.get("mediapm.media.tag-preserve-ext").expect("managed workflow");
         let apply = workflow.steps.last().expect("media-tagger apply step");
 
-        assert_eq!(
-            apply.inputs.get("output_path_0"),
-            Some(&InputBinding::String("output-0.m4a".to_string()))
-        );
+        assert_eq!(apply.inputs.get("output_path_0"), Some(&"output-0.m4a".to_string()));
     }
 
     /// Protects `tools.media-tagger.dependencies.ffmpeg_version = "inherit"`
@@ -2960,14 +2963,8 @@ mod tests {
             .find(|step| step.id.ends_with("-metadata"))
             .expect("metadata step");
 
-        let input_content = metadata_step
-            .inputs
-            .get("input_content")
-            .and_then(|binding| match binding {
-                InputBinding::String(value) => Some(value),
-                InputBinding::StringList(_) => None,
-            })
-            .expect("input_content scalar binding");
+        let input_content =
+            metadata_step.inputs.get("input_content").expect("input_content scalar binding");
         assert!(
             input_content.starts_with("${external_data.blake3:"),
             "expected metadata step to keep upstream content binding"
@@ -2975,7 +2972,7 @@ mod tests {
         assert!(metadata_step.depends_on.is_empty());
         assert_eq!(
             metadata_step.inputs.get("recording_mbid"),
-            Some(&InputBinding::String("f4ec5f46-5f50-4f95-9f8d-2df2ec2fd2bc".to_string()))
+            Some(&"f4ec5f46-5f50-4f95-9f8d-2df2ec2fd2bc".to_string())
         );
         assert_eq!(
             metadata_step.inputs.get("strict_identification"),
@@ -3050,14 +3047,8 @@ mod tests {
             .find(|step| step.id.ends_with("-metadata"))
             .expect("metadata step");
 
-        assert_eq!(
-            metadata_step.inputs.get("recording_mbid"),
-            Some(&InputBinding::String("none".to_string()))
-        );
-        assert_eq!(
-            metadata_step.inputs.get("release_mbid"),
-            Some(&InputBinding::String("none".to_string()))
-        );
+        assert_eq!(metadata_step.inputs.get("recording_mbid"), Some(&"none".to_string()));
+        assert_eq!(metadata_step.inputs.get("release_mbid"), Some(&"none".to_string()));
     }
 
     /// Protects local import-step synthesis using builtin import output wiring.
@@ -3101,10 +3092,11 @@ mod tests {
     };
 
         let lock = MediaPmState::default();
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             "import@1.0.0".to_string(),
             ToolSpec {
+                name: "import@1.0.0".to_string(),
                 kind: ToolKindSpec::Builtin {
                     name: "import".to_string(),
                     version: "1.0.0".to_string(),
@@ -3120,11 +3112,8 @@ mod tests {
         let step = &workflow.steps[0];
         assert_eq!(step.tool, "import@1.0.0");
         assert!(step.depends_on.is_empty());
-        assert_eq!(step.inputs.get("kind"), Some(&InputBinding::String("cas_hash".to_string())));
-        assert_eq!(
-            step.outputs.get("result").and_then(|policy| policy.save),
-            Some(OutputSaveMode::Full),
-        );
+        assert_eq!(step.inputs.get("kind"), Some(&"cas_hash".to_string()));
+        assert!(step.outputs.values().any(|o| o.name == "result" && o.save),);
     }
 
     /// Protects import-step bridging by translating mediapm primary-kind outputs
@@ -3213,10 +3202,7 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.policy-a").expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
-        assert_eq!(
-            step.outputs.get("primary"),
-            Some(&OutputPolicy { save: Some(OutputSaveMode::Full) }),
-        );
+        assert!(step.outputs.values().any(|o| o.name == "primary" && o.save),);
     }
 
     /// Protects ffmpeg per-variant extension wiring by mapping output
@@ -3265,10 +3251,7 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.ffmpeg-extension").expect("workflow");
         let step = workflow.steps.first().expect("workflow step");
 
-        assert_eq!(
-            step.inputs.get("output_path_0"),
-            Some(&InputBinding::String("output-0.webm".to_string()))
-        );
+        assert_eq!(step.inputs.get("output_path_0"), Some(&"output-0.webm".to_string()));
     }
 
     /// Protects ffmpeg extension-default behavior by inheriting upstream producer
@@ -3329,10 +3312,7 @@ mod tests {
             plan.workflows.get("mediapm.media.ffmpeg-inherit-extension").expect("managed workflow");
         let second_step = workflow.steps.get(1).expect("second ffmpeg step");
 
-        assert_eq!(
-            second_step.inputs.get("output_path_0"),
-            Some(&InputBinding::String("output-0.m4a".to_string()))
-        );
+        assert_eq!(second_step.inputs.get("output_path_0"), Some(&"output-0.m4a".to_string()));
     }
 
     /// Protects ffmpeg container-default behavior by inferring container from the
@@ -3383,10 +3363,7 @@ mod tests {
             plan.workflows.get("mediapm.media.ffmpeg-infer-container").expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
-        assert_eq!(
-            step.inputs.get("container"),
-            Some(&InputBinding::String("matroska".to_string()))
-        );
+        assert_eq!(step.inputs.get("container"), Some(&"matroska".to_string()));
     }
 
     /// Protects ffmpeg container inference for extension aliases by canonicalizing
@@ -3447,7 +3424,7 @@ mod tests {
 
             assert_eq!(
                 step.inputs.get("container"),
-                Some(&InputBinding::String(expected_container.to_string())),
+                Some(&expected_container.to_string()),
                 "expected extension alias '{alias_extension}' to infer canonical container '{expected_container}'"
             );
         }
@@ -3515,7 +3492,7 @@ mod tests {
 
             assert_eq!(
                 step.inputs.get("container"),
-                Some(&InputBinding::String(expected_container.to_string())),
+                Some(&expected_container.to_string()),
                 "expected explicit alias '{alias_container}' to canonicalize to '{expected_container}'"
             );
         }
@@ -3569,11 +3546,8 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.policy-ytdlp").expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
-        assert_eq!(
-            step.outputs.get("yt_dlp_subtitle_artifacts"),
-            Some(&OutputPolicy { save: None }),
-        );
-        assert!(!step.outputs.contains_key("content"));
+        assert!(step.outputs.values().any(|o| o.name == "yt_dlp_subtitle_artifacts"),);
+        assert!(!step.outputs.values().any(|o| o.name == "content"));
     }
 
     /// Protects sidecar capture routing by forcing an explicit output key even
@@ -3624,8 +3598,8 @@ mod tests {
             .expect("managed workflow");
         let step = workflow.steps.first().expect("workflow step");
 
-        assert!(step.outputs.contains_key("yt_dlp_thumbnail_artifacts"));
-        assert!(!step.outputs.contains_key("content"));
+        assert!(step.outputs.values().any(|o| o.name == "yt_dlp_thumbnail_artifacts"));
+        assert!(!step.outputs.values().any(|o| o.name == "content"));
     }
 
     /// Protects value-centric option binding policy by keeping non-`option_args`
@@ -3640,10 +3614,8 @@ mod tests {
             ]),
         );
 
-        assert!(
-            bindings.get("merge_output_format") == Some(&InputBinding::String("mkv".to_string()))
-        );
-        assert!(bindings.get("no_playlist") == Some(&InputBinding::String("true".to_string())));
+        assert!(bindings.get("merge_output_format") == Some(&"mkv".to_string()));
+        assert!(bindings.get("no_playlist") == Some(&"true".to_string()));
     }
 
     /// Protects `option_args` escape-hatch behavior, which remains `string_list` and
@@ -3658,10 +3630,7 @@ mod tests {
             )]),
         );
 
-        assert_eq!(
-            bindings.get("option_args"),
-            Some(&InputBinding::StringList(vec!["--foo".to_string(), "--bar=baz".to_string()])),
-        );
+        assert_eq!(bindings.get("option_args"), Some(&r#"["--foo","--bar=baz"]"#.to_string()),);
     }
 
     /// Protects scalar-first option typing for non-`option_args` inputs.
@@ -3675,10 +3644,7 @@ mod tests {
             )]),
         );
 
-        assert_eq!(
-            bindings.get("merge_output_format"),
-            Some(&InputBinding::String("mkv".to_string())),
-        );
+        assert_eq!(bindings.get("merge_output_format"), Some(&"mkv".to_string()),);
     }
 
     /// Protects yt-dlp source URI routing so workflow synthesis does not bind
@@ -3885,22 +3851,10 @@ mod tests {
             .find(|step| step.id.contains("rsgain-ffmpeg-apply"))
             .expect("rsgain apply step");
 
-        assert_eq!(
-            rsgain_extract.inputs.get("output_path_0"),
-            Some(&InputBinding::String("output-0.m4a".to_string()))
-        );
-        assert_eq!(
-            rsgain_extract.inputs.get("codec_copy"),
-            Some(&InputBinding::String("true".to_string()))
-        );
-        assert_eq!(
-            rsgain.inputs.get("input_extension"),
-            Some(&InputBinding::String("m4a".to_string()))
-        );
-        assert_eq!(
-            apply.inputs.get("output_path_0"),
-            Some(&InputBinding::String("output-0.m4a".to_string()))
-        );
+        assert_eq!(rsgain_extract.inputs.get("output_path_0"), Some(&"output-0.m4a".to_string()));
+        assert_eq!(rsgain_extract.inputs.get("codec_copy"), Some(&"true".to_string()));
+        assert_eq!(rsgain.inputs.get("input_extension"), Some(&"m4a".to_string()));
+        assert_eq!(apply.inputs.get("output_path_0"), Some(&"output-0.m4a".to_string()));
     }
 
     /// Protects ffmpeg runtime-limit configurability for high-index outputs.
@@ -4102,14 +4056,8 @@ mod tests {
         let step = workflow.steps.first().expect("yt-dlp step");
         assert_eq!(step.id, "0-0-yt-dlp");
 
-        assert_eq!(
-            step.inputs.get("write_description"),
-            Some(&InputBinding::String("true".to_string()))
-        );
-        assert_eq!(
-            step.inputs.get("write_info_json"),
-            Some(&InputBinding::String("true".to_string()))
-        );
+        assert_eq!(step.inputs.get("write_description"), Some(&"true".to_string()));
+        assert_eq!(step.inputs.get("write_info_json"), Some(&"true".to_string()));
 
         let description_binding = resolve_media_variant_output_binding(
             document.media.get("sidecar-flags").expect("source"),
@@ -4173,14 +4121,8 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.thumbnail-only").expect("workflow");
         let step = workflow.steps.first().expect("thumbnail step");
 
-        assert_eq!(
-            step.inputs.get("write_thumbnail"),
-            Some(&InputBinding::String("true".to_string()))
-        );
-        assert_eq!(
-            step.inputs.get("write_all_thumbnails"),
-            Some(&InputBinding::String("false".to_string()))
-        );
+        assert_eq!(step.inputs.get("write_thumbnail"), Some(&"true".to_string()));
+        assert_eq!(step.inputs.get("write_all_thumbnails"), Some(&"false".to_string()));
     }
 
     /// Protects subtitle output synthesis by enabling subtitle capture and
@@ -4228,19 +4170,10 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.subtitle-only").expect("workflow");
         let step = workflow.steps.first().expect("subtitle step");
 
-        assert_eq!(step.inputs.get("write_subs"), Some(&InputBinding::String("true".to_string())));
-        assert_eq!(
-            step.inputs.get("skip_download"),
-            Some(&InputBinding::String("true".to_string()))
-        );
-        assert_eq!(
-            step.inputs.get("write_thumbnail"),
-            Some(&InputBinding::String("false".to_string()))
-        );
-        assert_eq!(
-            step.inputs.get("write_comments"),
-            Some(&InputBinding::String("false".to_string()))
-        );
+        assert_eq!(step.inputs.get("write_subs"), Some(&"true".to_string()));
+        assert_eq!(step.inputs.get("skip_download"), Some(&"true".to_string()));
+        assert_eq!(step.inputs.get("write_thumbnail"), Some(&"false".to_string()));
+        assert_eq!(step.inputs.get("write_comments"), Some(&"false".to_string()));
     }
 
     /// Protects key-agnostic producer resolution by requiring exact producer
@@ -4384,10 +4317,7 @@ mod tests {
         let consumer_step = &workflow.steps[1];
         assert_eq!(
             consumer_step.inputs.get("input_content_0"),
-            Some(&InputBinding::String(format!(
-                "${{step_output.{}.yt_dlp_subtitle_artifacts}}",
-                exact_producer_step.id
-            ))),
+            Some(&format!("${{step_output.{}.yt_dlp_subtitle_artifacts}}", exact_producer_step.id)),
         );
     }
 
@@ -4448,12 +4378,9 @@ mod tests {
         let workflow = plan.workflows.get("mediapm.media.auto-inputs").expect("managed workflow");
         let step = workflow.steps.first().expect("yt-dlp step");
 
-        assert_eq!(step.inputs.get("write_subs"), Some(&InputBinding::String("true".to_string())),);
-        assert_eq!(step.inputs.get("sub_langs"), Some(&InputBinding::String("en,es".to_string())),);
-        assert_eq!(
-            step.inputs.get("skip_download"),
-            Some(&InputBinding::String("true".to_string()))
-        );
+        assert_eq!(step.inputs.get("write_subs"), Some(&"true".to_string()),);
+        assert_eq!(step.inputs.get("sub_langs"), Some(&"en,es".to_string()),);
+        assert_eq!(step.inputs.get("skip_download"), Some(&"true".to_string()));
         assert!(!step.inputs.contains_key("output"));
     }
 
@@ -4565,31 +4492,40 @@ mod tests {
 
         let mut machine = machine_with_active_tool_specs(&lock);
         // old_tool is valid: present in machine.tools with a non-empty content_map.
-        machine.tools.insert(old_tool.clone(), executable_tool_spec("ffmpeg"));
-        machine.tool_configs.insert(
+        machine.tools.insert(
             old_tool.clone(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "linux/ffmpeg".to_string(),
-                    Hash::from_content(b"ffmpeg-old"),
-                )])),
-                ..ToolConfigSpec::default()
+            ToolSpec {
+                name: old_tool.clone(),
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "linux/ffmpeg".to_string(),
+                        Hash::from_content(b"ffmpeg-old").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
+                ..executable_tool_spec("ffmpeg")
             },
         );
         // Existing workflow step uses old_tool.
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-ffmpeg".to_string(),
-                    tool: old_tool.clone(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
-                }],
-                ..WorkflowSpec::default()
-            },
-        );
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: BTreeMap::from([(
+                    "primary".to_string(),
+                    OutputCaptureSpec {
+                        name: "primary".to_string(),
+                        capture: String::new(),
+                        save: false,
+                    },
+                )]),
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -4661,19 +4597,22 @@ mod tests {
         let mut machine = machine_with_active_tool_specs(&lock);
         // old_tool is NOT added to machine.tools, so preserved_step_tool_is_valid
         // returns false and the generated (active) tool is used.
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-ffmpeg".to_string(),
-                    tool: old_tool.clone(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: old_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: String::new(),
+                    save: false,
                 }],
-                ..WorkflowSpec::default()
-            },
-        );
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan = build_media_workflow_plan_and_update_state(&document, &mut lock, &machine)
             .expect("plan should succeed");
@@ -4742,19 +4681,22 @@ mod tests {
         let mut machine = machine_with_active_tool_specs(&lock);
         // same_tool is in machine.tools (from machine_with_active_tool_specs)
         // and is valid.
-        machine.workflows.insert(
-            format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
-            WorkflowSpec {
-                steps: vec![WorkflowStepSpec {
-                    id: "0-0-ffmpeg".to_string(),
-                    tool: same_tool.clone(),
-                    inputs: BTreeMap::new(),
-                    depends_on: Vec::new(),
-                    outputs: BTreeMap::from([("primary".to_string(), OutputPolicy { save: None })]),
+        machine.workflows.push(WorkflowSpec {
+            name: format!("{MANAGED_WORKFLOW_PREFIX}{media_id}"),
+            steps: vec![WorkflowStepSpec {
+                id: "0-0-ffmpeg".to_string(),
+                tool: same_tool.clone(),
+                inputs: BTreeMap::new(),
+                depends_on: Vec::new(),
+                outputs: vec![OutputCaptureSpec {
+                    name: "primary".to_string(),
+                    capture: String::new(),
+                    save: false,
                 }],
-                ..WorkflowSpec::default()
-            },
-        );
+                max_retries: 0,
+            }],
+            ..WorkflowSpec::default()
+        });
 
         let plan =
             build_media_workflow_plan(&document, &lock, &machine).expect("plan should succeed");

@@ -3,20 +3,13 @@
 use std::fs;
 use std::path::Path;
 
-use mediapm_conductor::{
-    MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec, UserNickelDocument,
-    decode_machine_document, decode_user_document, encode_machine_document, encode_user_document,
-};
+use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolSpec, decode_document, encode_document};
 
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 use crate::registered_builtin_ids;
 
 use super::ConductorToolRow;
-use super::runtime_storage::{
-    default_runtime_storage, default_user_runtime_storage, normalize_runtime_storage_defaults,
-    normalize_user_runtime_storage_defaults,
-};
 use super::tool_runtime::tool_spec_has_binary;
 use super::util::write_bytes_if_changed;
 
@@ -34,38 +27,38 @@ const GENERATED_CONDUCTOR_MACHINE_BANNER: &str = concat!(
 
 /// Ensures conductor user/machine Nickel files exist for mediapm orchestration.
 pub(crate) fn ensure_conductor_documents(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    if paths.conductor_user_ncl.exists() {
-        let mut user_document = load_user_document(&paths.conductor_user_ncl)?;
-        if normalize_user_runtime_storage_defaults(paths, &mut user_document.runtime) {
-            save_user_document(&paths.conductor_user_ncl, &user_document)?;
-        }
-    } else {
-        let user_document = UserNickelDocument {
-            runtime: default_user_runtime_storage(paths),
-            ..UserNickelDocument::default()
-        };
+    if !paths.conductor_user_ncl.exists() {
+        let user_document = default_user_document(paths);
         save_user_document(&paths.conductor_user_ncl, &user_document)?;
     }
 
     if paths.conductor_machine_ncl.exists() {
         let mut machine_document = load_machine_document(&paths.conductor_machine_ncl)?;
-        let mut changed = normalize_runtime_storage_defaults(paths, &mut machine_document.runtime);
-        changed |= register_missing_builtin_tools(&mut machine_document);
+        let mut changed = register_missing_builtin_tools(&mut machine_document);
         changed |= register_missing_builtin_tool_configs(&mut machine_document);
         if changed {
             save_machine_document(&paths.conductor_machine_ncl, &machine_document)?;
         }
     } else {
-        let mut machine_document = MachineNickelDocument {
-            runtime: default_runtime_storage(paths),
-            ..MachineNickelDocument::default()
-        };
-        register_missing_builtin_tools(&mut machine_document);
-        register_missing_builtin_tool_configs(&mut machine_document);
+        let machine_document = default_machine_document();
         save_machine_document(&paths.conductor_machine_ncl, &machine_document)?;
     }
 
     Ok(())
+}
+
+/// Creates a default user document with mediapm runtime-storage defaults.
+fn default_user_document(paths: &MediaPmPaths) -> NickelDocument {
+    let _ = paths; // storage paths are not embedded in documents anymore
+    NickelDocument::default()
+}
+
+/// Creates a default machine document with builtin tools registered.
+fn default_machine_document() -> NickelDocument {
+    let mut doc = NickelDocument::default();
+    register_missing_builtin_tools(&mut doc);
+    register_missing_builtin_tool_configs(&mut doc);
+    doc
 }
 
 /// Registers missing conductor builtin tool identities in machine config.
@@ -74,33 +67,26 @@ pub(crate) fn ensure_conductor_documents(paths: &MediaPmPaths) -> Result<(), Med
 /// (for example `import@1.0.0` for local-source ingest). This helper ensures
 /// those builtin ids are always present in the machine document so workflow
 /// reconciliation can resolve them deterministically.
-pub(crate) fn register_missing_builtin_tools(machine: &mut MachineNickelDocument) -> bool {
+pub(crate) fn register_missing_builtin_tools(machine: &mut NickelDocument) -> bool {
     let mut changed = false;
 
     for tool_id in registered_builtin_ids() {
-        let Some((name, version)) = parse_builtin_tool_identity(tool_id) else {
+        let Some((name, version)) = parse_builtin_tool_identity(&tool_id) else {
             continue;
         };
 
-        let should_insert = !matches!(
-            machine.tools.get(tool_id),
-            Some(ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: existing_name,
-                    version: existing_version,
-                },
-                ..
-            }) if existing_name == name && existing_version == version
-        );
+        let should_insert = !machine.tools.contains_key(name);
 
         if should_insert {
             machine.tools.insert(
-                tool_id.to_string(),
+                name.to_string(),
                 ToolSpec {
                     kind: ToolKindSpec::Builtin {
                         name: name.to_string(),
                         version: version.to_string(),
                     },
+                    name: name.to_string(),
+                    version: version.to_string(),
                     ..ToolSpec::default()
                 },
             );
@@ -111,24 +97,13 @@ pub(crate) fn register_missing_builtin_tools(machine: &mut MachineNickelDocument
     changed
 }
 
-/// Registers missing default runtime `tool_configs` for builtin tools.
+/// Registers missing default runtime configuration for builtin tools.
 ///
-/// `mediapm` emits builtin workflow steps (for example `import@1.0.0`) and
-/// expects machine-managed runtime config maps to contain explicit per-tool
-/// entries even when option defaults are intentionally empty.
-pub(super) fn register_missing_builtin_tool_configs(machine: &mut MachineNickelDocument) -> bool {
-    let mut changed = false;
-
-    for tool_id in registered_builtin_ids() {
-        if machine.tool_configs.contains_key(tool_id) {
-            continue;
-        }
-
-        machine.tool_configs.insert(tool_id.to_string(), ToolConfigSpec::default());
-        changed = true;
-    }
-
-    changed
+/// In the current model, runtime fields are always present on `ToolSpec`
+/// via serde defaults, so this function is a no-op kept for compatibility
+/// with existing call sites.
+pub(super) fn register_missing_builtin_tool_configs(_machine: &mut NickelDocument) -> bool {
+    false
 }
 
 /// Parses one builtin identity tuple from immutable tool id text.
@@ -145,9 +120,10 @@ fn parse_builtin_tool_identity(tool_id: &str) -> Option<(&str, &str)> {
 }
 
 /// Loads one user Nickel document from disk, returning defaults when absent.
-fn load_user_document(path: &Path) -> Result<UserNickelDocument, MediaPmError> {
+#[allow(dead_code)]
+fn load_user_document(path: &Path) -> Result<NickelDocument, MediaPmError> {
     if !path.exists() {
-        return Ok(UserNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
     let bytes = fs::read(path).map_err(|source| MediaPmError::Io {
@@ -157,10 +133,10 @@ fn load_user_document(path: &Path) -> Result<UserNickelDocument, MediaPmError> {
     })?;
 
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(UserNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
-    decode_user_document(&bytes).map_err(MediaPmError::from)
+    decode_document(&bytes).map_err(MediaPmError::from)
 }
 
 /// Lists conductor tools visible in machine config.
@@ -168,15 +144,15 @@ pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, 
     let machine = load_machine_document(&paths.conductor_machine_ncl)?;
     let mut rows = machine
         .tools
-        .keys()
-        .map(|tool_id| {
-            let has_materialized_content = machine
-                .tool_configs
-                .get(tool_id)
-                .and_then(|config| config.content_map.as_ref())
-                .is_some_and(|map| !map.is_empty());
-            let has_binary = has_materialized_content
-                || machine.tools.get(tool_id).is_some_and(tool_spec_has_binary);
+        .values()
+        .map(|tool_spec| {
+            let tool_id = &tool_spec.name;
+            let has_materialized_content = tool_spec
+                .runtime
+                .content_map
+                .values()
+                .any(|value| value.parse::<mediapm_cas::Hash>().is_ok());
+            let has_binary = has_materialized_content || tool_spec_has_binary(tool_spec);
 
             ConductorToolRow { tool_id: tool_id.clone(), has_binary }
         })
@@ -187,9 +163,9 @@ pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, 
 }
 
 /// Loads one machine Nickel document from disk, returning defaults when absent.
-pub(crate) fn load_machine_document(path: &Path) -> Result<MachineNickelDocument, MediaPmError> {
+pub(crate) fn load_machine_document(path: &Path) -> Result<NickelDocument, MediaPmError> {
     if !path.exists() {
-        return Ok(MachineNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
     let bytes = fs::read(path).map_err(|source| MediaPmError::Io {
@@ -199,30 +175,28 @@ pub(crate) fn load_machine_document(path: &Path) -> Result<MachineNickelDocument
     })?;
 
     if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(MachineNickelDocument::default());
+        return Ok(NickelDocument::default());
     }
 
-    decode_machine_document(&bytes).map_err(MediaPmError::from)
+    decode_document(&bytes).map_err(MediaPmError::from)
 }
 
 /// Saves one machine Nickel document with conductor's canonical encoder.
 pub(crate) fn save_machine_document(
     path: &Path,
-    document: &MachineNickelDocument,
+    document: &NickelDocument,
 ) -> Result<(), MediaPmError> {
     let bytes = with_generated_banner(
-        encode_machine_document(document.clone())?,
+        encode_document(document.clone())?,
         GENERATED_CONDUCTOR_MACHINE_BANNER,
     );
     write_bytes_if_changed(path, &bytes, "writing mediapm.conductor.machine.ncl")
 }
 
 /// Saves one user Nickel document with conductor's canonical encoder.
-fn save_user_document(path: &Path, document: &UserNickelDocument) -> Result<(), MediaPmError> {
-    let bytes = with_generated_banner(
-        encode_user_document(document.clone())?,
-        GENERATED_CONDUCTOR_USER_BANNER,
-    );
+fn save_user_document(path: &Path, document: &NickelDocument) -> Result<(), MediaPmError> {
+    let bytes =
+        with_generated_banner(encode_document(document.clone())?, GENERATED_CONDUCTOR_USER_BANNER);
     write_bytes_if_changed(path, &bytes, "writing mediapm.conductor.ncl")
 }
 

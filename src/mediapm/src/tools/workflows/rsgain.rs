@@ -2,15 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{
-    InputBinding, MachineNickelDocument, OutputPolicy, WorkflowSpec, WorkflowStepSpec,
-};
+use mediapm_conductor::{NickelDocument, OutputCaptureSpec, WorkflowSpec, WorkflowStepSpec};
 
 use crate::conductor_bridge::tool_runtime::SUPPORTED_RSGAIN_INPUT_EXTENSIONS;
 use crate::config::MediaPmState;
 use crate::config::{
     DecodedOutputVariantConfig, MediaStep, MediaStepTool, ResolvedStepVariantFlow, ToolRequirement,
-    decode_output_variant_config, decode_output_variant_policy,
+    decode_output_variant_config,
 };
 use crate::error::MediaPmError;
 
@@ -18,12 +16,11 @@ use super::{
     FfmpegSlotLimits, INPUT_CONTENT, INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS,
     INPUT_SD_PATTERN, INPUT_SD_REPLACEMENT, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
     RSGAIN_APPLY_STEP_OFFSET, RSGAIN_EXPANDED_STEPS_PER_MAPPING, VariantProducer,
-    conductor_output_save_mode, expanded_step_index_for_mapping, extract_step_list_args,
-    ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_path_input_name,
-    ffmpeg_output_path_with_extension, media_step_id, normalize_output_extension,
-    resolve_input_variant_producer, resolve_selected_dependency_tool_id,
-    resolve_step_output_binding, resolve_step_tool_id, resolved_ffmpeg_family_output_extension,
-    step_option_input_bindings, step_option_scalar,
+    expanded_step_index_for_mapping, extract_step_list_args, ffmpeg_input_content_name,
+    ffmpeg_output_capture_name, ffmpeg_output_path_input_name, ffmpeg_output_path_with_extension,
+    media_step_id, normalize_output_extension, resolve_input_variant_producer,
+    resolve_selected_dependency_tool_id, resolve_step_output_binding, resolve_step_tool_id,
+    resolved_ffmpeg_family_output_extension, step_option_input_bindings, step_option_scalar,
 };
 
 /// Resolves managed rsgain extraction extension.
@@ -106,7 +103,7 @@ pub(super) fn synthesize_rsgain_step_chain(
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     logical_tool_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
@@ -231,9 +228,6 @@ pub(super) fn synthesize_rsgain_step_chain(
             &mapping.output,
             ffmpeg_slot_limits,
         )?;
-        let output_policy =
-            decode_output_variant_policy(step.tool, &mapping.output, output_variant_value)
-                .map_err(MediaPmError::Workflow)?;
         let DecodedOutputVariantConfig::Generic(output_config) =
             decode_output_variant_config(step.tool, &mapping.output, output_variant_value)
                 .map_err(MediaPmError::Workflow)?
@@ -251,22 +245,15 @@ pub(super) fn synthesize_rsgain_step_chain(
         extract_inputs.insert(ffmpeg_input_content_name(0), input_binding.clone());
         extract_inputs.insert(
             ffmpeg_output_path_input_name(0),
-            InputBinding::String(ffmpeg_output_path_with_extension(
-                0,
-                Some(&rsgain_input_extension),
-            )),
+            ffmpeg_output_path_with_extension(0, Some(&rsgain_input_extension)),
         );
-        extract_inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        extract_inputs.insert(
-            INPUT_TRAILING_ARGS.to_string(),
-            InputBinding::StringList(vec!["-map".to_string(), "0:a?".to_string()]),
-        );
-        extract_inputs
-            .insert("codec_copy".to_string(), InputBinding::String(extract_codec_copy.to_string()));
-        extract_inputs.insert("vn".to_string(), InputBinding::String("true".to_string()));
-        extract_inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
-        extract_inputs.insert("map_metadata".to_string(), InputBinding::String("-1".to_string()));
-        extract_inputs.insert("map_chapters".to_string(), InputBinding::String("-1".to_string()));
+        extract_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        extract_inputs.insert(INPUT_TRAILING_ARGS.to_string(), "-map 0:a?".to_string());
+        extract_inputs.insert("codec_copy".to_string(), extract_codec_copy.to_string());
+        extract_inputs.insert("vn".to_string(), "true".to_string());
+        extract_inputs.insert("movflags".to_string(), String::new());
+        extract_inputs.insert("map_metadata".to_string(), "-1".to_string());
+        extract_inputs.insert("map_chapters".to_string(), "-1".to_string());
 
         if let Some(step_dependency) = input_dependency.clone() {
             extract_depends_on.push(step_dependency);
@@ -276,8 +263,16 @@ pub(super) fn synthesize_rsgain_step_chain(
             id: extract_step_id.clone(),
             tool: ffmpeg_tool_id.clone(),
             inputs: extract_inputs,
+            outputs: BTreeMap::from([(
+                ffmpeg_output_capture_name(0),
+                OutputCaptureSpec {
+                    name: ffmpeg_output_capture_name(0),
+                    capture: String::new(),
+                    save: true,
+                },
+            )]),
+            max_retries: 0,
             depends_on: extract_depends_on,
-            outputs: BTreeMap::from([(ffmpeg_output_capture_name(0), OutputPolicy::default())]),
         });
 
         let (leading_args, trailing_args) = extract_step_list_args(step);
@@ -286,153 +281,140 @@ pub(super) fn synthesize_rsgain_step_chain(
         let mut rsgain_inputs = BTreeMap::new();
         rsgain_inputs.insert(
             INPUT_CONTENT.to_string(),
-            InputBinding::String(format!(
-                "${{step_output.{extract_step_id}.{}}}",
-                ffmpeg_output_capture_name(0)
-            )),
+            format!("${{step_output.{extract_step_id}.{}}}", ffmpeg_output_capture_name(0)),
         );
-        rsgain_inputs
-            .insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
-        rsgain_inputs
-            .insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
+        rsgain_inputs.insert(INPUT_LEADING_ARGS.to_string(), leading_args.join(" "));
+        rsgain_inputs.insert(INPUT_TRAILING_ARGS.to_string(), trailing_args.join(" "));
         rsgain_inputs.extend(option_inputs);
         // Keep managed ReplayGain synthesis in single-track mode by default.
         // Callers can still opt into album families explicitly through
         // step-level options.
-        rsgain_inputs.insert(
-            "input_extension".to_string(),
-            InputBinding::String(rsgain_input_extension.clone()),
-        );
+        rsgain_inputs.insert("input_extension".to_string(), rsgain_input_extension.clone());
 
         workflow.steps.push(WorkflowStepSpec {
             id: rsgain_step_id.clone(),
             tool: rsgain_tool_id.clone(),
             inputs: rsgain_inputs,
+            outputs: BTreeMap::from([(
+                OUTPUT_CONTENT.to_string(),
+                OutputCaptureSpec {
+                    name: OUTPUT_CONTENT.to_string(),
+                    capture: String::new(),
+                    save: true,
+                },
+            )]),
+            max_retries: 0,
             depends_on: vec![extract_step_id.clone()],
-            outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), OutputPolicy::default())]),
         });
 
         let mut metadata_export_inputs = BTreeMap::new();
         metadata_export_inputs.insert(
             ffmpeg_input_content_name(0),
-            InputBinding::String(format!("${{step_output.{rsgain_step_id}.{OUTPUT_CONTENT}}}")),
+            format!("${{step_output.{rsgain_step_id}.{OUTPUT_CONTENT}}}"),
         );
         metadata_export_inputs.insert(
             ffmpeg_output_path_input_name(0),
-            InputBinding::String(ffmpeg_output_path_with_extension(0, Some("ffmeta"))),
+            ffmpeg_output_path_with_extension(0, Some("ffmeta")),
         );
-        metadata_export_inputs
-            .insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        metadata_export_inputs.insert(
-            INPUT_TRAILING_ARGS.to_string(),
-            InputBinding::StringList(vec!["-f".to_string(), "ffmetadata".to_string()]),
-        );
-        metadata_export_inputs
-            .insert("codec_copy".to_string(), InputBinding::String("true".to_string()));
-        metadata_export_inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
+        metadata_export_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        metadata_export_inputs.insert(INPUT_TRAILING_ARGS.to_string(), "-f ffmetadata".to_string());
+        metadata_export_inputs.insert("codec_copy".to_string(), "true".to_string());
+        metadata_export_inputs.insert("movflags".to_string(), String::new());
         // Suppress all stream processing: the ffmetadata output format reads
         // only the container-level global metadata (tags and chapters) from the
         // file header without demuxing any encoded frames.  Omitting these flags
         // causes FFmpeg to transcode or probe every audio frame, adding ~28 s of
         // unnecessary processing on large inputs.
-        metadata_export_inputs.insert("an".to_string(), InputBinding::String("true".to_string()));
-        metadata_export_inputs.insert("vn".to_string(), InputBinding::String("true".to_string()));
-        metadata_export_inputs.insert("sn".to_string(), InputBinding::String("true".to_string()));
-        metadata_export_inputs.insert("dn".to_string(), InputBinding::String("true".to_string()));
+        metadata_export_inputs.insert("an".to_string(), "true".to_string());
+        metadata_export_inputs.insert("vn".to_string(), "true".to_string());
+        metadata_export_inputs.insert("sn".to_string(), "true".to_string());
+        metadata_export_inputs.insert("dn".to_string(), "true".to_string());
 
         workflow.steps.push(WorkflowStepSpec {
             id: metadata_export_step_id.clone(),
             tool: ffmpeg_tool_id.clone(),
             inputs: metadata_export_inputs,
+            outputs: BTreeMap::from([(
+                ffmpeg_output_capture_name(0),
+                OutputCaptureSpec {
+                    name: ffmpeg_output_capture_name(0),
+                    capture: String::new(),
+                    save: true,
+                },
+            )]),
+            max_retries: 0,
             depends_on: vec![rsgain_step_id.clone()],
-            outputs: BTreeMap::from([(ffmpeg_output_capture_name(0), OutputPolicy::default())]),
         });
 
         let mut metadata_rewrite_inputs = BTreeMap::new();
         metadata_rewrite_inputs.insert(
             INPUT_CONTENT.to_string(),
-            InputBinding::String(format!(
-                "${{step_output.{metadata_export_step_id}.{}}}",
-                ffmpeg_output_capture_name(0)
-            )),
+            format!("${{step_output.{metadata_export_step_id}.{}}}", ffmpeg_output_capture_name(0)),
         );
-        metadata_rewrite_inputs
-            .insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        metadata_rewrite_inputs
-            .insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        metadata_rewrite_inputs.insert(
-            INPUT_SD_PATTERN.to_string(),
-            InputBinding::String("(?i)REPLAYGAIN_".to_string()),
-        );
-        metadata_rewrite_inputs.insert(
-            INPUT_SD_REPLACEMENT.to_string(),
-            InputBinding::String("replaygain_".to_string()),
-        );
+        metadata_rewrite_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        metadata_rewrite_inputs.insert(INPUT_TRAILING_ARGS.to_string(), String::new());
+        metadata_rewrite_inputs.insert(INPUT_SD_PATTERN.to_string(), "(?i)REPLAYGAIN_".to_string());
+        metadata_rewrite_inputs.insert(INPUT_SD_REPLACEMENT.to_string(), "replaygain_".to_string());
 
         workflow.steps.push(WorkflowStepSpec {
             id: metadata_rewrite_step_id.clone(),
             tool: sd_tool_id.clone(),
             inputs: metadata_rewrite_inputs,
+            outputs: BTreeMap::from([(
+                OUTPUT_CONTENT.to_string(),
+                OutputCaptureSpec {
+                    name: OUTPUT_CONTENT.to_string(),
+                    capture: String::new(),
+                    save: true,
+                },
+            )]),
+            max_retries: 0,
             depends_on: vec![metadata_export_step_id.clone()],
-            outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), OutputPolicy::default())]),
         });
 
         let mut metadata_r128_rewrite_inputs = BTreeMap::new();
         metadata_r128_rewrite_inputs.insert(
             INPUT_CONTENT.to_string(),
-            InputBinding::String(format!(
-                "${{step_output.{metadata_rewrite_step_id}.{OUTPUT_CONTENT}}}"
-            )),
+            format!("${{step_output.{metadata_rewrite_step_id}.{OUTPUT_CONTENT}}}"),
         );
-        metadata_r128_rewrite_inputs
-            .insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        metadata_r128_rewrite_inputs
-            .insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        metadata_r128_rewrite_inputs
-            .insert(INPUT_SD_PATTERN.to_string(), InputBinding::String("(?i)R128_".to_string()));
-        metadata_r128_rewrite_inputs
-            .insert(INPUT_SD_REPLACEMENT.to_string(), InputBinding::String("R128_".to_string()));
+        metadata_r128_rewrite_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        metadata_r128_rewrite_inputs.insert(INPUT_TRAILING_ARGS.to_string(), String::new());
+        metadata_r128_rewrite_inputs.insert(INPUT_SD_PATTERN.to_string(), "(?i)R128_".to_string());
+        metadata_r128_rewrite_inputs.insert(INPUT_SD_REPLACEMENT.to_string(), "R128_".to_string());
 
         workflow.steps.push(WorkflowStepSpec {
             id: metadata_r128_rewrite_step_id.clone(),
             tool: sd_tool_id.clone(),
             inputs: metadata_r128_rewrite_inputs,
+            outputs: BTreeMap::from([(
+                OUTPUT_CONTENT.to_string(),
+                OutputCaptureSpec {
+                    name: OUTPUT_CONTENT.to_string(),
+                    capture: String::new(),
+                    save: true,
+                },
+            )]),
+            max_retries: 0,
             depends_on: vec![metadata_rewrite_step_id.clone()],
-            outputs: BTreeMap::from([(OUTPUT_CONTENT.to_string(), OutputPolicy::default())]),
         });
         let mut apply_inputs = BTreeMap::new();
         let mut apply_depends_on = vec![metadata_r128_rewrite_step_id.clone()];
         apply_inputs.insert(ffmpeg_input_content_name(0), input_binding);
         apply_inputs.insert(
             INPUT_FFMETADATA_CONTENT.to_string(),
-            InputBinding::String(format!(
-                "${{step_output.{metadata_r128_rewrite_step_id}.{OUTPUT_CONTENT}}}"
-            )),
+            format!("${{step_output.{metadata_r128_rewrite_step_id}.{OUTPUT_CONTENT}}}"),
         );
         apply_inputs.insert(
             ffmpeg_output_path_input_name(0),
-            InputBinding::String(ffmpeg_output_path_with_extension(
-                0,
-                apply_output_extension.as_deref(),
-            )),
+            ffmpeg_output_path_with_extension(0, apply_output_extension.as_deref()),
         );
-        apply_inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        apply_inputs.insert(
-            INPUT_TRAILING_ARGS.to_string(),
-            InputBinding::StringList(vec![
-                "-map".to_string(),
-                "0".to_string(),
-                "-map_metadata".to_string(),
-                "1".to_string(),
-            ]),
-        );
-        apply_inputs.insert(
-            "metadata".to_string(),
-            InputBinding::String("replaygain_reference_loudness=89.0 dB".to_string()),
-        );
-        apply_inputs.insert("map_metadata".to_string(), InputBinding::String("0".to_string()));
-        apply_inputs.insert("codec_copy".to_string(), InputBinding::String("true".to_string()));
-        apply_inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
+        apply_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        apply_inputs.insert(INPUT_TRAILING_ARGS.to_string(), "-map 0 -map_metadata 1".to_string());
+        apply_inputs
+            .insert("metadata".to_string(), "replaygain_reference_loudness=89.0 dB".to_string());
+        apply_inputs.insert("map_metadata".to_string(), "0".to_string());
+        apply_inputs.insert("codec_copy".to_string(), "true".to_string());
+        apply_inputs.insert("movflags".to_string(), String::new());
 
         if let Some(step_dependency) = input_dependency {
             apply_depends_on.push(step_dependency);
@@ -442,11 +424,16 @@ pub(super) fn synthesize_rsgain_step_chain(
             id: apply_step_id.clone(),
             tool: ffmpeg_tool_id.clone(),
             inputs: apply_inputs,
-            depends_on: apply_depends_on,
             outputs: BTreeMap::from([(
                 ffmpeg_output_capture_name(0),
-                OutputPolicy { save: conductor_output_save_mode(output_policy.save) },
+                OutputCaptureSpec {
+                    name: ffmpeg_output_capture_name(0),
+                    capture: String::new(),
+                    save: true,
+                },
             )]),
+            max_retries: 0,
+            depends_on: apply_depends_on,
         });
 
         variant_producers.insert(

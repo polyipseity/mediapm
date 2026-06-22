@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use blake3;
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
-use mediapm_conductor::{MachineNickelDocument, OrchestrationState};
+use mediapm_conductor::{NickelDocument, OrchestrationState};
 use pulsebar::{MultiProgress, ProgressBar};
 use regex::Regex;
 
@@ -32,18 +32,15 @@ mod playlist;
 mod resolve;
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::Path;
 
     use mediapm_cas::{CasApi, FileSystemCas, Hash};
-    use mediapm_conductor::model::config::ImpureTimestamp;
-    use mediapm_conductor::model::config::ToolInputKind;
     use mediapm_conductor::{
-        InputBinding, MachineNickelDocument, OrchestrationState, OutputCaptureSpec, OutputPolicy,
-        OutputRef, OutputSaveMode, PersistenceFlags, StateNickelDocument, ToolCallInstance,
-        ToolInputSpec, ToolKindSpec, ToolOutputSpec, ToolSpec, WorkflowSpec, WorkflowStepSpec,
-        encode_state, encode_state_document,
+        AuxData, NickelDocument, OrchestrationState, OutputCaptureSpec, OutputRef, OutputSaveMode,
+        ResolvedInput, ToolCallInstance, ToolInputSpec, ToolKindSpec, ToolSpec,
+        encode_state_json, WorkflowSpec, WorkflowStepSpec,
     };
     use unicode_normalization::UnicodeNormalization;
 
@@ -72,10 +69,11 @@ mod tests {
 
         let ffmpeg_tool_id =
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@demo".to_string();
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             ffmpeg_tool_id.clone(),
             ToolSpec {
+                name: ffmpeg_tool_id.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![
                         "windows/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe".to_string(),
@@ -119,10 +117,11 @@ mod tests {
 
         let ffmpeg_tool_id =
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@demo".to_string();
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             ffmpeg_tool_id.clone(),
             ToolSpec {
+                name: ffmpeg_tool_id.clone(),
                 kind: ToolKindSpec::Executable {
                     command: vec![
                         "windows/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe".to_string(),
@@ -432,7 +431,7 @@ mod tests {
         sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -493,7 +492,7 @@ mod tests {
         sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -749,7 +748,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -876,7 +875,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -985,7 +984,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1079,7 +1078,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1138,7 +1137,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1273,7 +1272,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1412,7 +1411,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1497,7 +1496,7 @@ mod tests {
         let error = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1616,7 +1615,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1747,7 +1746,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1825,7 +1824,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1896,7 +1895,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -1957,7 +1956,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -2029,7 +2028,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -2101,7 +2100,7 @@ mod tests {
         let report = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -2147,7 +2146,9 @@ mod tests {
         let output_bytes = b"ID3workflow-output".to_vec();
         let output_hash = cas.put(output_bytes.clone().into()).await.expect("put output bytes");
 
-        let tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string();
+        let tool_name = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp".to_string();
+        let tool_version = "latest".to_string();
+        let tool_id = format!("{tool_name}@{tool_version}");
         let tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["yt-dlp.exe".to_string()],
@@ -2156,46 +2157,38 @@ mod tests {
             },
             inputs: BTreeMap::from([
                 ("source_url".to_string(), ToolInputSpec::default()),
-                ("leading_args".to_string(), ToolInputSpec { kind: ToolInputKind::StringList }),
-                ("trailing_args".to_string(), ToolInputSpec { kind: ToolInputKind::StringList }),
+                ("leading_args".to_string(), ToolInputSpec::default()),
+                ("trailing_args".to_string(), ToolInputSpec::default()),
             ]),
-            outputs: BTreeMap::from([(
-                "primary".to_string(),
-                ToolOutputSpec {
-                    allow_empty: false,
-                    capture: OutputCaptureSpec::File {
-                        path: "downloads/yt-dlp-output.media".to_string(),
-                    },
-                },
-            )]),
+            version: tool_version.clone(),
             ..ToolSpec::default()
         };
 
         let step_id = "0-0-yt-dlp".to_string();
         let workflow = WorkflowSpec {
-            name: Some(media_id.to_string()),
-            description: Some("online source".to_string()),
+            name: media_id.to_string(),
+            display_name: String::new(),
+            description: "online source".to_string(),
+            impure: false,
             steps: vec![WorkflowStepSpec {
                 id: step_id.clone(),
-                tool: tool_id.clone(),
+                tool: tool_name.clone(),
                 inputs: BTreeMap::from([
-                    ("source_url".to_string(), InputBinding::String(source_uri.to_string())),
+                    ("source_url".to_string(), source_uri.to_string()),
                     (
                         "leading_args".to_string(),
-                        InputBinding::StringList(vec![
-                            "--format".to_string(),
-                            "bestaudio/best".to_string(),
-                        ]),
+                        "--format bestaudio/best".to_string(),
                     ),
-                    ("trailing_args".to_string(), InputBinding::StringList(Vec::new())),
+                    ("trailing_args".to_string(), String::new()),
                 ]),
+                max_retries: 0,
                 depends_on: Vec::new(),
                 outputs: BTreeMap::new(),
             }],
         };
 
-        let mut machine = MachineNickelDocument::default();
-        machine.tools.insert(tool_id.clone(), tool_spec.clone());
+        let mut machine = NickelDocument::default();
+        machine.tools.insert(tool_name.clone(), ToolSpec { name: tool_name.clone(), version: tool_version.clone(), ..tool_spec.clone() });
         let workflow_id = crate::conductor_bridge::managed_workflow_id_for_media(
             media_id,
             &MediaSourceSpec {
@@ -2223,69 +2216,52 @@ mod tests {
                 }],
             },
         );
-        machine.workflows.insert(workflow_id, workflow);
+        machine.workflows.push(WorkflowSpec { name: workflow_id, ..workflow });
 
-        let instance_inputs = BTreeMap::from([
-            (
-                "source_url".to_string(),
-                mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
-                    source_uri.as_bytes(),
-                ))
-                .into(),
-            ),
-            (
-                "leading_args".to_string(),
-                mediapm_conductor::ResolvedInput::from_string_list(vec![
-                    "--format".to_string(),
-                    "bestaudio/best".to_string(),
-                ])
-                .expect("list hash")
-                .into(),
-            ),
-            (
-                "trailing_args".to_string(),
-                mediapm_conductor::ResolvedInput::from_string_list(Vec::new())
-                    .expect("empty list hash")
-                    .into(),
-            ),
-        ]);
+        let instance_inputs = vec![
+            ResolvedInput {
+                key: "source_url".to_string(),
+                value: source_uri.to_string(),
+            },
+            ResolvedInput {
+                key: "leading_args".to_string(),
+                value: "--format bestaudio/best".to_string(),
+            },
+            ResolvedInput {
+                key: "trailing_args".to_string(),
+                value: String::new(),
+            },
+        ];
 
         let state = OrchestrationState {
-            version: 1,
+            version: 2,
             instances: BTreeMap::from([(
                 "instance-a".to_string(),
-                mediapm_conductor::ToolCallInstance {
-                    tool_name: tool_id.clone(),
-                    metadata: tool_spec,
-                    impure_timestamp: None,
+                ToolCallInstance {
+                    instance_key: "instance-a".to_string(),
+                    tool_id: tool_id.clone(),
                     inputs: instance_inputs,
-                    outputs: BTreeMap::from([(
-                        "primary".to_string(),
+                    outputs: vec![
                         OutputRef {
-                            allow_empty_capture: false,
+                            name: "primary".to_string(),
                             hash: output_hash,
-                            persistence: PersistenceFlags::default(),
+                            save_mode: OutputSaveMode::Saved,
                         },
-                    )]),
+                    ],
+                    worker_index: 0,
+                    executed: true,
+                    rematerialized: false,
                 },
             )]),
-            aux: BTreeMap::new(),
-            instance_blob_hashes: BTreeSet::new(),
-            referenced_instance_keys: HashSet::new(),
-            external_data: BTreeMap::new(),
+            aux: AuxData::default(),
         };
 
-        let state_pointer = encode_state(&cas, state).await.expect("encode state");
-        let encoded_state_document = encode_state_document(StateNickelDocument {
-            impure_timestamps: BTreeMap::new(),
-            state_pointer: Some(state_pointer),
-        })
-        .expect("encode state document");
+        let encoded = encode_state_json(&state).expect("encode state");
 
         std::fs::create_dir_all(paths.conductor_state_config.parent().expect("state parent"))
             .expect("create state parent");
-        std::fs::write(&paths.conductor_state_config, encoded_state_document)
-            .expect("write state document");
+        std::fs::write(&paths.conductor_state_config, encoded)
+            .expect("write state");
 
         let source = MediaSourceSpec {
             id: None,
@@ -2395,7 +2371,7 @@ mod tests {
         let error = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -2466,7 +2442,7 @@ mod tests {
         let error = sync_hierarchy(
             &paths,
             &document,
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
             &cas_root,
             &mut lock,
             None,
@@ -2492,30 +2468,22 @@ mod tests {
         };
 
         let instance = ToolCallInstance {
-            tool_name: "echo@1.0.0".to_string(),
-            metadata: ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
+            instance_key: "echo-instance".to_string(),
+            tool_id: "echo@1.0.0".to_string(),
+            inputs: vec![
+                ResolvedInput {
+                    key: "text".to_string(),
+                    value: "hello".to_string(),
                 },
-                ..ToolSpec::default()
-            },
-            impure_timestamp: None,
-            inputs: BTreeMap::from([
-                (
-                    "text".to_string(),
-                    mediapm_conductor::ResolvedInput::from_hash(expected_text_hash).into(),
-                ),
-                (
-                    "leading_args".to_string(),
-                    mediapm_conductor::ResolvedInput::from_string_list(vec![
-                        "--verbose".to_string(),
-                    ])
-                    .expect("list hash")
-                    .into(),
-                ),
-            ]),
-            outputs: BTreeMap::new(),
+                ResolvedInput {
+                    key: "leading_args".to_string(),
+                    value: "--verbose".to_string(),
+                },
+            ],
+            outputs: vec![],
+            worker_index: 0,
+            executed: true,
+            rematerialized: false,
         };
 
         assert!(instance_matches_expected_inputs(&instance, &expected));
@@ -2532,7 +2500,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let cas = FileSystemCas::open(temp.path()).await.expect("open cas");
 
-        let tool_id = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp@latest".to_string();
+        let tool_name = "mediapm.tools.yt-dlp+github-releases-yt-dlp-yt-dlp".to_string();
+        let tool_version = "latest".to_string();
+        let tool_id = format!("{tool_name}@{tool_version}");
         let tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["yt-dlp.exe".to_string()],
@@ -2540,103 +2510,89 @@ mod tests {
                 success_codes: vec![0],
             },
             inputs: BTreeMap::from([("source_url".to_string(), ToolInputSpec::default())]),
-            outputs: BTreeMap::from([
-                (
-                    "content".to_string(),
-                    ToolOutputSpec {
-                        allow_empty: false,
-                        capture: OutputCaptureSpec::File {
-                            path: "downloads/yt-dlp-output.media".to_string(),
-                        },
-                    },
-                ),
-                (
-                    "yt_dlp_thumbnail_artifacts".to_string(),
-                    ToolOutputSpec {
-                        allow_empty: false,
-                        capture: OutputCaptureSpec::Folder {
-                            path: "downloads".to_string(),
-                            include_topmost_folder: false,
-                        },
-                    },
-                ),
-            ]),
+            version: tool_version.clone(),
             ..ToolSpec::default()
         };
 
         let step_id = "step-0-primary".to_string();
         let source_url = "https://example.com/video".to_string();
-        let source_url_hash = Hash::from_content(source_url.as_bytes());
 
         let workflow = WorkflowSpec {
-            name: Some("demo".to_string()),
-            description: None,
+            name: "demo".to_string(),
+            display_name: String::new(),
+            description: String::new(),
+            impure: false,
             steps: vec![WorkflowStepSpec {
                 id: step_id.clone(),
-                tool: tool_id.clone(),
+                tool: tool_name.clone(),
                 inputs: BTreeMap::from([(
                     "source_url".to_string(),
-                    InputBinding::String(source_url.clone()),
+                    source_url.clone(),
                 )]),
                 depends_on: Vec::new(),
-                outputs: BTreeMap::from([(
-                    "content".to_string(),
-                    OutputPolicy { save: Some(OutputSaveMode::Full) },
-                )]),
+                max_retries: 0,
+                outputs: BTreeMap::from([("content".to_string(), OutputCaptureSpec {
+                    name: "content".to_string(),
+                    capture: "file:output.media".to_string(),
+                    save: true,
+                })]),
             }],
         };
 
-        let mut machine = MachineNickelDocument::default();
-        machine.tools.insert(tool_id.clone(), tool_spec.clone());
+        let mut machine = NickelDocument::default();
+        machine.tools.insert(tool_name.clone(), ToolSpec { name: tool_name.clone(), version: tool_version.clone(), ..tool_spec.clone() });
 
         let state = OrchestrationState {
-            version: 1,
+            version: 2,
             instances: BTreeMap::from([
                 (
                     "a-thumbnail-first".to_string(),
                     ToolCallInstance {
-                        tool_name: tool_id.clone(),
-                        metadata: tool_spec.clone(),
-                        impure_timestamp: None,
-                        inputs: BTreeMap::from([(
-                            "source_url".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "yt_dlp_thumbnail_artifacts".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: Hash::from_content(b"thumb-zip"),
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "a-thumbnail-first".to_string(),
+                        tool_id: tool_id.clone(),
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "source_url".to_string(),
+                                value: source_url.clone(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "yt_dlp_thumbnail_artifacts".to_string(),
+                                hash: Hash::from_content(b"thumb-zip"),
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
                 (
                     "z-primary-second".to_string(),
                     ToolCallInstance {
-                        tool_name: tool_id,
-                        metadata: tool_spec,
-                        impure_timestamp: None,
-                        inputs: BTreeMap::from([(
-                            "source_url".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(source_url_hash).into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "content".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: Hash::from_content(b"primary-media"),
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "z-primary-second".to_string(),
+                        tool_id: tool_id,
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "source_url".to_string(),
+                                value: source_url.clone(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "content".to_string(),
+                                hash: Hash::from_content(b"primary-media"),
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
             ]),
-            aux: BTreeMap::new(),
-            instance_blob_hashes: BTreeSet::new(),
-            referenced_instance_keys: HashSet::new(),
-            external_data: BTreeMap::new(),
+            aux: AuxData::default(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
@@ -2669,7 +2625,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let cas = FileSystemCas::open(temp.path()).await.expect("open cas");
 
-        let tagger_tool_id = "mediapm.tools.media-tagger@latest".to_string();
+        let tagger_tool_name = "mediapm.tools.media-tagger".to_string();
+        let tagger_tool_version = "latest".to_string();
+        let tagger_tool_id = format!("{tagger_tool_name}@{tagger_tool_version}");
         let tagger_tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["media-tagger.exe".to_string()],
@@ -2677,20 +2635,13 @@ mod tests {
                 success_codes: vec![0],
             },
             inputs: BTreeMap::from([("input_content".to_string(), ToolInputSpec::default())]),
-            outputs: BTreeMap::from([(
-                "sandbox_artifacts".to_string(),
-                ToolOutputSpec {
-                    allow_empty: false,
-                    capture: OutputCaptureSpec::Folder {
-                        path: "sandbox".to_string(),
-                        include_topmost_folder: false,
-                    },
-                },
-            )]),
+            version: tagger_tool_version.clone(),
             ..ToolSpec::default()
         };
 
-        let apply_tool_id = "mediapm.tools.ffmpeg@latest".to_string();
+        let apply_tool_name = "mediapm.tools.ffmpeg".to_string();
+        let apply_tool_version = "latest".to_string();
+        let apply_tool_id = format!("{apply_tool_name}@{apply_tool_version}");
         let apply_tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["ffmpeg.exe".to_string()],
@@ -2698,19 +2649,12 @@ mod tests {
                 success_codes: vec![0],
             },
             inputs: BTreeMap::from([("cover_flag".to_string(), ToolInputSpec::default())]),
-            outputs: BTreeMap::from([(
-                "content".to_string(),
-                ToolOutputSpec {
-                    allow_empty: false,
-                    capture: OutputCaptureSpec::File { path: "output.media".to_string() },
-                },
-            )]),
+            version: apply_tool_version.clone(),
             ..ToolSpec::default()
         };
 
         let step_tagger_id = "step-0-media-tagger".to_string();
         let step_apply_id = "step-1-ffmpeg".to_string();
-        let input_hash = Hash::from_content(b"tagger-input");
 
         let required_member = "coverart-slot-0.flag";
         let member_bytes = b"coverart-present";
@@ -2722,121 +2666,119 @@ mod tests {
 
         let final_output_hash = Hash::from_content(b"final-media-output");
         let workflow = WorkflowSpec {
-            name: Some("zip-selector-demo".to_string()),
-            description: None,
+            name: "zip-selector-demo".to_string(),
+            display_name: String::new(),
+            description: String::new(),
+            impure: false,
             steps: vec![
                 WorkflowStepSpec {
                     id: step_tagger_id.clone(),
-                    tool: tagger_tool_id.clone(),
+                    tool: tagger_tool_name.clone(),
                     inputs: BTreeMap::from([(
                         "input_content".to_string(),
-                        InputBinding::String("tagger-input".to_string()),
+                        "tagger-input".to_string(),
                     )]),
                     depends_on: Vec::new(),
-                    outputs: BTreeMap::from([(
-                        "sandbox_artifacts".to_string(),
-                        OutputPolicy { save: Some(OutputSaveMode::Full) },
-                    )]),
+                    max_retries: 0,
+                    outputs: BTreeMap::from([("sandbox_artifacts".to_string(), OutputCaptureSpec {
+                        name: "sandbox_artifacts".to_string(),
+                        capture: "file:sandbox".to_string(),
+                        save: true,
+                    })]),
                 },
                 WorkflowStepSpec {
                     id: step_apply_id.clone(),
-                    tool: apply_tool_id.clone(),
+                    tool: apply_tool_name.clone(),
                     inputs: BTreeMap::from([(
                         "cover_flag".to_string(),
-                        InputBinding::String(format!(
+                        format!(
                             "${{step_output.{step_tagger_id}.sandbox_artifacts:zip({required_member})}}"
-                        )),
+                        ),
                     )]),
                     depends_on: vec![step_tagger_id.clone()],
-                    outputs: BTreeMap::from([(
-                        "content".to_string(),
-                        OutputPolicy { save: Some(OutputSaveMode::Full) },
-                    )]),
-                },
-            ],
-        };
-
-        let mut machine = MachineNickelDocument::default();
-        machine.tools.insert(tagger_tool_id.clone(), tagger_tool_spec.clone());
-        machine.tools.insert(apply_tool_id.clone(), apply_tool_spec.clone());
+                    max_retries: 0,
+                    outputs: BTreeMap::from([("content".to_string(), OutputCaptureSpec {
+                        name: "content".to_string(),
+                        capture: "file:output.media".to_string(),
+                        save: true,
+                    })]),
+        machine.tools.insert(tagger_tool_name.clone(), ToolSpec { name: tagger_tool_name.clone(), version: tagger_tool_version.clone(), ..tagger_tool_spec.clone() });
+        machine.tools.insert(apply_tool_name.clone(), ToolSpec { name: apply_tool_name.clone(), version: apply_tool_version.clone(), ..apply_tool_spec.clone() });
 
         let state = OrchestrationState {
-            version: 1,
+            version: 2,
             instances: BTreeMap::from([
                 (
                     "a-stale-missing-zip".to_string(),
                     ToolCallInstance {
-                        tool_name: tagger_tool_id.clone(),
-                        metadata: tagger_tool_spec.clone(),
-                        impure_timestamp: Some(ImpureTimestamp {
-                            epoch_seconds: 1,
-                            subsec_nanos: 0,
-                        }),
-                        inputs: BTreeMap::from([(
-                            "input_content".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "sandbox_artifacts".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: missing_zip_hash,
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "a-stale-missing-zip".to_string(),
+                        tool_id: tagger_tool_id.clone(),
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "input_content".to_string(),
+                                value: "tagger-input".to_string(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "sandbox_artifacts".to_string(),
+                                hash: missing_zip_hash,
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
                 (
                     "z-fresh-valid-zip".to_string(),
                     ToolCallInstance {
-                        tool_name: tagger_tool_id,
-                        metadata: tagger_tool_spec,
-                        impure_timestamp: Some(ImpureTimestamp {
-                            epoch_seconds: 2,
-                            subsec_nanos: 0,
-                        }),
-                        inputs: BTreeMap::from([(
-                            "input_content".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(input_hash).into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "sandbox_artifacts".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: valid_zip_hash,
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "z-fresh-valid-zip".to_string(),
+                        tool_id: tagger_tool_id,
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "input_content".to_string(),
+                                value: "tagger-input".to_string(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "sandbox_artifacts".to_string(),
+                                hash: valid_zip_hash,
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
                 (
                     "apply-instance".to_string(),
                     ToolCallInstance {
-                        tool_name: apply_tool_id,
-                        metadata: apply_tool_spec,
-                        impure_timestamp: None,
-                        inputs: BTreeMap::from([(
-                            "cover_flag".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
-                                member_bytes,
-                            ))
-                            .into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "content".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: final_output_hash,
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "apply-instance".to_string(),
+                        tool_id: apply_tool_id,
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "cover_flag".to_string(),
+                                value: String::from_utf8(member_bytes.to_vec()).expect("member bytes"),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "content".to_string(),
+                                hash: final_output_hash,
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
             ]),
-            aux: BTreeMap::new(),
-            instance_blob_hashes: BTreeSet::new(),
-            referenced_instance_keys: HashSet::new(),
-            external_data: BTreeMap::new(),
+            aux: AuxData::default(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
@@ -2874,7 +2816,9 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let cas = FileSystemCas::open(temp.path()).await.expect("open cas");
 
-        let tagger_tool_id = "mediapm.tools.media-tagger@latest".to_string();
+        let tagger_tool_name = "mediapm.tools.media-tagger".to_string();
+        let tagger_tool_version = "latest".to_string();
+        let tagger_tool_id = format!("{tagger_tool_name}@{tagger_tool_version}");
         let tagger_tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["media-tagger.exe".to_string()],
@@ -2882,20 +2826,13 @@ mod tests {
                 success_codes: vec![0],
             },
             inputs: BTreeMap::from([("input_content".to_string(), ToolInputSpec::default())]),
-            outputs: BTreeMap::from([(
-                "sandbox_artifacts".to_string(),
-                ToolOutputSpec {
-                    allow_empty: false,
-                    capture: OutputCaptureSpec::Folder {
-                        path: "sandbox".to_string(),
-                        include_topmost_folder: false,
-                    },
-                },
-            )]),
+            version: tagger_tool_version.clone(),
             ..ToolSpec::default()
         };
 
-        let apply_tool_id = "mediapm.tools.ffmpeg@latest".to_string();
+        let apply_tool_name = "mediapm.tools.ffmpeg".to_string();
+        let apply_tool_version = "latest".to_string();
+        let apply_tool_id = format!("{apply_tool_name}@{apply_tool_version}");
         let apply_tool_spec = ToolSpec {
             kind: ToolKindSpec::Executable {
                 command: vec!["ffmpeg.exe".to_string()],
@@ -2903,13 +2840,7 @@ mod tests {
                 success_codes: vec![0],
             },
             inputs: BTreeMap::from([("cover_flag".to_string(), ToolInputSpec::default())]),
-            outputs: BTreeMap::from([(
-                "content".to_string(),
-                ToolOutputSpec {
-                    allow_empty: false,
-                    capture: OutputCaptureSpec::File { path: "output.media".to_string() },
-                },
-            )]),
+            version: apply_tool_version.clone(),
             ..ToolSpec::default()
         };
 
@@ -2919,104 +2850,101 @@ mod tests {
         let final_output_hash = Hash::from_content(b"final-media-output");
 
         let workflow = WorkflowSpec {
-            name: Some("zip-selector-missing-source-demo".to_string()),
-            description: None,
+            name: "zip-selector-missing-source-demo".to_string(),
+            display_name: String::new(),
+            description: String::new(),
+            impure: false,
             steps: vec![
                 WorkflowStepSpec {
                     id: step_tagger_id.clone(),
-                    tool: tagger_tool_id.clone(),
+                    tool: tagger_tool_name.clone(),
                     inputs: BTreeMap::from([(
                         "input_content".to_string(),
-                        InputBinding::String("tagger-input".to_string()),
+                        "tagger-input".to_string(),
                     )]),
                     depends_on: Vec::new(),
-                    outputs: BTreeMap::from([(
-                        "sandbox_artifacts".to_string(),
-                        OutputPolicy { save: Some(OutputSaveMode::Full) },
-                    )]),
+                    max_retries: 0,
+                    outputs: BTreeMap::from([("sandbox_artifacts".to_string(), OutputCaptureSpec {
+                        name: "sandbox_artifacts".to_string(),
+                        capture: "file:sandbox".to_string(),
+                        save: true,
+                    })]),
                 },
                 WorkflowStepSpec {
                     id: step_apply_id.clone(),
-                    tool: apply_tool_id.clone(),
+                    tool: apply_tool_name.clone(),
                     inputs: BTreeMap::from([(
                         "cover_flag".to_string(),
-                        InputBinding::String(format!(
+                        format!(
                             "${{step_output.{step_tagger_id}.sandbox_artifacts:zip(coverart-slot-0.flag)}}"
-                        )),
+                        ),
                     )]),
                     depends_on: vec![step_tagger_id.clone()],
-                    outputs: BTreeMap::from([(
-                        "content".to_string(),
-                        OutputPolicy { save: Some(OutputSaveMode::Full) },
-                    )]),
+                    max_retries: 0,
+                    outputs: BTreeMap::from([("content".to_string(), OutputCaptureSpec {
+                        name: "content".to_string(),
+                        capture: "file:output.media".to_string(),
+                        save: true,
+                    })]),
                 },
             ],
         };
 
-        let mut machine = MachineNickelDocument::default();
-        machine.tools.insert(tagger_tool_id.clone(), tagger_tool_spec.clone());
-        machine.tools.insert(apply_tool_id.clone(), apply_tool_spec.clone());
+        let mut machine = NickelDocument::default();
+        machine.tools.insert(tagger_tool_name.clone(), ToolSpec { name: tagger_tool_name.clone(), version: tagger_tool_version.clone(), ..tagger_tool_spec.clone() });
+        machine.tools.insert(apply_tool_name.clone(), ToolSpec { name: apply_tool_name.clone(), version: apply_tool_version.clone(), ..apply_tool_spec.clone() });
 
         let state = OrchestrationState {
-            version: 1,
+            version: 2,
             instances: BTreeMap::from([
                 (
                     "tagger-instance".to_string(),
                     ToolCallInstance {
-                        tool_name: tagger_tool_id,
-                        metadata: tagger_tool_spec,
-                        impure_timestamp: Some(ImpureTimestamp {
-                            epoch_seconds: 2,
-                            subsec_nanos: 0,
-                        }),
-                        inputs: BTreeMap::from([(
-                            "input_content".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
-                                b"tagger-input",
-                            ))
-                            .into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "sandbox_artifacts".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: missing_zip_hash,
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "tagger-instance".to_string(),
+                        tool_id: tagger_tool_id,
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "input_content".to_string(),
+                                value: "tagger-input".to_string(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "sandbox_artifacts".to_string(),
+                                hash: missing_zip_hash,
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
                 (
                     "apply-instance".to_string(),
                     ToolCallInstance {
-                        tool_name: apply_tool_id,
-                        metadata: apply_tool_spec,
-                        impure_timestamp: Some(ImpureTimestamp {
-                            epoch_seconds: 3,
-                            subsec_nanos: 0,
-                        }),
-                        inputs: BTreeMap::from([(
-                            "cover_flag".to_string(),
-                            mediapm_conductor::ResolvedInput::from_hash(Hash::from_content(
-                                b"opaque-runtime-cover-flag",
-                            ))
-                            .into(),
-                        )]),
-                        outputs: BTreeMap::from([(
-                            "content".to_string(),
-                            OutputRef {
-                                allow_empty_capture: false,
-                                hash: final_output_hash,
-                                persistence: PersistenceFlags::default(),
+                        instance_key: "apply-instance".to_string(),
+                        tool_id: apply_tool_id,
+                        inputs: vec![
+                            ResolvedInput {
+                                key: "cover_flag".to_string(),
+                                value: "opaque-runtime-cover-flag".to_string(),
                             },
-                        )]),
+                        ],
+                        outputs: vec![
+                            OutputRef {
+                                name: "content".to_string(),
+                                hash: final_output_hash,
+                                save_mode: OutputSaveMode::Saved,
+                            },
+                        ],
+                        worker_index: 0,
+                        executed: true,
+                        rematerialized: false,
                     },
                 ),
             ]),
-            aux: BTreeMap::new(),
-            instance_blob_hashes: BTreeSet::new(),
-            referenced_instance_keys: HashSet::new(),
-            external_data: BTreeMap::new(),
+            aux: AuxData::default(),
         };
 
         let step_output_hashes = super::resolve_workflow_step_output_hashes(
@@ -3162,7 +3090,7 @@ struct MaterializationLookupContext {
     /// Conductor CAS store used for payload reads.
     cas: Arc<FileSystemCas>,
     /// Resolved conductor machine document for tool/workflow metadata.
-    machine: Arc<MachineNickelDocument>,
+    machine: Arc<NickelDocument>,
     /// Optional persisted orchestration state loaded from runtime pointer.
     orchestration_state: Option<Arc<OrchestrationState>>,
     /// Effective ffmpeg input-slot limit used for output-binding resolution.
@@ -3760,7 +3688,7 @@ async fn prepare_hierarchy_entry(
 pub async fn sync_hierarchy(
     paths: &MediaPmPaths,
     document: &MediaPmDocument,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     conductor_cas_root: &Path,
     lock: &mut MediaPmState,
     current_materialized_hash: Option<Hash>,
@@ -3799,7 +3727,7 @@ pub async fn sync_hierarchy(
             conductor_cas_root.display()
         ))
     })?);
-    let orchestration_state = load_runtime_orchestration_state(paths, &cas).await?.map(Arc::new);
+    let orchestration_state = load_runtime_orchestration_state(paths)?.map(Arc::new);
     let managed_ffprobe_path = resolve_managed_ffprobe_path(paths, machine, lock);
     let metadata_cache =
         crate::metadata_cache::MetadataCache::open(&paths.workspace_mediapm_cache_dir())

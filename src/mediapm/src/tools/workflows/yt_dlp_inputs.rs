@@ -6,12 +6,12 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{InputBinding, OutputPolicy};
+use mediapm_conductor::OutputCaptureSpec;
 use serde_json::Value;
 
 use crate::config::{
     DecodedOutputVariantConfig, MediaStepTool, OutputCaptureKind, YtDlpOutputKind,
-    YtDlpOutputVariantConfig, decode_output_variant_config, decode_output_variant_policy,
+    YtDlpOutputVariantConfig, decode_output_variant_config,
 };
 use crate::error::MediaPmError;
 
@@ -21,8 +21,7 @@ use super::{
     OUTPUT_YT_DLP_CHAPTER_ARTIFACTS, OUTPUT_YT_DLP_DESCRIPTION_FILE, OUTPUT_YT_DLP_INFOJSON_FILE,
     OUTPUT_YT_DLP_LINK_ARTIFACTS, OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE,
     OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE, OUTPUT_YT_DLP_SUBTITLE_ARTIFACTS,
-    OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS, YT_DLP_MANAGED_ARCHIVE_FILE, conductor_output_save_mode,
-    ffmpeg_output_capture_name,
+    OUTPUT_YT_DLP_THUMBNAIL_ARTIFACTS, YT_DLP_MANAGED_ARCHIVE_FILE, ffmpeg_output_capture_name,
 };
 
 /// Resolved output binding behavior for one step output-variant entry.
@@ -145,25 +144,23 @@ fn yt_dlp_sidecar_toggle_inputs() -> [&'static str; 12] {
 /// capture/materialization behavior.
 pub(super) fn yt_dlp_inputs_for_output_variants(
     output_configs: &[YtDlpOutputVariantConfig],
-) -> Result<BTreeMap<String, InputBinding>, MediaPmError> {
+) -> Result<BTreeMap<String, String>, MediaPmError> {
     let mut inputs = BTreeMap::new();
-    let true_binding = || InputBinding::String("true".to_string());
-    let false_binding = || InputBinding::String("false".to_string());
 
     if output_configs.is_empty() {
         return Ok(inputs);
     }
 
     for toggle in yt_dlp_sidecar_toggle_inputs() {
-        inputs.insert(toggle.to_string(), false_binding());
+        inputs.insert(toggle.to_string(), "false".to_string());
     }
-    inputs.insert("split_chapters".to_string(), false_binding());
+    inputs.insert("split_chapters".to_string(), "false".to_string());
 
     let has_primary_or_sandbox = output_configs
         .iter()
         .any(|config| matches!(config.kind, YtDlpOutputKind::Primary | YtDlpOutputKind::Sandbox));
     if !has_primary_or_sandbox {
-        inputs.insert("skip_download".to_string(), true_binding());
+        inputs.insert("skip_download".to_string(), "true".to_string());
     }
 
     for config in output_configs {
@@ -171,29 +168,29 @@ pub(super) fn yt_dlp_inputs_for_output_variants(
             YtDlpOutputKind::Primary => {}
             YtDlpOutputKind::Sandbox => {
                 for toggle in yt_dlp_sidecar_toggle_inputs() {
-                    inputs.insert(toggle.to_string(), true_binding());
+                    inputs.insert(toggle.to_string(), "true".to_string());
                 }
-                inputs.insert("embed_chapters".to_string(), true_binding());
-                inputs.insert("split_chapters".to_string(), true_binding());
+                inputs.insert("embed_chapters".to_string(), "true".to_string());
+                inputs.insert("split_chapters".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Subtitles => {
-                inputs.insert("write_subs".to_string(), true_binding());
+                inputs.insert("write_subs".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Thumbnails => {
-                inputs.insert("write_thumbnail".to_string(), true_binding());
+                inputs.insert("write_thumbnail".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Description | YtDlpOutputKind::PlaylistDescription => {
-                inputs.insert("write_description".to_string(), true_binding());
+                inputs.insert("write_description".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Annotation => {
-                inputs.insert("write_annotations".to_string(), true_binding());
+                inputs.insert("write_annotations".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Infojson | YtDlpOutputKind::PlaylistInfojson => {
-                inputs.insert("write_info_json".to_string(), true_binding());
+                inputs.insert("write_info_json".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Comment => {
-                inputs.insert("write_comments".to_string(), true_binding());
-                inputs.insert("write_info_json".to_string(), true_binding());
+                inputs.insert("write_comments".to_string(), "true".to_string());
+                inputs.insert("write_info_json".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Archive => {
                 merge_yt_dlp_scalar_override(
@@ -203,14 +200,14 @@ pub(super) fn yt_dlp_inputs_for_output_variants(
                 )?;
             }
             YtDlpOutputKind::Links => {
-                inputs.insert("write_link".to_string(), true_binding());
-                inputs.insert("write_url_link".to_string(), true_binding());
-                inputs.insert("write_webloc_link".to_string(), true_binding());
-                inputs.insert("write_desktop_link".to_string(), true_binding());
+                inputs.insert("write_link".to_string(), "true".to_string());
+                inputs.insert("write_url_link".to_string(), "true".to_string());
+                inputs.insert("write_webloc_link".to_string(), "true".to_string());
+                inputs.insert("write_desktop_link".to_string(), "true".to_string());
             }
             YtDlpOutputKind::Chapters => {
-                inputs.insert("write_chapters".to_string(), true_binding());
-                inputs.insert("split_chapters".to_string(), true_binding());
+                inputs.insert("write_chapters".to_string(), "true".to_string());
+                inputs.insert("split_chapters".to_string(), "true".to_string());
             }
         }
 
@@ -231,7 +228,7 @@ pub(super) fn yt_dlp_inputs_for_output_variants(
 
 /// Merges one scalar yt-dlp per-variant override while rejecting conflicts.
 fn merge_yt_dlp_scalar_override(
-    inputs: &mut BTreeMap<String, InputBinding>,
+    inputs: &mut BTreeMap<String, String>,
     key: &str,
     value: &str,
 ) -> Result<(), MediaPmError> {
@@ -241,15 +238,12 @@ fn merge_yt_dlp_scalar_override(
     }
 
     match inputs.get(key) {
-        Some(InputBinding::String(existing)) if existing == normalized => Ok(()),
-        Some(InputBinding::String(existing)) => Err(MediaPmError::Workflow(format!(
+        Some(existing) if existing == normalized => Ok(()),
+        Some(existing) => Err(MediaPmError::Workflow(format!(
             "yt-dlp multi-output step has conflicting '{key}' values: '{existing}' vs '{normalized}'"
         ))),
-        Some(_) => Err(MediaPmError::Workflow(format!(
-            "yt-dlp multi-output step cannot merge non-scalar input override for '{key}'"
-        ))),
         None => {
-            inputs.insert(key.to_string(), InputBinding::String(normalized.to_string()));
+            inputs.insert(key.to_string(), normalized.to_string());
             Ok(())
         }
     }
@@ -317,21 +311,17 @@ pub(super) fn step_output_policy_overrides(
     output_variants: &BTreeMap<String, Value>,
     output_variant: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
-) -> Result<BTreeMap<String, OutputPolicy>, MediaPmError> {
-    let options = output_variants
-        .get(output_variant)
-        .map(|value| decode_output_variant_policy(tool, output_variant, value))
-        .transpose()
-        .map_err(MediaPmError::Workflow)?
-        .ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "missing output variant '{output_variant}' while resolving output policy"
-            ))
-        })?;
+) -> Result<BTreeMap<String, OutputCaptureSpec>, MediaPmError> {
+    let _validated = output_variants.get(output_variant).ok_or_else(|| {
+        MediaPmError::Workflow(format!(
+            "missing output variant '{output_variant}' while resolving output policy"
+        ))
+    })?;
     let output_binding =
         resolve_step_output_binding(tool, output_variants, output_variant, ffmpeg_slot_limits)?;
 
-    let policy = OutputPolicy { save: conductor_output_save_mode(options.save) };
-
-    Ok(BTreeMap::from([(output_binding.output_name, policy)]))
+    Ok(BTreeMap::from([(
+        output_binding.output_name.clone(),
+        OutputCaptureSpec { name: output_binding.output_name, capture: String::new(), save: true },
+    )]))
 }

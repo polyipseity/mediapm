@@ -2,9 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{
-    InputBinding, MachineNickelDocument, OutputPolicy, WorkflowSpec, WorkflowStepSpec,
-};
+use mediapm_conductor::{NickelDocument, OutputCaptureSpec, WorkflowSpec, WorkflowStepSpec};
 
 use crate::builtins::media_tagger::{
     cover_art_slot_flag_member_name, cover_art_slot_image_member_name,
@@ -12,20 +10,19 @@ use crate::builtins::media_tagger::{
 use crate::config::MediaPmState;
 use crate::config::{
     DecodedOutputVariantConfig, MediaStep, MediaStepTool, ResolvedStepVariantFlow, ToolRequirement,
-    decode_output_variant_config, decode_output_variant_policy,
+    decode_output_variant_config,
 };
 use crate::error::MediaPmError;
 
 use super::{
     FfmpegSlotLimits, INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
     MEDIA_TAGGER_APPLY_STEP_OFFSET, MEDIA_TAGGER_EXPANDED_STEPS_PER_MAPPING, OUTPUT_CONTENT,
-    OUTPUT_SANDBOX_ARTIFACTS, VariantProducer, conductor_output_save_mode,
-    expanded_step_index_for_mapping, extract_step_list_args, ffmpeg_cover_slot_enabled_input_name,
-    ffmpeg_input_content_name, ffmpeg_output_capture_name, ffmpeg_output_path_input_name,
-    ffmpeg_output_path_with_extension, media_step_id, normalize_output_extension,
-    resolve_input_variant_producer, resolve_selected_dependency_tool_id,
-    resolve_step_output_binding, resolve_step_tool_id, resolved_ffmpeg_family_output_extension,
-    step_option_input_bindings, step_option_scalar,
+    OUTPUT_SANDBOX_ARTIFACTS, VariantProducer, expanded_step_index_for_mapping,
+    extract_step_list_args, ffmpeg_cover_slot_enabled_input_name, ffmpeg_input_content_name,
+    ffmpeg_output_capture_name, ffmpeg_output_path_input_name, ffmpeg_output_path_with_extension,
+    media_step_id, normalize_output_extension, resolve_input_variant_producer,
+    resolve_selected_dependency_tool_id, resolve_step_output_binding, resolve_step_tool_id,
+    resolved_ffmpeg_family_output_extension, step_option_input_bindings, step_option_scalar,
 };
 
 /// Resolves the effective output extension for one managed media-tagger apply
@@ -137,7 +134,7 @@ pub(super) fn synthesize_media_tagger_step_pair(
     step: &MediaStep,
     mappings: &[ResolvedStepVariantFlow],
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     media_tagger_requirement: Option<&ToolRequirement>,
     producer_snapshot: &BTreeMap<String, VariantProducer>,
     variant_producers: &mut BTreeMap<String, VariantProducer>,
@@ -192,9 +189,6 @@ pub(super) fn synthesize_media_tagger_step_pair(
             &mapping.output,
             ffmpeg_slot_limits,
         )?;
-        let output_policy =
-            decode_output_variant_policy(step.tool, &mapping.output, output_variant_value)
-                .map_err(MediaPmError::Workflow)?;
         let DecodedOutputVariantConfig::Generic(output_config) =
             decode_output_variant_config(step.tool, &mapping.output, output_variant_value)
                 .map_err(MediaPmError::Workflow)?
@@ -209,7 +203,11 @@ pub(super) fn synthesize_media_tagger_step_pair(
         let apply_output_name = ffmpeg_output_capture_name(0);
         let apply_outputs = BTreeMap::from([(
             apply_output_name.clone(),
-            OutputPolicy { save: conductor_output_save_mode(output_policy.save) },
+            OutputCaptureSpec {
+                name: apply_output_name.clone(),
+                capture: String::new(),
+                save: true,
+            },
         )]);
 
         let mut metadata_inputs = BTreeMap::new();
@@ -221,21 +219,17 @@ pub(super) fn synthesize_media_tagger_step_pair(
 
         let (leading_args, trailing_args) = extract_step_list_args(step);
         let option_inputs = step_option_input_bindings(step.tool, &step.options);
-        metadata_inputs
-            .insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(leading_args));
-        metadata_inputs
-            .insert(INPUT_TRAILING_ARGS.to_string(), InputBinding::StringList(trailing_args));
+        metadata_inputs.insert(INPUT_LEADING_ARGS.to_string(), leading_args.join(" "));
+        metadata_inputs.insert(INPUT_TRAILING_ARGS.to_string(), trailing_args.join(" "));
         metadata_inputs.extend(option_inputs);
 
         workflow.steps.push(WorkflowStepSpec {
             id: metadata_step_id.clone(),
             tool: media_tagger_tool_id.clone(),
             inputs: metadata_inputs,
+            outputs: BTreeMap::new(),
+            max_retries: 0,
             depends_on: metadata_depends_on,
-            outputs: BTreeMap::from([
-                (OUTPUT_CONTENT.to_string(), OutputPolicy::default()),
-                (OUTPUT_SANDBOX_ARTIFACTS.to_string(), OutputPolicy::default()),
-            ]),
         });
 
         let mut apply_inputs = BTreeMap::new();
@@ -243,22 +237,16 @@ pub(super) fn synthesize_media_tagger_step_pair(
         apply_inputs.insert(ffmpeg_input_content_name(0), input_binding);
         apply_inputs.insert(
             "ffmetadata_content".to_string(),
-            InputBinding::String(format!("${{step_output.{metadata_step_id}.{OUTPUT_CONTENT}}}")),
+            format!("${{step_output.{metadata_step_id}.{OUTPUT_CONTENT}}}"),
         );
         apply_inputs.insert(
             ffmpeg_output_path_input_name(0),
-            InputBinding::String(ffmpeg_output_path_with_extension(
-                0,
-                apply_output_extension.as_deref(),
-            )),
+            ffmpeg_output_path_with_extension(0, apply_output_extension.as_deref()),
         );
-        apply_inputs.insert(INPUT_LEADING_ARGS.to_string(), InputBinding::StringList(Vec::new()));
-        apply_inputs.insert(
-            INPUT_TRAILING_ARGS.to_string(),
-            InputBinding::StringList(vec!["-map".to_string(), "0".to_string()]),
-        );
-        apply_inputs.insert("map_metadata".to_string(), InputBinding::String("1".to_string()));
-        apply_inputs.insert("movflags".to_string(), InputBinding::String(String::new()));
+        apply_inputs.insert(INPUT_LEADING_ARGS.to_string(), String::new());
+        apply_inputs.insert(INPUT_TRAILING_ARGS.to_string(), "-map 0".to_string());
+        apply_inputs.insert("map_metadata".to_string(), "1".to_string());
+        apply_inputs.insert("movflags".to_string(), String::new());
 
         let cover_art_slot_count =
             resolve_cover_art_slot_count(media_id, step_index, step, ffmpeg_slot_limits)?;
@@ -267,15 +255,15 @@ pub(super) fn synthesize_media_tagger_step_pair(
             let flag_member = cover_art_slot_flag_member_name(slot_index);
             apply_inputs.insert(
                 ffmpeg_input_content_name(slot_index),
-                InputBinding::String(format!(
+                format!(
                     "${{step_output.{metadata_step_id}.{OUTPUT_SANDBOX_ARTIFACTS}:zip({image_member})}}"
-                )),
+                ),
             );
             apply_inputs.insert(
                 ffmpeg_cover_slot_enabled_input_name(slot_index),
-                InputBinding::String(format!(
+                format!(
                     "${{step_output.{metadata_step_id}.{OUTPUT_SANDBOX_ARTIFACTS}:zip({flag_member})}}"
-                )),
+                ),
             );
         }
 
@@ -283,10 +271,7 @@ pub(super) fn synthesize_media_tagger_step_pair(
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            apply_inputs.insert(
-                "container".to_string(),
-                InputBinding::String(output_container.to_string()),
-            );
+            apply_inputs.insert("container".to_string(), output_container.to_string());
         }
 
         if let Some(step_dependency) = input_dependency {
@@ -298,8 +283,9 @@ pub(super) fn synthesize_media_tagger_step_pair(
             id: apply_step_id.clone(),
             tool: ffmpeg_tool_id.clone(),
             inputs: apply_inputs,
-            depends_on: apply_depends_on,
             outputs: apply_outputs,
+            max_retries: 0,
+            depends_on: apply_depends_on,
         });
 
         variant_producers.insert(

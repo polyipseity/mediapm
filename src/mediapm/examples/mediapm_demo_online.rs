@@ -56,9 +56,8 @@ use mediapm::{
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    ExternalContentRef, MachineNickelDocument, SimpleConductor, ToolConfigSpec, ToolKindSpec,
-    ToolSpec, decode_machine_document, default_runtime_inherited_env_vars_for_host,
-    encode_machine_document,
+    NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolKindSpec, ToolRuntime, ToolSpec,
+    decode_document, default_runtime_inherited_env_vars, encode_document,
 };
 use same_file::is_same_file;
 use serde::Serialize;
@@ -1404,7 +1403,12 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
         // Explicit host default inherited env-var map.
         // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: Some(default_runtime_inherited_env_vars_for_host()),
+        inherited_env_vars: {
+            let host_platform = std::env::consts::OS.to_ascii_lowercase();
+            let mut map = BTreeMap::new();
+            map.insert(host_platform, default_runtime_inherited_env_vars().into_keys().collect());
+            Some(map)
+        },
         // Machine-managed mediapm state path relative to workspace root.
         // Default: `.mediapm/state.ncl`.
         media_state_config: Some(".mediapm/state.ncl".to_string()),
@@ -1452,20 +1456,20 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
 }
 
 /// Loads conductor machine document from one path.
-fn load_machine(path: &Path) -> ExampleResult<MachineNickelDocument> {
+fn load_machine(path: &Path) -> ExampleResult<NickelDocument> {
     let raw = fs::read_to_string(path)?;
-    Ok(decode_machine_document(raw.as_bytes())?)
+    Ok(decode_document(raw.as_bytes())?)
 }
 
 /// Seeds machine + lock state with stale active tool ids for update precheck.
 fn seed_old_synced_tools_state_for_update_precheck(
-    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    service: &MediaPmService<mediapm_cas::InMemoryCas>,
     logical_tool_ids: &[String],
 ) -> ExampleResult<()> {
     service.refresh_runtime_configuration()?;
 
-    let mut machine: MachineNickelDocument =
-        decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+    let mut machine: NickelDocument =
+        decode_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in logical_tool_ids {
@@ -1475,30 +1479,21 @@ fn seed_old_synced_tools_state_for_update_precheck(
         let stale_hash = Hash::from_content(stale_payload.as_bytes());
         let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
 
-        machine.external_data.insert(
-            stale_hash,
-            ExternalContentRef {
-                description: Some(format!("stale payload for {logical_tool_name}")),
-                save: None,
-            },
-        );
         machine.tools.insert(
             stale_tool_id.clone(),
             ToolSpec {
+                name: stale_tool_id.clone(),
+                version: "old".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("./{stale_relative_path}")],
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(stale_relative_path, stale_hash.to_string())]),
+                    ..ToolRuntime::default()
+                },
                 ..ToolSpec::default()
-            },
-        );
-        machine.tool_configs.insert(
-            stale_tool_id.clone(),
-            ToolConfigSpec {
-                description: Some(format!("stale managed tool config for {logical_tool_name}")),
-                content_map: Some(BTreeMap::from([(stale_relative_path, stale_hash)])),
-                ..ToolConfigSpec::default()
             },
         );
 
@@ -1515,7 +1510,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
+    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
     save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
@@ -1523,7 +1518,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
 /// Executes tools-only stale-tool update precheck with empty media/hierarchy.
 async fn run_tools_update_precheck(
-    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    service: &MediaPmService<mediapm_cas::InMemoryCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize, usize)> {
     let logical_tool_ids = configure_document_for_online_demo(workspace_root)?;
@@ -1558,7 +1553,7 @@ async fn run_tools_update_precheck(
 /// This helper accepts logical ids declared in `mediapm.ncl` (for example
 /// `yt-dlp`) and resolves each one to exactly one immutable id.
 fn resolve_tool_binaries(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     tool_ids: &[String],
 ) -> ExampleResult<BTreeMap<String, String>> {
     let mut binaries = BTreeMap::new();
@@ -1566,9 +1561,10 @@ fn resolve_tool_binaries(
     for tool_id in tool_ids {
         let resolved_tool_id = resolve_managed_tool_id(machine, tool_id)?;
 
-        let spec = machine.tools.get(&resolved_tool_id).ok_or_else(|| {
-            format!("machine config is missing tool spec for '{resolved_tool_id}'")
-        })?;
+        let spec =
+            machine.tools.values().find(|t| t.name == resolved_tool_id).ok_or_else(|| {
+                format!("machine config is missing tool spec for '{resolved_tool_id}'")
+            })?;
 
         let ToolKindSpec::Executable { command, .. } = &spec.kind else {
             return Err(
@@ -1586,9 +1582,10 @@ fn resolve_tool_binaries(
         }
 
         let has_content_map = machine
-            .tool_configs
-            .get(&resolved_tool_id)
-            .and_then(|config| config.content_map.as_ref())
+            .tools
+            .values()
+            .find(|t| t.name == resolved_tool_id)
+            .map(|t| &t.runtime.content_map)
             .is_some_and(|map| !map.is_empty());
         if !has_content_map {
             return Err(format!(
@@ -1640,7 +1637,7 @@ fn derive_ffprobe_path_from_ffmpeg_command(ffmpeg_command: &str) -> Option<PathB
 ///
 /// Falls back to bare `ffprobe` when no managed sibling binary is available.
 fn configure_demo_ffprobe_command(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     tool_binaries: &BTreeMap<String, String>,
 ) -> ExampleResult<()> {
     let ffmpeg_tool_id = resolve_managed_tool_id(machine, "ffmpeg")?;
@@ -1657,11 +1654,15 @@ fn configure_demo_ffprobe_command(
 
 /// Reads yt-dlp max concurrency from machine config and enforces policy value `1`.
 fn assert_yt_dlp_concurrency_policy(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     yt_dlp_tool_id: &str,
 ) -> ExampleResult<i32> {
-    let observed =
-        machine.tool_configs.get(yt_dlp_tool_id).map_or(-1, |config| config.max_concurrent_calls);
+    let observed = machine
+        .tools
+        .values()
+        .find(|t| t.name == yt_dlp_tool_id)
+        .map(|t| t.runtime.max_concurrent_calls as i32)
+        .unwrap_or(-1);
 
     if observed != 1 {
         return Err(format!(
@@ -1675,10 +1676,15 @@ fn assert_yt_dlp_concurrency_policy(
 
 /// Reads yt-dlp retry policy from machine config and enforces value `1`.
 fn assert_yt_dlp_retry_policy(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     yt_dlp_tool_id: &str,
 ) -> ExampleResult<i32> {
-    let observed = machine.tool_configs.get(yt_dlp_tool_id).map_or(-1, |config| config.max_retries);
+    let observed = machine
+        .tools
+        .values()
+        .find(|t| t.name == yt_dlp_tool_id)
+        .map(|t| t.runtime.max_retries as i32)
+        .unwrap_or(-1);
 
     if observed != 1 {
         return Err(format!(
@@ -1691,7 +1697,7 @@ fn assert_yt_dlp_retry_policy(
 }
 
 /// Verifies the managed demo workflow exists and keeps the expected tool flow.
-fn assert_demo_workflow_shape(machine: &MachineNickelDocument) -> ExampleResult<(String, usize)> {
+fn assert_demo_workflow_shape(machine: &NickelDocument) -> ExampleResult<(String, usize)> {
     fn tool_order_text(logical_tools: &[String]) -> String {
         logical_tools.join(" -> ")
     }
@@ -1719,20 +1725,21 @@ fn assert_demo_workflow_shape(machine: &MachineNickelDocument) -> ExampleResult<
     let workflow_id = format!("mediapm.media.{DEMO_MEDIA_ID}");
     let workflow = machine
         .workflows
-        .get(&workflow_id)
+        .iter()
+        .find(|w| w.name == DEMO_MEDIA_ID)
         .ok_or_else(|| format!("machine config is missing managed workflow '{workflow_id}'"))?;
 
-    if workflow.name.as_deref() != Some(DEMO_MEDIA_ID) {
+    if workflow.name != DEMO_MEDIA_ID {
         return Err(format!(
-            "managed workflow '{workflow_id}' must set name='{}' but observed {:?}",
+            "managed workflow '{workflow_id}' must set name='{}' but observed '{}'",
             DEMO_MEDIA_ID, workflow.name
         )
         .into());
     }
 
-    if workflow.description.as_deref() != Some(DEMO_WORKFLOW_DESCRIPTION) {
+    if workflow.description != DEMO_WORKFLOW_DESCRIPTION {
         return Err(format!(
-            "managed workflow '{workflow_id}' must mirror description='{}' but observed {:?}",
+            "managed workflow '{workflow_id}' must mirror description='{}' but observed '{}'",
             DEMO_WORKFLOW_DESCRIPTION, workflow.description
         )
         .into());
@@ -2544,7 +2551,10 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         let file_system_cas = FileSystemCas::open(&store_root).await.map_err(|error| {
             format!("opening filesystem CAS store at '{}': {error}", store_root.display())
         })?;
-        let conductor = SimpleConductor::new(file_system_cas);
+        let conductor = SimpleConductor::new(
+            RuntimeStoragePaths::new(&workspace_root.join(".mediapm")),
+            file_system_cas,
+        );
         MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
     };
 
@@ -2575,9 +2585,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     eprintln!(
         "[demo_online] sync complete; rendering conductor timing profile (workflow scope only)..."
     );
-    mediapm_conductor::print_profile_timing(
-        &sync_service.paths().runtime_root.join("profile.json"),
-    );
+    // (profile timing intentionally omitted: no print_profile_timing API in new conductor)
 
     eprintln!("[demo_online] running post-sync verification and artifact summary...");
     let machine = load_machine(&sync_service.paths().conductor_machine_ncl)?;
@@ -2678,17 +2686,14 @@ fn logical_name_from_managed_tool_id(tool_id: &str) -> Option<&str> {
 }
 
 /// Resolves exactly one immutable managed tool id for one logical name.
-fn resolve_managed_tool_id(
-    machine: &MachineNickelDocument,
-    logical_name: &str,
-) -> ExampleResult<String> {
+fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> ExampleResult<String> {
     let matches: Vec<String> = machine
         .tools
-        .keys()
+        .values()
+        .map(|t| t.name.clone())
         .filter(|candidate| {
             logical_name_from_managed_tool_id(candidate).is_some_and(|name| name == logical_name)
         })
-        .cloned()
         .collect();
 
     match matches.len() {
@@ -2703,10 +2708,10 @@ fn resolve_managed_tool_id(
                 .iter()
                 .filter(|id| {
                     machine
-                        .tool_configs
-                        .get(*id)
-                        .and_then(|c| c.content_map.as_ref())
-                        .is_some_and(|m| !m.is_empty())
+                        .tools
+                        .values()
+                        .find(|t| t.name == **id)
+                        .map_or(false, |t| !t.runtime.content_map.is_empty())
                 })
                 .collect::<Vec<_>>();
             if with_content.len() == 1 {

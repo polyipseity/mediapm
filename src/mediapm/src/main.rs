@@ -922,7 +922,9 @@ async fn passthrough_conductor(
     effective_paths: &mediapm::MediaPmPaths,
 ) -> anyhow::Result<()> {
     let injected = inject_conductor_passthrough_defaults(args, effective_paths);
-    mediapm_conductor::cli::run_from_passthrough_args(&injected).await.map_err(anyhow::Error::from)
+    let mut passthrough = vec!["mediapm-conductor"];
+    passthrough.extend(injected.iter().map(String::as_str));
+    mediapm_conductor::cli::run_from_args(&passthrough).await.map_err(anyhow::Error::from)
 }
 
 /// Injects default `cas` root when the caller did not provide one explicitly.

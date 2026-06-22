@@ -25,11 +25,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use mediapm_conductor::provision::ProvisionCache;
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
-use mediapm_conductor::tool_cache::ToolContentCache;
-use mediapm_conductor::{AddToolOptions, InputBinding, ToolKindSpec};
+use mediapm_conductor::{ToolKindSpec, ToolRuntime};
 
 use crate::builtins::media_tagger::MEDIA_TAGGER_FFMPEG_BIN_ENV;
+use crate::conductor_bridge::legacy::{InputBinding, ToolConfigSpec};
 use crate::config::MediaPmDocument;
 use crate::config::{MediaPmState, ToolRegistryRecord};
 use crate::error::MediaPmError;
@@ -41,8 +42,8 @@ use super::documents::{ensure_conductor_documents, load_machine_document, save_m
 use super::runtime_storage::resolve_cas_store_path;
 use super::tool_runtime::{
     YT_DLP_FFMPEG_LOCATION_ENV, YT_DLP_JS_RUNTIMES_ENV, build_tool_env, build_tool_spec,
-    default_tool_config_description, merge_tool_config_defaults, resolve_ffmpeg_slot_limits,
-    validate_tool_command,
+    default_tool_config_description, legacy_to_tool_spec, merge_tool_config_defaults,
+    resolve_ffmpeg_slot_limits, validate_tool_command,
 };
 use super::util::now_unix_seconds;
 
@@ -63,17 +64,17 @@ pub(crate) async fn reconcile_desired_tools(
 
     let mut report = ToolSyncReport::default();
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
-    let conductor_runtime_dir = resolve_conductor_runtime_dir(paths, &machine);
+    let conductor_runtime_dir = resolve_conductor_runtime_dir(paths);
     ensure_runtime_env_files(&conductor_runtime_dir).map_err(MediaPmError::from)?;
     let ffmpeg_slot_limits = resolve_ffmpeg_slot_limits(&document.tools)?;
-    let cas_root = resolve_cas_store_path(paths, &machine);
+    let cas_root = resolve_cas_store_path(paths);
     let cas = Arc::new(FileSystemCas::open(&cas_root).await.map_err(|source| {
         MediaPmError::Workflow(format!(
             "opening conductor CAS store '{}' for tool sync failed: {source}",
             cas_root.display()
         ))
     })?);
-    let tool_content_cache = ToolContentCache::new(paths.tools_dir.clone(), Arc::clone(&cas), None);
+    let tool_content_cache = ProvisionCache::new(paths.tools_dir.clone(), Arc::clone(&cas), None);
 
     let mut requirements_to_provision = BTreeMap::new();
     let mut skipped_tag_update_tool_ids = BTreeMap::new();
@@ -97,12 +98,14 @@ pub(crate) async fn reconcile_desired_tools(
                 // the payload/ directory.  The existence check is a cheap
                 // index lookup, not a full content read.
                 let blobs_available: bool = match machine
-                    .tool_configs
-                    .get(&active_tool_id)
-                    .and_then(|cfg| cfg.content_map.as_ref())
+                    .tools
+                    .values()
+                    .find(|t| t.name == active_tool_id || t.id() == active_tool_id)
+                    .map(|t| &t.runtime.content_map)
                 {
                     Some(content_map) if !content_map.is_empty() => {
-                        let hashes: Vec<Hash> = content_map.values().copied().collect();
+                        let hashes: Vec<Hash> =
+                            content_map.values().filter_map(|s| s.parse::<Hash>().ok()).collect();
                         let mut all_exist = true;
                         for h in &hashes {
                             if cas.stat(*h).await.is_err() {
@@ -272,8 +275,30 @@ pub(crate) async fn reconcile_desired_tools(
         let content_map =
             import_tool_content_files_into_cas(&cas, &effective_content_entries).await?;
         validate_tool_command(name, &command_vector, &content_map)?;
+        let existing_config: Option<ToolConfigSpec> = machine
+            .tools
+            .values()
+            .find(|t| t.name == desired_tool_id || t.id() == desired_tool_id)
+            .map(|t| ToolConfigSpec {
+                max_concurrent_calls: t.runtime.max_concurrent_calls as i32,
+                max_retries: t.runtime.max_retries as i32,
+                description: None,
+                input_defaults: t
+                    .default_inputs
+                    .iter()
+                    .map(|(k, v)| (k.clone(), InputBinding::String(v.clone())))
+                    .collect(),
+                env_vars: t.runtime.inherited_env_vars.clone(),
+                content_map: Some(
+                    t.runtime
+                        .content_map
+                        .iter()
+                        .filter_map(|(k, v)| v.parse::<Hash>().ok().map(|h| (k.clone(), h)))
+                        .collect(),
+                ),
+            });
         let mut desired_config = merge_tool_config_defaults(
-            machine.tool_configs.get(&desired_tool_id),
+            existing_config.as_ref(),
             paths,
             name,
             content_map,
@@ -317,7 +342,20 @@ pub(crate) async fn reconcile_desired_tools(
                     });
                 if let Some(ffmpeg_path) = companion_ffmpeg_path {
                     yt_dlp_resolved_ffmpeg_path = Some(ffmpeg_path);
-                    if should_set_yt_dlp_ffmpeg_location(&desired_config.input_defaults) {
+                    let input_defaults_str: BTreeMap<String, String> = desired_config
+                        .input_defaults
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                match v {
+                                    InputBinding::String(s) => s.clone(),
+                                    InputBinding::StringList(list) => list.join(","),
+                                },
+                            )
+                        })
+                        .collect();
+                    if should_set_yt_dlp_ffmpeg_location(&input_defaults_str) {
                         desired_config.input_defaults.insert(
                             "ffmpeg_location".to_string(),
                             InputBinding::String(
@@ -339,7 +377,20 @@ pub(crate) async fn reconcile_desired_tools(
                     });
                 if let Some(js_runtimes_path) = companion_js_path {
                     yt_dlp_resolved_js_runtimes_path = Some(js_runtimes_path);
-                    if should_set_yt_dlp_js_runtimes(&desired_config.input_defaults) {
+                    let input_defaults_str: BTreeMap<String, String> = desired_config
+                        .input_defaults
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                match v {
+                                    InputBinding::String(s) => s.clone(),
+                                    InputBinding::StringList(list) => list.join(","),
+                                },
+                            )
+                        })
+                        .collect();
+                    if should_set_yt_dlp_js_runtimes(&input_defaults_str) {
                         desired_config.input_defaults.insert(
                             "js_runtimes".to_string(),
                             InputBinding::String(
@@ -357,10 +408,20 @@ pub(crate) async fn reconcile_desired_tools(
         if let Some(tool_content_map) = &desired_config.content_map {
             let _ = tool_content_cache.materialize(&desired_tool_id, tool_content_map).await?;
         }
-        remove_redundant_inherited_env_vars_from_tool_config(
-            &mut desired_config,
-            inherited_env_vars,
-        );
+        {
+            let mut temp_runtime = ToolRuntime {
+                inherited_env_vars: std::mem::take(&mut desired_config.env_vars),
+                content_map: BTreeMap::new(),
+                impure: false,
+                max_concurrent_calls: 0,
+                max_retries: 0,
+            };
+            remove_redundant_inherited_env_vars_from_tool_config(
+                &mut temp_runtime,
+                inherited_env_vars,
+            );
+            desired_config.env_vars = temp_runtime.inherited_env_vars;
+        }
         if let Some(ref ffmpeg_abs_path) = yt_dlp_resolved_ffmpeg_path {
             generated_runtime_env_vars
                 .insert(YT_DLP_FFMPEG_LOCATION_ENV.to_string(), ffmpeg_abs_path.clone());
@@ -379,14 +440,24 @@ pub(crate) async fn reconcile_desired_tools(
             generated_runtime_env_vars.insert(MEDIA_TAGGER_FFMPEG_BIN_ENV.to_string(), ffmpeg_path);
         }
 
-        // Route all tools through machine.add_tool(), which handles
-        // spec/config insertion and external_data sync internally.
-        // The self-wipe below is guarded so rolling-release tools
-        // (same tool_id, different bytes) keep their content_map.
-        machine.add_tool(
-            desired_tool_id.clone(),
-            AddToolOptions::new(spec).overwrite_existing(true).with_tool_config(desired_config),
-        )?;
+        // Convert legacy ToolConfigSpec to v2 ToolSpec + ToolRuntime and
+        // insert (or overwrite) in machine.tools.
+        let (mut tool_entry_spec, tool_entry_runtime) = legacy_to_tool_spec(
+            desired_config,
+            spec.kind.clone(),
+            &desired_tool_id,
+            spec.inputs.clone(),
+        );
+        tool_entry_spec.runtime = tool_entry_runtime;
+        if let Some(existing) = machine
+            .tools
+            .values_mut()
+            .find(|t| t.name == desired_tool_id || t.id() == desired_tool_id)
+        {
+            *existing = tool_entry_spec;
+        } else {
+            machine.tools.insert(desired_tool_id.clone(), tool_entry_spec);
+        }
 
         let registry_multihash = Hash::from_content(desired_tool_id.as_bytes()).to_string();
         lock.tool_registry.insert(
@@ -408,8 +479,12 @@ pub(crate) async fn reconcile_desired_tools(
                 // Clear the old tool's content_map so conductor step-tool
                 // preservation never matches stale content references
                 // against the old tool_id (R1 root-cause fix).
-                if let Some(old_config) = machine.tool_configs.get_mut(&old_tool_id) {
-                    old_config.content_map = None;
+                if let Some(old_tool) = machine
+                    .tools
+                    .values_mut()
+                    .find(|t| t.name == old_tool_id || t.id() == old_tool_id)
+                {
+                    old_tool.runtime.content_map.clear();
                 }
             } else {
                 report.unchanged_tool_ids.push(desired_tool_id);
@@ -423,15 +498,27 @@ pub(crate) async fn reconcile_desired_tools(
     // a valid payload/ directory. This covers tools that were skipped
     // (unchanged) in this sync but whose payload/ may never have been
     // created due to the pre-fix absence of materialization during sync.
-    for (tool_id, config) in &machine.tool_configs {
-        if let Some(content_map) = &config.content_map {
-            if let Err(e) = tool_content_cache.materialize(tool_id, content_map).await {
-                tracing::warn!("final pass materialization of tool '{tool_id}' failed: {e}");
+    for tool_spec in machine.tools.values() {
+        if !tool_spec.runtime.content_map.is_empty() {
+            let content_map: BTreeMap<String, Hash> = tool_spec
+                .runtime
+                .content_map
+                .iter()
+                .filter_map(|(k, v)| v.parse::<Hash>().ok().map(|h| (k.clone(), h)))
+                .collect();
+            if !content_map.is_empty() {
+                if let Err(e) = tool_content_cache.materialize(&tool_spec.name, &content_map).await
+                {
+                    tracing::warn!(
+                        "final pass materialization of tool '{}' failed: {e}",
+                        tool_spec.name
+                    );
+                }
             }
         }
     }
 
-    write_generated_runtime_env_file(paths, &machine, &generated_runtime_env_vars)?;
+    write_generated_runtime_env_file(paths, &generated_runtime_env_vars)?;
     ensure_machine_runtime_inherits_generated_env_vars(&mut machine, &generated_runtime_env_vars);
 
     save_machine_document(&paths.conductor_machine_ncl, &machine)?;
@@ -453,24 +540,33 @@ pub(crate) async fn prune_tool_binary(
     remove_metadata: bool,
 ) -> Result<usize, MediaPmError> {
     let mut machine = load_machine_document(&paths.conductor_machine_ncl)?;
-    let removed_hashes = machine
-        .tool_configs
-        .remove(tool_id)
-        .and_then(|config| config.content_map)
-        .map(|map| map.into_values().collect::<Vec<_>>())
+
+    // Find the tool by name or id and extract content_map hashes.
+    let removed_hashes: Vec<Hash> = machine
+        .tools
+        .values()
+        .find(|t| t.name == tool_id || t.id() == tool_id)
+        .map(|t| {
+            t.runtime
+                .content_map
+                .values()
+                .filter_map(|s| s.parse::<Hash>().ok())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
-    if removed_hashes.is_empty() && !machine.tools.contains_key(tool_id) {
+    let tool_exists = machine.tools.values().any(|t| t.name == tool_id || t.id() == tool_id);
+    if removed_hashes.is_empty() && !tool_exists {
         return Err(MediaPmError::Workflow(format!("tool '{tool_id}' is not registered")));
     }
 
     if remove_metadata {
-        machine.tools.remove(tool_id);
+        machine.tools.retain(|_, t| t.name != tool_id && t.id() != tool_id);
     }
 
     save_machine_document(&paths.conductor_machine_ncl, &machine)?;
 
-    let cas_root = resolve_cas_store_path(paths, &machine);
+    let cas_root = resolve_cas_store_path(paths);
     if !removed_hashes.is_empty() {
         let cas = FileSystemCas::open(&cas_root).await.map_err(|source| {
             MediaPmError::Workflow(format!(
@@ -512,10 +608,9 @@ pub(crate) async fn prune_tool_binary(
 mod tests {
     use std::collections::BTreeMap;
 
+    use crate::conductor_bridge::legacy::InputBinding;
     use mediapm_cas::{FileSystemCas, Hash};
-    use mediapm_conductor::{
-        InputBinding, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec,
-    };
+    use mediapm_conductor::{NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec};
 
     use crate::config::ToolRequirement;
     use crate::config::{MediaPmState, ToolRegistryRecord};
@@ -625,10 +720,8 @@ mod tests {
     /// user-provided yt-dlp defaults.
     #[test]
     fn should_not_set_yt_dlp_ffmpeg_location_for_explicit_value() {
-        let input_defaults = BTreeMap::from([(
-            "ffmpeg_location".to_string(),
-            InputBinding::String("/custom/ffmpeg/bin".to_string()),
-        )]);
+        let input_defaults =
+            BTreeMap::from([("ffmpeg_location".to_string(), "/custom/ffmpeg/bin".to_string())]);
         assert!(!should_set_yt_dlp_ffmpeg_location(&input_defaults));
     }
 
@@ -799,8 +892,8 @@ mod tests {
     /// generated tool config rows while preserving tool-specific entries.
     #[test]
     fn inherited_env_vars_are_not_duplicated_into_tool_config_env_vars() {
-        let mut config = mediapm_conductor::ToolConfigSpec {
-            env_vars: BTreeMap::from([
+        let mut runtime = mediapm_conductor::ToolRuntime {
+            inherited_env_vars: BTreeMap::from([
                 ("SYSTEMROOT".to_string(), "C:/Windows".to_string()),
                 ("Temp".to_string(), "C:/Temp".to_string()),
                 (
@@ -809,18 +902,23 @@ mod tests {
                 ),
                 ("CUSTOM_TOOL_FLAG".to_string(), "enabled".to_string()),
             ]),
-            ..mediapm_conductor::ToolConfigSpec::default()
+            ..mediapm_conductor::ToolRuntime::default()
         };
 
         remove_redundant_inherited_env_vars_from_tool_config(
-            &mut config,
+            &mut runtime,
             &["systemroot".to_string(), "TEMP".to_string()],
         );
 
-        assert!(!config.env_vars.contains_key("SYSTEMROOT"));
-        assert!(!config.env_vars.contains_key("Temp"));
-        assert!(config.env_vars.contains_key(MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV));
-        assert_eq!(config.env_vars.get("CUSTOM_TOOL_FLAG").map(String::as_str), Some("enabled"));
+        assert!(!runtime.inherited_env_vars.contains_key("SYSTEMROOT"));
+        assert!(!runtime.inherited_env_vars.contains_key("Temp"));
+        assert!(
+            runtime.inherited_env_vars.contains_key(MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV)
+        );
+        assert_eq!(
+            runtime.inherited_env_vars.get("CUSTOM_TOOL_FLAG").map(String::as_str),
+            Some("enabled")
+        );
     }
 
     /// Verifies internal launchers do not use tag-only skip mode so stale
@@ -844,12 +942,15 @@ mod tests {
             ..MediaPmState::default()
         };
 
-        let machine = MachineNickelDocument {
+        let machine = NickelDocument {
             tools: BTreeMap::from([(
                 "mediapm.tools.media-tagger+mediapm-internal@latest".to_string(),
-                mediapm_conductor::ToolSpec::default(),
+                ToolSpec {
+                    name: "mediapm.tools.media-tagger+mediapm-internal@latest".to_string(),
+                    ..ToolSpec::default()
+                },
             )]),
-            ..MachineNickelDocument::default()
+            ..NickelDocument::default()
         };
 
         assert!(!should_skip_tag_update_check(
@@ -880,29 +981,27 @@ mod tests {
             ..MediaPmState::default()
         };
 
-        let machine = MachineNickelDocument {
+        let machine = NickelDocument {
             tools: BTreeMap::from([(
                 active_tool_id.clone(),
                 ToolSpec {
+                    name: active_tool_id.clone(),
                     kind: ToolKindSpec::Executable {
                         command: vec!["linux/yt-dlp".to_string()],
                         env_vars: BTreeMap::new(),
                         success_codes: vec![0],
                     },
+                    runtime: mediapm_conductor::ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "linux/yt-dlp".to_string(),
+                            Hash::from_content(b"yt-dlp").to_string(),
+                        )]),
+                        ..mediapm_conductor::ToolRuntime::default()
+                    },
                     ..ToolSpec::default()
                 },
             )]),
-            tool_configs: BTreeMap::from([(
-                active_tool_id,
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(
-                        "linux/yt-dlp".to_string(),
-                        Hash::from_content(b"yt-dlp"),
-                    )])),
-                    ..ToolConfigSpec::default()
-                },
-            )]),
-            ..MachineNickelDocument::default()
+            ..NickelDocument::default()
         };
 
         assert!(!should_skip_tag_update_check(&requirement, "yt-dlp", &lock, &machine, false,));
@@ -976,29 +1075,27 @@ mod tests {
             ..MediaPmState::default()
         };
 
-        let machine = MachineNickelDocument {
+        let machine = NickelDocument {
             tools: BTreeMap::from([(
                 active_tool_id.clone(),
                 ToolSpec {
+                    name: active_tool_id,
                     kind: ToolKindSpec::Executable {
                         command: vec![command_selector],
                         env_vars: BTreeMap::new(),
                         success_codes: vec![0],
                     },
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([(
+                            "windows/ffmpeg.exe".to_string(),
+                            Hash::from_content(b"windows").to_string(),
+                        )]),
+                        ..ToolRuntime::default()
+                    },
                     ..ToolSpec::default()
                 },
             )]),
-            tool_configs: BTreeMap::from([(
-                active_tool_id,
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([(
-                        "windows/ffmpeg.exe".to_string(),
-                        Hash::from_content(b"windows"),
-                    )])),
-                    ..ToolConfigSpec::default()
-                },
-            )]),
-            ..MachineNickelDocument::default()
+            ..NickelDocument::default()
         };
 
         assert!(!should_skip_tag_update_check(&requirement, "ffmpeg", &lock, &machine, false,));
@@ -1025,30 +1122,31 @@ mod tests {
             ..MediaPmState::default()
         };
 
-        let machine = MachineNickelDocument {
+        let machine = NickelDocument {
             tools: BTreeMap::from([(
                 active_tool_id.clone(),
                 ToolSpec {
+                    name: active_tool_id,
                     kind: ToolKindSpec::Executable {
                         command: vec![command_selector],
                         env_vars: BTreeMap::new(),
                         success_codes: vec![0],
                     },
+                    runtime: ToolRuntime {
+                        content_map: BTreeMap::from([
+                            (
+                                "windows/ffmpeg.exe".to_string(),
+                                Hash::from_content(b"windows").to_string(),
+                            ),
+                            ("linux/ffmpeg".to_string(), Hash::from_content(b"linux").to_string()),
+                            ("macos/ffmpeg".to_string(), Hash::from_content(b"macos").to_string()),
+                        ]),
+                        ..ToolRuntime::default()
+                    },
                     ..ToolSpec::default()
                 },
             )]),
-            tool_configs: BTreeMap::from([(
-                active_tool_id,
-                ToolConfigSpec {
-                    content_map: Some(BTreeMap::from([
-                        ("windows/ffmpeg.exe".to_string(), Hash::from_content(b"windows")),
-                        ("linux/ffmpeg".to_string(), Hash::from_content(b"linux")),
-                        ("macos/ffmpeg".to_string(), Hash::from_content(b"macos")),
-                    ])),
-                    ..ToolConfigSpec::default()
-                },
-            )]),
-            ..MachineNickelDocument::default()
+            ..NickelDocument::default()
         };
 
         assert!(should_skip_tag_update_check(&requirement, "ffmpeg", &lock, &machine, false,));
@@ -1377,26 +1475,24 @@ mod tests {
             },
         );
 
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
             ToolSpec {
+                name: "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec!["windows/ffmpeg/bin/ffmpeg.exe".to_string()],
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "windows/ffmpeg/bin/ffmpeg.exe".to_string(),
+                        Hash::from_content(b"ffmpeg-v7.1").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
                 ..ToolSpec::default()
-            },
-        );
-        machine.tool_configs.insert(
-            "mediapm.tools.ffmpeg+github-releases-btbn-ffmpeg-builds@v7.1".to_string(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "windows/ffmpeg/bin/ffmpeg.exe".to_string(),
-                    Hash::from_content(b"ffmpeg-v7.1"),
-                )])),
-                ..ToolConfigSpec::default()
             },
         );
         let selection = resolve_companion_ffmpeg_selection(
@@ -1445,26 +1541,24 @@ mod tests {
         let mut lock = MediaPmState::default();
         lock.active_tools.insert("ffmpeg".to_string(), tool_id.to_string());
 
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             tool_id.to_string(),
             ToolSpec {
+                name: tool_id.to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("{host_os}/{ffmpeg_file_name}")],
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        format!("{host_os}/{ffmpeg_file_name}"),
+                        Hash::from_content(b"ffmpeg").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
                 ..ToolSpec::default()
-            },
-        );
-        machine.tool_configs.insert(
-            tool_id.to_string(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    format!("{host_os}/{ffmpeg_file_name}"),
-                    Hash::from_content(b"ffmpeg"),
-                )])),
-                ..ToolConfigSpec::default()
             },
         );
 
@@ -1519,26 +1613,24 @@ mod tests {
             },
         );
 
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
             ToolSpec {
+                name: "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec!["windows/deno/deno.exe".to_string()],
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        "windows/deno/deno.exe".to_string(),
+                        Hash::from_content(b"deno-v2.5.0").to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
                 ..ToolSpec::default()
-            },
-        );
-        machine.tool_configs.insert(
-            "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
-            ToolConfigSpec {
-                content_map: Some(BTreeMap::from([(
-                    "windows/deno/deno.exe".to_string(),
-                    Hash::from_content(b"deno-v2.5.0"),
-                )])),
-                ..ToolConfigSpec::default()
             },
         );
 
@@ -1585,10 +1677,11 @@ mod tests {
             },
         );
 
-        let mut machine = MachineNickelDocument::default();
+        let mut machine = NickelDocument::default();
         machine.tools.insert(
             "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
             ToolSpec {
+                name: "mediapm.tools.deno+github-releases-denoland-deno@v2.5.0".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec!["windows/deno/deno.exe".to_string()],
                     env_vars: BTreeMap::new(),
@@ -1634,7 +1727,7 @@ mod tests {
             &requirement,
             &BTreeMap::new(),
             &MediaPmState::default(),
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
         )
         .expect_err("unknown deno selector should fail");
 
@@ -1722,7 +1815,7 @@ mod tests {
             &requirement,
             &BTreeMap::new(),
             &MediaPmState::default(),
-            &MachineNickelDocument::default(),
+            &NickelDocument::default(),
         )
         .expect_err("unknown selector should fail");
 
@@ -1750,30 +1843,38 @@ mod tests {
         let shared_hash = Hash::from_content(b"shared-companion-bytes");
         let unique_hash = Hash::from_content(b"unique-bytes");
 
-        let machine = MachineNickelDocument {
-            tool_configs: BTreeMap::from([
+        let machine = NickelDocument {
+            tools: BTreeMap::from([
                 (
                     "mediapm.tools.yt-dlp@new".to_string(),
-                    ToolConfigSpec {
-                        content_map: Some(BTreeMap::from([(
-                            "linux/deno/deno".to_string(),
-                            shared_hash,
-                        )])),
-                        ..ToolConfigSpec::default()
+                    ToolSpec {
+                        name: "mediapm.tools.yt-dlp@new".to_string(),
+                        runtime: ToolRuntime {
+                            content_map: BTreeMap::from([(
+                                "linux/deno/deno".to_string(),
+                                shared_hash.to_string(),
+                            )]),
+                            ..ToolRuntime::default()
+                        },
+                        ..ToolSpec::default()
                     },
                 ),
                 (
                     "mediapm.tools.ffmpeg@new".to_string(),
-                    ToolConfigSpec {
-                        content_map: Some(BTreeMap::from([(
-                            "linux/ffmpeg".to_string(),
-                            unique_hash,
-                        )])),
-                        ..ToolConfigSpec::default()
+                    ToolSpec {
+                        name: "mediapm.tools.ffmpeg@new".to_string(),
+                        runtime: ToolRuntime {
+                            content_map: BTreeMap::from([(
+                                "linux/ffmpeg".to_string(),
+                                unique_hash.to_string(),
+                            )]),
+                            ..ToolRuntime::default()
+                        },
+                        ..ToolSpec::default()
                     },
                 ),
             ]),
-            ..MachineNickelDocument::default()
+            ..NickelDocument::default()
         };
 
         assert!(is_hash_still_referenced_by_tool_configs(&machine, shared_hash));

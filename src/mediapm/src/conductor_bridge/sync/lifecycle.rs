@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 use mediapm_cas::Hash;
-use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
+use mediapm_conductor::{NickelDocument, ToolKindSpec};
 
 use crate::config::MediaPmState;
 use crate::config::ToolRequirement;
@@ -19,7 +19,7 @@ pub(super) fn should_skip_tag_update_check(
     requirement: &ToolRequirement,
     tool_name: &str,
     lock: &MediaPmState,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     check_tag_updates: bool,
 ) -> bool {
     // yt-dlp carries same-step companion dependencies (ffmpeg + deno) that
@@ -44,21 +44,16 @@ pub(super) fn should_skip_tag_update_check(
         return false;
     };
 
-    let Some(tool_spec) = machine.tools.get(active_tool_id) else {
-        return false;
-    };
-    let Some(tool_config) = machine.tool_configs.get(active_tool_id) else {
-        return false;
-    };
-    let Some(content_map) = tool_config.content_map.as_ref() else {
+    let Some(tool_spec) = machine.tools.values().find(|t| t.name == *active_tool_id) else {
         return false;
     };
 
-    let ToolKindSpec::Executable { command, .. } = &tool_spec.kind else {
-        return false;
+    let command_parts = match &tool_spec.kind {
+        ToolKindSpec::Executable { command, .. } => command.clone(),
+        _ => return false,
     };
 
-    validate_tool_command(tool_name, command, content_map).is_ok()
+    validate_tool_command(tool_name, &command_parts, &tool_spec.runtime.content_map).is_ok()
 }
 
 /// Returns true when one requirement selects only by moving tag.
@@ -76,15 +71,14 @@ pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
 /// Returns whether any current machine tool config still references `hash`.
 #[must_use]
 pub(super) fn is_hash_still_referenced_by_tool_configs(
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     hash: Hash,
 ) -> bool {
-    machine.tool_configs.values().any(|config| {
-        config
-            .content_map
-            .as_ref()
-            .is_some_and(|content_map| content_map.values().any(|candidate| *candidate == hash))
-    })
+    let hash_str = hash.to_string();
+    machine
+        .tools
+        .values()
+        .any(|tool| tool.runtime.content_map.values().any(|candidate| *candidate == hash_str))
 }
 
 /// Resolves lockfile version label from provisioned identity metadata.

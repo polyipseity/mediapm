@@ -16,8 +16,7 @@ use mediapm::{
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
-    ExternalContentRef, MachineNickelDocument, ToolConfigSpec, ToolKindSpec, ToolSpec,
-    decode_machine_document, encode_machine_document,
+    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
 };
 use serde::{Deserialize, Serialize};
 
@@ -134,8 +133,8 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         .collect::<BTreeMap<_, _>>();
     save_mediapm_document(&service.paths().mediapm_ncl, &document)?;
 
-    let mut machine: MachineNickelDocument =
-        decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+    let machine_bytes = fs::read(&service.paths().conductor_machine_ncl)?;
+    let mut machine: NickelDocument = decode_document(&machine_bytes)?;
 
     let mut tool_ids = Vec::new();
     for logical_tool_name in TOOL_NAMES {
@@ -149,33 +148,31 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        machine.external_data.insert(
-            payload_hash,
-            ExternalContentRef {
-                description: Some(format!("dummy payload for {logical_tool_name}")),
-                save: None,
+        let (name, version) = tool_id.split_once('@').unwrap_or((&tool_id, "latest"));
+
+        machine.tools.insert(
+            name.to_string(),
+            ToolSpec {
+                name: name.to_string(),
+                version: version.to_string(),
+                kind: ToolKindSpec::Executable {
+                    command: vec![relative_payload_path.clone()],
+                    env_vars: BTreeMap::new(),
+                    success_codes: vec![0],
+                },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(
+                        relative_payload_path,
+                        payload_hash.to_string(),
+                    )]),
+                    ..ToolRuntime::default()
+                },
+                ..ToolSpec::default()
             },
         );
-
-        let tool_spec = ToolSpec {
-            kind: ToolKindSpec::Executable {
-                command: vec![relative_payload_path.clone()],
-                env_vars: BTreeMap::new(),
-                success_codes: vec![0],
-            },
-            ..ToolSpec::default()
-        };
-        machine.tools.insert(tool_id.clone(), tool_spec);
-
-        let tool_config = ToolConfigSpec {
-            description: Some(format!("dummy managed tool config for {logical_tool_name}")),
-            content_map: Some(BTreeMap::from([(relative_payload_path, payload_hash)])),
-            ..ToolConfigSpec::default()
-        };
-        machine.tool_configs.insert(tool_id, tool_config);
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
+    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
 
     let mediapm_ncl = service.paths().mediapm_ncl.clone();
     let conductor_user_ncl = service.paths().conductor_user_ncl.clone();
@@ -217,7 +214,7 @@ mod tests {
     use std::fs;
 
     use mediapm::load_mediapm_document;
-    use mediapm_conductor::decode_machine_document;
+    use mediapm_conductor::{NickelDocument, decode_document};
 
     use super::run_add_tools_example;
 
@@ -239,13 +236,19 @@ mod tests {
         );
 
         let machine_bytes = fs::read(&manifest.conductor_machine_ncl).expect("read machine doc");
-        let machine = decode_machine_document(&machine_bytes).expect("decode machine doc");
+        let machine: NickelDocument = decode_document(&machine_bytes).expect("decode machine doc");
 
         for tool_id in &manifest.tool_ids {
-            assert!(machine.tools.contains_key(tool_id), "expected tool '{tool_id}'");
-            let config =
-                machine.tool_configs.get(tool_id).expect("expected tool config for dummy tool");
-            assert!(config.content_map.as_ref().is_some_and(|entries| !entries.is_empty()));
+            let (name, version) = tool_id.split_once('@').unwrap_or((tool_id, "latest"));
+            let tool = machine
+                .tools
+                .iter()
+                .find(|t| t.name == name && t.version == version)
+                .expect("expected tool '{tool_id}'");
+            assert!(
+                !tool.runtime.content_map.is_empty(),
+                "expected content map entries for dummy tool '{tool_id}'"
+            );
         }
     }
 }

@@ -1,14 +1,11 @@
 //! Orchestration state loading, variant source resolution, and instance matching.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use mediapm_cas::{CasApi, CasError, FileSystemCas, Hash};
-use mediapm_conductor::model::config::ImpureTimestamp;
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    ConductorError, InputBinding, MachineNickelDocument, OrchestrationState, ToolCallInstance,
-    ToolKindSpec, ToolSpec, decode_state, decode_state_document,
+    NickelDocument, OrchestrationState, OutputCaptureSpec, ToolCallInstance, decode_state_json,
 };
 
 use crate::conductor_bridge::{
@@ -20,23 +17,17 @@ use crate::config::{
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
-use super::zip::{
-    extract_zip_member_bytes, parse_external_data_reference, parse_step_output_reference,
-};
+use super::zip::{extract_zip_member_bytes, parse_step_output_reference};
 use super::{
     ExpectedStepInputs, InputBindingHashResolution, MaterializationLookupContext,
     RequiredStepOutputNames, RequiredStepZipMembers, StepOutputHashes, VariantSourceBytes,
 };
 
-/// Loads persisted orchestration state referenced by runtime state pointer.
+/// Loads persisted orchestration state from the runtime state document.
 ///
-/// Returns `None` when the volatile runtime state document is absent, empty, or
-/// does not carry a state pointer yet. A missing pointed CAS object is also
-/// treated as unavailable state so sync can continue in mixed-backend flows
-/// (for example in-memory conductor bootstrapping with filesystem materializer).
-pub(super) async fn load_runtime_orchestration_state(
+/// Returns `None` when the volatile runtime state document is absent or empty.
+pub(super) fn load_runtime_orchestration_state(
     paths: &MediaPmPaths,
-    cas: &FileSystemCas,
 ) -> Result<Option<OrchestrationState>, MediaPmError> {
     if !paths.conductor_state_config.exists() {
         return Ok(None);
@@ -53,38 +44,13 @@ pub(super) async fn load_runtime_orchestration_state(
         return Ok(None);
     }
 
-    let state_document = decode_state_document(&state_bytes).map_err(|error| {
-        MediaPmError::Workflow(format!(
-            "decoding conductor runtime state document '{}' failed: {error}",
+    match decode_state_json(&state_bytes) {
+        Ok(state) => Ok(Some(state)),
+        Err(error) => Err(MediaPmError::Serialization(format!(
+            "decoding runtime orchestration state '{}' failed: {error}",
             paths.conductor_state_config.display()
-        ))
-    })?;
-    let Some(state_pointer) = state_document.state_pointer else {
-        return Ok(None);
-    };
-
-    let orchestration_state = match decode_state(cas, state_pointer).await {
-        Ok(state) => Some(state),
-        Err(ConductorError::Cas(CasError::NotFound(missing))) => {
-            // Mixed-backend flow: the conductor writes state to a
-            // potentially different CAS backend than the materializer
-            // reads from (e.g. in-memory conductor with filesystem
-            // materializer). Treat unavailable blobs as no state so
-            // sync can continue gracefully.
-            eprintln!(
-                "orchestration state blob '{missing}' not found in materializer CAS; \
-                 skipping persisted-state load (mixed-backend)"
-            );
-            return Ok(None);
-        }
-        Err(error) => {
-            return Err(MediaPmError::Serialization(format!(
-                "decoding persisted orchestration-state blob '{state_pointer}' failed: {error}"
-            )));
-        }
-    };
-
-    Ok(orchestration_state)
+        ))),
+    }
 }
 
 /// Resolves one hierarchy source reference.
@@ -293,7 +259,7 @@ async fn resolve_variant_hash_from_workflow_state(
     };
 
     let workflow_id = managed_workflow_id_for_media(media_id, source);
-    let Some(workflow) = lookup.machine.workflows.get(&workflow_id) else {
+    let Some(workflow) = lookup.machine.workflows.iter().find(|w| w.name == workflow_id) else {
         return Ok(None);
     };
 
@@ -355,10 +321,10 @@ async fn resolve_variant_hash_from_workflow_state(
 /// instance cannot be resolved from the current persisted orchestration state.
 pub(super) async fn resolve_workflow_step_output_hashes(
     cas: &FileSystemCas,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     state: &OrchestrationState,
     workflow: &mediapm_conductor::WorkflowSpec,
-    tool_registry: &BTreeMap<String, ToolRegistryRecord>,
+    _tool_registry: &BTreeMap<String, ToolRegistryRecord>,
 ) -> Result<Option<StepOutputHashes>, MediaPmError> {
     let mut step_outputs = StepOutputHashes::new();
     let required_step_output_names = collect_required_step_output_names(workflow);
@@ -371,49 +337,30 @@ pub(super) async fn resolve_workflow_step_output_hashes(
             return Ok(None);
         };
 
-        let expected_metadata = machine.tools.get(&step.tool).ok_or_else(|| {
-            MediaPmError::Workflow(format!(
+        let Some(expected_tool) = machine.tools.values().find(|t| t.name == step.tool) else {
+            return Err(MediaPmError::Workflow(format!(
                 "workflow step '{}' references unknown tool '{}' in machine config",
                 step.id, step.tool
-            ))
-        })?;
+            )));
+        };
+        let expected_tool_id = expected_tool.id();
 
         let required_output_names =
             required_step_output_names.get(&step.id).cloned().unwrap_or_default();
         let required_zip_members = required_step_zip_members.get(&step.id);
 
-        let mut matching_instances = state
-            .instances
+        let mut matching_instances: Vec<_> = state
+            .tool_call_instances
             .iter()
-            .filter_map(|(instance_id, instance)| {
-                let exact_tool_ok = instance.tool_name == step.tool;
-                let tool_ok = exact_tool_ok
-                    || tool_registry_logical_name(tool_registry, &instance.tool_name)
-                        .zip(tool_registry_logical_name(tool_registry, &step.tool))
-                        .is_some_and(|(a, b)| a == b);
-                let meta_ok = if exact_tool_ok {
-                    tool_metadata_matches(expected_metadata, &instance.metadata)
-                } else {
-                    tool_metadata_matches_identity(expected_metadata, &instance.metadata)
-                };
-                let inputs_ok = instance_matches_expected_inputs(instance, &expected_inputs);
-                let outputs_ok = instance_matches_expected_output_names(instance, &step.outputs);
-                let required_ok =
-                    instance_matches_required_output_names(instance, &required_output_names);
-
-                (tool_ok && meta_ok && inputs_ok && outputs_ok && required_ok)
-                    .then_some((instance_id, instance))
+            .filter(|(_, instance)| {
+                instance.tool_id == expected_tool_id
+                    && instance_matches_expected_inputs(instance, &expected_inputs)
+                    && instance_matches_expected_output_names(instance, &step.outputs)
+                    && instance_matches_required_output_names(instance, &required_output_names)
             })
-            .collect::<Vec<_>>();
+            .collect();
 
-        matching_instances.sort_by(|(left_id, left_instance), (right_id, right_instance)| {
-            compare_instance_recency(
-                left_id.as_str(),
-                left_instance.impure_timestamp,
-                right_id.as_str(),
-                right_instance.impure_timestamp,
-            )
-        });
+        matching_instances.sort_by(|(a_id, _), (b_id, _)| a_id.cmp(b_id));
 
         let mut selected_instance = None;
         for (_, instance) in &matching_instances {
@@ -439,7 +386,7 @@ pub(super) async fn resolve_workflow_step_output_hashes(
         let output_hashes = instance
             .outputs
             .iter()
-            .map(|(name, output)| (name.clone(), output.hash))
+            .map(|output| (output.name.clone(), output.hash))
             .collect::<BTreeMap<_, _>>();
         step_outputs.insert(step.id.clone(), output_hashes);
     }
@@ -458,17 +405,13 @@ fn collect_required_step_output_names(
     let mut required = RequiredStepOutputNames::new();
 
     for step in &workflow.steps {
-        for output_name in step.outputs.keys() {
-            required.entry(step.id.clone()).or_default().insert(output_name.clone());
+        for output in step.outputs.values() {
+            required.entry(step.id.clone()).or_default().insert(output.name.clone());
         }
     }
 
     for step in &workflow.steps {
-        for binding in step.inputs.values() {
-            let InputBinding::String(value) = binding else {
-                continue;
-            };
-
+        for value in step.inputs.values() {
             if let Some(reference) = parse_step_output_reference(value) {
                 required
                     .entry(reference.step_id.to_string())
@@ -488,11 +431,7 @@ fn collect_required_step_zip_members(
     let mut required = RequiredStepZipMembers::new();
 
     for step in &workflow.steps {
-        for binding in step.inputs.values() {
-            let InputBinding::String(value) = binding else {
-                continue;
-            };
-
+        for value in step.inputs.values() {
             let Some(reference) = parse_step_output_reference(value) else {
                 continue;
             };
@@ -518,36 +457,9 @@ fn instance_matches_required_output_names(
     instance: &ToolCallInstance,
     required_output_names: &BTreeSet<String>,
 ) -> bool {
-    required_output_names.iter().all(|output_name| instance.outputs.contains_key(output_name))
-}
-
-/// Compares two matching instances by recency for deterministic selection.
-///
-/// Higher recency wins:
-/// 1. presence of impure timestamp,
-/// 2. larger `epoch_seconds`,
-/// 3. larger `subsec_nanos`,
-/// 4. lexicographically larger instance id (stable tie-breaker).
-fn compare_instance_recency(
-    left_id: &str,
-    left_timestamp: Option<ImpureTimestamp>,
-    right_id: &str,
-    right_timestamp: Option<ImpureTimestamp>,
-) -> Ordering {
-    let left_rank = instance_recency_rank(left_id, left_timestamp);
-    let right_rank = instance_recency_rank(right_id, right_timestamp);
-    right_rank.cmp(&left_rank)
-}
-
-/// Builds one sortable recency tuple for runtime instance selection.
-fn instance_recency_rank(
-    instance_id: &str,
-    timestamp: Option<ImpureTimestamp>,
-) -> (bool, u64, u32, &str) {
-    match timestamp {
-        Some(timestamp) => (true, timestamp.epoch_seconds, timestamp.subsec_nanos, instance_id),
-        None => (false, 0, 0, instance_id),
-    }
+    required_output_names
+        .iter()
+        .all(|output_name| instance.outputs.iter().any(|o| o.name == *output_name))
 }
 
 /// Returns whether required outputs are readable from CAS for one candidate.
@@ -566,7 +478,7 @@ async fn instance_has_materializable_required_outputs(
     required_zip_members: Option<&BTreeMap<String, BTreeSet<String>>>,
 ) -> bool {
     for output_name in required_output_names {
-        let Some(output_ref) = instance.outputs.get(output_name) else {
+        let Some(output_ref) = instance.outputs.iter().find(|o| o.name == *output_name) else {
             return false;
         };
 
@@ -594,79 +506,19 @@ async fn instance_has_materializable_required_outputs(
     true
 }
 
-/// Returns true when two tool metadata specs represent the same runtime tool.
-///
-/// Builtin metadata persisted in orchestration state intentionally remains in a
-/// strict minimal wire shape (`kind`/`name`/`version`) while decoded machine
-/// config builtins may carry runtime defaults for `is_impure` and outputs.
-/// Materializer instance matching must therefore compare builtin identity by
-/// name/version only, while executable tools keep full-struct equality.
-fn tool_metadata_matches(expected: &ToolSpec, actual: &ToolSpec) -> bool {
-    let result = match (&expected.kind, &actual.kind) {
-        (
-            ToolKindSpec::Builtin { name: expected_name, version: expected_version },
-            ToolKindSpec::Builtin { name: actual_name, version: actual_version },
-        ) => expected_name == actual_name && expected_version == actual_version,
-        (ToolKindSpec::Executable { .. }, ToolKindSpec::Executable { .. }) => expected == actual,
-        _ => false,
-    };
-    if !result {
-        tracing::trace!(
-            "[TRACE-META-MISMATCH] expected={:?} actual={:?}",
-            serde_json::to_string(expected).unwrap_or_default(),
-            serde_json::to_string(actual).unwrap_or_default(),
-        );
-    }
-    result
-}
-
-/// Looks up the logical tool name for a tool_id from the tool registry.
-///
-/// Returns `None` when the tool_id is not in the registry (e.g., builtin tools
-/// or legacy instances created before the registry existed).
-fn tool_registry_logical_name<'a>(
-    registry: &'a BTreeMap<String, ToolRegistryRecord>,
-    tool_id: &str,
-) -> Option<&'a str> {
-    Some(registry.get(tool_id)?.name.as_str())
-}
-
-/// Returns true when two executable ToolSpecs share the same identity-relevant
-/// fields, ignoring the provisioning-dependent `command` path.
-///
-/// Fields compared: `is_impure`, `inputs`, `outputs`, `env_vars`, `success_codes`.
-fn tool_metadata_matches_identity(expected: &ToolSpec, actual: &ToolSpec) -> bool {
-    if expected.is_impure != actual.is_impure
-        || expected.inputs != actual.inputs
-        || expected.outputs != actual.outputs
-    {
-        return false;
-    }
-    match (&expected.kind, &actual.kind) {
-        (
-            ToolKindSpec::Executable {
-                env_vars: expected_env, success_codes: expected_codes, ..
-            },
-            ToolKindSpec::Executable { env_vars: actual_env, success_codes: actual_codes, .. },
-        ) => expected_env == actual_env && expected_codes == actual_codes,
-        // Builtins: delegate to existing name/version comparison.
-        _ => tool_metadata_matches(expected, actual),
-    }
-}
-
 /// Resolves expected input hashes for one workflow step from concrete bindings.
 ///
 /// Returns `None` when the step depends on unresolved prior step output hashes.
 async fn resolve_expected_input_hashes(
     cas: &FileSystemCas,
-    machine: &MachineNickelDocument,
-    step_inputs: &BTreeMap<String, InputBinding>,
+    machine: &NickelDocument,
+    step_inputs: &BTreeMap<String, String>,
     step_outputs: &StepOutputHashes,
 ) -> Result<Option<ExpectedStepInputs>, MediaPmError> {
     let mut expected = ExpectedStepInputs::default();
 
-    for (input_name, binding) in step_inputs {
-        match resolve_input_binding_hash(cas, machine, binding, step_outputs).await? {
+    for (input_name, value) in step_inputs {
+        match resolve_input_binding_hash(cas, machine, value, step_outputs).await? {
             InputBindingHashResolution::Resolved(hash) => {
                 expected.resolved_hashes.insert(input_name.clone(), hash);
             }
@@ -686,67 +538,40 @@ async fn resolve_expected_input_hashes(
 ///
 /// This mirrors conductor runtime semantics:
 /// - scalar values hash raw UTF-8 bytes,
-/// - list values hash concatenated per-element Blake3 hashes,
-/// - `${external_data.<hash>}` resolves directly to the declared CAS hash,
 /// - `${step_output.<step_id>.<output_name>}` resolves from prior step outputs.
 /// - `${step_output.<step_id>.<output_name>:zip(<member>)}` resolves ZIP
 ///   member bytes from that output before hashing.
 async fn resolve_input_binding_hash(
     cas: &FileSystemCas,
-    machine: &MachineNickelDocument,
-    binding: &InputBinding,
+    _machine: &NickelDocument,
+    value: &str,
     step_outputs: &StepOutputHashes,
 ) -> Result<InputBindingHashResolution, MediaPmError> {
-    match binding {
-        InputBinding::String(value) => {
-            if let Some(reference) = parse_step_output_reference(value) {
-                let Some(hash) = step_outputs
-                    .get(reference.step_id)
-                    .and_then(|outputs| outputs.get(reference.output_name))
-                    .copied()
-                else {
-                    return Ok(InputBindingHashResolution::MissingPriorStepOutput);
-                };
+    if let Some(reference) = parse_step_output_reference(value) {
+        let Some(hash) = step_outputs
+            .get(reference.step_id)
+            .and_then(|outputs| outputs.get(reference.output_name))
+            .copied()
+        else {
+            return Ok(InputBindingHashResolution::MissingPriorStepOutput);
+        };
 
-                if let Some(zip_member) = reference.zip_member {
-                    let Ok(zip_bytes) = cas.get(hash).await else {
-                        return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
-                    };
-                    let Ok(member_bytes) = extract_zip_member_bytes(zip_bytes.as_ref(), zip_member)
-                    else {
-                        return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
-                    };
-                    return Ok(InputBindingHashResolution::Resolved(Hash::from_content(
-                        member_bytes.as_slice(),
-                    )));
-                }
-
-                return Ok(InputBindingHashResolution::Resolved(hash));
-            }
-
-            if let Some(external_hash) = parse_external_data_reference(value)? {
-                return machine
-                    .external_data
-                    .contains_key(&external_hash)
-                    .then_some(InputBindingHashResolution::Resolved(external_hash))
-                    .ok_or_else(|| {
-                        MediaPmError::Workflow(format!(
-                            "workflow binding references unknown external_data hash '{external_hash}'"
-                        ))
-                    });
-            }
-
-            Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
+        if let Some(zip_member) = reference.zip_member {
+            let Ok(zip_bytes) = cas.get(hash).await else {
+                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            };
+            let Ok(member_bytes) = extract_zip_member_bytes(zip_bytes.as_ref(), zip_member) else {
+                return Ok(InputBindingHashResolution::MissingMaterializedStepOutput);
+            };
+            return Ok(InputBindingHashResolution::Resolved(Hash::from_content(
+                member_bytes.as_slice(),
+            )));
         }
-        InputBinding::StringList(values) => {
-            // Composite hash from concatenated per-element hashes (must match
-            // conductor runtime's Hash::composite and persist_resolved_list_input).
-            let element_hashes: Vec<Hash> =
-                values.iter().map(|element| Hash::from_content(element.as_bytes())).collect();
-            let hash = Hash::composite(&element_hashes);
-            Ok(InputBindingHashResolution::Resolved(hash))
-        }
+
+        return Ok(InputBindingHashResolution::Resolved(hash));
     }
+
+    Ok(InputBindingHashResolution::Resolved(Hash::from_content(value.as_bytes())))
 }
 
 /// Returns true when one runtime instance contains all expected input hashes.
@@ -758,12 +583,16 @@ pub(super) fn instance_matches_expected_inputs(
     instance: &ToolCallInstance,
     expected_inputs: &ExpectedStepInputs,
 ) -> bool {
-    expected_inputs.resolved_hashes.iter().all(|(name, hash)| {
-        instance.inputs.get(name).is_some_and(|resolved| resolved.hash == *hash)
+    expected_inputs.resolved_hashes.iter().all(|(name, expected_hash)| {
+        instance
+            .inputs
+            .iter()
+            .find(|resolved| resolved.key == *name)
+            .is_some_and(|resolved| Hash::from_content(resolved.value.as_bytes()) == *expected_hash)
     }) && expected_inputs
         .unresolved_hash_input_names
         .iter()
-        .all(|name| instance.inputs.contains_key(name))
+        .all(|name| instance.inputs.iter().any(|i| i.key == *name))
 }
 
 /// Returns true when one runtime instance exposes all step-declared outputs.
@@ -774,7 +603,7 @@ pub(super) fn instance_matches_expected_inputs(
 /// matching to instances that provide the workflow step's expected output keys.
 fn instance_matches_expected_output_names(
     instance: &ToolCallInstance,
-    expected_outputs: &BTreeMap<String, mediapm_conductor::OutputPolicy>,
+    expected_outputs: &BTreeMap<String, OutputCaptureSpec>,
 ) -> bool {
-    expected_outputs.keys().all(|output_name| instance.outputs.contains_key(output_name))
+    expected_outputs.values().all(|output| instance.outputs.iter().any(|o| o.name == output.name))
 }

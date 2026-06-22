@@ -398,6 +398,7 @@ pub(super) fn register_zip_file_entry(
 }
 
 /// Parses exact `${external_data.<hash>}` references.
+#[allow(dead_code)]
 pub(super) fn parse_external_data_reference(value: &str) -> Result<Option<Hash>, MediaPmError> {
     let Some(hash_text) =
         value.strip_prefix("${external_data.").and_then(|text| text.strip_suffix('}'))

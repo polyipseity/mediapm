@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
-use mediapm_conductor::MachineNickelDocument;
+use mediapm_conductor::NickelDocument;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -222,14 +222,9 @@ pub(crate) fn first_non_empty_json_string(
 /// Resolves conductor CAS root from machine runtime storage with default fallback.
 pub(crate) fn resolve_conductor_cas_root(
     paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
+    _machine: &NickelDocument,
 ) -> PathBuf {
-    if let Some(raw) = machine.runtime.cas_store_dir.as_deref() {
-        let candidate = PathBuf::from(raw);
-        if candidate.is_absolute() { candidate } else { paths.root_dir.join(candidate) }
-    } else {
-        paths.runtime_root.join("store")
-    }
+    paths.runtime_root.join("store")
 }
 
 #[cfg(test)]

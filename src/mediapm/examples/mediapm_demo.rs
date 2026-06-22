@@ -35,9 +35,8 @@ use mediapm::{
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use mediapm_conductor::{
-    ExternalContentRef, MachineNickelDocument, SimpleConductor, ToolConfigSpec, ToolKindSpec,
-    ToolSpec, decode_machine_document, default_runtime_inherited_env_vars_for_host,
-    encode_machine_document,
+    NickelDocument, RuntimeStoragePaths, SimpleConductor, ToolKindSpec, ToolRuntime, ToolSpec,
+    decode_document, default_runtime_inherited_env_vars, encode_document,
 };
 use same_file::is_same_file;
 use serde::Serialize;
@@ -888,7 +887,12 @@ fn configure_document_for_local_tool_chain(
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
         // Explicit host default inherited env-var map.
         // Runtime still merges this map case-insensitively with host defaults.
-        inherited_env_vars: Some(default_runtime_inherited_env_vars_for_host()),
+        inherited_env_vars: {
+            let host_platform = std::env::consts::OS.to_ascii_lowercase();
+            let mut map = BTreeMap::new();
+            map.insert(host_platform, default_runtime_inherited_env_vars().into_keys().collect());
+            Some(map)
+        },
         // Machine-managed mediapm state path relative to workspace root.
         // Default: `.mediapm/state.ncl`.
         media_state_config: Some(".mediapm/state.ncl".to_string()),
@@ -1011,12 +1015,12 @@ fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleR
 
 /// Seeds one machine/lock pair with stale active tool ids for update checks.
 fn seed_old_synced_tools_state_for_update_precheck(
-    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    service: &MediaPmService<mediapm_cas::InMemoryCas>,
 ) -> ExampleResult<()> {
     service.refresh_runtime_configuration()?;
 
-    let mut machine: MachineNickelDocument =
-        decode_machine_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+    let mut machine: NickelDocument =
+        decode_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in local_demo_tool_requirements().into_keys() {
@@ -1030,30 +1034,21 @@ fn seed_old_synced_tools_state_for_update_precheck(
         let stale_hash = Hash::from_content(stale_payload.as_bytes());
         let stale_relative_path = format!("legacy/{logical_tool_name}/tool.bin");
 
-        machine.external_data.insert(
-            stale_hash,
-            ExternalContentRef {
-                description: Some(format!("stale payload for {logical_tool_name}")),
-                save: None,
-            },
-        );
         machine.tools.insert(
             stale_tool_id.clone(),
             ToolSpec {
+                name: stale_tool_id.clone(),
+                version: "old".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("./{stale_relative_path}")],
                     env_vars: BTreeMap::new(),
                     success_codes: vec![0],
                 },
+                runtime: ToolRuntime {
+                    content_map: BTreeMap::from([(stale_relative_path, stale_hash.to_string())]),
+                    ..ToolRuntime::default()
+                },
                 ..ToolSpec::default()
-            },
-        );
-        machine.tool_configs.insert(
-            stale_tool_id.clone(),
-            ToolConfigSpec {
-                description: Some(format!("stale managed tool config for {logical_tool_name}")),
-                content_map: Some(BTreeMap::from([(stale_relative_path, stale_hash)])),
-                ..ToolConfigSpec::default()
             },
         );
 
@@ -1070,7 +1065,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_machine_document(machine)?)?;
+    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
     save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
@@ -1078,7 +1073,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
 
 /// Executes tools-only stale-tool update precheck with empty media/hierarchy.
 async fn run_tools_update_precheck(
-    service: &MediaPmService<SimpleConductor<mediapm_cas::InMemoryCas>>,
+    service: &MediaPmService<mediapm_cas::InMemoryCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize, usize)> {
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
@@ -1103,10 +1098,9 @@ async fn run_tools_update_precheck(
 
 /// Clears machine workflows so final demo sync regenerates only desired media workflows.
 fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
-    let mut machine: MachineNickelDocument =
-        decode_machine_document(fs::read(machine_path)?.as_slice())?;
+    let mut machine: NickelDocument = decode_document(fs::read(machine_path)?.as_slice())?;
     machine.workflows.clear();
-    fs::write(machine_path, encode_machine_document(machine)?)?;
+    fs::write(machine_path, encode_document(machine)?)?;
     Ok(())
 }
 
@@ -1167,7 +1161,10 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let service = {
         let store_root = workspace_root.join(".mediapm").join("store");
         let file_system_cas = FileSystemCas::open(&store_root).await?;
-        let conductor = SimpleConductor::new(file_system_cas);
+        let conductor = SimpleConductor::new(
+            RuntimeStoragePaths::new(&workspace_root.join(".mediapm")),
+            file_system_cas,
+        );
         MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
     };
     if run_sync {
@@ -1296,9 +1293,6 @@ async fn main() -> ExampleResult<()> {
     println!("generated library root: {}", paths.library_root.display());
     println!("manifest: {}", paths.manifest_path.display());
     println!("sync executed: {run_sync}");
-    // Profile is written by conductor to <mediapm_dir>/profile.json when
-    // profiler_enabled is set in MediaRuntimeStorage (set above to Some(true)).
-    mediapm_conductor::print_profile_timing(&paths.workspace_root.join(".mediapm/profile.json"));
     Ok(())
 }
 

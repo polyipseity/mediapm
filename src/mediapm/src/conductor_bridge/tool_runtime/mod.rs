@@ -1,13 +1,13 @@
 //! Tool command, environment, and config-policy helpers.
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
 
 use mediapm_cas::Hash;
 use mediapm_conductor::model::config::ToolInputKind;
-use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, ToolConfigSpec, ToolInputSpec, ToolKindSpec, ToolOutputSpec,
-    ToolSpec,
-};
+use mediapm_conductor::{ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec};
+
+use super::legacy::{InputBinding, OutputCaptureKind, ToolConfigSpec, ToolOutputSpec};
 
 use super::constants::*;
 use crate::config::{
@@ -413,14 +413,23 @@ pub(crate) fn build_tool_spec(
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> ToolSpec {
     ToolSpec {
-        is_impure: is_internet_required_tool(tool_name),
-        inputs: build_tool_inputs(tool_name, ffmpeg_slot_limits),
         kind: ToolKindSpec::Executable {
             command: build_tool_command(tool_name, provisioned, ffmpeg_slot_limits),
             env_vars: BTreeMap::new(),
             success_codes: success_codes_for_tool(tool_name),
         },
-        outputs: build_tool_outputs(tool_name, ffmpeg_slot_limits),
+        name: tool_name.to_string(),
+        version: String::new(),
+        inputs: build_tool_inputs(tool_name, ffmpeg_slot_limits),
+        default_inputs: BTreeMap::new(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime {
+            content_map: BTreeMap::new(),
+            impure: is_internet_required_tool(tool_name),
+            inherited_env_vars: BTreeMap::new(),
+            max_concurrent_calls: default_max_concurrent_calls(tool_name),
+            max_retries: default_max_retries(tool_name),
+        },
     }
 }
 
@@ -441,53 +450,118 @@ fn build_tool_inputs(
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> BTreeMap<String, ToolInputSpec> {
     let mut inputs = BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), ToolInputSpec { kind: ToolInputKind::StringList }),
-        (INPUT_TRAILING_ARGS.to_string(), ToolInputSpec { kind: ToolInputKind::StringList }),
+        (
+            INPUT_LEADING_ARGS.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        ),
+        (
+            INPUT_TRAILING_ARGS.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        ),
     ]);
 
     for option_input in option_input_names_for_tool(tool_name) {
         let kind = if *option_input == "option_args" {
-            ToolInputKind::StringList
+            ToolInputKind::String
         } else {
             ToolInputKind::String
         };
-        inputs.insert((*option_input).to_string(), ToolInputSpec { kind });
+        inputs.insert(
+            (*option_input).to_string(),
+            ToolInputSpec { kind, description: String::new(), required: false },
+        );
     }
 
     if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        inputs.insert(INPUT_SOURCE_URL.to_string(), ToolInputSpec { kind: ToolInputKind::String });
+        inputs.insert(
+            INPUT_SOURCE_URL.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        );
     } else if tool_name.eq_ignore_ascii_case("ffmpeg") {
         for index in 0..ffmpeg_slot_limits.max_input_slots {
             inputs.insert(
                 ffmpeg_input_content_name(index),
-                ToolInputSpec { kind: ToolInputKind::String },
+                ToolInputSpec {
+                    kind: ToolInputKind::String,
+                    description: String::new(),
+                    required: false,
+                },
             );
         }
         for index in 1..ffmpeg_slot_limits.max_input_slots {
             inputs.insert(
                 ffmpeg_cover_slot_enabled_input_name(index),
-                ToolInputSpec { kind: ToolInputKind::String },
+                ToolInputSpec {
+                    kind: ToolInputKind::String,
+                    description: String::new(),
+                    required: false,
+                },
             );
         }
         for index in 0..ffmpeg_slot_limits.max_output_slots {
             inputs.insert(
                 ffmpeg_output_path_input_name(index),
-                ToolInputSpec { kind: ToolInputKind::String },
+                ToolInputSpec {
+                    kind: ToolInputKind::String,
+                    description: String::new(),
+                    required: false,
+                },
             );
         }
         inputs.insert(
             INPUT_FFMETADATA_CONTENT.to_string(),
-            ToolInputSpec { kind: ToolInputKind::String },
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
         );
     } else if tool_name.eq_ignore_ascii_case("sd") {
-        inputs.insert(INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String });
-        inputs.insert(INPUT_SD_PATTERN.to_string(), ToolInputSpec { kind: ToolInputKind::String });
+        inputs.insert(
+            INPUT_CONTENT.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        );
+        inputs.insert(
+            INPUT_SD_PATTERN.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        );
         inputs.insert(
             INPUT_SD_REPLACEMENT.to_string(),
-            ToolInputSpec { kind: ToolInputKind::String },
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
         );
     } else {
-        inputs.insert(INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String });
+        inputs.insert(
+            INPUT_CONTENT.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        );
     }
 
     inputs
@@ -507,7 +581,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_CONTENT.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex { path_regex: ffmpeg_output_file_regex(0) },
+                capture: OutputCaptureKind::FileRegex { path_regex: ffmpeg_output_file_regex(0) },
                 allow_empty: false,
             },
         );
@@ -516,29 +590,29 @@ fn build_tool_outputs(
             outputs.insert(
                 ffmpeg_output_capture_name(index),
                 ToolOutputSpec {
-                    capture: OutputCaptureSpec::FileRegex { path_regex: path_regex.clone() },
+                    capture: OutputCaptureKind::FileRegex { path_regex: path_regex.clone() },
                     allow_empty: false,
                 },
             );
             outputs.insert(
                 format!("{OUTPUT_CONTENT}_{index}"),
                 ToolOutputSpec {
-                    capture: OutputCaptureSpec::FileRegex { path_regex },
+                    capture: OutputCaptureKind::FileRegex { path_regex },
                     allow_empty: false,
                 },
             );
         }
     } else {
         let output_capture = if tool_name.eq_ignore_ascii_case("yt-dlp") {
-            OutputCaptureSpec::FileRegex { path_regex: YT_DLP_OUTPUT_CONTENT_REGEX.to_string() }
+            OutputCaptureKind::FileRegex { path_regex: YT_DLP_OUTPUT_CONTENT_REGEX.to_string() }
         } else if tool_name.eq_ignore_ascii_case("media-tagger") {
-            OutputCaptureSpec::File { path: MEDIA_TAGGER_OUTPUT_FILE.to_string() }
+            OutputCaptureKind::File { path: MEDIA_TAGGER_OUTPUT_FILE.to_string() }
         } else if tool_name.eq_ignore_ascii_case("rsgain") {
-            OutputCaptureSpec::FileRegex { path_regex: rsgain_output_file_regex() }
+            OutputCaptureKind::FileRegex { path_regex: rsgain_output_file_regex() }
         } else if tool_name.eq_ignore_ascii_case("sd") {
-            OutputCaptureSpec::File { path: SANDBOX_SD_INPUT_FILE.to_string() }
+            OutputCaptureKind::File { path: SANDBOX_SD_INPUT_FILE.to_string() }
         } else {
-            OutputCaptureSpec::File { path: SANDBOX_INPUT_FILE.to_string() }
+            OutputCaptureKind::File { path: SANDBOX_INPUT_FILE.to_string() }
         };
 
         outputs.insert(
@@ -550,7 +624,7 @@ fn build_tool_outputs(
             outputs.insert(
                 "primary".to_string(),
                 ToolOutputSpec {
-                    capture: OutputCaptureSpec::FileRegex {
+                    capture: OutputCaptureKind::FileRegex {
                         path_regex: YT_DLP_OUTPUT_CONTENT_REGEX.to_string(),
                     },
                     allow_empty: false,
@@ -562,7 +636,7 @@ fn build_tool_outputs(
     outputs.insert(
         OUTPUT_SANDBOX_ARTIFACTS.to_string(),
         ToolOutputSpec {
-            capture: OutputCaptureSpec::Folder {
+            capture: OutputCaptureKind::Folder {
                 path: sandbox_artifacts_path.clone(),
                 include_topmost_folder: false,
             },
@@ -573,18 +647,18 @@ fn build_tool_outputs(
     );
     outputs.insert(
         "stdout".to_string(),
-        ToolOutputSpec { capture: OutputCaptureSpec::Stdout {}, allow_empty: true },
+        ToolOutputSpec { capture: OutputCaptureKind::Stdout {}, allow_empty: true },
     );
     outputs.insert(
         "stderr".to_string(),
-        ToolOutputSpec { capture: OutputCaptureSpec::Stderr {}, allow_empty: true },
+        ToolOutputSpec { capture: OutputCaptureKind::Stderr {}, allow_empty: true },
     );
     outputs.insert(
         "process_code".to_string(),
         // process_code is always present for a completed subprocess; allow_empty is true
         // because the conductor treats absent process-code the same as an empty output
         // when the process terminates cleanly without emitting an exit-code record.
-        ToolOutputSpec { capture: OutputCaptureSpec::ProcessCode {}, allow_empty: true },
+        ToolOutputSpec { capture: OutputCaptureKind::ProcessCode {}, allow_empty: true },
     );
 
     if tool_name.eq_ignore_ascii_case("yt-dlp") {
@@ -599,7 +673,7 @@ fn build_tool_outputs(
                 // FolderRegex outputs may match no files when the relevant sidecar type
                 // (subtitles, thumbnails, links, chapters) is absent for the media item.
                 ToolOutputSpec {
-                    capture: OutputCaptureSpec::FolderRegex { path_regex: path_regex.to_string() },
+                    capture: OutputCaptureKind::FolderRegex { path_regex: path_regex.to_string() },
                     allow_empty: true,
                 },
             );
@@ -613,7 +687,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_DESCRIPTION_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_DESCRIPTION_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -622,7 +696,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_ANNOTATION_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_ANNOTATION_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -631,7 +705,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_INFOJSON_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_INFOJSON_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -640,7 +714,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_ARCHIVE_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_ARCHIVE_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -649,7 +723,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_PLAYLIST_DESCRIPTION_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_PLAYLIST_DESCRIPTION_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -658,7 +732,7 @@ fn build_tool_outputs(
         outputs.insert(
             OUTPUT_YT_DLP_PLAYLIST_INFOJSON_FILE.to_string(),
             ToolOutputSpec {
-                capture: OutputCaptureSpec::FileRegex {
+                capture: OutputCaptureKind::FileRegex {
                     path_regex: YT_DLP_PLAYLIST_INFOJSON_OUTPUT_REGEX.to_string(),
                 },
                 allow_empty: true,
@@ -689,14 +763,16 @@ fn sandbox_artifacts_folder_for_tool(tool_name: &str) -> &'static str {
 
 /// Returns the default execution-concurrency policy for one logical tool.
 ///
+/// Returns the default max concurrent calls for a tool.
+///
 /// Policy notes:
 /// - `yt-dlp` defaults to at most one active call so remote download pressure
 ///   remains predictable and does not overrun provider throttling by default,
-/// - all other tools keep conductor's unbounded default (`-1`) unless users
-///   explicitly set a stricter value in config.
+/// - all other tools return `0` (unbounded) unless users explicitly set a
+///   stricter value in config.
 #[must_use]
-pub(super) fn default_max_concurrent_calls(tool_name: &str) -> i32 {
-    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { -1 }
+pub(super) fn default_max_concurrent_calls(tool_name: &str) -> usize {
+    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { 0 }
 }
 
 /// Returns the default retry budget policy for one logical tool.
@@ -704,14 +780,18 @@ pub(super) fn default_max_concurrent_calls(tool_name: &str) -> i32 {
 /// Policy notes:
 /// - `yt-dlp` keeps this at `1` because the downloader already has its own
 ///   internal network retry controls,
-/// - other tools keep sentinel `-1` so conductor runtime default behavior is
-///   used.
+/// - other tools return `0` (use conductor runtime default).
 #[must_use]
-pub(super) fn default_max_retries(tool_name: &str) -> i32 {
-    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { -1 }
+pub(super) fn default_max_retries(tool_name: &str) -> usize {
+    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { 0 }
 }
 
 /// Merges existing runtime tool config with default policy and fresh content map.
+///
+/// Returns a legacy [`ToolConfigSpec`] whose `max_concurrent_calls`/`max_retries`
+/// use conductor's sentinel convention (`0` = use runtime default). Callers
+/// should convert the result to v2 [`ToolRuntime`] before pushing into
+/// `machine.tools` via [`legacy_to_runtime`].
 pub(crate) fn merge_tool_config_defaults(
     existing: Option<&ToolConfigSpec>,
     _paths: &MediaPmPaths,
@@ -720,8 +800,8 @@ pub(crate) fn merge_tool_config_defaults(
     default_description: String,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> ToolConfigSpec {
-    let default_limit = default_max_concurrent_calls(tool_name);
-    let default_retries = default_max_retries(tool_name);
+    let default_limit: i32 = default_max_concurrent_calls(tool_name).try_into().unwrap_or(0);
+    let default_retries: i32 = default_max_retries(tool_name).try_into().unwrap_or(0);
 
     let mut max_concurrent_calls = default_limit;
     let mut max_retries = default_retries;
@@ -757,6 +837,53 @@ pub(crate) fn merge_tool_config_defaults(
         env_vars,
         content_map: Some(content_map),
     }
+}
+
+/// Converts a legacy [`ToolConfigSpec`] + [`ToolKindSpec`] + tool name into
+/// v2 [`ToolSpec`] and [`ToolRuntime`].
+///
+/// The returned [`ToolRuntime`] derives `max_concurrent_calls`/`max_retries`
+/// from the config spec (treating `-1` as `0` = unlimited), and the
+/// [`ToolSpec`] carries `name`, `kind`, `inputs`, `default_inputs`, and
+/// `runtime`.
+pub(crate) fn legacy_to_tool_spec(
+    config: ToolConfigSpec,
+    kind: ToolKindSpec,
+    name: &str,
+    inputs: BTreeMap<String, ToolInputSpec>,
+) -> (ToolSpec, ToolRuntime) {
+    let max_concurrent_calls: usize =
+        if config.max_concurrent_calls >= 0 { config.max_concurrent_calls as usize } else { 0 };
+    let max_retries: usize = if config.max_retries >= 0 { config.max_retries as usize } else { 0 };
+
+    let content_map = config.content_map.unwrap_or_default();
+
+    let runtime = ToolRuntime {
+        content_map: content_map.into_iter().map(|(k, v)| (k, v.to_string())).collect(),
+        impure: false,
+        inherited_env_vars: config.env_vars,
+        max_concurrent_calls,
+        max_retries,
+    };
+
+    let spec = ToolSpec {
+        kind,
+        name: name.to_string(),
+        version: String::new(),
+        inputs,
+        default_inputs: config
+            .input_defaults
+            .into_iter()
+            .map(|(k, v)| match v {
+                InputBinding::String(s) => (k, s),
+                InputBinding::StringList(list) => (k, list.join(",")),
+            })
+            .collect(),
+        outputs: BTreeMap::new(),
+        runtime: ToolRuntime::default(),
+    };
+
+    (spec, runtime)
 }
 
 /// Builds default generated input bindings for one managed tool.
@@ -969,10 +1096,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use mediapm_cas::Hash;
-    use mediapm_conductor::OutputCaptureSpec;
     use tempfile::tempdir;
 
-    use mediapm_conductor::InputBinding;
+    use crate::conductor_bridge::legacy::InputBinding;
+    use crate::conductor_bridge::legacy::OutputCaptureKind as OutputCaptureSpec;
 
     use crate::conductor_bridge::tool_runtime::{
         FfmpegSlotLimits, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,

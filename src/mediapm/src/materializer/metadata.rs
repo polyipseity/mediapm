@@ -11,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use regex::Regex;
 
-use mediapm_conductor::{MachineNickelDocument, ToolKindSpec};
+use mediapm_conductor::{NickelDocument, ToolKindSpec};
 
 use crate::config::MediaPmState;
 use crate::config::{
@@ -484,17 +484,17 @@ fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmE
 #[must_use]
 pub(crate) fn resolve_managed_ffprobe_path(
     paths: &MediaPmPaths,
-    machine: &MachineNickelDocument,
+    machine: &NickelDocument,
     lock: &MediaPmState,
 ) -> Option<PathBuf> {
     let ffmpeg_tool_id = lock.active_tools.get("ffmpeg")?;
-    let ffmpeg_tool = machine.tools.get(ffmpeg_tool_id)?;
+    let ffmpeg_tool = machine.tools.values().find(|t| t.name == *ffmpeg_tool_id)?;
     let ToolKindSpec::Executable { command, .. } = &ffmpeg_tool.kind else {
         return None;
     };
 
-    let selector = command.first()?.trim();
-    if selector.is_empty() {
+    let selector = command.first()?;
+    if selector.trim().is_empty() {
         return None;
     }
 

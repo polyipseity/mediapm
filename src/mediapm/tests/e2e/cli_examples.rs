@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use mediapm_conductor::decode_machine_document;
+use mediapm_conductor::decode_document;
 use serde_json::Value;
 
 /// Extracts `manifest: <path>` from example stdout.
@@ -187,7 +187,7 @@ fn add_tools_example_runs_and_writes_manifest() {
         .and_then(Value::as_str)
         .map(PathBuf::from)
         .expect("manifest should include conductor machine path");
-    let machine = decode_machine_document(&fs::read(machine_path).expect("read conductor machine"))
+    let machine = decode_document(&fs::read(machine_path).expect("read conductor machine"))
         .expect("decode conductor machine document");
 
     let mediapm_path = manifest_json
@@ -202,15 +202,15 @@ fn add_tools_example_runs_and_writes_manifest() {
     for value in tool_ids {
         let tool_id = value.as_str().expect("tool id should be a string");
         assert!(
-            machine.tools.contains_key(tool_id),
+            machine.tools.values().any(|t| t.name == tool_id || t.id() == tool_id),
             "conductor machine should contain tool '{tool_id}'"
         );
         assert!(
             machine
-                .tool_configs
-                .get(tool_id)
-                .and_then(|config| config.content_map.as_ref())
-                .is_some_and(|content_map| !content_map.is_empty()),
+                .tools
+                .values()
+                .find(|t| t.name == tool_id || t.id() == tool_id)
+                .is_some_and(|tool| !tool.runtime.content_map.is_empty()),
             "conductor machine should contain dummy content-map entries for tool '{tool_id}'"
         );
     }

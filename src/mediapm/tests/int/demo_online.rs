@@ -22,9 +22,7 @@ fn demo_online_writes_explicit_runtime_defaults() {
             )
             && source
                 .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
-            && source.contains(
-                "inherited_env_vars: Some(default_runtime_inherited_env_vars_for_host())"
-            )
+            && source.contains("inherited_env_vars: Some(default_runtime_inherited_env_vars())")
             && source.contains("media_state_config: Some(\".mediapm/state.ncl\".to_string())")
             && source.contains("env_file: Some(\".mediapm/.env\".to_string())")
             && source.contains("env_generated_file: Some(\".mediapm/.env.generated\".to_string())")
