@@ -1438,6 +1438,7 @@ stateDiagram-v2
 | `get_runtime_diagnostics()` | Retrieve runtime diagnostic counters |
 
 Intentionally removed from the old 9-method trait:
+
 - `submit_workflow`, `poll_workflow`, `cancel_workflow` — synchronous execution, no async submission model.
 - `get_workflow_status` — status returned directly from run calls.
 - `export_state_to_path` — state persistence is internal; CLI commands handle export.
