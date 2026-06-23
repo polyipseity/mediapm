@@ -48,7 +48,7 @@ config comprises five sections:
 | `hierarchy_root_dir` | (required) | Output root for materialized library |
 | `materialization_preference_order` | `["hardlink", "symlink", "reflink", "copy"]` | Method fallback order |
 | `conductor_config` | `<mediapm_dir>/conductor.ncl` | Conductor config doc path |
-| `conductor_machine_config` | `<mediapm_dir>/conductor.machine.ncl` | Conductor machine config doc path |
+| `conductor_generated_config` | `<mediapm_dir>/conductor.generated.ncl` | Conductor generated config doc path |
 | `conductor_state_config` | `<mediapm_dir>/state.conductor.ncl` | Conductor state config doc path |
 | `conductor_schema_dir` | `<mediapm_dir>/config/conductor/` | Conductor schema export path |
 | `inherited_env_vars` | `{}` | Per-platform inherited env var name lists. Type: `BTreeMap<String, Vec<String>>` — each key is a platform name (`"macos"`, `"linux"`, `"windows"`, or `"all"`) mapping to a list of env var names to inherit into the managed-tool execution environment. When resolving, the current platform's key is looked up; if absent, the `"all"` entry is used as fallback. |
@@ -122,7 +122,7 @@ defined in `sync_library_with_tag_update_checks(tag-updates-default, verify-mate
 | `--root <path>` | `.` | `MEDIAPM_ROOT` | Workspace root hosting `mediapm.ncl` and `.mediapm/` |
 | `--mediapm-dir <path>` | — | `MEDIAPM_DIR` | Override `runtime.mediapm_dir` |
 | `--conductor-config <path>` | — | `MEDIAPM_CONDUCTOR_CONFIG` | Override `runtime.conductor_config` |
-| `--conductor-machine-config <path>` | — | `MEDIAPM_CONDUCTOR_MACHINE_CONFIG` | Override `runtime.conductor_machine_config` |
+| `--conductor-generated-config <path>` | — | `MEDIAPM_CONDUCTOR_GENERATED_CONFIG` | Override `runtime.conductor_generated_config` |
 | `--conductor-state-config <path>` | — | `MEDIAPM_CONDUCTOR_STATE_CONFIG` | Override `runtime.conductor_state_config` |
 | `--media-state-config <path>` | — | `MEDIAPM_MEDIA_STATE_CONFIG` | Override `runtime.media_state_config` |
 | `--env-file <path>` | — | `MEDIAPM_ENV_FILE` | Override `runtime.env_file` |
@@ -847,7 +847,14 @@ materializer/                   — CAS→filesystem materialization
 
 tools/                          — Managed tool catalog, provisioning, and workflow synthesis
   mod.rs                        —   Module router, re-exports
-  catalog.rs                    —   TOOL_CATALOG, ToolOs, PlatformValue; all entries inline (flat)
+  catalog/                     —   Tool catalog (per-tool files)
+    mod.rs                    —     Module router, TOOL_CATALOG, ToolOs, PlatformValue
+    deno.rs                   —     deno entry
+    ffmpeg.rs                 —     ffmpeg entry
+    media_tagger.rs           —     media-tagger entry
+    rsgain.rs                 —     rsgain entry
+    sd.rs                     —     Stable Diffusion entry
+    yt_dlp.rs                 —     yt-dlp entry
   downloader.rs                 —   ToolDownloadCache, download, resolution, GitHub API, HTTP, cache, materialization, models (flat)
   models.rs                     —   Download plan types, tool identity models
   workflows/                    —   Managed workflow step synthesis (owns code formerly in conductor_bridge)
