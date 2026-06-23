@@ -47,10 +47,50 @@ like `youtube.<video-id>.video`) and media presets (media map keys like
 without a separate `source_type` field. Preset generators (`--preset yt-dlp`)
 auto-generate these IDs; custom configs may use any convention.
 
+**Media entry model**: Each entry in the `media` map contains:
+
+- **Top-level fields** (`artist`, `title`, `description`): Human-readable
+  display identifiers, auto-populated from lightweight source metadata when
+  available, independently overridable by the user. These are NOT directly used
+  for path template resolution — that is handled by `metadata.<key>`.
+- **`metadata`** object: Structured fallback-chain definitions for hierarchy
+  path template resolution (Section 5). Each `<key>` may be a literal string, a
+  single variant binding `{ metadata_key, variant }`, or an ordered fallback
+  array.
+- **`steps`** array: Ordered list of processing steps forming the media
+  pipeline. Typical pattern: ingest → (optional ffmpeg) → media-tagger → rsgain.
+
+**Step model**: Each step has these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `tool` | Yes | Tool name: `yt-dlp`, `import`, `ffmpeg`, `media-tagger`, `rsgain` |
+| `input_variants` | No | Previous step output variant names this step consumes. Source-ingest steps (yt-dlp, import) keep this empty — they originate content. Transform steps list which prior outputs to consume. Supports exact string (`"video"`) or regex object (`{ regex = "^subtitles/.+$" }`). |
+| `output_variants` | Yes | Map of variant names to output configs (`kind`, optional `save` (boolean or `"full"`), `capture_kind`, `idx`, `extension`, `zip_member`) |
+| `options` | No | Tool-specific key-value pairs (per-tool option key whitelist enforced by validation) |
+
+The `input_variants` / `output_variants` naming is significant: `output_variants` specifies what a step produces, and `input_variants` selects from those produced outputs. A step's `output_variants` may produce outputs with the same name as its `input_variants` (e.g., ffmpeg consumes `input_variants = ["video"]` and produces `output_variants = { video = { kind = "primary", extension = "mkv" } }`). This is the update-a-variant pattern — the transform replaces/rewraps the variant content while preserving its name for downstream steps.
+
+**Use cases** — Typical deployments fall into two patterns:
+
+- **Homogeneous pipelines** (preset-driven): All media entries share identical
+  step sequences with the same tool set and option keys. The current production
+  deployment (93 entries) follows this pattern. The system should optimize for
+  this common case: config loading, workflow synthesis, and caching all benefit
+  from detecting and exploiting pipeline uniformity.
+
 **Scalability**: The system targets 2000+ media entries with sub-second config
 loading, incremental workflow execution (only new/changed media), and efficient
 hierarchy flattening. Hierarchy preset generators produce constant-size output
 per entry, independent of total count.
+
+**Scalability testing requirements**:
+
+- Config loading benchmarks at 2000+ entries with hierarchy generation.
+- Hierarchy flattening benchmarks at 2000 entries × 8 child nodes (16,000 leaf
+  nodes) to validate sub-second performance.
+- Incremental workflow execution: verify that only changed entries trigger
+  re-execution, with O(1) constant overhead independent of total entry count.
 
 ### 2. Multiple Source Types
 
@@ -63,6 +103,15 @@ per entry, independent of total count.
 - Local sources: file-path based, imported via CAS hash.
 - Both pipelines optionally pass through ffmpeg (transcode) when enabled.
 
+**Test requirements** — Both source types must have test coverage:
+
+- **Online (yt-dlp)**: Integration tests with mocked yt-dlp output verifying
+  the full ingest → metadata extraction → CAS storage pipeline.
+- **Local (import)**: Integration tests exercising file-based import with
+  ffprobe probe for metadata extraction, CAS hash import, and subsequent
+  media-tagger/rsgain pipeline steps. The import pipeline is exercised by 0%
+  of current deployments and therefore needs explicit mock-based coverage.
+
 ### 3. Managed Tool Provisioning
 
 6 managed tools with built-in catalog entries:
@@ -70,7 +119,7 @@ per entry, independent of total count.
 | Tool | Source | Type |
 |---|---|---|
 | `yt-dlp` | GitHub Releases | Media downloader |
-| `ffmpeg` | GitHub Releases (BtbN) | Transcode/analysis |
+| `ffmpeg` | GitHub Releases (BtbN + evermeet-ffmpeg) | Transcode/analysis |
 | `deno` | GitHub Releases | JS runtime (yt-dlp companion) |
 | `rsgain` | GitHub Releases ZIP | Loudness normalization |
 | `media-tagger` | Internal launcher | Metadata tagging |
@@ -93,8 +142,15 @@ Tool lifecycle commands:
   - `.mediapm/.env` — user-authored config with commented-out defaults for
     `ACOUSTID_API_KEY`, `HTTP_PROXY`, `MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS`, etc.
   - `.mediapm/.env.generated` — auto-generated by `tool refresh-runtime` with
-    concrete absolute paths for tool binaries (`MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN`,
-    `MEDIAPM_YT_DLP_FFMPEG_LOCATION`, `MEDIAPM_YT_DLP_JS_RUNTIMES`, etc.).
+    concrete absolute paths for tool binaries. Generated variables per tool:
+    - **All tools**: `MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS`,
+      `MEDIAPM_CONDUCTOR_RPC_TIMEOUT_SECONDS`
+    - **ffmpeg**: `MEDIAPM_MEDIA_TAGGER_FFMPEG_BIN` (overridable),
+      `MEDIAPM_YT_DLP_FFMPEG_LOCATION`
+    - **deno** (yt-dlp JS runtime): `MEDIAPM_YT_DLP_JS_RUNTIMES`
+    - **media-tagger**: `MEDIAPM_MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS`
+      (or per-platform launcher variant)
+    - **yt-dlp**: `MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS`
 - Conductor loads them in order: `.env` first, then `.env.generated`. Later
   files override earlier values. User overrides go in `.env`.
 - The env file list is explicitly configurable. Each file name is resolved
@@ -138,8 +194,19 @@ yt-dlp = {
 
 - Ordered node-array hierarchy schema (`hierarchy = [{ ... }]`) with recursive
   `children`.
-- Node kinds: `folder`, `media` (singular `variant`), `media_folder` (plural
+- Node kinds: `folder` (default when omitted on parent nodes with `children`),
+  `media` (singular `variant`), `media_folder` (plural
   `variants` + optional `rename_files`), `playlist`.
+- **`folder`+`media_id` grouping**: `folder` nodes carry an optional
+  `media_id` field to act as implicit grouping parents for per-media child
+  subtrees. When a `folder` sets `media_id`, descendant nodes inherit it unless
+  they set their own. This convention is in active production use: one grouping
+  folder per media entry with ~7–8 child nodes for video, archive, description,
+  infojson, subtitles, thumbnails, links. The inherited `media_id` enables
+  media-aware path template resolution (`${media.id}`, `${media.metadata.<key>}`)
+  for descendant node filenames and `rename_files` patterns. The flattening
+  pipeline propagates `media_id` through the tree, so the convention is fully
+  supported.
 - Materialization: direct CAS→output-path writes (no staging commit).
 - Materialization methods in fallback order: hardlink → symlink → reflink → copy.
   Configurable via `runtime.materialization_preference_order`.
@@ -182,36 +249,163 @@ Both reference the `thumbnails` variant with different `rename_files` rules.
 - Playlist generation: M3U8, PLS, XSPF, WPL, ASX.
 - Playlists are placed under their hierarchy parent folder.
 
-**ffmpeg source note**: Multiple ffmpeg sources exist for different platforms:
+**Playlist path conventions**:
 
-- BtbN (default): Linux, Windows
-- evermeet: macOS (recommended)
+- Entry paths in generated playlists are **relative** by default (e.g.,
+  `../music videos/Artist - Title [id]/file.mkv`), computed as relative offsets
+  from the playlist file's directory to the referenced materialized output.
+- Path type can be configured via an object form instead of a string ID:
 
-All platform payloads are always downloaded regardless of the current platform.
-This ensures cross-platform reproducibility (e.g., a CI runner on Linux can
-validate tool content for macOS targets). Versioning in tool configs selects the
-appropriate catalog entry; payload retrieval is unconditional.
+  ```nickel
+  { id = "youtube.<video-id>.video", path = "absolute" }
+  ```
+
+  Supported `path` values: `"relative"` (default), `"absolute"`.
+- The bare string `"youtube.<video-id>.video"` is shorthand for
+  `{ id = "youtube.<video-id>.video", path = "relative" }`.
+
+**ffmpeg source note**: Multiple ffmpeg sources exist for different platforms.
+Payloads from ALL sources are always downloaded regardless of the current
+platform — on macOS you download both evermeet (macOS) and BtbN (Linux/Windows)
+payloads, on Linux you download both BtbN and evermeet, etc. This ensures
+cross-platform reproducibility (e.g., a CI runner on Linux can validate tool
+content for macOS targets).
+
+- BtbN: Linux, Windows
+- evermeet: macOS
+
+**Download code sharing**: The tool download/resolution logic for ffmpeg (and
+other managed tools) should be shared between `mediapm` and `mediapm-conductor`,
+since both need to download tool presets from the same catalog sources. Avoid
+duplicating the catalog, download, and platform-resolution logic.
 
 ### 5. Metadata Resolution
 
-- Online sources: yt-dlp JSON metadata probe (`--dump-json`).
-- Local sources: ffprobe probe for title/artist.
-- Metadata cache: JSONC file with TTL-based expiry (86400s default), timer-based
-  batch persistence.
+Metadata serves two distinct roles:
+
+- **[Top-level media fields]** (`artist`, `title`, `description`): Human-readable
+  display identifiers, independently overridable (Section 1).
+- **[`metadata.<key>` fields]**: Structured fallback-chain definitions consumed
+  by hierarchy path template resolution (`${media.metadata.<key>}` placeholders
+  in hierarchy `path` and `rename_files.replacement`).
+
+**Metadata value types** — Each `metadata.<key>` value is one of three forms,
+resolved in order by `#[serde(untagged)]` deserialization:
+
+| Form | Nickel syntax | Description |
+|------|---------------|-------------|
+| Literal string | `video_ext = ".mkv"` | Used as-is. |
+| Single variant binding | `video_id = { variant = "infojson", metadata_key = "id" }` | Extract a named key from a specific step variant's output metadata. |
+| Fallback chain (array) | `artist = [{ variant = "video", metadata_key = "artist" }, { variant = "infojson", metadata_key = "uploader" }, "Fallback Name"]` | Ordered list of candidates; first non-empty match wins; literal strings act as terminal fallback. |
+
+**Variant binding** (`MediaMetadataVariantBinding`): References a step's output
+by `variant` name, then extracts a named `metadata_key` from that output's
+metadata (JSON key lookup in yt-dlp/infojson output, or ffprobe tag extraction
+for media content). Supports an optional regex transform:
+
+```nickel
+{
+  variant = "infojson",
+  metadata_key = "uploader",
+  transform = { pattern = "^(.*) - Topic$", replacement = "$1" },
+}
+```
+
+The transform is a full-match regex with capture-group replacement; it applies
+only when the resolved value matches the pattern.
+
+**Resolution pipeline** (in `materializer/metadata.rs`):
+
+1. **Template extraction**: `${media.metadata.<key>}` patterns extracted from
+   path templates.
+2. **Per-key resolution**: Dispatches on value type — `Literal` returns the
+   string directly; `Variant` calls through to variant-payload resolution;
+   `Fallback` iterates candidates returning the first non-empty result.
+3. **Variant payload resolution**: Fetches actual bytes for the specified step
+   variant (via CAS or materialized output), then extracts the requested key.
+4. **Metadata extraction from payload**: Checks persistent metadata cache first
+   (BLAKE3-keyed). On cache miss: tries JSON key lookup with case-insensitive
+   matching through top-level keys, `format.tags.<key>`, and `streams[].tags.<key>`;
+   falls back to running managed ffprobe for media content. Stores result in
+   cache.
+5. **Optional regex transform**: Applied if the binding includes `transform`.
+
+**Persistent metadata cache** (`metadata_cache.rs`): On-disk JSONC file keyed
+by `blake3::hash(media_id)`. TTL-based expiry (86400s default), timer-based
+batch persistence (dirty flag with periodic flush, not write-through). Avoids
+repeated ffprobe/network calls for the same media entry.
+
+**Source metadata probes** — Used to auto-populate top-level fields and test
+source reachability:
+
+- **Online** (`source_metadata.rs`): Calls yt-dlp `--skip-download --dump-json`
+  for a URL, returns title/artist/description.
+- **Local**: Runs ffprobe on a file path for title/artist.
+
+**Produced variant sidecars** — Certain step variants carry metadata that feeds
+resolution:
+
+- yt-dlp `infojson` variant: Full yt-dlp JSON (title, uploader, id, etc.) —
+  the most common metadata source for online media.
+- yt-dlp `description` variant: Separate description text.
+- ffprobe analysis: Available for any media-content variant, exposing
+  format/stream tags.
+
+**`video_ext` convention**: The file extension for materialized primary output
+comes from the ffmpeg step's `output_variants.<name>.extension` (e.g.,
+`extension = "mkv"`). It is referenced in path templates via
+`${media.metadata.video_ext}`, set by the media entry's `metadata.video_ext`.
+
+**Test requirements** — Regex transform path:
+
+- Unit tests for `MediaMetadataVariantBinding` that verify the regex transform
+  is applied when the resolved value matches the pattern, and skipped when it
+  does not.
+- Integration tests verifying the full resolution pipeline (template extraction
+  → variant payload resolution → regex transform → path substitution) with
+  mocked variant payloads. The regex transform path is exercised by 0% of
+  current deployments, making it a high-risk untested code path.
 
 ### 6. Native Media Tagger Builtin
 
-Replaces external Picard dependency with internal pipeline:
+Replaces external Picard dependency with internal pipeline that branches on
+whether MBIDs are explicitly provided:
 
-1. Decode audio via ffmpeg → Chromaprint fingerprint.
-2. Resolve MBIDs via AcoustID lookup.
-3. Fetch recording/release metadata via MusicBrainz API.
+- **With explicit MBID overrides** (e.g., `recording_mbid`, `release_mbid` in
+  step `options`): Use the MBID directly — skip fingerprinting and AcoustID
+  lookup entirely. Proceed straight to MusicBrainz API fetch.
+- **Without explicit MBIDs**: Full auto-resolution path:
+  1. Decode audio via ffmpeg → Chromaprint fingerprint.
+  2. Resolve MBIDs via AcoustID lookup.
+  3. Fetch recording/release metadata via MusicBrainz API.
+
+After MBID resolution (by either path):
 4. Fetch cover art from Cover Art Archive (deterministic selection).
 5. Map metadata to FFmetadata key/value pairs.
 6. Persist FFmetadata document for downstream apply.
 
 Configurable: `strict_identification`, MBID overrides, AcoustID API key,
 cover-art providers/types/sizes, tag-writing controls.
+
+**Versioning**: `media-tagger` is part of mediapm itself, so its version always
+follows the mediapm crate version (via `env!("CARGO_PKG_VERSION")` or
+equivalent). No separate `media-tagger` version pinning is needed. The catalog
+entry MUST report the crate version, not a separately maintained string — any
+discrepancy (e.g., a deployment showing `version = "0.0.0"`) is a bug.
+
+**Test requirements**:
+
+- Both MBID paths must have test coverage:
+  - **Explicit MBID path**: Unit tests with mocked MusicBrainz API responses
+    verifying that explicit `recording_mbid`/`release_mbid` options skip
+    fingerprinting and AcoustID entirely.
+  - **Auto-resolution path (AcoustID)**: Integration tests (with mocked network
+    endpoints for AcoustID and MusicBrainz APIs) verifying the full
+    Chromaprint → AcoustID lookup → MusicBrainz fetch pipeline. The AcoustID
+    path is exercised by 0% of current deployments, making it a high-risk
+    untested code path.
+- AcoustID API calls must be mockable via trait injection or HTTP mock server
+  to enable deterministic testing without external service dependencies.
 
 ### 7. Versioned Config Schemas
 
@@ -243,6 +437,26 @@ Centralized `MediaPmError` enum:
 - `Serialization(String)` — schema/Nickel errors.
 - `Io { operation, path, source }` — filesystem errors with context.
 - `Conductor(ConductorError)` — propagated from conductor crate.
+
+### 12. ffmpeg Transform Step
+
+When an ffmpeg step is present in a media pipeline, it sits between the ingest
+step (yt-dlp/import) and the tagging/normalization steps:
+
+**Stream selection**: By default ffmpeg selects ALL streams (video, audio,
+subtitle, attachments, and data streams) from the input — not only the first
+video stream. This preserves multi-track content through the transform.
+
+**Output format (extension)**: When `extension` is specified in the ffmpeg
+output variant (e.g., `extension = "mkv"`), the step re-wraps or transcodes to
+that container. This is a separate operation from yt-dlp's
+`merge_output_format` — yt-dlp produces an intermediate format, then ffmpeg
+produces the final output.
+
+**Stream indexing**: `idx` in ffmpeg output variants selects the N-th stream
+(of the matching type) as the primary output. When omitted, all streams are
+passed through. Multiple output variants can extract different streams for
+separate materialization.
 
 ### 11. Content Identity & Integrity
 
