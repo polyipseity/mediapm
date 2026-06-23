@@ -15,6 +15,16 @@ The crate ships as:
 
 ---
 
+**Config object policy**: All configuration(-like) structs use concrete value
+types (no `Option`). Defaults are pushed to the boundary — a dedicated
+`defaults.rs` module supplies `pub const` defaults. Boundary callers (CLI
+parsing, library entry points, Nickel deserialization) apply these before
+passing values downward. Internal code never consults defaults inline. (See
+`src/mediapm-cas/src/defaults.rs` and `src/mediapm-conductor/src/defaults.rs`
+for existing implementations.)
+
+---
+
 ## Requirements
 
 ### 1. Declarative Media Library Sync
@@ -27,8 +37,39 @@ config comprises five sections:
 | `hierarchy` | Ordered node-array defining output layout (folders, media entries, playlists) with recursive `children` |
 | `media` | Per-media config map keyed by media ID (`youtube.<video-id>`), containing metadata overrides (artist, title, description), step pipelines (tool chain with options and output variants), and per-platform metadata |
 | `tools` | Managed tool requirements with version tags and optional dependency inheritance |
-| `runtime` | Operational settings (hierarchy root dir, materialization order, instance TTL, retry policy) |
+| `runtime` | Operational settings — see **Runtime configuration** below |
 | `version` | Schema version marker |
+
+**Runtime configuration** — The `runtime` section in `mediapm.ncl` configures operational behavior. Config fields use concrete value types (no `Option`); defaults are defined in `defaults.rs` and applied by boundary callers.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mediapm_dir` | `.mediapm` | Runtime state directory under workspace root |
+| `hierarchy_root_dir` | (required) | Output root for materialized library |
+| `materialization_preference_order` | `["hardlink", "symlink", "reflink", "copy"]` | Method fallback order |
+| `conductor_config` | `<mediapm_dir>/conductor.ncl` | Conductor config doc path |
+| `conductor_machine_config` | `<mediapm_dir>/conductor.machine.ncl` | Conductor machine config doc path |
+| `conductor_state_config` | `<mediapm_dir>/state.conductor.ncl` | Conductor state config doc path |
+| `conductor_schema_dir` | `<mediapm_dir>/config/conductor/` | Conductor schema export path |
+| `inherited_env_vars` | `{}` | Per-platform inherited env var name lists. Type: `BTreeMap<String, Vec<String>>` — each key is a platform name (`"macos"`, `"linux"`, `"windows"`, or `"all"`) mapping to a list of env var names to inherit into the managed-tool execution environment. When resolving, the current platform's key is looked up; if absent, the `"all"` entry is used as fallback. |
+| `media_state_config` | `<mediapm_dir>/state.ncl` | Media state config path |
+| `env_file` | `<mediapm_dir>/.env` | User-authored dotenv file path |
+| `env_generated_file` | `<mediapm_dir>/.env.generated` | Auto-generated dotenv file path |
+| `mediapm_schema_dir` | `<mediapm_dir>/config/mediapm` | MediaPM schema export path; `null` disables export |
+| `profiler_enabled` | `false` | Enable runtime profiler |
+| `verify_materialization` | `false` | Verify CAS→filesystem hash after materialization |
+| `retry_impure` | `false` | Allow auto-retry for impure workflows |
+| `path_sanitization` | `Inherit` | Hierarchy filename sanitization mode. Type: `SanitizeNamesConfig` — `Disabled` (pass through), `Inherit` (default, root→`Enabled`), `Enabled` (built-in reserved→`_`), or `Custom(BTreeMap<char, char>)` (explicit per-char mapping, overrides reserved-char set) |
+| `instance_ttl_seconds` | `604800` (7 days) | Conductor GC instance pruning TTL. Matches the conductor config field name. |
+| `verify_on_read` | `["modified", "sample"]` | CAS integrity verification triggers (`always`, `modified`, `sample`, `stale`) |
+| `verify_on_read_sample_denominator` | `100` | 1-in-N sample probability when `sample` in `verify_on_read` |
+| `verify_on_read_stale_timeout_secs` | `604800` (7 days) | Age threshold for stale verification when `stale` in `verify_on_read` |
+| `reconstructed_cache_ttl_seconds` | `3600` (1 hour) | CAS reconstructed-bytes cache TTL. Renamed from `reconstructed_bytes_cache_ttl_secs` to match CAS crate naming (`reconstructed_cache_ttl` in `BackgroundEngine`). |
+
+> **Conductor config ownership**: `verify_on_read` and related fields,
+> `reconstructed_cache_ttl_seconds`, and `instance_ttl_seconds` belong
+> semantically to the conductor crate's `ConductorRuntimeConfig`. The conductor
+> crate must expose them; mediapm passes them through.
 
 `mediapm sync` reconciles that state against the filesystem:
 
@@ -39,6 +80,66 @@ config comprises five sections:
 5. Materialize CAS outputs to final library paths under the hierarchy root.
 6. Remove stale hierarchy paths, empty parent dirs.
 7. Mark managed paths read-only.
+
+**Invalidation**: `mediapm media invalidate <media-id> <step-index>` selectively
+marks completed tool calls for one media step as needing re-execution, without
+re-adding or removing media. The result type `MediaStepInvalidationSummary`
+reports which steps were invalidated with these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `workflow_id` | `String` | The workflow whose step was targeted |
+| `targeted_step_ids` | `Vec<String>` | IDs of the steps that were invalidated |
+| `removed_generated_timestamps` | `Vec<String>` | Previously recorded step-generation timestamps that were cleared |
+| `removed_instances` | `Vec<String>` | Completed tool-call instances that were removed |
+| `regenerated_step` | `bool` | Whether the step was immediately regenerated after invalidation |
+
+Two boolean flag pairs control behavior:
+
+| Flag pair | Default | Effect |
+|-----------|---------|--------|
+| `--invalidate-calls` / `--no-invalidate-calls` | `--invalidate-calls` | Mark completed tool calls as needing re-execution |
+| `--regenerate` / `--no-regenerate` | `--no-regenerate` | Immediately regenerate the targeted step after invalidation |
+
+The two flags in each pair are mutually exclusive. `--no-invalidate-calls` is
+a no-op (the command does nothing).
+
+**Sync CLI flags** — Flattened via `#[command(flatten)]` across `mediapm sync` (verify-materialization only applies to mediapm sync, not tool sync):
+
+| Flag pair | Default | Effect |
+|-----------|---------|--------|
+| `--verify-materialization` / `--no-verify-materialization` | enabled | Verify CAS→filesystem integrity after materialization (mediapm sync only) |
+| `--check-tag-updates` / `--no-check-tag-updates` | enabled | Re-check metadata tags on already-materialized files for upstream changes |
+
+The two flags in each pair are mutually exclusive (`conflicts_with`). The `--no-*`
+form explicitly overrides the per-command default. Per-command defaults are
+defined in `sync_library_with_tag_update_checks(tag-updates-default, verify-materialization-default)`.
+
+**Global CLI flags** — These apply to every `mediapm` invocation (parsed before the subcommand):
+
+| Flag | Default | Env var | Description |
+|------|---------|---------|-------------|
+| `--root <path>` | `.` | `MEDIAPM_ROOT` | Workspace root hosting `mediapm.ncl` and `.mediapm/` |
+| `--mediapm-dir <path>` | — | `MEDIAPM_DIR` | Override `runtime.mediapm_dir` |
+| `--conductor-config <path>` | — | `MEDIAPM_CONDUCTOR_CONFIG` | Override `runtime.conductor_config` |
+| `--conductor-machine-config <path>` | — | `MEDIAPM_CONDUCTOR_MACHINE_CONFIG` | Override `runtime.conductor_machine_config` |
+| `--conductor-state-config <path>` | — | `MEDIAPM_CONDUCTOR_STATE_CONFIG` | Override `runtime.conductor_state_config` |
+| `--media-state-config <path>` | — | `MEDIAPM_MEDIA_STATE_CONFIG` | Override `runtime.media_state_config` |
+| `--env-file <path>` | — | `MEDIAPM_ENV_FILE` | Override `runtime.env_file` |
+| `--env-generated-file <path>` | — | `MEDIAPM_ENV_GENERATED_FILE` | Override `runtime.env_generated_file` |
+| `--retry-impure` | `false` | `MEDIAPM_RETRY_IMPURE` | Enable corrupt-object retry for impure workflow steps |
+
+When both a CLI flag and its env var are present, argv takes precedence. When
+neither is set, the value from `mediapm.ncl` (or the built-in default) is used.
+
+**`retry_impure` explained**: Conductor workflows may encounter
+`CorruptObject` errors (CAS integrity failures). By default, only **pure**
+workflows — those whose outputs are a deterministic function of their inputs —
+auto-recover by dropping the corrupt object, clearing impure timestamps, and
+re-executing once. **Impure** workflows (non-deterministic, e.g., those with
+side effects) do NOT auto-retry unless `retry_impure = true`, which gives them
+the same single retry recovery path. This prevents non-deterministic side
+effects (like duplicate downloads or API calls) from accidental re-execution.
 
 **Media ID naming**: IDs follow `<source>.<native-id>` convention (e.g.,
 `youtube.<video-id>`). This convention is used for hierarchy presets (node IDs
@@ -103,6 +204,29 @@ per entry, independent of total count.
 - Local sources: file-path based, imported via CAS hash.
 - Both pipelines optionally pass through ffmpeg (transcode) when enabled.
 
+**Media add CLI** — `mediapm media add` flags (`MediaAddArgs`):
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--preset <preset>` | `yt-dlp`, `local` | Source type preset |
+| `<source>` | (positional) | Source value: `http(s)://` URL for `yt-dlp`, filesystem path for `local` |
+| `--title <text>` | string | Title override; prepended as `Literal` in metadata fallback chain (§5) |
+| `--artist <text>` | string | Artist override; prepended as `Literal` in metadata fallback chain (§5) |
+| `--description <text>` | string | Description override; takes full precedence over source-derived metadata (not fallback) |
+| `--album <text>` | string | Album metadata; populates `metadata["album"]` as `Literal` when set |
+| `--recording-mbid <uuid>` | string | MusicBrainz recording MBID passed to media-tagger step options |
+| `--release-mbid <uuid>` | string | MusicBrainz release MBID passed to media-tagger step options |
+| `--insert-position <pos>` | `sorted`, `beginning`, `end` | Insertion position in media map |
+| `--overwrite` | flag | Replace existing media entry with same id |
+
+The `--title`, `--artist`, and `--description` flags interact with the metadata
+fallback chain (§5). `--title` and `--artist` are prepended as `Literal`
+candidates at the front of their key's fallback chain — source-derived values
+(from `--dump-json` for yt-dlp, ffprobe for local) occupy the next position,
+and any existing `metadata.<key>` definition in `mediapm.ncl` serves as the
+final fallback. `--description` differs: it takes full precedence over source
+metadata rather than participating in the fallback chain.
+
 **Test requirements** — Both source types must have test coverage:
 
 - **Online (yt-dlp)**: Integration tests with mocked yt-dlp output verifying
@@ -127,12 +251,33 @@ per entry, independent of total count.
 
 Tool lifecycle commands:
 
-- `tool add <name>` — register requirement in `mediapm.ncl`.
+- `tool add <name>` — register requirement in `mediapm.ncl`. If the name is not
+  in the built-in catalog, a warning is printed but the requirement is still
+  registered (allowing custom/unknown tools).
 - `tool sync` — download, validate, register in conductor machine state.
-- `tool list` — show registered tools and binary status.
+- `tool list` — show registered tools and binary status. Output is a simple,
+  minimal table with no unnecessary decoration. Current format:
+
+  ```text
+  tool_id              binary_present
+  yt-dlp               true
+  ffmpeg               true
+  deno                 false
+  rsgain               false
+  media-tagger         true
+  sd                   false
+  ```
+
+  The output is plain text, tab-separated for machine parsing, with a header
+  line. `binary_present` is `true`/`false` indicating whether the binary was
+  found on disk.
 - `tool remove <name>` — remove requirement from config.
-- `tool prune <id>` — remove downloaded binaries and/or metadata.
-- `tool run <id> [args...]` — execute managed binary directly.
+- `tool prune <id> [--metadata]` — remove downloaded binaries. With `--metadata`,
+  also erase the tool's machine-document metadata and registry entry, forcing a
+  full re-fetch on re-provisioning.
+- `tool run <id> [args...]` — execute managed binary. Trailing `args` are passed
+  verbatim (`trailing_var_arg = true`, `allow_hyphen_values = true`) so flags
+  like `--flag value` reach the managed tool without `mediapm` interpreting them.
 - `tool refresh-runtime` — regenerate `.env.generated` and path scaffolding.
 
 **Runtime environment files**:
@@ -210,10 +355,24 @@ yt-dlp = {
 - Materialization: direct CAS→output-path writes (no staging commit).
 - Materialization methods in fallback order: hardlink → symlink → reflink → copy.
   Configurable via `runtime.materialization_preference_order`.
-- Materialized paths marked read-only after sync.
+- Materialized paths marked read-only after sync. On macOS/BSD, the immutable
+  flag (`UF_IMMUTABLE`/`SF_IMMUTABLE`) is cleared before managed replacement or
+  removal operations to allow overwrites, then re-set after materialization.
+  This is handled by `clear_bsd_immutable_flags()` in `materializer/commit.rs`.
 - Path components support `${media.id}`, `${media.metadata.<key>}` placeholders.
 - NFD-only filenames enforced; reserved path characters rejected.
 - ZIP folder variant extraction under `.mediapm/tmp/`.
+
+**Progress indication** — Materialization shows a progress bar per worker slot
+with an overall progress bar summarizing total progress. The design is:
+
+- One bar per active worker (e.g., `[worker 1/4] [====>    ] media-id`).
+- One overall bar at the bottom (`[total] [========>   ] 45/120 items`).
+- Bars collapse to a single summary line on completion.
+- Minimal, non-flashing output (overwrite-in-place via carriage return).
+
+This applies to materialization, tool download, and any batch operation with
+predictable item counts.
 
 **rename_files regex patterns** (`media_folder` only):
 
@@ -246,7 +405,7 @@ Both reference the `thumbnails` variant with different `rename_files` rules.
 - IDs must be explicitly enumerated — no auto-discovery, glob patterns, or
   wildcard expansion.
 - `path` sets the output filename (e.g., `"all.m3u8"`).
-- Playlist generation: M3U8, PLS, XSPF, WPL, ASX.
+- Playlist generation: M3U8, PLS, XSPF, WPL, ASX (controlled by `PlaylistFormat` enum passed to the playlist generator).
 - Playlists are placed under their hierarchy parent folder.
 
 **Playlist path conventions**:
@@ -263,6 +422,34 @@ Both reference the `thumbnails` variant with different `rename_files` rules.
   Supported `path` values: `"relative"` (default), `"absolute"`.
 - The bare string `"youtube.<video-id>.video"` is shorthand for
   `{ id = "youtube.<video-id>.video", path = "relative" }`.
+
+**Hierarchy CLI** — `mediapm hierarchy add` and `mediapm hierarchy remove`:
+
+`mediapm hierarchy add`:
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--preset <preset>` | `local`, `yt-dlp` | Hierarchy-add preset (`MediaHierarchyPreset`) |
+| `--root-folder <path>` | string | Root folder name; defaults to `media/` |
+| `--insert-position <pos>` | `sorted`, `beginning`, `end` | Insertion position in root-folder group |
+| `--overwrite` | flag | Replace existing node with same id |
+| `<media-id>` | (positional) | Existing media id in `mediapm.ncl` |
+
+`mediapm hierarchy remove`:
+
+| Flag | Values | Description |
+|------|--------|-------------|
+| `--preset <preset>` | `local`, `yt-dlp` | Hierarchy-remove preset |
+| `--root-folder <path>` | string | Root folder name; defaults to `media/` |
+| `<media-id>` | (positional) | Existing media id in `mediapm.ncl` |
+
+**Insertion position** (`AddInsertPosition`) controls where entries are placed:
+
+| Value | Effect |
+|-------|--------|
+| `sorted` | Lexicographic sorted position (default) |
+| `beginning` | Beginning of the map or group |
+| `end` | End of the map or group |
 
 **ffmpeg source note**: Multiple ffmpeg sources exist for different platforms.
 Payloads from ALL sources are always downloaded regardless of the current
@@ -393,6 +580,35 @@ equivalent). No separate `media-tagger` version pinning is needed. The catalog
 entry MUST report the crate version, not a separately maintained string — any
 discrepancy (e.g., a deployment showing `version = "0.0.0"`) is a bug.
 
+**Builtin CLI entry point**: `mediapm builtin media-tagger` exposes the native
+tagger as a standalone CLI for testing and scripting:
+
+| Flag | Description |
+|------|-------------|
+| `--input <path>` | Optional input media payload path (omit for MBID-only fetch) |
+| `--output <path>` | Output media payload path (required) |
+| `--acoustid-api-key <key>` | AcoustID API key override |
+| `--acoustid-endpoint <url>` | AcoustID lookup endpoint |
+| `--musicbrainz-endpoint <url>` | MusicBrainz endpoint label |
+| `--cache-dir <path>` | Persistent metadata/cover-art cache directory |
+| `--cache-expiry-seconds <n>` | Cache expiry budget in seconds (negative = no expiry) |
+| `--strict-identification` | Fail hard when identity cannot be resolved |
+| `--write-all-tags` | Project all MusicBrainz tags |
+| `--write-all-images` | Attach all cover-art images |
+| `--save-images-to-tags` | Embed selected images into output tags |
+| `--embed-only-one-front-image` | Keep only one front cover image |
+| `--ca-providers <list>` | Ordered cover-art provider selector |
+| `--caa-image-types <expr>` | CAA image-type selector |
+| `--caa-image-size <size>` | Requested CAA image size |
+| `--caa-approved-only` | Restrict to approved CAA entries |
+| `--preserve-images` | Preserve existing embedded images |
+| `--clear-existing-tags` | Clear existing tags before applying new ones |
+| `--enable-tag-saving` | Enable output-tag writing |
+| `--release-ars` | Enable release relationship processing |
+| `--cover-art-slot-count <n>` | Deterministic cover-art attachment slots |
+| `--recording-mbid <id>` | Recording MBID override (`auto`, `none`, or MBID) |
+| `--release-mbid <id>` | Release MBID override (`auto`, `none`, or MBID) |
+
 **Test requirements**:
 
 - Both MBID paths must have test coverage:
@@ -409,11 +625,64 @@ discrepancy (e.g., a deployment showing `version = "0.0.0"`) is a bug.
 
 ### 7. Versioned Config Schemas
 
-- `mediapm.ncl` — user-authored config, versioned (`v1` currently).
-- `state.ncl` — machine-managed state, versioned.
-- Both carry explicit top-level `version` marker.
-- Migration dispatcher in `config/versions/`.
-- Nickel contract validation via `nickel-lang-core`.
+Four-document model:
+
+- `mediapm.ncl` — **User intent for mediapm**: `media`, `hierarchy`, `tools`,
+  `runtime`. Versioned (`v1` currently). Authoritative user configuration.
+- `mediapm.conductor.ncl` — **User intent for conductor**: Generated from
+  `mediapm.ncl` via schema mapping at sync time. Contains workflow definitions,
+  tool config overrides, and conductor-specific settings. Carries a top-level
+  `version` marker.
+- `mediapm.conductor.generated.ncl` — **Machine-managed conductor state**:
+  Tool registry (resolved hashes, provisioned versions), workflow runtime state,
+  and conductor orchestration cache. Fully machine-controlled; users should not
+  edit it. Carries explicit top-level `version` marker.
+- `state.ncl` — **Machine-managed mediapm state**: Additional fully
+  machine-controlled file tracked alongside conductor state. Contains:
+  - `version`: Schema version marker.
+  - `workflow_states`: Per-media per-step tracking, including:
+    - `generated_timestamp` (distinct from conductor's `ImpureTimestamp`):
+      Records when a step was synthesized/generated by mediapm, not when it
+      was executed. Renamed from `impure_timestamp` in earlier designs to avoid
+      confusion with the conductor-level `ImpureTimestamp`.
+  - `last_materialized_state_hash: Option<Hash>`: CAS hash of the last fully
+    materialized library state. When the user's config hash matches this,
+    materialization is skipped entirely (fast no-op sync).
+  - `managed_files`: Set of files managed by mediapm (for cleanup tracking).
+  - `tool_registry`: Resolved tool identities and deployment state.
+  - `active_tools`: Currently provisioned tool instances.
+
+All machine-managed documents have explicit top-level `version` markers.
+Migration dispatcher in `config/versions/`. Nickel contract validation via
+`nickel-lang-core`.
+
+**Version dispatch**: The `version` field at the top of each config document
+selects the correct schema and migration path. This enables backward-compatible
+config evolution: a config written for `v1` still loads after the codebase has
+migrated to `v2`, with automatic upgrade during the first write-back.
+
+**Validation rules** — Cross-field document validation lives in
+`config/validation/`. Key rules enforced:
+
+- **`content_map` key safety**: All `tool_configs.<tool>.content_map` keys
+  must be sandbox-relative; absolute paths and path-traversal (`../`) entries
+  are rejected.
+- **No duplicate target paths**: Separate `content_map` entries must not
+  overwrite the same target path.
+- **Managed tool schema strictness**: Builtin tool definitions in persisted
+  config are strictly `kind` + `name` + `version` only; extra fields are
+  rejected on decode.
+- **Hierarchy ID uniqueness**: Node `id` values must be unique across the
+  hierarchy when provided.
+- **`media_id` requirement**: `media` and `media_folder` nodes require one
+  effective non-empty `media_id` (direct or inherited from a parent folder).
+- **`rename_files` placement**: `rename_files` regex rewrites are valid only
+  on `media_folder`/`folder` nodes (not on `media` file-leaf targets).
+- **Output-variant kind strictness**: Kind naming uses canonical names only
+  — no legacy aliases (e.g., `subtitles` not `subtitle`).
+- **Hierarchy schema strictness**: Only ordered node-array format
+  (`hierarchy = [{ ... }]`) is accepted; legacy flat-map and `"/kind"` forms
+  are unsupported.
 
 ### 8. Global User Cache
 
@@ -422,11 +691,47 @@ discrepancy (e.g., a deployment showing `version = "0.0.0"`) is a bug.
 - 30-day eviction for inactive entries.
 - Commands: `global path`, `global init`, `global tool-cache status/prune/clear`.
 
+**Output structs**:
+
+- `GlobalToolCacheStatus` reports cache directory layout:
+  - `tool_cache_dir`: Root directory of the tool cache.
+  - `store_dir`: CAS payload subdirectory.
+  - `index_jsonc`: Metadata index file path.
+  - `entry_count`: Number of entries in the index.
+- `GlobalToolCachePruneSummary` reports cleanup results:
+  - `removed_entries`: Count of stale index entries removed.
+  - `removed_payloads`: Count of orphaned payload files removed.
+
+These are intentionally minimal — no nested report types, no per-entry
+breakdowns. If richer output is needed later, add a `--verbose` flag instead
+of expanding the default output.
+
 ### 9. Passthrough CLIs
 
-- `mediapm cas [args...]` — forward to `mediapm-cas` binary.
-- `mediapm conductor [args...]` — forward to `mediapm-conductor` binary.
-- `mediapm completions <shell>` — shell completion script generation.
+- `mediapm cas [args...]` — forward to `mediapm-cas` binary (or run
+  in-process if the crate is available as a library).
+- `mediapm conductor [args...]` — forward to `mediapm-conductor` binary (or run
+  in-process).
+- `mediapm completions <shell>` — shell completion script generation (always
+  in-process, no binary needed).
+
+**Auto-injection strategy**: Defaults are injected via **environment variables**
+(rather than argv injection) so passthrough CLI args always take precedence:
+CLI > env var > config > built-in default. Each CLI flag maps to a `MEDIAPM_`-
+prefixed env var (see the Global CLI flags table in §1 for the full mapping).
+
+Additionally, env vars are supported for configuration values that have no CLI
+flag equivalent — across all three crates (`mediapm-cas`, `mediapm-conductor`,
+`mediapm`). These env vars bypass the config layer entirely and are consumed
+directly at the binary/library boundary. Examples of settings currently lacking
+CLI equivalents:
+
+| Crate | Setting without CLI equivalent | Notes |
+|-------|-------------------------------|-------|
+| `mediapm-cas` | `verify_on_read` strategies, sample denominator, stale timeout | `CasIntegrityConfig` / `CasConfig` — only settable via Rust API |
+| `mediapm-conductor` | `retry_impure` (already has `--retry-impure` in `mediapm` only) | `ConductorRuntimeConfig` — conductor binary itself lacks a dedicated flag |
+| `mediapm-conductor` | `platform_inherited_env_var_names` (map of platform→env-var-name lists) | Nested map — cannot be a simple CLI flag |
+| `mediapm` | `path_sanitization` (character mapping), `instance_ttl_seconds`, `reconstructed_cache_ttl_seconds` | Runtime config — currently Nickel-only, no CLI flags |
 
 ### 10. Error Taxonomy
 
@@ -461,7 +766,13 @@ separate materialization.
 ### 11. Content Identity & Integrity
 
 - BLAKE3 hashing for all content identities.
-- CAS verification on read (configurable sampling/stale-timeout).
+- CAS verification on read (configurable via `runtime.verify_on_read` and related
+  fields — see §1 Runtime configuration). These fields belong semantically to
+  the conductor crate (which opens the CAS store) and are passed through from
+  mediapm. The CAS crate exposes `CasIntegrityConfig` with strategies:
+  `Always`, `Modified`, `Sample`, `Stale`.
+- `reconstructed_cache_ttl_seconds` (renamed from `reconstructed_bytes_cache_ttl_secs`): TTL for CAS reconstructed-bytes cache.
+  Owned by conductor config, passed through from mediapm.
 - Referential integrity: lock records → CAS hashes, pre-prune validation.
 
 ---
@@ -471,9 +782,19 @@ separate materialization.
 ### Module Map
 
 ```text
-lib.rs                          — Re-exports, top-level types, global cache fns
+lib.rs                          — Re-exports, top-level types (`MediaStepInvalidationSummary`,
+                                `GlobalToolCacheStatus`, `GlobalToolCachePruneSummary`,
+                                `SyncSummary`, `ToolsSyncSummary`), public free functions:
+                                global cache ops (`resolve_default_global_paths`,
+                                `ensure_global_directory_layout`, `global_tool_cache_status`,
+                                `global_tool_cache_prune_expired`, `global_tool_cache_clear`),
+                                runtime helpers (`load_runtime_dotenv_for_root`,
+                                `resolve_effective_paths_for_root`, `load_runtime_dotenv`),
+                                schema export (`export_mediapm_nickel_config_schemas`),
+                                builtin discovery (`registered_builtin_ids`).
 main.rs                         — CLI entry, clap dispatch, async main
 error.rs                        — MediaPmError enum
+defaults.rs                     — Centralized default values for all config fields
 paths.rs                        — MediaPmPaths (15 path fields)
 global.rs                       — MediaPmGlobalPaths (user-level cache)
 http_client.rs                  — Shared reqwest::Client (OnceLock)
@@ -498,7 +819,7 @@ config/                         — NCL document model, serde types, I/O
   validation/hierarchy.rs       —   Hierarchy policy validation
   validation/sources.rs         —   Source/step validation
 
-conductor_bridge/               — Conductor integration layer
+conductor_bridge/               — Conductor integration layer (tool provisioning, doc I/O, runtime storage — NOT workflow step synthesis; see tools/workflows/)
   mod.rs                        —   ToolSyncReport, reconcile_desired_tools
   constants.rs                  —   Input/output key constants
   documents.rs                  —   Load/save conductor NCL documents
@@ -506,10 +827,10 @@ conductor_bridge/               — Conductor integration layer
   util.rs                       —   Shared helpers
   sync/mod.rs                   —   Tool reconciliation coordinator
   sync/provision.rs             —   Concurrent tool provisioning
-  sync/tool_config.rs           —   Tool config generation
+  sync/tool_config.rs           —   Tool config generation (companion binding, content-map policy)
   sync/content_import.rs        —   Content map CAS import
   sync/lifecycle.rs             —   Tool lifecycle transitions
-  tool_runtime/mod.rs           —   Sandbox paths, slot limits, tool spec builders
+  tool_runtime/mod.rs           —   Sandbox paths, slot limits, tool spec builders (NOT step synthesis)
   tool_runtime/option_constants.rs — Tool option default definitions
   tool_runtime/option_tokens.rs — Template token definitions
   tool_runtime/template.rs      — Command template syntax constants
@@ -524,44 +845,47 @@ materializer/                   — CAS→filesystem materialization
   playlist.rs                   —   Playlist file generation (5 formats)
   zip.rs                        —   ZIP archive member/folder extraction
 
-tools/                          — Managed tool provisioning and workflow synthesis
-  mod.rs                        —   Module router
-  catalog/mod.rs                —   TOOL_CATALOG, ToolOs, PlatformValue
-  catalog/ffmpeg.rs             —   ffmpeg catalog entry
-  catalog/yt_dlp.rs             —   yt-dlp catalog entry
-  catalog/deno.rs               —   deno catalog entry
-  catalog/rsgain.rs             —   rsgain catalog entry
-  catalog/media_tagger.rs       —   media-tagger catalog entry
-  catalog/sd.rs                 —   sd catalog entry
-  downloader/mod.rs             —   ToolDownloadCache, download/resolution
-  downloader/cache.rs           —   Download cache helpers
-  downloader/github.rs          —   GitHub release API
-  downloader/http.rs            —   HTTP download
-  downloader/materialize.rs     —   Payload→CAS materialization
-  downloader/models.rs          —   Download plan types
-  downloader/resolve.rs         —   Download plan resolution
-  workflows/mod.rs              —   Managed workflow synthesis
-  workflows/ffmpeg.rs           —   ffmpeg step synthesis
-  workflows/media_tagger.rs     —   media-tagger step synthesis
-  workflows/rsgain.rs           —   rsgain step synthesis
-  workflows/yt_dlp.rs           —   yt-dlp step synthesis
-  workflows/yt_dlp_inputs.rs    —   yt-dlp input defaults synthesis
+tools/                          — Managed tool catalog, provisioning, and workflow synthesis
+  mod.rs                        —   Module router, re-exports
+  catalog.rs                    —   TOOL_CATALOG, ToolOs, PlatformValue; all entries inline (flat)
+  downloader.rs                 —   ToolDownloadCache, download, resolution, GitHub API, HTTP, cache, materialization, models (flat)
+  models.rs                     —   Download plan types, tool identity models
+  workflows/                    —   Managed workflow step synthesis (owns code formerly in conductor_bridge)
+    mod.rs                      —     Module router
+    ffmpeg.rs                   —     ffmpeg step synthesis
+    media_tagger.rs             —     media-tagger step synthesis
+    rsgain.rs                   —     rsgain step synthesis
+    yt_dlp.rs                   —     yt-dlp step synthesis
+    yt_dlp_inputs.rs            —     yt-dlp input defaults synthesis
 
-builtins/
-  mod.rs                        —   Builtin command module router
-  media_tagger/mod.rs           —   Native tagging pipeline
-  media_tagger/acoustid.rs      —   AcoustID lookup
-  media_tagger/cover_art.rs     —   CAA image fetch/selection
-  media_tagger/ffmetadata.rs    —   FFmetadata parse/write
-  media_tagger/musicbrainz.rs   —   MusicBrainz API client
-  media_tagger/util.rs          —   ffmpeg resolution, subprocess helpers
+builtins/                       — Builtin command implementations
+  mod.rs                        —   Module router, builtin discovery
+  media_tagger/                 —   Native media-tagger builtin
+    mod.rs                      —     CLI argument routing (InternalMediaTaggerArgs)
+    acoustid.rs                 —     AcoustID lookup
+    cover_art.rs                —     Cover Art Archive fetch
+    ffmetadata.rs               —     FFmetadata key/value mapping
+    musicbrainz.rs              —     MusicBrainz API
+    util.rs                     —     Shared helpers
 ```
 
 ### Key Designs
 
+- **No Option in config objects**: All configuration structs use concrete value
+  types. A `defaults.rs` module supplies `pub const` defaults; boundary callers
+  apply them before passing values downward. Internal code never unwraps
+  optional config values.
+- **Simplified library API**: `MediaPmApi` trait is replaced by concrete
+  `MediaPmService` methods. The service exposes explicit CRUD operations
+  (add/remove/list/invalidate media, add/remove hierarchy, tool lifecycle)
+  rather than a generic trait. Contrived trait abstractions are removed.
 - **Generic service**: `MediaPmService<Cas: CasApi>` — pluggable CAS backend.
-- **Three-document pattern**: `mediapm.ncl` (user intent) → `state.ncl` (machine
-  state) → conductor NCL docs (runtime).
+- **Four-document model**: (1) `mediapm.ncl` — mediapm user intent (media,
+  hierarchy, tools, runtime). (2) `mediapm.conductor.ncl` — mediapm→conductor
+  user intent, generated from `mediapm.ncl` via schema mapping. (3)
+  `mediapm.conductor.generated.ncl` — machine-managed conductor runtime state.
+  (4) `state.ncl` — additional machine-only mediapm state (materialization
+  hashes, generated timestamps, managed files).
 - **Direct materialization**: No staging commit; CAS→output-path writes with
   automatic cleanup on partial failure.
 - **Deterministic tool identity**: `mediapm.tools.<name>+<source>@<hash|version|tag>`.
@@ -593,14 +917,15 @@ builtins/
 | 10 | **metadata_cache.rs** | Timer-based persistence adds complexity (interval checks, dirty flag, Drop handler). | Consider simplifying to write-through (every `set()` flushes) since cache size is small. Remove `Arc<Mutex<>>` by making cache non-shared. |
 | 11 | **http_client.rs** | `OnceLock<Result<...>>` pattern. Two custom error paths. | Simplify: make `build_shared_http_client` infallible (reasonable defaults always work), remove the `Err` variant in `OnceLock`. |
 | 12 | **MediaPmPaths field count** | 15 fields, complex resolution. | Group related paths into sub-structs: `ConductorPaths`, `CachePaths`, `ConfigPaths`. |
+| 13 | **MediaRuntimeStorage Option fields** | ~20 fields, most `Option<T>` with defaults in getters. | Strip `Option` wrappers, push defaults to `defaults.rs`, apply at boundary. Align with CAS/conductor pattern. |
 
 ### Low Impact / Cosmetic
 
 | # | Area | Observation | Suggestion |
 |---|------|-------------|------------|
-| 13 | **conductor_bridge/tool_runtime/ option_constants.rs, option_tokens.rs, template.rs** | Three small constants files. | Merge into one `tool_runtime/constants.rs`. |
-| 14 | **global.rs** | `MediaPmGlobalPaths` methods: `from_cache_base_dir`, `from_data_base_dir`, `from_tool_cache_dir`. | Could consolidate constructors (some are unused except in tests). |
-| 15 | **config/validation/ unused code** | Check for dead validation functions. | Remove unused validators. |
+| 14 | **conductor_bridge/tool_runtime/ option_constants.rs, option_tokens.rs, template.rs** | Three small constants files. | Merge into one `tool_runtime/constants.rs`. |
+| 15 | **global.rs** | `MediaPmGlobalPaths` methods: `from_cache_base_dir`, `from_data_base_dir`, `from_tool_cache_dir`. | Could consolidate constructors (some are unused except in tests). |
+| 16 | **config/validation/ unused code** | Check for dead validation functions. | Remove unused validators. |
 
 ### Defer (Intentionally Kept)
 
