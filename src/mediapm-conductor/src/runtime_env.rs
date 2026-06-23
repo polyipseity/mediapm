@@ -1,13 +1,13 @@
 //! Runtime `.env` management for conductor execution contexts.
 //!
-//! Conductor uses two colocated dotenv files under the resolved
+//! Conductor supports loading zero or more dotenv files in specified order.
+//! The default convention uses two colocated files under the resolved
 //! `runtime_storage_paths.conductor_dir` root:
 //! - `.env`: user-authored environment variables,
 //! - `.env.generated`: machine-generated runtime variables.
 //!
-//! Both files are loaded before workflow/state commands execute, and all loaded
-//! variable names are returned so callers can inherit them into executable tool
-//! environments.
+//! Loaded variable names are returned so callers can inherit them into
+//! executable tool environments.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -156,44 +156,60 @@ fn merge_runtime_gitignore(existing: &str) -> String {
     if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) }
 }
 
-/// Loads conductor runtime dotenv files and returns inherited env-var names.
+/// Loads conductor runtime dotenv files in specified order.
 ///
-/// Load order is `.env` then `.env.generated`; later files override earlier
-/// values. Returned names preserve declaration order with case-insensitive
+/// Each file name is resolved relative to `conductor_dir`. Later files
+/// override earlier values. An empty list loads nothing (returns empty names).
+/// Returned names preserve declaration order with case-insensitive
 /// de-duplication.
 ///
 /// # Errors
 ///
-/// Returns [`ConductorError`] when dotenv files cannot be read or parsed.
-pub fn load_runtime_env_files(conductor_dir: &Path) -> Result<Vec<String>, ConductorError> {
-    ensure_runtime_env_files(conductor_dir)?;
+/// Returns [`ConductorError`] when any dotenv file cannot be read or parsed.
+pub fn load_runtime_env_files(
+    conductor_dir: &Path,
+    file_names: &[&str],
+) -> Result<Vec<String>, ConductorError> {
+    let mut inherited_names = Vec::new();
 
-    let dotenv_path = runtime_dotenv_path(conductor_dir);
-    let generated_dotenv_path = runtime_generated_dotenv_path(conductor_dir);
+    for file_name in file_names {
+        let path = conductor_dir.join(file_name);
+        let names = read_dotenv_variable_names(&path)?;
+        append_unique_env_var_names(&mut inherited_names, &names);
 
-    let mut inherited_names = read_dotenv_variable_names(&dotenv_path)?;
-    let generated_names = read_dotenv_variable_names(&generated_dotenv_path)?;
-    append_unique_env_var_names(&mut inherited_names, &generated_names);
-
-    if dotenv_path.exists() {
-        dotenvy::from_path_override(&dotenv_path).map_err(|source| {
-            ConductorError::Workflow(format!(
-                "loading conductor runtime dotenv file '{}' failed: {source}",
-                dotenv_path.display()
-            ))
-        })?;
-    }
-
-    if generated_dotenv_path.exists() {
-        dotenvy::from_path_override(&generated_dotenv_path).map_err(|source| {
-            ConductorError::Workflow(format!(
-                "loading conductor runtime dotenv file '{}' failed: {source}",
-                generated_dotenv_path.display()
-            ))
-        })?;
+        if path.exists() {
+            dotenvy::from_path_override(&path).map_err(|source| {
+                ConductorError::Workflow(format!(
+                    "loading conductor runtime dotenv file '{}' failed: {source}",
+                    path.display()
+                ))
+            })?;
+        }
     }
 
     Ok(inherited_names)
+}
+
+/// Loads default runtime dotenv files (`.env` then `.env.generated`).
+///
+/// Convenience wrapper that creates template files on first use and delegates
+/// to [`load_runtime_env_files`] with the standard default file names.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when template creation or dotenv loading fails.
+pub fn load_default_runtime_env_files(conductor_dir: &Path) -> Result<Vec<String>, ConductorError> {
+    ensure_runtime_env_files(conductor_dir)?;
+    load_runtime_env_files(
+        conductor_dir,
+        &[RUNTIME_DOTENV_FILE_NAME, RUNTIME_DOTENV_GENERATED_FILE_NAME],
+    )
+}
+
+/// Returns the default env file names in load order.
+#[must_use]
+pub fn default_runtime_env_file_names() -> &'static [&'static str] {
+    &[RUNTIME_DOTENV_FILE_NAME, RUNTIME_DOTENV_GENERATED_FILE_NAME]
 }
 
 /// Reads dotenv variable names from one file without mutating process env.

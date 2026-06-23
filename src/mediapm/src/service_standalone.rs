@@ -8,11 +8,11 @@ use std::fs;
 use std::path::Path;
 
 use mediapm_conductor::config::ImpureTimestamp;
-use mediapm_conductor::{decode_document, encode_document, NickelDocument, ToolCallInstance};
+use mediapm_conductor::{NickelDocument, ToolCallInstance, decode_document, encode_document};
 
 use crate::config::{
-    self, load_mediapm_document, load_mediapm_document_without_validation, save_mediapm_document,
-    MediaPmDocument, MediaPmState, MediaRuntimeStorage,
+    self, MediaPmDocument, MediaPmState, MediaRuntimeStorage, load_mediapm_document,
+    load_mediapm_document_without_validation, save_mediapm_document,
 };
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
@@ -282,8 +282,8 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::{
-        remove_target_step_impure_timestamps, should_invalidate_instance,
-        ManagedWorkflowStepTarget, ToolInvalidationRule,
+        ManagedWorkflowStepTarget, ToolInvalidationRule, remove_target_step_impure_timestamps,
+        should_invalidate_instance,
     };
 
     /// Ensures helper removes targeted impure timestamps and tracks tool mapping.

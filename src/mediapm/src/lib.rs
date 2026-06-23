@@ -34,7 +34,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm_conductor::RunWorkflowOptions;
-use mediapm_conductor::runtime_env::load_runtime_env_files;
+use mediapm_conductor::runtime_env::load_default_runtime_env_files;
 use url::Url;
 
 pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
@@ -286,7 +286,7 @@ pub use service::{
 
 /// Ensures runtime dotenv files exist and loads key/value pairs into process env.
 pub(crate) fn load_runtime_dotenv(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    load_runtime_env_files(&paths.runtime_root).map_err(|source| {
+    load_default_runtime_env_files(&paths.runtime_root).map_err(|source| {
         MediaPmError::Workflow(format!(
             "loading conductor runtime dotenv files under '{}' failed: {source}",
             paths.runtime_root.display()
