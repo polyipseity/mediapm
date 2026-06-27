@@ -33,7 +33,7 @@ use super::{WalEntry, WalPosition};
 pub(crate) const HEADER_LEN: usize = 8;
 
 /// Magic prefix for journal segment files.
-pub(crate) const JOURNAL_MAGIC: &[u8; 6] = v2::JOURNAL_MAGIC;
+pub(crate) const JOURNAL_MAGIC: [u8; 6] = v2::JOURNAL_MAGIC;
 /// Current journal segment format version.
 pub(crate) const JOURNAL_VERSION: u16 = v2::JOURNAL_VERSION;
 
@@ -135,24 +135,24 @@ mod tests {
     #[test]
     fn header_roundtrip() {
         let header = encode_header(JOURNAL_MAGIC, 1);
-        let version = decode_header(&header, JOURNAL_MAGIC, 1).unwrap();
+        let version = decode_header(header, JOURNAL_MAGIC, 1).unwrap();
         assert_eq!(version, 1);
     }
 
     #[test]
     fn header_rejects_wrong_magic() {
         let header = encode_header(v1::CHECKPOINT_MAGIC, 1);
-        assert!(decode_header(&header, JOURNAL_MAGIC, 1).is_err());
+        assert!(decode_header(header, JOURNAL_MAGIC, 1).is_err());
     }
 
     #[test]
     fn header_rejects_unknown_version() {
         let mut header = encode_header(JOURNAL_MAGIC, 99);
         // decode_header rejects > max_version
-        assert!(decode_header(&header, JOURNAL_MAGIC, 1).is_err());
+        assert!(decode_header(header, JOURNAL_MAGIC, 1).is_err());
         // Also reject version 0
         header = encode_header(JOURNAL_MAGIC, 0);
-        assert!(decode_header(&header, JOURNAL_MAGIC, 1).is_err());
+        assert!(decode_header(header, JOURNAL_MAGIC, 1).is_err());
     }
 
     #[test]

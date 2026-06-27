@@ -29,6 +29,7 @@ pub struct InMemoryWalInner {
 
 impl InMemoryWal {
     /// Create an empty Wal.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(InMemoryWalInner {
@@ -111,7 +112,7 @@ impl Wal for InMemoryWal {
 
     async fn trim(&self, up_to: WalPosition) -> Result<(), CasError> {
         let mut guard = self.inner.entries.lock().unwrap();
-        while guard.front().map_or(false, |(p, _)| *p <= up_to) {
+        while guard.front().is_some_and(|(p, _)| *p <= up_to) {
             guard.pop_front();
         }
         Ok(())

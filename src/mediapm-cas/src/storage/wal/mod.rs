@@ -2,7 +2,7 @@
 //!
 //! The WAL is the **only** crash-safe commitment point. Every operation
 //! is appended to the WAL before being acknowledged. Other layers
-//! (ObjectIndex, ReadView) are derived — they can be rebuilt by replaying
+//! (`ObjectIndex`, `ReadView`) are derived — they can be rebuilt by replaying
 //! the WAL.
 //!
 //! See [`InMemoryWal`] for the in-memory implementation (used by
@@ -44,17 +44,20 @@ impl WalPosition {
     /// appended to the WAL receives the next sequential position. Must not
     /// overflow `u64::MAX` — callers are responsible for ensuring the WAL
     /// is trimmed (checkpoint advanced) before exhausting the position space.
+    #[must_use]
     pub fn next(self) -> Self {
         debug_assert!(self.0 != u64::MAX, "WalPosition overflow");
         WalPosition(self.0 + 1)
     }
 
     /// Return the inner value.
+    #[must_use]
     pub fn as_u64(self) -> u64 {
         self.0
     }
 
     /// Create a position from a raw value.
+    #[must_use]
     pub fn from_u64(value: u64) -> Self {
         WalPosition(value)
     }

@@ -15,8 +15,8 @@ pub const INTEGRITY_CONFIG: CasIntegrityConfig = CasIntegrityConfig { verify_on_
 pub const LOCATOR_PARSE_OPTIONS: CasLocatorParseOptions =
     CasLocatorParseOptions { allow_plain_filesystem_path: true };
 
-/// Default reconstructed-bytes cache TTL (60 seconds).
-pub const CACHE_TTL: Duration = Duration::from_secs(60);
+/// Default reconstructed-bytes cache TTL (1 minute).
+pub const CACHE_TTL: Duration = Duration::from_mins(1);
 
 /// Default maximum WAL segment size (64 MiB).
 pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
@@ -26,7 +26,7 @@ pub const WAL_MAX_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
 pub const WAL_INLINE_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// Default buffer size for streaming I/O (256 KiB).
-pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 262144;
+pub const OBJECT_STREAM_BUFFER_SIZE: u32 = 262_144;
 
 /// Default threshold for delta compression (16 MiB).
 /// Objects larger than this are never delta-compressed.

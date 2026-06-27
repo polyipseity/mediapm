@@ -53,12 +53,20 @@ enum CasCommand {
 }
 
 /// Run the CLI from environment arguments and exit.
+///
+/// # Errors
+///
+/// Returns anyhow errors from argument parsing and CAS operations.
 pub async fn run_from_env() -> anyhow::Result<()> {
     let cli = Cli::parse();
     run(cli).await
 }
 
 /// Run the CLI from explicit arguments (for library API callers).
+///
+/// # Errors
+///
+/// Returns anyhow errors from argument parsing and CAS operations.
 pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
     let cli = Cli::try_parse_from(args.iter().map(String::as_str))?;
     run(cli).await
@@ -67,7 +75,7 @@ pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     let config = CasConfig::from_locator_with_options(
         &cli.storage,
-        defaults::LOCATOR_PARSE_OPTIONS,
+        &defaults::LOCATOR_PARSE_OPTIONS,
         defaults::INTEGRITY_CONFIG,
     )?;
     let cas = config.open().await?;

@@ -1,6 +1,6 @@
 //! V2 binary wire format for journal segments.
 //!
-//! Difference from V1: adds `PutLarge` entry type (op_type=3) for large
+//! Difference from V1: adds `PutLarge` entry type (`op_type=3`) for large
 //! objects whose payload is stored externally (immediately materialized to
 //! the blob store). `PutLarge` stores only `hash` + `content_len` with no
 //! inline data.
@@ -42,7 +42,7 @@ pub(crate) enum WalEntryV2 {
 // ---------------------------------------------------------------------------
 
 /// Magic prefix for journal segment files (same as V1).
-pub(crate) const JOURNAL_MAGIC: &[u8; 6] = b"CASJNL";
+pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
 /// Current journal segment format version.
 pub(crate) const JOURNAL_VERSION: u16 = 2;
 
@@ -60,14 +60,15 @@ pub(crate) const MAX_JOURNAL_VERSION: u16 = 2;
 //   [payload_len: 4-byte LE u32]
 //   [payload: payload_len bytes]
 //
-// Payload per op_type:
-//   Put:        data bytes (raw content)
-//   PutLarge:   content_len (8-byte LE u64)
-//   Delete:     (empty)
-//   Constraint: base_count(4-byte LE u32) + base_hashes(34 bytes each)
+// Payload per `op_type`:
+//   `Put`:        data bytes (raw content)
+//   `PutLarge`:   content_len (8-byte LE u64)
+//   `Delete`:     (empty)
+//   `Constraint`: base_count(4-byte LE u32) + base_hashes(34 bytes each)
 
 impl WalEntryV2 {
     /// Encode a journal entry into bytes at the given position.
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
         match self {
             WalEntryV2::Put { hash, data } => {
@@ -169,6 +170,7 @@ impl WalEntryV2 {
             }
             2 => {
                 // Constraint
+                const BASE_HASH_MH_SIZE: usize = 34;
                 if payload.len() < 4 {
                     return Err(CasError::corrupt_object(
                         "journal entry: Constraint payload too short",
@@ -177,7 +179,6 @@ impl WalEntryV2 {
                 let base_count = u32::from_le_bytes(payload[..4].try_into().map_err(|_| {
                     CasError::corrupt_object("journal entry: failed to parse base_count")
                 })?) as usize;
-                const BASE_HASH_MH_SIZE: usize = 34;
                 let expected_payload = 4 + base_count * BASE_HASH_MH_SIZE;
                 if payload.len() < expected_payload {
                     return Err(CasError::corrupt_object(format!(

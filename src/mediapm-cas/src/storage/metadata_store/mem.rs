@@ -1,4 +1,4 @@
-//! In-memory metadata — ephemeral, all data in DashMaps.
+//! In-memory metadata — ephemeral, all data in `DashMap`s.
 //!
 //! Used by [`InMemoryCas`](super::super::in_memory::InMemoryCas) and as the
 //! in-memory layer of [`FileSystemMetadataStore`](super::fs::FileSystemMetadataStore).
@@ -33,7 +33,7 @@ pub struct InMemoryMetadataStore {
     data: Arc<DashMap<Hash, MetadataEntry>>,
     /// Constraint data (target → bases), independent of metadata.
     constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>,
-    /// Reverse index: base hash → dependents (hashes with Delta { base_hash }).
+    /// Reverse index: base hash → dependents (hashes with Delta { `base_hash` }).
     dependents: Arc<DashMap<Hash, Vec<Hash>>>,
 }
 
@@ -48,12 +48,11 @@ impl InMemoryMetadataStore {
 impl MetadataStore for InMemoryMetadataStore {
     async fn put(&self, hash: Hash, entry: MetadataEntry) -> Result<(), CasError> {
         // Remove old dependent relation if hash previously had a delta base.
-        if let Some(old_entry) = self.data.get(&hash) {
-            if let ObjectEncoding::Delta { base_hash } = old_entry.encoding {
-                if let Some(mut list) = self.dependents.get_mut(&base_hash) {
-                    list.retain(|h| *h != *(&hash));
-                }
-            }
+        if let Some(old_entry) = self.data.get(&hash)
+            && let ObjectEncoding::Delta { base_hash } = old_entry.encoding
+            && let Some(mut list) = self.dependents.get_mut(&base_hash)
+        {
+            list.retain(|h| *h != hash);
         }
         // Record new dependent relation if this is a delta-encoded entry.
         if let ObjectEncoding::Delta { base_hash } = entry.encoding {
@@ -70,12 +69,11 @@ impl MetadataStore for InMemoryMetadataStore {
 
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         // Remove this hash from its base's dependents list.
-        if let Some(entry) = self.data.get(hash) {
-            if let ObjectEncoding::Delta { base_hash } = entry.encoding {
-                if let Some(mut list) = self.dependents.get_mut(&base_hash) {
-                    list.retain(|h| *h != *hash);
-                }
-            }
+        if let Some(entry) = self.data.get(hash)
+            && let ObjectEncoding::Delta { base_hash } = entry.encoding
+            && let Some(mut list) = self.dependents.get_mut(&base_hash)
+        {
+            list.retain(|h| *h != *hash);
         }
         // Remove this hash as a base from the reverse index.
         self.dependents.remove(hash);

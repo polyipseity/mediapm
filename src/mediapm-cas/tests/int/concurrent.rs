@@ -5,7 +5,7 @@
 //! - Concurrent put/get/delete on many hashes
 //! - In-flight dedup concurrent stress test
 //! - Clone-sharing across concurrent tasks
-//! - BackgroundEngine cancellation safety
+//! - `BackgroundEngine` cancellation safety
 
 use std::collections::BTreeSet;
 
@@ -65,7 +65,7 @@ async fn write_delete_write_cycle_multiple() {
 /// Concurrent put/get/delete on many unique hashes.
 ///
 /// Each task operates on its own independent hash; all share the same
-/// CasStore instance. This exercises DashMap, WAL append, and the
+/// `CasStore` instance. This exercises `DashMap`, WAL append, and the
 /// read-view cache under contention.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_operations_many_hashes() {
@@ -101,7 +101,7 @@ async fn concurrent_operations_many_hashes() {
 /// Concurrent constraint operations on shared hashes.
 ///
 /// Multiple tasks simultaneously set, patch, and get constraints on the
-/// same target hash. Exercises MetadataIndex concurrent access patterns.
+/// same target hash. Exercises `MetadataIndex` concurrent access patterns.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_constraint_operations() {
     let cas = new_in_memory_cas();
@@ -139,14 +139,14 @@ async fn concurrent_constraint_operations() {
 
 /// Clone-sharing across concurrent tasks.
 ///
-/// Two clones of the same CasStore must share state: an object put through
+/// Two clones of the same `CasStore` must share state: an object put through
 /// one clone is visible through the other, even when accessed concurrently.
 #[tokio::test(flavor = "multi_thread")]
 async fn cas_clone_concurrent_access() {
+    const TASKS_PER_CLONE: usize = 20;
+
     let cas_a = new_in_memory_cas();
     let cas_b = cas_a.clone();
-
-    const TASKS_PER_CLONE: usize = 20;
 
     // Phase 1: put objects through both clones concurrently.
     let mut puts_a = Vec::with_capacity(TASKS_PER_CLONE);
@@ -181,7 +181,7 @@ async fn cas_clone_concurrent_access() {
     }
 }
 
-/// BackgroundEngine cancellation does not corrupt state.
+/// `BackgroundEngine` cancellation does not corrupt state.
 ///
 /// Requesting cancellation causes maintenance (optimizer + constraint
 /// pruning) to exit early without errors. State remains consistent.
@@ -311,11 +311,11 @@ async fn concurrent_dedup_same_content() {
     assert_eq!(final_data, content_small);
 }
 
-/// PendingOps read dedup — many concurrent `get()` on the same hash.
+/// `PendingOps` read dedup — many concurrent `get()` on the same hash.
 ///
 /// Verifies that when N tasks simultaneously read the same hash, all
 /// receive the same bytes. This exercises the in-flight read dedup
-/// (PendingOps) where only one task performs the actual lookup while
+/// (`PendingOps`) where only one task performs the actual lookup while
 /// others wait for its result.
 #[tokio::test(flavor = "multi_thread")]
 async fn pending_ops_deduplicates_concurrent_gets() {

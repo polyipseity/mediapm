@@ -1,4 +1,4 @@
-//! Read-through view — provides coherent reads over MetadataStore + BlobStore +
+//! Read-through view — provides coherent reads over `MetadataStore` + `BlobStore` +
 //! WAL fallback.
 //!
 //! The [`ComposedReadView`] implements a three-layer lookup used by
@@ -16,6 +16,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::io::AsyncWriteExt;
 
 use crate::api::ObjectEncoding;
 use crate::defaults;
@@ -53,7 +54,6 @@ pub(crate) trait ReadView: Send + Sync {
         writer: &mut (dyn tokio::io::AsyncWrite + Send + Unpin),
     ) -> Result<(), CasError> {
         let data = self.get(hash).await?;
-        use tokio::io::AsyncWriteExt;
         writer.write_all(&data).await?;
         Ok(())
     }
@@ -103,21 +103,18 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
     /// restrictions.
     async fn fetch_inner(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
         // Check Metadata for metadata.
-        let entry = match self.metadata.get(hash).await? {
-            Some(e) => e,
-            None => {
-                // WAL fallback: data may only exist as pending Put.
-                return match self.wal.check_pending(hash).await {
-                    PendingState::Present(data) => Ok(Some(data)),
-                    PendingState::PresentExternal { .. } => {
-                        // Large object: immediately materialized to blob +
-                        // metadata during put(), so this path shouldn't
-                        // normally be hit. Fall through to blob read.
-                        Ok(None)
-                    }
-                    PendingState::Tombstone | PendingState::NotPresent => Ok(None),
-                };
-            }
+        let Some(entry) = self.metadata.get(hash).await? else {
+            // WAL fallback: data may only exist as pending Put.
+            return match self.wal.check_pending(hash).await {
+                PendingState::Present(data) => Ok(Some(data)),
+                PendingState::PresentExternal { .. } => {
+                    // Large object: immediately materialized to blob +
+                    // metadata during put(), so this path shouldn't
+                    // normally be hit. Fall through to blob read.
+                    Ok(None)
+                }
+                PendingState::Tombstone | PendingState::NotPresent => Ok(None),
+            };
         };
 
         // Before reading payload, check the WAL for a pending entry.
@@ -151,24 +148,23 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
     async fn get(&self, hash: &Hash) -> Result<Bytes, CasError> {
         // Check size: if object is large, require caller to use
         // get_to_writer (streaming) instead.
-        if let Ok(Some(entry)) = self.metadata.get(hash).await {
-            if entry.len > defaults::WAL_INLINE_THRESHOLD {
-                return Err(CasError::TooLarge {
-                    hash: *hash,
-                    size: entry.len,
-                    limit: defaults::WAL_INLINE_THRESHOLD,
-                });
-            }
+        if let Ok(Some(entry)) = self.metadata.get(hash).await
+            && entry.len > defaults::WAL_INLINE_THRESHOLD
+        {
+            return Err(CasError::TooLarge {
+                hash: *hash,
+                size: entry.len,
+                limit: defaults::WAL_INLINE_THRESHOLD,
+            });
         } else if let PendingState::PresentExternal { content_len } =
             self.wal.check_pending(hash).await
+            && content_len > defaults::WAL_INLINE_THRESHOLD
         {
-            if content_len > defaults::WAL_INLINE_THRESHOLD {
-                return Err(CasError::TooLarge {
-                    hash: *hash,
-                    size: content_len,
-                    limit: defaults::WAL_INLINE_THRESHOLD,
-                });
-            }
+            return Err(CasError::TooLarge {
+                hash: *hash,
+                size: content_len,
+                limit: defaults::WAL_INLINE_THRESHOLD,
+            });
         }
 
         self.pending
@@ -185,24 +181,21 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
         // Streaming path: skip PendingOps dedup (only useful for small
         // objects). Stream directly from Blob when the object is a full
         // encoding; fall back to buffered resolution for deltas.
-        let entry = match self.metadata.get(hash).await? {
-            Some(e) => e,
-            None => {
-                return match self.wal.check_pending(hash).await {
-                    PendingState::Present(data) => {
-                        use tokio::io::AsyncWriteExt;
-                        writer.write_all(&data).await?;
-                        Ok(())
-                    }
-                    PendingState::PresentExternal { .. } => {
-                        // Materialized large object — stream from blob.
-                        self.blob.read_to_writer(hash, writer).await
-                    }
-                    PendingState::Tombstone | PendingState::NotPresent => {
-                        Err(CasError::NotFound(*hash))
-                    }
-                };
-            }
+        let Some(entry) = self.metadata.get(hash).await? else {
+            return match self.wal.check_pending(hash).await {
+                PendingState::Present(data) => {
+                    use tokio::io::AsyncWriteExt;
+                    writer.write_all(&data).await?;
+                    Ok(())
+                }
+                PendingState::PresentExternal { .. } => {
+                    // Materialized large object — stream from blob.
+                    self.blob.read_to_writer(hash, writer).await
+                }
+                PendingState::Tombstone | PendingState::NotPresent => {
+                    Err(CasError::NotFound(*hash))
+                }
+            };
         };
 
         // Before streaming, check WAL for a pending entry.
@@ -232,7 +225,6 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                     "delta chain: base",
                 )
                 .await?;
-                use tokio::io::AsyncWriteExt;
                 writer.write_all(&bytes).await?;
                 Ok(())
             }

@@ -35,6 +35,10 @@ impl std::ops::Deref for FileSystemCas {
 impl FileSystemCas {
     /// Open or create a file-system CAS store at `dir` with the given
     /// verify strategies.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to WAL creation, blob store creation, and metadata rebuild.
     pub async fn open_with_strategies(
         dir: &Path,
         verify_strategies: Vec<VerifyTriggerStrategy>,
@@ -51,6 +55,10 @@ impl FileSystemCas {
 
     /// Open or create a file-system CAS store at `dir` with no
     /// integrity verification enabled.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`open_with_strategies`](Self::open_with_strategies).
     pub async fn open(dir: &Path) -> Result<Self, CasError> {
         Self::open_with_strategies(dir, Vec::new()).await
     }
@@ -69,12 +77,17 @@ impl FileSystemCas {
     /// Ensure the blob for `hash` is materialized in the blob store on
     /// disk, even if it was originally committed as a WAL-only small blob.
     ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::NotFound`] if the hash does not exist, or
+    /// delegates to blob store and metadata store operations.
+    ///
     /// After calling this, [`object_path_for_hash`](Self::object_path_for_hash)
     /// will return a path whose file exists and can be used for
     /// hardlink/symlink/reflink materialization.
     pub async fn ensure_blob_materialized(&self, hash: Hash) -> Result<(), CasError> {
         // Fast path: already materialized in the blob store.
-        if self.0.blob().materialized_path(&hash).map_or(false, |p| p.is_file()) {
+        if self.0.blob().materialized_path(&hash).is_some_and(|p| p.is_file()) {
             return Ok(());
         }
 

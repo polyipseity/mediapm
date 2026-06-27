@@ -39,6 +39,7 @@ const DIFF_STORAGE_MAGIC_PREFIX_LEGACY: &[u8; 6] = b"MDCASD";
 /// Accepts two magic prefixes:
 /// - `CASDLT` (V3+, new)
 /// - `MDCASD` (V1/V2, legacy)
+///
 /// Cross-validation: `CASDLT` requires version ≥ 3; `MDCASD` requires version ≤ 2.
 fn decode_magic_embedded_version(bytes: &[u8]) -> Result<u16, CasError> {
     let (prefix, version) = if bytes[..6] == *DIFF_STORAGE_MAGIC_PREFIX_V3 {
@@ -141,8 +142,7 @@ pub(crate) fn validate_payload_len(
 ) -> Result<(), CasError> {
     if field_payload_len != actual_payload_len {
         return Err(CasError::corrupt_object(format!(
-            "delta envelope: payload_len mismatch (field {}, actual {})",
-            field_payload_len, actual_payload_len
+            "delta envelope: payload_len mismatch (field {field_payload_len}, actual {actual_payload_len})"
         )));
     }
     Ok(())
@@ -152,14 +152,12 @@ pub(crate) fn validate_payload_len(
 pub(crate) fn check_payload_bounds(bytes_len: usize, payload_end: usize) -> Result<(), CasError> {
     if bytes_len < payload_end {
         return Err(CasError::corrupt_object(format!(
-            "delta envelope: buffer too short for payload (need {}, have {})",
-            payload_end, bytes_len
+            "delta envelope: buffer too short for payload (need {payload_end}, have {bytes_len})"
         )));
     }
     if bytes_len != payload_end {
         return Err(CasError::corrupt_object(format!(
-            "delta envelope: trailing bytes after payload (expected {}, have {})",
-            payload_end, bytes_len
+            "delta envelope: trailing bytes after payload (expected {payload_end}, have {bytes_len})"
         )));
     }
     Ok(())

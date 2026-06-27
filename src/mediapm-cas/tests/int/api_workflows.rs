@@ -90,9 +90,9 @@ async fn bulk_put_and_get() {
 /// - get(empty) → empty bytes
 /// - stat(empty) → {len: 0, encoding: Full}
 /// - delete(empty) → no-op (sentinel always present)
-/// - set_constraint(empty, …) → always empty constraints
-/// - get_constraint(empty) → always empty
-/// - patch_constraint(empty, …) → no-op
+/// - `set_constraint(empty, …)` → always empty constraints
+/// - `get_constraint(empty)` → always empty
+/// - `patch_constraint(empty, …)` → no-op
 #[tokio::test]
 async fn empty_sentinel_is_always_present() {
     let cas = new_in_memory_cas();

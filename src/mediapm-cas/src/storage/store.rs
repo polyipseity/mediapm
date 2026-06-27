@@ -90,6 +90,10 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
     }
 
     /// Rebuild metadata from WAL (for recovery after restart).
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the inner metadata store's [`rebuild_from_wal`](MetadataStore::rebuild_from_wal).
     pub async fn rebuild_index_from_wal(&self) -> Result<(), CasError> {
         self.metadata.rebuild_from_wal(&self.wal).await
     }
@@ -110,6 +114,10 @@ impl<J: Wal + Clone, M: MetadataStore + Clone, B: BlobStore + Clone> CasStore<J,
     }
 
     /// Materialize all committed WAL entries into blob + metadata.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the WAL consumer.
     pub async fn flush(&self) -> Result<u64, CasError> {
         self.bg_engine.run_wal_consumer().await
     }
@@ -287,6 +295,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> ConstraintApi for CasStore<J, M, B>
 #[async_trait]
 impl<J: Wal, M: MetadataStore, B: BlobStore> CasMaintenanceApi for CasStore<J, M, B> {
     async fn run_maintenance_cycle(&self) -> Result<OptimizeReport, CasError> {
+        #[allow(clippy::cast_possible_truncation)]
         let count = self.bg_engine.run_wal_consumer().await? as usize;
         let maint_done = self.bg_engine.run_maintenance().await?;
         Ok(OptimizeReport { wal_entries_consumed: count, maintenance_done: maint_done })

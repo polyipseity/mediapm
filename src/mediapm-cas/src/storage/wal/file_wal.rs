@@ -25,7 +25,7 @@
 //! 4. Resumes appending to the active segment (or creates one).
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -164,7 +164,7 @@ impl ActiveSegment {
     }
 
     /// Return the path to the active segment file.
-    fn path(journal_dir: &PathBuf) -> PathBuf {
+    fn path(journal_dir: &Path) -> PathBuf {
         journal_dir.join("active.seg")
     }
 
@@ -186,7 +186,7 @@ impl ActiveSegment {
     /// active file to a sealed filename, and returning the metadata.
     async fn seal(
         mut self,
-        journal_dir: &PathBuf,
+        journal_dir: &Path,
         last_pos: WalPosition,
     ) -> Result<SealedSegment, CasError> {
         self.flush().await?;
@@ -249,6 +249,10 @@ impl FileWal {
 
     /// Create or open a file-based journal at `cas_dir`.
     ///
+    /// # Errors
+    ///
+    /// Delegates to [`create_with_max_size`](Self::create_with_max_size).
+    ///
     /// If the directory does not exist, it is created. If journal files
     /// already exist, they are scanned and recovered.
     pub async fn create(cas_dir: PathBuf) -> Result<Self, CasError> {
@@ -256,6 +260,18 @@ impl FileWal {
     }
 
     /// Create or open a file-based journal with a custom max segment size.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::Io`] if the journal directory cannot be created
+    /// or if segment files cannot be read.
+    /// Returns [`CasError::CorruptObject`] if segment files have an invalid
+    /// format.
+    ///
+    /// # Panics
+    ///
+    /// Panics if an entry path has no valid file name (should not happen
+    /// for entries returned by `read_dir`).
     pub async fn create_with_max_size(
         cas_dir: PathBuf,
         max_segment_size: u64,
@@ -287,10 +303,10 @@ impl FileWal {
                 // Read active segment entries.
                 let (entries, pos_range) = Self::read_segment_entries(&path).await?;
                 active_entries = entries;
-                if let Some((_, last_pos)) = pos_range {
-                    if last_pos.as_u64() > max_position {
-                        max_position = last_pos.as_u64();
-                    }
+                if let Some((_, last_pos)) = pos_range
+                    && last_pos.as_u64() > max_position
+                {
+                    max_position = last_pos.as_u64();
                 }
             } else if let Some((first, last)) = parse_sealed_filename(&name) {
                 sealed.push(SealedSegment { first_pos: first, last_pos: last, path });
@@ -358,7 +374,7 @@ impl FileWal {
     /// Read all entries from a segment file and return them along with
     /// the first/last position range.
     async fn read_segment_entries(
-        path: &PathBuf,
+        path: &Path,
     ) -> Result<(Vec<(WalPosition, WalEntry)>, Option<(WalPosition, WalPosition)>), CasError> {
         let buf = tokio::fs::read(path).await.map_err(CasError::Io)?;
         if buf.len() < format::HEADER_LEN {
@@ -371,7 +387,7 @@ impl FileWal {
         // Verify header.
         let mut header = [0u8; format::HEADER_LEN];
         header.copy_from_slice(&buf[..format::HEADER_LEN]);
-        format::decode_header(&header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
+        format::decode_header(header, format::JOURNAL_MAGIC, format::MAX_JOURNAL_VERSION)?;
 
         let entries = format::decode_entries(&buf[format::HEADER_LEN..])?;
         let range = entries.first().zip(entries.last()).map(|((fp, _), (lp, _))| (*fp, *lp));
@@ -413,7 +429,7 @@ impl FileWal {
     }
 
     /// Ensure the active segment is ready to accept writes.
-    /// If it exceeds max_segment_size, seal it and create a new one.
+    /// If it exceeds `max_segment_size`, seal it and create a new one.
     async fn maybe_seal(
         state: &mut JournalWriterState,
         inner: &FileWalInner,
@@ -440,7 +456,7 @@ impl FileWal {
         // Determine last pos from the active segment's entries.
         let act_path = ActiveSegment::path(&inner.journal_dir);
         let entries = Self::read_segment_entries(&act_path).await?;
-        let last_pos = entries.0.last().map(|(pos, _)| *pos).unwrap_or(WalPosition::ZERO);
+        let last_pos = entries.0.last().map_or(WalPosition::ZERO, |(pos, _)| *pos);
 
         // If no entries were written yet, nothing to seal.
         if last_pos == WalPosition::ZERO {
@@ -535,7 +551,7 @@ impl Wal for FileWal {
 
     async fn check_pending(&self, hash: &Hash) -> PendingState {
         let map = self.inner.pending.lock().unwrap();
-        map.get(hash).map(|(_, state)| state.clone()).unwrap_or(PendingState::NotPresent)
+        map.get(hash).map_or(PendingState::NotPresent, |(_, state)| state.clone())
     }
 
     async fn check_pending_constraint(&self, target: &Hash) -> Option<BTreeSet<Hash>> {
@@ -558,35 +574,30 @@ impl Wal for FileWal {
             if seg.last_pos < pos {
                 continue;
             }
-            let buf = match std::fs::read(&seg.path) {
-                Ok(b) => b,
-                Err(_) => continue,
+            let Ok(buf) = std::fs::read(&seg.path) else {
+                continue;
             };
             if buf.len() < format::HEADER_LEN {
                 continue;
             }
-            match format::decode_entries(&buf[format::HEADER_LEN..]) {
-                Ok(entries) => {
-                    for (epos, entry) in entries {
-                        if epos >= pos {
-                            all.push((epos, entry));
-                        }
+            if let Ok(entries) = format::decode_entries(&buf[format::HEADER_LEN..]) {
+                for (epos, entry) in entries {
+                    if epos >= pos {
+                        all.push((epos, entry));
                     }
                 }
-                Err(_) => continue,
             }
         }
 
         // Collect from active segment.
         let active_path = ActiveSegment::path(&inner.journal_dir);
-        if let Ok(buf) = std::fs::read(&active_path) {
-            if buf.len() >= format::HEADER_LEN {
-                if let Ok(entries) = format::decode_entries(&buf[format::HEADER_LEN..]) {
-                    for (epos, entry) in entries {
-                        if epos >= pos {
-                            all.push((epos, entry));
-                        }
-                    }
+        if let Ok(buf) = std::fs::read(&active_path)
+            && buf.len() >= format::HEADER_LEN
+            && let Ok(entries) = format::decode_entries(&buf[format::HEADER_LEN..])
+        {
+            for (epos, entry) in entries {
+                if epos >= pos {
+                    all.push((epos, entry));
                 }
             }
         }

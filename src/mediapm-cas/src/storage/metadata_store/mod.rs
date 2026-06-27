@@ -3,7 +3,7 @@
 //! Provides the [`MetadataStore`] trait (entry + constraint operations) and the
 //! [`MetadataEntry`] type. Implementations:
 //!
-//! - [`InMemoryMetadataStore`](self::mem::InMemoryMetadataStore) — ephemeral, all data in DashMaps
+//! - [`InMemoryMetadataStore`](self::mem::InMemoryMetadataStore) — ephemeral, all data in `DashMap`s
 //! - [`FileSystemMetadataStore`](self::fs::FileSystemMetadataStore) — in-memory with persisted snapshot file
 
 mod fs;
@@ -39,6 +39,7 @@ pub struct MetadataEntry {
 
 impl MetadataEntry {
     /// Convenience: returns `ObjectMeta` from this entry.
+    #[must_use]
     pub fn as_meta(&self) -> ObjectMeta {
         ObjectMeta { len: self.len, encoding: self.encoding }
     }
@@ -104,11 +105,10 @@ pub trait MetadataStore: Send + Sync {
     async fn list_dependents(&self, hash: &Hash) -> Result<Vec<Hash>, CasError> {
         let mut dependents = Vec::new();
         for h in self.list_hashes().await? {
-            if let Some(entry) = self.get(&h).await? {
-                if matches!(entry.encoding, ObjectEncoding::Delta { base_hash } if base_hash == *hash)
-                {
-                    dependents.push(h);
-                }
+            if let Some(entry) = self.get(&h).await?
+                && matches!(entry.encoding, ObjectEncoding::Delta { base_hash } if base_hash == *hash)
+            {
+                dependents.push(h);
             }
         }
         Ok(dependents)
@@ -117,8 +117,8 @@ pub trait MetadataStore: Send + Sync {
     /// Rebuild state by replaying the journal.
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError>;
 
-    /// Whether `put()` should materialize MetadataStore + BlobStore synchronously
+    /// Whether `put()` should materialize `MetadataStore` + `BlobStore` synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
-    /// InMemory impls return `true`.
+    /// `InMemory` impls return `true`.
     const SYNC_MATERIALIZE: bool = true;
 }

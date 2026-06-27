@@ -48,12 +48,12 @@ pub(crate) struct CheckpointV1 {
 
 /// Magic prefix for journal segment files.
 #[expect(dead_code)]
-pub(crate) const JOURNAL_MAGIC: &[u8; 6] = b"CASJNL";
+pub(crate) const JOURNAL_MAGIC: [u8; 6] = *b"CASJNL";
 /// Current journal segment format version.
 pub(crate) const JOURNAL_VERSION: u16 = 1;
 
 /// Magic prefix for checkpoint files.
-pub(crate) const CHECKPOINT_MAGIC: &[u8; 6] = b"CASCKP";
+pub(crate) const CHECKPOINT_MAGIC: [u8; 6] = *b"CASCKP";
 
 /// Maximum supported journal segment format version.
 pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
@@ -77,6 +77,7 @@ pub(crate) const MAX_JOURNAL_VERSION: u16 = 1;
 impl WalEntryV1 {
     /// Encode a journal entry into bytes at the given position.
     #[expect(dead_code)]
+    #[allow(clippy::cast_possible_truncation)]
     pub(crate) fn encode(&self, pos: u64) -> Vec<u8> {
         match self {
             WalEntryV1::Put { hash, data } => {
@@ -168,6 +169,8 @@ impl WalEntryV1 {
             }
             2 => {
                 // Constraint
+                // Base hashes are multihash-encoded (34 bytes each)
+                const BASE_HASH_MH_SIZE: usize = 34;
                 if payload.len() < 4 {
                     return Err(CasError::corrupt_object(
                         "journal entry: Constraint payload too short",
@@ -176,8 +179,6 @@ impl WalEntryV1 {
                 let base_count = u32::from_le_bytes(payload[..4].try_into().map_err(|_| {
                     CasError::corrupt_object("journal entry: failed to parse base_count")
                 })?) as usize;
-                // Base hashes are multihash-encoded (34 bytes each)
-                const BASE_HASH_MH_SIZE: usize = 34;
                 let expected_payload = 4 + base_count * BASE_HASH_MH_SIZE;
                 if payload.len() < expected_payload {
                     return Err(CasError::corrupt_object(format!(
@@ -244,7 +245,7 @@ impl CheckpointV1 {
         // Verify header
         let mut header = [0u8; 8];
         header.copy_from_slice(&buf[..8]);
-        decode_header(&header, CHECKPOINT_MAGIC, MAX_JOURNAL_VERSION)?;
+        decode_header(header, CHECKPOINT_MAGIC, MAX_JOURNAL_VERSION)?;
 
         // Verify integrity hash
         let body_end = 8 + 8; // header + last_position
@@ -267,9 +268,9 @@ impl CheckpointV1 {
 // ---------------------------------------------------------------------------
 
 /// Encode an 8-byte header: 6-byte magic + 2-byte LE version.
-pub(crate) fn encode_header(magic: &[u8; 6], version: u16) -> [u8; 8] {
+pub(crate) fn encode_header(magic: [u8; 6], version: u16) -> [u8; 8] {
     let mut buf = [0u8; 8];
-    buf[..6].copy_from_slice(magic);
+    buf[..6].copy_from_slice(&magic);
     buf[6..8].copy_from_slice(&version.to_le_bytes());
     buf
 }
@@ -278,11 +279,11 @@ pub(crate) fn encode_header(magic: &[u8; 6], version: u16) -> [u8; 8] {
 ///
 /// Returns the decoded version on success.
 pub(crate) fn decode_header(
-    buf: &[u8; 8],
-    expected_magic: &[u8; 6],
+    buf: [u8; 8],
+    expected_magic: [u8; 6],
     max_version: u16,
 ) -> Result<u16, CasError> {
-    if &buf[..6] != expected_magic {
+    if buf[..6] != expected_magic {
         return Err(CasError::corrupt_object(format!(
             "expected magic {expected_magic:02x?}, got {:02x?}",
             &buf[..6]

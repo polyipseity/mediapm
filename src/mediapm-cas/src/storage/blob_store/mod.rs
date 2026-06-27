@@ -76,9 +76,9 @@ pub trait BlobStore: Send + Sync {
         None
     }
 
-    /// Whether `put()` should materialize BlobStore + metadata synchronously
+    /// Whether `put()` should materialize [`BlobStore`] + metadata synchronously
     /// (write-through), or defer to the WAL consumer (write-back).
-    /// InMemory impls return `true`; FileSystem impls return `false`.
+    /// `InMemory` impls return `true`; `FileSystem` impls return `false`.
     const SYNC_MATERIALIZE: bool = true;
 
     /// Read blob data and write it to an async writer.
@@ -109,7 +109,7 @@ pub trait BlobStore: Send + Sync {
         content_len: u64,
     ) -> Result<(), CasError> {
         use tokio::io::AsyncReadExt;
-        let mut buf = Vec::with_capacity(content_len as usize);
+        let mut buf = Vec::with_capacity(usize::try_from(content_len).unwrap_or(usize::MAX));
         reader.read_to_end(&mut buf).await.map_err(CasError::Io)?;
         self.write(hash, encoding, Bytes::from(buf)).await
     }

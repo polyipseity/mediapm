@@ -110,7 +110,7 @@ impl V3Envelope {
         Ok(V3Envelope { base_hash, content_len, diff_hash, payload })
     }
 
-    /// Validates the diff_hash: `blake3(payload) == diff_hash`.
+    /// Validates the [`diff_hash`]: `blake3(payload) == diff_hash`.
     pub(crate) fn validate(&self) -> Result<(), CasError> {
         let computed = blake3::hash(&self.payload);
         if *computed.as_bytes() != self.diff_hash {
@@ -134,15 +134,15 @@ impl V3Envelope {
         buf
     }
 
-    /// Builds an envelope from content parameters, computing diff_hash internally.
+    /// Builds an envelope from content parameters, computing [`diff_hash`] internally.
     pub(crate) fn from_parts(base_hash: Hash, content_len: u64, payload: Vec<u8>) -> Self {
         let diff_hash = *blake3::hash(&payload).as_bytes();
         V3Envelope { base_hash, content_len, diff_hash, payload }
     }
 }
 
-/// V2 → V3 migration: preserves base_hash, content_len, payload; computes
-/// diff_hash from payload.
+/// V2 → V3 migration: preserves [`base_hash`], [`content_len`], payload; computes
+/// [`diff_hash`] from payload.
 impl From<DeltaStateV2> for DeltaStateV3 {
     fn from(v2: DeltaStateV2) -> Self {
         let diff_hash = *blake3::hash(&v2.payload).as_bytes();

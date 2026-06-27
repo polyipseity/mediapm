@@ -2,8 +2,8 @@
 //!
 //! Drives two background tasks:
 //!
-//! - **WAL consumer** — drains pending WAL entries into the BlobStore and
-//!   MetadataStore, then trims them from the WAL.
+//! - **WAL consumer** — drains pending WAL entries into the [`BlobStore`] and
+//!   [`MetadataStore`], then trims them from the WAL.
 //! - **Maintenance** — combined GC + Optimizer: prunes constraint metadata to
 //!   approach effective constraints (intersection of stored bases with live
 //!   hashes) and evaluates delta-compression opportunities.
@@ -84,6 +84,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
 
     /// Drain the WAL consumer once: drain WAL entries into Blob +
     /// Metadata, advancing checkpoint after each entry.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the WAL and metadata store operations.
     ///
     /// Returns the number of entries consumed.
     pub async fn run_wal_consumer(&self) -> Result<u64, CasError> {
@@ -186,8 +190,7 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
             let delta_data = self.blob.read_delta(&dep_hash).await?;
             // Base bytes are still in Blob (not yet deleted).
             // Use read_full_bytes so delta-encoded bases are reconstructed.
-            let base_bytes =
-                self.read_full_bytes(hash).await?.ok_or_else(|| CasError::NotFound(*hash))?;
+            let base_bytes = self.read_full_bytes(hash).await?.ok_or(CasError::NotFound(*hash))?;
 
             let stored_obj =
                 StoredObject::decode_delta(&delta_data).map_err(|e| CasError::CorruptObject {
@@ -247,10 +250,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         // Check the time-based cache first.
         if self.reconstructed_cache_ttl > Duration::ZERO {
             let cache = self.reconstructed_cache.lock().unwrap();
-            if let Some((cached_bytes, expiry)) = cache.get(hash) {
-                if expiry.elapsed() < self.reconstructed_cache_ttl {
-                    return Ok(Some(cached_bytes.clone()));
-                }
+            if let Some((cached_bytes, expiry)) = cache.get(hash)
+                && expiry.elapsed() < self.reconstructed_cache_ttl
+            {
+                return Ok(Some(cached_bytes.clone()));
             }
             // Don't hold the lock while doing I/O below.
             drop(cache);
@@ -276,43 +279,41 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
         })?;
 
         // Cache the result if TTL is non-zero.
-        if let Some(ref bytes) = result {
-            if self.reconstructed_cache_ttl > Duration::ZERO {
-                // Compute max bytes from metadata store size if not yet set.
-                if self.cache_max_bytes.load(Ordering::Relaxed) == 0 {
-                    let meta_size: u64 = self
-                        .metadata
-                        .list_hashes()
-                        .await
-                        .ok()
-                        .map(|hashes| hashes.len() as u64)
-                        .unwrap_or(0);
-                    let limit =
-                        (meta_size as f64 * defaults::CACHE_MAX_FRACTION_OF_TOTAL_SIZE) as u64;
-                    self.cache_max_bytes.store(limit.max(1), Ordering::Relaxed);
-                }
-                let max_bytes = self.cache_max_bytes.load(Ordering::Relaxed);
-                let entry_size = bytes.len() as u64;
+        if let Some(ref bytes) = result
+            && self.reconstructed_cache_ttl > Duration::ZERO
+        {
+            // Compute max bytes from metadata store size if not yet set.
+            if self.cache_max_bytes.load(Ordering::Relaxed) == 0 {
+                let meta_size: u64 =
+                    self.metadata.list_hashes().await.ok().map_or(0, |hashes| hashes.len() as u64);
+                #[allow(
+                    clippy::cast_precision_loss,
+                    clippy::cast_sign_loss,
+                    clippy::cast_possible_truncation
+                )]
+                let limit = (meta_size as f64 * defaults::CACHE_MAX_FRACTION_OF_TOTAL_SIZE) as u64;
+                self.cache_max_bytes.store(limit.max(1), Ordering::Relaxed);
+            }
+            let max_bytes = self.cache_max_bytes.load(Ordering::Relaxed);
+            let entry_size = bytes.len() as u64;
 
-                // Skip caching if entry is disproportionately large.
-                if entry_size <= max_bytes / 4 {
-                    let mut cache = self.reconstructed_cache.lock().unwrap();
-                    let current = self.cached_bytes.load(Ordering::Relaxed);
+            // Skip caching if entry is disproportionately large.
+            if entry_size <= max_bytes / 4 {
+                let mut cache = self.reconstructed_cache.lock().unwrap();
+                let current = self.cached_bytes.load(Ordering::Relaxed);
 
-                    if current + entry_size > max_bytes {
-                        // Simple eviction: clear half the oldest entries.
-                        let half = (cache.len() / 2).max(1);
-                        let to_remove: Vec<Hash> = cache.keys().take(half).copied().collect();
-                        for h in &to_remove {
-                            if let Some((evicted, _)) = cache.remove(h) {
-                                self.cached_bytes
-                                    .fetch_sub(evicted.len() as u64, Ordering::Relaxed);
-                            }
+                if current + entry_size > max_bytes {
+                    // Simple eviction: clear half the oldest entries.
+                    let half = (cache.len() / 2).max(1);
+                    let to_remove: Vec<Hash> = cache.keys().take(half).copied().collect();
+                    for h in &to_remove {
+                        if let Some((evicted, _)) = cache.remove(h) {
+                            self.cached_bytes.fetch_sub(evicted.len() as u64, Ordering::Relaxed);
                         }
                     }
-                    cache.insert(*hash, (bytes.clone(), Instant::now()));
-                    self.cached_bytes.fetch_add(entry_size, Ordering::Relaxed);
                 }
+                cache.insert(*hash, (bytes.clone(), Instant::now()));
+                self.cached_bytes.fetch_add(entry_size, Ordering::Relaxed);
             }
         }
 
@@ -327,6 +328,10 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     /// 2. **Constraint pruning**: per-base prune so each entry converges
     ///    toward its effective constraint set (intersection of stored bases
     ///    with live hashes). Only prunes metadata, never objects.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to WAL consumer, metadata store, and blob store operations.
     ///
     /// Returns `true` if any work was done.
     pub async fn run_maintenance(&self) -> Result<bool, CasError> {
@@ -424,6 +429,11 @@ impl<J: Wal, M: MetadataStore, B: BlobStore> BackgroundEngine<J, M, B> {
     }
 
     /// Run both WAL consumer and maintenance until nothing remains to do.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`run_wal_consumer`](Self::run_wal_consumer) and
+    /// [`run_maintenance`](Self::run_maintenance).
     pub async fn drain_all(&self) -> Result<(), CasError> {
         self.run_wal_consumer().await?;
         self.run_maintenance().await?;

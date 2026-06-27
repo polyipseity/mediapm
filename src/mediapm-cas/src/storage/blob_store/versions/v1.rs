@@ -11,6 +11,7 @@
 //! - Latest-version bridging to unversioned runtime structs is owned by
 //!   `versions/mod.rs`.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::hash::Hash;
@@ -35,14 +36,11 @@ pub(crate) fn hash_to_path(root: &Path, hash: &Hash) -> PathBuf {
 /// Derive the delta-blob path for a hash (`.diff` suffix) using the V1 layout.
 pub(crate) fn hash_to_delta_path(root: &Path, hash: &Hash) -> PathBuf {
     let mut path = hash_to_path(root, hash);
-    let ext = path
-        .extension()
-        .map(|e| {
-            let mut s = e.to_os_string();
-            s.push(".diff");
-            s
-        })
-        .unwrap_or_else(|| "diff".into());
+    let ext = path.extension().map_or(OsString::from("diff"), |e| {
+        let mut s = e.to_os_string();
+        s.push(".diff");
+        s
+    });
     path.set_extension(ext);
     path
 }

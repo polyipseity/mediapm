@@ -51,6 +51,10 @@ pub struct FileSystemBlobStore {
 impl FileSystemBlobStore {
     /// Create a new blob store rooted at `root`.
     ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::Io`] if the root directory cannot be created.
+    ///
     /// The root directory is created if it does not exist.
     pub async fn create(
         root: PathBuf,
@@ -61,6 +65,10 @@ impl FileSystemBlobStore {
     }
 
     /// Convenience: create a store with no integrity verification.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`create`](Self::create).
     pub async fn new(root: PathBuf) -> Result<Self, CasError> {
         Self::create(root, Vec::new()).await
     }
@@ -71,11 +79,13 @@ impl FileSystemBlobStore {
     /// Only [`VerifyTriggerStrategy::Always`] triggers inline verification;
     /// `Modified`, `Sample`, and `Stale` are not yet implemented and
     /// silently treated as off.
+    #[must_use]
     fn should_verify(&self) -> bool {
         self.verify_strategies.iter().any(|s| matches!(s, VerifyTriggerStrategy::Always))
     }
 
     /// Return the root path.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -290,6 +300,7 @@ impl BlobStore for FileSystemBlobStore {
         static STREAM_COUNTER: AtomicU64 = AtomicU64::new(0);
         let tmp_dir = self.root.join(".tmp");
         fs::create_dir_all(&tmp_dir).await.map_err(CasError::Io)?;
+        #[allow(clippy::cast_possible_truncation)]
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
         let tmp_name = format!("stream-{ts}-{}", STREAM_COUNTER.fetch_add(1, Ordering::Relaxed));
         let tmp_path = tmp_dir.join(tmp_name);

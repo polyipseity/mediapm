@@ -33,6 +33,7 @@ pub struct CasIntegrityConfig {
 impl CasIntegrityConfig {
     /// Returns `true` when at least one verify-on-read strategy is
     /// configured.
+    #[must_use]
     pub fn should_verify_on_read(&self) -> bool {
         !self.verify_on_read.is_empty()
     }
@@ -90,13 +91,18 @@ pub struct CasConfig {
 impl CasConfig {
     /// Parse a locator string into a [`CasConfig`].
     ///
+    /// # Errors
+    ///
+    /// Returns [`CasError::InvalidArgument`] if the locator string is not a
+    /// recognized scheme.
+    ///
     /// Recognized schemes:
     /// - `"memory"` → [`CasStorageLocator::InMemory`]
     /// - A filesystem path (when `opts.allow_plain_filesystem_path` is true)
     ///   → [`CasStorageLocator::FileSystem`]
     pub fn from_locator_with_options(
         locator: &str,
-        opts: CasLocatorParseOptions,
+        opts: &CasLocatorParseOptions,
         integrity: CasIntegrityConfig,
     ) -> Result<Self, CasError> {
         if locator == "memory" {
@@ -116,15 +122,23 @@ impl CasConfig {
     }
 
     /// Parse a locator string with default options and empty integrity config.
+    ///
+    /// # Errors
+    ///
+    /// See [`from_locator_with_options`](Self::from_locator_with_options).
     pub fn from_locator(locator: &str) -> Result<Self, CasError> {
         Self::from_locator_with_options(
             locator,
-            CasLocatorParseOptions::default(),
+            &CasLocatorParseOptions::default(),
             CasIntegrityConfig::default(),
         )
     }
 
     /// Open the configured CAS backend.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to the underlying backend's open implementation.
     pub async fn open(&self) -> Result<ConfiguredCas, CasError> {
         match &self.storage_locator {
             CasStorageLocator::InMemory => Ok(ConfiguredCas::InMemory(InMemoryCas::new())),

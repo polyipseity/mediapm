@@ -11,6 +11,8 @@ use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
 
+use super::SnapshotData;
+
 /// On-disk representation of a constraint entry.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct ConstraintEntry {
@@ -40,16 +42,8 @@ struct SnapshotFile {
 
 /// Load snapshot (constraints + entries) from a V1 file.
 ///
-/// Returns an empty pair if the file does not exist.
-pub(crate) fn load(
-    path: &Path,
-) -> Result<
-    (
-        BTreeMap<Hash, BTreeSet<Hash>>,        // constraints
-        BTreeMap<Hash, (u64, ObjectEncoding)>, // hash → (len, encoding)
-    ),
-    CasError,
-> {
+/// Returns empty maps if the file does not exist.
+pub(crate) fn load(path: &Path) -> Result<SnapshotData, CasError> {
     let data = match std::fs::read(path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -133,7 +127,7 @@ pub(crate) fn save(
         SnapshotFile { version: 1, constraints: BTreeMap::new(), entries: BTreeMap::new() };
 
     for (target, bases) in constraints {
-        let entry = ConstraintEntry { bases: bases.iter().map(|h| h.to_string()).collect() };
+        let entry = ConstraintEntry { bases: bases.iter().map(ToString::to_string).collect() };
         file.constraints.insert(target.to_string(), entry);
     }
 
@@ -147,8 +141,8 @@ pub(crate) fn save(
 
     // Atomic write via temp+rename.
     let tmp_path = path.with_extension("tmp");
-    let json = serde_json::to_vec_pretty(&file)
-        .map_err(|e| CasError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+    let json =
+        serde_json::to_vec_pretty(&file).map_err(|e| CasError::Io(std::io::Error::other(e)))?;
     std::fs::write(&tmp_path, &json).map_err(CasError::Io)?;
     std::fs::rename(&tmp_path, path).map_err(CasError::Io)?;
     Ok(())

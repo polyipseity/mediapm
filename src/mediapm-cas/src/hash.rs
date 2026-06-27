@@ -36,27 +36,32 @@ pub struct Hash([u8; HASH_SIZE]);
 
 impl Hash {
     /// Compute the hash of arbitrary bytes.
+    #[must_use]
     pub fn from_content(data: &[u8]) -> Self {
         Self(*blake3::hash(data).as_bytes())
     }
 
     /// Construct from raw 32-byte array.
+    #[must_use]
     pub const fn from_bytes(bytes: [u8; HASH_SIZE]) -> Self {
         Self(bytes)
     }
 
     /// Return a reference to the raw bytes.
+    #[must_use]
     pub const fn as_bytes(&self) -> &[u8; HASH_SIZE] {
         &self.0
     }
 
     /// Hex-encode the hash.
+    #[must_use]
     pub fn to_hex(&self) -> String {
         blake3::Hash::from(self.0).to_hex().to_string()
     }
 
     /// Return the hash of empty content (`blake3(b"")`). A well-known sentinel:
     /// always present in the store (seeded on init) and protected from deletion.
+    #[must_use]
     pub const fn empty() -> Self {
         // Precomputed blake3-256 hash of the empty byte string.
         const EMPTY_HASH_BYTES: [u8; HASH_SIZE] = [
@@ -72,8 +77,9 @@ impl Hash {
     /// Produces `blake3(h₁.as_bytes() ‖ h₂.as_bytes() ‖ …)`. Deterministic —
     /// same sequence always produces same composite hash.
     ///
-    /// This is used by Conductor and MediaPM for StringList identity where
+    /// This is used by [`Conductor`] and [`MediaPM`] for [`StringList`] identity where
     /// element hashes are already stored as individual CAS objects.
+    #[must_use]
     pub fn composite(hashes: &[Hash]) -> Self {
         let mut inner = blake3::Hasher::new();
         for h in hashes {
@@ -83,23 +89,33 @@ impl Hash {
     }
 
     /// Return the raw digest bytes (same as [`as_bytes`](Self::as_bytes)).
+    #[must_use]
     pub fn digest(&self) -> &[u8] {
         &self.0
     }
 
     /// Return the multihash codec code (blake3 = `0x1e`).
+    #[must_use]
     pub fn code(&self) -> u64 {
         BLAKE3_MULTICODEC
     }
 
     /// Return the multihash digest length in bytes (always 32 for blake3-256).
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub fn size(&self) -> u8 {
         HASH_SIZE as u8
     }
 
     /// Encode the hash as multihash storage bytes using the official [`multihash`] crate.
     ///
+    /// # Panics
+    ///
+    /// Panics if the blake3-256 digest does not fit in a [`Multihash<32>`].
+    /// This is a programming error; the digest is always 32 bytes.
+    ///
     /// Output uses proper unsigned-varint encoding: `[code: varint(0x1e)][digest_len: varint(0x20)][digest: 32 bytes]`.
+    #[must_use]
     pub fn storage_bytes(&self) -> Vec<u8> {
         Multihash::<32>::wrap(BLAKE3_MULTICODEC, &self.0)
             .expect("blake3-256 digest always fits in Multihash<32>")
@@ -107,6 +123,11 @@ impl Hash {
     }
 
     /// Parse a hash from multihash-encoded bytes, returning the hash and bytes consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`HashParseError::Multihash`] if the bytes do not contain a
+    /// valid multihash or the codec is not blake3.
     ///
     /// Uses [`Multihash::read`] instead of [`Multihash::from_bytes`] because the multihash
     /// may be embedded in a larger buffer with trailing data.

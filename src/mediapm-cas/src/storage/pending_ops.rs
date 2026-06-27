@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use tokio::sync::Notify;
 
 use crate::error::CasError;
@@ -77,7 +78,6 @@ impl PendingOps {
         let slot =
             Arc::new(PendingSlot { done: Notify::new(), result: std::sync::OnceLock::new() });
 
-        use dashmap::mapref::entry::Entry;
         match self.inner.entry(hash) {
             Entry::Occupied(e) => {
                 // Another task is already working — wait for its result.

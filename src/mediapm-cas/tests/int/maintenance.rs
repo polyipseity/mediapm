@@ -76,7 +76,7 @@ async fn gc_sweep_never_deletes_objects() {
     assert!(cas.get(target).await.is_ok(), "target should still exist after prune");
 }
 
-/// prune_constraints approaches effective constraints — surviving bases winnow
+/// `prune_constraints` approaches effective constraints — surviving bases winnow
 /// to the live-set intersection.
 #[tokio::test]
 async fn prune_constraints_approaches_effective_constraints() {
@@ -171,7 +171,7 @@ async fn optimize_skips_missing_base() {
 
     // Stat must still report Full encoding (no rewrite happened).
     let meta = cas.stat(target).await.unwrap();
-    assert_eq!(meta.encoding, ObjectEncoding::Full, "no rewrite when all bases are missing",);
+    assert_eq!(meta.encoding, ObjectEncoding::Full, "no rewrite when all bases are missing");
 
     // Content still retrievable.
     let retrieved = cas.get(target).await.unwrap();
@@ -197,7 +197,7 @@ async fn optimize_skips_all_bases_deleted() {
 
     // Stat must still report Full encoding (no rewrite occurred).
     let meta = cas.stat(target).await.unwrap();
-    assert_eq!(meta.encoding, ObjectEncoding::Full, "no rewrite when all bases were deleted",);
+    assert_eq!(meta.encoding, ObjectEncoding::Full, "no rewrite when all bases were deleted");
 }
 
 /// Optimizer walks delta chains correctly: an object that already depends on
@@ -270,7 +270,7 @@ async fn optimize_with_delta_chain() {
 }
 
 /// Constraint with multiple bases: optimizer picks the first effective base
-/// (BTreeSet ordering) and computes delta against it.
+/// (`BTreeSet` ordering) and computes delta against it.
 #[tokio::test]
 async fn optimize_multi_base_picks_first_effective() {
     let cas = new_in_memory_cas();
@@ -364,16 +364,14 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
     // Compute the .diff path from the object path.
     let full_path = cas.object_path_for_hash(target_hash).unwrap();
     let mut diff_path = full_path.clone();
-    diff_path.set_extension(
-        full_path
-            .extension()
-            .map(|e| {
-                let mut s = e.to_os_string();
-                s.push(".diff");
-                s
-            })
-            .unwrap_or_else(|| std::ffi::OsString::from("diff")),
-    );
+    diff_path.set_extension(full_path.extension().map_or_else(
+        || std::ffi::OsString::from("diff"),
+        |e| {
+            let mut s = e.to_os_string();
+            s.push(".diff");
+            s
+        },
+    ));
     assert!(diff_path.exists(), ".diff file should exist after delta rewrite");
 
     // Delete the base — next maintenance will promote target to full.
@@ -395,7 +393,7 @@ async fn stale_diff_removed_after_delta_to_full_promotion() {
     assert!(!diff_path.exists(), "stale .diff file should be removed after promotion");
 }
 
-/// Delta cache accelerates repeated read_full_bytes calls.
+/// Delta cache accelerates repeated `read_full_bytes` calls.
 ///
 /// Uses `FileSystemCas` so that background engine operations are real.
 #[tokio::test]

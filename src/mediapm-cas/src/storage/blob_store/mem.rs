@@ -23,6 +23,7 @@ pub struct InMemoryBlobStore {
 
 impl InMemoryBlobStore {
     /// Create an empty blob store.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

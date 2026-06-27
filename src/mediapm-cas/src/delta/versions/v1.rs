@@ -55,7 +55,7 @@ pub(crate) struct V1Envelope {
     pub(crate) content_len: u64,
     /// Encoded payload length.
     pub(crate) payload_len: u64,
-    /// Envelope checksum (read in test-only encode() path).
+    /// Envelope checksum (read in test-only [`encode()`] path).
     #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) checksum: u32,
     /// VCDIFF payload bytes.

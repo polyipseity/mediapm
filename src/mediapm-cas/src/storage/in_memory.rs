@@ -24,6 +24,7 @@ pub struct InMemoryCas(pub(crate) CasStore<InMemoryWal, InMemoryMetadataStore, I
 
 impl InMemoryCas {
     /// Create a new empty in-memory CAS store.
+    #[must_use]
     pub fn new() -> Self {
         Self(CasStore::new(
             InMemoryWal::new(),
@@ -32,6 +33,12 @@ impl InMemoryCas {
             WalPosition::ZERO,
             defaults::CACHE_TTL,
         ))
+    }
+}
+
+impl Default for InMemoryCas {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -47,6 +54,7 @@ impl std::ops::Deref for InMemoryCas {
 /// The returned store implements [`CasApi`](crate::api::CasApi),
 /// [`ConstraintApi`](crate::api::ConstraintApi), and
 /// [`CasMaintenanceApi`](crate::api::CasMaintenanceApi).
+#[must_use]
 pub fn new_in_memory_cas() -> InMemoryCas {
     InMemoryCas::new()
 }

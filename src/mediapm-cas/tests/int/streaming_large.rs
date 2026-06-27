@@ -1,6 +1,6 @@
 //! Large-object and streaming-path integration tests.
 //!
-//! These tests exercise the streaming put/get_to_writer paths and verify
+//! These tests exercise the streaming `put`/`get_to_writer` paths and verify
 //! behavior at the WAL-inline threshold boundary (64 MiB).  Test data is:
 //!
 //! - 1 MiB for streaming-path correctness (well below threshold).
@@ -16,7 +16,7 @@ use mediapm_cas::hash::Hash;
 
 /// Size of a 1 MiB payload for streaming correctness tests.
 const SIZE_1MIB: u64 = 1024 * 1024;
-/// Size of a 65 MiB payload (> [`WAL_INLINE_THRESHOLD`]) for TooLarge tests.
+/// Size of a 65 MiB payload (> [`WAL_INLINE_THRESHOLD`]) for `TooLarge` tests.
 const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -28,6 +28,7 @@ const SIZE_65MIB: u64 = 65 * 1024 * 1024;
 #[tokio::test]
 async fn put_stream_content_len_propagated() {
     let cas = new_in_memory_cas_for_large_tests();
+    #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xABu8; SIZE_1MIB as usize];
     let expected_hash = Hash::from_content(&data);
 
@@ -43,12 +44,14 @@ async fn put_stream_content_len_propagated() {
 #[tokio::test]
 async fn put_stream_get_to_writer_roundtrip() {
     let cas = new_in_memory_cas_for_large_tests();
+    #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xCDu8; SIZE_1MIB as usize];
     let expected_hash = Hash::from_content(&data);
 
     let hash = cas.put_stream(&data[..]).await.unwrap();
     assert_eq!(hash, expected_hash);
 
+    #[allow(clippy::cast_possible_truncation)]
     let mut buf = Vec::with_capacity(SIZE_1MIB as usize);
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_1MIB, "output length must match");
@@ -59,11 +62,12 @@ async fn put_stream_get_to_writer_roundtrip() {
 // InMemoryCas: large-object behaviour (FileSystemCas covered below)
 // ---------------------------------------------------------------------------
 
-/// InMemoryCas `get()` returns [`CasError::TooLarge`] when the object
+/// `InMemoryCas` `get()` returns [`CasError::TooLarge`] when the object
 /// exceeds [`WAL_INLINE_THRESHOLD`].
 #[tokio::test]
 async fn in_memory_large_object_get_returns_too_large() {
     let cas = new_in_memory_cas_for_large_tests();
+    #[allow(clippy::cast_possible_truncation)]
     let data = Bytes::from(vec![0u8; SIZE_65MIB as usize]);
 
     let hash = cas.put(data).await.unwrap();
@@ -79,11 +83,12 @@ async fn in_memory_large_object_get_returns_too_large() {
     }
 }
 
-/// InMemoryCas `get_to_writer()` succeeds for objects that exceed
+/// `InMemoryCas` `get_to_writer()` succeeds for objects that exceed
 /// [`WAL_INLINE_THRESHOLD`] (streaming read path).
 #[tokio::test]
 async fn in_memory_large_object_get_to_writer_works() {
     let cas = new_in_memory_cas_for_large_tests();
+    #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xEFu8; SIZE_65MIB as usize];
     let expected_hash = Hash::from_content(&data);
     let chunk = Bytes::from(data.clone());
@@ -91,6 +96,7 @@ async fn in_memory_large_object_get_to_writer_works() {
     let hash = cas.put(chunk).await.unwrap();
     assert_eq!(hash, expected_hash);
 
+    #[allow(clippy::cast_possible_truncation)]
     let mut buf = Vec::with_capacity(SIZE_65MIB as usize);
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_65MIB);
@@ -101,12 +107,13 @@ async fn in_memory_large_object_get_to_writer_works() {
 // FileSystemCas: large-object behaviour (disk-backed store)
 // ---------------------------------------------------------------------------
 
-/// FileSystemCas `get()` returns [`CasError::TooLarge`] for objects
+/// `FileSystemCas` `get()` returns [`CasError::TooLarge`] for objects
 /// exceeding [`WAL_INLINE_THRESHOLD`].
 #[tokio::test]
 async fn filesystem_large_object_get_returns_too_large() {
     let dir = tempdir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    #[allow(clippy::cast_possible_truncation)]
     let data = Bytes::from(vec![0xFFu8; SIZE_65MIB as usize]);
 
     let hash = cas.put(data).await.unwrap();
@@ -114,12 +121,13 @@ async fn filesystem_large_object_get_returns_too_large() {
     assert!(matches!(&result, Err(CasError::TooLarge { .. })), "expected TooLarge, got {result:?}");
 }
 
-/// FileSystemCas `get_to_writer()` succeeds for objects exceeding
+/// `FileSystemCas` `get_to_writer()` succeeds for objects exceeding
 /// [`WAL_INLINE_THRESHOLD`].
 #[tokio::test]
 async fn filesystem_large_object_get_to_writer_works() {
     let dir = tempdir().unwrap();
     let cas = mediapm_cas::FileSystemCas::open(dir.path()).await.unwrap();
+    #[allow(clippy::cast_possible_truncation)]
     let data = vec![0xFEu8; SIZE_65MIB as usize];
     let expected_hash = Hash::from_content(&data);
     let chunk = Bytes::from(data.clone());
@@ -127,6 +135,7 @@ async fn filesystem_large_object_get_to_writer_works() {
     let hash = cas.put(chunk).await.unwrap();
     assert_eq!(hash, expected_hash);
 
+    #[allow(clippy::cast_possible_truncation)]
     let mut buf = Vec::with_capacity(SIZE_65MIB as usize);
     cas.get_to_writer(hash, &mut buf).await.unwrap();
     assert_eq!(buf.len() as u64, SIZE_65MIB);
@@ -137,7 +146,7 @@ async fn filesystem_large_object_get_to_writer_works() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Create an InMemoryCas with large-enough limits for multi-MiB payloads.
+/// Create an `InMemoryCas` with large-enough limits for multi-MiB payloads.
 fn new_in_memory_cas_for_large_tests() -> mediapm_cas::InMemoryCas {
     // The default InMemoryCas is unlimited and works fine for large data.
     mediapm_cas::new_in_memory_cas()
