@@ -68,7 +68,7 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(path)
 }
 
-async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
+fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
@@ -112,7 +112,7 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_hierarchy_example().await?;
+    let manifest = run_add_hierarchy_example()?;
 
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
@@ -137,7 +137,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_hierarchy_writes_expected_hierarchy_nodes() {
-        let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");
+        let manifest = run_add_hierarchy_example().expect("run add-hierarchy example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");

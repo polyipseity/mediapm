@@ -55,7 +55,7 @@ async fn attempt_reflink_materialization(
         attempt_reflink_materialization_sync(&owned_src, &owned_dst)
     })
     .await
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+    .map_err(io::Error::other)?
 }
 
 /// Platform-specific reflink implementation for Linux using `FICLONE` ioctl.

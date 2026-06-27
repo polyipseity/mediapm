@@ -81,5 +81,5 @@ pub(crate) const DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS: usize = 4;
 
 /// Config key for the generated conductor document tools section.
 pub(crate) const CONFIG_TOOLS_KEY: &str = "tools";
-/// Config key for generated tool_configs section.
+/// Config key for generated `tool_configs` section.
 pub(crate) const CONFIG_TOOL_CONFIGS_KEY: &str = "tool_configs";

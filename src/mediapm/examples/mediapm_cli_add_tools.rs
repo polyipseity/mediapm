@@ -98,7 +98,7 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     }
 }
 
-async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
+fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
@@ -172,7 +172,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_tools_example().await?;
+    let manifest = run_add_tools_example()?;
 
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
@@ -195,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_tools_writes_expected_config_documents() {
-        let manifest = run_add_tools_example().await.expect("run add-tools example");
+        let manifest = run_add_tools_example().expect("run add-tools example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");

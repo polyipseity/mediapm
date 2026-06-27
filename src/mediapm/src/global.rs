@@ -84,6 +84,11 @@ fn infer_root_dir_from_tool_cache_dir(tool_cache_dir: &Path) -> PathBuf {
 }
 
 /// Ensures that the global directory layout exists on disk.
+///
+/// # Errors
+///
+/// Returns `std::io::Error` if directory creation fails or the global cache
+/// root cannot be resolved.
 pub fn ensure_global_directory_layout() -> Result<(), std::io::Error> {
     let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
@@ -93,6 +98,10 @@ pub fn ensure_global_directory_layout() -> Result<(), std::io::Error> {
 }
 
 /// Returns the status of the global tool cache.
+///
+/// # Errors
+///
+/// Returns `std::io::Error` if the global cache root cannot be resolved.
 pub fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, std::io::Error> {
     let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
@@ -129,6 +138,10 @@ pub struct GlobalToolCacheStatus {
 }
 
 /// Prunes expired entries from the global tool cache.
+///
+/// # Errors
+///
+/// Returns `std::io::Error` if the cache root cannot be resolved.
 pub fn global_tool_cache_prune_expired() -> Result<GlobalToolCachePruneSummary, std::io::Error> {
     // TODO: Implement actual TTL-based pruning
     Ok(GlobalToolCachePruneSummary { removed_entries: 0, removed_payloads: 0 })
@@ -144,6 +157,11 @@ pub struct GlobalToolCachePruneSummary {
 }
 
 /// Clears the global tool cache entirely.
+///
+/// # Errors
+///
+/// Returns `std::io::Error` if the cache cannot be cleared or the root
+/// cannot be resolved.
 pub fn global_tool_cache_clear() -> Result<(), std::io::Error> {
     let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")

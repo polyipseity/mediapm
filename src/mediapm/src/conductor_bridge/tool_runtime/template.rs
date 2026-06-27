@@ -8,8 +8,6 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::ToolSpec;
 
-use crate::error::MediaPmError;
-
 // ── Template literal escaping ────────────────────────────────────────────
 
 /// Escapes a literal string value for use inside conductor NCL templates.
@@ -28,12 +26,8 @@ pub(super) fn escape_template_literal(value: &str) -> String {
 /// - The template references at least one sandbox input file.
 /// - Required input bindings are satisfied.
 /// - Template does not contain obviously invalid token sequences.
-pub(crate) fn validate_tool_command(
-    _tool_spec: &ToolSpec,
-    _command_template: &str,
-) -> Result<(), MediaPmError> {
+pub(crate) fn validate_tool_command(_tool_spec: &ToolSpec, _command_template: &str) {
     // Stub: passes all validation.
-    Ok(())
 }
 
 // ── Platform-conditional path extraction ─────────────────────────────────
@@ -49,25 +43,22 @@ pub(super) fn extract_platform_conditional_paths(source: &str) -> BTreeMap<Strin
     for part in source.split("${") {
         if let Some(conditional) = part.split('}').next() {
             let trimmed = conditional.trim();
-            if let Some(true_path) = trimmed.split("? ").nth(1) {
-                if let Some((true_val, false_val)) = true_path.split_once(" : ") {
-                    let os_name = if trimmed.contains("linux") {
-                        "linux"
-                    } else if trimmed.contains("macos") {
-                        "macos"
-                    } else if trimmed.contains("windows") {
-                        "windows"
-                    } else {
-                        continue;
-                    };
-                    result
-                        .insert(os_name.to_string(), true_val.trim().trim_matches('"').to_string());
-                    // false path is the else branch
-                    result.insert(
-                        format!("!{os_name}"),
-                        false_val.trim().trim_matches('"').to_string(),
-                    );
-                }
+            if let Some(true_path) = trimmed.split("? ").nth(1)
+                && let Some((true_val, false_val)) = true_path.split_once(" : ")
+            {
+                let os_name = if trimmed.contains("linux") {
+                    "linux"
+                } else if trimmed.contains("macos") {
+                    "macos"
+                } else if trimmed.contains("windows") {
+                    "windows"
+                } else {
+                    continue;
+                };
+                result.insert(os_name.to_string(), true_val.trim().trim_matches('"').to_string());
+                // false path is the else branch
+                result
+                    .insert(format!("!{os_name}"), false_val.trim().trim_matches('"').to_string());
             }
         }
     }
@@ -77,11 +68,11 @@ pub(super) fn extract_platform_conditional_paths(source: &str) -> BTreeMap<Strin
 
 // ── Sandbox path normalization ───────────────────────────────────────────
 
-/// Resolves a sandbox-relative path from a tool command's content_map entry.
+/// Resolves a sandbox-relative path from a tool command's `content_map` entry.
 #[must_use]
-pub(super) fn resolve_sandbox_path(_content_map_key: &str) -> String {
+pub(super) fn resolve_sandbox_path(content_map_key: &str) -> String {
     // Stub: returns an inputs-relative path.
-    format!("inputs/{_content_map_key}")
+    format!("inputs/{content_map_key}")
 }
 
 /// Removes sandbox path prefix from a fully qualified sandbox path.

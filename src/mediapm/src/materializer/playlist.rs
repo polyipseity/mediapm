@@ -7,7 +7,6 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::config::hierarchy_types::PlaylistFormat;
-use crate::error::MediaPmError;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,7 +39,7 @@ pub(super) enum PlaylistEntryPathMode {
 pub(super) fn generate_playlist_bytes(
     entries: &[RenderedPlaylistEntry],
     format: PlaylistFormat,
-) -> Result<Vec<u8>, MediaPmError> {
+) -> Vec<u8> {
     match format {
         PlaylistFormat::M3u8 => render_m3u8(entries),
         PlaylistFormat::Pls => render_pls(entries),
@@ -134,19 +133,19 @@ fn escape_xml(s: &str) -> String {
 // M3U8 / M3U rendering
 // ---------------------------------------------------------------------------
 
-fn render_m3u8(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError> {
+fn render_m3u8(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("#EXTM3U\n");
     for entry in entries {
         let _ = writeln!(output, "#EXTINF:-1,{}\n{}", entry.id, entry.path);
     }
-    Ok(output.into_bytes())
+    output.into_bytes()
 }
 
 // ---------------------------------------------------------------------------
 // PLS rendering
 // ---------------------------------------------------------------------------
 
-fn render_pls(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError> {
+fn render_pls(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("[playlist]\n");
     let _ = writeln!(output, "NumberOfEntries={}", entries.len());
     for (i, entry) in entries.iter().enumerate() {
@@ -156,14 +155,14 @@ fn render_pls(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError
         let _ = writeln!(output, "Length{num}=-1");
     }
     output.push_str("Version=2\n");
-    Ok(output.into_bytes())
+    output.into_bytes()
 }
 
 // ---------------------------------------------------------------------------
 // XSPF rendering
 // ---------------------------------------------------------------------------
 
-fn render_xspf(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError> {
+fn render_xspf(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\">\n\
@@ -181,14 +180,14 @@ fn render_xspf(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmErro
         );
     }
     output.push_str("\x20 </trackList>\n</playlist>\n");
-    Ok(output.into_bytes())
+    output.into_bytes()
 }
 
 // ---------------------------------------------------------------------------
 // WPL rendering
 // ---------------------------------------------------------------------------
 
-fn render_wpl(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError> {
+fn render_wpl(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from(
         "<?wpl version=\"1.0\"?>\n\
          <smil>\n\
@@ -199,21 +198,21 @@ fn render_wpl(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError
          \x20\x20\x20<seq>\n",
     );
     for entry in entries {
-        let _ = writeln!(output, "\x20\x20\x20\x20<media src=\"{}\"/>", escape_xml(&entry.path),);
+        let _ = writeln!(output, "\x20\x20\x20\x20<media src=\"{}\"/>", escape_xml(&entry.path));
     }
     output.push_str(
         "\x20\x20\x20</seq>\n\
          \x20 </body>\n\
          </smil>\n",
     );
-    Ok(output.into_bytes())
+    output.into_bytes()
 }
 
 // ---------------------------------------------------------------------------
 // ASX rendering
 // ---------------------------------------------------------------------------
 
-fn render_asx(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError> {
+fn render_asx(entries: &[RenderedPlaylistEntry]) -> Vec<u8> {
     let mut output = String::from("<asx version=\"3.0\">\n");
     for entry in entries {
         let _ = writeln!(
@@ -227,5 +226,5 @@ fn render_asx(entries: &[RenderedPlaylistEntry]) -> Result<Vec<u8>, MediaPmError
         );
     }
     output.push_str("</asx>\n");
-    Ok(output.into_bytes())
+    output.into_bytes()
 }

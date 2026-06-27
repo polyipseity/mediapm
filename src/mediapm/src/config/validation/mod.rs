@@ -7,9 +7,7 @@
 #![allow(dead_code)]
 // TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
-use std::collections::BTreeSet;
-
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::MediaPmError;
 
@@ -29,7 +27,7 @@ pub fn validate_document(
     // Source-level validation.
     // Build a complete variant set from all sources for selector resolution.
     let mut all_variants = BTreeSet::new();
-    for (_, source) in media {
+    for source in media.values() {
         for step in &source.steps {
             for variant in step.output_variants.keys() {
                 all_variants.insert(variant.clone());
@@ -38,7 +36,7 @@ pub fn validate_document(
     }
     // Also include variant_hashes keys as "known variants" for source
     // continuity checks.
-    for (_, source) in media {
+    for source in media.values() {
         for variant in source.variant_hashes.keys() {
             all_variants.insert(variant.clone());
         }

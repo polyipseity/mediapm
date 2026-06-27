@@ -58,7 +58,7 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(local_source_path)
 }
 
-async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
+fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
@@ -100,7 +100,7 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_sources_example().await?;
+    let manifest = run_add_sources_example()?;
 
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
@@ -124,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
-        let manifest = run_add_sources_example().await.expect("run add-sources example");
+        let manifest = run_add_sources_example().expect("run add-sources example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");

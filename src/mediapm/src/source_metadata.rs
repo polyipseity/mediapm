@@ -182,7 +182,7 @@ pub(crate) fn parse_local_source_metadata_from_ffprobe_json(value: &Value) -> Lo
                 .get("format")
                 .and_then(|f| f.get("filename"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
         })
         .unwrap_or_else(|| "Untitled".to_string());
 
@@ -220,22 +220,21 @@ pub(crate) fn fetch_local_source_metadata(
     let cache_key = format!("ffprobe:{}", path.display());
 
     // Check cache first
-    if let Some(cache) = cache {
-        if let Some(cached) = cache.get(&cache_key) {
-            if let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached) {
-                return Ok(metadata);
-            }
-        }
+    if let Some(cache) = cache
+        && let Some(cached) = cache.get(&cache_key)
+        && let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached)
+    {
+        return Ok(metadata);
     }
 
     let raw = try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command)?;
     let metadata = parse_local_source_metadata_from_ffprobe_json(&raw);
 
     // Update cache
-    if let Some(cache) = cache {
-        if let Ok(value) = serde_json::to_value(&metadata) {
-            cache.set(cache_key, value);
-        }
+    if let Some(cache) = cache
+        && let Ok(value) = serde_json::to_value(&metadata)
+    {
+        cache.set(cache_key, value);
     }
 
     Ok(metadata)
@@ -328,7 +327,7 @@ mod tests {
         assert_eq!(metadata.artist, "Unknown");
     }
 
-    /// Ensures resolve_online_source_metadata_for_add maps fields correctly.
+    /// Ensures `resolve_online_source_metadata_for_add` maps fields correctly.
     #[test]
     fn resolve_online_source_metadata_for_add_maps_fields() {
         let input = json!({

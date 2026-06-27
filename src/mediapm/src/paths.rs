@@ -30,6 +30,7 @@ pub struct MediaPmPathOverrides {
     /// Override for env generated file path.
     pub env_generated_file: Option<PathBuf>,
     /// Override for mediapm schema export dir (`None` = disable export).
+    #[allow(clippy::option_option)]
     pub mediapm_schema_dir: Option<Option<PathBuf>>,
 }
 

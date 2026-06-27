@@ -7,11 +7,6 @@
 //!
 //! This binary requires the `cli` feature.
 
-#![expect(
-    clippy::too_many_lines,
-    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-)]
-
 #[cfg(feature = "cli")]
 use std::path::PathBuf;
 
@@ -36,7 +31,7 @@ fn main() -> anyhow::Result<()> {
     {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(main_cli())?;
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(feature = "cli"))]
@@ -234,14 +229,13 @@ async fn main_cli() -> anyhow::Result<()> {
                         }
                         MediaAddPreset::Local => {
                             let path = PathBuf::from(&args.source);
-                            let media_id = service.add_local_source_with_position(
+                            service.add_local_source_with_position(
                                 &path,
                                 args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
                                 None,
                                 args.insert_position.into(),
                                 args.overwrite,
-                            )?;
-                            media_id
+                            )?
                         }
                     };
                     println!("registered media source id={media_id}");
@@ -430,7 +424,7 @@ struct Cli {
     /// Override for `runtime.media_state_config`.
     #[arg(long, env = "MEDIAPM_MEDIA_STATE_CONFIG")]
     media_state_config: Option<PathBuf>,
-    /// Enables CorruptObject retry for impure workflow steps.
+    /// Enables `CorruptObject` retry for impure workflow steps.
     #[arg(long, env = "MEDIAPM_RETRY_IMPURE")]
     retry_impure: bool,
     /// Top-level command selector.
@@ -626,6 +620,7 @@ impl From<AddInsertPositionArg> for AddInsertPosition {
 
 /// Arguments for `media invalidate <media-id> <step-index>`.
 #[derive(Debug, Args)]
+#[allow(clippy::struct_excessive_bools)]
 struct MediaInvalidateArgs {
     /// Media source id whose step cache should be invalidated.
     media_id: String,
@@ -756,13 +751,13 @@ struct InternalMediaTaggerArgs {
     /// Output file path.
     #[arg(short, long)]
     output: String,
-    /// AcoustID API key.
+    /// `AcoustID` API key.
     #[arg(long)]
     acoustid_api_key: Option<String>,
-    /// AcoustID endpoint URL.
+    /// `AcoustID` endpoint URL.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_ACOUSTID_ENDPOINT)]
     acoustid_endpoint: String,
-    /// MusicBrainz endpoint URL.
+    /// `MusicBrainz` endpoint URL.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT)]
     musicbrainz_endpoint: String,
     /// Cache directory path.
@@ -961,6 +956,7 @@ fn default_yt_dlp_steps(
 
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
 #[cfg(feature = "media-tagger")]
+#[allow(clippy::cast_possible_wrap)]
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {

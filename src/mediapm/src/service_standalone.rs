@@ -153,7 +153,7 @@ pub(crate) fn mark_media_step_for_regeneration(
     if let Some(step_state) = state.media.get_mut(media_id) {
         // Clear variant hashes to force regeneration
         step_state.variant_hashes.clear();
-        step_state.steps_completed = Some(step_index as u32);
+        step_state.steps_completed = Some(u32::try_from(step_index).unwrap_or(u32::MAX));
     }
 }
 
@@ -191,7 +191,7 @@ pub(crate) fn save_conductor_state_document(
 
 /// Removes impure timestamps for a specific tool from all media step states.
 pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _tool_id: &str) {
-    for (_media_id, step_state) in &mut state.media {
+    for step_state in state.media.values_mut() {
         if step_state.last_impure_sync_at.is_some() {
             step_state.last_impure_sync_at = None;
         }
@@ -268,7 +268,7 @@ mod tests {
     use crate::config::MediaSourceSpec;
     use std::collections::BTreeMap;
 
-    /// Ensures registered_builtin_ids returns expected builtins.
+    /// Ensures `registered_builtin_ids` returns expected builtins.
     #[test]
     fn registered_builtin_ids_returns_expected_set() {
         let ids = registered_builtin_ids();
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(ids.len(), 5);
     }
 
-    /// Ensures collect_workflow_step_targets_for_media_step finds matching steps.
+    /// Ensures `collect_workflow_step_targets_for_media_step` finds matching steps.
     #[test]
     fn collect_workflow_step_targets_finds_import_steps() {
         let mut doc = MediaPmDocument::default();
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(targets[0].step_index, 0);
     }
 
-    /// Ensures mark_media_step_for_regeneration clears variant hashes.
+    /// Ensures `mark_media_step_for_regeneration` clears variant hashes.
     #[test]
     fn mark_media_step_for_regeneration_clears_variant_hashes() {
         let mut state = MediaPmState::default();
@@ -328,7 +328,7 @@ mod tests {
         assert!(state.media["test-source"].variant_hashes.is_empty());
     }
 
-    /// Ensures resolve_effective_paths_for_root works with overrides.
+    /// Ensures `resolve_effective_paths_for_root` works with overrides.
     #[test]
     fn resolve_effective_paths_for_root_applies_overrides() {
         let dir = tempfile::TempDir::new().expect("temp dir");

@@ -42,7 +42,7 @@ fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
     Ok(())
 }
 
-/// Adding a YtDlpChannel hierarchy preset creates non-empty hierarchy nodes.
+/// Adding a `YtDlpChannel` hierarchy preset creates non-empty hierarchy nodes.
 #[test]
 fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");

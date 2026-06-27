@@ -168,9 +168,8 @@ pub(super) async fn resolve_variant_metadata_key(
     source: &MediaSourceSpec,
     lookup_context: &MaterializationLookupContext,
 ) -> Result<Option<String>, MediaPmError> {
-    let hash_str = match source.variant_hashes.get(variant) {
-        Some(h) => h,
-        None => return Ok(None),
+    let Some(hash_str) = source.variant_hashes.get(variant) else {
+        return Ok(None);
     };
 
     let hash: Hash = hash_str.parse().map_err(|e| {
@@ -186,10 +185,10 @@ pub(super) async fn resolve_variant_metadata_key(
     })?;
 
     // Try JSON extraction from ffprobe-style or generic JSON payloads.
-    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-        if let Some(value) = extract_metadata_key_from_json(&json, metadata_key) {
-            return Ok(Some(value));
-        }
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(value) = extract_metadata_key_from_json(&json, metadata_key)
+    {
+        return Ok(Some(value));
     }
 
     Ok(None)
@@ -208,10 +207,10 @@ fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option
         if let Some(value) = lookup_json_string_key(format, key) {
             return Some(value);
         }
-        if let Some(tags) = format.get("tags").and_then(serde_json::Value::as_object) {
-            if let Some(value) = lookup_json_string_key(tags, key) {
-                return Some(value);
-            }
+        if let Some(tags) = format.get("tags").and_then(serde_json::Value::as_object)
+            && let Some(value) = lookup_json_string_key(tags, key)
+        {
+            return Some(value);
         }
     }
 
@@ -222,20 +221,20 @@ fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option
                 if let Some(value) = lookup_json_string_key(stream_obj, key) {
                     return Some(value);
                 }
-                if let Some(tags) = stream_obj.get("tags").and_then(serde_json::Value::as_object) {
-                    if let Some(value) = lookup_json_string_key(tags, key) {
-                        return Some(value);
-                    }
+                if let Some(tags) = stream_obj.get("tags").and_then(serde_json::Value::as_object)
+                    && let Some(value) = lookup_json_string_key(tags, key)
+                {
+                    return Some(value);
                 }
             }
         }
     }
 
     // Top-level fallback for generic JSON objects.
-    if let Some(obj) = json.as_object() {
-        if let Some(value) = lookup_json_string_key(obj, key) {
-            return Some(value);
-        }
+    if let Some(obj) = json.as_object()
+        && let Some(value) = lookup_json_string_key(obj, key)
+    {
+        return Some(value);
     }
 
     None

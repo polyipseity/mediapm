@@ -59,6 +59,7 @@ pub(crate) struct ToolSyncReport {
 /// Returns an error when any critical step (document loading, builtin
 /// registration, content-map import) fails. Non-critical failures are
 /// reported as warnings in [`ToolSyncReport`].
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn reconcile_desired_tools(
     cas: &impl CasApi,
     paths: &MediaPmPaths,
@@ -108,15 +109,17 @@ pub(crate) async fn reconcile_desired_tools(
         if let Ok(_req) =
             serde_json::from_value::<crate::config::ToolRequirement>(requirement_value.clone())
         {
-            let mut runtime = ToolRuntime::default();
-            runtime.impure = false;
-            runtime.inherited_env_vars = inherited_env_vars
-                .get(tool_id)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|v| (v.clone(), v))
-                .collect();
+            let runtime = ToolRuntime {
+                impure: false,
+                inherited_env_vars: inherited_env_vars
+                    .get(tool_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| (v.clone(), v))
+                    .collect(),
+                ..ToolRuntime::default()
+            };
             tool_runtimes.insert(tool_id.clone(), runtime);
             report.tools_updated += 1;
         } else {
@@ -169,7 +172,7 @@ pub(crate) async fn reconcile_desired_tools(
         Err(e) => {
             report
                 .warnings
-                .push(format!("tool provisioning failed (will retry on next sync): {e}",));
+                .push(format!("tool provisioning failed (will retry on next sync): {e}"));
         }
     }
 
@@ -184,7 +187,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 5. Ensure internal launcher content entries exist and regenerate launcher.
     let tools_dir = &paths.tools_dir;
-    ensure_internal_launcher_content_entries_exist(&mut generated_doc, tools_dir)?;
+    ensure_internal_launcher_content_entries_exist(&mut generated_doc, tools_dir);
     regenerate_media_tagger_internal_launcher_file(tools_dir)?;
 
     // 6. Inject generated env vars into tool runtimes.

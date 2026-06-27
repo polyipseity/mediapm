@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use mediapm_conductor::WorkflowStepSpec;
 
 use crate::config::{MediaSourceSpec, MediaStep};
-use crate::error::MediaPmError;
 
 use super::{
     OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, step_option_input_bindings,
@@ -25,12 +24,12 @@ use super::{
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError`] when required configuration is missing or invalid.
+#[must_use]
 pub(crate) fn synthesize_rsgain_step_chain(
     source: &MediaSourceSpec,
     step_index: usize,
     step: &MediaStep,
-) -> Result<Vec<WorkflowStepSpec>, MediaPmError> {
+) -> Vec<WorkflowStepSpec> {
     let mut steps = Vec::new();
 
     let step_id =
@@ -69,5 +68,5 @@ pub(crate) fn synthesize_rsgain_step_chain(
         depends_on: Vec::new(),
     });
 
-    Ok(steps)
+    steps
 }

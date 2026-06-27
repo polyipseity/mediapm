@@ -167,7 +167,7 @@ impl Drop for MetadataCache {
 
 /// Returns the current Unix epoch seconds.
 fn unix_seconds_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 /// Loads a JSONC cache file, stripping comments before parsing.
@@ -180,6 +180,7 @@ fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, 
 
 /// Strips JSONC-style comments (single-line `//` and multi-line `/* */`) from
 /// a string. Does not handle comments inside strings.
+#[allow(clippy::while_let_on_iterator)]
 fn strip_jsonc_comments(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -266,7 +267,7 @@ mod tests {
         assert_eq!(retrieved, Some(serde_json::json!({"key": "value"})));
     }
 
-    /// Ensures strip_jsonc_comments removes single-line comments.
+    /// Ensures `strip_jsonc_comments` removes single-line comments.
     #[test]
     fn strip_jsonc_comments_removes_single_line() {
         let input = "{\n  // comment\n  \"key\": \"value\"\n}";
@@ -275,7 +276,7 @@ mod tests {
         assert!(output.contains("\"key\": \"value\""));
     }
 
-    /// Ensures strip_jsonc_comments removes multi-line comments.
+    /// Ensures `strip_jsonc_comments` removes multi-line comments.
     #[test]
     fn strip_jsonc_comments_removes_multi_line() {
         let input = "{\n  /* multi\n     line */\n  \"key\": \"value\"\n}";

@@ -17,9 +17,9 @@ pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError
         .build::<CacheImpl>()
         .map_err(|err| MediaPmError::Workflow(format!("failed to create Nickel program: {err}")))?;
 
-    let nickel_value = program
-        .eval_full_for_export()
-        .map_err(|err| MediaPmError::Workflow(format!("failed to evaluate '{path:?}': {err:?}")))?;
+    let nickel_value = program.eval_full_for_export().map_err(|err| {
+        MediaPmError::Workflow(format!("failed to evaluate '{}': {err:?}", path.display()))
+    })?;
 
     serde_json::to_value(&nickel_value)
         .map_err(|err| MediaPmError::Serialization(format!("failed to render Nickel value: {err}")))
@@ -28,6 +28,12 @@ pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError
 /// Parses one floating-point value into `u64` when it is a non-negative
 /// integer within representable range.
 #[must_use]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::float_cmp
+)]
 pub fn parse_non_negative_integral_u64(value: f64) -> Option<u64> {
     if value.is_sign_negative() || value.is_nan() || value.is_infinite() {
         return None;
@@ -57,7 +63,7 @@ pub fn parse_non_negative_integral_u32(value: f64) -> Option<u32> {
 pub fn normalize_version_field_to_u64(value: &serde_json::Value) -> Option<u64> {
     match value {
         serde_json::Value::Number(n) => {
-            n.as_u64().or_else(|| n.as_f64().and_then(|f| parse_non_negative_integral_u64(f)))
+            n.as_u64().or_else(|| n.as_f64().and_then(parse_non_negative_integral_u64))
         }
         _ => None,
     }
@@ -86,11 +92,13 @@ fn save_json_document<T: Serialize>(path: &Path, doc: &T, label: &str) -> Result
 }
 
 /// Loads and parses a `mediapm.ncl` file.
+#[allow(clippy::missing_errors_doc)]
 pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocument, MediaPmError> {
     load_json_document(path, "mediapm document")
 }
 
 /// Serializes and writes a `mediapm.ncl` document.
+#[allow(clippy::missing_errors_doc)]
 pub fn save_mediapm_document(
     path: &Path,
     doc: &crate::config::MediaPmDocument,
@@ -99,6 +107,7 @@ pub fn save_mediapm_document(
 }
 
 /// Loads and parses a `state.ncl` file.
+#[allow(clippy::missing_errors_doc)]
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
@@ -106,6 +115,7 @@ pub fn load_mediapm_state_document(
 }
 
 /// Serializes and writes a `state.ncl` document.
+#[allow(clippy::missing_errors_doc)]
 pub fn save_mediapm_state_document(
     path: &Path,
     state: &crate::config::MediaPmState,
@@ -118,6 +128,7 @@ pub fn save_mediapm_state_document(
 /// Currently a no-op passthrough since the state document contains
 /// `ManagedWorkflowStepState` entries that are structurally incompatible with
 /// the document's `MediaSourceSpec` entries.
+#[allow(clippy::missing_errors_doc)]
 pub fn merge_mediapm_document_with_state(
     doc: &crate::config::MediaPmDocument,
     _state: &crate::config::MediaPmState,

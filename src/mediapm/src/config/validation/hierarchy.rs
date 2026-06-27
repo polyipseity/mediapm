@@ -43,12 +43,12 @@ fn validate_hierarchy_node_list(
 ) -> Result<(), MediaPmError> {
     for node in nodes {
         // Validate id uniqueness.
-        if let Some(ref id) = node.id {
-            if !hierarchy_ids.insert(id.clone()) {
-                return Err(MediaPmError::InvalidSource(format!(
-                    "duplicate hierarchy id '{id}' at the same nesting level"
-                )));
-            }
+        if let Some(ref id) = node.id
+            && !hierarchy_ids.insert(id.clone())
+        {
+            return Err(MediaPmError::InvalidSource(format!(
+                "duplicate hierarchy id '{id}' at the same nesting level"
+            )));
         }
 
         // Validate media_id when the node kind requires one.

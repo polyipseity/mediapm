@@ -165,7 +165,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             let desired = effective.tools.get(tool_id);
             // If no desired requirement is declared, the tool is considered
             // up-to-date when present in state.
-            desired.map_or(false, |req| req.version != existing.version || req.tag != existing.tag)
+            desired.is_some_and(|req| req.version != existing.version || req.tag != existing.tag)
         } else {
             true // missing from state → requires sync
         }
@@ -237,6 +237,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Workflow`] if the media id already exists or
     /// the hierarchy insertion fails.
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     pub fn add_media_source_with_position(
         &mut self,
         media_source: &MediaSourceSpec,
@@ -257,8 +258,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
                 let _ = remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, &media_id);
             } else {
                 return Err(MediaPmError::Workflow(format!(
-                    "media source '{}' already exists in config",
-                    media_id
+                    "media source '{media_id}' already exists in config",
                 )));
             }
         }
@@ -292,9 +292,9 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         path: &Path,
         ffprobe_command: &str,
         media_id: Option<String>,
-        _position: AddInsertPosition,
+        position: AddInsertPosition,
     ) -> Result<String, MediaPmError> {
-        self.add_local_source_with_position(path, ffprobe_command, media_id, _position, false)
+        self.add_local_source_with_position(path, ffprobe_command, media_id, position, false)
     }
 
     /// Adds one local media source at the given position, auto-resolving
@@ -336,8 +336,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
                     remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, &resolved_media_id);
             } else {
                 return Err(MediaPmError::Workflow(format!(
-                    "media source '{}' already exists in config",
-                    resolved_media_id
+                    "media source '{resolved_media_id}' already exists in config",
                 )));
             }
         }
@@ -428,7 +427,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         if document.media.remove(media_id).is_none() {
-            return Err(MediaPmError::Workflow(format!("media source '{}' not found", media_id)));
+            return Err(MediaPmError::Workflow(format!("media source '{media_id}' not found")));
         }
 
         // Remove hierarchy nodes that reference this media id.
@@ -450,7 +449,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         let removed = remove_hierarchy_nodes_by_id(&mut document.hierarchy, node_id);
         if removed == 0 {
-            return Err(MediaPmError::Workflow(format!("hierarchy node '{}' not found", node_id)));
+            return Err(MediaPmError::Workflow(format!("hierarchy node '{node_id}' not found")));
         }
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
@@ -544,10 +543,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         if document.runtime.tools.remove(tool_id).is_none() {
-            return Err(MediaPmError::Workflow(format!(
-                "tool requirement '{}' not found",
-                tool_id
-            )));
+            return Err(MediaPmError::Workflow(format!("tool requirement '{tool_id}' not found")));
         }
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
@@ -580,8 +576,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         if !state.media.contains_key(media_id) {
             return Err(MediaPmError::Workflow(format!(
-                "media source '{}' not found in state",
-                media_id
+                "media source '{media_id}' not found in state",
             )));
         }
         let workflow_id = format!("media/{media_id}");

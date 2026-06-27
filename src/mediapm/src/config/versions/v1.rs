@@ -154,21 +154,23 @@ impl From<MediaPmDocumentEnvelopeV1> for MediaPmDocument {
 
 impl From<MediaPmStateEnvelopeV1> for MediaPmState {
     fn from(envelope: MediaPmStateEnvelopeV1) -> Self {
-        let mut state = MediaPmState::default();
-
-        state.media =
-            envelope.media_state.into_iter().map(|(key, wire)| (key, wire.into())).collect();
-
-        state.tools = envelope.tools.into_iter().map(|(key, wire)| (key, wire.into())).collect();
-
-        state.last_materialized_state_hash = envelope.last_materialized_state_hash;
-        state.managed_files = envelope.managed_files;
-        state.tool_registry =
-            envelope.tool_registry.into_iter().map(|(key, wire)| (key, wire.into())).collect();
-        state.active_tools =
-            envelope.active_tools.into_iter().map(|(key, wire)| (key, wire.into())).collect();
-
-        state
+        MediaPmState {
+            media: envelope.media_state.into_iter().map(|(key, wire)| (key, wire.into())).collect(),
+            tools: envelope.tools.into_iter().map(|(key, wire)| (key, wire.into())).collect(),
+            last_materialized_state_hash: envelope.last_materialized_state_hash,
+            managed_files: envelope.managed_files,
+            tool_registry: envelope
+                .tool_registry
+                .into_iter()
+                .map(|(key, wire)| (key, wire.into()))
+                .collect(),
+            active_tools: envelope
+                .active_tools
+                .into_iter()
+                .map(|(key, wire)| (key, wire.into()))
+                .collect(),
+            ..Default::default()
+        }
     }
 }
 
@@ -187,7 +189,7 @@ impl From<MediaPmStateWireV1> for ManagedWorkflowStepState {
 impl From<ToolRegistryStateWireV1> for ToolRequirement {
     fn from(wire: ToolRegistryStateWireV1) -> Self {
         Self {
-            version: wire.version.clone().map(|v| source_types::MediaMetadataValue::Literal(v)),
+            version: wire.version.clone().map(source_types::MediaMetadataValue::Literal),
             tag: wire.tag.clone(),
             ..ToolRequirement::default()
         }
@@ -295,8 +297,8 @@ impl Migrate for MediaPmState {
                 (
                     key.clone(),
                     ToolRegistryStateWireV1 {
-                        version: tool_req.normalized_version().map(|s| s.to_string()),
-                        tag: tool_req.normalized_tag().map(|s| s.to_string()),
+                        version: tool_req.normalized_version(),
+                        tag: tool_req.normalized_tag(),
                     },
                 )
             })

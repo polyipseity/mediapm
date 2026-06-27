@@ -64,10 +64,11 @@ pub const MATERIALIZE_REFLINK: &str = "reflink";
 pub const MATERIALIZE_COPY: &str = "copy";
 
 /// Supported file materialization methods in preference order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MaterializationMethod {
     /// Hard-link target file into the output tree.
+    #[default]
     Hardlink,
     /// Symbolic-link target file into the output tree.
     Symlink,
@@ -75,12 +76,6 @@ pub enum MaterializationMethod {
     Reflink,
     /// Full byte copy into the output tree.
     Copy,
-}
-
-impl Default for MaterializationMethod {
-    fn default() -> Self {
-        Self::Hardlink
-    }
 }
 
 /// Deserializes a materialization method or named-object form from Nickel.
@@ -171,7 +166,7 @@ where
 // ---------------------------------------------------------------------------
 
 /// Platform-grouped inherited environment variable configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformInheritedEnvVars {
     /// Variables inherited on all platforms.
@@ -186,12 +181,6 @@ pub struct PlatformInheritedEnvVars {
     /// Variables inherited on Windows.
     #[serde(default)]
     pub windows: Vec<String>,
-}
-
-impl Default for PlatformInheritedEnvVars {
-    fn default() -> Self {
-        Self { shared: Vec::new(), macos: Vec::new(), linux: Vec::new(), windows: Vec::new() }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +307,7 @@ impl Default for MediaRuntimeStorage {
 // ---------------------------------------------------------------------------
 
 /// Managed tool version and dependency requirements.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirement {
     /// Version metadata value or selector binding.
@@ -354,7 +343,7 @@ pub struct ToolRequirement {
 }
 
 /// Selector-based dependency version requirements for managed tools.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirementDependencies {
     /// Selector or literal version for ffmpeg dependency.
@@ -366,25 +355,6 @@ pub struct ToolRequirementDependencies {
     /// Selector or literal version for sd (stable-diffusion) dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sd_version: Option<MediaMetadataValue>,
-}
-
-impl Default for ToolRequirement {
-    fn default() -> Self {
-        Self {
-            version: None,
-            tag: None,
-            dependencies: ToolRequirementDependencies::default(),
-            recheck_seconds: None,
-            max_input_slots: None,
-            max_output_slots: None,
-        }
-    }
-}
-
-impl Default for ToolRequirementDependencies {
-    fn default() -> Self {
-        Self { ffmpeg_version: None, deno_version: None, sd_version: None }
-    }
 }
 
 impl ToolRequirement {
@@ -475,7 +445,7 @@ impl MediaPmDocument {
     pub fn normalize(&mut self) {
         // Version is already a concrete u32, no trimming needed.
         // Trimming media source titles, descriptions, etc.
-        for (_id, source) in &mut self.media {
+        for source in self.media.values_mut() {
             if let Some(ref mut description) = source.description {
                 let trimmed = description.trim().to_string();
                 if trimmed.is_empty() {
@@ -509,7 +479,7 @@ impl MediaPmDocument {
 // ---------------------------------------------------------------------------
 
 /// Per-media-source workflow step state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedWorkflowStepState {
     /// Pre-seeded CAS hash pointers keyed by variant name.
@@ -521,12 +491,6 @@ pub struct ManagedWorkflowStepState {
     /// Optional last impure sync timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_impure_sync_at: Option<MediaPmImpureTimestamp>,
-}
-
-impl Default for ManagedWorkflowStepState {
-    fn default() -> Self {
-        Self { variant_hashes: BTreeMap::new(), steps_completed: None, last_impure_sync_at: None }
-    }
 }
 
 /// Impure sync timestamp tracked per media source.
@@ -616,8 +580,8 @@ impl MediaPmState {
                 || normalized_tag(tool_req.tag.as_ref()).is_some()
         });
         self.tool_registry.retain(|_, entry| {
-            entry.version.as_ref().map_or(true, |v| !v.trim().is_empty())
-                || entry.tag.as_ref().map_or(true, |t| !t.trim().is_empty())
+            entry.version.as_ref().is_none_or(|v| !v.trim().is_empty())
+                || entry.tag.as_ref().is_none_or(|t| !t.trim().is_empty())
         });
         self.managed_files.retain(|f| !f.trim().is_empty());
     }

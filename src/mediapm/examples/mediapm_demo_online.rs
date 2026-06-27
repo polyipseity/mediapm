@@ -1,7 +1,7 @@
 //! End-to-end online demo exercising managed tool provisioning.
 //!
 //! Default sync enabled; override via `MEDIAPM_DEMO_ONLINE_RUN_SYNC`.
-//! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on YouTube URL.
+//! Workflow: `yt-dlp -> ffmpeg -> media-tagger -> rsgain` on `YouTube` URL.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -1206,7 +1206,7 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         verify_on_read_sample_denominator: 100,
         // Timeout in seconds for the "stale" verify-on-read strategy.
         // Default: 604800 (7 days).
-        verify_on_read_stale_timeout_secs: 604800,
+        verify_on_read_stale_timeout_secs: 604_800,
         // TTL in seconds for reconstructed bytes cache.
         // Default: 3600 (1 hour).
         reconstructed_cache_ttl_seconds: 3600,
@@ -1414,6 +1414,7 @@ fn configure_demo_ffprobe_command(
     Ok(())
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn assert_yt_dlp_concurrency_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
@@ -1422,8 +1423,7 @@ fn assert_yt_dlp_concurrency_policy(
         .tools
         .values()
         .find(|t| t.name == yt_dlp_tool_id)
-        .map(|t| t.runtime.max_concurrent_calls as i32)
-        .unwrap_or(-1);
+        .map_or(-1, |t| t.runtime.max_concurrent_calls as i32);
 
     if observed != 1 {
         return Err(format!(
@@ -1435,6 +1435,7 @@ fn assert_yt_dlp_concurrency_policy(
     Ok(observed)
 }
 
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn assert_yt_dlp_retry_policy(
     machine: &NickelDocument,
     yt_dlp_tool_id: &str,
@@ -1443,8 +1444,7 @@ fn assert_yt_dlp_retry_policy(
         .tools
         .values()
         .find(|t| t.name == yt_dlp_tool_id)
-        .map(|t| t.runtime.max_retries as i32)
-        .unwrap_or(-1);
+        .map_or(-1, |t| t.runtime.max_retries as i32);
 
     if observed != 1 {
         return Err(format!(
@@ -2427,7 +2427,7 @@ fn resolve_managed_tool_id(machine: &NickelDocument, logical_name: &str) -> Exam
                         .tools
                         .values()
                         .find(|t| t.name == **id)
-                        .map_or(false, |t| !t.runtime.content_map.is_empty())
+                        .is_some_and(|t| !t.runtime.content_map.is_empty())
                 })
                 .collect::<Vec<_>>();
             if with_content.len() == 1 {

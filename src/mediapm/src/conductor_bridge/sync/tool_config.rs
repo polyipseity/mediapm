@@ -5,6 +5,7 @@
 //! for same-step companion dependencies.
 
 use std::collections::BTreeMap;
+use std::fmt::Write;
 
 use mediapm_conductor::ToolRuntime;
 
@@ -30,15 +31,14 @@ const GENERATED_RUNTIME_ENV_HEADER: &str = concat!(
 pub(super) fn resolve_companion_ffmpeg_selection(
     requirements: &BTreeMap<String, serde_json::Value>,
 ) -> Option<String> {
-    for (_name, value) in requirements {
-        if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone()) {
-            if let Some(version) = requirement.dependencies.ffmpeg_version {
-                if let MediaMetadataValue::Literal(v) = version {
-                    if !v.is_empty() && !v.eq_ignore_ascii_case("inherit") {
-                        return Some(v);
-                    }
-                }
-            }
+    for value in requirements.values() {
+        if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone())
+            && let Some(version) = requirement.dependencies.ffmpeg_version
+            && let MediaMetadataValue::Literal(v) = version
+            && !v.is_empty()
+            && !v.eq_ignore_ascii_case("inherit")
+        {
+            return Some(v);
         }
     }
     None
@@ -53,15 +53,14 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 pub(super) fn resolve_companion_deno_selection(
     requirements: &BTreeMap<String, serde_json::Value>,
 ) -> Option<String> {
-    for (_name, value) in requirements {
-        if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone()) {
-            if let Some(version) = requirement.dependencies.deno_version {
-                if let MediaMetadataValue::Literal(v) = version {
-                    if !v.is_empty() && !v.eq_ignore_ascii_case("inherit") {
-                        return Some(v);
-                    }
-                }
-            }
+    for value in requirements.values() {
+        if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone())
+            && let Some(version) = requirement.dependencies.deno_version
+            && let MediaMetadataValue::Literal(v) = version
+            && !v.is_empty()
+            && !v.eq_ignore_ascii_case("inherit")
+        {
+            return Some(v);
         }
     }
     None
@@ -102,19 +101,17 @@ pub(super) fn write_generated_runtime_env_file(
     tool_runtimes: &BTreeMap<String, ToolRuntime>,
 ) -> Result<(), MediaPmError> {
     let generated_path = &paths.env_generated_file;
-    let tools_dir = &paths.tools_dir;
 
     let mut content = String::from(GENERATED_RUNTIME_ENV_HEADER);
     for (tool_id, runtime) in tool_runtimes {
-        let tool_dir = tools_dir.join(tool_id);
-        for (key, _hash) in &runtime.content_map {
+        for key in runtime.content_map.keys() {
             let env_name = format!(
                 "MEDIAPM_{}_{}",
-                tool_id.to_uppercase().replace('-', "_").replace('.', "_"),
-                key.to_uppercase().replace('-', "_").replace('.', "_"),
+                tool_id.to_uppercase().replace(['-', '.'], "_"),
+                key.to_uppercase().replace(['-', '.'], "_"),
             );
-            let env_value = tool_dir.join(key).to_string_lossy().to_string();
-            content.push_str(&format!("{env_name}={}\n", render_dotenv_quoted_value(&env_value)));
+            let env_value = paths.tools_dir.join(key).to_string_lossy().to_string();
+            let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
         }
     }
 
@@ -133,9 +130,8 @@ pub(super) fn ensure_machine_runtime_inherits_generated_env_vars(
     document: &mut mediapm_conductor::NickelDocument,
     generated_env_path: &str,
 ) {
-    let content = match std::fs::read_to_string(generated_env_path) {
-        Ok(c) => c,
-        Err(_) => return, // File not yet generated; nothing to inherit.
+    let Ok(content) = std::fs::read_to_string(generated_env_path) else {
+        return; // File not yet generated; nothing to inherit.
     };
 
     let mut generated_vars: BTreeMap<String, String> = BTreeMap::new();
@@ -173,9 +169,9 @@ pub(super) fn ensure_machine_runtime_inherits_generated_env_vars(
 fn render_dotenv_quoted_value(value: &str) -> String {
     let escaped = value
         .replace("\\\\", "\\\\\\\\")
-        .replace("\"", "\\\"")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-        .replace("\t", "\\t");
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
     format!("\"{escaped}\"")
 }

@@ -207,6 +207,7 @@ pub(crate) fn yt_dlp_hierarchy_media_children() -> Vec<HierarchyNode> {
 ///
 /// Returns [`MediaPmError::Workflow`] if the position specifies a sibling
 /// that does not exist in the hierarchy.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn insert_hierarchy_preset_node(
     hierarchy: &mut Vec<HierarchyNode>,
     preset: MediaHierarchyPreset,
@@ -219,24 +220,22 @@ pub(crate) fn insert_hierarchy_preset_node(
         AddInsertPosition::Sorted => {
             // Insert alphabetically based on id or empty-string fallback.
             let new_id = node.id.as_deref().unwrap_or("");
-            let pos = hierarchy
+            hierarchy
                 .iter()
                 .position(|n| n.id.as_deref().unwrap_or("") > new_id)
-                .unwrap_or(hierarchy.len());
-            pos
+                .unwrap_or(hierarchy.len())
         }
         AddInsertPosition::Beginning => 0,
         AddInsertPosition::End => hierarchy.len(),
     };
 
     // Check for duplicate id
-    if let Some(ref node_id) = node.id {
-        if existing_ids.contains(&node_id.as_str()) {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy node with id '{}' already exists",
-                node_id
-            )));
-        }
+    if let Some(ref node_id) = node.id
+        && existing_ids.contains(&node_id.as_str())
+    {
+        return Err(MediaPmError::Workflow(format!(
+            "hierarchy node with id '{node_id}' already exists",
+        )));
     }
 
     hierarchy.insert(insert_index, node);
@@ -309,17 +308,17 @@ pub(crate) fn normalize_hierarchy_folder_root(
 ) -> String {
     match preset {
         Some(MediaHierarchyPreset::Local) => {
-            if !path.contains("Artists") {
-                format!("{{01 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
-            } else {
+            if path.contains("Artists") {
                 path.to_string()
+            } else {
+                format!("{{01 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
             }
         }
         Some(MediaHierarchyPreset::YtDlpChannel) => {
-            if !path.contains("YouTube") {
-                format!("{{02 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
-            } else {
+            if path.contains("YouTube") {
                 path.to_string()
+            } else {
+                format!("{{02 {}}}", path.trim_start_matches('{').trim_end_matches('}'))
             }
         }
         None => path.to_string(),
@@ -366,7 +365,7 @@ mod tests {
         assert_eq!(node.kind, HierarchyNodeKind::Folder);
     }
 
-    /// Ensures hierarchy_contains_node_id finds existing nodes.
+    /// Ensures `hierarchy_contains_node_id` finds existing nodes.
     #[test]
     fn hierarchy_contains_node_id_finds_existing_node() {
         let hierarchy = build_hierarchy_preset_node(MediaHierarchyPreset::Local);
@@ -374,7 +373,7 @@ mod tests {
         assert!(!hierarchy_contains_node_id(&hierarchy.children, "nonexistent"));
     }
 
-    /// Ensures remove_hierarchy_nodes_by_id removes the correct node.
+    /// Ensures `remove_hierarchy_nodes_by_id` removes the correct node.
     #[test]
     fn remove_hierarchy_nodes_by_id_removes_matching_node() {
         let mut hierarchy = vec![
@@ -387,7 +386,7 @@ mod tests {
         assert_eq!(hierarchy[0].id.as_deref(), Some(HIERARCHY_YT_DLP_MEDIA_ROOT_TEMPLATE));
     }
 
-    /// Ensures insert_hierarchy_preset_node inserts at the correct position.
+    /// Ensures `insert_hierarchy_preset_node` inserts at the correct position.
     #[test]
     fn insert_hierarchy_preset_node_inserts_at_last_position() {
         let mut hierarchy = vec![build_hierarchy_preset_node(MediaHierarchyPreset::Local)];
@@ -400,7 +399,7 @@ mod tests {
         assert_eq!(hierarchy.len(), 2);
     }
 
-    /// Ensures insert_hierarchy_preset_node rejects duplicate ids.
+    /// Ensures `insert_hierarchy_preset_node` rejects duplicate ids.
     #[test]
     fn insert_hierarchy_preset_node_rejects_duplicate_id() {
         let mut hierarchy = vec![];

@@ -232,28 +232,26 @@ pub fn export_mediapm_nickel_config_schemas(
 
 /// Normalizes a media source URI for stable identity.
 ///
-/// Expands short YouTube links (`youtu.be/...`) to the canonical
+/// Expands short `YouTube` links (`youtu.be/...`) to the canonical
 /// `www.youtube.com/watch?v=...` form. Other URIs are returned unchanged.
 #[must_use]
 pub fn normalize_source_uri(uri: &Url) -> Url {
-    let host = match uri.host_str() {
-        Some(host) => host,
-        None => return uri.clone(),
+    let Some(host) = uri.host_str() else {
+        return uri.clone();
     };
 
-    if host.eq_ignore_ascii_case("youtu.be") {
-        if let Some(v) = uri.path().strip_prefix('/') {
-            if let Ok(mut normalized) = Url::parse("https://www.youtube.com/watch") {
-                normalized.query_pairs_mut().append_pair("v", v);
-                // Preserve timestamp query param
-                for (key, value) in uri.query_pairs() {
-                    if key == "t" {
-                        normalized.query_pairs_mut().append_pair(&key, &value);
-                    }
-                }
-                return normalized;
+    if host.eq_ignore_ascii_case("youtu.be")
+        && let Some(v) = uri.path().strip_prefix('/')
+        && let Ok(mut normalized) = Url::parse("https://www.youtube.com/watch")
+    {
+        normalized.query_pairs_mut().append_pair("v", v);
+        // Preserve timestamp query param
+        for (key, value) in uri.query_pairs() {
+            if key == "t" {
+                normalized.query_pairs_mut().append_pair(&key, &value);
             }
         }
+        return normalized;
     }
 
     uri.clone()
@@ -282,17 +280,14 @@ pub fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
 /// For `local` URIs, uses the URI path as the media id.
 #[must_use]
 pub fn media_id_from_uri(uri: &Url) -> String {
-    match uri.scheme() {
-        "local" => {
-            // Strip `local:` prefix and use the path portion.
-            uri.path().to_string()
-        }
-        _ => {
-            let host = uri.host_str().unwrap_or("unknown");
-            let host_slug = host.trim_start_matches("www.").replace('.', "-");
-            let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
-            format!("{host_slug}.{}", &hash[..12])
-        }
+    if uri.scheme() == "local" {
+        // Strip `local:` prefix and use the path portion.
+        uri.path().to_string()
+    } else {
+        let host = uri.host_str().unwrap_or("unknown");
+        let host_slug = host.trim_start_matches("www.").replace('.', "-");
+        let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
+        format!("{host_slug}.{}", &hash[..12])
     }
 }
 

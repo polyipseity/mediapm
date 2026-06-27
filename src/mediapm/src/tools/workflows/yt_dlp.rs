@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use mediapm_conductor::WorkflowStepSpec;
 
 use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
-use crate::error::MediaPmError;
 
 use super::{
     OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, source_uri_input,
@@ -19,7 +18,7 @@ use super::{
 
 /// Synthesizes the yt-dlp workflow step from a media step definition.
 ///
-/// Configures standard inputs (source_url, format, subtitles, etc.),
+/// Configures standard inputs (`source_url`, format, subtitles, etc.),
 /// output captures for each declared variant, and sets the tool reference
 /// to the managed `yt-dlp-managed` conductor tool.
 ///
@@ -30,7 +29,7 @@ pub(crate) fn synthesize_yt_dlp_step(
     source: &MediaSourceSpec,
     step_index: usize,
     step: &MediaStep,
-) -> Result<Vec<WorkflowStepSpec>, MediaPmError> {
+) -> Vec<WorkflowStepSpec> {
     let step_id =
         qualify_step_id(source.id.as_deref().unwrap_or("unknown"), &format!("yt_dlp_{step_index}"));
 
@@ -77,12 +76,12 @@ pub(crate) fn synthesize_yt_dlp_step(
         );
     }
 
-    Ok(vec![WorkflowStepSpec {
+    vec![WorkflowStepSpec {
         id: step_id,
         tool: resolve_step_tool_id(crate::config::MediaStepTool::YtDlp),
         inputs,
         outputs,
         max_retries: 1,
         depends_on: Vec::new(),
-    }])
+    }]
 }

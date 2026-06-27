@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use blake3;
 use mediapm_cas::CasApi;
 
 use crate::error::MediaPmError;

@@ -1,4 +1,4 @@
-//! Conductor bridge — MediaPM ↔ Conductor integration layer.
+//! Conductor bridge — `MediaPM` ↔ Conductor integration layer.
 //!
 //! This module translates mediapm's configuration and lifecycle model into
 //! conductor tool specifications, runtime settings, and Nickel documents.

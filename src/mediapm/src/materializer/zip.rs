@@ -5,7 +5,7 @@
 //! into compiled forms.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use zip::ZipArchive;
@@ -62,6 +62,7 @@ pub(super) fn extract_zip_folder_variant_bytes(
         if entry.is_dir() {
             dirs.insert(renamed);
         } else {
+            #[allow(clippy::cast_possible_truncation)]
             let mut bytes = Vec::with_capacity(entry.size() as usize);
             // We need to handle the entry read carefully since `by_index` returns a read-only archive.
             drop(entry);
@@ -119,7 +120,7 @@ pub(super) fn compile_hierarchy_folder_rename_rules(
 
 /// Normalises a ZIP entry path: strips `./` prefix and leading `/`, and
 /// collapses consecutive slashes.
-fn normalize_zip_entry_relative_path(path: &PathBuf) -> PathBuf {
+fn normalize_zip_entry_relative_path(path: &Path) -> PathBuf {
     let mut components: Vec<_> = path
         .components()
         .filter_map(|c| {
@@ -137,7 +138,7 @@ fn normalize_zip_entry_relative_path(path: &PathBuf) -> PathBuf {
 /// Applies a sequence of compiled folder rename rules to a normalized path's
 /// file-name component (last segment). Non-leaf path components are not
 /// renamed.
-fn apply_entry_rename_rules(path: &PathBuf, rules: &[CompiledFolderRenameRule]) -> PathBuf {
+fn apply_entry_rename_rules(path: &Path, rules: &[CompiledFolderRenameRule]) -> PathBuf {
     let parent = path.parent().map(PathBuf::from);
     let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
 

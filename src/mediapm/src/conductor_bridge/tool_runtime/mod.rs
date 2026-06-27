@@ -25,7 +25,11 @@ use mediapm_conductor::{
     OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
 };
 
-use crate::conductor_bridge::constants::*;
+use crate::conductor_bridge::constants::{
+    DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS, INPUT_CONTENT,
+    INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_SOURCE_URL, INPUT_TRAILING_ARGS,
+    OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
+};
 
 /// ffmpeg slot-limit configuration derived from tool requirements.
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +42,7 @@ pub(crate) struct FfmpegSlotLimits {
 
 /// Resolves ffmpeg slot limits from config default or overrides.
 #[must_use]
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn resolve_ffmpeg_slot_limits(
     max_input: Option<u32>,
     max_output: Option<u32>,
@@ -84,12 +89,12 @@ pub(crate) fn build_tool_spec(
 
 #[must_use]
 pub(super) fn default_max_concurrent_calls(tool_name: &str) -> usize {
-    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { 0 }
+    usize::from(tool_name.eq_ignore_ascii_case("yt-dlp"))
 }
 
 #[must_use]
 pub(super) fn default_max_retries(tool_name: &str) -> usize {
-    if tool_name.eq_ignore_ascii_case("yt-dlp") { 1 } else { 0 }
+    usize::from(tool_name.eq_ignore_ascii_case("yt-dlp"))
 }
 
 // ── Input / output spec builders ─────────────────────────────────────────
@@ -147,9 +152,9 @@ fn build_tool_outputs(
     let mut outputs = BTreeMap::new();
 
     let main_capture = if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        format!("file_regex:{}", YT_DLP_OUTPUT_CONTENT_REGEX)
+        format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}")
     } else {
-        format!("file:{}", SANDBOX_INPUT_FILE)
+        format!("file:{SANDBOX_INPUT_FILE}")
     };
 
     outputs.insert(
@@ -160,7 +165,7 @@ fn build_tool_outputs(
         OUTPUT_SANDBOX_ARTIFACTS.to_string(),
         OutputCaptureSpec {
             name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
-            capture: format!("folder:{}", SANDBOX_INPUTS_DIR),
+            capture: format!("folder:{SANDBOX_INPUTS_DIR}"),
             save: true,
         },
     );
@@ -176,9 +181,9 @@ fn build_default_input_defaults(
 
     // Apply static defaults per tool.
     let static_defaults: &[(&str, &str)] = match tool_name {
-        n if n.eq_ignore_ascii_case("yt-dlp") => &YT_DLP_INPUT_DEFAULTS,
-        n if n.eq_ignore_ascii_case("rsgain") => &RSGAIN_INPUT_DEFAULTS,
-        n if n.eq_ignore_ascii_case("media-tagger") => &MEDIA_TAGGER_INPUT_DEFAULTS,
+        n if n.eq_ignore_ascii_case("yt-dlp") => YT_DLP_INPUT_DEFAULTS,
+        n if n.eq_ignore_ascii_case("rsgain") => RSGAIN_INPUT_DEFAULTS,
+        n if n.eq_ignore_ascii_case("media-tagger") => MEDIA_TAGGER_INPUT_DEFAULTS,
         _ => &[],
     };
 

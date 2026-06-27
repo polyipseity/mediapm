@@ -93,7 +93,7 @@ struct SyncSharedState {
 
 /// Returns the number of concurrent hierarchy-worker tasks.
 fn hierarchy_worker_count() -> usize {
-    let count = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    let count = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     count.clamp(1, 1024)
 }
 
@@ -248,27 +248,23 @@ async fn prepare_hierarchy_entry(
 
             let hash = resolve_variant_hash(media_id, &effective_variant, source, lookup).await?;
 
-            match hash {
-                Some(hash) => {
-                    materialize_file_entry(&target_path, &relative_path, &hash, shared, lookup)
-                        .await?;
-                    Ok(PreparedHierarchyEntryResult {
-                        materialized: true,
-                        relative_path,
-                        is_directory: false,
-                    })
-                }
-                None => {
-                    // No content — still mark as processed but warn.
-                    shared.notice(format!(
-                        "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
-                    ));
-                    Ok(PreparedHierarchyEntryResult {
-                        materialized: false,
-                        relative_path,
-                        is_directory: false,
-                    })
-                }
+            if let Some(hash) = hash {
+                materialize_file_entry(&target_path, &relative_path, &hash, shared, lookup).await?;
+                Ok(PreparedHierarchyEntryResult {
+                    materialized: true,
+                    relative_path,
+                    is_directory: false,
+                })
+            } else {
+                // No content — still mark as processed but warn.
+                shared.notice(format!(
+                    "media '{media_id}' variant '{effective_variant}' has no content hash; skipping"
+                ));
+                Ok(PreparedHierarchyEntryResult {
+                    materialized: false,
+                    relative_path,
+                    is_directory: false,
+                })
             }
         }
         HierarchyEntryKind::MediaFolder => {
@@ -495,7 +491,7 @@ async fn materialize_playlist_entry(
         })?;
     }
 
-    let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format)?;
+    let bytes = generate_playlist_bytes(&rendered_entries, entry.entry.format);
     tokio::fs::write(target_path, &bytes).await.map_err(|source| MediaPmError::Io {
         operation: "writing playlist file".to_string(),
         path: target_path.to_path_buf(),
@@ -523,7 +519,8 @@ fn remove_stale_paths(
     hierarchy_root: &Path,
     current_entries: &[FlattenedHierarchyEntry],
 ) -> Result<(usize, usize), MediaPmError> {
-    let current_paths: BTreeSet<String> = current_entries.iter().map(|e| e.path_str()).collect();
+    let current_paths: BTreeSet<String> =
+        current_entries.iter().map(FlattenedHierarchyEntry::path_str).collect();
 
     let mut removed_paths = 0usize;
     let mut removed_empty_dirs = 0usize;
@@ -544,6 +541,7 @@ fn remove_stale_paths(
 }
 
 /// Recursively scans for stale paths relative to the current hierarchy.
+#[allow(clippy::only_used_in_recursion)]
 fn remove_stale_recursive(
     absolute_root: &Path,
     absolute_dir: &Path,
@@ -554,9 +552,8 @@ fn remove_stale_recursive(
 ) -> Result<(), MediaPmError> {
     use crate::materializer::commit::remove_path;
 
-    let mut dir = match std::fs::read_dir(absolute_dir) {
-        Ok(d) => d,
-        Err(_) => return Ok(()),
+    let Ok(mut dir) = std::fs::read_dir(absolute_dir) else {
+        return Ok(());
     };
 
     while let Some(entry) = dir.next().transpose().map_err(|source| MediaPmError::Io {
@@ -640,6 +637,7 @@ fn is_zip_content(data: &[u8]) -> bool {
 }
 
 impl SyncSharedState {
+    #[allow(clippy::unused_self)]
     fn notice(&self, message: impl Into<String>) {
         warn!("{}", message.into());
     }

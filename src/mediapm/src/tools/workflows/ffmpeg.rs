@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use mediapm_conductor::WorkflowStepSpec;
 
 use crate::config::{DecodedOutputVariantConfig, MediaSourceSpec, MediaStep};
-use crate::error::MediaPmError;
 
 use super::{
     OUTPUT_PRIMARY, qualify_step_id, resolve_step_tool_id, step_option_input_bindings,
@@ -21,12 +20,12 @@ use super::{
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError`] when required configuration is missing or invalid.
+#[must_use]
 pub(crate) fn synthesize_ffmpeg_step(
     source: &MediaSourceSpec,
     step_index: usize,
     step: &MediaStep,
-) -> Result<Vec<WorkflowStepSpec>, MediaPmError> {
+) -> Vec<WorkflowStepSpec> {
     let step_id =
         qualify_step_id(source.id.as_deref().unwrap_or("unknown"), &format!("ffmpeg_{step_index}"));
 
@@ -57,12 +56,12 @@ pub(crate) fn synthesize_ffmpeg_step(
         );
     }
 
-    Ok(vec![WorkflowStepSpec {
+    vec![WorkflowStepSpec {
         id: step_id,
         tool: resolve_step_tool_id(crate::config::MediaStepTool::Ffmpeg),
         inputs,
         outputs,
         max_retries: 0,
         depends_on: Vec::new(),
-    }])
+    }]
 }

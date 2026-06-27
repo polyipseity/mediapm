@@ -48,7 +48,7 @@ pub(crate) const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
 
 /// Converts a mediapm [`OutputSaveConfig`] to a conductor [`OutputSaveMode`].
 #[must_use]
-pub(crate) fn conductor_output_save_mode(config: &OutputSaveConfig) -> OutputSaveMode {
+pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSaveMode {
     match config {
         OutputSaveConfig::Bool(true) => OutputSaveMode::Saved,
         OutputSaveConfig::Bool(false) => OutputSaveMode::Unsaved,

@@ -117,7 +117,7 @@ pub(crate) async fn probe_content_length_from_candidates(
             Ok(response) if response.status().is_success() => {
                 return Ok(response.content_length());
             }
-            _ => continue,
+            _ => {}
         }
     }
     Ok(None)
@@ -172,7 +172,7 @@ pub(crate) async fn github_release_list_json(
 #[must_use]
 #[allow(dead_code)]
 pub(crate) fn github_release_description(release: &serde_json::Value) -> Option<String> {
-    release.get("body").and_then(|v| v.as_str()).map(|s| s.to_string())
+    release.get("body").and_then(|v| v.as_str()).map(ToString::to_string)
 }
 
 /// Finds the download URL of a named asset in a release JSON object.
@@ -345,7 +345,7 @@ pub(crate) async fn materialize_download_plan(
     let host_os = current_tool_os();
 
     if plan.internal_launcher {
-        return materialize_internal_launcher(entry, tools_cache_root).await;
+        return Ok(materialize_internal_launcher(entry, tools_cache_root));
     }
 
     let action = plan.per_os_actions.get(&host_os).ok_or_else(|| {
@@ -386,7 +386,7 @@ pub(crate) async fn materialize_download_plan(
     extract_archive(&payload_bytes, entry.archive_format, &extract_dir)?;
 
     // Build content map entries.
-    let content_entries = build_content_entries(entry, &extract_dir, host_os)?;
+    let content_entries = build_content_entries(entry, &extract_dir, host_os);
 
     let identity = plan.identity.clone();
     let tool_id = format!("{}-{}", entry.id, tool_id_suffix_from_identity(&identity));
@@ -432,14 +432,14 @@ pub(crate) struct ProvisionedPayload {
 ///
 /// Returns [`MediaPmError`] when the launcher binary cannot be located.
 #[allow(dead_code)]
-pub(crate) async fn materialize_internal_launcher(
+pub(crate) fn materialize_internal_launcher(
     entry: &ToolCatalogEntry,
     _tools_cache_root: &Path,
-) -> Result<ProvisionedPayload, MediaPmError> {
+) -> ProvisionedPayload {
     let host_os = current_tool_os();
     let command_selector = build_command_selector(entry, host_os);
 
-    Ok(ProvisionedPayload {
+    ProvisionedPayload {
         tool_id: entry.id.to_string(),
         command_selector: command_selector.clone(),
         content_entries: BTreeMap::new(),
@@ -448,7 +448,7 @@ pub(crate) async fn materialize_internal_launcher(
         source_identifier: entry.id.to_string(),
         catalog: entry.clone(),
         warnings: Vec::new(),
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +470,7 @@ pub(crate) fn extract_archive(
         ARCHIVE_TAR_GZ => extract_tar_gz(bytes, target_dir),
         ARCHIVE_TAR_XZ => extract_tar_xz(bytes, target_dir),
         ARCHIVE_BINARY => extract_binary(bytes, target_dir),
-        other => Err(MediaPmError::Workflow(format!("unsupported archive format: {other}",))),
+        other => Err(MediaPmError::Workflow(format!("unsupported archive format: {other}"))),
     }
 }
 
@@ -560,7 +560,7 @@ fn build_content_entries(
     _entry: &ToolCatalogEntry,
     extract_dir: &Path,
     os: ToolOs,
-) -> Result<BTreeMap<String, ContentMapSource>, MediaPmError> {
+) -> BTreeMap<String, ContentMapSource> {
     let mut entries = BTreeMap::new();
     let os_prefix = match os {
         ToolOs::Windows => "windows",
@@ -572,5 +572,5 @@ fn build_content_entries(
         os_prefix.to_string(),
         ContentMapSource::DirectoryZip { root_dir: extract_dir.to_path_buf() },
     );
-    Ok(entries)
+    entries
 }

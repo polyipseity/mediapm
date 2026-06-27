@@ -42,15 +42,15 @@ pub(super) async fn resolve_variant_hash(
     }
 
     // Fallback to "default" variant.
-    if variant_name != "default" {
-        if let Some(hash_str) = source.variant_hashes.get("default") {
-            let hash: Hash = hash_str.parse().map_err(|e| {
-                MediaPmError::Workflow(format!(
-                    "media '{media_id}' default variant hash '{hash_str}' is invalid: {e}"
-                ))
-            })?;
-            return Ok(Some(hash));
-        }
+    if variant_name != "default"
+        && let Some(hash_str) = source.variant_hashes.get("default")
+    {
+        let hash: Hash = hash_str.parse().map_err(|e| {
+            MediaPmError::Workflow(format!(
+                "media '{media_id}' default variant hash '{hash_str}' is invalid: {e}"
+            ))
+        })?;
+        return Ok(Some(hash));
     }
 
     Ok(None)

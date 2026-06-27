@@ -19,12 +19,13 @@ use crate::error::MediaPmError;
 ///
 /// Control how reserved filename characters (`<`, `>`, `:`, `"`, `/`, `\\`,
 /// `|`, `?`, `*`) are handled during materialization.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SanitizeNamesConfig {
     /// No sanitization (variant outputs are named as-produced).
     Disabled,
     /// Inherit parent or global sanitization policy.
+    #[default]
     Inherit,
     /// Apply default sanitization (reserved chars → `_`).
     Enabled,
@@ -34,21 +35,16 @@ pub enum SanitizeNamesConfig {
     Custom(BTreeMap<char, char>),
 }
 
-impl Default for SanitizeNamesConfig {
-    fn default() -> Self {
-        Self::Inherit
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Hierarchy node kind
 // ---------------------------------------------------------------------------
 
 /// Kind of one hierarchy node declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HierarchyNodeKind {
     /// Plain folder grouping (no media binding).
+    #[default]
     Folder,
     /// Single-file media entry.
     Media,
@@ -59,21 +55,16 @@ pub enum HierarchyNodeKind {
     Playlist,
 }
 
-impl Default for HierarchyNodeKind {
-    fn default() -> Self {
-        Self::Folder
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Playlist types
 // ---------------------------------------------------------------------------
 
 /// Supported playlist serialization formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlaylistFormat {
     /// M3U8 extended format.
     #[serde(rename = "m3u8")]
+    #[default]
     M3u8,
     /// PLS format.
     Pls,
@@ -85,14 +76,9 @@ pub enum PlaylistFormat {
     Asx,
 }
 
-impl Default for PlaylistFormat {
-    fn default() -> Self {
-        Self::M3u8
-    }
-}
-
 /// Returns true when the serializer can omit the playlist format field.
 #[must_use]
+#[allow(clippy::trivially_copy_pass_by_ref)]
 pub fn playlist_format_is_default(format: &PlaylistFormat) -> bool {
     matches!(format, PlaylistFormat::M3u8)
 }
@@ -114,19 +100,14 @@ pub enum PlaylistItemRef {
 }
 
 /// Playlist entry path output mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlaylistEntryPathMode {
     /// Relative paths in playlist output.
+    #[default]
     Relative,
     /// Absolute paths in playlist output.
     Absolute,
-}
-
-impl Default for PlaylistEntryPathMode {
-    fn default() -> Self {
-        Self::Relative
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +558,11 @@ use std::collections::BTreeSet;
 /// Decodes one hierarchy JSON value into ordered node declarations.
 ///
 /// The schema is strict: `hierarchy` must be an array of node objects.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if the value is not a JSON array or if
+/// decoding fails.
 pub fn flatten_hierarchy_value(value: Value) -> Result<Vec<HierarchyNode>, MediaPmError> {
     match value {
         Value::Array(_) => serde_json::from_value(value)
@@ -588,6 +574,10 @@ pub fn flatten_hierarchy_value(value: Value) -> Result<Vec<HierarchyNode>, Media
 }
 
 /// Encodes ordered hierarchy nodes into JSON array form.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if serialization fails.
 pub fn nest_hierarchy_value(hierarchy: &[HierarchyNode]) -> Result<Value, MediaPmError> {
     serde_json::to_value(hierarchy)
         .map_err(|error| MediaPmError::Workflow(format!("hierarchy encode failed: {error}")))

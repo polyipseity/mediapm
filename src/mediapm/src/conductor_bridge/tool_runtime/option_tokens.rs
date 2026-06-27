@@ -234,13 +234,6 @@ pub(super) fn option_tokens_for_input(
     for (name, spec) in specs {
         if *name == input_key {
             return match spec {
-                TokenSpec::Pair => {
-                    if input_value.is_empty() {
-                        None
-                    } else {
-                        Some(vec![format!("--{name}={input_value}")])
-                    }
-                }
                 TokenSpec::Bool => {
                     if input_value.eq_ignore_ascii_case("true") {
                         Some(vec![format!("--{name}")])
@@ -248,7 +241,7 @@ pub(super) fn option_tokens_for_input(
                         None
                     }
                 }
-                TokenSpec::BoolPair => {
+                TokenSpec::Pair | TokenSpec::BoolPair => {
                     if input_value.is_empty() {
                         None
                     } else {
@@ -288,7 +281,7 @@ pub(super) fn ffmpeg_output_path_input_name(index: u32) -> String {
     format!("output_path_{index}")
 }
 
-/// Returns a FileRegex pattern for one ffmpeg output slot.
+/// Returns a `FileRegex` pattern for one ffmpeg output slot.
 #[must_use]
 pub(super) fn ffmpeg_output_file_regex(index: u32) -> String {
     format!(r"^{index}_output\.\w+$")

@@ -85,7 +85,7 @@ pub enum YtDlpOutputKind {
     Thumbnails,
     /// Description text outputs.
     Description,
-    /// InfoJSON metadata outputs.
+    /// `InfoJSON` metadata outputs.
     Infojson,
     /// Comment metadata outputs.
     Comment,
@@ -142,6 +142,11 @@ pub enum DecodedOutputVariantConfig {
 impl DecodedOutputVariantConfig {
     /// Attempts to decode a [`DecodedOutputVariantConfig`] from a raw JSON
     /// [`Value`], trying yt-dlp-specific decoding first, then generic.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a description if decoding fails for both
+    /// yt-dlp-specific and generic config formats.
     pub fn from_json_value(value: Value) -> Result<Self, String> {
         if let Ok(config) = serde_json::from_value::<YtDlpOutputVariantConfig>(value.clone()) {
             return Ok(Self::YtDlp(config));

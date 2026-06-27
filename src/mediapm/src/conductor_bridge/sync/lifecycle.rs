@@ -15,7 +15,7 @@ const ALWAYS_RECHECK_TOOLS: &[&str] = &["yt-dlp", "InternalLauncher"];
 
 /// Returns true when the tool's tag update check should be skipped (healthy
 /// tools with recent successful provisioning), except for yt-dlp and
-/// InternalLauncher tools which always recheck.
+/// `InternalLauncher` tools which always recheck.
 #[must_use]
 pub(super) fn should_skip_tag_update_check(tool_name: &str, _document: &NickelDocument) -> bool {
     // yt-dlp and InternalLauncher always recheck; all others skip the check.
@@ -67,22 +67,20 @@ pub(super) async fn lock_registry_version(
 pub(super) fn ensure_internal_launcher_content_entries_exist(
     document: &mut NickelDocument,
     tools_dir: &Path,
-) -> Result<(), MediaPmError> {
+) {
     let launcher_tool_id = "media-tagger";
     let launcher_name = "media-tagger-launcher";
 
-    if let Some(spec) = document.tools.get_mut(launcher_tool_id) {
-        if !spec.runtime.content_map.contains_key(launcher_name) {
-            let launcher_path = tools_dir.join(launcher_tool_id).join(launcher_name);
-            // Register the launcher path as a content-map entry placeholder.
-            // The actual file is materialized by regenerate_media_tagger_internal_launcher_file.
-            spec.runtime
-                .content_map
-                .insert(launcher_name.to_string(), launcher_path.to_string_lossy().to_string());
-        }
+    if let Some(spec) = document.tools.get_mut(launcher_tool_id)
+        && !spec.runtime.content_map.contains_key(launcher_name)
+    {
+        let launcher_path = tools_dir.join(launcher_tool_id).join(launcher_name);
+        // Register the launcher path as a content-map entry placeholder.
+        // The actual file is materialized by regenerate_media_tagger_internal_launcher_file.
+        spec.runtime
+            .content_map
+            .insert(launcher_name.to_string(), launcher_path.to_string_lossy().to_string());
     }
-
-    Ok(())
 }
 
 /// Regenerates the `media-tagger` launcher file for the current platform.

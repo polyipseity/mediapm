@@ -130,7 +130,7 @@ fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     Ok(())
 }
 
-/// Adding a YtDlpChannel hierarchy preset creates non-empty hierarchy nodes.
+/// Adding a `YtDlpChannel` hierarchy preset creates non-empty hierarchy nodes.
 #[test]
 fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
