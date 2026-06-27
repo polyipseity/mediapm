@@ -173,6 +173,8 @@ enum ToolCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// List configured tools with their binary presence status.
+    List,
 }
 
 /// Well-known tool presets for `import tool --preset`.
@@ -382,6 +384,21 @@ async fn cmd_tool(args: ToolArgs) -> Result<(), ConductorError> {
             let conductor = ensure_conductor().await?;
             let exit_code = conductor.run_tool_passthrough(&tool, &args).await?;
             std::process::exit(exit_code);
+        }
+        ToolCommand::List => {
+            let conductor = ensure_conductor().await?;
+            let unified = conductor.get_unified_config().await?;
+            println!("tool_id\tbinary_present");
+            for (name, spec) in &unified.tools {
+                let binary_present = if spec.command_parts.is_empty() {
+                    true // builtin tool, always present
+                } else {
+                    let cmd = &spec.command_parts[0];
+                    crate::cli_tools::check_binary_exists(cmd)
+                };
+                println!("{name}\t{binary_present}");
+            }
+            Ok(())
         }
     }
 }

@@ -75,6 +75,21 @@ pub(crate) fn resolve_import_process_name(
     ))
 }
 
+/// Checks whether a command binary exists on the system.
+///
+/// For absolute/relative paths, checks file existence. For bare command names,
+/// searches `PATH` directories.
+#[must_use]
+pub(crate) fn check_binary_exists(cmd: &str) -> bool {
+    if cmd.contains(std::path::MAIN_SEPARATOR) || cmd.contains('/') {
+        std::path::Path::new(cmd).exists()
+    } else {
+        std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).exists()))
+            .unwrap_or(false)
+    }
+}
+
 /// Imports a directory tree into a content map by hashing each file into CAS.
 ///
 /// Returns the content map (relative_path → hash) and the total number of
