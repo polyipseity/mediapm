@@ -507,12 +507,13 @@ fn validate_argument_contract(params: &StringMap, inputs: &BinaryInputMap) -> Re
 
             let _ = require_binary_input(inputs, "content", "archive transform")?;
 
-            if let Some(mode) = params.get("mode") {
-                if mode != "text" && mode != "binary" {
-                    return Err(format!(
-                        "archive transform mode must be 'text' or 'binary', got '{mode}'"
-                    ));
-                }
+            if let Some(mode) = params.get("mode")
+                && mode != "text"
+                && mode != "binary"
+            {
+                return Err(format!(
+                    "archive transform mode must be 'text' or 'binary', got '{mode}'"
+                ));
             }
 
             validate_numbered_transforms(params)?;
@@ -573,10 +574,11 @@ fn validate_numbered_transforms(params: &StringMap) -> Result<(), String> {
             return Err(format!("transform {n} has '{replace_key}' but no '{find_key}'"));
         }
 
-        if let Some(mode) = params.get(&format!("mode_{n}")) {
-            if mode != "text" && mode != "binary" {
-                return Err(format!("transform {n} mode must be 'text' or 'binary', got '{mode}'"));
-            }
+        if let Some(mode) = params.get(&format!("mode_{n}"))
+            && mode != "text"
+            && mode != "binary"
+        {
+            return Err(format!("transform {n} mode must be 'text' or 'binary', got '{mode}'"));
         }
     }
 
@@ -848,7 +850,7 @@ mod tests {
             &BTreeMap::from([
                 ("action".to_string(), "transform".to_string()),
                 ("find_0".to_string(), "__mediapm__".to_string()),
-                ("replace_0".to_string(), "".to_string()),
+                ("replace_0".to_string(), String::new()),
             ]),
             &BinaryInputMap::from([("content".to_string(), inner_payload)]),
         )
@@ -901,7 +903,7 @@ mod tests {
             &BTreeMap::from([
                 ("action".to_string(), "transform".to_string()),
                 ("find_0".to_string(), "__mediapm__".to_string()),
-                ("replace_0".to_string(), "".to_string()),
+                ("replace_0".to_string(), String::new()),
                 ("filter".to_string(), "*.txt".to_string()),
             ]),
             &BinaryInputMap::from([("content".to_string(), folder_payload)]),
