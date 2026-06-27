@@ -100,7 +100,7 @@ fn default_impure_timestamp_zero() -> ImpureTimestamp {
 pub struct AuxData {
     /// Monotonic tool call instance counter.
     pub tool_call_instance_counter: u64,
-    /// Conductor GC reference clock — updated to now() on every state
+    /// Conductor GC reference clock — updated to [`now()`] on every state
     /// commit. Used by `run_conductor_gc()` for grace-period comparisons
     /// and CAS blob reclamation. Distinct from CAS GC.
     pub conductor_gc_epoch: ImpureTimestamp,
@@ -111,7 +111,7 @@ pub struct AuxData {
 pub struct OrchestrationState {
     /// Schema version marker.
     pub version: u32,
-    /// Declared tool call instance store (instance_key → instance).
+    /// Declared tool call instance store (`instance_key` → instance).
     pub tool_call_instances: BTreeMap<String, ToolCallInstance>,
     /// Auxiliary metadata.
     pub aux: AuxData,
@@ -186,8 +186,7 @@ fn check_and_migrate_state(state: &OrchestrationState) -> Result<(), ConductorEr
             state.version
         ))),
         v => Err(ConductorError::Serialization(format!(
-            "unsupported orchestration state version: {v} (expected {})",
-            STATE_VERSION
+            "unsupported orchestration state version: {v} (expected {STATE_VERSION})",
         ))),
     }
 }

@@ -69,7 +69,7 @@ fn single_echo_doc(tool_id: &str, workflow_name: &str) -> NickelDocument {
 }
 
 /// Creates a `NickelDocument` with two echo tools and two workflows
-/// (distinct tool_id keys for independent cache entries).
+/// (distinct `tool_id` keys for independent cache entries).
 fn dual_echo_doc() -> NickelDocument {
     NickelDocument {
         tools: BTreeMap::from([

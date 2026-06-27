@@ -57,13 +57,11 @@ pub(super) async fn run_executable_process(
         .spawn()
         .map_err(|source| ConductorError::io("spawn executable process", command, source))?;
 
-    let result = timeout(timeout_duration, collect_child_output(child)).await.map_err(|_| {
+    timeout(timeout_duration, collect_child_output(child)).await.map_err(|_| {
         ConductorError::Workflow(format!(
             "executable process '{command}' timed out after {timeout_duration:?}",
         ))
-    })?;
-
-    result
+    })?
 }
 
 /// Collects stdout, stderr, and exit code from a spawned child process.

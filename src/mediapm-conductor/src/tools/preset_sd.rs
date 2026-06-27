@@ -96,11 +96,10 @@ fn host_release_asset_markers() -> &'static [&'static str] {
 
 /// Fetches one JSON value from the latest `sd` release endpoint.
 fn fetch_latest_release_json() -> Result<serde_json::Value, ConductorError> {
-    let client = Client::builder().timeout(std::time::Duration::from_secs(60)).build().map_err(
-        |source| {
+    let client =
+        Client::builder().timeout(std::time::Duration::from_mins(1)).build().map_err(|source| {
             ConductorError::Workflow(format!("building sd metadata HTTP client failed: {source}"))
-        },
-    )?;
+        })?;
     let response = client
         .get(SD_LATEST_RELEASE_API_URL)
         .header(reqwest::header::USER_AGENT, SD_DOWNLOAD_USER_AGENT)
@@ -213,11 +212,10 @@ fn download_release_asset(download_urls: &[String]) -> Result<Vec<u8>, Conductor
             "downloading sd release asset failed: candidate URL list was empty".to_string(),
         ));
     }
-    let client = Client::builder().timeout(std::time::Duration::from_secs(300)).build().map_err(
-        |source| {
+    let client =
+        Client::builder().timeout(std::time::Duration::from_mins(5)).build().map_err(|source| {
             ConductorError::Workflow(format!("building sd download HTTP client failed: {source}"))
-        },
-    )?;
+        })?;
     let mut errors = Vec::new();
     for download_url in download_urls {
         let response = match client

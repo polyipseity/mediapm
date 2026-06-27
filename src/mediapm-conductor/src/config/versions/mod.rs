@@ -53,6 +53,11 @@ pub(crate) const fn latest_config_version() -> u32 {
 ///
 /// The document is first converted to a latest-schema envelope, validated,
 /// then rendered as Nickel source.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the document cannot be converted to the
+/// latest schema, validation fails, or Nickel rendering fails.
 pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8>, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest = document.into();
     render_document_as_nickel(&envelope, "configuration document")
@@ -63,6 +68,11 @@ pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8
 ///
 /// The input bytes are interpreted as UTF-8 Nickel source, evaluated through
 /// the versioned migration pipeline, and deserialized into a `NickelDocument`.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when the bytes are not valid UTF-8, Nickel
+/// evaluation fails, or the document does not match the expected schema.
 pub fn decode_document(bytes: &[u8]) -> Result<crate::config::NickelDocument, ConductorError> {
     let source = std::str::from_utf8(bytes).map_err(|err| {
         ConductorError::Serialization(format!("document source is not valid UTF-8: {err}"))

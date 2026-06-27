@@ -11,11 +11,12 @@ use crate::state::{OutputRef, OutputSaveMode, PersistenceFlags};
 use super::process::ExecutionResult;
 
 /// Captures declared outputs from the execution result and persists to CAS.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
     cas: &C,
     output_specs: &std::collections::BTreeMap<String, OutputCaptureSpec>,
     execution: &ExecutionResult,
-    _sandbox_dir: &Path,
+    sandbox_dir: &Path,
     persistence: PersistenceFlags,
 ) -> Result<Vec<OutputRef>, ConductorError> {
     let mut outputs = Vec::new();
@@ -23,7 +24,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
 
     // Implicitly capture stdout, stderr, and process_code unless explicitly declared.
     let declared_names: std::collections::BTreeSet<&str> =
-        output_specs.keys().map(|s| s.as_str()).collect();
+        output_specs.keys().map(String::as_str).collect();
     let implicit_specs = ["stdout", "stderr", "process_code"]
         .into_iter()
         .filter(|name| !declared_names.contains(name))
@@ -48,7 +49,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
             "process_code" => execution.exit_code.to_string().into_bytes(),
             capture if capture.starts_with("file:") => {
                 let relative_path = &capture[5..];
-                let full_path = _sandbox_dir.join(relative_path);
+                let full_path = sandbox_dir.join(relative_path);
                 // Don't error if file doesn't exist — may be optional.
                 match tokio::fs::read(&full_path).await {
                     Ok(data) => data,
@@ -62,7 +63,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 })?;
                 // Walk sandbox_dir, find files matching the regex.
                 let mut matched = Vec::new();
-                let mut dir_entries = vec![_sandbox_dir.to_path_buf()];
+                let mut dir_entries = vec![sandbox_dir.to_path_buf()];
                 while let Some(dir) = dir_entries.pop() {
                     let mut read_dir = tokio::fs::read_dir(&dir).await.map_err(|e| {
                         ConductorError::Workflow(format!(
@@ -73,7 +74,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                     while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
                         ConductorError::Workflow(format!("failed to read entry: {e}"))
                     })? {
-                        if entry.file_type().await.map_or(false, |t| t.is_dir()) {
+                        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
                             dir_entries.push(entry.path());
                         } else if regex.is_match(&entry.file_name().to_string_lossy()) {
                             matched.push(entry.path());
@@ -93,7 +94,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
             }
             capture if capture.starts_with("folder:") => {
                 let relative_path = &capture[7..];
-                let full_path = _sandbox_dir.join(relative_path);
+                let full_path = sandbox_dir.join(relative_path);
                 // Recursively collect all file paths.
                 let mut file_paths = Vec::new();
                 let mut dir_entries = vec![full_path.clone()];
@@ -110,7 +111,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                     while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
                         ConductorError::Workflow(format!("failed to read entry: {e}"))
                     })? {
-                        if entry.file_type().await.map_or(false, |t| t.is_dir()) {
+                        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
                             dir_entries.push(entry.path());
                         } else {
                             file_paths.push(entry.path());
@@ -120,7 +121,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 // Serialize file paths as JSON list.
                 let file_list: Vec<String> = file_paths
                     .iter()
-                    .filter_map(|p| p.strip_prefix(&_sandbox_dir).ok())
+                    .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
                 serde_json::to_vec(&file_list).map_err(|e| {

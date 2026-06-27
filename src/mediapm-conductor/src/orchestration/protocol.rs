@@ -107,6 +107,7 @@ pub(crate) struct StepExecutionRequest {
 
 /// Fine-grained phase timings captured within one step execution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::struct_field_names)]
 pub(crate) struct StepPhaseTiming {
     /// Time spent resolving step/default input bindings.
     pub resolve_inputs_ms: f64,

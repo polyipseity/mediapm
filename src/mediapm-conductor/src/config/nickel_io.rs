@@ -9,8 +9,8 @@
 //!
 //! # Cache discipline
 //!
-//! - `eval_cache`: (source_hash, version) → JSON value for migrated/decode results
-//! - `eval_source_value_cache`: source_hash → JSON value for schema-agnostic metadata inspection
+//! - `eval_cache`: (`source_hash`, version) → JSON value for migrated/decode results
+//! - `eval_source_value_cache`: `source_hash` → JSON value for schema-agnostic metadata inspection
 
 use std::collections::HashMap;
 use std::fs;

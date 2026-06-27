@@ -27,10 +27,10 @@ use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 /// document produce one `NickelDocument`.  These are merged in order during
 /// configuration loading.
 ///
-/// Runtime-only fields (concurrency, retries, content_map, env overrides)
+/// Runtime-only fields (concurrency, retries, `content_map`, env overrides)
 /// live inline on each [`ToolSpec`] via its [`ToolRuntime`] — there is no
 /// separate `tool_runtimes` map.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NickelDocument {
     /// Document metadata (identity, version marker).
     pub metadata: NickelDocumentMetadata,
@@ -46,18 +46,6 @@ pub struct NickelDocument {
     /// External data entries keyed by CAS hash.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub external_data: BTreeMap<Hash, super::ExternalDataEntry>,
-}
-
-impl Default for NickelDocument {
-    fn default() -> Self {
-        Self {
-            metadata: NickelDocumentMetadata::default(),
-            tools: BTreeMap::new(),
-            workflows: Vec::new(),
-            runtime: ConductorRuntimeConfig::default(),
-            external_data: BTreeMap::new(),
-        }
-    }
 }
 
 /// Prefix reserved for managed external-data descriptions that root tool
@@ -88,7 +76,7 @@ pub fn collect_config_content_hashes(
     hashes
 }
 
-/// A NickelDocument paired with its source file path.
+/// A `NickelDocument` paired with its source file path.
 ///
 /// Used during configuration loading to track which file each document
 /// originated from — critical for error reporting on merge conflicts.

@@ -199,12 +199,20 @@ fn set_conductor_overrides(conductor_dir_override: Option<PathBuf>, overrides: P
 // ---------------------------------------------------------------------------
 
 /// Runs the CLI from environment arguments.
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when CLI argument parsing or command dispatch fails.
 pub async fn run_from_env() -> Result<(), ConductorError> {
     let cli = Cli::parse_from(std::env::args().skip(1));
     run(cli).await
 }
 
 /// Runs the CLI from explicit args (for testing).
+///
+/// # Errors
+///
+/// Returns [`ConductorError`] when CLI argument parsing or command dispatch fails.
 pub async fn run_from_args(args: &[&str]) -> Result<(), ConductorError> {
     let cli = Cli::try_parse_from(args.iter())
         .map_err(|err| ConductorError::Workflow(format!("CLI parse error: {err}")))?;
@@ -236,7 +244,10 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
         CliCommand::Cas { args } => cmd_cas(args).await,
         CliCommand::ExportSchemas { output } => cmd_export_schemas(output).await,
         CliCommand::Gc => cmd_gc().await,
-        CliCommand::Completions { shell } => cmd_completions(shell),
+        CliCommand::Completions { shell } => {
+            cmd_completions(shell);
+            Ok(())
+        }
     }
 }
 
@@ -251,7 +262,7 @@ async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, C
             let overrides = STORAGE_OVERRIDES.get().cloned().unwrap_or_default();
             let conductor_dir = CONDUCTOR_DIR_OVERRIDE
                 .get()
-                .and_then(|o| o.clone())
+                .and_then(Clone::clone)
                 .unwrap_or_else(|| root.join(defaults::DEFAULT_CONDUCTOR_DIR_NAME));
             let paths = RuntimeStoragePaths::resolve_for(&conductor_dir, &overrides);
             let cas = ConfiguredCas::FileSystem(FileSystemCas::open(&paths.cas_store_dir).await?);
@@ -333,26 +344,23 @@ async fn cmd_import(args: ImportArgs) -> Result<(), ConductorError> {
             let process_name = process_name.as_deref();
             let executable =
                 crate::cli_tools::resolve_import_process_name(&p, process_name, None).ok();
-            conductor
-                .add_tool_config(
-                    &name.unwrap_or_else(|| {
-                        p.file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_else(|| "imported".to_string())
-                    }),
-                    executable.as_deref(),
-                    content_map,
-                )
-                .await?;
+            conductor.add_tool_config(
+                &name.unwrap_or_else(|| {
+                    p.file_stem()
+                        .map_or_else(|| "imported".to_string(), |s| s.to_string_lossy().to_string())
+                }),
+                executable.as_deref(),
+                content_map,
+            )?;
         }
-        ImportCommand::Tool { path, name, process_name, preset: Some(_preset) } => {
+        ImportCommand::Tool { path, name, process_name, preset: Some(_) } => {
             // Tool-preset download requires the `tool-presets` Cargo feature.
-            let _ = (path, name, process_name, _preset);
+            let _ = (path, name, process_name);
             return Err(ConductorError::Workflow(
                 "tool preset import requires the `tool-presets` feature".to_string(),
             ));
         }
-        _ => {
+        ImportCommand::Tool { .. } => {
             return Err(ConductorError::Workflow(
                 "tool import requires a path or --preset".to_string(),
             ));
@@ -371,7 +379,7 @@ async fn cmd_remove(args: RemoveArgs) -> Result<(), ConductorError> {
             println!("Removed external data {hash}");
         }
         RemoveCommand::Tool { name, metadata } => {
-            conductor.remove_tool_config(&name, metadata).await?;
+            conductor.remove_tool_config(&name, metadata)?;
             println!("Removed tool '{name}' (metadata={metadata})");
         }
     }
@@ -411,7 +419,7 @@ async fn cmd_cas(args: Vec<String>) -> Result<(), ConductorError> {
 
 async fn cmd_export_schemas(output: PathBuf) -> Result<(), ConductorError> {
     let conductor = ensure_conductor().await?;
-    conductor.export_schemas(&output).await?;
+    conductor.export_schemas(&output)?;
     println!("Schemas exported to '{}'", output.display());
     Ok(())
 }
@@ -423,8 +431,7 @@ async fn cmd_gc() -> Result<(), ConductorError> {
     Ok(())
 }
 
-fn cmd_completions(shell: Shell) -> Result<(), ConductorError> {
+fn cmd_completions(shell: Shell) {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, "conductor", &mut std::io::stdout());
-    Ok(())
 }

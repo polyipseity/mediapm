@@ -257,7 +257,9 @@ mod tests {
             ContentMapKeyKind::Directory { relative_dir } => {
                 assert!(relative_dir.as_os_str().is_empty());
             }
-            other => panic!("expected Directory with empty relative_dir, got {other:?}"),
+            ContentMapKeyKind::File { .. } => {
+                panic!("expected Directory with empty relative_dir")
+            }
         }
     }
 

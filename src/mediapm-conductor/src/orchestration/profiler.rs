@@ -42,10 +42,6 @@ pub(crate) struct WorkflowRunProfile {
 impl WorkflowRunProfile {
     /// Builds one profile value from run context, step timings, and diagnostics.
     #[must_use]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "profile constructor collects all workflow-run context in one call"
-    )]
     pub(crate) fn new(
         run_started_unix_nanos: u128,
         run_finished_unix_nanos: u128,

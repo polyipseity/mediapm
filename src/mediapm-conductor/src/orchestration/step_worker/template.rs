@@ -37,7 +37,7 @@ use crate::error::ConductorError;
 pub struct TemplateContext<'a, C> {
     /// Optional CAS handle for fetching external data and step-output content.
     pub cas: Option<&'a C>,
-    /// Step outputs: map from step_id → (output_name → content hash).
+    /// Step outputs: map from `step_id` → (`output_name` → content hash).
     pub step_outputs: &'a BTreeMap<String, BTreeMap<String, Hash>>,
     /// Host environment variables.
     pub env_vars: &'a BTreeMap<String, String>,
@@ -58,7 +58,7 @@ pub struct TemplateContext<'a, C> {
 pub enum ResolvedValue {
     /// Plain string value (most common — step output, env var, etc.).
     String(String),
-    /// Binary data (from external_data, zip extraction, or unpack token).
+    /// Binary data (from `external_data`, zip extraction, or unpack token).
     Bytes(Vec<u8>),
     /// File materialized to the sandbox at the given path.
     MaterializedFile(PathBuf),
@@ -113,7 +113,7 @@ enum BaseRef {
     UnpackToken(String),
     /// `${inputs.<name>}` — resolved step input value.
     Input(String),
-    /// `${*inputs.<name>}` — splat a string_list input into multiple command
+    /// `${*inputs.<name>}` — splat a `string_list` input into multiple command
     /// parts (JSON-decodes `Vec<String>` from the resolved value).
     UnpackInput(String),
 }
@@ -160,6 +160,7 @@ struct ParsedConditional {
 /// The `ref_expr` is resolved; if non-empty, the true branch is used,
 /// otherwise the false branch.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::struct_field_names)]
 struct ParsedExistsTernary {
     /// Reference expression to check for existence (may include selectors).
     ref_expr: String,
@@ -190,7 +191,7 @@ enum ComparisonOp {
 }
 
 impl ComparisonOp {
-    fn evaluate(&self, lhs: &str, rhs: &str) -> bool {
+    fn evaluate(self, lhs: &str, rhs: &str) -> bool {
         match self {
             ComparisonOp::Eq => lhs == rhs,
             ComparisonOp::Neq => lhs != rhs,
@@ -245,7 +246,7 @@ pub async fn resolve_template<C: mediapm_cas::CasApi + Send + Sync>(
 
 /// Resolves a template string into raw binary content.
 ///
-/// For references that resolve to binary (external_data, zip members, unpack
+/// For references that resolve to binary (`external_data`, zip members, unpack
 /// tokens), the raw bytes are returned. For string values, UTF-8 encoding
 /// is used.
 pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
@@ -256,11 +257,9 @@ pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
     let segments = parse_into_segments(&processed)?;
 
     // If the template is a single reference, return its bytes directly.
-    if segments.len() == 1 {
-        if let Segment::Reference(parsed) = &segments[0] {
-            let value = resolve_parsed_reference(parsed, ctx).await?;
-            return value.into_bytes();
-        }
+    if let [Segment::Reference(parsed)] = &segments[..] {
+        let value = resolve_parsed_reference(parsed, ctx).await?;
+        return value.into_bytes();
     }
 
     // Otherwise, resolve as string and encode.
@@ -288,7 +287,7 @@ pub async fn resolve_command_parts<C: mediapm_cas::CasApi + Send + Sync>(
         if let Some(splat_inner) = trimmed
             .strip_prefix("${")
             .and_then(|s| s.strip_suffix('}'))
-            .map(|s| s.trim())
+            .map(str::trim)
             .and_then(|s| s.strip_prefix("*inputs."))
         {
             let name = splat_inner.trim().to_string();
@@ -566,7 +565,7 @@ fn try_parse_conditional(expr: &str) -> Option<ParsedConditional> {
     })
 }
 
-/// Parses the condition part `context.os == "value"` into (lhs, op, quoted_rhs).
+/// Parses the condition part `context.os == "value"` into (lhs, op, `quoted_rhs`).
 fn parse_condition_expression(s: &str) -> Option<(&str, &str, &str)> {
     // Try each operator in descending length order to match `<=`, `>=`, `!=` first.
     for op_str in &["<=", ">=", "!=", "==", "<", ">"] {
@@ -597,6 +596,7 @@ fn unquote_string(s: &str) -> Option<&str> {
 
 /// Splits an expression into a base reference string and a list of post-processing
 /// selectors (parsed right-to-left).  Returns `("base_expr", [PostSelector])`.
+#[allow(clippy::unnecessary_wraps)]
 fn parse_selectors(expr: &str) -> Result<(String, Vec<PostSelector>), ConductorError> {
     let expr = expr.trim();
     let mut remaining = expr;
@@ -629,6 +629,7 @@ fn split_last_selector(expr: &str) -> Option<(PostSelector, &str)> {
 }
 
 /// Static list of supported selector prefixes and their constructors.
+#[allow(clippy::type_complexity)]
 static SEL_PREFIXES: [(&str, fn(String) -> PostSelector); 3] = [
     (":zip(", |s| PostSelector::Zip(s)),
     (":file(", |s| PostSelector::File(s)),
@@ -870,7 +871,7 @@ fn resolve_unpack_token<C: mediapm_cas::CasApi + Send + Sync>(
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     let data = ctx.tokens.get(token).ok_or_else(|| {
-        ConductorError::Workflow(format!("template: unpack token '${{*{token}}}' not found",))
+        ConductorError::Workflow(format!("template: unpack token '${{*{token}}}' not found"))
     })?;
 
     Ok(ResolvedValue::Bytes(data.clone()))
@@ -882,7 +883,7 @@ fn resolve_input<C: mediapm_cas::CasApi + Send + Sync>(
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     let value = ctx.inputs.get(name).ok_or_else(|| {
-        ConductorError::Workflow(format!("template: input '${{inputs.{name}}}' not found",))
+        ConductorError::Workflow(format!("template: input '${{inputs.{name}}}' not found"))
     })?;
 
     Ok(ResolvedValue::String(value.clone()))
@@ -895,7 +896,7 @@ fn resolve_unpack_input<C: mediapm_cas::CasApi + Send + Sync>(
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     let raw = ctx.inputs.get(name).ok_or_else(|| {
-        ConductorError::Workflow(format!("template: input '${{*inputs.{name}}}' not found",))
+        ConductorError::Workflow(format!("template: input '${{*inputs.{name}}}' not found"))
     })?;
 
     // Parse as JSON array of strings.
@@ -958,7 +959,7 @@ async fn evaluate_comparison_conditional<C: mediapm_cas::CasApi + Send + Sync>(
 
 /// Resolves a conditional operand to a string for comparison.
 ///
-/// Supports `context.os` (maps to ctx.host_os) and literal strings.
+/// Supports `context.os` (maps to `ctx.host_os`) and literal strings.
 async fn resolve_conditional_operand<C: mediapm_cas::CasApi + Send + Sync>(
     operand: &str,
     ctx: &TemplateContext<'_, C>,
@@ -1000,17 +1001,14 @@ async fn apply_selector<C: mediapm_cas::CasApi + Send + Sync>(
     ctx: &TemplateContext<'_, C>,
 ) -> Result<ResolvedValue, ConductorError> {
     match selector {
-        PostSelector::Zip(member) => apply_zip_selector(value, member).await,
+        PostSelector::Zip(member) => apply_zip_selector(value, member),
         PostSelector::File(path) => apply_file_selector(value, path, ctx).await,
         PostSelector::Folder(path) => apply_folder_selector(value, path, ctx).await,
     }
 }
 
 /// `:zip(member)` — extracts a member from ZIP binary content.
-async fn apply_zip_selector(
-    value: ResolvedValue,
-    member: &str,
-) -> Result<ResolvedValue, ConductorError> {
+fn apply_zip_selector(value: ResolvedValue, member: &str) -> Result<ResolvedValue, ConductorError> {
     let data = value.into_bytes()?;
     let extracted = extract_zip_member(&data, member)?;
     Ok(ResolvedValue::Bytes(extracted))
@@ -1080,19 +1078,17 @@ fn extract_zip_member(data: &[u8], member: &str) -> Result<Vec<u8>, ConductorErr
         use std::io::Read;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| {
             ConductorError::Workflow(format!(
-                "template: failed to open ZIP archive for ':zip({member})': {e}",
+                "template: failed to open ZIP archive for ':zip({member})': {e}"
             ))
         })?;
 
         let mut file = archive.by_name(member).map_err(|e| {
-            ConductorError::Workflow(format!("template: ZIP member '{member}' not found: {e}",))
+            ConductorError::Workflow(format!("template: ZIP member '{member}' not found: {e}"))
         })?;
 
         let mut buf = Vec::new();
         file.read_to_end(&mut buf).map_err(|e| {
-            ConductorError::Workflow(
-                format!("template: failed to read ZIP member '{member}': {e}",),
-            )
+            ConductorError::Workflow(format!("template: failed to read ZIP member '{member}': {e}"))
         })?;
         Ok(buf)
     }
@@ -1113,13 +1109,13 @@ async fn extract_archive_to_folder(data: &[u8], target_dir: &Path) -> Result<(),
         use std::io::Read;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| {
             ConductorError::Workflow(format!(
-                "template: failed to open ZIP archive for folder extraction: {e}",
+                "template: failed to open ZIP archive for folder extraction: {e}"
             ))
         })?;
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).map_err(|e| {
-                ConductorError::Workflow(format!("template: failed to access ZIP entry #{i}: {e}",))
+                ConductorError::Workflow(format!("template: failed to access ZIP entry #{i}: {e}"))
             })?;
 
             let name = file.mangled_name().to_string_lossy().to_string();
@@ -1549,7 +1545,7 @@ mod tests {
         let result = resolve_template("user=${env.USER}, result=${step_output.step-1.val}", &ctx)
             .await
             .unwrap();
-        assert_eq!(result, format!("user=alice, result={}", Hash::from_content(b"42")),);
+        assert_eq!(result, format!("user=alice, result={}", Hash::from_content(b"42")));
     }
 
     #[tokio::test]

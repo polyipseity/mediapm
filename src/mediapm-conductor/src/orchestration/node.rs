@@ -110,7 +110,7 @@ where
                 let _ = reply.send(summary);
             }
             ConductorMessage::GetRuntimeDiagnostics { reply } => {
-                let diagnostics = state.runtime_diagnostics().await;
+                let diagnostics = state.runtime_diagnostics();
                 let _ = reply.send(diagnostics);
             }
             ConductorMessage::RunGc { referenced_keys, state: mut gc_state, unified, reply } => {
@@ -170,7 +170,7 @@ impl ConductorActorClient {
                     state,
                     reply,
                 },
-                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
             )
             .await
         {
@@ -190,7 +190,7 @@ impl ConductorActorClient {
             .actor_ref
             .call(
                 |reply| ConductorMessage::GetRuntimeDiagnostics { reply },
-                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
             )
             .await
         {
@@ -219,7 +219,7 @@ impl ConductorActorClient {
             .actor_ref
             .call(
                 |reply| ConductorMessage::RunGc { referenced_keys, state, unified, reply },
-                Some(Duration::from_millis(self.rpc_timeout.as_millis() as u64)),
+                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
             )
             .await
         {

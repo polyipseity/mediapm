@@ -42,7 +42,7 @@ pub(crate) enum StepWorkerMessage {
 // ---------------------------------------------------------------------------
 
 /// Default timeout for external executable subprocesses (15 minutes).
-const DEFAULT_EXECUTABLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_EXECUTABLE_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Environment variable override for executable timeout in seconds.
 const EXECUTABLE_TIMEOUT_ENV_VAR: &str = "MEDIAPM_CONDUCTOR_EXECUTABLE_TIMEOUT_SECS";

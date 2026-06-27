@@ -72,7 +72,7 @@ fn topological_sort(steps: &[WorkflowStepSpec]) -> Result<Vec<Vec<String>>, Cond
         queue = next_queue;
     }
 
-    let total_steps: usize = levels.iter().map(|l| l.len()).sum();
+    let total_steps: usize = levels.iter().map(Vec::len).sum();
     if total_steps != step_ids.len() {
         return Err(ConductorError::Workflow(
             "workflow contains a cycle in step dependency graph".to_string(),
@@ -93,7 +93,7 @@ fn compute_required_outputs(steps: &[WorkflowStepSpec]) -> BTreeMap<String, BTre
         regex::Regex::new(r"\$\{step_output\.([^.]+)\.([^}]+)\}").expect("valid step output regex");
 
     for step in steps {
-        for (_key, value) in &step.inputs {
+        for value in step.inputs.values() {
             for cap in re.captures_iter(value) {
                 let dep_step_id = cap[1].to_string();
                 let output_name = cap[2].to_string();
@@ -123,7 +123,7 @@ where
     /// Pool of step-worker actors for concurrent step execution.
     workers: Vec<ractor::ActorRef<StepWorkerMessage>>,
     /// Handle to the background CAS maintenance task, if started.
-    _background_gc_handle: Option<tokio::task::JoinHandle<()>>,
+    background_gc_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<C> WorkflowCoordinator<C>
@@ -133,7 +133,7 @@ where
     /// Creates a coordinator bound to one CAS implementation.
     #[must_use]
     pub(crate) fn new(cas: Arc<C>) -> Self {
-        Self { cas, workers: Vec::new(), _background_gc_handle: None }
+        Self { cas, workers: Vec::new(), background_gc_handle: None }
     }
 
     /// Ensures the step-worker pool is initialized.
@@ -158,7 +158,7 @@ where
         &mut self,
         workflow_name: &str,
         unified: &UnifiedNickelDocument,
-        _state: &mut OrchestrationState,
+        state: &mut OrchestrationState,
     ) -> Result<RunSummary, ConductorError> {
         self.ensure_workers().await?;
 
@@ -174,7 +174,7 @@ where
         let mut failed_steps = 0usize;
 
         let mut step_outputs: StepOutputs = BTreeMap::new();
-        let state_snapshot = Arc::new(_state.clone());
+        let state_snapshot = Arc::new(state.clone());
 
         for level in &levels {
             let mut handles = Vec::new();
@@ -264,7 +264,8 @@ where
 
     /// Returns a default runtime diagnostics snapshot.
     #[must_use]
-    pub(crate) async fn runtime_diagnostics(&self) -> RuntimeDiagnostics {
+    #[allow(clippy::unused_self)]
+    pub(crate) fn runtime_diagnostics(&self) -> RuntimeDiagnostics {
         RuntimeDiagnostics::default()
     }
 
@@ -312,7 +313,7 @@ where
                 }
             }
         });
-        self._background_gc_handle = Some(handle);
+        self.background_gc_handle = Some(handle);
     }
 }
 

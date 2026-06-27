@@ -436,6 +436,7 @@ mod tests {
     /// Verifies the TTL constants are at least one day (no accidental
     /// short-duration defaults).
     #[test]
+    #[expect(clippy::assertions_on_constants)]
     fn ttl_constants_are_reasonably_large() {
         assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60, "ENTRY_TTL_SECONDS should be at least one day");
         assert!(

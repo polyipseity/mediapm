@@ -80,6 +80,9 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     /// Concurrent calls for the same `tool_id` are deduplicated:
     /// only the first caller drives extraction; others wait on a notification
     /// and retry the fast path.
+    ///
+    /// # Errors
+    /// Returns [`ConductorError`] if extraction or metadata I/O fails.
     pub async fn materialize(
         &self,
         tool_id: &str,
@@ -243,6 +246,9 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     ///
     /// Only entries that are not currently locked are removed — active
     /// entries are always protected.
+    ///
+    /// # Errors
+    /// Returns [`ConductorError`] if filesystem operations fail during pruning.
     pub async fn prune(&self) -> Result<(), ConductorError> {
         let now = now_unix_seconds();
         self.prune_internal(now).await
@@ -252,6 +258,9 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
     ///
     /// Only entries without active locks are removed; in-use entries are
     /// preserved even if they are not in the active set.
+    ///
+    /// # Errors
+    /// Returns [`ConductorError`] if filesystem operations fail during retention.
     pub async fn retain_only(
         &self,
         active_tool_ids: &HashSet<String>,

@@ -99,7 +99,7 @@ impl UserLevelCache {
         Self::open_with_index_file_name_and_ttl(root, "tools.jsonc", 30 * 24 * 60 * 60).await
     }
 
-    /// Opens a tool_metadata.jsonc cache with 1-day TTL.
+    /// Opens a `tool_metadata.jsonc` cache with 1-day TTL.
     ///
     /// # Errors
     ///
@@ -117,7 +117,7 @@ impl UserLevelCache {
 
     /// Stores payload bytes under one logical download key.
     pub async fn store_bytes(&self, cache_key: &str, payload: &[u8]) {
-        self.0.store_bytes(cache_key, payload).await
+        self.0.store_bytes(cache_key, payload).await;
     }
 
     /// Returns current number of logical cache-key rows in index metadata.

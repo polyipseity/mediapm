@@ -17,6 +17,9 @@ use super::{LOCK_FILE_NAME, METADATA_FILE_NAME, TTL_SECONDS, VERSION};
 /// usable without constructing a [`super::ProvisionCache`].  Only entries without
 /// active locks are removed; in-use entries are preserved even if they are not
 /// in the active set.
+///
+/// # Errors
+/// Returns [`ConductorError`] if directory listing or removal fails.
 pub async fn retain_only_tool_dirs<S: std::hash::BuildHasher>(
     tools_dir: PathBuf,
     active_tool_ids: HashSet<String, S>,

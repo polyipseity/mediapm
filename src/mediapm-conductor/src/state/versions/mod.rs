@@ -35,13 +35,14 @@ impl From<v2::AuxDataV2> for crate::state::AuxData {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
             conductor_gc_epoch: crate::config::ImpureTimestamp::from_unix_nanos(
-                aux.conductor_gc_epoch.0 as u128,
+                aux.conductor_gc_epoch.0.into(),
             ),
         }
     }
 }
 
 impl From<crate::state::AuxData> for v2::AuxDataV2 {
+    #[allow(clippy::cast_possible_truncation)]
     fn from(aux: crate::state::AuxData) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
@@ -105,13 +106,14 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
             executed: inst.executed,
             rematerialized: inst.rematerialized,
             conductor_gc_last_referenced_at: crate::config::ImpureTimestamp::from_unix_nanos(
-                inst.conductor_gc_last_referenced_at.0 as u128,
+                inst.conductor_gc_last_referenced_at.0.into(),
             ),
         }
     }
 }
 
 impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
+    #[allow(clippy::cast_possible_truncation)]
     fn from(inst: ToolCallInstance) -> Self {
         Self {
             instance_key: inst.instance_key,
@@ -217,6 +219,7 @@ pub(crate) async fn decode_state<C: CasApi>(
 }
 
 /// Extracts the numeric `version` field from a JSON blob.
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))?;
@@ -234,6 +237,8 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
 
 /// Decodes an orchestration state from inline JSON bytes, checking that the
 /// version marker matches the latest schema.
+///
+/// # Errors
 ///
 /// Returns an error if the version is unsupported. Unknown/missing versions
 /// are reported with a clear message.
@@ -257,6 +262,10 @@ pub fn decode_state_json(bytes: &[u8]) -> Result<OrchestrationState, ConductorEr
 
 /// Encodes an orchestration state as pretty JSON, ensuring the version marker
 /// matches the latest schema.
+///
+/// # Errors
+///
+/// Returns an error if serialization to JSON fails.
 pub fn encode_state_json(state: &OrchestrationState) -> Result<Vec<u8>, ConductorError> {
     // Route through V2 wire type for explicit version boundary.
     let v2_state: v2::OrchestrationStateV2 = state.clone().into();

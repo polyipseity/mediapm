@@ -89,10 +89,10 @@ where
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
-            if !opts.retry_impure {
-                if let Some(true) = unified.runtime.retry_impure {
-                    opts.retry_impure = true;
-                }
+            if !opts.retry_impure
+                && let Some(true) = unified.runtime.retry_impure
+            {
+                opts.retry_impure = true;
             }
             opts
         };
@@ -136,8 +136,9 @@ where
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// read.
+    #[allow(clippy::unused_async)]
     pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
-        load_state(self.storage_paths()).await
+        Ok(load_state(self.storage_paths()))
     }
 
     /// Replaces the persisted orchestration state.
@@ -146,11 +147,13 @@ where
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// written.
+    #[allow(clippy::unused_async)]
     pub async fn replace_resolved_state(
         &self,
         state: OrchestrationState,
     ) -> Result<(), ConductorError> {
-        save_state(self.storage_paths(), &state).await
+        save_state(self.storage_paths(), &state);
+        Ok(())
     }
 
     /// Adds a tool configuration to the first available config document.
@@ -167,7 +170,7 @@ where
     ///
     /// Returns [`ConductorError::Workflow`] when the tool already exists in
     /// any config document, or wraps any I/O / Nickel evaluation error.
-    pub async fn add_tool_config(
+    pub fn add_tool_config(
         &self,
         name: &str,
         executable: Option<&str>,
@@ -245,11 +248,7 @@ where
     ///
     /// Returns [`ConductorError::Workflow`] when the tool is not found, or
     /// wraps any I/O / Nickel evaluation error.
-    pub async fn remove_tool_config(
-        &self,
-        name: &str,
-        _metadata: bool,
-    ) -> Result<(), ConductorError> {
+    pub fn remove_tool_config(&self, name: &str, _metadata: bool) -> Result<(), ConductorError> {
         let config_dir = &self.storage_paths.conductor_dir;
         let config_path = find_first_config(config_dir).ok_or_else(|| {
             ConductorError::Workflow("no config document found to remove from".to_string())
@@ -331,7 +330,7 @@ where
     ///
     /// Returns [`ConductorError::Io`] when the output directory cannot be
     /// created or schema files cannot be written.
-    pub async fn export_schemas(&self, output: &Path) -> Result<(), ConductorError> {
+    pub fn export_schemas(&self, output: &Path) -> Result<(), ConductorError> {
         std::fs::create_dir_all(output).map_err(|source| ConductorError::Io {
             operation: "creating schema export directory".to_string(),
             path: output.to_path_buf(),
@@ -368,7 +367,8 @@ where
         let (unified, state) = load_unified_config_and_state(self.storage_paths()).await?;
         let referenced_keys = std::collections::BTreeSet::new();
         let new_state = client.run_gc(referenced_keys, state, unified).await?;
-        save_state(self.storage_paths(), &new_state).await
+        save_state(self.storage_paths(), &new_state);
+        Ok(())
     }
 
     /// Returns the merged unified configuration (compiled view).
@@ -406,6 +406,7 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
         async move { self.run_workflow_with_options(&wf, RunWorkflowOptions::default()).await }
     }
 
+    #[allow(clippy::manual_async_fn)]
     fn get_runtime_diagnostics(
         &self,
     ) -> impl std::future::Future<Output = Result<RuntimeDiagnostics, ConductorError>> + Send {
@@ -424,10 +425,11 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
 /// at the parent of `conductor_dir`.  Each file is independently evaluated
 /// through the versioned Nickel pipeline.  All evaluated documents are merged
 /// with error-on-conflict semantics.  The state document is loaded separately.
+#[allow(clippy::unused_async)]
 pub(crate) async fn load_unified_config_and_state(
     storage_paths: &RuntimeStoragePaths,
 ) -> Result<(UnifiedNickelDocument, OrchestrationState), ConductorError> {
-    let state = load_state(storage_paths).await?;
+    let state = load_state(storage_paths);
     let config_paths = discover_config_paths(storage_paths);
 
     let source_docs: Vec<SourceDocument> = config_paths
@@ -466,7 +468,7 @@ fn discover_config_paths(storage_paths: &RuntimeStoragePaths) -> Vec<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(&storage_paths.conductor_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "ncl") {
+            if path.extension().is_some_and(|e| e == "ncl") {
                 paths.push(path);
             }
         }
@@ -491,7 +493,7 @@ fn find_first_config(conductor_dir: &Path) -> Option<PathBuf> {
     if let Ok(entries) = std::fs::read_dir(conductor_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "ncl") {
+            if path.extension().is_some_and(|e| e == "ncl") {
                 return Some(path);
             }
         }
@@ -500,30 +502,23 @@ fn find_first_config(conductor_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Returns the default orchestration state (filesystem persistence removed).
-async fn load_state(
-    _storage_paths: &RuntimeStoragePaths,
-) -> Result<OrchestrationState, ConductorError> {
-    Ok(OrchestrationState::default())
+fn load_state(_storage_paths: &RuntimeStoragePaths) -> OrchestrationState {
+    OrchestrationState::default()
 }
 
 /// No-op: state persistence is via CAS pointers, not filesystem.
-async fn save_state(
-    _storage_paths: &RuntimeStoragePaths,
-    _state: &OrchestrationState,
-) -> Result<(), ConductorError> {
-    Ok(())
-}
+fn save_state(_storage_paths: &RuntimeStoragePaths, _state: &OrchestrationState) {}
 
 /// Locates the `mediapm-cas` binary by searching the conductor binary's
 /// directory first, then `PATH`.
 fn find_cas_binary() -> Option<PathBuf> {
     // Check same directory as the conductor binary.
-    if let Ok(exe_path) = std::env::current_exe() {
-        if let Some(parent) = exe_path.parent() {
-            let candidate = parent.join("mediapm-cas");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(parent) = exe_path.parent()
+    {
+        let candidate = parent.join("mediapm-cas");
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
     // Fall back to PATH.

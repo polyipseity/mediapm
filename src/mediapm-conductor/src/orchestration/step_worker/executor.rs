@@ -21,11 +21,12 @@ use super::sandbox::{create_sandbox, materialize_content_map};
 use super::template::{TemplateContext, resolve_command_parts};
 
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     cas: &C,
     request: StepExecutionRequest,
 ) -> Result<StepExecutionBundle, ConductorError> {
-    let _start = Instant::now();
+    let start = Instant::now();
     let mut phase_timings = StepPhaseTiming::default();
 
     // Phase 1: Resolve inputs.
@@ -54,8 +55,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
         let cached =
             request.state_snapshot.tool_call_instances.get(&instance_key).ok_or_else(|| {
                 ConductorError::Internal(format!(
-                    "cache probe reported hit but tool call instance '{}' not found in state",
-                    instance_key,
+                    "cache probe reported hit but tool call instance '{instance_key}' not found in state",
                 ))
             })?;
 
@@ -69,7 +69,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
             executed: false,
             rematerialized: true,
             pending_unsaved_hashes: BTreeSet::new(),
-            elapsed_ms: _start.elapsed().as_secs_f64() * 1000.0,
+            elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
             phase_timings,
         });
     }
@@ -127,7 +127,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let t5 = Instant::now();
     phase_timings.persistence_merge_ms = t5.elapsed().as_secs_f64() * 1000.0;
 
-    let elapsed_ms = _start.elapsed().as_secs_f64() * 1000.0;
+    let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
 
     let tool_id = format!("{}@{}", tool_spec.inputs.len(), "?"); // simplified tool id for now
     let instance = ToolCallInstance {

@@ -85,14 +85,13 @@ pub(crate) fn check_binary_exists(cmd: &str) -> bool {
         std::path::Path::new(cmd).exists()
     } else {
         std::env::var_os("PATH")
-            .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).exists()))
-            .unwrap_or(false)
+            .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(cmd).exists()))
     }
 }
 
 /// Imports a directory tree into a content map by hashing each file into CAS.
 ///
-/// Returns the content map (relative_path → hash) and the total number of
+/// Returns the content map (`relative_path` → hash) and the total number of
 /// imported files.  Files whose names appear in `skip_names` are excluded.
 pub(crate) async fn import_directory_to_content_map<C: mediapm_cas::CasApi>(
     cas: &C,
@@ -109,7 +108,7 @@ pub(crate) async fn import_directory_to_content_map<C: mediapm_cas::CasApi>(
 
         if skip_names
             .iter()
-            .any(|n| relative_str == *n || file_path.file_name().map_or(false, |f| f == *n))
+            .any(|n| relative_str == *n || file_path.file_name().is_some_and(|f| f == *n))
         {
             continue;
         }
