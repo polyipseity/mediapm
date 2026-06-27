@@ -38,7 +38,6 @@ clap_complete = { workspace = true, optional = true }
 dotenvy.workspace = true
 ffmetadata.workspace = true
 flate2.workspace = true
-fp-library.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
 mediapm-conductor = { path = "../mediapm-conductor", default-features = false }
