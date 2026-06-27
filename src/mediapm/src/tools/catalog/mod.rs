@@ -108,6 +108,7 @@ pub(crate) fn tool_catalog() -> &'static [ToolCatalogEntry] {
             yt_dlp::entry(),
             deno::entry(),
             rsgain::entry(),
+            #[cfg(feature = "media-tagger")]
             media_tagger::entry(),
             sd::entry(),
         ]

@@ -2035,7 +2035,6 @@ dependencies = [
  "mediapm-conductor-builtin-fs",
  "mediapm-conductor-builtin-import",
  "nickel-lang-core",
- "pulsebar",
  "ractor",
  "regex",
  "reqwest",

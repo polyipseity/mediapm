@@ -369,6 +369,7 @@ async fn main_cli() -> anyhow::Result<()> {
             },
         },
         Command::Builtin { command } => match *command {
+            #[cfg(feature = "media-tagger")]
             BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await,
         },
         Command::Cas(args) => {
@@ -740,10 +741,12 @@ enum GlobalToolCacheCommand {
 #[derive(Debug, Subcommand)]
 enum BuiltinCommand {
     /// Run internal media-tagger (Picard-based tagging pipeline).
+    #[cfg(feature = "media-tagger")]
     MediaTagger(InternalMediaTaggerArgs),
 }
 
 /// Arguments for `builtin media-tagger`.
+#[cfg(feature = "media-tagger")]
 #[derive(Debug, Args)]
 #[expect(clippy::struct_excessive_bools, reason = "media-tagger has many option toggles")]
 struct InternalMediaTaggerArgs {
@@ -957,6 +960,7 @@ fn default_yt_dlp_steps(
 }
 
 /// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
+#[cfg(feature = "media-tagger")]
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {

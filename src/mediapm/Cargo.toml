@@ -8,13 +8,14 @@ publish.workspace = true
 description = "Media orchestration facade over conductor and CAS"
 
 [features]
-default = ["cli"]
+default = ["cli", "media-tagger"]
 cli = [
   "dep:clap",
   "dep:clap_complete",
   "mediapm-cas/cli",
   "mediapm-conductor/cli",
 ]
+media-tagger = ["dep:chromaprint-next", "dep:musicbrainz_rs", "dep:ffmetadata"]
 
 [lints]
 workspace = true
@@ -32,16 +33,16 @@ required-features = ["cli"]
 anyhow.workspace = true
 blake3.workspace = true
 bytes.workspace = true
-chromaprint-next.workspace = true
+chromaprint-next = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }
 dotenvy.workspace = true
-ffmetadata.workspace = true
+ffmetadata = { workspace = true, optional = true }
 flate2.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
 mediapm-conductor = { path = "../mediapm-conductor", default-features = false }
-musicbrainz_rs = { workspace = true, features = ["async", "rustls"] }
+musicbrainz_rs = { workspace = true, features = ["async", "rustls"], optional = true }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 regex.workspace = true
