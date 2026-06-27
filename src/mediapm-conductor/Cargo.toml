@@ -40,7 +40,6 @@ mediapm-conductor-builtin-import = { path = "../mediapm-conductor-builtins/impor
 mediapm-conductor-builtin-archive = { path = "../mediapm-conductor-builtins/archive", default-features = false }
 mediapm-conductor-builtin-export = { path = "../mediapm-conductor-builtins/export", default-features = false }
 nickel-lang-core.workspace = true
-pulsebar.workspace = true
 ractor.workspace = true
 regex.workspace = true
 serde.workspace = true
