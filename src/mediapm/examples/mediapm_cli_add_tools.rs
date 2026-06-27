@@ -1,9 +1,8 @@
-//! Offline example for adding managed tool requirements without downloading tool binaries.
+//! Example for adding managed tool requirements without downloading tool binaries.
 //!
-//! The example bootstraps a clean `mediapm` workspace, leaves `media` empty,
-//! populates the `tools` block with every managed tool in the default mediapm
-//! stack, and writes dummy tool payload files so the conductor machine config
-//! can show concrete `content_map` entries without fetching real releases.
+//! Bootstraps a clean `mediapm` workspace, populates the `tools` block with
+//! every managed tool in the default stack, and writes dummy tool payload
+//! files so the conductor machine config shows concrete `content_map` entries.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -11,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mediapm::{
-    MediaPmService, ToolRequirement, ToolRequirementDependencies, load_mediapm_document,
-    save_mediapm_document,
+    MediaMetadataValue, MediaPmService, ToolRequirement, ToolRequirementDependencies,
+    load_mediapm_document, save_mediapm_document,
 };
 use mediapm_cas::Hash;
 use mediapm_conductor::{
@@ -20,35 +19,22 @@ use mediapm_conductor::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Stable artifact-folder name for this example.
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-tools";
-
-/// Managed tool names demonstrated by this example.
 const TOOL_NAMES: [&str; 6] = ["yt-dlp", "ffmpeg", "deno", "rsgain", "sd", "media-tagger"];
 
-/// Shared result alias for this example.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
-/// Manifest emitted by this example for downstream assertions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddToolsManifest {
-    /// Artifact root used by this run.
     artifact_root: PathBuf,
-    /// Path to `manifest.json`.
     manifest_path: PathBuf,
-    /// Path to generated `mediapm.ncl`.
     mediapm_ncl: PathBuf,
-    /// Path to generated conductor user document.
     conductor_user_ncl: PathBuf,
-    /// Path to generated conductor machine document.
     conductor_machine_ncl: PathBuf,
-    /// Logical tool names written into `mediapm.ncl`.
     logical_tool_names: Vec<String>,
-    /// Immutable tool ids written into the machine document.
     tool_ids: Vec<String>,
 }
 
-/// Returns workspace root by walking up from this crate directory.
 fn workspace_root() -> PathBuf {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     crate_root
@@ -58,12 +44,10 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Returns deterministic artifact root for this example.
 fn artifact_root() -> PathBuf {
     workspace_root().join("src/mediapm/examples/.artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
 }
 
-/// Removes stale artifacts and recreates a clean output directory.
 fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
         fs::remove_dir_all(root)?;
@@ -72,7 +56,6 @@ fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-/// Creates one deterministic dummy tool payload file and returns its path + hash.
 fn write_dummy_tool_payload(root: &Path, tool_name: &str) -> ExampleResult<(PathBuf, Hash)> {
     let tool_dir = root.join("dummy-tools").join(tool_name);
     fs::create_dir_all(&tool_dir)?;
@@ -82,27 +65,25 @@ fn write_dummy_tool_payload(root: &Path, tool_name: &str) -> ExampleResult<(Path
     Ok((payload_path, Hash::from_content(payload.as_bytes())))
 }
 
-/// Returns one stable immutable tool id used by this example.
 fn tool_id_for(logical_tool_name: &str) -> String {
     format!("mediapm.tools.{}+demo@latest", logical_tool_name.trim().to_ascii_lowercase())
 }
 
-/// Builds one tool requirement for the example `mediapm.ncl` document.
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     let dependencies = match logical_tool_name {
         "yt-dlp" | "media-tagger" => ToolRequirementDependencies {
-            ffmpeg_version: Some("inherit".to_string()),
+            ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
             deno_version: if logical_tool_name == "yt-dlp" {
-                Some("inherit".to_string())
+                Some(MediaMetadataValue::Literal("inherit".to_string()))
             } else {
                 None
             },
             sd_version: None,
         },
         "rsgain" => ToolRequirementDependencies {
-            ffmpeg_version: Some("inherit".to_string()),
+            ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
             deno_version: None,
-            sd_version: Some("inherit".to_string()),
+            sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
         },
         _ => ToolRequirementDependencies::default(),
     };
@@ -117,23 +98,23 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     }
 }
 
-/// Ensures the `mediapm` runtime docs exist, then writes a tools-only example state.
 async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let service = MediaPmService::new_in_memory_at(&root);
-    let _ = service.sync_tools().await?;
+    let mut service = MediaPmService::new_fs_at(&root)?;
+    let _ = service.sync_tools()?;
 
-    let mut document = load_mediapm_document(&service.paths().mediapm_ncl)?;
+    let paths = service.paths();
+    let mut document = load_mediapm_document(&paths.mediapm_ncl)?;
     document.media.clear();
-    document.tools = TOOL_NAMES
+    document.runtime.tools = TOOL_NAMES
         .iter()
         .map(|name| (name.to_string(), tool_requirement_for(name)))
         .collect::<BTreeMap<_, _>>();
-    save_mediapm_document(&service.paths().mediapm_ncl, &document)?;
+    save_mediapm_document(&paths.mediapm_ncl, &document)?;
 
-    let machine_bytes = fs::read(&service.paths().conductor_machine_ncl)?;
+    let machine_bytes = fs::read(&paths.conductor_machine_ncl)?;
     let mut machine: NickelDocument = decode_document(&machine_bytes)?;
 
     let mut tool_ids = Vec::new();
@@ -172,29 +153,23 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         );
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
+    fs::write(&paths.conductor_machine_ncl, encode_document(machine)?)?;
 
-    let mediapm_ncl = service.paths().mediapm_ncl.clone();
-    let conductor_user_ncl = service.paths().conductor_user_ncl.clone();
-    let conductor_machine_ncl = service.paths().conductor_machine_ncl.clone();
     let manifest_path = root.join("manifest.json");
-
     let manifest = AddToolsManifest {
         artifact_root: root,
         manifest_path: manifest_path.clone(),
-        mediapm_ncl,
-        conductor_user_ncl,
-        conductor_machine_ncl,
-        logical_tool_names: TOOL_NAMES.iter().map(|value| (*value).to_string()).collect(),
+        mediapm_ncl: paths.mediapm_ncl.clone(),
+        conductor_user_ncl: paths.conductor_user_ncl.clone(),
+        conductor_machine_ncl: paths.conductor_machine_ncl.clone(),
+        logical_tool_names: TOOL_NAMES.iter().map(|v| (*v).to_string()).collect(),
         tool_ids,
     };
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
-
     Ok(manifest)
 }
 
-/// Runs the offline add-tools example and prints artifact locations.
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_tools_example().await?;
@@ -218,7 +193,6 @@ mod tests {
 
     use super::run_add_tools_example;
 
-    /// Verifies the example writes a tools-only mediapm document and dummy tool payloads.
     #[tokio::test]
     async fn add_tools_writes_expected_config_documents() {
         let manifest = run_add_tools_example().await.expect("run add-tools example");

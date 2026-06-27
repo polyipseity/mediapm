@@ -1,59 +1,42 @@
-//! Offline example for adding hierarchy presets on top of registered media sources.
+//! Example for adding hierarchy presets on top of registered media sources.
 //!
-//! The example bootstraps a clean `mediapm` workspace, registers one local
-//! and one online media source, applies the local and yt-dlp hierarchy presets,
-//! and writes a small manifest that records the resulting document locations.
+//! Bootstraps a clean `mediapm` workspace, registers one local and one online
+//! media source, applies local and yt-dlp hierarchy presets, and writes a
+//! manifest recording the resulting document locations.
 
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use mediapm::{MediaHierarchyPreset, MediaPmService, load_mediapm_document};
+use mediapm::{
+    AddInsertPosition, MediaHierarchyPreset, MediaPmService, MediaSourceSpec, load_mediapm_document,
+};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-/// Stable artifact-folder name for this example.
 const EXAMPLE_ARTIFACT_FOLDER: &str = "cli-add-hierarchy";
-/// Dummy local source file used by this example.
 const DUMMY_LOCAL_SOURCE_FILE: &str = "dummy-local-video.mp4";
-/// Dummy `YouTube` URL used to synthesize remote source defaults.
 const DUMMY_YOUTUBE_URL: &str = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
-/// Folder root used for local hierarchy preset insertion.
 const LOCAL_HIERARCHY_FOLDER: &str = "music videos/local";
-/// Folder root used for yt-dlp hierarchy preset insertion.
 const YT_DLP_HIERARCHY_FOLDER: &str = "music videos/online";
 
-/// Shared result alias for this example.
 type ExampleResult<T> = Result<T, Box<dyn Error>>;
 
-/// Manifest emitted by this example for downstream assertions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AddHierarchyManifest {
-    /// Artifact root used by this run.
     artifact_root: PathBuf,
-    /// Path to `manifest.json`.
     manifest_path: PathBuf,
-    /// Path to generated `mediapm.ncl`.
     mediapm_ncl: PathBuf,
-    /// Path to generated conductor user document.
     conductor_user_ncl: PathBuf,
-    /// Path to generated conductor machine document.
     conductor_machine_ncl: PathBuf,
-    /// Local media id returned by `add_local_source`.
     local_media_id: String,
-    /// Remote media id returned by `add_media_source`.
     remote_media_id: String,
-    /// Number of hierarchy nodes after default-preset insertion.
     hierarchy_node_count: usize,
-    /// Folder root used for local hierarchy preset insertion.
     local_hierarchy_folder: String,
-    /// Folder root used for yt-dlp hierarchy preset insertion.
     yt_dlp_hierarchy_folder: String,
 }
 
-/// Returns workspace root by walking up from this crate directory.
 fn workspace_root() -> PathBuf {
     let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     crate_root
@@ -63,25 +46,13 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Returns deterministic artifact root for this example.
 fn artifact_root() -> PathBuf {
     let base = workspace_root().join("src/mediapm/examples/.artifacts");
-
-    #[cfg(test)]
-    {
-        let pid = std::process::id();
-        let stamp =
-            SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
-        return base.join(format!("{EXAMPLE_ARTIFACT_FOLDER}-test-{pid}-{stamp}"));
-    }
-
-    #[cfg(not(test))]
-    {
-        base.join(EXAMPLE_ARTIFACT_FOLDER)
-    }
+    let pid = std::process::id();
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    base.join(format!("{EXAMPLE_ARTIFACT_FOLDER}-{pid}-{stamp}"))
 }
 
-/// Removes stale artifacts and recreates a clean output directory.
 fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     if root.exists() {
         fs::remove_dir_all(root)?;
@@ -90,51 +61,44 @@ fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-/// Writes the dummy local media file used for source registration.
 fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
-    let local_source_path = root.join("inputs").join(DUMMY_LOCAL_SOURCE_FILE);
-    fs::create_dir_all(local_source_path.parent().expect("local source parent"))?;
-    fs::write(&local_source_path, b"dummy-local-video-bytes")?;
-    Ok(local_source_path)
+    let path = root.join("inputs").join(DUMMY_LOCAL_SOURCE_FILE);
+    fs::create_dir_all(path.parent().expect("parent"))?;
+    fs::write(&path, b"dummy-local-video-bytes")?;
+    Ok(path)
 }
 
-/// Runs the example flow and persists output manifest/config files.
 async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let service = MediaPmService::new_in_memory_at(&root);
+    let mut service = MediaPmService::new_fs_at(&root)?;
 
     let local_source_path = write_dummy_local_source(&root)?;
     let local_media_id =
-        service.add_local_source(&local_source_path, None, None, None, None, None, None).await?;
-    let remote_media_id = service
-        .add_media_source(&Url::parse(DUMMY_YOUTUBE_URL)?, None, None, None, None, None, None)
-        .await?;
-
-    service.add_media_hierarchy_preset(
-        MediaHierarchyPreset::Local,
-        &local_media_id,
-        LOCAL_HIERARCHY_FOLDER,
-    )?;
-    service.add_media_hierarchy_preset(
-        MediaHierarchyPreset::YtDlp,
-        &remote_media_id,
-        YT_DLP_HIERARCHY_FOLDER,
+        service.add_local_source(&local_source_path, "ffprobe", None, AddInsertPosition::End)?;
+    let remote_uri = Url::parse(DUMMY_YOUTUBE_URL)?;
+    let remote_media_id = "youtube-dQw4w9WgXcQ".to_string();
+    service.add_media_source(
+        &MediaSourceSpec::default(),
+        remote_media_id.clone(),
+        &remote_uri,
+        None,
+        None,
     )?;
 
-    let mediapm_ncl = service.paths().mediapm_ncl.clone();
-    let conductor_user_ncl = service.paths().conductor_user_ncl.clone();
-    let conductor_machine_ncl = service.paths().conductor_machine_ncl.clone();
+    service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
+    service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
+
+    let paths = service.paths();
     let manifest_path = root.join("manifest.json");
-
-    let document = load_mediapm_document(&mediapm_ncl)?;
+    let document = load_mediapm_document(&paths.mediapm_ncl)?;
     let manifest = AddHierarchyManifest {
         artifact_root: root,
         manifest_path: manifest_path.clone(),
-        mediapm_ncl,
-        conductor_user_ncl,
-        conductor_machine_ncl,
+        mediapm_ncl: paths.mediapm_ncl.clone(),
+        conductor_user_ncl: paths.conductor_user_ncl.clone(),
+        conductor_machine_ncl: paths.conductor_machine_ncl.clone(),
         local_media_id,
         remote_media_id,
         hierarchy_node_count: document.hierarchy.len(),
@@ -143,11 +107,9 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
     };
 
     fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
-
     Ok(manifest)
 }
 
-/// Runs the offline hierarchy-preset example and prints artifact locations.
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
     let manifest = run_add_hierarchy_example().await?;
@@ -158,8 +120,6 @@ async fn main() -> ExampleResult<()> {
     println!("conductor machine: {}", manifest.conductor_machine_ncl.display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
-    println!("local hierarchy folder: {}", manifest.local_hierarchy_folder);
-    println!("yt-dlp hierarchy folder: {}", manifest.yt_dlp_hierarchy_folder);
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
 
     Ok(())
@@ -175,7 +135,6 @@ mod tests {
 
     use super::run_add_hierarchy_example;
 
-    /// Verifies local/yt-dlp hierarchy presets insert one root node each with preset-specific projections.
     #[tokio::test]
     async fn add_hierarchy_writes_expected_hierarchy_nodes() {
         let manifest = run_add_hierarchy_example().await.expect("run add-hierarchy example");

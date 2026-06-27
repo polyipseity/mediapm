@@ -1,19 +1,23 @@
-//! Shared data structures for release resolution and payload materialization.
+//! Shared data structures for release resolution and payload provisioning.
+//!
+//! These types are used by the downloader and tool-runtime modules to
+//! represent resolved tool identity, download plans, and provisioned payloads.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::tools::catalog::{DownloadPayloadMode, ToolCatalogEntry, ToolOs};
+use crate::tools::catalog::{ToolCatalogEntry, ToolOs};
 
 /// GitHub API base URL used for release metadata queries.
-pub(super) const GITHUB_API_BASE: &str = "https://api.github.com/repos";
+#[allow(dead_code)]
+pub(crate) const GITHUB_API_BASE: &str = "https://api.github.com/repos";
 
-/// Resolved release identity metadata used for immutable tool-id construction.
+/// Resolved release identity metadata for immutable tool-id construction.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedToolIdentity {
-    /// Optional git commit hash (preferred immutable selector when available).
+    /// Optional git commit hash (preferred immutable selector).
     pub git_hash: Option<String>,
-    /// Optional semantic/version label.
+    /// Optional semantic version label.
     pub version: Option<String>,
     /// Optional tag label.
     pub tag: Option<String>,
@@ -21,17 +25,15 @@ pub(crate) struct ResolvedToolIdentity {
     pub release_description: Option<String>,
 }
 
-/// Provisioned tool payload prepared under the workspace tools cache root.
+/// Provisioned tool payload under the workspace tools cache root.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct ProvisionedToolPayload {
     /// Fully resolved immutable tool id.
     pub tool_id: String,
-    /// Sandbox-relative command selector used by executable tool specs.
+    /// Sandbox-relative command selector for executable tool specs.
     pub command_selector: String,
-    /// Materialized content-map payload entries (`content-map key -> payload source`).
-    ///
-    /// Archive downloads may emit directory keys (for example `./` or
-    /// `windows/`) that should be serialized as ZIP payload bytes.
+    /// Materialized content-map payload entries.
     pub content_entries: BTreeMap<String, ContentMapSource>,
     /// Resolved identity metadata for lock state and diagnostics.
     pub identity: ResolvedToolIdentity,
@@ -41,47 +43,59 @@ pub(crate) struct ProvisionedToolPayload {
     pub source_identifier: String,
     /// Catalog entry that produced this payload.
     pub catalog: ToolCatalogEntry,
-    /// Non-fatal metadata-resolution warnings produced during provisioning.
+    /// Non-fatal metadata-resolution warnings.
     pub warnings: Vec<String>,
 }
 
-/// Source payload representation for one conductor `content_map` entry.
+/// Source payload representation for conductor `content_map` entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum ContentMapSource {
-    /// Entry bytes come directly from one materialized regular file path.
+    /// Entry bytes come from a materialized regular file path.
     FilePath(PathBuf),
     /// Entry bytes should be generated as an uncompressed ZIP of this folder.
-    ///
-    /// The map key determines where conductor unpacks this ZIP payload.
     DirectoryZip { root_dir: PathBuf },
 }
 
 /// One resolved per-OS download action.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OsDownloadAction {
-    /// OS target represented by this action.
+pub(crate) struct OsDownloadAction {
+    /// OS target for this action.
     pub os: ToolOs,
-    /// URL candidates tried in-order.
+    /// URL candidates tried in order.
     pub urls: Vec<String>,
-    /// Payload transfer/extraction mode.
-    pub mode: DownloadPayloadMode,
+    /// Payload archive format.
+    pub archive_format: &'static str,
 }
 
 /// Resolved download plan including release identity metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ResolvedDownloadPlan {
+pub(crate) struct ResolvedDownloadPlan {
     /// Concrete actions keyed by OS target.
     pub per_os_actions: BTreeMap<ToolOs, OsDownloadAction>,
-    /// Whether all targets are satisfied by one shared package.
+    /// Whether all targets share one package.
     pub shared_package: bool,
-    /// Whether payload should be generated as local internal-launcher shim.
+    /// Whether payload is a local internal-launcher shim.
     pub internal_launcher: bool,
     /// Resolved release identity metadata.
     pub identity: ResolvedToolIdentity,
     /// Human-readable source label for lock metadata.
     pub source_label: String,
-    /// Stable source identifier fragment for immutable tool ids.
+    /// Stable source identifier for immutable tool ids.
     pub source_identifier: String,
-    /// Non-fatal warnings emitted while resolving release metadata.
+    /// Non-fatal warnings from release-metadata resolution.
     pub warnings: Vec<String>,
 }
+
+/// Snapshot of download progress at one point in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DownloadProgressSnapshot {
+    /// Bytes downloaded so far.
+    pub downloaded_bytes: u64,
+    /// Total expected bytes, if known.
+    pub total_bytes: Option<u64>,
+}
+
+/// Callback invoked with progress snapshots during transfer.
+pub(crate) type DownloadProgressCallback =
+    std::sync::Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;

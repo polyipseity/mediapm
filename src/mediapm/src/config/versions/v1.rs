@@ -1,217 +1,352 @@
-//! Typed version-1 persisted envelope for `mediapm.ncl`.
+//! V1 wire envelopes and migration definitions.
 //!
-//! ## DO NOT REMOVE: versions policy guard
-//!
-//! - This file must not import unversioned runtime structs from outside
-//!   `config/versions/`.
-//! - A `vX` module may reference only the immediately previous version and only
-//!   for migration/isomorphism.
-//! - Latest-version bridging to runtime structs is owned by
-//!   `config/versions/mod.rs`.
+//! This module provides the V1-specific deserialization envelopes and the
+//! `Migrate` implementation that transforms V1 JSON into the current
+//! runtime document model (`MediaPmDocument`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use fp_library::brands::RcBrand;
-use fp_library::types::optics::IsoPrime;
 use serde::{Deserialize, Serialize};
+
+use super::super::{
+    ActiveToolInstance, ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp,
+    MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement, hierarchy_types,
+    source_types,
+};
+use super::Migrate;
+
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
-// Version marker
+// V1 wire envelopes
 // ---------------------------------------------------------------------------
 
-/// Version marker for the V1 `mediapm.ncl` envelope.
-pub(crate) const MEDIAPM_NICKEL_VERSION_V1: u32 = 1;
-
-/// Returns whether `marker` matches the V1 schema marker.
-#[must_use]
-pub(crate) const fn is_mediapm_nickel_version_v1(marker: u32) -> bool {
-    marker == MEDIAPM_NICKEL_VERSION_V1
-}
-
-// ---------------------------------------------------------------------------
-// Wire types matching NCL `PlatformInheritedEnvVarsV1`
-// ---------------------------------------------------------------------------
-
-/// Platform-keyed inherited env-var names, matching NCL `PlatformInheritedEnvVarsV1`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// V1 deserialization envelope for `mediapm.ncl`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PlatformInheritedEnvVarsWireV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) windows: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) linux: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) macos: Option<Vec<String>>,
-}
-
-// ---------------------------------------------------------------------------
-// Wire types matching NCL `RuntimeStorageV1`
-// ---------------------------------------------------------------------------
-
-/// Runtime storage wire type matching NCL `MediaRuntimeStorageV1`.
-///
-/// Fields typed as `Value` correspond to NCL `Dyn` contracts where the runtime
-/// type (`MediaRuntimeStorage`) uses a concrete struct that cannot be imported
-/// here (policy guard).
-///
-/// Unknown fields are rejected so removed/legacy runtime keys fail decode
-/// (mirroring the final deserialization guard on `MediaRuntimeStorage`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MediaRuntimeStorageWireV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) mediapm_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) hierarchy_root_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) mediapm_tmp_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) materialization_preference_order: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_machine_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_state_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_tmp_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) conductor_schema_dir: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) inherited_env_vars: Option<PlatformInheritedEnvVarsWireV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) media_state_config: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) env_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) env_generated_file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) mediapm_schema_dir: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) instance_ttl_seconds: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) path_sanitization: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) profiler_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Wire field for `MediaRuntimeStorage.verify_materialization`.
-    pub(crate) verify_materialization: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) verify_on_read: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) verify_on_read_sample_denominator: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) verify_on_read_stale_timeout_secs: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reconstructed_bytes_cache_ttl_secs: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) retry_impure: Option<bool>,
-}
-
-// ---------------------------------------------------------------------------
-// Wire types matching NCL state contracts
-// ---------------------------------------------------------------------------
-
-/// Impure timestamp wire type matching NCL `MediaPmImpureTimestampV1`.
-///
-/// Both fields are `Value` because NCL uses `Dyn` contracts for them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MediaPmImpureTimestampWireV1 {
+pub(super) struct MediaPmDocumentEnvelopeV1 {
+    /// Schema version marker.
+    pub(super) version: u32,
+    /// Media source registry entries keyed by id.
     #[serde(default)]
-    pub(crate) epoch_seconds: Value,
+    pub(super) media: BTreeMap<String, source_types::MediaSourceSpec>,
+    /// Hierarchy node declarations.
     #[serde(default)]
-    pub(crate) subsec_nanos: Value,
+    pub(super) hierarchy: Vec<hierarchy_types::HierarchyNode>,
+    /// Runtime configuration overrides.
+    #[serde(default)]
+    pub(super) runtime: MediaRuntimeStorage,
+    /// Conductor config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) conductor: Option<BTreeMap<String, Value>>,
 }
 
-/// Managed workflow step state wire type matching NCL `ManagedWorkflowStepStateV1`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// V1 state envelope for `state.ncl` files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ManagedWorkflowStepStateWireV1 {
-    pub(crate) explicit_config: Value,
+pub(super) struct MediaPmStateEnvelopeV1 {
+    /// Schema version marker.
+    pub(super) version: u32,
+    /// Per-media-source state entries.
+    #[serde(default)]
+    pub(super) media_state: BTreeMap<String, MediaPmStateWireV1>,
+    /// Per-tool registry state.
+    #[serde(default)]
+    pub(super) tools: BTreeMap<String, ToolRegistryStateWireV1>,
+    /// Hash of the state snapshot at last materialization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) impure_timestamp: Option<MediaPmImpureTimestampWireV1>,
-}
-
-/// Machine-managed state wire type matching NCL `MediaPmStateV1`.
-///
-/// `managed_files`, `tool_registry`, and `active_tools` are `Value` because
-/// NCL uses `Dyn` contracts for them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct MediaPmStateWireV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) managed_files: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tool_registry: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) active_tools: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) workflow_states: Option<BTreeMap<String, Vec<ManagedWorkflowStepStateWireV1>>>,
-    /// Materialization-skip gate hash.
-    ///
-    /// `String` because NCL serializes the CAS hash as a string value.
-    /// The final decode step converts this to `Option<Hash>`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) last_materialized_state_hash: Option<String>,
+    pub(super) last_materialized_state_hash: Option<String>,
+    /// Set of files currently managed.
+    #[serde(default)]
+    pub(super) managed_files: BTreeSet<String>,
+    /// Fetched-tool registry.
+    #[serde(default)]
+    pub(super) tool_registry: BTreeMap<String, ToolRegistryEntryWireV1>,
+    /// Active tool deployments.
+    #[serde(default)]
+    pub(super) active_tools: BTreeMap<String, ActiveToolInstanceWireV1>,
 }
 
 // ---------------------------------------------------------------------------
-// Top-level envelope and state types
+// V1 wire state type
 // ---------------------------------------------------------------------------
 
-/// Version-local typed state for V1 persisted payload fields.
-///
-/// All top-level `mediapm.ncl` fields except `version`.
-///
-/// Unknown fields are rejected so removed/legacy top-level keys (for example
-/// `runtime_storage`) fail decode (mirroring the final deserialization guard
-/// on `MediaPmDocument`).
-///
-/// Note: `deny_unknown_fields` is intentionally omitted here — serde does not
-/// enforce it correctly on a `#[serde(flatten)]`-ed child struct. The parent
-/// envelope carries the guard instead.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub(crate) struct MediaPmDocumentStateV1 {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) runtime: Option<MediaRuntimeStorageWireV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) tools: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) media: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) hierarchy: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) state: Option<MediaPmStateWireV1>,
-}
-
-/// Top-level V1 persisted document envelope.
-///
-/// `deny_unknown_fields` lives here (not on the flattened child state) because
-/// serde does not enforce it correctly on `#[serde(flatten)]`-ed structs.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// V1 wire representation of one media-source state entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct MediaPmDocumentEnvelopeV1 {
-    /// Explicit schema marker.
-    pub(crate) version: u32,
-    /// Typed persisted payload fields (flattened so they sit at the same
-    /// JSON level as `version`, matching the wire shape).
-    #[serde(flatten)]
-    pub(crate) state: MediaPmDocumentStateV1,
+pub(super) struct MediaPmStateWireV1 {
+    /// Optional pre-seeded CAS hash pointers keyed by variant name.
+    #[serde(default)]
+    pub(super) variant_hashes: BTreeMap<String, String>,
+    /// Optional number of completed steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) steps_completed: Option<u32>,
+    /// Optional last impure sync timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) last_impure_sync_at: Option<MediaPmImpureTimestampWireV1>,
 }
 
-/// Isomorphism between V1 envelope and V1 local state.
-///
-/// Forward strips `version`; reverse adds version marker.
-#[must_use]
-pub(crate) fn mediapm_document_v1_iso()
--> IsoPrime<'static, RcBrand, MediaPmDocumentEnvelopeV1, MediaPmDocumentStateV1> {
-    IsoPrime::new(
-        |envelope: MediaPmDocumentEnvelopeV1| envelope.state,
-        |state: MediaPmDocumentStateV1| MediaPmDocumentEnvelopeV1 {
-            version: MEDIAPM_NICKEL_VERSION_V1,
-            state,
-        },
-    )
+/// V1 wire representation of one tool registry entry state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolRegistryStateWireV1 {
+    /// Optional tool version string (from version selector).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) version: Option<String>,
+    /// Optional tool tag string (from tag selector).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) tag: Option<String>,
+}
+
+/// V1 wire representation of a tool registry entry (fetch/deployment metadata).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolRegistryEntryWireV1 {
+    /// Tool version as fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) version: Option<String>,
+    /// Tag as fetched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) tag: Option<String>,
+    /// CAS content hash of the fetched payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) fetch_hash: Option<String>,
+    /// Unix-epoch seconds when the payload was deployed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) deployed_at: Option<u64>,
+}
+
+/// V1 wire representation of an active tool instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ActiveToolInstanceWireV1 {
+    /// Tool identifier.
+    pub(super) tool_id: String,
+    /// CAS content hash.
+    pub(super) content_hash: String,
+    /// Filesystem path.
+    pub(super) deployed_path: String,
+}
+
+/// V1 wire representation of an impure sync timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct MediaPmImpureTimestampWireV1 {
+    /// The `utc_epoch_seconds` field.
+    pub(super) utc_epoch_seconds: u64,
+}
+
+// ---------------------------------------------------------------------------
+// FromWire impls (V1 wire → runtime model)
+// ---------------------------------------------------------------------------
+
+impl From<MediaPmDocumentEnvelopeV1> for MediaPmDocument {
+    fn from(envelope: MediaPmDocumentEnvelopeV1) -> Self {
+        Self {
+            version: envelope.version,
+            media: envelope.media,
+            hierarchy: envelope.hierarchy,
+            runtime: envelope.runtime,
+            conductor: envelope.conductor.unwrap_or_default(),
+        }
+    }
+}
+
+impl From<MediaPmStateEnvelopeV1> for MediaPmState {
+    fn from(envelope: MediaPmStateEnvelopeV1) -> Self {
+        let mut state = MediaPmState::default();
+
+        state.media =
+            envelope.media_state.into_iter().map(|(key, wire)| (key, wire.into())).collect();
+
+        state.tools = envelope.tools.into_iter().map(|(key, wire)| (key, wire.into())).collect();
+
+        state.last_materialized_state_hash = envelope.last_materialized_state_hash;
+        state.managed_files = envelope.managed_files;
+        state.tool_registry =
+            envelope.tool_registry.into_iter().map(|(key, wire)| (key, wire.into())).collect();
+        state.active_tools =
+            envelope.active_tools.into_iter().map(|(key, wire)| (key, wire.into())).collect();
+
+        state
+    }
+}
+
+impl From<MediaPmStateWireV1> for ManagedWorkflowStepState {
+    fn from(wire: MediaPmStateWireV1) -> Self {
+        Self {
+            variant_hashes: wire.variant_hashes,
+            steps_completed: wire.steps_completed,
+            last_impure_sync_at: wire
+                .last_impure_sync_at
+                .map(|ts| MediaPmImpureTimestamp { utc_epoch_seconds: ts.utc_epoch_seconds }),
+        }
+    }
+}
+
+impl From<ToolRegistryStateWireV1> for ToolRequirement {
+    fn from(wire: ToolRegistryStateWireV1) -> Self {
+        Self {
+            version: wire.version.clone().map(|v| source_types::MediaMetadataValue::Literal(v)),
+            tag: wire.tag.clone(),
+            ..ToolRequirement::default()
+        }
+    }
+}
+
+impl From<ToolRegistryEntryWireV1> for ToolRegistryEntry {
+    fn from(wire: ToolRegistryEntryWireV1) -> Self {
+        Self {
+            version: wire.version,
+            tag: wire.tag,
+            fetch_hash: wire.fetch_hash,
+            deployed_at: wire.deployed_at,
+        }
+    }
+}
+
+impl From<ActiveToolInstanceWireV1> for ActiveToolInstance {
+    fn from(wire: ActiveToolInstanceWireV1) -> Self {
+        Self {
+            tool_id: wire.tool_id,
+            content_hash: wire.content_hash,
+            deployed_path: wire.deployed_path,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Migrate implementation
+// ---------------------------------------------------------------------------
+
+pub(super) fn mediapm_document_v1_iso() -> &'static str {
+    "mediapm_document_v1_iso"
+}
+
+impl Migrate for MediaPmDocument {
+    fn version() -> u32 {
+        1
+    }
+
+    fn decode(value: Value) -> Result<Self, crate::error::MediaPmError> {
+        let envelope: MediaPmDocumentEnvelopeV1 = serde_json::from_value(value).map_err(|err| {
+            crate::error::MediaPmError::Serialization(format!(
+                "failed to decode V1 document envelope: {err}"
+            ))
+        })?;
+
+        Ok(MediaPmDocument::from(envelope))
+    }
+
+    fn encode(&self) -> Result<Value, crate::error::MediaPmError> {
+        let envelope = MediaPmDocumentEnvelopeV1 {
+            version: 1,
+            media: self.media.clone(),
+            hierarchy: self.hierarchy.clone(),
+            runtime: self.runtime.clone(),
+            conductor: if self.conductor.is_empty() { None } else { Some(self.conductor.clone()) },
+        };
+
+        serde_json::to_value(envelope).map_err(|err| {
+            crate::error::MediaPmError::Serialization(format!(
+                "failed to encode V1 document envelope: {err}"
+            ))
+        })
+    }
+}
+
+impl Migrate for MediaPmState {
+    fn version() -> u32 {
+        1
+    }
+
+    fn decode(value: Value) -> Result<Self, crate::error::MediaPmError> {
+        let envelope: MediaPmStateEnvelopeV1 = serde_json::from_value(value).map_err(|err| {
+            crate::error::MediaPmError::Serialization(format!(
+                "failed to decode V1 state envelope: {err}"
+            ))
+        })?;
+
+        Ok(MediaPmState::from(envelope))
+    }
+
+    fn encode(&self) -> Result<Value, crate::error::MediaPmError> {
+        let media_state: BTreeMap<String, MediaPmStateWireV1> = self
+            .media
+            .iter()
+            .map(|(key, state)| {
+                (
+                    key.clone(),
+                    MediaPmStateWireV1 {
+                        variant_hashes: state.variant_hashes.clone(),
+                        steps_completed: state.steps_completed,
+                        last_impure_sync_at: state.last_impure_sync_at.as_ref().map(|ts| {
+                            MediaPmImpureTimestampWireV1 { utc_epoch_seconds: ts.utc_epoch_seconds }
+                        }),
+                    },
+                )
+            })
+            .collect();
+
+        let tools: BTreeMap<String, ToolRegistryStateWireV1> = self
+            .tools
+            .iter()
+            .map(|(key, tool_req)| {
+                (
+                    key.clone(),
+                    ToolRegistryStateWireV1 {
+                        version: tool_req.normalized_version().map(|s| s.to_string()),
+                        tag: tool_req.normalized_tag().map(|s| s.to_string()),
+                    },
+                )
+            })
+            .collect();
+
+        let tool_registry: BTreeMap<String, ToolRegistryEntryWireV1> = self
+            .tool_registry
+            .iter()
+            .map(|(key, entry)| {
+                (
+                    key.clone(),
+                    ToolRegistryEntryWireV1 {
+                        version: entry.version.clone(),
+                        tag: entry.tag.clone(),
+                        fetch_hash: entry.fetch_hash.clone(),
+                        deployed_at: entry.deployed_at,
+                    },
+                )
+            })
+            .collect();
+
+        let active_tools: BTreeMap<String, ActiveToolInstanceWireV1> = self
+            .active_tools
+            .iter()
+            .map(|(key, instance)| {
+                (
+                    key.clone(),
+                    ActiveToolInstanceWireV1 {
+                        tool_id: instance.tool_id.clone(),
+                        content_hash: instance.content_hash.clone(),
+                        deployed_path: instance.deployed_path.clone(),
+                    },
+                )
+            })
+            .collect();
+
+        let envelope = MediaPmStateEnvelopeV1 {
+            version: 1,
+            media_state,
+            tools,
+            last_materialized_state_hash: self.last_materialized_state_hash.clone(),
+            managed_files: self.managed_files.clone(),
+            tool_registry,
+            active_tools,
+        };
+
+        serde_json::to_value(envelope).map_err(|err| {
+            crate::error::MediaPmError::Serialization(format!(
+                "failed to encode V1 state envelope: {err}"
+            ))
+        })
+    }
 }

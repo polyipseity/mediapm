@@ -1,39 +1,40 @@
 //! Catalog entry for `rsgain` managed tool provisioning.
 
-use super::{PlatformValue, ToolCatalogEntry, ToolDownloadDescriptor};
-
-/// Marker list preferred for selecting a Windows `rsgain` ZIP asset.
-const RSGAIN_WINDOWS_MARKERS: &[&str] = &["windows", "win", "msvc"];
-
-/// Marker list preferred for selecting a macOS `rsgain` ZIP asset.
-const RSGAIN_MACOS_MARKERS: &[&str] = &["macos", "darwin", "apple"];
-
-/// Marker list preferred for selecting a Linux `rsgain` ZIP asset.
-const RSGAIN_LINUX_MARKERS: &[&str] = &["linux", "musl", "gnu"];
+use super::{ARCHIVE_ZIP, PlatformValue, ToolCatalogEntry};
 
 /// Declarative catalog record for `rsgain`.
-pub(super) const ENTRY: ToolCatalogEntry = ToolCatalogEntry {
-    name: "rsgain",
-    description: "rsgain ReplayGain loudness analyzer",
-    registry_track: "latest",
-    source_label: PlatformValue {
-        windows: "GitHub Releases",
-        macos: "GitHub Releases",
-        linux: "GitHub Releases",
-    },
-    source_identifier: PlatformValue {
-        windows: "github-releases-complexlogic-rsgain",
-        macos: "github-releases-complexlogic-rsgain",
-        linux: "github-releases-complexlogic-rsgain",
-    },
-    executable_name: PlatformValue { windows: "rsgain.exe", macos: "rsgain", linux: "rsgain" },
-    download: ToolDownloadDescriptor::GitHubLatestZipAsset {
-        repo: "complexlogic/rsgain",
-        markers: PlatformValue {
-            windows: RSGAIN_WINDOWS_MARKERS,
-            macos: RSGAIN_MACOS_MARKERS,
-            linux: RSGAIN_LINUX_MARKERS,
-        },
-    },
-    additional_download_sources: &[],
-};
+pub(super) fn entry() -> ToolCatalogEntry {
+    ToolCatalogEntry {
+        id: "rsgain",
+        description: "rsgain ReplayGain loudness analyzer",
+        homepage: "https://github.com/complexlogic/rsgain",
+        latest: "latest",
+        platforms: vec![
+            (
+                super::ToolOs::Windows,
+                vec![PlatformValue {
+                    url: "https://github.com/complexlogic/rsgain/releases/latest/download/rsgain-x86_64-pc-windows-msvc.zip",
+                    arch: "x86_64",
+                    checksum_sha256: None,
+                }],
+            ),
+            (
+                super::ToolOs::Macos,
+                vec![PlatformValue {
+                    url: "https://github.com/complexlogic/rsgain/releases/latest/download/rsgain-x86_64-apple-darwin.zip",
+                    arch: "x86_64",
+                    checksum_sha256: None,
+                }],
+            ),
+            (
+                super::ToolOs::Linux,
+                vec![PlatformValue {
+                    url: "https://github.com/complexlogic/rsgain/releases/latest/download/rsgain-x86_64-unknown-linux-gnu.zip",
+                    arch: "x86_64",
+                    checksum_sha256: None,
+                }],
+            ),
+        ],
+        archive_format: ARCHIVE_ZIP,
+    }
+}

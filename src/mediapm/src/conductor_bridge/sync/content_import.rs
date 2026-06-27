@@ -1,193 +1,169 @@
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::{Cursor, Write};
-use std::path::{Path, PathBuf};
+//! Content-map file import into CAS.
+//!
+//! This module handles importing tool payload artifacts (individual files or
+//! directory zips) from content-map sources into the CAS store.
 
-use mediapm_cas::{CasApi, FileSystemCas, Hash};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use bytes::Bytes;
+use mediapm_cas::{CasApi, Hash};
+use zip::write::SimpleFileOptions;
 
 use crate::error::MediaPmError;
-use crate::tools::downloader::ContentMapSource;
 
+/// Source of content-map entries for CAS import.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub(super) enum ContentMapSource {
+    /// A single file at the given path.
+    FilePath(std::path::PathBuf),
+    /// A directory to be zipped before importing.
+    DirectoryZip(std::path::PathBuf),
+}
+
+/// Cache key for deduplicating content-map source imports.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct ContentMapSourceCacheKey {
+    /// Source path string.
+    pub(super) source: String,
+    /// Last modified timestamp (seconds since epoch).
+    pub(super) mtime_secs: u64,
+}
+
+/// Imports tool content files from a content map into the CAS store.
+///
+/// Reads each file referenced by the content map, verifies its content hash
+/// matches the expected value, and stores it in the CAS. Returns a mapping
+/// of content-map keys to their verified CAS hashes.
 pub(super) async fn import_tool_content_files_into_cas(
-    cas: &FileSystemCas,
-    content_entries: &BTreeMap<String, ContentMapSource>,
+    cas: &impl CasApi,
+    content_map: &BTreeMap<String, String>,
+    content_dir: &Path,
 ) -> Result<BTreeMap<String, Hash>, MediaPmError> {
-    let mut map = BTreeMap::new();
-    let mut source_hash_cache = BTreeMap::<ContentMapSourceCacheKey, Hash>::new();
+    let mut result = BTreeMap::new();
 
-    for (relative_path, entry) in content_entries {
-        let hash = import_tool_content_source_into_cas(
-            cas,
-            relative_path.as_str(),
-            entry,
-            &mut source_hash_cache,
-        )
-        .await?;
-        map.insert(relative_path.clone(), hash);
-    }
-
-    Ok(map)
-}
-
-/// Cache key for one materialized content-map source import.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum ContentMapSourceCacheKey {
-    /// Raw file payload imported directly from one absolute path.
-    FilePath(PathBuf),
-    /// Directory payload imported as one deterministic uncompressed ZIP blob.
-    DirectoryZip(PathBuf),
-}
-
-/// Returns one stable source-cache key for content-map deduplication.
-fn content_map_source_cache_key(source: &ContentMapSource) -> ContentMapSourceCacheKey {
-    match source {
-        ContentMapSource::FilePath(path) => ContentMapSourceCacheKey::FilePath(path.clone()),
-        ContentMapSource::DirectoryZip { root_dir } => {
-            ContentMapSourceCacheKey::DirectoryZip(root_dir.clone())
-        }
-    }
-}
-
-/// Imports one content-map source into CAS with per-pass source-hash caching.
-///
-/// Blocking file I/O is offloaded to `spawn_blocking` so the async executor
-/// remains available for progress rendering and other tasks while large tool
-/// payloads (e.g. ffmpeg directory ZIPs) are read and serialized.
-pub(super) async fn import_tool_content_source_into_cas(
-    cas: &FileSystemCas,
-    relative_path: &str,
-    source: &ContentMapSource,
-    source_hash_cache: &mut BTreeMap<ContentMapSourceCacheKey, Hash>,
-) -> Result<Hash, MediaPmError> {
-    let cache_key = content_map_source_cache_key(source);
-    if let Some(hash) = source_hash_cache.get(&cache_key) {
-        return Ok(*hash);
-    }
-
-    let hash = match source {
-        ContentMapSource::FilePath(absolute_path) => {
-            let file =
-                tokio::fs::File::open(absolute_path).await.map_err(|source| MediaPmError::Io {
-                    operation: format!(
-                        "opening tool payload file '{}' for CAS import",
-                        absolute_path.display()
-                    ),
-                    path: absolute_path.clone(),
-                    source,
-                })?;
-            cas.put_stream(file).await.map_err(|source| {
-                MediaPmError::Workflow(format!(
-                    "importing tool payload entry '{relative_path}' into CAS failed: {source}",
-                ))
-            })?
-        }
-        ContentMapSource::DirectoryZip { root_dir } => {
-            let dir = root_dir.clone();
-            let bytes = tokio::task::spawn_blocking(move || {
-                build_uncompressed_zip_bytes_from_directory(&dir)
-            })
-            .await
-            .map_err(|e| {
-                MediaPmError::Workflow(format!("tool payload directory ZIP task panicked: {e}"))
-            })??;
-            cas.put(bytes.into()).await.map_err(|source| {
-                MediaPmError::Workflow(format!(
-                    "importing tool payload entry '{relative_path}' into CAS failed: {source}",
-                ))
-            })?
-        }
-    };
-    source_hash_cache.insert(cache_key, hash);
-
-    Ok(hash)
-}
-
-/// Serializes one directory tree as an uncompressed ZIP payload.
-///
-/// This encoding keeps conductor `content_map` compact for archive-style tools:
-/// one folder key can carry a complete tool payload without one hash per file.
-fn build_uncompressed_zip_bytes_from_directory(root_dir: &Path) -> Result<Vec<u8>, MediaPmError> {
-    if !root_dir.exists() || !root_dir.is_dir() {
-        return Err(MediaPmError::Workflow(format!(
-            "cannot build ZIP payload: '{}' is not a directory",
-            root_dir.display()
-        )));
-    }
-
-    let mut files = Vec::<PathBuf>::new();
-    let mut stack = vec![root_dir.to_path_buf()];
-    while let Some(next) = stack.pop() {
-        let entries = fs::read_dir(&next).map_err(|source| MediaPmError::Io {
-            operation: "enumerating tool payload directory for ZIP serialization".to_string(),
-            path: next.clone(),
+    for (key, expected_hash_str) in content_map {
+        let file_path = content_dir.join(key);
+        let bytes = tokio::fs::read(&file_path).await.map_err(|source| MediaPmError::Io {
+            operation: format!("reading content file for key '{key}'"),
+            path: file_path.clone(),
             source,
         })?;
+        let actual_hash = cas
+            .put(Bytes::from(bytes))
+            .await
+            .map_err(|e| MediaPmError::Workflow(format!("CAS put failed for key '{key}': {e}")))?;
 
-        for entry in entries {
-            let entry = entry.map_err(|source| MediaPmError::Io {
-                operation: "reading tool payload directory entry for ZIP serialization".to_string(),
-                path: next.clone(),
-                source,
-            })?;
-            let path = entry.path();
-            let ty = entry.file_type().map_err(|source| MediaPmError::Io {
-                operation: "reading tool payload entry type for ZIP serialization".to_string(),
+        let expected_hash = expected_hash_str.parse::<Hash>().map_err(|_| {
+            MediaPmError::Workflow(format!(
+                "invalid hash string for key '{key}': '{expected_hash_str}'"
+            ))
+        })?;
+
+        if actual_hash != expected_hash {
+            return Err(MediaPmError::Workflow(format!(
+                "content hash mismatch for key '{key}': expected {expected_hash}, got {actual_hash}"
+            )));
+        }
+
+        result.insert(key.clone(), actual_hash);
+    }
+
+    Ok(result)
+}
+
+/// Imports one content-map source entry into the CAS store.
+#[allow(dead_code)]
+pub(super) async fn import_tool_content_source_into_cas(
+    cas: &impl CasApi,
+    source: &ContentMapSource,
+) -> Result<Hash, MediaPmError> {
+    match source {
+        ContentMapSource::FilePath(path) => {
+            let bytes = tokio::fs::read(path).await.map_err(|source| MediaPmError::Io {
+                operation: "reading content source file".to_string(),
                 path: path.clone(),
                 source,
             })?;
-
-            if ty.is_dir() {
-                stack.push(path);
-            } else if ty.is_file() {
-                files.push(path);
-            }
+            let hash = cas.put(Bytes::from(bytes)).await.map_err(|e| {
+                MediaPmError::Workflow(format!("CAS put failed for content source: {e}"))
+            })?;
+            Ok(hash)
+        }
+        ContentMapSource::DirectoryZip(dir) => {
+            let zip_bytes = pack_directory_to_uncompressed_zip_bytes(dir)?;
+            let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| {
+                MediaPmError::Workflow(format!("CAS put failed for directory zip: {e}"))
+            })?;
+            Ok(hash)
         }
     }
+}
 
-    files.sort();
+/// Packs one directory tree into uncompressed ZIP bytes.
+#[allow(dead_code)]
+fn pack_directory_to_uncompressed_zip_bytes(dir: &Path) -> Result<Vec<u8>, MediaPmError> {
+    use zip::CompressionMethod;
 
-    let mut buffer = Cursor::new(Vec::new());
-    let mut zip = zip::ZipWriter::new(&mut buffer);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored)
-        .unix_permissions(0o644);
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
 
-    for path in files {
-        let relative = path.strip_prefix(root_dir).map_err(|_| {
-            MediaPmError::Workflow(format!(
-                "failed deriving ZIP entry path from '{}' under '{}'",
-                path.display(),
-                root_dir.display()
-            ))
-        })?;
-        let entry_name = relative.to_string_lossy().replace('\\', "/");
+        pack_directory_entries(&mut writer, dir, dir, &options)?;
 
-        zip.start_file(entry_name, options).map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "creating ZIP entry for '{}' failed: {source}",
-                path.display()
-            ))
-        })?;
+        writer
+            .finish()
+            .map_err(|e| MediaPmError::Workflow(format!("failed to finalize zip archive: {e}")))?;
+    }
+    Ok(buf)
+}
 
-        let bytes = fs::read(&path).map_err(|source| MediaPmError::Io {
-            operation: "reading tool payload file for ZIP serialization".to_string(),
-            path: path.clone(),
+/// Recursively adds directory entries to the zip writer.
+#[allow(dead_code)]
+fn pack_directory_entries(
+    writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    root: &Path,
+    dir: &Path,
+    options: &SimpleFileOptions,
+) -> Result<(), MediaPmError> {
+    use std::io::{Read, Write};
+
+    for entry in std::fs::read_dir(dir).map_err(|source| MediaPmError::Io {
+        operation: format!("reading directory '{}'", dir.display()),
+        path: dir.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| MediaPmError::Io {
+            operation: format!("reading directory entry in '{}'", dir.display()),
+            path: dir.to_path_buf(),
             source,
         })?;
-        zip.write_all(&bytes).map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "writing ZIP entry bytes for '{}' failed: {source}",
-                path.display()
-            ))
-        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            pack_directory_entries(writer, root, &path, options)?;
+        } else {
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+            let mut file = std::fs::File::open(&path).map_err(|source| MediaPmError::Io {
+                operation: format!("opening file '{}' for zip", path.display()),
+                path: path.clone(),
+                source,
+            })?;
+            writer.start_file(relative.clone(), *options).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to start zip entry '{relative}': {e}"))
+            })?;
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents).map_err(|source| MediaPmError::Io {
+                operation: format!("reading file '{}' for zip", path.display()),
+                path: path.clone(),
+                source,
+            })?;
+            writer.write_all(&contents).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to write zip entry '{relative}': {e}"))
+            })?;
+        }
     }
-
-    zip.finish().map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "finalizing uncompressed ZIP payload for '{}' failed: {source}",
-            root_dir.display()
-        ))
-    })?;
-
-    Ok(buffer.into_inner())
+    Ok(())
 }

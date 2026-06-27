@@ -1,264 +1,126 @@
-//! Nickel document evaluation and Rust value rendering helpers.
+//! Nickel config evaluation and rendering utilities.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-/// Monotonically increasing counter used to generate unique workspace names.
-static NICKEL_WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-use nickel_lang_core::error::Error as NickelError;
 use nickel_lang_core::eval::cache::CacheImpl;
-use nickel_lang_core::program::{BuilderError, Program, ProgramBuilder};
-use serde::Deserialize;
+use nickel_lang_core::program::ProgramBuilder;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::error::MediaPmError;
 
-/// Returns a reference to the shared temporary Nickel workspace directory,
-/// creating it on first access.
-fn nickel_workspace_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("mediapm-nickel-{}", std::process::id()));
-        let _ = fs::create_dir_all(&dir);
-        dir
-    })
+/// Evaluates one Nickel source file at `path` to its exported JSON value.
+pub fn evaluate_nickel_source_to_json(path: &Path) -> Result<Value, MediaPmError> {
+    let mut program = ProgramBuilder::new()
+        .add_path(path)
+        .build::<CacheImpl>()
+        .map_err(|err| MediaPmError::Workflow(format!("failed to create Nickel program: {err}")))?;
+
+    let nickel_value = program
+        .eval_full_for_export()
+        .map_err(|err| MediaPmError::Workflow(format!("failed to evaluate '{path:?}': {err:?}")))?;
+
+    serde_json::to_value(&nickel_value)
+        .map_err(|err| MediaPmError::Serialization(format!("failed to render Nickel value: {err}")))
 }
 
-/// Evaluates one Nickel source string into exported JSON value.
-pub(super) fn evaluate_nickel_source_to_json(
-    path: &Path,
-    source: &str,
-) -> Result<Value, MediaPmError> {
-    let workspace_dir = nickel_workspace_dir();
-    let seq = NICKEL_WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let source_path = workspace_dir.join(format!("mediapm-{seq}.ncl"));
-
-    fs::write(&source_path, source).map_err(|source_err| MediaPmError::Io {
-        operation: "writing temporary mediapm.ncl source".to_string(),
-        path: source_path.clone(),
-        source: source_err,
-    })?;
-
-    let mut program: Program<CacheImpl> = ProgramBuilder::new()
-        .add_path(source_path.as_os_str())
-        .build()
-        .map_err(|err| match err {
-            BuilderError::Io { path: _, error } => MediaPmError::Io {
-                operation: "constructing Nickel program".to_string(),
-                path: path.to_path_buf(),
-                source: error,
-            },
-            BuilderError::NoInputs => MediaPmError::Workflow(
-                "constructing Nickel program: no inputs provided".to_string(),
-            ),
-        })?;
-
-    let exported = program.eval_full_for_export().map_err(|err| {
-        MediaPmError::Workflow(format!(
-            "evaluating mediapm.ncl: {}",
-            render_nickel_error(&mut program, err)
-        ))
-    })?;
-
-    // Clean up the source file after evaluation completes.
-    let _ = fs::remove_file(&source_path);
-
-    Value::deserialize(exported).map_err(|err| {
-        MediaPmError::Serialization(format!("deserializing exported Nickel value: {err}"))
-    })
-}
-
-/// Renders one Nickel interpreter error as user-facing text.
-fn render_nickel_error(program: &mut Program<CacheImpl>, err: NickelError) -> String {
-    nickel_lang_core::error::report::report_as_str(
-        &mut program.files(),
-        err,
-        nickel_lang_core::error::report::ColorOpt::Never,
-    )
-}
-
-/// Renders a field name in Nickel record syntax.
-fn render_field_name(name: &str) -> String {
-    if is_bare_identifier(name) {
-        name.to_string()
-    } else {
-        serde_json::to_string(name).unwrap_or_else(|_| format!("\"{name}\""))
-    }
-}
-
-/// Returns true when one record key can be emitted as a bare Nickel identifier.
-fn is_bare_identifier(input: &str) -> bool {
-    if is_nickel_reserved_identifier(input) {
-        return false;
-    }
-
-    let mut chars = input.chars().peekable();
-
-    while matches!(chars.peek(), Some('_')) {
-        let _ = chars.next();
-    }
-
-    let Some(head) = chars.next() else {
-        return false;
-    };
-
-    if !head.is_ascii_alphabetic() {
-        return false;
-    }
-
-    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '\''))
-}
-
-/// Returns true when one identifier token is reserved by Nickel syntax.
+/// Parses one floating-point value into `u64` when it is a non-negative
+/// integer within representable range.
 #[must_use]
-fn is_nickel_reserved_identifier(input: &str) -> bool {
-    matches!(
-        input,
-        "if" | "then"
-            | "else"
-            | "let"
-            | "in"
-            | "match"
-            | "with"
-            | "forall"
-            | "fun"
-            | "rec"
-            | "import"
-            | "as"
-            | "null"
-            | "true"
-            | "false"
-    )
+pub fn parse_non_negative_integral_u64(value: f64) -> Option<u64> {
+    if value.is_sign_negative() || value.is_nan() || value.is_infinite() {
+        return None;
+    }
+    if value.fract() != 0.0 {
+        return None;
+    }
+    let unsigned = value as u64;
+    if unsigned as f64 != value {
+        return None;
+    }
+    Some(unsigned)
 }
 
-/// Renders JSON as deterministic Nickel source with sorted object keys.
-/// Renders `text` as a Nickel multiline string literal using 2-percent delimiters.
+/// Parses one floating-point value into `u32` when it is a non-negative
+/// integer within representable range.
+#[must_use]
+pub fn parse_non_negative_integral_u32(value: f64) -> Option<u32> {
+    let raw_u64 = parse_non_negative_integral_u64(value)?;
+    u32::try_from(raw_u64).ok()
+}
+
+/// Normalizes a Nickel-version-field document-level `version` marker.
 ///
-/// Uses `m%%"..."%%` so content that contains the 1-percent closing sequence
-/// `"%` is still safe. Literal `%{` interpolation markers are escaped to `%%{`.
-fn render_nickel_multiline_string(text: &str) -> String {
-    let escaped = text.replace("%{", "%%{");
-    format!("m%%\"\n{escaped}\n\"%%")
-}
-
-/// Renders JSON as deterministic Nickel source with sorted object keys.
-pub(super) fn render_nickel_value(value: &Value, indent: usize) -> String {
-    let pad = " ".repeat(indent);
-    let next_pad = " ".repeat(indent + 2);
-
+/// Accepts both integer and floating-point JSON encoded version markers.
+#[must_use]
+pub fn normalize_version_field_to_u64(value: &serde_json::Value) -> Option<u64> {
     match value {
-        Value::Null => "null".to_string(),
-        Value::Bool(flag) => flag.to_string(),
-        Value::Number(number) => render_nickel_number(number),
-        Value::String(text) => serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string()),
-        Value::Array(items) => {
-            if items.is_empty() {
-                "[]".to_string()
-            } else {
-                let body = items
-                    .iter()
-                    .map(|item| format!("{next_pad}{},", render_nickel_value(item, indent + 2)))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("[\n{body}\n{pad}]")
-            }
+        serde_json::Value::Number(n) => {
+            n.as_u64().or_else(|| n.as_f64().and_then(|f| parse_non_negative_integral_u64(f)))
         }
-        Value::Object(entries) => {
-            if entries.is_empty() {
-                "{}".to_string()
-            } else {
-                let mut ordered = entries.iter().collect::<Vec<_>>();
-                ordered.sort_by_key(|(key, _)| *key);
-                let body = ordered
-                    .into_iter()
-                    .map(|(key, item)| {
-                        let rendered_value = match (key.as_str(), item) {
-                            ("description", Value::String(text)) => {
-                                render_nickel_multiline_string(text)
-                            }
-                            _ => render_nickel_value(item, indent + 2),
-                        };
-                        format!("{next_pad}{} = {},", render_field_name(key), rendered_value)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("{{\n{body}\n{pad}}}")
-            }
-        }
+        _ => None,
     }
 }
 
-/// Renders one JSON number value into deterministic Nickel numeric syntax.
-///
-/// Integral values are emitted without trailing decimal points (`0` instead of
-/// `0.0`) so generated Nickel remains stable for integer-typed fields such as
-/// output-variant `idx`.
-fn render_nickel_number(number: &serde_json::Number) -> String {
-    if let Some(value) = number.as_i64() {
-        return value.to_string();
-    }
-
-    if let Some(value) = number.as_u64() {
-        return value.to_string();
-    }
-
-    if let Some(value) = number.as_f64()
-        && value.is_finite()
-        && value.fract() == 0.0
-    {
-        return format!("{value:.0}");
-    }
-
-    number.to_string()
+/// Loads and deserializes a JSON document from a Nickel source file.
+fn load_json_document<T: DeserializeOwned>(path: &Path, label: &str) -> Result<T, MediaPmError> {
+    let value = evaluate_nickel_source_to_json(path)?;
+    serde_json::from_value(value)
+        .map_err(|err| MediaPmError::Serialization(format!("failed to deserialize {label}: {err}")))
 }
 
-/// Normalizes `version` field numbers exported by Nickel into integer JSON numbers.
-pub(super) fn normalize_version_field_to_u64(
-    value: &mut Value,
-    document_name: &str,
-) -> Result<(), MediaPmError> {
-    let Some(object) = value.as_object_mut() else {
-        return Err(MediaPmError::Workflow(format!(
-            "{document_name} must evaluate to a top-level record"
-        )));
-    };
-
-    let Some(version_value) = object.get("version").cloned() else {
-        return Ok(());
-    };
-
-    let normalized = if let Some(raw) = version_value.as_u64() {
-        raw
-    } else if let Some(raw) = version_value.as_f64() {
-        let Some(normalized) = parse_non_negative_integral_u64(raw) else {
-            return Err(MediaPmError::Workflow(format!(
-                "{document_name} version must be a non-negative integer"
-            )));
-        };
-        normalized
-    } else {
-        return Err(MediaPmError::Workflow(format!("{document_name} version must be numeric")));
-    };
-
-    object.insert("version".to_string(), Value::from(normalized));
+/// Serializes a document and writes it as pretty-printed JSON.
+fn save_json_document<T: Serialize>(path: &Path, doc: &T, label: &str) -> Result<(), MediaPmError> {
+    let value = serde_json::to_value(doc).map_err(|err| {
+        MediaPmError::Serialization(format!("failed to serialize {label}: {err}"))
+    })?;
+    let json = serde_json::to_string_pretty(&value)
+        .map_err(|err| MediaPmError::Serialization(format!("failed to format JSON: {err}")))?;
+    std::fs::write(path, json).map_err(|err| MediaPmError::Io {
+        operation: format!("write {label}"),
+        path: path.to_path_buf(),
+        source: err,
+    })?;
     Ok(())
 }
 
-/// Parses one non-negative integral `f64` into `u64` when lossless.
-#[must_use]
-pub(super) fn parse_non_negative_integral_u64(value: f64) -> Option<u64> {
-    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 {
-        return None;
-    }
-
-    format!("{value:.0}").parse::<u64>().ok()
+/// Loads and parses a `mediapm.ncl` file.
+pub fn load_mediapm_document(path: &Path) -> Result<crate::config::MediaPmDocument, MediaPmError> {
+    load_json_document(path, "mediapm document")
 }
 
-/// Parses one non-negative integral `f64` into `u32` when lossless.
-#[must_use]
-pub(super) fn parse_non_negative_integral_u32(value: f64) -> Option<u32> {
-    parse_non_negative_integral_u64(value).and_then(|normalized| u32::try_from(normalized).ok())
+/// Serializes and writes a `mediapm.ncl` document.
+pub fn save_mediapm_document(
+    path: &Path,
+    doc: &crate::config::MediaPmDocument,
+) -> Result<(), MediaPmError> {
+    save_json_document(path, doc, "mediapm document")
+}
+
+/// Loads and parses a `state.ncl` file.
+pub fn load_mediapm_state_document(
+    path: &Path,
+) -> Result<crate::config::MediaPmState, MediaPmError> {
+    load_json_document(path, "mediapm state")
+}
+
+/// Serializes and writes a `state.ncl` document.
+pub fn save_mediapm_state_document(
+    path: &Path,
+    state: &crate::config::MediaPmState,
+) -> Result<(), MediaPmError> {
+    save_json_document(path, state, "mediapm state")
+}
+
+/// Merges runtime state into a [`MediaPmDocument`].
+///
+/// Currently a no-op passthrough since the state document contains
+/// `ManagedWorkflowStepState` entries that are structurally incompatible with
+/// the document's `MediaSourceSpec` entries.
+pub fn merge_mediapm_document_with_state(
+    doc: &crate::config::MediaPmDocument,
+    _state: &crate::config::MediaPmState,
+) -> Result<crate::config::MediaPmDocument, MediaPmError> {
+    Ok(doc.clone())
 }

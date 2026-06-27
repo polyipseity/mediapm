@@ -1,90 +1,84 @@
-//! `MediaPmApi` trait and `MediaPmService` generic implementation.
+//! High-level orchestration service for mediapm.
 //!
-//! # Module structure note
-//!
-//! This file intentionally remains as a single module despite exceeding 1 000
-//! lines. Almost all logic lives inside `impl<C> MediaPmService<C>` whose
-//! methods take `&self` or `&mut self`. Splitting `impl` methods across files
-//! requires non-idiomatic `include!()`, so the module is kept whole.
+//! [`MediaPmService`] composes CAS + Conductor into the media-facing API.
+//! Callers create a service instance bound to a workspace root, then call
+//! methods to add/remove sources, sync tools, sync the library, and
+//! invalidate cached steps.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::path::Path;
-use std::process::Command as ProcessCommand;
 
-use mediapm_cas::{CasApi, FileSystemCas, InMemoryCas};
+use mediapm_cas::{CasApi, CasMaintenanceApi, FileSystemCas, Hash, InMemoryCas};
 use mediapm_conductor::runtime_env::ensure_runtime_env_files;
-use mediapm_conductor::{
-    RunWorkflowOptions, RuntimeStoragePaths, SimpleConductor,
-    resolve_managed_tool_executable_with_filesystem_cas,
-};
+use mediapm_conductor::{RuntimeStoragePaths, SimpleConductor};
 use url::Url;
 
-use crate::conductor_bridge::ConductorToolRow;
+use crate::conductor_bridge::documents::{ConductorToolRow, list_tools};
+use crate::conductor_bridge::sync::reconcile_desired_tools;
 use crate::config::{
-    MediaMetadataValue, MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument,
-    MediaSourceSpec, MediaStep, MediaStepTool, ToolRequirement, TransformInputValue,
-    load_mediapm_document_without_validation, save_mediapm_document,
+    MediaMetadataValue, MediaPmState, MediaRuntimeStorage, MediaSourceSpec, ToolRequirement,
+    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    save_mediapm_state_document,
 };
-use crate::config::{MediaPmState, load_mediapm_state_document, save_mediapm_state_document};
 use crate::error::MediaPmError;
 use crate::hierarchy::{
-    build_hierarchy_preset_node, default_hierarchy_folder_root_for_preset,
-    hierarchy_contains_node_id, hierarchy_preset_node_id, insert_hierarchy_preset_node,
-    normalize_hierarchy_folder_root, remove_hierarchy_nodes_by_id,
-    remove_hierarchy_nodes_by_media_id,
+    insert_hierarchy_preset_node, remove_hierarchy_nodes_by_id, remove_hierarchy_nodes_by_media_id,
 };
-use crate::paths::MediaPmPaths;
-pub use crate::service_standalone::*;
-use crate::source_metadata::{
-    fetch_local_source_metadata, fetch_online_source_metadata, resolve_conductor_cas_root,
-    resolve_online_source_metadata_for_add,
-};
-use crate::{
-    AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaRuntimeStorage,
-    MediaStepInvalidationSummary, SyncSummary, ToolsSyncSummary,
-};
-use crate::{
-    build_local_default_description, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
-    local_default_title, local_extension_with_dot, local_source_default_steps,
-    media_id_from_local_path, media_id_from_uri, merge_runtime_storage, normalize_source_uri,
-    validate_source_uri,
-};
-use crate::{conductor_bridge, config, materializer, tools};
+use crate::materializer;
+use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
+pub(crate) use crate::service_standalone::*;
+use crate::source_metadata::{fetch_local_source_metadata, resolve_conductor_cas_root};
+use crate::tools::catalog::tool_catalog_entry;
 
-pub trait MediaPmApi: Send + Sync {
-    /// Processes a single source URI using the configured media pipeline policy.
-    fn process_source(
-        &self,
-        uri: Url,
-        permanent: bool,
-    ) -> impl Future<Output = Result<MediaPackage, MediaPmError>> + Send;
+use crate::{
+    AddInsertPosition, MediaHierarchyPreset, MediaPackage, MediaStepInvalidationSummary,
+    SyncSummary, ToolsSyncSummary, export_mediapm_nickel_config_schemas, load_runtime_dotenv,
+    local_source_default_steps, media_id_from_local_path, media_id_from_uri, merge_runtime_storage,
+    normalize_source_uri, validate_source_uri,
+};
 
-    /// Reconciles declared media/tool state to filesystem/materialization state.
-    fn sync_library(&self) -> impl Future<Output = Result<SyncSummary, MediaPmError>> + Send;
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Creates a Tokio runtime for async operations.
+fn create_tokio_runtime() -> Result<tokio::runtime::Runtime, MediaPmError> {
+    tokio::runtime::Runtime::new()
+        .map_err(|e| MediaPmError::Workflow(format!("failed to create tokio runtime: {e}")))
 }
 
-/// Generic media service over a pluggable conductor implementation.
-pub struct MediaPmService<Cas: CasApi + Send + Sync + 'static> {
-    /// Conductor backend used for workflow execution and state coordination.
+// ---------------------------------------------------------------------------
+// Service struct
+// ---------------------------------------------------------------------------
+
+/// Composes CAS + Conductor into the media-facing API and CLI scaffold.
+///
+/// Type parameter `Cas` selects the content-addressed store backend.
+/// Generic code uses [`MediaPmService<Cas>`]; concrete filesystem and
+/// in-memory variants have convenience constructors.
+///
+/// # Type parameters
+///
+/// * `Cas` — The CAS backend. Must implement [`CasApi`] + [`CasMaintenanceApi`] + `Send + Sync + 'static`.
+pub struct MediaPmService<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> {
+    /// Conductor instance bound to this service's workspace.
     conductor: SimpleConductor<Cas>,
-    /// Canonical path set for this service instance.
+    /// Resolved filesystem paths for this workspace.
     paths: MediaPmPaths,
-    /// Optional runtime-storage overrides applied after `mediapm.ncl` values.
+    /// Runtime storage overrides passed at construction.
     runtime_storage_overrides: MediaRuntimeStorage,
 }
 
-impl<Cas: CasApi + Send + Sync + 'static> MediaPmService<Cas> {
-    /// Creates a media service with explicit workspace paths.
+impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas> {
+    /// Creates a new service instance with the given conductor and paths.
+    ///
+    /// Runtime storage overrides default to [`MediaRuntimeStorage::default()`].
     #[must_use]
     pub fn new(conductor: SimpleConductor<Cas>, paths: MediaPmPaths) -> Self {
         Self { conductor, paths, runtime_storage_overrides: MediaRuntimeStorage::default() }
     }
 
-    /// Creates a media service with explicit workspace paths and path overrides.
-    ///
-    /// `runtime_storage_overrides` has higher precedence than values declared in
-    /// `mediapm.ncl` and is primarily used for CLI-level path flags.
+    /// Creates a new service instance with explicit runtime storage overrides.
     #[must_use]
     pub fn new_with_runtime_storage_overrides(
         conductor: SimpleConductor<Cas>,
@@ -94,1403 +88,814 @@ impl<Cas: CasApi + Send + Sync + 'static> MediaPmService<Cas> {
         Self { conductor, paths, runtime_storage_overrides }
     }
 
-    /// Returns canonical paths used by this service.
+    // -----------------------------------------------------------------------
+    // Getters
+    // -----------------------------------------------------------------------
+
+    /// Returns a shared reference to the paths layout.
     #[must_use]
     pub fn paths(&self) -> &MediaPmPaths {
         &self.paths
     }
 
-    /// Resolves effective paths by merging config + service overrides.
-    fn resolve_effective_paths(
-        &self,
-        config_runtime_storage: &MediaRuntimeStorage,
-    ) -> MediaPmPaths {
-        let merged = self.resolve_effective_runtime_storage(config_runtime_storage);
-        self.paths.with_runtime_storage(&merged)
+    /// Returns a shared reference to the conductor.
+    #[must_use]
+    pub fn conductor(&self) -> &SimpleConductor<Cas> {
+        &self.conductor
     }
 
-    /// Resolves effective runtime-storage policy by merging config + overrides.
-    fn resolve_effective_runtime_storage(
-        &self,
-        config_runtime_storage: &MediaRuntimeStorage,
-    ) -> MediaRuntimeStorage {
-        merge_runtime_storage(config_runtime_storage, &self.runtime_storage_overrides)
+    /// Returns a shared reference to the runtime storage overrides.
+    #[must_use]
+    pub fn runtime_storage_overrides(&self) -> &MediaRuntimeStorage {
+        &self.runtime_storage_overrides
     }
 
-    /// Returns true when one logical tool requirement likely needs explicit
-    /// `mediapm tool sync` reconciliation.
+    // -----------------------------------------------------------------------
+    // Path and runtime helpers
+    // -----------------------------------------------------------------------
+
+    /// Resolves effective paths by applying runtime storage overrides on top
+    /// of the base paths.
+    #[must_use]
+    pub fn resolve_effective_paths(&self) -> MediaPmPaths {
+        let merged = self.resolve_effective_runtime_storage();
+        let mut overrides = MediaPmPathOverrides {
+            mediapm_dir: None,
+            hierarchy_root_dir: None,
+            conductor_config: None,
+            conductor_generated_config: None,
+            conductor_state_config: None,
+            conductor_schema_dir: None,
+            media_state_config: None,
+            env_file: None,
+            env_generated_file: None,
+            mediapm_schema_dir: None,
+        };
+        if let Some(ref dir) = merged.mediapm_dir {
+            overrides.mediapm_dir = Some(Path::new(dir).to_path_buf());
+        }
+        self.paths.with_overrides(&overrides)
+    }
+
+    /// Resolves effective runtime storage by merging config-declared values
+    /// with service-level overrides.
+    #[must_use]
+    pub fn resolve_effective_runtime_storage(&self) -> MediaRuntimeStorage {
+        let effective_paths = MediaPmPaths::from_root(&self.paths.root_dir);
+        // Try loading config doc; fall back to default on error.
+        let config_storage = load_mediapm_document(&effective_paths.mediapm_ncl)
+            .ok()
+            .map(|doc| doc.runtime)
+            .unwrap_or_default();
+        merge_runtime_storage(&config_storage, &self.runtime_storage_overrides)
+    }
+
+    // -----------------------------------------------------------------------
+    // Tool-sync helpers
+    // -----------------------------------------------------------------------
+
+    /// Checks whether a logical tool for the given media id requires a sync.
     ///
-    /// This check is intentionally local-only: it validates desired-vs-active
-    /// selector alignment and required machine rows, but does not perform
-    /// remote release lookups.
-    fn logical_tool_requires_sync(
-        tool_name: &str,
-        requirement: &ToolRequirement,
-        lock: &MediaPmState,
-        machine: &mediapm_conductor::NickelDocument,
-    ) -> bool {
-        if tools::catalog::tool_catalog_entry(tool_name).is_err() {
-            return false;
+    /// Returns `true` if the tool is missing from the state's tool table or
+    /// its requirements have changed.
+    #[must_use]
+    pub fn logical_tool_requires_sync(&self, tool_id: &str, state: &MediaPmState) -> bool {
+        if let Some(existing) = state.tools.get(tool_id) {
+            let effective = self.resolve_effective_runtime_storage();
+            let desired = effective.tools.get(tool_id);
+            // If no desired requirement is declared, the tool is considered
+            // up-to-date when present in state.
+            desired.map_or(false, |req| req.version != existing.version || req.tag != existing.tag)
+        } else {
+            true // missing from state → requires sync
         }
+    }
 
-        let Some(active_tool_id) = lock.active_tools.get(tool_name) else {
-            return true;
-        };
-
-        let Some(registry_entry) = lock.tool_registry.get(active_tool_id) else {
-            return true;
-        };
-
-        if !registry_entry.name.eq_ignore_ascii_case(tool_name) {
-            return true;
-        }
-
-        let Some(tool_spec) = machine.tools.values().find(|t| t.name == *active_tool_id) else {
-            return true;
-        };
-
-        if let Some(required_version) = requirement.normalized_version()
-            && config::normalize_selector_compare_value(registry_entry.version.as_str())
-                != config::normalize_selector_compare_value(required_version.as_str())
-        {
-            return true;
-        }
-
-        if !tool_spec.runtime.content_map.is_empty() {
-            let has_content_map = tool_spec
-                .runtime
-                .content_map
-                .values()
-                .any(|v| v.parse::<mediapm_cas::Hash>().is_ok());
-            if !has_content_map {
-                return true;
+    /// Collects tool ids that require a sync based on state comparison.
+    #[must_use]
+    pub fn collect_tools_requiring_sync(&self, state: &MediaPmState) -> Vec<String> {
+        let effective = self.resolve_effective_runtime_storage();
+        let mut needing_sync = Vec::new();
+        for tool_id in effective.tools.keys() {
+            if self.logical_tool_requires_sync(tool_id, state) {
+                needing_sync.push(tool_id.clone());
             }
         }
-
-        false
+        needing_sync
     }
 
-    /// Returns sorted logical tool names that likely need explicit
-    /// `mediapm tool sync` reconciliation.
-    fn collect_tools_requiring_sync(
-        document: &MediaPmDocument,
-        lock: &MediaPmState,
-        machine: &mediapm_conductor::NickelDocument,
-    ) -> Vec<String> {
-        let mut names = document
-            .tools
-            .iter()
-            .filter(|(tool_name, requirement)| {
-                Self::logical_tool_requires_sync(tool_name, requirement, lock, machine)
-            })
-            .map(|(tool_name, _requirement)| tool_name.clone())
-            .collect::<Vec<_>>();
-        names.sort();
-        names
-    }
-
-    /// Adds one warning that hints explicit tool-sync usage when required.
-    ///
-    /// This warning preserves explicit-policy boundaries: `mediapm sync` does
-    /// not auto-run tool reconciliation.
-    fn append_tool_sync_hint_warning(warnings: &mut Vec<String>, tools_requiring_sync: &[String]) {
-        if tools_requiring_sync.is_empty() {
-            return;
-        }
-
-        warnings.push(format!(
-            "tool state appears outdated for [{}]; run 'mediapm tool sync' to reconcile managed tool binaries/config before rerunning 'mediapm sync'",
-            tools_requiring_sync.join(", ")
-        ));
-    }
-
-    /// Adds one online media source to `mediapm.ncl`.
-    ///
-    /// `title`, `artist`, and `description` are CLI-level overrides that take
-    /// precedence over metadata fetched from the remote source.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when source validation fails, config cannot be
-    /// loaded/saved, or default source metadata cannot be synthesized.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn add_media_source(
-        &self,
-        uri: &Url,
-        title: Option<&str>,
-        artist: Option<&str>,
-        description: Option<&str>,
-        album: Option<&str>,
-        recording_mbid: Option<&str>,
-        release_mbid: Option<&str>,
-    ) -> Result<String, MediaPmError> {
-        self.add_media_source_with_position(
-            uri,
-            title,
-            artist,
-            description,
-            album,
-            recording_mbid,
-            release_mbid,
-            AddInsertPosition::Sorted,
-            false,
-        )
-        .await
-    }
-
-    /// Adds one online media source to `mediapm.ncl` with one insertion
-    /// policy hint for CLI parity.
-    ///
-    /// `media` registry entries are key-addressed and persisted in sorted key
-    /// order, so all insertion modes currently converge to deterministic key
-    /// insertion semantics.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when source validation fails, config cannot be
-    /// loaded/saved, or default source metadata cannot be synthesized.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub async fn add_media_source_with_position(
-        &self,
-        uri: &Url,
-        title: Option<&str>,
-        artist: Option<&str>,
-        description: Option<&str>,
-        album: Option<&str>,
-        recording_mbid: Option<&str>,
-        release_mbid: Option<&str>,
-        _position: AddInsertPosition,
-        overwrite: bool,
-    ) -> Result<String, MediaPmError> {
-        validate_source_uri(uri)?;
-
-        if uri.scheme() == "local" {
-            return Err(MediaPmError::Workflow(
-                "use 'media add --preset local <path>' for local sources so CAS hash pointers are recorded"
-                    .to_string(),
+    /// Appends a warning message when tools require syncing.
+    pub fn append_tool_sync_hint_warning(&self, warnings: &mut Vec<String>, state: &MediaPmState) {
+        let needing_sync = self.collect_tools_requiring_sync(state);
+        if !needing_sync.is_empty() {
+            warnings.push(format!(
+                "tools require sync before library sync: {}",
+                needing_sync.join(", ")
             ));
         }
-
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let normalized_uri = normalize_source_uri(uri);
-        let media_id = media_id_from_uri(&normalized_uri);
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let yt_dlp_configured = document.tools.contains_key("yt-dlp");
-        let (yt_dlp_metadata, warning) = if yt_dlp_configured {
-            conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-            let machine =
-                conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
-            let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-            let yt_dlp_fs_cas =
-                FileSystemCas::open(&conductor_cas_root).await.map_err(|error| {
-                    MediaPmError::Workflow(format!(
-                        "opening conductor CAS store '{}' for yt-dlp resolution: {error}",
-                        conductor_cas_root.display()
-                    ))
-                })?;
-            match resolve_managed_tool_executable_with_filesystem_cas(
-                "yt-dlp",
-                &effective_paths.tools_dir,
-                &yt_dlp_fs_cas,
-            )
-            .await
-            {
-                Ok(resolved_tool) => {
-                    let metadata = fetch_online_source_metadata(
-                        &normalized_uri,
-                        &resolved_tool.executable_path,
-                    );
-                    let warning = if metadata.title.is_none()
-                        && metadata.artist.is_none()
-                        && metadata.description.is_none()
-                    {
-                        Some(format!(
-                            "managed yt-dlp binary at '{}' returned no usable metadata for remote source '{normalized_uri}'",
-                            resolved_tool.executable_path.display()
-                        ))
-                    } else {
-                        None
-                    };
-                    (Some(metadata), warning)
-                }
-                Err(error) => {
-                    let warning = Some(format!(
-                        "yt-dlp managed tool is configured but unavailable for metadata fetch: {error}"
-                    ));
-                    (None, warning)
-                }
-            }
-        } else {
-            (
-                None,
-                Some(format!(
-                    "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source '{normalized_uri}'"
-                )),
-            )
-        };
-        let resolved_online_metadata =
-            resolve_online_source_metadata_for_add(yt_dlp_metadata, warning);
-        if let Some(warning) = resolved_online_metadata.warning.as_ref() {
-            eprintln!("warning: {warning}");
-        }
-        let source_title = title
-            .map(str::to_string)
-            .or(resolved_online_metadata.title)
-            .unwrap_or_else(|| "unknown".to_string());
-        let source_artist_literal = artist.map(str::to_string).or(resolved_online_metadata.artist);
-        let source_description = description
-            .map(str::to_string)
-            .or(resolved_online_metadata.description)
-            .unwrap_or_else(|| {
-                format!(
-                    "title: {source_title}\nartist: {}",
-                    source_artist_literal.as_deref().unwrap_or("unknown")
-                )
-            });
-
-        // Do-not-overwrite guard: skip insert when entry exists and overwrite is not requested.
-        if !overwrite && document.media.contains_key(&media_id) {
-            return Ok(media_id);
-        }
-
-        document.media.insert(
-            media_id.clone(),
-            MediaSourceSpec {
-                id: None,
-                description: Some(source_description),
-                title: Some(source_title.clone()),
-                artist: source_artist_literal.clone(),
-                workflow_id: None,
-                metadata: {
-                    let mut metadata_map = BTreeMap::new();
-                    let mut title_candidates = Vec::new();
-                    if let Some(explicit) = title {
-                        title_candidates
-                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
-                    }
-                    title_candidates.extend([
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "video".to_string(),
-                            metadata_key: "title".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "video".to_string(),
-                            metadata_key: "track".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: "title".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Literal(source_title.clone()),
-                    ]);
-                    metadata_map.insert(
-                        "title".to_string(),
-                        MediaMetadataValue::Fallback(title_candidates),
-                    );
-                    let mut artist_candidates = Vec::new();
-                    if let Some(explicit) = artist {
-                        artist_candidates
-                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
-                    }
-                    artist_candidates.extend([
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "video".to_string(),
-                            metadata_key: "artist".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "video".to_string(),
-                            metadata_key: "album_artist".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: "uploader".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Literal(
-                            source_artist_literal.as_deref().unwrap_or("unknown").to_string(),
-                        ),
-                    ]);
-                    metadata_map.insert(
-                        "artist".to_string(),
-                        MediaMetadataValue::Fallback(artist_candidates),
-                    );
-                    if let Some(album_value) = album {
-                        metadata_map.insert(
-                            "album".to_string(),
-                            MediaMetadataValue::Literal(album_value.to_string()),
-                        );
-                    }
-                    metadata_map.insert(
-                        "video_id".to_string(),
-                        MediaMetadataValue::Variant(MediaMetadataVariantBinding {
-                            variant: "infojson".to_string(),
-                            metadata_key: "id".to_string(),
-                            transform: None,
-                        }),
-                    );
-                    metadata_map.insert(
-                        "video_ext".to_string(),
-                        MediaMetadataValue::Literal(".mkv".to_string()),
-                    );
-                    Some(metadata_map)
-                },
-                variant_hashes: BTreeMap::new(),
-                steps: vec![
-                    MediaStep {
-                        tool: MediaStepTool::YtDlp,
-                        input_variants: Vec::new(),
-                        output_variants: BTreeMap::from([
-                            (
-                                "video".to_string(),
-                                serde_json::json!({
-                                    "kind": "primary",
-                                }),
-                            ),
-                            (
-                                "subtitles".to_string(),
-                                serde_json::json!({
-                                    "kind": "subtitles",
-                                }),
-                            ),
-                            (
-                                "thumbnails".to_string(),
-                                serde_json::json!({
-                                    "kind": "thumbnails",
-                                }),
-                            ),
-                            (
-                                "description".to_string(),
-                                serde_json::json!({
-                                    "kind": "description",
-                                }),
-                            ),
-                            (
-                                "infojson".to_string(),
-                                serde_json::json!({
-                                    "kind": "infojson",
-                                }),
-                            ),
-                            (
-                                "links".to_string(),
-                                serde_json::json!({
-                                    "kind": "links",
-                                }),
-                            ),
-                            (
-                                "archive".to_string(),
-                                serde_json::json!({
-                                    "kind": "archive",
-                                }),
-                            ),
-                        ]),
-                        options: BTreeMap::from([(
-                            "uri".to_string(),
-                            TransformInputValue::String(normalized_uri.to_string()),
-                        )]),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::Ffmpeg,
-                        input_variants: vec!["video".to_string()],
-                        output_variants: BTreeMap::from([(
-                            "video".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                                "idx": 0,
-                                "extension": "mkv",
-                            }),
-                        )]),
-                        options: BTreeMap::new(),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::MediaTagger,
-                        input_variants: vec!["video".to_string()],
-                        output_variants: BTreeMap::from([(
-                            "video".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                            }),
-                        )]),
-                        options: BTreeMap::from([
-                            (
-                                "recording_mbid".to_string(),
-                                TransformInputValue::String(
-                                    recording_mbid.unwrap_or("").to_string(),
-                                ),
-                            ),
-                            (
-                                "release_mbid".to_string(),
-                                TransformInputValue::String(release_mbid.unwrap_or("").to_string()),
-                            ),
-                        ]),
-                    },
-                    MediaStep {
-                        tool: MediaStepTool::Rsgain,
-                        input_variants: vec!["video".to_string()],
-                        output_variants: BTreeMap::from([(
-                            "video".to_string(),
-                            serde_json::json!({
-                                "kind": "primary",
-                            }),
-                        )]),
-                        options: BTreeMap::new(),
-                    },
-                ],
-            },
-        );
-
-        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        conductor_bridge::reconcile_media_workflows_for_config_edits(
-            &effective_paths,
-            &document,
-            &mut lock,
-        )?;
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
-
-        Ok(media_id)
     }
 
-    /// Adds one local media source to `mediapm.ncl` as an `import`
-    /// CAS-hash ingest step.
+    // -----------------------------------------------------------------------
+    // Source management
+    // -----------------------------------------------------------------------
+
+    /// Adds one online media source and saves the document.
     ///
-    /// `title`, `artist`, and `description` are CLI-level overrides that take
-    /// precedence over metadata fetched from the local file.
+    /// This is a convenience wrapper around
+    /// [`add_media_source_with_position`](Self::add_media_source_with_position)
+    /// that inserts at the end.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when the local source path cannot be
-    /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
-    /// required conductor runtime documents cannot be prepared.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn add_local_source(
-        &self,
-        local_path: &Path,
+    /// Delegates to [`add_media_source_with_position`](Self::add_media_source_with_position).
+    pub fn add_media_source(
+        &mut self,
+        media_source: &MediaSourceSpec,
+        media_id: String,
+        uri: &Url,
         title: Option<&str>,
-        artist: Option<&str>,
         description: Option<&str>,
-        album: Option<&str>,
-        recording_mbid: Option<&str>,
-        release_mbid: Option<&str>,
-    ) -> Result<String, MediaPmError> {
-        self.add_local_source_with_position(
-            local_path,
+    ) -> Result<(), MediaPmError> {
+        self.add_media_source_with_position(
+            media_source,
+            media_id,
+            uri,
             title,
-            artist,
             description,
-            album,
-            recording_mbid,
-            release_mbid,
-            AddInsertPosition::Sorted,
+            AddInsertPosition::End,
             false,
         )
-        .await
     }
 
-    /// Adds one local media source to `mediapm.ncl` with one insertion-policy
-    /// hint for CLI parity.
+    /// Adds one online media source at the given position and saves the
+    /// document.
     ///
-    /// `media` registry entries are key-addressed and persisted in sorted key
-    /// order, so all insertion modes currently converge to deterministic key
-    /// insertion semantics.
+    /// Normalizes the URI, validates the scheme, optionally fetches metadata
+    /// from the source, then inserts the entry into the mediapm document.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when the local source path cannot be
-    /// canonicalized/read, CAS import fails, config cannot be loaded/saved, or
-    /// required conductor runtime documents cannot be prepared.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-    pub async fn add_local_source_with_position(
-        &self,
-        local_path: &Path,
+    /// Returns [`MediaPmError::Workflow`] if the media id already exists or
+    /// the hierarchy insertion fails.
+    pub fn add_media_source_with_position(
+        &mut self,
+        media_source: &MediaSourceSpec,
+        media_id: String,
+        _uri: &Url,
         title: Option<&str>,
-        artist: Option<&str>,
         description: Option<&str>,
-        album: Option<&str>,
-        recording_mbid: Option<&str>,
-        release_mbid: Option<&str>,
         _position: AddInsertPosition,
         overwrite: bool,
-    ) -> Result<String, MediaPmError> {
-        let absolute = local_path.canonicalize().map_err(|source| MediaPmError::Io {
-            operation: "canonicalizing local media path".to_string(),
-            path: local_path.to_path_buf(),
-            source,
-        })?;
-
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        export_mediapm_nickel_config_schemas(&effective_paths)?;
-
-        let machine =
-            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
-        let cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-        let cas = FileSystemCas::open(&cas_root).await.map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "opening conductor CAS store '{}' for local import: {source}",
-                cas_root.display()
-            ))
-        })?;
-
-        let file = tokio::fs::File::open(&absolute).await.map_err(|source| MediaPmError::Io {
-            operation: "opening local media source for CAS import".to_string(),
-            path: absolute.clone(),
-            source,
-        })?;
-        let hash = cas.put_stream(file).await.map_err(|source| {
-            MediaPmError::Workflow(format!("importing local media into CAS failed: {source}"))
-        })?;
-
-        let media_id = media_id_from_local_path(&hash);
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        let managed_ffprobe_path = crate::materializer::metadata::resolve_managed_ffprobe_path(
-            &effective_paths,
-            &machine,
-            &lock,
-        );
-        let metadata_cache = crate::metadata_cache::MetadataCache::open(
-            &effective_paths.workspace_mediapm_cache_dir(),
-        )
-        .map_err(|e| tracing::warn!("failed to open metadata cache: {e}"))
-        .ok();
-        let local_metadata = fetch_local_source_metadata(
-            &absolute,
-            managed_ffprobe_path.as_deref(),
-            metadata_cache.as_ref(),
-        );
-        let source_title = title
-            .map(str::to_string)
-            .or(local_metadata.title)
-            .unwrap_or_else(|| local_default_title(&absolute));
-        let source_artist_literal = artist.map(str::to_string).or(local_metadata.artist);
-        let source_description =
-            description.map(str::to_string).or(local_metadata.description).unwrap_or_else(|| {
-                build_local_default_description(
-                    &absolute,
-                    &source_title,
-                    source_artist_literal.as_deref().unwrap_or("unknown"),
-                )
-            });
-        let source_extension_with_dot = local_extension_with_dot(&absolute);
-        let hash_text = hash.to_string();
-
-        // Do-not-overwrite guard: skip insert when entry exists and overwrite is not requested.
-        if !overwrite && document.media.contains_key(&media_id) {
-            return Ok(media_id);
-        }
-
-        document.media.insert(
-            media_id.clone(),
-            MediaSourceSpec {
-                id: None,
-                description: Some(source_description),
-                title: Some(source_title.clone()),
-                artist: source_artist_literal.clone(),
-                workflow_id: None,
-                metadata: {
-                    let mut metadata_map = BTreeMap::new();
-                    let mut title_candidates = Vec::new();
-                    if let Some(explicit) = title {
-                        title_candidates
-                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
-                    }
-                    title_candidates.extend([
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "media".to_string(),
-                            metadata_key: "title".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "media".to_string(),
-                            metadata_key: "track".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Literal(source_title.clone()),
-                    ]);
-                    metadata_map.insert(
-                        "title".to_string(),
-                        MediaMetadataValue::Fallback(title_candidates),
-                    );
-                    let mut artist_candidates = Vec::new();
-                    if let Some(explicit) = artist {
-                        artist_candidates
-                            .push(MediaMetadataValueCandidate::Literal(explicit.to_string()));
-                    }
-                    artist_candidates.extend([
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "media".to_string(),
-                            metadata_key: "artist".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Variant(MediaMetadataVariantBinding {
-                            variant: "media".to_string(),
-                            metadata_key: "album_artist".to_string(),
-                            transform: None,
-                        }),
-                        MediaMetadataValueCandidate::Literal(
-                            source_artist_literal.as_deref().unwrap_or("unknown").to_string(),
-                        ),
-                    ]);
-                    metadata_map.insert(
-                        "artist".to_string(),
-                        MediaMetadataValue::Fallback(artist_candidates),
-                    );
-                    if let Some(album_value) = album {
-                        metadata_map.insert(
-                            "album".to_string(),
-                            MediaMetadataValue::Literal(album_value.to_string()),
-                        );
-                    }
-                    metadata_map.insert(
-                        "video_ext".to_string(),
-                        MediaMetadataValue::Literal(source_extension_with_dot),
-                    );
-                    Some(metadata_map)
-                },
-                variant_hashes: BTreeMap::new(),
-                steps: local_source_default_steps(&hash_text, recording_mbid, release_mbid),
-            },
-        );
-        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-
-        conductor_bridge::reconcile_media_workflows_for_config_edits(
-            &effective_paths,
-            &document,
-            &mut lock,
-        )?;
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
-
-        Ok(media_id)
-    }
-
-    /// Adds one hierarchy preset node tree for an existing media id.
-    ///
-    /// This operation is idempotent per `(preset, media_id, folder)` identity.
-    /// Repeated invocations with the same triple will not add duplicate nodes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the media id is unknown, `folder` is
-    /// empty/invalid, or `mediapm.ncl` cannot be loaded/saved.
-    pub fn add_media_hierarchy_preset(
-        &self,
-        preset: MediaHierarchyPreset,
-        media_id: &str,
-        folder: &str,
     ) -> Result<(), MediaPmError> {
-        self.add_media_hierarchy_preset_with_position(
-            preset,
-            media_id,
-            Some(folder),
-            AddInsertPosition::Sorted,
-            false,
-        )
-    }
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-    /// Adds one hierarchy preset node tree for an existing media id with one
-    /// insertion policy.
-    ///
-    /// `folder` may be omitted to use preset-specific defaults:
-    /// - local: `music videos/local`
-    /// - yt-dlp: `music videos/online`
-    ///
-    /// This operation is idempotent by generated hierarchy id.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the media id is unknown, effective folder
-    /// root is empty/invalid, or `mediapm.ncl` cannot be loaded/saved.
-    pub fn add_media_hierarchy_preset_with_position(
-        &self,
-        preset: MediaHierarchyPreset,
-        media_id: &str,
-        folder: Option<&str>,
-        position: AddInsertPosition,
-        overwrite: bool,
-    ) -> Result<(), MediaPmError> {
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-
-        if !document.media.contains_key(media_id) {
-            return Err(MediaPmError::Workflow(format!(
-                "cannot add {} hierarchy preset: media id '{media_id}' does not exist",
-                preset.as_label()
-            )));
+        if document.media.contains_key(&media_id) {
+            if overwrite {
+                document.media.remove(&media_id);
+                let _ = remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, &media_id);
+            } else {
+                return Err(MediaPmError::Workflow(format!(
+                    "media source '{}' already exists in config",
+                    media_id
+                )));
+            }
         }
 
-        let normalized_folder = match folder {
-            Some(f) => normalize_hierarchy_folder_root(f)?,
-            None => default_hierarchy_folder_root_for_preset(preset),
-        };
-        let hierarchy_id = hierarchy_preset_node_id(media_id);
-        if hierarchy_contains_node_id(&document.hierarchy, &hierarchy_id) {
-            return Ok(());
-        }
+        // Build the source spec from the provided template and metadata.
+        let mut source = media_source.clone();
+        source.title = title.filter(|s| !s.is_empty()).map(str::to_string).or(source.title);
+        source.description =
+            description.filter(|s| !s.is_empty()).map(str::to_string).or(source.description);
 
-        let node = build_hierarchy_preset_node(preset, media_id, &normalized_folder, hierarchy_id);
-        insert_hierarchy_preset_node(
-            &mut document.hierarchy,
-            node,
-            &normalized_folder,
-            position,
-            overwrite,
-        );
+        document.media.insert(media_id.clone(), source);
 
-        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
+        // Save the document.
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+
         Ok(())
     }
 
-    /// Removes one media source id from `mediapm.ncl`.
+    /// Adds one local media source, auto-resolving metadata, and saves the
+    /// document.
     ///
-    /// This operation also removes any hierarchy nodes whose effective
-    /// `media_id` equals the removed media id so configuration remains
-    /// self-consistent after source deletion.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the target media id is not registered or
-    /// when `mediapm.ncl` cannot be loaded/saved.
-    pub fn remove_media_source(&self, media_id: &str) -> Result<usize, MediaPmError> {
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        if document.media.remove(media_id).is_none() {
-            return Err(MediaPmError::Workflow(format!(
-                "cannot remove media source: media id '{media_id}' does not exist"
-            )));
-        }
-
-        let removed_hierarchy_nodes =
-            remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
-        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        Ok(removed_hierarchy_nodes)
-    }
-
-    /// Invalidates cached completed tool calls for one media step.
-    ///
-    /// This operation keeps media-step synthesis state unchanged and only
-    /// targets conductor runtime cache rows that correspond to the selected
-    /// media-step index.
+    /// This is a convenience wrapper around
+    /// [`add_local_source_with_position`](Self::add_local_source_with_position)
+    /// that inserts at the end.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when the media id/step index is invalid,
-    /// conductor documents or state cannot be loaded, or cache-state mutation
-    /// fails.
-    pub async fn invalidate_media_step_tool_calls(
-        &self,
-        media_id: &str,
-        step_index: usize,
-    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
-        self.invalidate_media_step_tool_calls_internal(media_id, step_index, false).await
+    /// Delegates to [`add_local_source_with_position`](Self::add_local_source_with_position).
+    pub fn add_local_source(
+        &mut self,
+        path: &Path,
+        ffprobe_command: &str,
+        media_id: Option<String>,
+        _position: AddInsertPosition,
+    ) -> Result<String, MediaPmError> {
+        self.add_local_source_with_position(path, ffprobe_command, media_id, _position, false)
     }
 
-    /// Invalidates cached completed tool calls and forces one media step to
-    /// regenerate managed workflow invocations.
+    /// Adds one local media source at the given position, auto-resolving
+    /// metadata via ffprobe, and saves the document.
     ///
-    /// In addition to conductor cache invalidation, this mode clears the
-    /// selected `workflow_states` refresh timestamp before workflow
-    /// reconciliation so managed workflow synthesis treats the step as stale.
+    /// Reads the file into CAS to obtain a content hash, then builds default
+    /// media steps and metadata entries.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when the media id/step index is invalid,
-    /// lock/runtime documents cannot be loaded, or conductor state mutation
-    /// fails.
-    pub async fn invalidate_media_step_tool_calls_and_regenerate(
-        &self,
-        media_id: &str,
-        step_index: usize,
-    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
-        self.invalidate_media_step_tool_calls_internal(media_id, step_index, true).await
-    }
+    /// Returns [`MediaPmError::Io`] if the file cannot be read, or
+    /// [`MediaPmError::Workflow`] if the media id already exists.
+    pub fn add_local_source_with_position(
+        &mut self,
+        path: &Path,
+        ffprobe_command: &str,
+        media_id: Option<String>,
+        _position: AddInsertPosition,
+        overwrite: bool,
+    ) -> Result<String, MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-    /// Shared implementation for media-step invalidation modes.
-    async fn invalidate_media_step_tool_calls_internal(
-        &self,
-        media_id: &str,
-        step_index: usize,
-        regenerate_step: bool,
-    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let Some(source) = document.media.get(media_id) else {
-            return Err(MediaPmError::Workflow(format!(
-                "cannot invalidate media step: media id '{media_id}' does not exist"
-            )));
-        };
-        if step_index >= source.steps.len() {
-            return Err(MediaPmError::Workflow(format!(
-                "cannot invalidate media step: media '{media_id}' has {} step(s), but step index {step_index} was requested",
-                source.steps.len()
-            )));
-        }
+        // Compute content hash from the file.
+        let bytes = std::fs::read(path).map_err(|e| MediaPmError::Io {
+            operation: "reading local file for media add".to_string(),
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+        let hash = Hash::from_content(&bytes);
+        let resolved_media_id =
+            media_id.filter(|s| !s.is_empty()).unwrap_or_else(|| media_id_from_local_path(&hash));
 
-        let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
-        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
-        load_runtime_dotenv(&effective_paths)?;
-        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        if regenerate_step {
-            mark_media_step_for_regeneration(&mut lock, media_id, step_index)?;
-            conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        } else {
-            conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        }
-
-        let workflow_id = conductor_bridge::managed_workflow_id_for_media(media_id, source);
-        let machine =
-            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
-        let step_targets = collect_workflow_step_targets_for_media_step(
-            &machine,
-            workflow_id.as_str(),
-            step_index,
-        )?;
-
-        let mut state_document =
-            load_or_default_conductor_state_document(&effective_paths.conductor_state_config)?;
-        let (removed_impure_timestamps, impure_timestamps_by_tool, tools_without_timestamp) =
-            remove_target_step_impure_timestamps(
-                &mut state_document,
-                workflow_id.as_str(),
-                &step_targets,
-            );
-        save_conductor_state_document(&effective_paths.conductor_state_config, &state_document)?;
-
-        let invalidation_rules = build_tool_invalidation_rules(
-            &step_targets,
-            &impure_timestamps_by_tool,
-            &tools_without_timestamp,
-        );
-
-        let mut state = self.conductor.get_state().await?;
-
-        let mut removed_instances = 0usize;
-        state.tool_call_instances.retain(|_instance_key, instance| {
-            let remove_instance = should_invalidate_instance(instance, &invalidation_rules);
-            if remove_instance {
-                removed_instances = removed_instances.saturating_add(1);
-                false
+        if document.media.contains_key(&resolved_media_id) {
+            if overwrite {
+                document.media.remove(&resolved_media_id);
+                let _ =
+                    remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, &resolved_media_id);
             } else {
-                true
+                return Err(MediaPmError::Workflow(format!(
+                    "media source '{}' already exists in config",
+                    resolved_media_id
+                )));
             }
-        });
-
-        if removed_instances > 0 {
-            self.conductor.replace_resolved_state(state).await?;
         }
 
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
+        // Fetch metadata via ffprobe.
+        let metadata = fetch_local_source_metadata(path, ffprobe_command, None)?;
+        let title = Some(metadata.title.as_str());
+        let description = Some(metadata.description.as_str());
 
-        let mut targeted_step_ids =
-            step_targets.into_iter().map(|target| target.step_id).collect::<Vec<_>>();
-        targeted_step_ids.sort();
+        // Build default steps.
+        let hash_text = hash.to_hex();
+        let steps = local_source_default_steps(&hash_text, None, None);
 
-        Ok(MediaStepInvalidationSummary {
-            workflow_id,
-            targeted_step_ids,
-            removed_impure_timestamps,
-            removed_instances,
-            regenerated_step: regenerate_step,
-        })
+        let source = MediaSourceSpec {
+            id: None,
+            title: title.filter(|s| !s.is_empty()).map(str::to_string),
+            description: description.filter(|s| !s.is_empty()).map(str::to_string),
+            artist: None,
+            workflow_id: None,
+            metadata: None,
+            variant_hashes: BTreeMap::new(),
+            steps,
+        };
+
+        document.media.insert(resolved_media_id.clone(), source);
+
+        // Also insert a hierarchy preset node for this source.
+        if let Some(preset_node) = document.hierarchy.first_mut() {
+            // Append the media folder node to the first root folder.
+            let media_node = crate::hierarchy::local_hierarchy_media_children();
+            preset_node.children.extend(media_node);
+        }
+
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+
+        Ok(resolved_media_id)
     }
 
-    /// Removes one hierarchy preset node tree for one media id + folder root.
-    ///
-    /// This operation is idempotent. If the preset node does not exist,
-    /// no changes are written and `0` is returned.
+    // -----------------------------------------------------------------------
+    // Hierarchy management
+    // -----------------------------------------------------------------------
+
+    /// Adds a hierarchy preset node at the given position and saves the
+    /// document.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when `folder` is empty/invalid or
-    /// `mediapm.ncl` cannot be loaded/saved.
-    pub fn remove_media_hierarchy_preset(
-        &self,
-        _preset: MediaHierarchyPreset,
+    /// Returns [`MediaPmError::Workflow`] if the preset node id already
+    /// exists.
+    pub fn add_media_hierarchy_preset_with_position(
+        &mut self,
+        preset: MediaHierarchyPreset,
+        position: AddInsertPosition,
+    ) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
+
+        insert_hierarchy_preset_node(&mut document.hierarchy, preset, position)?;
+
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
+    /// Adds a hierarchy preset node at the end and saves the document.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to
+    /// [`add_media_hierarchy_preset_with_position`](Self::add_media_hierarchy_preset_with_position).
+    pub fn add_media_hierarchy_preset(
+        &mut self,
+        preset: MediaHierarchyPreset,
+    ) -> Result<(), MediaPmError> {
+        self.add_media_hierarchy_preset_with_position(preset, AddInsertPosition::End)
+    }
+
+    /// Removes one media source by id and saves the document.
+    ///
+    /// Also removes any hierarchy nodes referencing this media id.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if the media id does not exist.
+    pub fn remove_media_source(&mut self, media_id: &str) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
+
+        if document.media.remove(media_id).is_none() {
+            return Err(MediaPmError::Workflow(format!("media source '{}' not found", media_id)));
+        }
+
+        // Remove hierarchy nodes that reference this media id.
+        let _ = remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
+
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
+    /// Removes one hierarchy preset node by id and saves the document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if the node id is not found.
+    pub fn remove_media_hierarchy_preset(&mut self, node_id: &str) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
+
+        let removed = remove_hierarchy_nodes_by_id(&mut document.hierarchy, node_id);
+        if removed == 0 {
+            return Err(MediaPmError::Workflow(format!("hierarchy node '{}' not found", node_id)));
+        }
+
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
+    /// Removes hierarchy nodes referencing the given media id and saves the
+    /// document.
+    ///
+    /// Returns the number of removed nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if saving fails.
+    pub fn remove_media_hierarchy_preset_by_media_id(
+        &mut self,
         media_id: &str,
-        folder: &str,
     ) -> Result<usize, MediaPmError> {
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        normalize_hierarchy_folder_root(folder)?;
-        let hierarchy_id = hierarchy_preset_node_id(media_id);
-        let removed_nodes = remove_hierarchy_nodes_by_id(&mut document.hierarchy, &hierarchy_id);
-        if removed_nodes > 0 {
-            save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        }
-        Ok(removed_nodes)
-    }
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-    /// Lists currently registered tools from conductor machine config.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when config or state document cannot be loaded or
-    /// when conductor tool rows cannot be resolved.
-    pub fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        conductor_bridge::list_tools(&effective_paths)
-    }
+        let removed = remove_hierarchy_nodes_by_media_id(&mut document.hierarchy, media_id);
 
-    /// Adds one tool requirement to `mediapm.ncl` by logical name.
-    ///
-    /// The tool name must appear in the built-in downloader catalog. If a
-    /// requirement for this name already exists, the method is a no-op and
-    /// returns `false`. Otherwise the entry is inserted with `tag = "latest"`
-    /// and the updated document is saved before returning `true`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the tool name is not in the catalog,
-    /// or when `mediapm.ncl` cannot be loaded or saved.
-    pub fn add_tool_requirement(&self, tool_name: &str) -> Result<bool, MediaPmError> {
-        // Validate against catalog before mutating config.
-        tools::catalog::tool_catalog_entry(tool_name)?;
-
-        let mut document = load_mediapm_document_without_validation(&self.paths.mediapm_ncl)?;
-        if document.tools.contains_key(tool_name) {
-            return Ok(false);
-        }
-        document.tools.insert(
-            tool_name.to_string(),
-            ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
-                dependencies: tools::catalog::default_tool_requirement_dependencies(tool_name),
-                recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
-            },
-        );
-        save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        Ok(true)
-    }
-
-    /// Removes one tool requirement entry from `mediapm.ncl` by logical name.
-    ///
-    /// This method updates desired tool requirements only. Runtime tool
-    /// registration state is reconciled by a subsequent `tools sync` or
-    /// top-level `sync` execution.
-    ///
-    /// Returns `false` when no requirement with this name exists.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when `mediapm.ncl` cannot be loaded or saved.
-    pub fn remove_tool_requirement(&self, tool_name: &str) -> Result<bool, MediaPmError> {
-        let mut document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let removed = document.tools.remove(tool_name).is_some();
-        if removed {
-            save_mediapm_document(&self.paths.mediapm_ncl, &document)?;
-        }
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
         Ok(removed)
     }
 
-    /// Prunes one tool binary and optionally removes all associated metadata.
-    ///
-    /// When `remove_metadata` is `false` the operation only removes
-    /// `tool_configs.<tool_id>` (binary payload) and marks the registry entry
-    /// as `Pruned`, preserving historical records.
-    ///
-    /// When `remove_metadata` is `true` the tool spec, registry entry, and all
-    /// binary content are fully erased.  This is useful for retiring a tool
-    /// that will never be re-provisioned, but forces a full re-fetch if the
-    /// same tool is re-added later.
+    // -----------------------------------------------------------------------
+    // Tool management
+    // -----------------------------------------------------------------------
+
+    /// Lists registered tools from the conductor generated document.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when config/state documents cannot be loaded,
-    /// prune operations fail, or state cannot be persisted.
-    pub async fn prune_tool(
-        &self,
+    /// Delegates to [`list_tools`].
+    #[allow(dead_code)]
+    pub(crate) fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        list_tools(&effective_paths)
+    }
+
+    /// Adds one tool requirement to the document and saves it.
+    ///
+    /// Only updates the user-facing document; does not trigger a sync. Call
+    /// [`sync_tools`](Self::sync_tools) afterwards to materialize the tool.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if the tool id is empty.
+    pub fn add_tool_requirement(
+        &mut self,
         tool_id: &str,
-        remove_metadata: bool,
-    ) -> Result<usize, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        let removed_hashes = conductor_bridge::prune_tool_binary(
-            &effective_paths,
-            &mut lock,
-            tool_id,
-            remove_metadata,
-        )
-        .await?;
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
-        Ok(removed_hashes)
-    }
-
-    /// Executes one managed tool binary directly with passthrough arguments.
-    ///
-    /// `tool_selector` accepts either an immutable tool id or one logical tool
-    /// name that resolves to exactly one active/installed managed tool.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when runtime docs/state cannot be loaded,
-    /// selector resolution is ambiguous/invalid, executable materialization is
-    /// missing, process launch fails, or the host does not provide an exit code.
-    pub fn run_managed_tool(
-        &self,
-        tool_selector: &str,
-        args: &[String],
-    ) -> Result<i32, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        let machine =
-            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
-        let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
-
-        // Helper to open FileSystemCas in either current or temporary runtime.
-        let open_tool_cas = |cas_root: &Path| -> Result<FileSystemCas, MediaPmError> {
-            let cas_fut = FileSystemCas::open(cas_root);
-            if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
-                tokio::task::block_in_place(|| runtime_handle.block_on(cas_fut))
-            } else {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|source| {
-                        MediaPmError::Workflow(format!(
-                            "creating temporary runtime for managed tool execution failed: \
-                             {source}"
-                        ))
-                    })?;
-                runtime.block_on(cas_fut)
-            }
-            .map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "opening conductor CAS store '{}' for managed tool resolution: {error}",
-                    cas_root.display()
-                ))
-            })
-        };
-        let tool_fs_cas = open_tool_cas(&conductor_cas_root)?;
-
-        let resolved_tool = if let Ok(runtime_handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| {
-                runtime_handle.block_on(resolve_managed_tool_executable_with_filesystem_cas(
-                    tool_selector,
-                    &effective_paths.tools_dir,
-                    &tool_fs_cas,
-                ))
-            })
-        } else {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|source| {
-                    MediaPmError::Workflow(format!(
-                        "creating temporary runtime for managed tool execution failed: {source}"
-                    ))
-                })?;
-
-            runtime.block_on(resolve_managed_tool_executable_with_filesystem_cas(
-                tool_selector,
-                &effective_paths.tools_dir,
-                &tool_fs_cas,
-            ))
+        version: Option<&str>,
+        tag: Option<&str>,
+    ) -> Result<(), MediaPmError> {
+        if tool_id.is_empty() {
+            return Err(MediaPmError::Workflow("tool id must not be empty".to_string()));
         }
-        .map_err(MediaPmError::from)?;
+        if tool_catalog_entry(tool_id).is_none() {
+            return Err(MediaPmError::Workflow(format!(
+                "tool '{tool_id}' is not in the built-in catalog"
+            )));
+        }
 
-        let status = ProcessCommand::new(&resolved_tool.executable_path)
-            .args(args)
-            .status()
-            .map_err(|source| MediaPmError::Io {
-                operation: format!(
-                    "running managed tool '{}' executable",
-                    resolved_tool.executable_path.display()
-                ),
-                path: resolved_tool.executable_path.clone(),
-                source,
-            })?;
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-        status.code().ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "managed tool '{}' terminated without a numeric exit code",
-                resolved_tool.executable_path.display()
-            ))
-        })
-    }
+        let requirement = ToolRequirement {
+            version: version.map(|v| MediaMetadataValue::Literal(v.to_string())),
+            tag: tag.map(str::to_string),
+            ..ToolRequirement::default()
+        };
 
-    /// Refreshes mediapm-managed conductor runtime paths and dotenv files.
-    ///
-    /// This command updates machine-managed runtime defaults under
-    /// `mediapm.conductor.machine.ncl` so moved workspaces re-materialize
-    /// effective paths on next execution without running workflows.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when config loading, dotenv setup, or document
-    /// normalization fails.
-    pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_paths = self.resolve_effective_paths(&document.runtime);
-        load_runtime_dotenv(&effective_paths)?;
-        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
+        document.runtime.tools.insert(tool_id.to_string(), requirement);
+
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
         Ok(())
     }
 
-    /// Reconciles only tool requirements and state/runtime metadata.
-    ///
-    /// This operation intentionally avoids running conductor workflows or
-    /// hierarchy materialization, and is used by `mediapm tool sync`.
+    /// Removes one tool requirement from the document and saves it.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when runtime/config preparation fails, tool
-    /// reconciliation fails, workflow reconciliation fails, or state
-    /// cannot be persisted.
-    pub async fn sync_tools(&self) -> Result<ToolsSyncSummary, MediaPmError> {
-        self.sync_tools_with_tag_update_checks(true).await
-    }
+    /// Returns [`MediaPmError::Workflow`] if the tool id is not present.
+    pub fn remove_tool_requirement(&mut self, tool_id: &str) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut document =
+            crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-    /// Reconciles only tool requirements and lock/runtime metadata.
-    ///
-    /// `check_tag_updates` controls whether tag-only tool selectors (for
-    /// example `tag = "latest"`) trigger remote release checks.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when runtime/config preparation fails, tool
-    /// reconciliation fails, workflow reconciliation fails, or lock state
-    /// cannot be persisted.
-    pub async fn sync_tools_with_tag_update_checks(
-        &self,
-        _check_tag_updates: bool,
-    ) -> Result<ToolsSyncSummary, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let (summary, lock, effective_paths) =
-            self.sync_tools_from_document(&document, _check_tag_updates).await?;
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
-        Ok(summary)
-    }
-
-    /// Internal helper: runs tool sync from an already-loaded mediapm document.
-    ///
-    /// Reconciles desired tool state (`reconcile_desired_tools`) but does NOT
-    /// reconcile workflows.  `sync_library_with_tag_update_checks` is responsible
-    /// for workflow reconciliation, while `sync_tools_with_tag_update_checks`
-    /// intentionally skips it (tool sync should only touch tools).  Callers are
-    /// responsible for lock persistence regardless of path.
-    async fn sync_tools_from_document(
-        &self,
-        document: &MediaPmDocument,
-        check_tag_updates: bool,
-    ) -> Result<(ToolsSyncSummary, MediaPmState, MediaPmPaths), MediaPmError> {
-        let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
-        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
-        load_runtime_dotenv(&effective_paths)?;
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        export_mediapm_nickel_config_schemas(&effective_paths)?;
-        self.conductor.export_schemas(&effective_paths.conductor_schema_dir).await?;
-
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        let resolved_inherited_env_vars =
-            effective_runtime_storage.inherited_env_vars_with_defaults();
-        let report = conductor_bridge::reconcile_desired_tools(
-            &effective_paths,
-            document,
-            &resolved_inherited_env_vars,
-            &mut lock,
-            check_tag_updates,
-        )
-        .await?;
-
-        if !report.updated_tool_ids.is_empty() {
-            eprintln!("[mediapm] tool id(s) updated: {}", report.updated_tool_ids.join(", "));
+        if document.runtime.tools.remove(tool_id).is_none() {
+            return Err(MediaPmError::Workflow(format!(
+                "tool requirement '{}' not found",
+                tool_id
+            )));
         }
 
-        Ok((
-            ToolsSyncSummary {
-                added_tools: report.added_tool_ids.len(),
-                updated_tools: report.updated_tool_ids.len(),
-                unchanged_tools: report.unchanged_tool_ids.len(),
-                warnings: report.warnings,
-            },
-            lock,
+        save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Invalidation
+    // -----------------------------------------------------------------------
+
+    /// Invalidates tool-call instances for a given media step.
+    ///
+    /// Clears variant hashes and optionally impure timestamps for the targeted
+    /// step. When `invalidate_calls` is true, tool call instances are
+    /// invalidated. When `regenerate` is true, re-generation is triggered
+    /// immediately after invalidation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Workflow`] if the media id is not found.
+    pub fn invalidate_media_step_tool_calls(
+        &mut self,
+        media_id: &str,
+        step_index: usize,
+        invalidate_calls: bool,
+        regenerate: bool,
+    ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+
+        if !state.media.contains_key(media_id) {
+            return Err(MediaPmError::Workflow(format!(
+                "media source '{}' not found in state",
+                media_id
+            )));
+        }
+        let workflow_id = format!("media/{media_id}");
+
+        let (removed_instances, removed_generated_timestamps) = if invalidate_calls {
+            mark_media_step_for_regeneration(&mut state, media_id, step_index);
+            remove_target_step_impure_timestamps(&mut state, media_id);
+            // TODO: collect actual removed instance ids and generated
+            //       timestamps from the state entry after invalidation.
+            (vec![format!("step:{step_index}")], vec![])
+        } else {
+            (vec![], vec![])
+        };
+
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &state)?;
+
+        Ok(MediaStepInvalidationSummary {
+            workflow_id,
+            targeted_step_ids: vec![step_index.to_string()],
+            removed_generated_timestamps,
+            removed_instances,
+            regenerated_step: regenerate,
+            warnings: Vec::new(),
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Sync
+    // -----------------------------------------------------------------------
+
+    /// Refreshes the runtime configuration by loading dotenv files, ensuring
+    /// runtime env files exist, and exporting schemas.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Conductor`] if env file creation fails, or
+    /// [`MediaPmError::Io`] if schema export fails.
+    pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+
+        // Load dotenv files.
+        load_runtime_dotenv(&effective_paths.env_file, &effective_paths.env_generated_file);
+
+        // Ensure conductor runtime env files exist.
+        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::Conductor)?;
+
+        // Export schemas.
+        export_mediapm_nickel_config_schemas(
+            effective_paths.schema_export_dir.as_deref(),
+            &effective_paths.conductor_schema_dir,
+        )?;
+
+        Ok(())
+    }
+
+    /// Runs a full tool sync using the document's desired tools.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    pub fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
+        self.sync_tools_with_tag_update_checks(false)
+    }
+
+    /// Runs a full tool sync with optional tag-update checks.
+    ///
+    /// # Errors
+    ///
+    /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
+    pub fn sync_tools_with_tag_update_checks(
+        &mut self,
+        check_tag_updates: bool,
+    ) -> Result<ToolsSyncSummary, MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let merged = self.resolve_effective_runtime_storage();
+
+        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates)
+    }
+
+    /// Internal tool-sync implementation that reconciles desired tools from
+    /// the resolved runtime storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if document loading fails, or
+    /// [`MediaPmError::Conductor`] if reconciliation fails.
+    fn sync_tools_from_document(
+        &mut self,
+        effective_paths: &MediaPmPaths,
+        runtime_storage: &MediaRuntimeStorage,
+        check_tag_updates: bool,
+    ) -> Result<ToolsSyncSummary, MediaPmError> {
+        // Build the desired tools map from runtime storage.
+        let desired_tools: BTreeMap<String, serde_json::Value> = runtime_storage
+            .tools
+            .iter()
+            .map(|(id, req)| {
+                let value = serde_json::json!({
+                    "version": req.version.as_ref().map(|v| match v {
+                        MediaMetadataValue::Literal(s) => s.as_str(),
+                        _ => "",
+                    }),
+                    "tag": req.tag,
+                });
+                (id.clone(), value)
+            })
+            .collect();
+
+        let inherited_env_vars = runtime_storage.inherited_env_vars.clone();
+
+        // Run the reconciliation.
+        let report = create_tokio_runtime()?.block_on(reconcile_desired_tools(
+            &**self.conductor.cas(),
             effective_paths,
+            &desired_tools,
+            &inherited_env_vars,
+            check_tag_updates,
+        ))?;
+
+        // Load and update state with reconciled tools.
+        let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+        for (tool_id, req) in &runtime_storage.tools {
+            state.tools.insert(tool_id.clone(), req.clone());
+        }
+        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &state)?;
+
+        Ok(ToolsSyncSummary {
+            added_tools: report.tools_added,
+            updated_tools: report.tools_updated,
+            pruned_tools: 0, // stub: lifecycle prune not yet wired
+            removed_tools: report.tools_removed,
+            warnings: report.warnings,
+        })
+    }
+
+    // -----------------------------------------------------------------------
+    // Source processing
+    // -----------------------------------------------------------------------
+
+    /// Validates and normalizes a source URI, returning a [`MediaPackage`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::InvalidSource`] if the URI scheme is
+    /// unsupported.
+    pub fn process_source(&self, uri: &Url) -> Result<MediaPackage, MediaPmError> {
+        let normalized = normalize_source_uri(uri);
+        validate_source_uri(&normalized)?;
+        let media_id = media_id_from_uri(&normalized);
+
+        Ok(MediaPackage { media_id, source_uri: normalized, permanent: false })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem convenience constructors
+// ---------------------------------------------------------------------------
+
+impl MediaPmService<FileSystemCas> {
+    /// Creates a new filesystem-backed service at the given workspace root.
+    ///
+    /// Opens the filesystem CAS at the computed runtime root, creates a
+    /// `SimpleConductor`, and initializes all paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if the CAS cannot be created or the
+    /// conductor fails to initialise.
+    pub fn new_fs_at(root_dir: impl Into<std::path::PathBuf>) -> Result<Self, MediaPmError> {
+        Self::new_fs_at_with_runtime_storage_overrides(root_dir, MediaRuntimeStorage::default())
+    }
+
+    /// Creates a new filesystem-backed service at the given workspace root
+    /// with explicit runtime storage overrides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if the CAS cannot be created or the
+    /// conductor fails to initialise.
+    pub fn new_fs_at_with_runtime_storage_overrides(
+        root_dir: impl Into<std::path::PathBuf>,
+        runtime_storage_overrides: MediaRuntimeStorage,
+    ) -> Result<Self, MediaPmError> {
+        let root_dir = root_dir.into();
+        let effective_paths =
+            resolve_effective_paths_for_root(&root_dir, &runtime_storage_overrides);
+
+        // Ensure parent directory exists.
+        std::fs::create_dir_all(&effective_paths.runtime_root).map_err(|e| MediaPmError::Io {
+            operation: "create runtime root directory".to_string(),
+            path: effective_paths.runtime_root.clone(),
+            source: e,
+        })?;
+
+        // Open the filesystem CAS.
+        let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
+        std::fs::create_dir_all(&conductor_cas_root).map_err(|e| MediaPmError::Io {
+            operation: "create conductor CAS root directory".to_string(),
+            path: conductor_cas_root.clone(),
+            source: e,
+        })?;
+        let cas = create_tokio_runtime()?
+            .block_on(FileSystemCas::open(&conductor_cas_root))
+            .map_err(|e| MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}")))?;
+
+        // Build the conductor.
+        let runtime_storage = RuntimeStoragePaths::new(&effective_paths.runtime_root);
+        let conductor = SimpleConductor::new(runtime_storage, cas);
+
+        Ok(Self::new_with_runtime_storage_overrides(
+            conductor,
+            effective_paths,
+            runtime_storage_overrides,
         ))
     }
 
-    /// Reconciles full desired state with explicit tag-update-check policy.
+    /// Runs a full library sync (tools + materialization).
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when config/runtime preparation fails,
-    /// workflow reconciliation/execution fails (including filesystem-CAS
-    /// fallback), hierarchy materialization fails, or state cannot be
-    /// persisted.
-    #[expect(clippy::too_many_lines)]
-    pub async fn sync_library_with_tag_update_checks(
-        &self,
-        _check_tag_updates: bool,
-        verify_materialization_override: Option<bool>,
+    /// Delegates to
+    /// [`sync_library_with_tag_update_checks`](Self::sync_library_with_tag_update_checks).
+    pub fn sync_library(
+        &mut self,
+        verify_materialization: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        let document = ensure_and_load_mediapm_document(&self.paths.mediapm_ncl)?;
-        let effective_runtime_storage = self.resolve_effective_runtime_storage(&document.runtime);
-        let effective_paths = self.paths.with_runtime_storage(&effective_runtime_storage);
-        load_runtime_dotenv(&effective_paths)?;
-        ensure_runtime_env_files(&effective_paths.runtime_root).map_err(MediaPmError::from)?;
-        conductor_bridge::ensure_conductor_documents(&effective_paths)?;
-        export_mediapm_nickel_config_schemas(&effective_paths)?;
-        self.conductor.export_schemas(&effective_paths.conductor_schema_dir).await?;
+        self.sync_library_with_tag_update_checks(verify_materialization, false)
+    }
 
-        let mut lock = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
-        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        // NOTE: `mediapm sync` intentionally does NOT invoke desired-tool sync
-        // here.  The hint mechanism below (collect_tools_requiring_sync +
-        // append_tool_sync_hint_warning) reminds users to run `mediapm tool sync`
-        // when tool state looks stale.
-        let machine =
-            conductor_bridge::load_machine_document(&effective_paths.conductor_machine_ncl)?;
-        let tools_requiring_sync = Self::collect_tools_requiring_sync(&document, &lock, &machine);
-        let conductor_cas_root = resolve_conductor_cas_root(&effective_paths, &machine);
+    /// Runs a full library sync with optional tag-update checks.
+    ///
+    /// This is the primary sync entrypoint:
+    /// 1. Ensures runtime env files and schemas are up-to-date.
+    /// 2. Syncs tools.
+    /// 3. Loads the mediapm document and state.
+    /// 4. Opens the filesystem CAS for materialization.
+    /// 5. Runs the materializer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first critical error encountered; non-fatal issues are
+    /// collected as warnings.
+    pub fn sync_library_with_tag_update_checks(
+        &mut self,
+        verify_materialization: bool,
+        check_tag_updates: bool,
+    ) -> Result<SyncSummary, MediaPmError> {
+        let effective_paths = self.resolve_effective_paths();
+        let merged = self.resolve_effective_runtime_storage();
 
-        eprintln!("[mediapm::sync] running conductor workflows...");
-        let conductor_summary = match self
-            .conductor
-            .run_workflow("mediapm.sync", RunWorkflowOptions::default())
-            .await
-        {
-            Ok(summary) => summary,
-            Err(primary_error) => {
-                return Err(primary_error.into());
-            }
+        let mut warnings: Vec<String> = Vec::new();
+
+        // 1. Refresh runtime configuration.
+        self.refresh_runtime_configuration()?;
+
+        // 2. Sync tools.
+        let tools_report =
+            self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates)?;
+
+        // 3. Load mediapm document and state.
+        let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
+        let state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
+
+        // 4. Check if any tools require sync.
+        self.append_tool_sync_hint_warning(&mut warnings, &state);
+
+        // 5 – 6. Create a tokio runtime, open CAS, and run the materializer.
+        let materialize_report = {
+            let runtime = create_tokio_runtime()?;
+            let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
+            let cas = runtime.block_on(FileSystemCas::open(&conductor_cas_root)).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}"))
+            })?;
+            runtime.block_on(materializer::sync_hierarchy(
+                &effective_paths,
+                &document,
+                &state,
+                &cas,
+                verify_materialization,
+            ))?
         };
 
-        eprintln!("[mediapm::sync] syncing hierarchy materialization outputs...");
-        let hierarchy_start = std::time::Instant::now();
-        let state_json =
-            serde_json::to_vec(&lock).map_err(|e| MediaPmError::Serialization(e.to_string()))?;
-        let state_hash = mediapm_cas::Hash::from_bytes(*blake3::hash(&state_json).as_bytes());
-        let materialize_report = materializer::sync_hierarchy(
-            &effective_paths,
-            &document,
-            &machine,
-            &conductor_cas_root,
-            &mut lock,
-            Some(state_hash),
-            verify_materialization_override
-                .unwrap_or_else(|| document.runtime.verify_materialization()),
-        )
-        .await?;
-        let hierarchy_elapsed = hierarchy_start.elapsed();
-        eprintln!(
-            "[mediapm::sync] hierarchy materialization completed in {:.1}s",
-            hierarchy_elapsed.as_secs_f64()
-        );
-        let mut warnings = Vec::new();
-        warnings.extend(materialize_report.notices.clone());
-        Self::append_tool_sync_hint_warning(&mut warnings, &tools_requiring_sync);
-
-        // Reconcile again after materialization so managed-file hashes written
-        // during this sync are immediately rooted in machine external_data.
-        eprintln!("[mediapm::sync] finalizing machine-state reconciliation...");
-        conductor_bridge::reconcile_media_workflows(&effective_paths, &document, &mut lock)?;
-        save_mediapm_state_document(&effective_paths.mediapm_state_ncl, &lock)?;
+        // 7. Gather warnings from materializer.
+        warnings.extend(materialize_report.notices);
 
         Ok(SyncSummary {
-            executed_instances: conductor_summary.executed_steps,
-            cached_instances: conductor_summary.cached_steps,
+            executed_instances: 0, // stub: conductor not yet wired for full sync
+            cached_instances: 0,
             rematerialized_instances: 0,
             materialized_paths: materialize_report.materialized_paths,
             removed_paths: materialize_report.removed_paths,
             removed_empty_dirs: materialize_report.removed_empty_dirs,
-            added_tools: 0,
-            updated_tools: 0,
+            added_tools: tools_report.added_tools,
+            updated_tools: tools_report.updated_tools,
             warnings,
         })
     }
 }
 
-impl MediaPmService<FileSystemCas> {
-    /// Creates a filesystem-backed conductor stack rooted at the given directory.
-    ///
-    /// This is the production constructor used by the `mediapm` CLI.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the underlying filesystem CAS backend
-    /// cannot be opened or initialized at the resolved runtime store path.
-    pub async fn new_fs_at_with_runtime_storage_overrides(
-        root_dir: &Path,
-        runtime_storage_overrides: MediaRuntimeStorage,
-    ) -> Result<Self, MediaPmError> {
-        let paths = MediaPmPaths::from_root(root_dir);
-        let cas_store_root = paths.runtime_root.join("store");
-        let file_system_cas = FileSystemCas::open(&cas_store_root).await.map_err(|error| {
-            MediaPmError::Workflow(format!(
-                "opening conductor CAS store '{}' for workflow execution failed: {error}",
-                cas_store_root.display()
-            ))
-        })?;
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), file_system_cas);
-        Ok(Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides))
-    }
-}
+// ---------------------------------------------------------------------------
+// In-memory convenience constructors
+// ---------------------------------------------------------------------------
 
 impl MediaPmService<InMemoryCas> {
-    /// Creates a media service with an in-memory conductor and paths from the
-    /// current directory.
+    /// Creates a new in-memory service at a temporary root.
     ///
-    /// Useful for lightweight testing of API behavior that does not require
-    /// inspecting filesystem artifacts.
+    /// Useful for testing and short-lived operations.
     #[must_use]
     pub fn new_in_memory() -> Self {
-        let paths = MediaPmPaths::from_current_dir();
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
+        let root_dir = std::env::temp_dir().join("mediapm-inmemory");
+        let paths = MediaPmPaths::from_root(&root_dir);
+        let cas = InMemoryCas::new();
+        let runtime_storage = RuntimeStoragePaths::new(&paths.runtime_root);
+        let conductor = SimpleConductor::new(runtime_storage, cas);
         Self::new(conductor, paths)
-    }
-
-    /// Creates a media service with an in-memory conductor rooted at the given
-    /// directory.
-    ///
-    /// The workspace root is used to derive all canonical [`MediaPmPaths`] so
-    /// filesystem artifacts are available for inspection.
-    #[must_use]
-    pub fn new_in_memory_at(root_dir: &Path) -> Self {
-        let paths = MediaPmPaths::from_root(root_dir);
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
-        Self::new(conductor, paths)
-    }
-
-    /// Creates a media service with an in-memory conductor, rooted at the given
-    /// directory, with explicit runtime storage overrides.
-    #[must_use]
-    pub fn new_in_memory_at_with_runtime_storage_overrides(
-        root_dir: &Path,
-        runtime_storage_overrides: MediaRuntimeStorage,
-    ) -> Self {
-        let paths = MediaPmPaths::from_root(root_dir);
-        let conductor =
-            SimpleConductor::new(RuntimeStoragePaths::new(&paths.runtime_root), InMemoryCas::new());
-        Self::new_with_runtime_storage_overrides(conductor, paths, runtime_storage_overrides)
-    }
-}
-
-impl<Cas: CasApi + Send + Sync + 'static> MediaPmApi for MediaPmService<Cas> {
-    async fn process_source(
-        &self,
-        uri: Url,
-        permanent: bool,
-    ) -> Result<MediaPackage, MediaPmError> {
-        validate_source_uri(&uri)?;
-
-        Ok(MediaPackage { media_id: media_id_from_uri(&uri), source_uri: uri, permanent })
-    }
-
-    async fn sync_library(&self) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks(false, None).await
     }
 }

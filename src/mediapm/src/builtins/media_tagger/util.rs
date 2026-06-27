@@ -96,7 +96,7 @@ pub(super) fn join_unique<'a>(values: impl IntoIterator<Item = &'a str>) -> Stri
 
 /// Flattens one arbitrary JSON tree into FFmetadata-safe key/value pairs.
 pub(super) fn flatten_entity_json(prefix: &str, value: &Value, out: &mut BTreeMap<String, String>) {
-    pub(super) fn walk(prefix: &str, value: &Value, out: &mut BTreeMap<String, String>) {
+    fn walk(prefix: &str, value: &Value, out: &mut BTreeMap<String, String>) {
         if out.len() >= MAX_FLATTENED_METADATA_ENTRIES {
             return;
         }

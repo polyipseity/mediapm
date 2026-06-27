@@ -1,372 +1,247 @@
-//! Hierarchy path template resolution, media metadata extraction, and ffprobe helpers.
+//! Metadata resolution: placeholders, variant metadata, regex transforms.
+//!
+//! Provides template interpolation for `${media.id}` and
+//! `${media.metadata.<key>}` placeholders, variant-file metadata extraction
+//! from JSON/ffprobe output, and regex-based metadata string transforms.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeSet;
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
-
+use mediapm_cas::{CasApi, FileSystemCas, Hash};
 use regex::Regex;
 
-use mediapm_conductor::{NickelDocument, ToolKindSpec};
-
-use crate::config::MediaPmState;
-use crate::config::{
-    HierarchyEntry, HierarchyFolderRenameRule, MediaMetadataRegexTransform, MediaMetadataValue,
-    MediaMetadataValueCandidate, MediaSourceSpec, hierarchy_metadata_placeholder_keys,
+use crate::config::source_types::{
+    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate, MediaSourceSpec,
 };
 use crate::error::MediaPmError;
-use crate::paths::MediaPmPaths;
 
-use super::MaterializationLookupContext;
-use super::resolve::resolve_variant_source_bytes;
-use super::sanitize_path_component;
+// ---------------------------------------------------------------------------
+// Lookup context
+// ---------------------------------------------------------------------------
 
-/// Resolves `${media.id}` and `${media.metadata.*}` placeholders for each
-/// hierarchy path component independently.
-pub(super) async fn resolve_hierarchy_relative_path(
-    path_components: &[String],
-    entry: &HierarchyEntry,
-    source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext,
-) -> Result<Vec<String>, MediaPmError> {
-    let mut resolved = Vec::with_capacity(path_components.len());
-    for component in path_components {
-        let context_label = format!("hierarchy path component '{component}'");
-        let resolved_component = resolve_media_placeholder_template(
-            component,
-            entry,
-            source,
-            lookup,
-            context_label.as_str(),
-        )
-        .await?;
-        resolved.push(resolved_component);
-    }
-    Ok(resolved)
+/// Shared lookup context threaded through materialization workers.
+#[derive(Clone)]
+pub(super) struct MaterializationLookupContext {
+    /// CAS store reference for resolving variant byte content.
+    pub(super) cas: FileSystemCas,
 }
 
-/// Resolves supported media placeholder forms in one arbitrary template.
-///
-/// Supported placeholders:
-/// - `${media.id}`
-/// - `${media.metadata.<key>}`
-async fn resolve_media_placeholder_template(
-    template: &str,
-    entry: &HierarchyEntry,
-    source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext,
-    context_label: &str,
-) -> Result<String, MediaPmError> {
-    let placeholder_keys = hierarchy_metadata_placeholder_keys(template).map_err(|reason| {
-        MediaPmError::Workflow(format!(
-            "{context_label} has invalid metadata placeholder syntax: {reason}"
-        ))
-    })?;
-
-    let has_media_id_placeholder = template.contains("${media.id}");
-
-    if placeholder_keys.is_empty() && !has_media_id_placeholder {
-        return Ok(template.to_string());
+impl MaterializationLookupContext {
+    /// Creates a new lookup context with the given CAS store.
+    #[must_use]
+    pub(super) fn new(cas: FileSystemCas) -> Self {
+        Self { cas }
     }
+}
 
-    let mut resolved_values = BTreeMap::new();
-    if !placeholder_keys.is_empty() {
-        let metadata = source.metadata.as_ref().ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "{context_label} references metadata placeholders but media '{}' does not define metadata",
-                entry.media_id
-            ))
-        })?;
+// ---------------------------------------------------------------------------
+// Metadata value resolution
+// ---------------------------------------------------------------------------
 
-        for metadata_key in placeholder_keys {
-            if resolved_values.contains_key(&metadata_key) {
-                continue;
-            }
-
-            let metadata_value = metadata.get(metadata_key.as_str()).ok_or_else(|| {
+/// Resolves one [`MediaMetadataValue`] to a concrete string.
+///
+/// Literal values return the stored text directly. Variant bindings extract
+/// the named key from the variant's produced file bytes. Fallback lists
+/// evaluate candidates top-to-bottom and return the first non-empty result.
+#[allow(dead_code)]
+pub(super) async fn resolve_metadata_value(
+    value: &MediaMetadataValue,
+    media_id: &str,
+    source: &MediaSourceSpec,
+    lookup_context: &MaterializationLookupContext,
+) -> Result<String, MediaPmError> {
+    match value {
+        MediaMetadataValue::Literal(text) => Ok(text.clone()),
+        MediaMetadataValue::Variant(binding) => {
+            let resolved = resolve_variant_metadata_key(
+                &binding.variant,
+                &binding.metadata_key,
+                media_id,
+                source,
+                lookup_context,
+            )
+            .await?
+            .ok_or_else(|| {
                 MediaPmError::Workflow(format!(
-                    "{context_label} references undefined metadata key '{}' for media '{}'",
-                    metadata_key, entry.media_id
+                    "media '{media_id}' variant '{}' metadata key '{}' did not resolve",
+                    binding.variant, binding.metadata_key
                 ))
             })?;
 
-            let resolved = resolve_media_metadata_string_value(
-                &entry.media_id,
-                metadata_key.as_str(),
-                metadata_value,
-                source,
-                lookup,
-            )
-            .await?;
-            resolved_values.insert(metadata_key, resolved);
-        }
-    }
+            let value = if let Some(transform) = &binding.transform {
+                apply_metadata_regex_transform(&resolved, transform)
+            } else {
+                resolved
+            };
 
-    let mut resolved_path = template.to_string();
-    for (metadata_key, metadata_value) in resolved_values {
-        let placeholder = format!("${{media.metadata.{metadata_key}}}");
-        resolved_path = resolved_path.replace(&placeholder, metadata_value.as_str());
-    }
-
-    if has_media_id_placeholder {
-        resolved_path = resolved_path.replace("${media.id}", entry.media_id.as_str());
-    }
-
-    Ok(resolved_path)
-}
-
-/// Resolves placeholder templates used by folder rename-rule replacements and
-/// applies the effective reserved-character replacement map to each resolved
-/// replacement.
-pub(super) async fn resolve_hierarchy_folder_rename_rule_replacements(
-    rules: &[HierarchyFolderRenameRule],
-    hierarchy_path: &str,
-    entry: &HierarchyEntry,
-    source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext,
-    replacements: &BTreeMap<char, char>,
-) -> Result<Vec<HierarchyFolderRenameRule>, MediaPmError> {
-    let mut resolved_rules = Vec::with_capacity(rules.len());
-
-    for (rule_index, rule) in rules.iter().enumerate() {
-        let context_label =
-            format!("hierarchy path '{hierarchy_path}' rename_files[{rule_index}] replacement");
-        let resolved_replacement = resolve_media_placeholder_template(
-            rule.replacement.as_str(),
-            entry,
-            source,
-            lookup,
-            context_label.as_str(),
-        )
-        .await?;
-
-        let sanitized_replacement = sanitize_path_component(&resolved_replacement, replacements);
-        resolved_rules.push(HierarchyFolderRenameRule {
-            pattern: rule.pattern.clone(),
-            replacement: sanitized_replacement,
-        });
-    }
-
-    Ok(resolved_rules)
-}
-
-/// Resolves one media metadata value into a concrete string.
-async fn resolve_media_metadata_string_value(
-    media_id: &str,
-    metadata_key: &str,
-    metadata_value: &MediaMetadataValue,
-    source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext,
-) -> Result<String, MediaPmError> {
-    match metadata_value {
-        MediaMetadataValue::Literal(value) => Ok(value.clone()),
-        MediaMetadataValue::Variant(binding) => {
-            resolve_media_metadata_candidate_value(
-                media_id,
-                metadata_key,
-                &MediaMetadataValueCandidate::Variant(binding.clone()),
-                source,
-                lookup,
-            )
-            .await
+            Ok(value)
         }
         MediaMetadataValue::Fallback(candidates) => {
             for candidate in candidates {
-                let resolved = resolve_media_metadata_candidate_value(
-                    media_id,
-                    metadata_key,
-                    candidate,
-                    source,
-                    lookup,
-                )
-                .await;
-
-                if let Ok(value) = resolved
-                    && !value.trim().is_empty()
-                {
-                    return Ok(value);
+                match candidate {
+                    MediaMetadataValueCandidate::Literal(text) => {
+                        if !text.is_empty() {
+                            return Ok(text.clone());
+                        }
+                    }
+                    MediaMetadataValueCandidate::Variant(binding) => {
+                        if let Some(value) = resolve_variant_metadata_key(
+                            &binding.variant,
+                            &binding.metadata_key,
+                            media_id,
+                            source,
+                            lookup_context,
+                        )
+                        .await?
+                        {
+                            let value = if let Some(transform) = &binding.transform {
+                                apply_metadata_regex_transform(&value, transform)
+                            } else {
+                                value
+                            };
+                            if !value.is_empty() {
+                                return Ok(value);
+                            }
+                        }
+                    }
                 }
             }
 
             Err(MediaPmError::Workflow(format!(
-                "media '{media_id}' metadata '{metadata_key}' fallback list did not resolve any non-empty value"
+                "media '{media_id}' metadata had no fallback that resolved to a non-empty value"
             )))
         }
     }
 }
 
-/// Resolves one metadata fallback candidate to a concrete string.
-async fn resolve_media_metadata_candidate_value(
+// ---------------------------------------------------------------------------
+// Template placeholder interpolation
+// ---------------------------------------------------------------------------
+
+/// Interpolates `${media.id}` and `${media.metadata.<key>}` placeholders in a
+/// hierarchy path template string.
+#[allow(dead_code)]
+pub(super) async fn interpolate_path_template(
+    template: &str,
     media_id: &str,
-    metadata_key: &str,
-    candidate: &MediaMetadataValueCandidate,
     source: &MediaSourceSpec,
-    lookup: &MaterializationLookupContext,
+    lookup_context: &MaterializationLookupContext,
 ) -> Result<String, MediaPmError> {
-    match candidate {
-        MediaMetadataValueCandidate::Literal(value) => Ok(value.clone()),
-        MediaMetadataValueCandidate::Variant(binding) => {
-            let variant_source =
-                resolve_variant_source_bytes(lookup, media_id, source, binding.variant.as_str())
-                    .await?;
+    let placeholder_keys = collect_metadata_placeholder_keys(template);
+    let mut result = template.to_string();
 
-            let extracted = extract_metadata_value_from_variant_payload(
-                lookup,
-                media_id,
-                metadata_key,
-                binding.variant.as_str(),
-                binding.metadata_key.as_str(),
-                variant_source.bytes.as_slice(),
-            )?;
+    // Replace ${media.id}
+    result = result.replace("${media.id}", media_id);
 
-            apply_metadata_regex_transform(
-                media_id,
-                metadata_key,
-                binding.transform.as_ref(),
-                extracted,
-            )
-        }
+    // Replace each ${media.metadata.<key>} with its resolved value.
+    for key in &placeholder_keys {
+        let placeholder = format!("${{media.metadata.{key}}}");
+        let resolved = if let Some(metadata_values) = source.metadata.as_ref() {
+            if let Some(metadata_value) = metadata_values.get(key) {
+                resolve_metadata_value(metadata_value, media_id, source, lookup_context).await?
+            } else {
+                return Err(MediaPmError::Workflow(format!(
+                    "media '{media_id}' template placeholder \
+                     '${{media.metadata.{key}}}' has no matching metadata entry"
+                )));
+            }
+        } else {
+            return Err(MediaPmError::Workflow(format!(
+                "media '{media_id}' template placeholder \
+                 '${{media.metadata.{key}}}' but no metadata exists"
+            )));
+        };
+        result = result.replace(&placeholder, &resolved);
     }
+
+    Ok(result)
 }
 
-/// Extracts one metadata value from variant payload bytes.
+/// Resolves one metadata key from a variant's produced content bytes.
 ///
-/// Resolution first attempts JSON lookup, then falls back to running ffprobe
-/// against the variant bytes when JSON extraction does not produce the key.
-fn extract_metadata_value_from_variant_payload(
-    lookup: &MaterializationLookupContext,
-    media_id: &str,
-    metadata_name: &str,
-    variant_name: &str,
+/// Returns `Ok(None)` when the variant has no directly known hash or when
+/// the content is not parseable as JSON. Returns `Ok(Some(value))` when the
+/// key was found. Returns `Err` on CAS failures or hash format errors.
+pub(super) async fn resolve_variant_metadata_key(
+    variant: &str,
     metadata_key: &str,
-    variant_bytes: &[u8],
-) -> Result<String, MediaPmError> {
-    // Compute cache key from media_id for persistent metadata cache.
-    let cache_key = blake3::hash(media_id.as_bytes()).to_hex().to_string();
-
-    // Check persistent cache first.
-    if let Some(ref metadata_cache) = lookup.metadata_cache
-        && let Some(cached_value) = metadata_cache.get(&cache_key)
-        && let Some(cached_map) = cached_value.as_object()
-        && let Some(cached) = lookup_json_string_key(cached_map, metadata_key)
-    {
-        return Ok(cached);
-    }
-
-    // Cache miss — resolve via JSON lookup or ffprobe.
-    let extracted = if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(variant_bytes)
-        && let Some(found) = extract_metadata_key_from_json(&parsed, metadata_key)
-    {
-        found
-    } else {
-        let ffprobe_path = lookup.managed_ffprobe_path.as_deref().ok_or_else(|| {
-            MediaPmError::Workflow(format!(
-                "media '{media_id}' metadata '{metadata_name}' bound to variant '{variant_name}' requires ffprobe lookup for key '{metadata_key}', but active managed ffmpeg is not configured"
-            ))
-        })?;
-
-        extract_metadata_key_with_ffprobe(
-            ffprobe_path,
-            media_id,
-            metadata_name,
-            variant_name,
-            metadata_key,
-            variant_bytes,
-        )?
-    };
-
-    // Store in cache for future lookups (entire map so other keys hit too).
-    if let Some(ref metadata_cache) = lookup.metadata_cache {
-        let mut cached_map =
-            metadata_cache.get(&cache_key).and_then(|v| v.as_object().cloned()).unwrap_or_default();
-        cached_map.insert(metadata_key.to_string(), serde_json::Value::String(extracted.clone()));
-        metadata_cache.set(cache_key, serde_json::Value::Object(cached_map));
-    }
-
-    Ok(extracted)
-}
-
-/// Applies optional regex transform to one extracted metadata value.
-fn apply_metadata_regex_transform(
     media_id: &str,
-    metadata_name: &str,
-    transform: Option<&MediaMetadataRegexTransform>,
-    extracted: String,
-) -> Result<String, MediaPmError> {
-    let Some(transform) = transform else {
-        return Ok(extracted);
+    source: &MediaSourceSpec,
+    lookup_context: &MaterializationLookupContext,
+) -> Result<Option<String>, MediaPmError> {
+    let hash_str = match source.variant_hashes.get(variant) {
+        Some(h) => h,
+        None => return Ok(None),
     };
 
-    let full_match_pattern = format!("^(?:{})$", transform.pattern);
-    let regex = Regex::new(&full_match_pattern).map_err(|error| {
+    let hash: Hash = hash_str.parse().map_err(|e| {
         MediaPmError::Workflow(format!(
-            "media '{media_id}' metadata '{metadata_name}' transform.pattern '{}' is invalid regex: {error}",
-            transform.pattern
+            "media '{media_id}' variant '{variant}' has invalid hash '{hash_str}': {e}"
         ))
     })?;
 
-    if !regex.is_match(&extracted) {
-        return Err(MediaPmError::Workflow(format!(
-            "media '{media_id}' metadata '{metadata_name}' transform.pattern '{}' must fully match extracted value '{}'",
-            transform.pattern, extracted
-        )));
+    let bytes = lookup_context.cas.get(hash).await.map_err(|e| {
+        MediaPmError::Workflow(format!(
+            "media '{media_id}' variant '{variant}' CAS read failed: {e}"
+        ))
+    })?;
+
+    // Try JSON extraction from ffprobe-style or generic JSON payloads.
+    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+        if let Some(value) = extract_metadata_key_from_json(&json, metadata_key) {
+            return Ok(Some(value));
+        }
     }
 
-    Ok(regex.replace(&extracted, transform.replacement.as_str()).into_owned())
+    Ok(None)
 }
 
-/// Extracts one metadata key from JSON payloads, including ffprobe nested tag
-/// layouts.
-#[must_use]
-fn extract_metadata_key_from_json(
-    payload: &serde_json::Value,
-    metadata_key: &str,
-) -> Option<String> {
-    let object = payload.as_object()?;
+// ---------------------------------------------------------------------------
+// JSON metadata extraction helpers
+// ---------------------------------------------------------------------------
 
-    if let Some(value) = lookup_json_string_key(object, metadata_key) {
-        return Some(value);
-    }
-
-    if let Some(format_object) = object.get("format").and_then(serde_json::Value::as_object) {
-        if let Some(value) = lookup_json_string_key(format_object, metadata_key) {
+/// Extracts one metadata key from ffprobe-style JSON (format + streams) or
+/// from a flat JSON object.
+#[allow(dead_code)]
+fn extract_metadata_key_from_json(json: &serde_json::Value, key: &str) -> Option<String> {
+    // Check format-level tags (ffprobe style).
+    if let Some(format) = json.get("format").and_then(serde_json::Value::as_object) {
+        if let Some(value) = lookup_json_string_key(format, key) {
             return Some(value);
         }
-
-        if let Some(tags) = format_object.get("tags").and_then(serde_json::Value::as_object)
-            && let Some(value) = lookup_json_string_key(tags, metadata_key)
-        {
-            return Some(value);
+        if let Some(tags) = format.get("tags").and_then(serde_json::Value::as_object) {
+            if let Some(value) = lookup_json_string_key(tags, key) {
+                return Some(value);
+            }
         }
     }
 
-    if let Some(streams) = object.get("streams").and_then(serde_json::Value::as_array) {
+    // Check stream-level tags (ffprobe style).
+    if let Some(streams) = json.get("streams").and_then(serde_json::Value::as_array) {
         for stream in streams {
-            let Some(stream_object) = stream.as_object() else {
-                continue;
-            };
-
-            if let Some(value) = lookup_json_string_key(stream_object, metadata_key) {
-                return Some(value);
+            if let Some(stream_obj) = stream.as_object() {
+                if let Some(value) = lookup_json_string_key(stream_obj, key) {
+                    return Some(value);
+                }
+                if let Some(tags) = stream_obj.get("tags").and_then(serde_json::Value::as_object) {
+                    if let Some(value) = lookup_json_string_key(tags, key) {
+                        return Some(value);
+                    }
+                }
             }
+        }
+    }
 
-            if let Some(tags) = stream_object.get("tags").and_then(serde_json::Value::as_object)
-                && let Some(value) = lookup_json_string_key(tags, metadata_key)
-            {
-                return Some(value);
-            }
+    // Top-level fallback for generic JSON objects.
+    if let Some(obj) = json.as_object() {
+        if let Some(value) = lookup_json_string_key(obj, key) {
+            return Some(value);
         }
     }
 
     None
 }
 
-/// Looks up one string value by key with case-insensitive matching.
-#[must_use]
+/// Case-insensitive string key lookup in a JSON object.
 fn lookup_json_string_key(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -380,170 +255,53 @@ fn lookup_json_string_key(
         .map(ToString::to_string)
 }
 
-/// Runs managed ffprobe and extracts one metadata key from probe output JSON.
-fn extract_metadata_key_with_ffprobe(
-    ffprobe_path: &Path,
-    media_id: &str,
-    metadata_name: &str,
-    variant_name: &str,
-    metadata_key: &str,
-    variant_bytes: &[u8],
-) -> Result<String, MediaPmError> {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let temp_path = std::env::temp_dir()
-        .join(format!("mediapm-metadata-probe-{}-{unique}.bin", std::process::id()));
+// ---------------------------------------------------------------------------
+// Regex transform
+// ---------------------------------------------------------------------------
 
-    ensure_managed_ffprobe_executable(ffprobe_path)?;
-
-    fs::write(&temp_path, variant_bytes).map_err(|source| MediaPmError::Io {
-        operation: "writing temporary metadata probe payload".to_string(),
-        path: temp_path.clone(),
-        source,
-    })?;
-
-    let output = Command::new(ffprobe_path)
-        .arg("-v")
-        .arg("error")
-        .arg("-show_entries")
-        .arg(format!(
-            "format={metadata_key}:stream={metadata_key}:format_tags={metadata_key}:stream_tags={metadata_key}"
-        ))
-        .arg("-of")
-        .arg("json")
-        .arg(&temp_path)
-        .output()
-        .map_err(|source| {
-            let _ = fs::remove_file(&temp_path);
-            MediaPmError::Workflow(format!(
-                "running managed ffprobe '{}' for media '{media_id}' metadata '{metadata_name}' failed: {source}",
-                ffprobe_path.display()
-            ))
-        })?;
-
-    let _ = fs::remove_file(&temp_path);
-
-    if !output.status.success() {
-        return Err(MediaPmError::Workflow(format!(
-            "managed ffprobe '{}' failed while resolving media '{media_id}' metadata '{metadata_name}' from variant '{}': {}",
-            ffprobe_path.display(),
-            variant_name,
-            String::from_utf8_lossy(&output.stderr)
-        )));
+/// Applies one [`MediaMetadataRegexTransform`] to a metadata string value.
+#[allow(dead_code)]
+fn apply_metadata_regex_transform(value: &str, transform: &MediaMetadataRegexTransform) -> String {
+    match Regex::new(&transform.pattern) {
+        Ok(re) => re.replace_all(value, transform.replacement.as_str()).to_string(),
+        Err(_) => value.to_string(),
     }
-
-    let parsed = serde_json::from_slice::<serde_json::Value>(&output.stdout).map_err(|error| {
-        MediaPmError::Workflow(format!(
-            "managed ffprobe output for media '{media_id}' metadata '{metadata_name}' could not be decoded as JSON: {error}"
-        ))
-    })?;
-
-    extract_metadata_key_from_json(&parsed, metadata_key).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "media '{media_id}' metadata '{metadata_name}' expected key '{metadata_key}' in variant '{variant_name}', but ffprobe reported no matching field or tag"
-        ))
-    })
 }
 
-/// Ensures managed ffprobe binary is executable on current host.
-fn ensure_managed_ffprobe_executable(ffprobe_path: &Path) -> Result<(), MediaPmError> {
-    #[cfg(unix)]
-    {
-        let metadata = fs::metadata(ffprobe_path).map_err(|source| {
-            MediaPmError::Workflow(format!(
-                "reading managed ffprobe '{}' metadata failed: {source}",
-                ffprobe_path.display()
-            ))
-        })?;
+// ---------------------------------------------------------------------------
+// Placeholder key extraction
+// ---------------------------------------------------------------------------
 
-        let mode = metadata.permissions().mode();
-        if mode & 0o111 == 0 {
-            let mut permissions = metadata.permissions();
-            permissions.set_mode(mode | 0o111);
-            fs::set_permissions(ffprobe_path, permissions).map_err(|source| {
-                MediaPmError::Workflow(format!(
-                    "setting execute permission for managed ffprobe '{}' failed: {source}",
-                    ffprobe_path.display()
-                ))
-            })?;
+/// Collects the set of distinct `${media.metadata.<key>}` placeholder keys
+/// from a template string (excluding `${media.id}`).
+#[allow(dead_code)]
+fn collect_metadata_placeholder_keys(template: &str) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    let mut cursor = 0usize;
+
+    while let Some(relative_start) = template[cursor..].find("${") {
+        let placeholder_start = cursor + relative_start;
+        let after_marker = &template[placeholder_start + 2..];
+        let Some(relative_end) = after_marker.find('}') else {
+            break;
+        };
+
+        let expression = after_marker[..relative_end].trim();
+
+        if expression == "media.id" {
+            cursor = placeholder_start + 2 + relative_end + 1;
+            continue;
         }
-    }
 
-    #[cfg(not(unix))]
-    {
-        let _ = ffprobe_path;
-    }
-
-    Ok(())
-}
-
-/// Resolves host ffprobe path from active managed ffmpeg executable selector.
-///
-/// Resolution always projects the selector into the conductor `payload/`
-/// layout, which is the only supported runtime location for managed tool
-/// content.
-#[must_use]
-pub(crate) fn resolve_managed_ffprobe_path(
-    paths: &MediaPmPaths,
-    machine: &NickelDocument,
-    lock: &MediaPmState,
-) -> Option<PathBuf> {
-    let ffmpeg_tool_id = lock.active_tools.get("ffmpeg")?;
-    let ffmpeg_tool = machine.tools.values().find(|t| t.name == *ffmpeg_tool_id)?;
-    let ToolKindSpec::Executable { command, .. } = &ffmpeg_tool.kind else {
-        return None;
-    };
-
-    let selector = command.first()?;
-    if selector.trim().is_empty() {
-        return None;
-    }
-
-    let ffmpeg_selector_path = PathBuf::from(resolve_host_command_selector_path(selector)?);
-    let ffmpeg_path = if ffmpeg_selector_path.is_absolute() {
-        ffmpeg_selector_path
-    } else {
-        paths.tools_dir.join(ffmpeg_tool_id).join("payload").join(ffmpeg_selector_path)
-    };
-    let ffprobe_file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
-
-    let candidate = ffmpeg_path
-        .parent()
-        .map_or_else(|| PathBuf::from(ffprobe_file_name), |parent| parent.join(ffprobe_file_name));
-
-    candidate.is_file().then_some(candidate)
-}
-
-/// Resolves a command selector expression to the host-specific path.
-#[must_use]
-fn resolve_host_command_selector_path(command_selector: &str) -> Option<String> {
-    if command_selector.contains("context.os") {
-        let host_os = std::env::consts::OS;
-        let regex =
-            Regex::new(r#"\$\{context\.os\s*==\s*\"([^\"]+)\"\s*\?\s*([^|}]*)\|\s*[^}]*\}"#)
-                .ok()?;
-
-        for captures in regex.captures_iter(command_selector) {
-            let selector_os = captures.get(1).map(|value| value.as_str())?;
-            if selector_os != host_os {
-                continue;
-            }
-
-            let branch = captures.get(2).map(|value| value.as_str())?.trim();
-            let unquoted = branch
-                .strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-                .or_else(|| branch.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
-                .unwrap_or(branch)
-                .trim();
-
-            if !unquoted.is_empty() {
-                return Some(unquoted.to_string());
+        if let Some(metadata_key) = expression.strip_prefix("media.metadata.") {
+            let key = metadata_key.trim();
+            if !key.is_empty() {
+                keys.insert(key.to_string());
             }
         }
 
-        return None;
+        cursor = placeholder_start + 2 + relative_end + 1;
     }
 
-    let trimmed = command_selector.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    keys
 }

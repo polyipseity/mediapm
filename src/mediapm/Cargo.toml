@@ -10,7 +10,6 @@ description = "Media orchestration facade over conductor and CAS"
 [features]
 default = ["cli"]
 cli = [
-  "dep:anyhow",
   "dep:clap",
   "dep:clap_complete",
   "mediapm-cas/cli",
@@ -20,9 +19,19 @@ cli = [
 [lints]
 workspace = true
 
+[lib]
+name = "mediapm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mediapm"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
-anyhow = { workspace = true, optional = true }
+anyhow.workspace = true
 blake3.workspace = true
+bytes.workspace = true
 chromaprint-next.workspace = true
 clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }
@@ -37,7 +46,7 @@ musicbrainz_rs = { workspace = true, features = ["async", "rustls"] }
 nickel-lang-core.workspace = true
 pulsebar.workspace = true
 regex.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
@@ -53,8 +62,3 @@ zip.workspace = true
 
 [dev-dependencies]
 same-file.workspace = true
-
-[[bin]]
-name = "mediapm"
-path = "src/main.rs"
-required-features = ["cli"]

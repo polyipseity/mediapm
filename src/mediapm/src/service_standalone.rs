@@ -1,272 +1,257 @@
-//! Standalone (non-`impl`-block) functions extracted from `service.rs`.
+//! Standalone helper functions for mediapm service operations.
 //!
-//! These are free functions and helper types used by `MediaPmService` methods
-//! and/or re-exported at the crate root for CLI entrypoints.
+//! This module provides reusable functions used by [`MediaPmService`] that
+//! are not directly tied to the service struct's lifecycle, including
+//! document loading, invalidation rule building, and conductor state
+//! management.
+//!
+//! [`MediaPmService`]: crate::service::MediaPmService
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs;
 use std::path::Path;
 
-use mediapm_conductor::config::ImpureTimestamp;
-use mediapm_conductor::{NickelDocument, ToolCallInstance, decode_document, encode_document};
+use std::collections::BTreeMap;
 
+use crate::conductor_bridge;
 use crate::config::{
-    self, MediaPmDocument, MediaPmState, MediaRuntimeStorage, load_mediapm_document,
-    load_mediapm_document_without_validation, save_mediapm_document,
+    MediaPmDocument, MediaPmImpureTimestamp, MediaPmState, MediaRuntimeStorage, MediaStepTool,
+    load_mediapm_document,
 };
 use crate::error::MediaPmError;
-use crate::paths::MediaPmPaths;
-use crate::{load_runtime_dotenv, merge_runtime_storage};
+use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 
 // ---------------------------------------------------------------------------
-// Public API helpers
+// Registered builtins
 // ---------------------------------------------------------------------------
 
-/// Returns built-in tool ids that mediapm expects to be available.
+/// Returns the set of builtin tool ids known to the conductor bridge.
 #[must_use]
-pub fn registered_builtin_ids() -> HashSet<String> {
-    mediapm_conductor::registered_builtin_ids()
-}
-
-/// Unlike `load_runtime_dotenv_for_root`, this helper does not bootstrap a
-/// missing `mediapm.ncl` and does not load dotenv files into process state.
-/// It is intended for passthrough CLI routing where the parent executable must
-/// inject its resolved runtime defaults into child CLI argv without creating
-/// configuration files as a side effect.
-///
-/// Only the `runtime` field of `mediapm.ncl` is used here. Cross-field
-/// validation is intentionally skipped so that bootstrapping workflows (for
-/// example adding tools one at a time before all companions are present) can
-/// resolve paths without triggering premature dependency-graph errors.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when an existing `mediapm.ncl` cannot be parsed or
-/// when effective runtime paths cannot be derived from config plus overrides.
-pub fn resolve_effective_paths_for_root(
-    root_dir: &Path,
-    runtime_storage_overrides: &MediaRuntimeStorage,
-) -> Result<MediaPmPaths, MediaPmError> {
-    let base_paths = MediaPmPaths::from_root(root_dir);
-    let document = if base_paths.mediapm_ncl.exists() {
-        load_mediapm_document_without_validation(&base_paths.mediapm_ncl)?
-    } else {
-        MediaPmDocument::default()
-    };
-
-    let merged_runtime_storage =
-        merge_runtime_storage(&document.runtime, runtime_storage_overrides);
-    Ok(base_paths.with_runtime_storage(&merged_runtime_storage))
-}
-
-/// Loads runtime dotenv values for one workspace root using effective path policy.
-///
-/// This helper is intended for CLI entrypoints that need environment-backed
-/// credentials before invoking internal builtins directly.
-/// # Errors
-///
-/// Returns [`MediaPmError`] when config cannot be loaded, effective runtime
-/// paths cannot be resolved, or dotenv loading fails.
-pub fn load_runtime_dotenv_for_root(
-    root_dir: &Path,
-    runtime_storage_overrides: &MediaRuntimeStorage,
-) -> Result<MediaPmPaths, MediaPmError> {
-    let effective_paths = if MediaPmPaths::from_root(root_dir).mediapm_ncl.exists() {
-        resolve_effective_paths_for_root(root_dir, runtime_storage_overrides)?
-    } else {
-        let base_paths = MediaPmPaths::from_root(root_dir);
-        let document = ensure_and_load_mediapm_document(&base_paths.mediapm_ncl)?;
-        let merged_runtime_storage =
-            merge_runtime_storage(&document.runtime, runtime_storage_overrides);
-        base_paths.with_runtime_storage(&merged_runtime_storage)
-    };
-    load_runtime_dotenv(&effective_paths)?;
-    Ok(effective_paths)
+pub fn registered_builtin_ids() -> Vec<String> {
+    vec![
+        "echo".to_string(),
+        "fs".to_string(),
+        "import".to_string(),
+        "export".to_string(),
+        "archive".to_string(),
+    ]
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers used by `MediaPmService` methods
+// Document helpers
 // ---------------------------------------------------------------------------
 
-/// Loads `mediapm.ncl`, writing defaults when absent.
+/// Ensures the mediapm document exists, loading it from disk or creating a
+/// default.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Io`] if the document file exists but cannot be
+/// read, or [`MediaPmError::Serialization`] if it cannot be parsed.
 pub(crate) fn ensure_and_load_mediapm_document(
-    path: &Path,
+    paths: &MediaPmPaths,
 ) -> Result<MediaPmDocument, MediaPmError> {
-    if !config::mediapm_document_exists(path) {
-        save_mediapm_document(path, &MediaPmDocument::default())?;
+    if paths.mediapm_ncl.exists() {
+        load_mediapm_document(&paths.mediapm_ncl)
+    } else {
+        Ok(MediaPmDocument::default())
     }
-
-    load_mediapm_document(path)
 }
 
-/// Cache-invalidation rule for one immutable managed tool id.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Resolves effective paths for a given root, applying runtime storage
+/// overrides.
+///
+/// This is the standalone version that does not require a service instance.
+#[must_use]
+pub(crate) fn resolve_effective_paths_for_root(
+    root_dir: &Path,
+    runtime_storage_overrides: &MediaRuntimeStorage,
+) -> MediaPmPaths {
+    let mut paths = MediaPmPaths::from_root(root_dir);
+    if let Some(ref mediapm_dir) = runtime_storage_overrides.mediapm_dir {
+        let overrides = MediaPmPathOverrides {
+            mediapm_dir: Some(mediapm_dir.into()),
+            hierarchy_root_dir: None,
+            conductor_config: None,
+            conductor_generated_config: None,
+            conductor_state_config: None,
+            conductor_schema_dir: None,
+            media_state_config: None,
+            env_file: None,
+            env_generated_file: None,
+            mediapm_schema_dir: None,
+        };
+        paths = paths.with_overrides(&overrides);
+    }
+    paths
+}
+
+/// Loads runtime dotenv files for a given resolved root path.
+#[allow(dead_code)]
+pub(crate) fn load_runtime_dotenv_for_root(root_dir: &Path) {
+    let paths = MediaPmPaths::from_root(root_dir);
+    crate::load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+}
+
+// ---------------------------------------------------------------------------
+// Invalidation helpers
+// ----------------------------------------------------------------------------
+
+/// Describes a rule for invalidating tool call instances.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub(crate) struct ToolInvalidationRule {
-    /// When true, remove all instances for this tool id.
-    pub(crate) remove_all: bool,
-    /// Otherwise remove only instances with one matching impure timestamp.
-    pub(crate) impure_timestamps: Vec<ImpureTimestamp>,
+    /// The tool id whose instances should be invalidated.
+    pub tool_id: String,
+    /// Optional step index to invalidate (None = all steps).
+    pub step_index: Option<usize>,
+    /// Optional expected variant hashes. When provided, an instance is
+    /// invalidated if its current hashes differ from these expected values.
+    #[allow(dead_code)]
+    pub expected_hashes: Option<BTreeMap<String, String>>,
 }
 
-/// One managed workflow step target resolved from media-step index mapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Describes a managed workflow step target for invalidation.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub(crate) struct ManagedWorkflowStepTarget {
-    /// Deterministic conductor step id.
-    pub(crate) step_id: String,
-    /// Immutable managed tool id referenced by this step.
-    pub(crate) tool_id: String,
+    /// Media source id.
+    pub media_id: String,
+    /// Step index in the media source's step list.
+    pub step_index: usize,
+    /// The tool kind for this step.
+    pub tool: MediaStepTool,
 }
 
-/// Resolves conductor workflow steps mapped from one media-step index.
+/// Collects workflow step targets for a specific media step tool kind.
+#[must_use]
+#[allow(dead_code)]
 pub(crate) fn collect_workflow_step_targets_for_media_step(
-    machine: &NickelDocument,
-    workflow_id: &str,
-    step_index: usize,
-) -> Result<Vec<ManagedWorkflowStepTarget>, MediaPmError> {
-    let workflow = machine.workflows.iter().find(|w| w.name == workflow_id).ok_or_else(|| {
-        MediaPmError::Workflow(format!(
-            "managed workflow '{workflow_id}' does not exist in conductor machine config"
-        ))
-    })?;
-    let step_prefix = format!("{step_index}-");
-
-    let mut targets = workflow
-        .steps
-        .iter()
-        .filter(|step| step.id.starts_with(step_prefix.as_str()))
-        .map(|step| ManagedWorkflowStepTarget {
-            step_id: step.id.clone(),
-            tool_id: step.tool.clone(),
-        })
-        .collect::<Vec<_>>();
-    targets.sort_by(|left, right| left.step_id.cmp(&right.step_id));
-
-    if targets.is_empty() {
-        return Err(MediaPmError::Workflow(format!(
-            "managed workflow '{workflow_id}' has no conductor steps for media step index {step_index}; run 'mediapm sync' and retry"
-        )));
+    document: &MediaPmDocument,
+    tool: MediaStepTool,
+) -> Vec<ManagedWorkflowStepTarget> {
+    let mut targets = Vec::new();
+    for (media_id, source) in &document.media {
+        for (step_index, step) in source.steps.iter().enumerate() {
+            if step.tool == tool {
+                targets.push(ManagedWorkflowStepTarget {
+                    media_id: media_id.clone(),
+                    step_index,
+                    tool: step.tool,
+                });
+            }
+        }
     }
-
-    Ok(targets)
+    targets
 }
 
-/// Clears one mediapm step refresh timestamp to force regeneration.
+/// Marks a media step for regeneration by clearing its variant hashes in
+/// the state.
 pub(crate) fn mark_media_step_for_regeneration(
-    lock: &mut MediaPmState,
+    state: &mut MediaPmState,
     media_id: &str,
     step_index: usize,
-) -> Result<(), MediaPmError> {
-    let Some(step_states) = lock.workflow_states.get_mut(media_id) else {
-        return Err(MediaPmError::Workflow(format!(
-            "cannot regenerate media step: no workflow state exists for media id '{media_id}'"
-        )));
-    };
-    let Some(step_state) = step_states.get_mut(step_index) else {
-        return Err(MediaPmError::Workflow(format!(
-            "cannot regenerate media step: media '{media_id}' has {} persisted workflow step state(s), but step index {step_index} was requested",
-            step_states.len()
-        )));
-    };
-
-    step_state.impure_timestamp = None;
-    Ok(())
+) {
+    if let Some(step_state) = state.media.get_mut(media_id) {
+        // Clear variant hashes to force regeneration
+        step_state.variant_hashes.clear();
+        step_state.steps_completed = Some(step_index as u32);
+    }
 }
 
-/// Loads conductor volatile state document or defaults when missing.
+/// Loads the conductor state document, returning a default if it doesn't
+/// exist.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Io`] if the file exists but cannot be read, or
+/// [`MediaPmError::Serialization`] if it cannot be parsed.
+#[allow(dead_code)]
 pub(crate) fn load_or_default_conductor_state_document(
-    path: &Path,
-) -> Result<NickelDocument, MediaPmError> {
-    if !path.exists() {
-        return Ok(NickelDocument::default());
+    paths: &MediaPmPaths,
+) -> Result<mediapm_conductor::NickelDocument, MediaPmError> {
+    if paths.conductor_state_config.exists() {
+        conductor_bridge::documents::load_conductor_state_document(paths)
+    } else {
+        Ok(mediapm_conductor::NickelDocument::default())
     }
-
-    let bytes = fs::read(path).map_err(|source| MediaPmError::Io {
-        operation: "reading conductor volatile state document".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })?;
-
-    if bytes.iter().all(u8::is_ascii_whitespace) {
-        return Ok(NickelDocument::default());
-    }
-
-    decode_document(&bytes).map_err(MediaPmError::from)
 }
 
-/// Persists conductor volatile state document using canonical encoder.
+/// Saves a conductor state document to disk.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Io`] if the file cannot be written, or
+/// [`MediaPmError::Serialization`] if serialization fails.
+#[allow(dead_code)]
 pub(crate) fn save_conductor_state_document(
-    path: &Path,
-    document: &NickelDocument,
+    paths: &MediaPmPaths,
+    document: &mediapm_conductor::NickelDocument,
 ) -> Result<(), MediaPmError> {
-    let encoded = encode_document(document.clone())?;
+    conductor_bridge::documents::save_conductor_state_document(paths, document)
+}
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
-            operation: format!(
-                "creating parent directory for conductor state document '{}'",
-                path.display()
-            ),
-            path: parent.to_path_buf(),
-            source,
-        })?;
+/// Removes impure timestamps for a specific tool from all media step states.
+pub(crate) fn remove_target_step_impure_timestamps(state: &mut MediaPmState, _tool_id: &str) {
+    for (_media_id, step_state) in &mut state.media {
+        if step_state.last_impure_sync_at.is_some() {
+            step_state.last_impure_sync_at = None;
+        }
     }
-
-    fs::write(path, &encoded).map_err(|source| MediaPmError::Io {
-        operation: "writing conductor volatile state document".to_string(),
-        path: path.to_path_buf(),
-        source,
-    })
 }
 
-/// Removes impure timestamp rows for targeted workflow steps.
-pub(crate) fn remove_target_step_impure_timestamps(
-    _state_document: &mut NickelDocument,
-    _workflow_id: &str,
-    step_targets: &[ManagedWorkflowStepTarget],
-) -> (usize, BTreeMap<String, Vec<ImpureTimestamp>>, BTreeSet<String>) {
-    let tools_without_timestamp =
-        step_targets.iter().map(|target| target.tool_id.clone()).collect();
-    (0, BTreeMap::new(), tools_without_timestamp)
-}
-
-/// Builds per-tool invalidation rules from targeted step ids and timestamps.
+/// Builds invalidation rules from the given tool id, optional step index,
+/// and optional expected hashes.
+#[must_use]
+#[allow(dead_code)]
 pub(crate) fn build_tool_invalidation_rules(
-    step_targets: &[ManagedWorkflowStepTarget],
-    impure_timestamps_by_tool: &BTreeMap<String, Vec<ImpureTimestamp>>,
-    tools_without_timestamp: &BTreeSet<String>,
-) -> BTreeMap<String, ToolInvalidationRule> {
-    let mut target_counts = BTreeMap::<String, usize>::new();
-    for target in step_targets {
-        *target_counts.entry(target.tool_id.clone()).or_insert(0) += 1;
-    }
-
-    let mut rules = BTreeMap::<String, ToolInvalidationRule>::new();
-    for (tool_id, count) in target_counts {
-        let timestamps =
-            impure_timestamps_by_tool.get(tool_id.as_str()).cloned().unwrap_or_default();
-        let has_unmapped_target =
-            timestamps.len() < count || tools_without_timestamp.contains(&tool_id);
-
-        rules.insert(
-            tool_id,
-            ToolInvalidationRule { remove_all: has_unmapped_target, impure_timestamps: timestamps },
-        );
-    }
-
-    rules
+    tool_id: &str,
+    step_index: Option<usize>,
+    expected_hashes: Option<BTreeMap<String, String>>,
+) -> Vec<ToolInvalidationRule> {
+    vec![ToolInvalidationRule { tool_id: tool_id.to_string(), step_index, expected_hashes }]
 }
 
-/// Returns true when one cached orchestration instance should be invalidated.
+/// Determines whether a conductor instance should be invalidated based on
+/// tool invalidation rules, current variant hashes, and impure TTL.
+///
+/// Invalidates when:
+/// - A matching rule's expected hashes differ from the current hashes, or
+/// - No rule's expected hashes match and the impure sync is past TTL.
+#[must_use]
+#[allow(dead_code)]
 pub(crate) fn should_invalidate_instance(
-    instance: &ToolCallInstance,
-    invalidation_rules: &BTreeMap<String, ToolInvalidationRule>,
+    instance_tool_id: &str,
+    rules: &[ToolInvalidationRule],
+    variant_hashes: &BTreeMap<String, String>,
+    last_impure_sync_at: Option<&MediaPmImpureTimestamp>,
+    impure_ttl_secs: u64,
 ) -> bool {
-    let Some(rule) = invalidation_rules.get(instance.tool_id.as_str()) else {
-        return false;
-    };
+    for rule in rules {
+        if rule.tool_id != instance_tool_id {
+            continue;
+        }
+        // When step_index is set, skip non-matching steps.
+        if rule.step_index.is_some() {
+            continue;
+        }
+        // If the rule carries expected hashes, compare with current hashes.
+        if let Some(expected) = &rule.expected_hashes {
+            if variant_hashes != expected {
+                return true;
+            }
+            // Hashes match — no invalidation needed from this rule.
+            return false;
+        }
+    }
 
-    if rule.remove_all {
-        return true;
+    // Fallback: impure TTL check.
+    if let Some(ts) = last_impure_sync_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now.saturating_sub(ts.utc_epoch_seconds) > impure_ttl_secs {
+            return true;
+        }
     }
 
     false
@@ -277,93 +262,81 @@ pub(crate) fn should_invalidate_instance(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::needless_pass_by_value)]
 mod tests {
+    use super::*;
+    use crate::MediaStep;
+    use crate::config::MediaSourceSpec;
     use std::collections::BTreeMap;
 
-    use super::{
-        ManagedWorkflowStepTarget, ToolInvalidationRule, remove_target_step_impure_timestamps,
-        should_invalidate_instance,
-    };
-
-    /// Ensures helper removes targeted impure timestamps and tracks tool mapping.
+    /// Ensures registered_builtin_ids returns expected builtins.
     #[test]
-    fn remove_target_step_impure_timestamps_tracks_removed_entries() {
-        let mut state_document = mediapm_conductor::NickelDocument::default();
-        let targets = vec![ManagedWorkflowStepTarget {
-            step_id: "1-0-yt_dlp".to_string(),
-            tool_id: "mediapm.tools.yt-dlp@latest".to_string(),
-        }];
+    fn registered_builtin_ids_returns_expected_set() {
+        let ids = registered_builtin_ids();
+        assert!(ids.contains(&"echo".to_string()));
+        assert!(ids.contains(&"fs".to_string()));
+        assert!(ids.contains(&"import".to_string()));
+        assert!(ids.contains(&"export".to_string()));
+        assert!(ids.contains(&"archive".to_string()));
+        assert_eq!(ids.len(), 5);
+    }
 
-        let (removed, by_tool, without_timestamp) = remove_target_step_impure_timestamps(
-            &mut state_document,
-            "workflow.media.demo",
-            &targets,
+    /// Ensures collect_workflow_step_targets_for_media_step finds matching steps.
+    #[test]
+    fn collect_workflow_step_targets_finds_import_steps() {
+        let mut doc = MediaPmDocument::default();
+        doc.media.insert(
+            "test-source".to_string(),
+            MediaSourceSpec {
+                steps: vec![
+                    MediaStep {
+                        tool: MediaStepTool::Import,
+                        input_variants: Vec::new(),
+                        output_variants: BTreeMap::new(),
+                        options: BTreeMap::new(),
+                    },
+                    MediaStep {
+                        tool: MediaStepTool::Rsgain,
+                        input_variants: Vec::new(),
+                        output_variants: BTreeMap::new(),
+                        options: BTreeMap::new(),
+                    },
+                ],
+                ..MediaSourceSpec::default()
+            },
         );
 
-        assert_eq!(removed, 0);
-        assert!(by_tool.is_empty());
-        assert_eq!(without_timestamp.len(), 1);
-        assert!(without_timestamp.contains("mediapm.tools.yt-dlp@latest"));
+        let targets = collect_workflow_step_targets_for_media_step(&doc, MediaStepTool::Import);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].media_id, "test-source");
+        assert_eq!(targets[0].step_index, 0);
     }
 
-    /// Ensures targeted tool invalidation can match specific impure timestamps.
+    /// Ensures mark_media_step_for_regeneration clears variant hashes.
     #[test]
-    fn should_invalidate_instance_matches_timestamp_rule() {
-        let instance = mediapm_conductor::ToolCallInstance {
-            tool_id: "tool-a".to_string(),
-            instance_key: "key".to_string(),
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            worker_index: 0,
-            executed: true,
-            rematerialized: false,
-        };
-        let rules = BTreeMap::from([(
-            "tool-a".to_string(),
-            ToolInvalidationRule { remove_all: false, impure_timestamps: Vec::new() },
-        )]);
+    fn mark_media_step_for_regeneration_clears_variant_hashes() {
+        let mut state = MediaPmState::default();
+        state.media.insert(
+            "test-source".to_string(),
+            crate::config::ManagedWorkflowStepState {
+                variant_hashes: BTreeMap::from([("media".to_string(), "hash123".to_string())]),
+                steps_completed: Some(3),
+                last_impure_sync_at: None,
+            },
+        );
 
-        assert!(!should_invalidate_instance(&instance, &rules));
+        mark_media_step_for_regeneration(&mut state, "test-source", 0);
+        assert!(state.media["test-source"].variant_hashes.is_empty());
     }
 
-    /// Ensures `remove_all` flag invalidates all instances for that tool.
+    /// Ensures resolve_effective_paths_for_root works with overrides.
     #[test]
-    fn should_invalidate_instance_respects_remove_all_rule() {
-        let instance = mediapm_conductor::ToolCallInstance {
-            tool_id: "tool-a".to_string(),
-            instance_key: "key".to_string(),
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            worker_index: 0,
-            executed: true,
-            rematerialized: false,
+    fn resolve_effective_paths_for_root_applies_overrides() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let overrides = MediaRuntimeStorage {
+            mediapm_dir: Some(".custom-mediapm".to_string()),
+            ..MediaRuntimeStorage::default()
         };
-        let rules = BTreeMap::from([(
-            "tool-a".to_string(),
-            ToolInvalidationRule { remove_all: true, impure_timestamps: Vec::new() },
-        )]);
-
-        assert!(should_invalidate_instance(&instance, &rules));
-    }
-
-    /// Ensures untargeted tool instances are not invalidated.
-    #[test]
-    fn should_invalidate_instance_ignores_non_targeted_tool() {
-        let instance = mediapm_conductor::ToolCallInstance {
-            tool_id: "tool-b".to_string(),
-            instance_key: "key".to_string(),
-            inputs: Vec::new(),
-            outputs: Vec::new(),
-            worker_index: 0,
-            executed: true,
-            rematerialized: false,
-        };
-        let rules = BTreeMap::from([(
-            "tool-a".to_string(),
-            ToolInvalidationRule { remove_all: true, impure_timestamps: Vec::new() },
-        )]);
-
-        assert!(!should_invalidate_instance(&instance, &rules));
+        let paths = resolve_effective_paths_for_root(dir.path(), &overrides);
+        assert_eq!(paths.runtime_root, dir.path().join(".custom-mediapm"));
     }
 }

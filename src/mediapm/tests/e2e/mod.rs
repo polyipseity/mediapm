@@ -1,10 +1,3 @@
-//! End-to-end tests for `mediapm` workflows.
+//! Multi-step end-to-end service tests.
 
-/// Offline CLI example execution guardrails.
-mod cli_examples;
-
-/// Local demo example execution guardrails.
-mod demo;
-
-/// Full sync and source-management workflow scenarios.
-mod workflow;
+mod service;

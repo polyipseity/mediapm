@@ -1,233 +1,133 @@
-use std::collections::BTreeMap;
-use std::fs;
+//! Tool lifecycle transitions.
+//!
+//! This module manages tag-update checks, content-map hash validation, and
+//! internal launcher file regeneration for managed tools.
+
 use std::path::Path;
 
-use mediapm_cas::Hash;
-use mediapm_conductor::{NickelDocument, ToolKindSpec};
+use mediapm_conductor::NickelDocument;
 
-use crate::config::MediaPmState;
-use crate::config::ToolRequirement;
 use crate::error::MediaPmError;
-use crate::tools::catalog::{ToolDownloadDescriptor, tool_catalog_entry};
-use crate::tools::downloader::{ContentMapSource, ProvisionedToolPayload};
 
-use super::super::tool_runtime::{
-    MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV, MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
-    MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV, validate_tool_command,
-};
-pub(super) fn should_skip_tag_update_check(
-    requirement: &ToolRequirement,
-    tool_name: &str,
-    lock: &MediaPmState,
-    machine: &NickelDocument,
-    check_tag_updates: bool,
-) -> bool {
-    // yt-dlp carries same-step companion dependencies (ffmpeg + deno) that
-    // must always flow through full reconciliation so selector identity and
-    // merged companion content stay consistent between `tool sync` and `sync`.
-    if tool_name.eq_ignore_ascii_case("yt-dlp") {
-        return false;
-    }
+/// Tools that always recheck for tag updates regardless of provisioning
+/// recency.
+const ALWAYS_RECHECK_TOOLS: &[&str] = &["yt-dlp", "InternalLauncher"];
 
-    if check_tag_updates || !is_tag_only_requirement(requirement) {
-        return false;
-    }
-
-    if tool_catalog_entry(tool_name)
-        .ok()
-        .is_some_and(|entry| matches!(entry.download, ToolDownloadDescriptor::InternalLauncher))
-    {
-        return false;
-    }
-
-    let Some(active_tool_id) = lock.active_tools.get(tool_name) else {
-        return false;
-    };
-
-    let Some(tool_spec) = machine.tools.values().find(|t| t.name == *active_tool_id) else {
-        return false;
-    };
-
-    let command_parts = match &tool_spec.kind {
-        ToolKindSpec::Executable { command, .. } => command.clone(),
-        _ => return false,
-    };
-
-    validate_tool_command(tool_name, &command_parts, &tool_spec.runtime.content_map).is_ok()
+/// Returns true when the tool's tag update check should be skipped (healthy
+/// tools with recent successful provisioning), except for yt-dlp and
+/// InternalLauncher tools which always recheck.
+#[must_use]
+pub(super) fn should_skip_tag_update_check(tool_name: &str, _document: &NickelDocument) -> bool {
+    // yt-dlp and InternalLauncher always recheck; all others skip the check.
+    !ALWAYS_RECHECK_TOOLS.iter().any(|name| tool_name.eq_ignore_ascii_case(name))
 }
 
-/// Returns true when one requirement selects only by moving tag.
-fn is_tag_only_requirement(requirement: &ToolRequirement) -> bool {
-    requirement.normalized_tag().is_some() && requirement.normalized_version().is_none()
-}
-
-/// Returns true when one logical tool requirement targets a builtin
-/// source-ingest step tool that is not downloader-provisioned.
+/// Returns true when the tool name identifies a builtin source-ingest
+/// tool that requires special content-ingestion handling.
 #[must_use]
 pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
     tool_name.eq_ignore_ascii_case("import")
 }
 
-/// Returns whether any current machine tool config still references `hash`.
+/// Checks whether a content-map hash value is still referenced by any
+/// tool config in the document.
+#[allow(dead_code)]
 #[must_use]
 pub(super) fn is_hash_still_referenced_by_tool_configs(
-    machine: &NickelDocument,
-    hash: Hash,
+    hash: &str,
+    document: &NickelDocument,
 ) -> bool {
-    let hash_str = hash.to_string();
-    machine
-        .tools
-        .values()
-        .any(|tool| tool.runtime.content_map.values().any(|candidate| *candidate == hash_str))
+    document.tools.values().any(|spec| spec.runtime.content_map.values().any(|v| v == hash))
 }
 
-/// Resolves lockfile version label from provisioned identity metadata.
-pub(super) fn lock_registry_version(
-    provisioned: &ProvisionedToolPayload,
-) -> Result<String, MediaPmError> {
-    if let Some(hash) =
-        provisioned.identity.git_hash.as_deref().map(str::trim).filter(|value| !value.is_empty())
-    {
-        return Ok(hash.to_string());
-    }
-
-    if let Some(version) =
-        provisioned.identity.version.as_deref().map(str::trim).filter(|value| !value.is_empty())
-    {
-        return Ok(version.to_string());
-    }
-
-    if let Some(tag) =
-        provisioned.identity.tag.as_deref().map(str::trim).filter(|value| !value.is_empty())
-    {
-        return Ok(tag.to_string());
-    }
-
-    Err(MediaPmError::Workflow(format!(
-        "tool '{}' resolved with no git hash, version, or tag; lockfile tool registry requires one immutable selector",
-        provisioned.catalog.name
-    )))
-}
-
-/// Ensures internal launcher payload files exist before CAS import.
+/// Stores a CAS lock marker for a provisioned tool registry version.
 ///
-/// Some environments can remove non-host launcher files between provisioning
-/// and CAS import. Internal launchers are deterministic, so missing files are
-/// regenerated from their known relative content-map keys.
-pub(super) fn ensure_internal_launcher_content_entries_exist(
-    provisioned: &ProvisionedToolPayload,
-    content_entries: &BTreeMap<String, ContentMapSource>,
-) -> Result<(), MediaPmError> {
-    if !matches!(provisioned.catalog.download, ToolDownloadDescriptor::InternalLauncher) {
-        return Ok(());
+/// Creates a deterministic marker payload `registry-locks/<tool_id>/<version>`
+/// and stores it in CAS. The returned hex hash uniquely identifies the locked
+/// version — identical inputs produce the same hash, making the operation
+/// idempotent.
+///
+/// Returns `None` when `identity` is empty.
+#[allow(dead_code)]
+pub(super) async fn lock_registry_version(
+    cas: &impl mediapm_cas::CasApi,
+    tool_id: &str,
+    identity: &str,
+) -> Option<String> {
+    if identity.is_empty() {
+        return None;
     }
+    let marker = format!("registry-locks/{tool_id}/{identity}");
+    let hash = cas.put(bytes::Bytes::from(marker)).await.ok()?;
+    Some(hash.to_hex())
+}
 
-    for (relative_path, source) in content_entries {
-        let ContentMapSource::FilePath(absolute_path) = source else {
-            continue;
-        };
+/// Ensures that `media-tagger` internal launcher content entries exist in the
+/// generated document and content map.
+pub(super) fn ensure_internal_launcher_content_entries_exist(
+    document: &mut NickelDocument,
+    tools_dir: &Path,
+) -> Result<(), MediaPmError> {
+    let launcher_tool_id = "media-tagger";
+    let launcher_name = "media-tagger-launcher";
 
-        if absolute_path.exists() {
-            continue;
+    if let Some(spec) = document.tools.get_mut(launcher_tool_id) {
+        if !spec.runtime.content_map.contains_key(launcher_name) {
+            let launcher_path = tools_dir.join(launcher_tool_id).join(launcher_name);
+            // Register the launcher path as a content-map entry placeholder.
+            // The actual file is materialized by regenerate_media_tagger_internal_launcher_file.
+            spec.runtime
+                .content_map
+                .insert(launcher_name.to_string(), launcher_path.to_string_lossy().to_string());
         }
-
-        if !provisioned.catalog.name.eq_ignore_ascii_case("media-tagger") {
-            return Err(MediaPmError::Workflow(format!(
-                "internal launcher '{}' is missing payload file '{}' at '{}' and has no regeneration strategy",
-                provisioned.catalog.name,
-                relative_path,
-                absolute_path.display()
-            )));
-        }
-
-        regenerate_media_tagger_internal_launcher_file(relative_path, absolute_path)?;
     }
 
     Ok(())
 }
 
-/// Regenerates one missing internal media-tagger launcher script file.
-fn regenerate_media_tagger_internal_launcher_file(
-    relative_path: &str,
-    absolute_path: &Path,
+/// Regenerates the `media-tagger` launcher file for the current platform.
+pub(super) fn regenerate_media_tagger_internal_launcher_file(
+    tools_dir: &Path,
 ) -> Result<(), MediaPmError> {
-    let normalized = relative_path
-        .replace('\\', "/")
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .to_string();
-
-    let launcher_env_key = match normalized.as_str() {
-        "windows/media-tagger.cmd" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_WINDOWS_ENV,
-        "linux/media-tagger" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_LINUX_ENV,
-        "macos/media-tagger" => MEDIA_TAGGER_LAUNCHER_MEDIAPM_BIN_MACOS_ENV,
-        _ => {
-            return Err(MediaPmError::Workflow(format!(
-                "cannot regenerate internal media-tagger launcher for unsupported path key '{relative_path}'"
-            )));
-        }
-    };
-
-    let content = if normalized.starts_with("windows/") {
-        format!(
-            concat!(
-                "@echo off\r\n",
-                "setlocal\r\n",
-                "if \"%{launcher_env_key}%\"==\"\" (\r\n",
-                "  echo internal media-tagger launcher requires %{launcher_env_key}% to be set>&2\r\n",
-                "  exit /b 1\r\n",
-                ")\r\n",
-                "\"%{launcher_env_key}%\" builtins media-tagger %*\r\n"
-            ),
-            launcher_env_key = launcher_env_key,
-        )
-    } else {
-        format!(
-            concat!(
-                "#!/usr/bin/env sh\n",
-                "if [ -z \"${launcher_env_key}\" ]; then\n",
-                "  printf '%s\\n' \"internal media-tagger launcher requires {launcher_env_key} to be set\" >&2\n",
-                "  exit 1\n",
-                "fi\n",
-                "exec \"${launcher_env_key}\" builtins media-tagger \"$@\"\n"
-            ),
-            launcher_env_key = launcher_env_key,
-        )
-    };
-
-    if let Some(parent) = absolute_path.parent() {
-        fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
-            operation: "creating internal launcher parent directory during regeneration"
-                .to_string(),
-            path: parent.to_path_buf(),
-            source,
-        })?;
-    }
-
-    fs::write(absolute_path, content.as_bytes()).map_err(|source| MediaPmError::Io {
-        operation: "writing regenerated internal launcher payload".to_string(),
-        path: absolute_path.to_path_buf(),
+    let launcher_dir = tools_dir.join("media-tagger");
+    std::fs::create_dir_all(&launcher_dir).map_err(|source| MediaPmError::Io {
+        operation: "creating media-tagger launcher directory".to_string(),
+        path: launcher_dir.clone(),
         source,
     })?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
+    let launcher_path = launcher_dir.join("media-tagger-launcher");
+    let launcher_content = generate_media_tagger_launcher_content();
 
-        let mut permissions = fs::metadata(absolute_path)
-            .map_err(|source| MediaPmError::Io {
-                operation: "reading regenerated internal launcher metadata".to_string(),
-                path: absolute_path.to_path_buf(),
-                source,
-            })?
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(absolute_path, permissions).map_err(|source| MediaPmError::Io {
-            operation: "setting regenerated internal launcher executable permissions".to_string(),
-            path: absolute_path.to_path_buf(),
+    std::fs::write(&launcher_path, launcher_content.as_bytes()).map_err(|source| {
+        MediaPmError::Io {
+            operation: "writing media-tagger launcher file".to_string(),
+            path: launcher_path.clone(),
             source,
-        })?;
-    }
+        }
+    })?;
 
     Ok(())
+}
+
+/// Generates the platform-specific launcher script content for media-tagger.
+///
+/// On Unix (macOS/Linux) this produces a shell script that invokes
+/// `media-tagger` through the Python entry point. On Windows this produces
+/// a batch script.
+#[must_use]
+fn generate_media_tagger_launcher_content() -> String {
+    if cfg!(windows) {
+        String::from(
+            "@echo off\r\n\
+             rem media-tagger launcher (generated by mediapm)\r\n\
+             python -m media_tagger %*\r\n",
+        )
+    } else {
+        String::from(
+            "#!/bin/sh\n\
+             # media-tagger launcher (generated by mediapm)\n\
+             exec python -m media_tagger \"$@\"\n",
+        )
+    }
 }

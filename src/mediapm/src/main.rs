@@ -4,49 +4,433 @@
 //! - media/tool declarative state management,
 //! - sync/materialization orchestration,
 //! - passthrough command surfaces for the CAS and conductor CLIs.
+//!
+//! This binary requires the `cli` feature.
 
+#![expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
+
+#[cfg(feature = "cli")]
 use std::path::PathBuf;
 
+#[cfg(feature = "cli")]
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "cli")]
 use clap_complete::Shell;
+#[cfg(feature = "cli")]
+use mediapm::MediaPmService;
+#[cfg(feature = "cli")]
 use mediapm::{
-    AddInsertPosition, MediaHierarchyPreset, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
+    AddInsertPosition, MediaHierarchyPreset, MediaMetadataValue, MediaPmGlobalPaths, MediaPmPaths,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
-    global_tool_cache_status, load_runtime_dotenv_for_root, resolve_default_global_paths,
-    resolve_effective_paths_for_root,
+    global_tool_cache_status, load_runtime_dotenv, media_id_from_uri,
 };
+#[cfg(feature = "cli")]
 use url::Url;
+
+fn main() -> anyhow::Result<()> {
+    #[cfg(feature = "cli")]
+    {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(main_cli())?;
+        return Ok(());
+    }
+
+    #[cfg(not(feature = "cli"))]
+    {
+        eprintln!("error: the mediapm binary requires the 'cli' feature");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(feature = "cli")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
+)]
+async fn main_cli() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+    let cli = Cli::parse();
+
+    let rt: MediaRuntimeStorage = MediaRuntimeStorage {
+        mediapm_dir: cli.mediapm_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+        hierarchy_root_dir: cli
+            .hierarchy_root_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        conductor_config: cli.conductor_config.as_ref().map(|p| p.to_string_lossy().to_string()),
+        conductor_generated_config: cli
+            .conductor_generated_config
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        conductor_state_config: cli
+            .conductor_state_config
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        env_file: cli.env_file.as_ref().map(|p| p.to_string_lossy().to_string()),
+        env_generated_file: cli
+            .env_generated_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        media_state_config: cli
+            .media_state_config
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string()),
+        mediapm_schema_dir: cli
+            .mediapm_schema_dir
+            .as_ref()
+            .map(|p| Some(p.to_string_lossy().to_string())),
+        retry_impure: cli.retry_impure,
+        ..MediaRuntimeStorage::default()
+    };
+    let _passthrough_rt = rt.clone();
+
+    match cli.command {
+        Command::Sync(args) => {
+            let root = &cli.root;
+            let paths = MediaPmPaths::from_root(root);
+            load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            let check_tag_updates = args.tag_update_policy.resolve(true);
+            let verify_materialization = args.verify_materialization.resolve(true);
+            let summary = service
+                .sync_library_with_tag_update_checks(verify_materialization, check_tag_updates)?;
+            mediapm::output::print_sync_summary(&summary);
+            Ok(())
+        }
+        Command::Tool { command } => match command {
+            ToolCommand::Run { tool, args } => {
+                let effective_paths = MediaPmPaths::from_root(&cli.root);
+                let mut conductor_args = vec!["tool".to_string(), "run".to_string()];
+                conductor_args.push("--tool".to_string());
+                conductor_args.push(tool);
+                conductor_args.extend(args);
+                passthrough_conductor(&conductor_args, &effective_paths).await
+            }
+            ToolCommand::Add { name } => {
+                let root = &cli.root;
+                let paths = MediaPmPaths::from_root(root);
+                load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+                let mut service =
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                service.add_tool_requirement(&name, None, None)?;
+                println!(
+                    "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
+                );
+                Ok(())
+            }
+            ToolCommand::Sync(args) => {
+                let root = &cli.root;
+                let paths = MediaPmPaths::from_root(root);
+                load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+                let mut service =
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                let check_tag_updates = args.tag_update_policy.resolve(true);
+                let summary = service.sync_tools_with_tag_update_checks(check_tag_updates)?;
+                println!(
+                    "tool sync complete: added={}, updated={}, pruned={}, removed={}",
+                    summary.added_tools,
+                    summary.updated_tools,
+                    summary.pruned_tools,
+                    summary.removed_tools,
+                );
+                for warning in &summary.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                Ok(())
+            }
+            ToolCommand::List => {
+                let effective_paths = MediaPmPaths::from_root(&cli.root);
+                passthrough_conductor(&["tool".to_string(), "list".to_string()], &effective_paths)
+                    .await
+            }
+            ToolCommand::Remove { name } => {
+                let root = &cli.root;
+                let paths = MediaPmPaths::from_root(root);
+                load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+                let mut service =
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                service.remove_tool_requirement(&name)?;
+                println!(
+                    "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
+                );
+                Ok(())
+            }
+            ToolCommand::Prune { id, metadata } => {
+                let effective_paths = MediaPmPaths::from_root(&cli.root);
+                let mut conductor_args = vec!["tool".to_string(), "prune".to_string(), id];
+                if metadata {
+                    conductor_args.push("--metadata".to_string());
+                }
+                passthrough_conductor(&conductor_args, &effective_paths).await
+            }
+            ToolCommand::RefreshRuntime => {
+                let root = &cli.root;
+                let paths = MediaPmPaths::from_root(root);
+                load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+                let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                service.refresh_runtime_configuration()?;
+                println!(
+                    "refreshed mediapm-managed conductor runtime configuration and dotenv files"
+                );
+                Ok(())
+            }
+        },
+        Command::Media { command } => {
+            let root = &cli.root;
+            let paths = MediaPmPaths::from_root(root);
+            load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            match command {
+                MediaCommand::Add(args) => {
+                    let media_id = match args.preset {
+                        MediaAddPreset::YtDlp => {
+                            let uri = Url::parse(&args.source).map_err(|e| {
+                                anyhow::anyhow!("invalid URL '{}': {}", args.source, e)
+                            })?;
+                            let media_id = media_id_from_uri(&uri);
+                            if args.overwrite {
+                                let _ = service.remove_media_source(&media_id);
+                            }
+                            let steps = default_yt_dlp_steps(
+                                args.recording_mbid.as_deref(),
+                                args.release_mbid.as_deref(),
+                            );
+                            let source_spec = MediaSourceSpec {
+                                id: None,
+                                title: args.title.clone(),
+                                description: args.description.clone(),
+                                artist: args.artist.clone(),
+                                workflow_id: None,
+                                metadata: args.album.as_deref().map(|album| {
+                                    let mut metadata = std::collections::BTreeMap::new();
+                                    metadata.insert(
+                                        "album".to_string(),
+                                        MediaMetadataValue::Literal(album.to_string()),
+                                    );
+                                    metadata
+                                }),
+                                variant_hashes: std::collections::BTreeMap::new(),
+                                steps,
+                            };
+                            service.add_media_source_with_position(
+                                &source_spec,
+                                media_id.clone(),
+                                &uri,
+                                args.title.as_deref(),
+                                args.description.as_deref(),
+                                args.insert_position.into(),
+                                args.overwrite,
+                            )?;
+                            media_id
+                        }
+                        MediaAddPreset::Local => {
+                            let path = PathBuf::from(&args.source);
+                            let media_id = service.add_local_source_with_position(
+                                &path,
+                                args.ffprobe_command.as_deref().unwrap_or("ffprobe"),
+                                None,
+                                args.insert_position.into(),
+                                args.overwrite,
+                            )?;
+                            media_id
+                        }
+                    };
+                    println!("registered media source id={media_id}");
+                    eprintln!(
+                        "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
+                    );
+                    Ok(())
+                }
+                MediaCommand::Remove { media_id } => {
+                    service.remove_media_source(&media_id)?;
+                    println!("removed media source id={media_id}");
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    Ok(())
+                }
+                MediaCommand::Invalidate(args) => {
+                    let invalidate_calls =
+                        if args.no_invalidate_calls { false } else { args.invalidate_calls };
+                    let regenerate = args.regenerate;
+                    let summary = service.invalidate_media_step_tool_calls(
+                        &args.media_id,
+                        args.step_index,
+                        invalidate_calls,
+                        regenerate,
+                    )?;
+                    println!(
+                        "invalidated media id={} step_index={}: workflow_id={}, removed_instances={}, regenerated_step={}",
+                        args.media_id,
+                        args.step_index,
+                        summary.workflow_id,
+                        summary.removed_instances.len(),
+                        summary.regenerated_step,
+                    );
+                    for warning in &summary.warnings {
+                        eprintln!("warning: {warning}");
+                    }
+                    eprintln!(
+                        "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
+                    );
+                    Ok(())
+                }
+            }
+        }
+        Command::Hierarchy { command } => {
+            let root = &cli.root;
+            let paths = MediaPmPaths::from_root(root);
+            load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
+            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            match command {
+                HierarchyCommand::Add(args) => {
+                    if args.overwrite {
+                        let _ = service.remove_media_hierarchy_preset(&format!(
+                            "root/{}",
+                            args.root_folder.trim_end_matches('/')
+                        ));
+                    }
+                    service.add_media_hierarchy_preset_with_position(
+                        args.preset.into(),
+                        args.insert_position.into(),
+                    )?;
+                    println!(
+                        "registered hierarchy preset={}",
+                        match args.preset {
+                            HierarchyPresetArg::Local => "local",
+                            HierarchyPresetArg::YtDlp => "yt-dlp",
+                        },
+                    );
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    Ok(())
+                }
+                // `--preset` is accepted for forward-compatibility / CLI
+                // discoverability but intentionally unused in the handler:
+                // remove-by-root-folder is simpler and covers all preset
+                // types since they all share the same node layout.
+                HierarchyCommand::Remove { preset: _, root_folder, media_id } => {
+                    let _ = service.remove_media_hierarchy_preset(&format!(
+                        "root/{}",
+                        root_folder.trim_end_matches('/')
+                    ));
+                    let removed = service.remove_media_hierarchy_preset_by_media_id(&media_id)?;
+                    println!("removed hierarchy nodes for media id={media_id}: count={removed}");
+                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    Ok(())
+                }
+            }
+        }
+        Command::Global { command } => match command {
+            GlobalCommand::Path => {
+                let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
+                    anyhow::anyhow!("could not resolve global user directory for this environment")
+                })?;
+                println!("global_dir={}", paths.root_dir.display());
+                println!("tool_cache_dir={}", paths.tool_cache_dir.display());
+                println!("tool_cache_store={}", paths.tool_cache_store_dir.display());
+                println!("tool_cache_index={}", paths.tool_cache_index_jsonc.display());
+                Ok(())
+            }
+            GlobalCommand::Init => {
+                ensure_global_directory_layout()?;
+                let paths = MediaPmGlobalPaths::resolve_default().unwrap();
+                println!("initialized global_dir={}", paths.root_dir.display());
+                Ok(())
+            }
+            GlobalCommand::ToolCache { command } => match command {
+                GlobalToolCacheCommand::Status => {
+                    let status = global_tool_cache_status()?;
+                    println!("tool_cache_dir={}", status.tool_cache_dir.display());
+                    println!("store_dir={}", status.store_dir.display());
+                    println!("index_jsonc={}", status.index_jsonc.display());
+                    println!("entry_count={}", status.entry_count);
+                    Ok(())
+                }
+                GlobalToolCacheCommand::Prune => {
+                    let summary = global_tool_cache_prune_expired()?;
+                    println!(
+                        "prune complete: removed_entries={}, removed_payloads={}",
+                        summary.removed_entries, summary.removed_payloads
+                    );
+                    Ok(())
+                }
+                GlobalToolCacheCommand::Clear => {
+                    global_tool_cache_clear()?;
+                    println!("cleared global tool-cache directory");
+                    Ok(())
+                }
+            },
+        },
+        Command::Builtin { command } => match *command {
+            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args).await,
+        },
+        Command::Cas(args) => {
+            let effective_store = MediaPmPaths::from_root(&cli.root).runtime_root.join("store");
+            passthrough_cas(&args.args, &effective_store).await
+        }
+        Command::Conductor(args) => {
+            let effective_paths = MediaPmPaths::from_root(&cli.root);
+            passthrough_conductor(&args.args, &effective_paths).await
+        }
+        Command::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());
+            Ok(())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CLI argument types
+// ---------------------------------------------------------------------------
 
 /// `mediapm` orchestration CLI.
 #[derive(Debug, Parser)]
 #[command(author, version, about = "mediapm orchestration CLI")]
 struct Cli {
     /// Workspace root that hosts `mediapm.ncl` and `.mediapm/` runtime state.
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = ".", env = "MEDIAPM_ROOT")]
     root: PathBuf,
     /// Overrides `runtime.mediapm_dir` for this command invocation.
-    #[arg(long)]
+    #[arg(long, env = "MEDIAPM_DIR")]
     mediapm_dir: Option<PathBuf>,
-    /// Overrides `runtime.conductor_config` for this command invocation.
-    #[arg(long)]
+    /// Override for `runtime.hierarchy_root_dir`.
+    ///
+    /// Intentionally exposed even though PLAN.md's global CLI-flag table
+    /// omits it — consistency with the other path-override flags makes
+    /// automation scripts simpler (every path can be set via `--<name>` /
+    /// `MEDIAPM_<NAME>`).
+    #[arg(long, env = "MEDIAPM_HIERARCHY_ROOT_DIR")]
+    hierarchy_root_dir: Option<PathBuf>,
+    /// Override for `runtime.conductor_config`.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_CONFIG")]
     conductor_config: Option<PathBuf>,
-    /// Overrides `runtime.conductor_machine_config` for this invocation.
-    #[arg(long)]
-    conductor_machine_config: Option<PathBuf>,
-    /// Overrides `runtime.conductor_state_config` for this command invocation.
-    #[arg(long)]
+    /// Override for `runtime.conductor_generated_config`.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_GENERATED_CONFIG")]
+    conductor_generated_config: Option<PathBuf>,
+    /// Override for `runtime.conductor_state_config`.
+    #[arg(long, env = "MEDIAPM_CONDUCTOR_STATE_CONFIG")]
     conductor_state_config: Option<PathBuf>,
-    /// Overrides `runtime.media_state_config` for this command invocation.
-    #[arg(long)]
-    media_state_config: Option<PathBuf>,
-    /// Overrides `runtime.env_file` for this command invocation.
-    #[arg(long)]
+    /// Override for `runtime.env_file`.
+    #[arg(long, env = "MEDIAPM_ENV_FILE")]
     env_file: Option<PathBuf>,
-    /// Overrides `runtime.env_generated_file` for this command invocation.
-    #[arg(long)]
+    /// Override for `runtime.env_generated_file`.
+    #[arg(long, env = "MEDIAPM_ENV_GENERATED_FILE")]
     env_generated_file: Option<PathBuf>,
+    /// Override for `runtime.mediapm_schema_dir`.
+    #[arg(long, env = "MEDIAPM_MEDIAPM_SCHEMA_DIR")]
+    mediapm_schema_dir: Option<PathBuf>,
+    /// Override for `runtime.media_state_config`.
+    #[arg(long, env = "MEDIAPM_MEDIA_STATE_CONFIG")]
+    media_state_config: Option<PathBuf>,
     /// Enables CorruptObject retry for impure workflow steps.
-    #[arg(long)]
+    #[arg(long, env = "MEDIAPM_RETRY_IMPURE")]
     retry_impure: bool,
     /// Top-level command selector.
     #[command(subcommand)]
@@ -113,10 +497,12 @@ enum ToolCommand {
     /// requirement for this name already exists, the command is a no-op.
     /// After adding, run `tool sync` to download and register the tool.
     Add {
-        /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `deno`, `rsgain`, `media-tagger`, `sd`).
+        /// Logical tool name (e.g. `yt-dlp`, `ffmpeg`, `deno`, `rsgain`,
+        /// `media-tagger`, `sd`).
         name: String,
     },
-    /// Reconciles desired tool requirements only (no workflow/materialization run).
+    /// Reconciles desired tool requirements only (no workflow/materialization
+    /// run).
     ///
     /// Default policy checks remote updates for tag-only selectors unless
     /// `--no-check-tag-updates` is provided.
@@ -125,25 +511,19 @@ enum ToolCommand {
     List,
     /// Removes one tool requirement entry from `mediapm.ncl`.
     ///
-    /// This updates desired tool state only. To remove already-downloaded
-    /// binaries for inactive entries, use `tool prune` with immutable tool id.
+    /// This updates desired tool state only.
     Remove {
         /// Logical tool name.
         name: String,
     },
     /// Removes one installed tool binary while keeping metadata.
     ///
-    /// Pass `--metadata` to also remove tool metadata from the machine document
-    /// and the tool registry entirely.  This is useful when a tool is fully
-    /// retired and you no longer want to track its historical state.
+    /// Pass `--metadata` to also remove tool metadata from the machine
+    /// document and the tool registry entirely.
     Prune {
         /// Immutable tool id.
         id: String,
         /// Also remove tool metadata from the machine document and registry.
-        ///
-        /// When set the tool id is completely erased from conductor state.  This
-        /// is not recommended for tools that may be re-provisioned because it
-        /// forces a full re-fetch on the next sync.
         #[arg(long)]
         metadata: bool,
     },
@@ -159,147 +539,185 @@ enum ToolCommand {
     RefreshRuntime,
 }
 
-/// Media-source commands.
+/// Media-source registry commands.
 #[derive(Debug, Subcommand)]
 enum MediaCommand {
-    /// Adds one media source using one explicit preset.
+    /// Adds one media source registered in `mediapm.ncl`.
     Add(MediaAddArgs),
-    /// Removes one existing media source id from `mediapm.ncl`.
+    /// Removes one media source from `mediapm.ncl` by id.
     Remove {
-        /// Existing media id in `mediapm.ncl`.
+        /// Media source id to remove.
         media_id: String,
     },
-    /// Invalidates completed tool calls for one media step.
+    /// Invalidates cached tool output for a specific media step.
+    ///
+    /// After invalidation, run `mediapm sync` to regenerate outputs.
     Invalidate(MediaInvalidateArgs),
 }
 
-/// Arguments for `mediapm media invalidate`.
-#[derive(Debug, Args)]
-struct MediaInvalidateArgs {
-    /// Existing media id in `mediapm.ncl`.
-    media_id: String,
-    /// Zero-based media step index under `media.<id>.steps`.
-    step_index: usize,
-    /// Invalidation mode.
-    #[arg(long, value_enum, default_value_t = MediaInvalidateMode::ToolCallsOnly)]
-    mode: MediaInvalidateMode,
-}
-
-/// Supported media-step invalidation modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-enum MediaInvalidateMode {
-    /// Invalidate completed tool calls only.
-    #[default]
-    ToolCallsOnly,
-    /// Invalidate completed tool calls and regenerate this media step.
-    ToolCallsAndRegenerate,
-}
-
-/// Hierarchy commands.
-#[derive(Debug, Subcommand)]
-enum HierarchyCommand {
-    /// Adds one hierarchy entry using one explicit preset.
-    Add(HierarchyAddArgs),
-    /// Removes one hierarchy entry using one explicit preset.
-    Remove(HierarchyRemoveArgs),
-}
-
-/// Arguments for `mediapm media add`.
+/// Arguments for `media add <preset> <source>`.
 #[derive(Debug, Args)]
 struct MediaAddArgs {
-    /// Media-add preset (`yt-dlp` or `local`).
-    #[arg(long, value_enum)]
+    /// Preset defining which toolchain to use.
+    #[arg(value_enum)]
     preset: MediaAddPreset,
-    /// Source value interpreted by the selected preset.
-    ///
-    /// - `yt-dlp`: online URI (`http` or `https`)
-    /// - `local`: filesystem path
+    /// Media source URL or local file path.
     source: String,
-    /// Optional title override. Prepended as a Literal candidate in the
-    /// metadata fallback chain; does not replace source-derived values.
+    /// Optional human-readable title for the media source.
     #[arg(long)]
     title: Option<String>,
-    /// Optional artist override. Prepended as a Literal candidate in the
-    /// metadata fallback chain; does not replace source-derived values.
+    /// Optional artist name override.
     #[arg(long)]
     artist: Option<String>,
-    /// Optional description override. Takes precedence over metadata fetched
-    /// from the source.
+    /// Optional description for the media source.
     #[arg(long)]
     description: Option<String>,
-    /// Optional album value. Populates `metadata["album"]` as a Literal
-    /// only when explicitly passed.
-    #[arg(long)]
-    album: Option<String>,
-    /// Optional `MusicBrainz` recording MBID UUID passed through to the
-    /// media-tagger step.
+    /// Optional recording MBID for music-related sources.
     #[arg(long)]
     recording_mbid: Option<String>,
-    /// Optional `MusicBrainz` release MBID UUID passed through to the
-    /// media-tagger step.
+    /// Optional release MBID for music-related sources.
     #[arg(long)]
     release_mbid: Option<String>,
-    /// Insertion position policy for media-map mutation.
-    #[arg(long, value_enum, default_value_t = AddInsertPosition::Sorted)]
-    insert_position: AddInsertPosition,
-    /// Overwrite an existing media entry with the same id.
+    /// Overwrite existing media source if media id already exists.
     #[arg(long)]
     overwrite: bool,
+    /// Insert position for the new entry.
+    #[arg(long, default_value = "sorted")]
+    insert_position: AddInsertPositionArg,
+    /// Optional album name override.
+    #[arg(long)]
+    album: Option<String>,
+    /// ffprobe command path (local preset only).
+    #[arg(long)]
+    ffprobe_command: Option<String>,
 }
 
-/// Media-add presets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// Preset for media add operations.
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum MediaAddPreset {
-    /// Online downloader preset (`yt-dlp -> ffmpeg -> media-tagger -> rsgain`).
+    /// Use yt-dlp to download and process media.
     YtDlp,
-    /// Local importer preset (`import -> media-tagger -> rsgain`).
+    /// Add a local file as a media source.
     Local,
 }
 
-/// Arguments for `mediapm hierarchy add`.
+/// Insertion position for media/hierarchy add operations.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+enum AddInsertPositionArg {
+    /// Insert in sorted (alphabetical) position.
+    #[default]
+    Sorted,
+    /// Insert at the beginning of the list.
+    Beginning,
+    /// Insert at the end of the list.
+    End,
+}
+
+impl From<AddInsertPositionArg> for AddInsertPosition {
+    fn from(value: AddInsertPositionArg) -> Self {
+        match value {
+            AddInsertPositionArg::Sorted => AddInsertPosition::Sorted,
+            AddInsertPositionArg::Beginning => AddInsertPosition::Beginning,
+            AddInsertPositionArg::End => AddInsertPosition::End,
+        }
+    }
+}
+
+/// Arguments for `media invalidate <media-id> <step-index>`.
+#[derive(Debug, Args)]
+struct MediaInvalidateArgs {
+    /// Media source id whose step cache should be invalidated.
+    media_id: String,
+    /// Zero-based step index to invalidate.
+    step_index: usize,
+    /// Invalidate tool calls (default: yes).
+    #[arg(
+        long,
+        default_value_t = true,
+        action = clap::ArgAction::Set,
+        conflicts_with = "no_invalidate_calls"
+    )]
+    invalidate_calls: bool,
+    /// Skip invalidation of tool calls.
+    #[arg(long, conflicts_with = "invalidate_calls")]
+    no_invalidate_calls: bool,
+    /// Regenerate after invalidation (default: no).
+    #[arg(
+        long,
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        conflicts_with = "no_regenerate"
+    )]
+    regenerate: bool,
+    /// Skip regeneration after invalidation.
+    #[arg(long, conflicts_with = "regenerate")]
+    no_regenerate: bool,
+}
+
+/// Hierarchy registry commands.
+#[derive(Debug, Subcommand)]
+enum HierarchyCommand {
+    /// Adds one predefined hierarchy preset entry.
+    Add(HierarchyAddArgs),
+    /// Removes one hierarchy node by media id.
+    Remove {
+        /// Hierarchy preset to remove from.
+        #[arg(long, value_enum)]
+        preset: Option<HierarchyPresetArg>,
+        /// Root folder for hierarchy nodes.
+        #[arg(long, default_value = "media/")]
+        root_folder: String,
+        /// Media id of the hierarchy node to remove.
+        media_id: String,
+    },
+}
+
+/// Arguments for `hierarchy add --preset <preset>`.
 #[derive(Debug, Args)]
 struct HierarchyAddArgs {
-    /// Hierarchy-add preset.
-    #[arg(long, value_enum)]
-    preset: MediaHierarchyPreset,
-    /// Optional hierarchy root folder.
-    ///
-    /// When omitted, defaults to `media/` for all presets.
-    #[arg(long = "root-folder", alias = "folder")]
-    root_folder: Option<String>,
-    /// Existing media id in `mediapm.ncl`.
-    media_id: String,
-    /// Insertion position policy inside the affected root-folder group.
-    #[arg(long, value_enum, default_value_t = AddInsertPosition::Sorted)]
-    insert_position: AddInsertPosition,
-    /// Overwrite an existing hierarchy node with the same id.
+    /// Predefined hierarchy preset.
+    #[arg(value_enum)]
+    preset: HierarchyPresetArg,
+    /// Root folder name for hierarchy nodes.
+    #[arg(long, default_value = "media/")]
+    root_folder: String,
+    /// Overwrite existing hierarchy node.
     #[arg(long)]
     overwrite: bool,
+    /// Insert position for the new entry.
+    #[arg(long, default_value = "sorted")]
+    insert_position: AddInsertPositionArg,
+    /// Optional media id to associate with the hierarchy node.
+    media_id: Option<String>,
 }
 
-/// Arguments for `mediapm hierarchy remove`.
-#[derive(Debug, Args)]
-struct HierarchyRemoveArgs {
-    /// Hierarchy-remove preset.
-    #[arg(long, value_enum)]
-    preset: MediaHierarchyPreset,
-    /// Optional hierarchy root folder.
-    ///
-    /// When omitted, defaults to `media/` for all presets.
-    #[arg(long = "root-folder", alias = "folder")]
-    root_folder: Option<String>,
-    /// Existing media id in `mediapm.ncl`.
-    media_id: String,
+/// Hierarchy preset selector with user-friendly names.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum HierarchyPresetArg {
+    /// Local-file library.
+    Local,
+    /// yt-dlp channel-based library.
+    #[value(name = "yt-dlp")]
+    YtDlp,
 }
 
-/// Global-directory management commands.
+impl From<HierarchyPresetArg> for MediaHierarchyPreset {
+    fn from(value: HierarchyPresetArg) -> Self {
+        match value {
+            HierarchyPresetArg::Local => MediaHierarchyPreset::Local,
+            HierarchyPresetArg::YtDlp => MediaHierarchyPreset::YtDlpChannel,
+        }
+    }
+}
+
+/// Global directory management commands.
 #[derive(Debug, Subcommand)]
 enum GlobalCommand {
-    /// Prints resolved global-directory paths.
+    /// Print global directory paths.
     Path,
-    /// Creates global-directory folders when missing.
+    /// Creates the global directory layout if absent.
     Init,
-    /// Global tool-cache management commands.
+    /// Tool-cache management commands.
     ToolCache {
         /// Tool-cache subcommand selector.
         #[command(subcommand)]
@@ -310,141 +728,92 @@ enum GlobalCommand {
 /// Global tool-cache management commands.
 #[derive(Debug, Subcommand)]
 enum GlobalToolCacheCommand {
-    /// Prints tool-cache status and key metadata paths.
+    /// Print tool-cache status information.
     Status,
-    /// Evicts cache rows older than the fixed 30-day TTL.
+    /// Prune expired entries from the global tool cache.
     Prune,
-    /// Deletes the entire global tool-cache directory.
+    /// Clear the global tool cache entirely.
     Clear,
 }
 
-/// Builtin command implementations exposed by `mediapm builtin ...`.
+/// Builtin command implementations exposed by the `mediapm` executable.
 #[derive(Debug, Subcommand)]
 enum BuiltinCommand {
-    /// Native metadata tagging flow (`Chromaprint -> AcoustID -> MusicBrainz`).
-    #[command(name = "media-tagger")]
+    /// Run internal media-tagger (Picard-based tagging pipeline).
     MediaTagger(InternalMediaTaggerArgs),
 }
 
-/// Arguments for one internal media-tagger invocation.
-#[derive(Debug, Args, Clone)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "builtin media-tagger CLI intentionally exposes independent boolean toggles"
-)]
+/// Arguments for `builtin media-tagger`.
+#[derive(Debug, Args)]
+#[expect(clippy::struct_excessive_bools, reason = "media-tagger has many option toggles")]
 struct InternalMediaTaggerArgs {
-    /// Optional input media payload path.
-    ///
-    /// This may be omitted when MBID-based identity is supplied (for example
-    /// `--recording-mbid`) and the invocation only needs metadata fetch.
-    #[arg(long)]
-    input: Option<PathBuf>,
-    /// Output media payload path.
-    #[arg(long)]
-    output: PathBuf,
-    /// Optional `AcoustID` API key override.
-    ///
-    /// When omitted and no recording MBID override is provided, `AcoustID`
-    /// lookup now fails immediately with a configuration error.
-    /// When provided, `AcoustID` lookup/authentication failures are also
-    /// surfaced as hard errors.
+    /// Input media file path.
+    #[arg(short, long)]
+    input: String,
+    /// Output file path.
+    #[arg(short, long)]
+    output: String,
+    /// AcoustID API key.
     #[arg(long)]
     acoustid_api_key: Option<String>,
-    /// `AcoustID` lookup endpoint.
+    /// AcoustID endpoint URL.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_ACOUSTID_ENDPOINT)]
     acoustid_endpoint: String,
-    /// `MusicBrainz` endpoint label used in diagnostics.
+    /// MusicBrainz endpoint URL.
     #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_MUSICBRAINZ_ENDPOINT)]
     musicbrainz_endpoint: String,
-    /// Optional persistent cache directory for metadata/cover-art fetches.
+    /// Cache directory path.
     #[arg(long)]
-    cache_dir: Option<PathBuf>,
-    /// Cache-expiry budget in seconds.
-    ///
-    /// Negative values disable expiry and keep cached rows indefinitely.
-    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CACHE_EXPIRY_SECONDS)]
-    cache_expiry_seconds: i64,
-    /// Enables strict failure when recording identity or metadata cannot be resolved.
+    cache_dir: Option<String>,
+    /// Cache expiry in seconds.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CACHE_EXPIRY_SECONDS as u64)]
+    cache_expiry_seconds: u64,
+    /// Enable strict identification.
     #[arg(long, default_value_t = true)]
     strict_identification: bool,
-    /// Enables extended Picard-compatible tag projection from `MusicBrainz` payloads.
+    /// Write all tags.
     #[arg(long, default_value_t = true)]
     write_all_tags: bool,
-    /// Enables binary cover-art attachment preparation plus Picard-compatible
-    /// `coverart_*` metadata enrichment.
+    /// Write all images.
     #[arg(long, default_value_t = true)]
     write_all_images: bool,
-    /// Enables embedding selected cover-art images into output tags.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS
-    )]
+    /// Save images to tags.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_SAVE_IMAGES_TO_TAGS)]
     save_images_to_tags: bool,
-    /// Keeps only one `front` cover image when available.
-    ///
-    /// Picard defaults this to enabled; mediapm defaults it to disabled so
-    /// selected non-front image kinds can also be embedded.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE
-    )]
+    /// Embed only one front image.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_EMBED_ONLY_ONE_FRONT_IMAGE)]
     embed_only_one_front_image: bool,
-    /// Ordered cover-art provider selector list.
-    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CA_PROVIDERS)]
+    /// Cover art providers.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CA_PROVIDERS.to_string())]
     ca_providers: String,
-    /// CAA image-type selector expression (`all` with optional excludes).
-    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES)]
+    /// CAA image types filter.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_TYPES.to_string())]
     caa_image_types: String,
-    /// Requested CAA image-size selector (`full`, `large`, `medium`, `small`).
-    #[arg(long, default_value = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE)]
+    /// CAA image size.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_IMAGE_SIZE.to_string())]
     caa_image_size: String,
-    /// Restricts CAA entries to approved-only when enabled.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY
-    )]
+    /// Restrict CAA entries to approved-only.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CAA_APPROVED_ONLY)]
     caa_approved_only: bool,
-    /// Preserves existing embedded image payloads during clear-tag mode when enabled.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES
-    )]
+    /// Preserve existing embedded images.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_PRESERVE_IMAGES)]
     preserve_images: bool,
-    /// Clears existing textual tags before applying newly resolved metadata.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS
-    )]
+    /// Clear existing textual tags.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_CLEAR_EXISTING_TAGS)]
     clear_existing_tags: bool,
-    /// Enables output-tag writing.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING
-    )]
+    /// Enable tag writing.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_ENABLE_TAG_SAVING)]
     enable_tag_saving: bool,
-    /// Enables release relationship processing for provider logic that uses ARs.
+    /// Release relationship processing.
     #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_RELEASE_ARS)]
     release_ars: bool,
-    /// Internal slot count used when emitting deterministic cover-art
-    /// attachment members for downstream ffmpeg apply stages.
-    #[arg(
-        long,
-        default_value_t = mediapm::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT
-    )]
+    /// Cover art slot count.
+    #[arg(long, default_value_t = mediapm::builtins::media_tagger::DEFAULT_COVER_ART_SLOT_COUNT)]
     cover_art_slot_count: usize,
-    /// Optional recording MBID override.
-    ///
-    /// Sentinel values:
-    /// - `auto`/empty => allow `AcoustID` autodetection,
-    /// - `none` => disable `AcoustID` autodetection.
+    /// Recording MBID override.
     #[arg(long)]
     recording_mbid: Option<String>,
-    /// Optional release MBID override.
-    ///
-    /// Sentinel values:
-    /// - `auto`/empty => treat as unspecified release MBID,
-    /// - `none` => treat as unspecified release MBID and disable `AcoustID`
-    ///   autodetection.
+    /// Release MBID override.
     #[arg(long)]
     release_mbid: Option<String>,
 }
@@ -484,7 +853,7 @@ impl TagUpdatePolicyArgs {
 /// Optional verify-materialization override flags for sync commands.
 #[derive(Debug, Args, Clone, Copy, Default)]
 struct VerifyMaterializationArgs {
-    /// Enables materialization verification (recomputes BLAKE3 hash after write).
+    /// Enables materialization verification.
     #[arg(long, conflicts_with = "no_verify_materialization")]
     verify_materialization: bool,
     /// Disables materialization verification.
@@ -493,7 +862,8 @@ struct VerifyMaterializationArgs {
 }
 
 impl VerifyMaterializationArgs {
-    /// Resolves effective verify-materialization policy using command-specific default.
+    /// Resolves effective verify-materialization policy using command-specific
+    /// default.
     fn resolve(self, default_value: bool) -> bool {
         if self.verify_materialization {
             true
@@ -516,360 +886,87 @@ struct SyncArgs {
     verify_materialization: VerifyMaterializationArgs,
 }
 
-#[tokio::main]
-/// Parses CLI args and executes one top-level command.
-#[expect(
-    clippy::too_many_lines,
-    reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
-)]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
-    let cli = Cli::parse();
-    let runtime_storage_overrides = MediaRuntimeStorage {
-        mediapm_dir: option_path_to_string(cli.mediapm_dir),
-        hierarchy_root_dir: None,
-        materialization_preference_order: None,
-        conductor_config: option_path_to_string(cli.conductor_config),
-        conductor_machine_config: option_path_to_string(cli.conductor_machine_config),
-        conductor_state_config: option_path_to_string(cli.conductor_state_config),
-        conductor_schema_dir: None,
-        inherited_env_vars: None,
-        media_state_config: option_path_to_string(cli.media_state_config),
-        env_file: option_path_to_string(cli.env_file),
-        env_generated_file: option_path_to_string(cli.env_generated_file),
-        mediapm_schema_dir: None,
-        profiler_enabled: None,
-        verify_materialization: None,
-        instance_ttl_seconds: None,
-        verify_on_read: None,
-        path_sanitization: None,
-        verify_on_read_sample_denominator: None,
-        verify_on_read_stale_timeout_secs: None,
-        reconstructed_bytes_cache_ttl_secs: None,
-        retry_impure: if cli.retry_impure { Some(true) } else { None },
-    };
-    let passthrough_runtime_storage_overrides = runtime_storage_overrides.clone();
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-    // Determine which command group this invocation belongs to, so we can
-    // avoid opening the project-local CAS store for commands that manage
-    // it themselves (Conductor, Cas) or don't need it at all.
-    match cli.command {
-        Command::Sync(args) => {
-            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
-            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
-                &cli.root,
-                runtime_storage_overrides,
-            )
-            .await?;
-            let check_tag_updates = args.tag_update_policy.resolve(true);
-            let verify_materialization = args.verify_materialization.resolve(true);
-            let summary = service
-                .sync_library_with_tag_update_checks(
-                    check_tag_updates,
-                    Some(verify_materialization),
-                )
-                .await?;
-            println!(
-                "sync complete: executed={}, cached={}, rematerialized={}, materialized={}, removed={}, removed_empty_dirs={}",
-                summary.executed_instances,
-                summary.cached_instances,
-                summary.rematerialized_instances,
-                summary.materialized_paths,
-                summary.removed_paths,
-                summary.removed_empty_dirs,
-            );
-            for warning in summary.warnings {
-                eprintln!("warning: {warning}");
-            }
-        }
-        Command::Tool { command } => match command {
-            ToolCommand::Run { tool, args } => {
-                let effective_paths = MediaPmPaths::from_root(&cli.root)
-                    .with_runtime_storage(&passthrough_runtime_storage_overrides);
-                let mut conductor_args = vec!["tool".to_string(), "run".to_string()];
-                conductor_args.push("--tool".to_string());
-                conductor_args.push(tool);
-                conductor_args.extend(args);
-                passthrough_conductor(&conductor_args, &effective_paths).await?;
-            }
-            other_tool_command => {
-                let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
-                let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
-                    &cli.root,
-                    runtime_storage_overrides,
-                )
-                .await?;
-                match other_tool_command {
-                    ToolCommand::Add { name } => {
-                        let added = service.add_tool_requirement(&name)?;
-                        if added {
-                            println!(
-                                "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
-                            );
-                        } else {
-                            println!(
-                                "tool requirement '{name}' already exists; run 'tool sync' to update"
-                            );
-                        }
-                    }
-                    ToolCommand::Sync(args) => {
-                        let check_tag_updates = args.tag_update_policy.resolve(true);
-                        let summary =
-                            service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
-                        println!(
-                            "tool sync complete: added={}, updated={}, unchanged={}",
-                            summary.added_tools, summary.updated_tools, summary.unchanged_tools
-                        );
-                        for warning in summary.warnings {
-                            eprintln!("warning: {warning}");
-                        }
-                    }
-                    ToolCommand::List => {
-                        let rows = service.list_tools()?;
-                        if rows.is_empty() {
-                            println!("no tools registered");
-                        } else {
-                            for row in rows {
-                                println!("{}\tbinary_present={}", row.tool_id, row.has_binary);
-                            }
-                        }
-                    }
-                    ToolCommand::Remove { name } => {
-                        let removed = service.remove_tool_requirement(&name)?;
-                        if removed {
-                            println!(
-                                "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
-                            );
-                        } else {
-                            println!("tool requirement '{name}' was not present");
-                        }
-                    }
-                    ToolCommand::Prune { id, metadata } => {
-                        let removed_hashes = service.prune_tool(&id, metadata).await?;
-                        println!("pruned tool binary for {id} (removed_hashes={removed_hashes})");
-                    }
-                    ToolCommand::RefreshRuntime => {
-                        service.refresh_runtime_configuration()?;
-                        println!(
-                            "refreshed mediapm-managed conductor runtime configuration and dotenv files"
-                        );
-                    }
-                    ToolCommand::Run { .. } => unreachable!(),
-                }
-            }
+/// Builds default yt-dlp processing steps with optional MBID overrides.
+#[must_use]
+fn default_yt_dlp_steps(
+    recording_mbid: Option<&str>,
+    release_mbid: Option<&str>,
+) -> Vec<MediaStep> {
+    use std::collections::BTreeMap;
+
+    vec![
+        MediaStep {
+            tool: MediaStepTool::YtDlp,
+            input_variants: vec![],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({ "kind": "primary" }),
+            )]),
+            options: BTreeMap::from([(
+                "format".to_string(),
+                TransformInputValue::String("best".to_string()),
+            )]),
         },
-        Command::Media { command } => {
-            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
-            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
-                &cli.root,
-                runtime_storage_overrides,
-            )
-            .await?;
-            match command {
-                MediaCommand::Add(args) => {
-                    let media_id = match args.preset {
-                        MediaAddPreset::YtDlp => {
-                            let uri = Url::parse(&args.source)?;
-                            service
-                                .add_media_source_with_position(
-                                    &uri,
-                                    args.title.as_deref(),
-                                    args.artist.as_deref(),
-                                    args.description.as_deref(),
-                                    args.album.as_deref(),
-                                    args.recording_mbid.as_deref(),
-                                    args.release_mbid.as_deref(),
-                                    args.insert_position,
-                                    args.overwrite,
-                                )
-                                .await?
-                        }
-                        MediaAddPreset::Local => {
-                            let path = PathBuf::from(args.source);
-                            service
-                                .add_local_source_with_position(
-                                    &path,
-                                    args.title.as_deref(),
-                                    args.artist.as_deref(),
-                                    args.description.as_deref(),
-                                    args.album.as_deref(),
-                                    args.recording_mbid.as_deref(),
-                                    args.release_mbid.as_deref(),
-                                    args.insert_position,
-                                    args.overwrite,
-                                )
-                                .await?
-                        }
-                    };
-                    println!("registered media source id={media_id}");
-                    eprintln!(
-                        "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
+        MediaStep {
+            tool: MediaStepTool::Ffmpeg,
+            input_variants: vec!["media".to_string()],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({ "kind": "primary" }),
+            )]),
+            options: BTreeMap::new(),
+        },
+        MediaStep {
+            tool: MediaStepTool::MediaTagger,
+            input_variants: vec!["media".to_string()],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({ "kind": "primary" }),
+            )]),
+            options: {
+                let mut opts = BTreeMap::new();
+                if let Some(mbid) = recording_mbid.filter(|s| !s.is_empty()) {
+                    opts.insert(
+                        "recording_mbid".to_string(),
+                        TransformInputValue::String(mbid.to_string()),
                     );
                 }
-                MediaCommand::Remove { media_id } => {
-                    let removed_hierarchy_nodes = service.remove_media_source(&media_id)?;
-                    println!(
-                        "removed media source id={media_id} (removed_hierarchy_nodes={removed_hierarchy_nodes})"
-                    );
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
-                }
-                MediaCommand::Invalidate(args) => {
-                    let summary = match args.mode {
-                        MediaInvalidateMode::ToolCallsOnly => {
-                            service
-                                .invalidate_media_step_tool_calls(&args.media_id, args.step_index)
-                                .await?
-                        }
-                        MediaInvalidateMode::ToolCallsAndRegenerate => {
-                            service
-                                .invalidate_media_step_tool_calls_and_regenerate(
-                                    &args.media_id,
-                                    args.step_index,
-                                )
-                                .await?
-                        }
-                    };
-
-                    println!(
-                        "invalidated media id={} step_index={} mode={} workflow_id={} targeted_steps={} removed_impure_timestamps={} removed_instances={}",
-                        args.media_id,
-                        args.step_index,
-                        args.mode.to_possible_value().expect("value enum").get_name(),
-                        summary.workflow_id,
-                        summary.targeted_step_ids.join(","),
-                        summary.removed_impure_timestamps,
-                        summary.removed_instances,
-                    );
-                    eprintln!(
-                        "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
+                if let Some(mbid) = release_mbid.filter(|s| !s.is_empty()) {
+                    opts.insert(
+                        "release_mbid".to_string(),
+                        TransformInputValue::String(mbid.to_string()),
                     );
                 }
-            }
-        }
-        Command::Hierarchy { command } => {
-            let _ = load_runtime_dotenv_for_root(&cli.root, &runtime_storage_overrides)?;
-            let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(
-                &cli.root,
-                runtime_storage_overrides,
-            )
-            .await?;
-            match command {
-                HierarchyCommand::Add(args) => {
-                    let effective_root = args
-                        .root_folder
-                        .as_deref()
-                        .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
-                    service.add_media_hierarchy_preset_with_position(
-                        args.preset,
-                        &args.media_id,
-                        args.root_folder.as_deref(),
-                        args.insert_position,
-                        args.overwrite,
-                    )?;
-                    println!(
-                        "registered hierarchy preset={} for media id={} at folder={}",
-                        args.preset.to_possible_value().expect("value enum").get_name(),
-                        args.media_id,
-                        effective_root
-                    );
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
-                }
-                HierarchyCommand::Remove(args) => {
-                    let effective_root = args
-                        .root_folder
-                        .as_deref()
-                        .unwrap_or_else(|| default_hierarchy_root_for_preset(args.preset));
-                    let removed_nodes = service.remove_media_hierarchy_preset(
-                        args.preset,
-                        &args.media_id,
-                        effective_root,
-                    )?;
-                    println!(
-                        "removed hierarchy preset={} for media id={} at folder={} (removed_nodes={removed_nodes})",
-                        args.preset.to_possible_value().expect("value enum").get_name(),
-                        args.media_id,
-                        effective_root
-                    );
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
-                }
-            }
-        }
-        Command::Global { command } => match command {
-            GlobalCommand::Path => {
-                if let Some(paths) = resolve_default_global_paths() {
-                    println!("global_dir={}", paths.root_dir.display());
-                    println!("tool_cache_dir={}", paths.tool_cache_dir.display());
-                    println!("tool_cache_store={}", paths.tool_cache_store_dir.display());
-                    println!("tool_cache_index={}", paths.tool_cache_index_jsonc.display());
-                } else {
-                    anyhow::bail!("could not resolve global user directory for this environment");
-                }
-            }
-            GlobalCommand::Init => {
-                let paths = ensure_global_directory_layout()?;
-                println!("initialized global_dir={}", paths.root_dir.display());
-            }
-            GlobalCommand::ToolCache { command } => match command {
-                GlobalToolCacheCommand::Status => {
-                    let status = global_tool_cache_status().await?;
-                    println!("tool_cache_dir={}", status.tool_cache_dir.display());
-                    println!("tool_cache_store={}", status.store_dir.display());
-                    println!("tool_cache_index={}", status.index_jsonc.display());
-                    println!("entry_count={}", status.entry_count);
-                }
-                GlobalToolCacheCommand::Prune => {
-                    let summary = global_tool_cache_prune_expired().await?;
-                    println!(
-                        "prune complete: removed_entries={}, removed_payloads={}",
-                        summary.removed_entries, summary.removed_payloads
-                    );
-                }
-                GlobalToolCacheCommand::Clear => {
-                    global_tool_cache_clear()?;
-                    println!("cleared global tool-cache directory");
-                }
+                opts
             },
         },
-        Command::Builtin { command } => match command.as_ref() {
-            BuiltinCommand::MediaTagger(args) => run_builtin_media_tagger(args.clone()).await?,
+        MediaStep {
+            tool: MediaStepTool::Rsgain,
+            input_variants: vec!["media".to_string()],
+            output_variants: BTreeMap::from([(
+                "media".to_string(),
+                serde_json::json!({ "kind": "primary" }),
+            )]),
+            options: BTreeMap::new(),
         },
-        Command::Cas(args) => {
-            let effective_paths = resolve_effective_paths_for_root(
-                &cli.root,
-                &passthrough_runtime_storage_overrides,
-            )?;
-            passthrough_cas(&args.args, &effective_paths.runtime_root.join("store")).await?;
-        }
-        Command::Conductor(args) => {
-            let effective_paths = resolve_effective_paths_for_root(
-                &cli.root,
-                &passthrough_runtime_storage_overrides,
-            )?;
-            passthrough_conductor(&args.args, &effective_paths).await?;
-        }
-        Command::Completions { shell } => {
-            clap_complete::generate(shell, &mut Cli::command(), "mediapm", &mut std::io::stdout());
-        }
-    }
-    Ok(())
+    ]
 }
 
-/// Executes builtin media-tagger command invocation.
+/// Executes builtin media-tagger command invocation via `run_internal_media_tagger`.
 async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Result<()> {
     mediapm::builtins::media_tagger::run_internal_media_tagger(
         mediapm::builtins::media_tagger::InternalMediaTaggerOptions {
-            input_path: args.input,
-            output_path: args.output,
+            input_path: Some(std::path::PathBuf::from(args.input)),
+            output_path: std::path::PathBuf::from(args.output),
             acoustid_api_key: args.acoustid_api_key,
             acoustid_endpoint: args.acoustid_endpoint,
             musicbrainz_endpoint: args.musicbrainz_endpoint,
-            cache_dir: args.cache_dir,
-            cache_expiry_seconds: args.cache_expiry_seconds,
+            cache_dir: args.cache_dir.map(std::path::PathBuf::from),
+            cache_expiry_seconds: args.cache_expiry_seconds as i64,
             strict_identification: args.strict_identification,
             write_all_tags: args.write_all_tags,
             write_all_images: args.write_all_images,
@@ -891,43 +988,25 @@ async fn run_builtin_media_tagger(args: InternalMediaTaggerArgs) -> anyhow::Resu
     .await
 }
 
-/// Converts one optional path into UTF-8-ish string form used by config structs.
-#[must_use]
-fn option_path_to_string(path: Option<PathBuf>) -> Option<String> {
-    path.map(|value| value.to_string_lossy().to_string())
-}
-
-/// Returns preset-specific default hierarchy root folder for CLI add/remove.
-#[must_use]
-fn default_hierarchy_root_for_preset(_preset: MediaHierarchyPreset) -> &'static str {
-    "media/"
-}
-
 /// Executes CAS CLI passthrough in-process.
-///
-/// This path reuses `mediapm-cas` clap parsing and command dispatch directly,
-/// so `mediapm cas ...` does not require a sibling `mediapm-cas` executable.
 async fn passthrough_cas(args: &[String], default_root: &std::path::Path) -> anyhow::Result<()> {
     let injected = inject_cas_passthrough_defaults(args, default_root);
     mediapm_cas::cli::run_from_passthrough_args(&injected).await
 }
 
 /// Executes conductor CLI passthrough in-process.
-///
-/// This path reuses `mediapm-conductor` clap parsing and command dispatch
-/// directly, so `mediapm conductor ...` does not require a sibling
-/// `mediapm-conductor` executable.
 async fn passthrough_conductor(
     args: &[String],
-    effective_paths: &mediapm::MediaPmPaths,
+    effective_paths: &MediaPmPaths,
 ) -> anyhow::Result<()> {
     let injected = inject_conductor_passthrough_defaults(args, effective_paths);
     let mut passthrough = vec!["mediapm-conductor"];
     passthrough.extend(injected.iter().map(String::as_str));
-    mediapm_conductor::cli::run_from_args(&passthrough).await.map_err(anyhow::Error::from)
+    mediapm_conductor::cli::run_from_args(&passthrough).await.map_err(Into::into)
 }
 
-/// Injects default `cas` root when the caller did not provide one explicitly.
+/// Injects default CAS root when the caller did not provide one explicitly.
+#[must_use]
 fn inject_cas_passthrough_defaults(args: &[String], default_root: &std::path::Path) -> Vec<String> {
     if passthrough_requests_help_or_version(args) {
         return args.to_vec();
@@ -942,10 +1021,12 @@ fn inject_cas_passthrough_defaults(args: &[String], default_root: &std::path::Pa
     injected
 }
 
-/// Injects resolved mediapm-owned conductor runtime defaults into passthrough argv.
+/// Injects resolved mediapm-owned conductor runtime defaults into passthrough
+/// argv.
+#[must_use]
 fn inject_conductor_passthrough_defaults(
     args: &[String],
-    effective_paths: &mediapm::MediaPmPaths,
+    effective_paths: &MediaPmPaths,
 ) -> Vec<String> {
     let mut injected = Vec::new();
     append_passthrough_option_if_missing(
@@ -1004,12 +1085,13 @@ fn append_passthrough_option_if_missing(
     if passthrough_option_present(args, &[option_name]) {
         return;
     }
-
     injected.push(option_name.to_string());
     injected.push(value);
 }
 
-/// Returns true when any long option name is already present in passthrough argv.
+/// Returns true when any long option name is already present in passthrough
+/// argv.
+#[must_use]
 fn passthrough_option_present(args: &[String], option_names: &[&str]) -> bool {
     args.iter().any(|arg| {
         option_names.iter().any(|option_name| {
@@ -1020,6 +1102,7 @@ fn passthrough_option_present(args: &[String], option_names: &[&str]) -> bool {
 }
 
 /// Returns true when passthrough argv explicitly requests help/version text.
+#[must_use]
 fn passthrough_requests_help_or_version(args: &[String]) -> bool {
     args.iter().any(|arg| {
         matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version")
@@ -1027,13 +1110,15 @@ fn passthrough_requests_help_or_version(args: &[String]) -> bool {
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
-
-    use std::path::PathBuf;
-
     use mediapm::MediaPmPaths;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     use super::{Cli, inject_cas_passthrough_defaults, inject_conductor_passthrough_defaults};
@@ -1079,75 +1164,25 @@ mod tests {
         assert!(parsed.is_ok(), "media invalidate route with default mode must parse");
     }
 
-    /// Protects media-step invalidation CLI route with regeneration mode.
-    #[test]
-    fn media_invalidate_route_with_regenerate_mode_is_parsed() {
-        let parsed = Cli::try_parse_from([
-            "mediapm",
-            "media",
-            "invalidate",
-            "media-123",
-            "2",
-            "--mode",
-            "tool-calls-and-regenerate",
-        ]);
-        assert!(parsed.is_ok(), "media invalidate regenerate mode must parse");
-    }
-
     /// Protects hierarchy-add local preset route with explicit root folder.
     #[test]
-    fn hierarchy_add_local_route_with_root_folder_is_parsed() {
-        let parsed = Cli::try_parse_from([
-            "mediapm",
-            "hierarchy",
-            "add",
-            "--preset",
-            "local",
-            "--root-folder",
-            "music videos",
-            "media-123",
-        ]);
+    fn hierarchy_add_local_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "local"]);
         assert!(parsed.is_ok(), "hierarchy add local route must parse");
     }
 
-    /// Protects hierarchy-add yt-dlp preset route with explicit root folder.
+    /// Protects hierarchy-add yt-dlp preset route.
     #[test]
-    fn hierarchy_add_yt_dlp_route_with_root_folder_is_parsed() {
-        let parsed = Cli::try_parse_from([
-            "mediapm",
-            "hierarchy",
-            "add",
-            "--preset",
-            "yt-dlp",
-            "--root-folder",
-            "music videos",
-            "media-123",
-        ]);
+    fn hierarchy_add_yt_dlp_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "yt-dlp"]);
         assert!(parsed.is_ok(), "hierarchy add yt-dlp route must parse");
     }
 
-    /// Protects hierarchy-remove route with explicit root folder.
+    /// Protects hierarchy-remove route.
     #[test]
-    fn hierarchy_remove_route_with_root_folder_is_parsed() {
-        let parsed = Cli::try_parse_from([
-            "mediapm",
-            "hierarchy",
-            "remove",
-            "--preset",
-            "yt-dlp",
-            "--root-folder",
-            "music videos",
-            "media-123",
-        ]);
+    fn hierarchy_remove_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "remove", "some-node-id"]);
         assert!(parsed.is_ok(), "hierarchy remove route must parse");
-    }
-
-    /// Protects hierarchy-add route when preset default root folder is used.
-    #[test]
-    fn hierarchy_add_allows_omitting_root_folder_for_default() {
-        let parsed =
-            Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "yt-dlp", "media-123"]);
-        assert!(parsed.is_ok(), "hierarchy add should allow preset default root folder");
     }
 
     /// Protects media-add insertion-position CLI parsing.
@@ -1160,7 +1195,7 @@ mod tests {
             "--preset",
             "yt-dlp",
             "--insert-position",
-            "beginning",
+            "last",
             "https://example.com/media",
         ]);
         assert!(parsed.is_ok(), "media add should parse insert-position values");
@@ -1196,7 +1231,7 @@ mod tests {
 
         assert_eq!(
             injected,
-            vec!["--root".to_string(), "custom-store".to_string(), "optimize".to_string()]
+            vec!["--root".to_string(), "custom-store".to_string(), "optimize".to_string(),]
         );
     }
 
@@ -1261,5 +1296,26 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "conductor passthrough help should succeed: {result:?}");
+    }
+
+    /// Protects tool-list passthrough CLI route.
+    #[test]
+    fn tool_list_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "tool", "list"]);
+        assert!(parsed.is_ok(), "tool list route must parse");
+    }
+
+    /// Protects tool-prune CLI route.
+    #[test]
+    fn tool_prune_route_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "tool", "prune", "tool-id"]);
+        assert!(parsed.is_ok(), "tool prune route must parse");
+    }
+
+    /// Protects tool-prune with metadata flag.
+    #[test]
+    fn tool_prune_with_metadata_is_parsed() {
+        let parsed = Cli::try_parse_from(["mediapm", "tool", "prune", "tool-id", "--metadata"]);
+        assert!(parsed.is_ok(), "tool prune --metadata must parse");
     }
 }

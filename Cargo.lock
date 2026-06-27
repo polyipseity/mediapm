@@ -1989,6 +1989,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "bytes",
  "chromaprint-next",
  "clap",
  "clap_complete",

@@ -1,749 +1,366 @@
-//! Hierarchy node types, variant selector helpers, and flatten/nest utilities
-//! for mediapm configuration.
+//! Hierarchy node, entry, and path types for mediapm configuration.
+//!
+//! These types model the `hierarchy` declarations in `mediapm.ncl` plus the
+//! flatten/nest utilities and sanitization config.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
 use regex::Regex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
-use unicode_normalization::UnicodeNormalization;
 
 use crate::error::MediaPmError;
 
-/// Runtime-local hierarchy sanitization policy.
+// ---------------------------------------------------------------------------
+// Sanitization config
+// ---------------------------------------------------------------------------
+
+/// Filename sanitization policy for hierarchy entries.
 ///
-/// This field accepts the same user-facing wire forms as the config field:
-/// - `false` disables sanitization,
-/// - `true` (default) enables replacement using runtime defaults,
-/// - `{ "<": "_", ... }` applies a custom per-character mapping.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Control how reserved filename characters (`<`, `>`, `:`, `"`, `/`, `\\`,
+/// `|`, `?`, `*`) are handled during materialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum SanitizeNamesConfig {
-    /// Explicitly disable reserved-character replacement.
+    /// No sanitization (variant outputs are named as-produced).
     Disabled,
-    /// Inherit the effective setting from the parent hierarchy node.
-    ///
-    /// The root seed always resolves to [`Enabled`](Self::Enabled).
-    #[default]
+    /// Inherit parent or global sanitization policy.
     Inherit,
-    /// Enable reserved-character replacement using runtime defaults.
+    /// Apply default sanitization (reserved chars → `_`).
     Enabled,
-    /// Override runtime defaults with a custom replacement map.
+    /// Apply custom sanitization with explicit replacement mapping.
+    ///
+    /// The value is a `BTreeMap<char, char>` serialized as `{ "<": "_", ... }`.
     Custom(BTreeMap<char, char>),
 }
 
-impl SanitizeNamesConfig {
-    /// Returns whether sanitization is disabled for this node.
-    #[must_use]
-    pub fn is_disabled(&self) -> bool {
-        matches!(self, Self::Disabled)
-    }
-
-    /// Returns whether this node should inherit from its parent.
-    #[must_use]
-    pub fn is_inherit(&self) -> bool {
-        matches!(self, Self::Inherit)
-    }
-
-    /// Returns whether sanitization is enabled for this node.
-    ///
-    /// Returns `false` for [`Inherit`](Self::Inherit) because inheritance must
-    /// be resolved before this check is meaningful.
-    #[must_use]
-    pub fn is_enabled(&self) -> bool {
-        matches!(self, Self::Enabled | Self::Custom(..))
-    }
-
-    /// Returns the effective replacement map for this node by merging the
-    /// node's custom mapping over the runtime defaults.
-    #[must_use]
-    pub fn replacement_map_with_defaults(
-        &self,
-        defaults: &BTreeMap<char, char>,
-    ) -> BTreeMap<char, char> {
-        let mut map = defaults.clone();
-        if let Self::Custom(custom) = self {
-            map.extend(custom.clone());
-        }
-        map
+impl Default for SanitizeNamesConfig {
+    fn default() -> Self {
+        Self::Inherit
     }
 }
 
-impl Serialize for SanitizeNamesConfig {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Disabled => serializer.serialize_bool(false),
-            Self::Inherit => serializer.serialize_str("inherit"),
-            Self::Enabled => serializer.serialize_bool(true),
-            Self::Custom(map) => {
-                let encoded: BTreeMap<String, String> =
-                    map.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect();
-                encoded.serialize(serializer)
-            }
-        }
+// ---------------------------------------------------------------------------
+// Hierarchy node kind
+// ---------------------------------------------------------------------------
+
+/// Kind of one hierarchy node declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HierarchyNodeKind {
+    /// Plain folder grouping (no media binding).
+    Folder,
+    /// Single-file media entry.
+    Media,
+    /// Multi-variant media folder entry.
+    #[serde(rename = "media_folder")]
+    MediaFolder,
+    /// Playlist definition.
+    Playlist,
+}
+
+impl Default for HierarchyNodeKind {
+    fn default() -> Self {
+        Self::Folder
     }
 }
 
-impl<'de> Deserialize<'de> for SanitizeNamesConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = Value::deserialize(deserializer)?;
-        match value {
-            Value::Bool(false) => Ok(Self::Disabled),
-            Value::Bool(true) => Ok(Self::Enabled),
-            Value::String(s) if s == "inherit" => Ok(Self::Inherit),
-            Value::Object(map) => {
-                let mut decoded = BTreeMap::new();
-                for (key, value) in map {
-                    let key_char = key.chars().next().ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "sanitize_names mapping keys must be a single character",
-                        )
-                    })?;
-                    if key.chars().count() != 1 {
-                        return Err(serde::de::Error::custom(
-                            "sanitize_names mapping keys must be a single character",
-                        ));
-                    }
+// ---------------------------------------------------------------------------
+// Playlist types
+// ---------------------------------------------------------------------------
 
-                    let replacement = value
-                        .as_str()
-                        .ok_or_else(|| {
-                            serde::de::Error::custom(
-                                "sanitize_names mapping values must be single-character strings",
-                            )
-                        })?
-                        .to_string();
-                    let replacement_char = replacement.chars().next().ok_or_else(|| {
-                        serde::de::Error::custom(
-                            "sanitize_names mapping values must be single-character strings",
-                        )
-                    })?;
-                    if replacement.chars().count() != 1 {
-                        return Err(serde::de::Error::custom(
-                            "sanitize_names mapping values must be single-character strings",
-                        ));
-                    }
-                    decoded.insert(key_char, replacement_char);
-                }
-                Ok(Self::Custom(decoded))
-            }
-            _ => Err(serde::de::Error::custom(
-                "sanitize_names must be a boolean, string \"inherit\", or a mapping of single-character replacements",
-            )),
-        }
+/// Supported playlist serialization formats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlaylistFormat {
+    /// M3U8 extended format.
+    #[serde(rename = "m3u8")]
+    M3u8,
+    /// PLS format.
+    Pls,
+    /// XSPF (XML Shareable Playlist Format).
+    Xspf,
+    /// WPL (Windows Media Player) format.
+    Wpl,
+    /// ASX (Advanced Stream Redirector) format.
+    Asx,
+}
+
+impl Default for PlaylistFormat {
+    fn default() -> Self {
+        Self::M3u8
     }
 }
 
-/// Internal prefix used for regex-based variant selectors.
-///
-/// `mediapm.ncl` represents regex selectors as object values
-/// (`{ regex = "..." }`). Internally we preserve API compatibility by storing
-/// selectors as strings and tagging regex selectors with this prefix.
-const REGEX_VARIANT_SELECTOR_PREFIX: &str = "__mediapm_regex__:";
+/// Returns true when the serializer can omit the playlist format field.
+#[must_use]
+pub fn playlist_format_is_default(format: &PlaylistFormat) -> bool {
+    matches!(format, PlaylistFormat::M3u8)
+}
 
-/// One flattened hierarchy materialization entry derived from schema nodes.
-///
-/// `mediapm.ncl` persists hierarchy as an ordered recursive node list. Runtime
-/// validation/materialization currently operates on explicit flat paths and
-/// leaf payloads, so node decoding expands into this intermediate model.
+/// One playlist item reference.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PlaylistItemRef {
+    /// Shorthand: bare hierarchy id string.
+    Shorthand(String),
+    /// Object form with explicit path.
+    Object {
+        /// Target hierarchy node id.
+        id: String,
+        /// Optional relative path override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+}
+
+/// Playlist entry path output mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaylistEntryPathMode {
+    /// Relative paths in playlist output.
+    Relative,
+    /// Absolute paths in playlist output.
+    Absolute,
+}
+
+impl Default for PlaylistEntryPathMode {
+    fn default() -> Self {
+        Self::Relative
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rename rules
+// ---------------------------------------------------------------------------
+
+/// One regex rename rule for hierarchy folder members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HierarchyFolderRenameRule {
+    /// Regex pattern matched against filenames (full match).
+    pub pattern: String,
+    /// Replacement template string.
+    pub replacement: String,
+}
+
+// ---------------------------------------------------------------------------
+// Hierarchy node
+// ---------------------------------------------------------------------------
+
+/// One node in the ordered hierarchy declaration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HierarchyNode {
+    /// Relative path from hierarchy root.
+    #[serde(default)]
+    pub path: HierarchyPath,
+    /// Node kind.
+    #[serde(default)]
+    pub kind: HierarchyNodeKind,
+    /// Optional stable hierarchy id for playlist reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Media id this node binds to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_id: Option<String>,
+    /// Single variant name (for `media` kind).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    /// Multiple variant names or selectors (for `media_folder` kind).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
+    /// Optional rename rules for folder members.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rename_files: Vec<HierarchyFolderRenameRule>,
+    /// Playlist output format.
+    #[serde(default, skip_serializing_if = "playlist_format_is_default")]
+    pub format: PlaylistFormat,
+    /// Playlist item references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<PlaylistItemRef>,
+    /// Sanitization policy for this node.
+    #[serde(default)]
+    pub sanitize_names: SanitizeNamesConfig,
+    /// Recursive children.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<HierarchyNode>,
+}
+
+// ---------------------------------------------------------------------------
+// Flattened hierarchy entry (runtime form)
+// ---------------------------------------------------------------------------
+
+/// Runtime hierarchy entry kind (post-flattening).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HierarchyEntryKind {
+    /// Single-file media target.
+    Media,
+    /// Multi-variant media directory.
+    MediaFolder,
+    /// Playlist definition.
+    Playlist,
+}
+
+/// Runtime hierarchy entry (post-flattening).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FlattenedHierarchyEntry {
-    /// Path components for one materialization leaf.
+pub struct HierarchyEntry {
+    /// Entry kind.
+    pub kind: HierarchyEntryKind,
+    /// Bound media id.
+    pub media_id: String,
+    /// Variant names or selectors.
+    pub variants: Vec<String>,
+    /// Optional rename rules.
+    pub rename_files: Vec<HierarchyFolderRenameRule>,
+    /// Playlist output format.
+    pub format: PlaylistFormat,
+    /// Playlist item references.
+    pub ids: Vec<PlaylistItemRef>,
+    /// Sanitization policy.
+    pub sanitize_names: SanitizeNamesConfig,
+}
+
+/// One flattened hierarchy entry with resolved path components.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlattenedHierarchyEntry {
+    /// Path components from root to this entry.
     pub path_components: Vec<String>,
-    /// Leaf entry payload consumed by runtime validation/materializer logic.
-    pub entry: HierarchyEntry,
-    /// Optional explicit hierarchy id declared on the source hierarchy node.
+    /// Optional stable hierarchy id.
     pub hierarchy_id: Option<String>,
+    /// Runtime entry payload.
+    pub entry: HierarchyEntry,
 }
 
 impl FlattenedHierarchyEntry {
-    /// Returns the path joined by "/".
+    /// Joins path components into one relative path string.
     #[must_use]
     pub fn path_str(&self) -> String {
         self.path_components.join("/")
     }
 }
 
-/// Validates one hierarchy path component for invalid content.
+// ---------------------------------------------------------------------------
+// HierarchyPath (serde-aware path type)
+// ---------------------------------------------------------------------------
+
+/// A path composed of one or more components (path segments).
 ///
-/// Rules:
-/// - Empty components are rejected.
-/// - `.` and `..` components are rejected.
-/// - Component must be Unicode NFD normalized.
-fn validate_hierarchy_path_component(component: &str, context_label: &str) -> Result<(), String> {
-    if component.is_empty() {
-        return Err(format!("{context_label} path component must not be empty"));
+/// Serialization rules:
+/// - Empty component list serializes as `""`
+/// - Single component serializes as `"component"`
+/// - Multiple components serialize as `["component1", "component2"]`
+///
+/// Deserialization accepts both bare string and array forms:
+/// - `""` → zero components
+/// - `"abc"` → one component (NOT split by `/`)
+/// - `["a", "b"]` → two components
+///
+/// `From<&str>` splits by `/` for Rust convenience but serde does NOT split.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HierarchyPath(Vec<String>);
+
+impl HierarchyPath {
+    /// Creates a path from a single literal component.
+    #[must_use]
+    pub fn simple(component: &str) -> Self {
+        Self(vec![component.to_string()])
     }
-    if component == "." || component == ".." {
-        return Err(format!(
-            "{context_label} path component must not contain '.' or '..' segments"
-        ));
+
+    /// Creates a path from a single template component
+    /// (mustache-format placeholders like `{{title}}`).
+    ///
+    /// The internal representation is the same as [`simple`](Self::simple) —
+    /// the template/literal distinction is semantic only.
+    #[must_use]
+    pub fn template(component: &str) -> Self {
+        Self(vec![component.to_string()])
     }
-    let component_nfd = component.nfd().collect::<String>();
-    if component_nfd != component {
-        return Err(format!("{context_label} path component must be Unicode NFD normalized"));
+
+    /// Returns an immutable reference to the component list.
+    #[must_use]
+    pub fn components(&self) -> &[String] {
+        &self.0
     }
-    Ok(())
+
+    /// Returns the number of path components.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns `true` if there are zero components.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Joins all components with `/` separator.
+    #[must_use]
+    pub fn join_path(&self) -> String {
+        self.0.join("/")
+    }
 }
 
-/// Returns one normalized optional non-empty string field.
-fn normalize_optional_non_empty_field(
-    field_name: &str,
-    value: Option<&str>,
-    context_label: &str,
-) -> Result<Option<String>, String> {
-    let Some(raw) = value else {
-        return Ok(None);
-    };
-
-    let normalized = raw.trim();
-    if normalized.is_empty() {
-        return Err(format!(
-            "{context_label} field '{field_name}' must be non-empty when provided"
-        ));
-    }
-
-    Ok(Some(normalized.to_string()))
-}
-
-/// Returns one required normalized non-empty string field.
-fn normalize_required_non_empty_field(
-    field_name: &str,
-    value: Option<&str>,
-    context_label: &str,
-) -> Result<String, String> {
-    normalize_optional_non_empty_field(field_name, value, context_label)?
-        .ok_or_else(|| format!("{context_label} must define required field '{field_name}'"))
-}
-
-/// Flattens recursive hierarchy nodes into ordered runtime leaf entries.
-#[allow(clippy::too_many_lines)]
-fn flatten_hierarchy_nodes_inner(
-    nodes: &[HierarchyNode],
-    parent_components: &[String],
-    inherited_media_id: Option<&str>,
-    inherited_sanitize_names: &SanitizeNamesConfig,
-    flattened: &mut Vec<FlattenedHierarchyEntry>,
-) -> Result<(), String> {
-    for (node_index, node) in nodes.iter().enumerate() {
-        let parent_path_str =
-            if parent_components.is_empty() { String::new() } else { parent_components.join("/") };
-        let context_label = if parent_components.is_empty() {
-            format!("hierarchy[{node_index}]")
-        } else {
-            format!("hierarchy node '{parent_path_str}' children[{node_index}]")
-        };
-
-        // Validate each component of the HierarchyPath.
-        for component in node.path.components() {
-            validate_hierarchy_path_component(component, &context_label)?;
+impl From<&str> for HierarchyPath {
+    fn from(value: &str) -> Self {
+        let trimmed = value.trim_matches('/');
+        if trimmed.is_empty() {
+            return Self(Vec::new());
         }
-        let node_local_components: Vec<String> = node.path.components().to_vec();
-        let resolved_node_components: Vec<String> = if parent_components.is_empty() {
-            node_local_components.clone()
-        } else if node_local_components.is_empty() {
-            parent_components.to_vec()
-        } else {
-            let mut components = parent_components.to_vec();
-            components.extend(node_local_components);
-            components
-        };
-        let resolved_node_path = resolved_node_components.join("/");
-        let node_path_label =
-            if resolved_node_path.is_empty() { "<root>" } else { resolved_node_path.as_str() };
+        Self(trimmed.split('/').map(String::from).collect())
+    }
+}
 
-        let hierarchy_id =
-            normalize_optional_non_empty_field("id", node.id.as_deref(), node_path_label)?;
+impl Serialize for HierarchyPath {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.len() {
+            0 => serializer.serialize_str(""),
+            1 => serializer.serialize_str(&self.0[0]),
+            _ => self.0.serialize(serializer),
+        }
+    }
+}
 
-        let sanitize_names = if node.sanitize_names.is_inherit() {
-            inherited_sanitize_names.clone()
-        } else {
-            node.sanitize_names.clone()
-        };
-
-        match node.kind {
-            HierarchyNodeKind::Folder => {
-                if node.variant.is_some() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'folder' must not define 'variant'"
-                    ));
+impl<'de> Deserialize<'de> for HierarchyPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        match value {
+            Value::String(text) => {
+                if text.is_empty() {
+                    Ok(Self(Vec::new()))
+                } else {
+                    Ok(Self(vec![text]))
                 }
-                if !node.variants.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'folder' must not define 'variants'"
-                    ));
-                }
-                if !node.rename_files.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'folder' must not define 'rename_files'"
-                    ));
-                }
-                if !playlist_format_is_default(&node.format) {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'folder' must not define 'format'"
-                    ));
-                }
-                if !node.ids.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'folder' must not define 'ids'"
-                    ));
-                }
-
-                let folder_media_id = normalize_optional_non_empty_field(
-                    "media_id",
-                    node.media_id.as_deref().or(inherited_media_id),
-                    node_path_label,
-                )?;
-
-                flatten_hierarchy_nodes_inner(
-                    &node.children,
-                    &resolved_node_components,
-                    folder_media_id.as_deref(),
-                    &sanitize_names,
-                    flattened,
-                )?;
             }
-            HierarchyNodeKind::Media => {
-                if !node.children.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media' must not define children"
-                    ));
-                }
-                if !node.variants.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media' must not define 'variants'; use singular 'variant'"
-                    ));
-                }
-                if !node.rename_files.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media' must not define 'rename_files'"
-                    ));
-                }
-                if !playlist_format_is_default(&node.format) {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media' must not define 'format'"
-                    ));
-                }
-                if !node.ids.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media' must not define 'ids'"
-                    ));
-                }
-
-                let media_id = normalize_required_non_empty_field(
-                    "media_id",
-                    node.media_id.as_deref().or(inherited_media_id),
-                    node_path_label,
-                )?;
-                let hierarchy_id = node
-                    .id
-                    .as_deref()
-                    .map(|value| {
-                        normalize_required_non_empty_field("id", Some(value), node_path_label)
+            Value::Array(items) => {
+                let components: Result<Vec<String>, _> = items
+                    .into_iter()
+                    .map(|item| {
+                        if let Value::String(component) = item {
+                            Ok(component)
+                        } else {
+                            Err(serde::de::Error::custom(
+                                "hierarchy path array elements must be strings",
+                            ))
+                        }
                     })
-                    .transpose()?;
-                let variant = normalize_required_non_empty_field(
-                    "variant",
-                    node.variant.as_deref(),
-                    node_path_label,
-                )?;
-
-                if resolved_node_path.is_empty() {
-                    return Err(
-                        "hierarchy media node must not resolve to an empty path; use path = \"\" only on folder nodes"
-                            .to_string(),
-                    );
-                }
-
-                flattened.push(FlattenedHierarchyEntry {
-                    path_components: resolved_node_components.clone(),
-                    entry: HierarchyEntry {
-                        kind: HierarchyEntryKind::Media,
-                        media_id,
-                        variants: vec![variant],
-                        rename_files: Vec::new(),
-                        format: PlaylistFormat::M3u8,
-                        ids: Vec::new(),
-                        sanitize_names: sanitize_names.clone(),
-                    },
-                    hierarchy_id,
-                });
+                    .collect();
+                Ok(Self(components?))
             }
-            HierarchyNodeKind::MediaFolder => {
-                if !node.children.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media_folder' must not define children"
-                    ));
-                }
-                if node.variant.is_some() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media_folder' must not define singular 'variant'; use 'variants'"
-                    ));
-                }
-                if node.variants.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media_folder' must define non-empty 'variants'"
-                    ));
-                }
-                if !playlist_format_is_default(&node.format) {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media_folder' must not define 'format'"
-                    ));
-                }
-                if !node.ids.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'media_folder' must not define 'ids'"
-                    ));
-                }
-
-                let media_id = normalize_required_non_empty_field(
-                    "media_id",
-                    node.media_id.as_deref().or(inherited_media_id),
-                    node_path_label,
-                )?;
-                let hierarchy_id = node
-                    .id
-                    .as_deref()
-                    .map(|value| {
-                        normalize_required_non_empty_field("id", Some(value), node_path_label)
-                    })
-                    .transpose()?;
-
-                // NOTE: media_folder nodes may resolve to empty path (path="") when multiple
-                // nodes with different variants materialize to the same location.
-                // The variants and rename_files rules ensure different final output paths
-                // at materialization time. Duplicate path validation occurs after flattening
-                // and allows same path with different variants.
-
-                flattened.push(FlattenedHierarchyEntry {
-                    path_components: resolved_node_components.clone(),
-                    entry: HierarchyEntry {
-                        kind: HierarchyEntryKind::MediaFolder,
-                        media_id,
-                        variants: node.variants.clone(),
-                        rename_files: node.rename_files.clone(),
-                        format: PlaylistFormat::M3u8,
-                        ids: Vec::new(),
-                        sanitize_names: sanitize_names.clone(),
-                    },
-                    hierarchy_id,
-                });
-            }
-            HierarchyNodeKind::Playlist => {
-                if !node.children.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'playlist' must not define children"
-                    ));
-                }
-                if node.variant.is_some() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'playlist' must not define 'variant'"
-                    ));
-                }
-                if !node.variants.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'playlist' must not define 'variants'"
-                    ));
-                }
-                if !node.rename_files.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'playlist' must not define 'rename_files'"
-                    ));
-                }
-                if node.ids.is_empty() {
-                    return Err(format!(
-                        "hierarchy node '{node_path_label}' kind 'playlist' must define non-empty 'ids'"
-                    ));
-                }
-
-                if resolved_node_path.is_empty() {
-                    return Err(
-                        "hierarchy playlist node must not resolve to an empty path; use path = \"\" only on folder nodes"
-                            .to_string(),
-                    );
-                }
-
-                let playlist_media_id = normalize_optional_non_empty_field(
-                    "media_id",
-                    node.media_id.as_deref().or(inherited_media_id),
-                    node_path_label,
-                )?;
-
-                flattened.push(FlattenedHierarchyEntry {
-                    path_components: resolved_node_components.clone(),
-                    entry: HierarchyEntry {
-                        kind: HierarchyEntryKind::Playlist,
-                        media_id: playlist_media_id.unwrap_or_default(),
-                        variants: Vec::new(),
-                        rename_files: Vec::new(),
-                        format: node.format,
-                        ids: node.ids.clone(),
-                        sanitize_names: sanitize_names.clone(),
-                    },
-                    hierarchy_id,
-                });
+            _ => {
+                Err(serde::de::Error::custom("hierarchy path must be a string or array of strings"))
             }
         }
     }
-
-    Ok(())
 }
 
-/// Flattens ordered recursive hierarchy nodes into runtime leaf entries.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when node semantics are invalid (for example
-/// unsupported field combinations, missing required fields, or duplicate
-/// flattened paths).
-pub(crate) fn flatten_hierarchy_nodes_for_runtime(
-    hierarchy: &[HierarchyNode],
-) -> Result<Vec<FlattenedHierarchyEntry>, MediaPmError> {
-    let mut flattened = Vec::new();
-    flatten_hierarchy_nodes_inner(
-        hierarchy,
-        &[],
-        None,
-        &SanitizeNamesConfig::Enabled,
-        &mut flattened,
-    )
-    .map_err(MediaPmError::Workflow)?;
-
-    let mut seen_paths = BTreeMap::<(String, String), Vec<usize>>::new();
-    let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
-    for (index, entry) in flattened.iter().enumerate() {
-        let path_key = (entry.path_str(), entry.entry.media_id.clone());
-        seen_paths.entry(path_key.clone()).or_default().push(index);
-
-        // Check for true duplicate paths: same path AND same variants (or both lack variants).
-        // Allow same path with different variants since rename_files rules differentiate outputs.
-        // Template paths with different media_ids resolve to different paths during
-        // materialization (via resolve_hierarchy_relative_path), so they are not
-        // considered duplicates at flattening time.
-        if seen_paths[&path_key].len() > 1 {
-            let current_variants =
-                entry.entry.variants.iter().collect::<std::collections::BTreeSet<_>>();
-            let previous_index = seen_paths[&path_key][seen_paths[&path_key].len() - 2];
-            let previous_variants = flattened[previous_index]
-                .entry
-                .variants
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>();
-
-            // Only error if both have empty variants (true duplicate) or if they have overlapping variants with identical rename_files
-            if current_variants.is_empty() && previous_variants.is_empty() {
-                return Err(MediaPmError::Workflow(format!(
-                    "hierarchy flattening produced duplicate path '{}' with no differentiating variants (entries #{previous_index} and #{index})",
-                    entry.path_str()
-                )));
-            }
-
-            // Check for overlapping variants which would conflict.
-            // Allow same path with overlapping variants when rename_files rules differ,
-            // since rename_files produce different output file names at materialization time.
-            // The materializer handles multi-entry deduplication through isolated staging
-            // directories per entry (see materializer/mod.rs MediaFolder staging logic).
-            let overlap: Vec<_> = current_variants.intersection(&previous_variants).collect();
-            if !overlap.is_empty() {
-                let current_rename = &entry.entry.rename_files;
-                let previous_rename = &flattened[previous_index].entry.rename_files;
-                if current_rename == previous_rename {
-                    return Err(MediaPmError::Workflow(format!(
-                        "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} and identical rename_files (entries #{previous_index} and #{index})",
-                        entry.path_str(),
-                        overlap
-                    )));
-                }
-            }
-        }
-
-        if let Some(hierarchy_id) = entry.hierarchy_id.as_deref()
-            && let Some(previous_path) =
-                seen_hierarchy_ids.insert(hierarchy_id.to_string(), entry.path_str())
-        {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy id '{hierarchy_id}' is duplicated by paths '{previous_path}' and '{}'",
-                entry.path_str()
-            )));
-        }
-    }
-
-    Ok(flattened)
-}
-
-/// Collects effective hierarchy-id → media-path mappings from a flattened
-/// hierarchy.
-///
-/// Each media entry with a non-empty `hierarchy_id` produces one index entry.
-/// Duplicate hierarchy IDs resolve to the same concrete path are rejected.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError::Workflow`] when one hierarchy ID maps to multiple
-/// distinct paths.
-pub fn collect_playlist_media_index(
-    flattened_hierarchy: &[FlattenedHierarchyEntry],
-) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
-    let mut index = BTreeMap::new();
-
-    for flattened_entry in flattened_hierarchy {
-        if !matches!(flattened_entry.entry.kind, HierarchyEntryKind::Media) {
-            continue;
-        }
-
-        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
-            continue;
-        };
-
-        if let Some(previous_path_components) =
-            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
-            && previous_path_components != flattened_entry.path_components
-        {
-            return Err(MediaPmError::Workflow(format!(
-                "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
-                hierarchy_id,
-                previous_path_components.join("/"),
-                flattened_entry.path_str()
-            )));
-        }
-    }
-
-    Ok(index)
-}
-
-/// Converts flat runtime hierarchy entries into node-list schema form.
-///
-/// This helper exists for Rust-authored callsites/tests that still construct
-/// hierarchy payloads as explicit path maps while internal schema migration is
-/// in progress.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when one flat entry cannot be represented as one
-/// node declaration.
-#[cfg(test)]
-pub(crate) fn hierarchy_nodes_from_flat_entries(
-    hierarchy: &BTreeMap<String, HierarchyEntry>,
-) -> Result<Vec<HierarchyNode>, MediaPmError> {
-    let mut media_id_counts = BTreeMap::<String, usize>::new();
-    for entry in hierarchy.values() {
-        if matches!(entry.kind, HierarchyEntryKind::Media | HierarchyEntryKind::MediaFolder) {
-            *media_id_counts.entry(entry.media_id.clone()).or_insert(0) += 1;
-        }
-    }
-
-    let derive_hierarchy_id = |path: &str, media_id: &str| {
-        let count = media_id_counts.get(media_id).copied().unwrap_or(0);
-        if count <= 1 { media_id.to_string() } else { format!("{media_id}:{path}") }
-    };
-
-    let mut nodes = Vec::with_capacity(hierarchy.len());
-
-    for (path, entry) in hierarchy {
-        match entry.kind {
-            HierarchyEntryKind::Media => {
-                let variant = entry.variants.first().cloned().ok_or_else(|| {
-                    MediaPmError::Workflow(format!(
-                        "legacy flat hierarchy path '{path}' kind 'media' requires at least one variant"
-                    ))
-                })?;
-
-                if entry.variants.len() != 1 {
-                    return Err(MediaPmError::Workflow(format!(
-                        "legacy flat hierarchy path '{path}' kind 'media' file target must define exactly one variant"
-                    )));
-                }
-
-                let hierarchy_id = derive_hierarchy_id(path, &entry.media_id);
-
-                nodes.push(HierarchyNode {
-                    path: HierarchyPath::from(path.as_str()),
-                    kind: HierarchyNodeKind::Media,
-                    id: Some(hierarchy_id),
-                    media_id: Some(entry.media_id.clone()),
-                    variant: Some(variant),
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: PlaylistFormat::M3u8,
-                    ids: Vec::new(),
-                    sanitize_names: entry.sanitize_names.clone(),
-                    children: Vec::new(),
-                });
-            }
-            HierarchyEntryKind::MediaFolder => {
-                let hierarchy_id = derive_hierarchy_id(path, &entry.media_id);
-                nodes.push(HierarchyNode {
-                    path: HierarchyPath::from(path.trim_end_matches(['/', '\\'])),
-                    kind: HierarchyNodeKind::MediaFolder,
-                    id: Some(hierarchy_id),
-                    media_id: Some(entry.media_id.clone()),
-                    variant: None,
-                    variants: entry.variants.clone(),
-                    rename_files: entry.rename_files.clone(),
-                    format: PlaylistFormat::M3u8,
-                    ids: Vec::new(),
-                    sanitize_names: entry.sanitize_names.clone(),
-                    children: Vec::new(),
-                });
-            }
-            HierarchyEntryKind::Playlist => {
-                nodes.push(HierarchyNode {
-                    path: HierarchyPath::from(path.as_str()),
-                    kind: HierarchyNodeKind::Playlist,
-                    id: None,
-                    media_id: None,
-                    variant: None,
-                    variants: Vec::new(),
-                    rename_files: Vec::new(),
-                    format: entry.format,
-                    ids: entry.ids.clone(),
-                    sanitize_names: entry.sanitize_names.clone(),
-                    children: Vec::new(),
-                });
-            }
-        }
-    }
-
-    Ok(nodes)
-}
-
-/// Decodes one hierarchy JSON value into ordered node declarations.
-///
-/// The new schema is strict: `hierarchy` must be an array of node objects.
-/// Legacy flat-map and nested-map forms are intentionally unsupported.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when the value shape is invalid or node decoding
-/// fails.
-pub fn flatten_hierarchy_value(value: Value) -> Result<Vec<HierarchyNode>, MediaPmError> {
-    match value {
-        Value::Array(_) => serde_json::from_value(value)
-            .map_err(|error| MediaPmError::Workflow(format!("hierarchy decode failed: {error}"))),
-        _ => Err(MediaPmError::Workflow(
-            "hierarchy must decode from an ordered array of nodes".to_string(),
-        )),
-    }
-}
-
-/// Encodes ordered hierarchy nodes into JSON array form.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when node serialization fails.
-pub fn nest_hierarchy_value(hierarchy: &[HierarchyNode]) -> Result<Value, MediaPmError> {
-    serde_json::to_value(hierarchy)
-        .map_err(|error| MediaPmError::Workflow(format!("hierarchy encode failed: {error}")))
-}
+// ---------------------------------------------------------------------------
+// Custom serde helpers for hierarchy fields
+// ---------------------------------------------------------------------------
 
 /// Deserializes hierarchy field values using array-of-nodes semantics.
-pub(super) fn deserialize_hierarchy_node_list<'de, D>(
+#[allow(dead_code)]
+pub fn deserialize_hierarchy_node_list<'de, D>(
     deserializer: D,
 ) -> Result<Vec<HierarchyNode>, D::Error>
 where
@@ -754,7 +371,8 @@ where
 }
 
 /// Serializes hierarchy field values into array-of-nodes representation.
-pub(super) fn serialize_hierarchy_node_list<S>(
+#[allow(dead_code)]
+pub fn serialize_hierarchy_node_list<S>(
     hierarchy: &[HierarchyNode],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -764,6 +382,10 @@ where
     let encoded = nest_hierarchy_value(hierarchy).map_err(serde::ser::Error::custom)?;
     encoded.serialize(serializer)
 }
+
+// ---------------------------------------------------------------------------
+// Wire types for variant selector serde
+// ---------------------------------------------------------------------------
 
 /// Wire representation for one variant selector entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -791,6 +413,9 @@ enum VariantSelectorOwned {
     },
 }
 
+/// Prefix used for internal regex variant selector encoding.
+const REGEX_VARIANT_SELECTOR_PREFIX: &str = "__mediapm_regex__:";
+
 /// Encodes one regex selector as internal tagged string form.
 #[must_use]
 fn encode_regex_variant_selector(pattern: &str) -> String {
@@ -799,22 +424,18 @@ fn encode_regex_variant_selector(pattern: &str) -> String {
 
 /// Returns regex pattern when one selector uses internal regex-tag form.
 #[must_use]
-pub(crate) fn decode_regex_variant_selector_pattern(selector: &str) -> Option<&str> {
+pub fn decode_regex_variant_selector_pattern(selector: &str) -> Option<&str> {
     selector.strip_prefix(REGEX_VARIANT_SELECTOR_PREFIX)
 }
 
 /// Public helper for constructing regex selector values in Rust-authored docs.
-///
-/// Serialized `mediapm.ncl` output uses object syntax (`{ regex = "..." }`).
 #[must_use]
 pub fn regex_variant_selector(pattern: &str) -> String {
     encode_regex_variant_selector(pattern)
 }
 
 /// Deserializes selector arrays that accept literal strings or regex objects.
-pub(super) fn deserialize_variant_selector_list<'de, D>(
-    deserializer: D,
-) -> Result<Vec<String>, D::Error>
+pub fn deserialize_variant_selector_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -830,7 +451,6 @@ where
                         "variant selector strings must be non-empty",
                     ));
                 }
-
                 decoded.push(trimmed.to_string());
             }
             VariantSelectorSerde::Regex { regex } => {
@@ -856,7 +476,7 @@ where
 }
 
 /// Serializes selector arrays back to string-or-object wire representation.
-pub(super) fn serialize_variant_selector_list<S>(
+pub fn serialize_variant_selector_list<S>(
     selectors: &[String],
     serializer: S,
 ) -> Result<S::Ok, S::Error>
@@ -877,22 +497,24 @@ where
     encoded.serialize(serializer)
 }
 
+// ---------------------------------------------------------------------------
+// Expand variant selectors
+// ---------------------------------------------------------------------------
+
 /// Resolves selector entries against available variant names.
 ///
-/// Resolution policy:
 /// - literal selectors match exact variant names;
-/// - regex selectors (`{ regex = "..." }`) match any variant names whose
-///   full text matches the regex;
-/// - when a selector resolves nothing and a `default` variant exists, it falls
-///   back to `default`.
+/// - regex selectors match any variant names whose full text matches;
+/// - when a selector resolves nothing and a `default` variant exists,
+///   falls back to `default`.
 ///
-/// Returned variants are de-duplicated while preserving first-seen order.
-pub(crate) fn expand_variant_selectors(
+/// Returned variants are deduplicated preserving first-seen order.
+pub fn expand_variant_selectors(
     selectors: &[String],
-    available_variants: &std::collections::BTreeSet<String>,
+    available_variants: &BTreeSet<String>,
 ) -> Result<Vec<String>, String> {
     let mut resolved = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
 
     for selector in selectors {
         let trimmed = selector.trim();
@@ -946,386 +568,251 @@ pub(crate) fn expand_variant_selectors(
     Ok(resolved)
 }
 
-/// A path composed of one or more path components (path segments).
+use std::collections::BTreeSet;
+
+// ---------------------------------------------------------------------------
+// Flatten/nest hierarchy
+// ---------------------------------------------------------------------------
+
+/// Decodes one hierarchy JSON value into ordered node declarations.
 ///
-/// Serialization rules:
-/// - Empty component list serializes as `""`
-/// - Single component serializes as `"component"`
-/// - Multiple components serialize as `["component1", "component2"]`
-///
-/// Deserialization accepts both bare string and array forms:
-/// - `""` → `HierarchyPath(vec![])` (zero components)
-/// - `"abc"` → `HierarchyPath(vec!["abc"])` (single component, NOT split by `/`)
-/// - `["a", "b"]` → `HierarchyPath(vec!["a", "b"])` (multi-component)
-///
-/// The `From<&str>` impl DOES split by `/` for convenience in Rust code,
-/// but serde deserialize does NOT split — bare strings are one component.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct HierarchyPath(Vec<String>);
-
-impl HierarchyPath {
-    /// Returns an immutable reference to the component list.
-    #[must_use]
-    pub fn components(&self) -> &[String] {
-        &self.0
-    }
-
-    /// Returns the number of path components.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Returns `true` if there are zero components.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Joins all components with `/` separator.
-    #[must_use]
-    pub fn join_path(&self) -> String {
-        self.0.join("/")
+/// The schema is strict: `hierarchy` must be an array of node objects.
+pub fn flatten_hierarchy_value(value: Value) -> Result<Vec<HierarchyNode>, MediaPmError> {
+    match value {
+        Value::Array(_) => serde_json::from_value(value)
+            .map_err(|error| MediaPmError::Workflow(format!("hierarchy decode failed: {error}"))),
+        _ => Err(MediaPmError::Workflow(
+            "hierarchy must decode from an ordered array of nodes".to_string(),
+        )),
     }
 }
 
-impl From<&str> for HierarchyPath {
-    fn from(value: &str) -> Self {
-        let trimmed = value.trim_matches('/');
-        if trimmed.is_empty() {
-            return Self(Vec::new());
-        }
-        Self(trimmed.split('/').map(String::from).collect())
-    }
+/// Encodes ordered hierarchy nodes into JSON array form.
+pub fn nest_hierarchy_value(hierarchy: &[HierarchyNode]) -> Result<Value, MediaPmError> {
+    serde_json::to_value(hierarchy)
+        .map_err(|error| MediaPmError::Workflow(format!("hierarchy encode failed: {error}")))
 }
 
-impl Serialize for HierarchyPath {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self.0.len() {
-            0 => serializer.serialize_str(""),
-            1 => serializer.serialize_str(&self.0[0]),
-            _ => self.0.serialize(serializer),
-        }
-    }
-}
+/// Flattens hierarchy nodes into runtime entries with resolved paths.
+pub fn flatten_hierarchy_nodes_for_runtime(
+    hierarchy: &[HierarchyNode],
+) -> Result<Vec<FlattenedHierarchyEntry>, MediaPmError> {
+    let mut flattened = Vec::new();
+    flatten_hierarchy_nodes_inner(
+        hierarchy,
+        &[],
+        None,
+        &SanitizeNamesConfig::Enabled,
+        &mut flattened,
+    )
+    .map_err(MediaPmError::Workflow)?;
 
-impl<'de> Deserialize<'de> for HierarchyPath {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct HierarchyPathVisitor;
-        impl<'de> serde::de::Visitor<'de> for HierarchyPathVisitor {
-            type Value = HierarchyPath;
+    let mut seen_paths = BTreeMap::<(String, String), Vec<usize>>::new();
+    let mut seen_hierarchy_ids = BTreeMap::<String, String>::new();
+    for (index, entry) in flattened.iter().enumerate() {
+        let path_key = (entry.path_str(), entry.entry.media_id.clone());
+        seen_paths.entry(path_key.clone()).or_default().push(index);
 
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a string or array of strings")
+        if seen_paths[&path_key].len() > 1 {
+            let current_variants = entry.entry.variants.iter().collect::<BTreeSet<_>>();
+            let previous_index = seen_paths[&path_key][seen_paths[&path_key].len() - 2];
+            let previous_variants =
+                flattened[previous_index].entry.variants.iter().collect::<BTreeSet<_>>();
+
+            if current_variants.is_empty() && previous_variants.is_empty() {
+                return Err(MediaPmError::Workflow(format!(
+                    "hierarchy flattening produced duplicate path '{}' with no differentiating variants (entries #{previous_index} and #{index})",
+                    entry.path_str()
+                )));
             }
 
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<HierarchyPath, E> {
-                let trimmed = value.trim_matches('/');
-                if trimmed.is_empty() {
-                    Ok(HierarchyPath(Vec::new()))
-                } else {
-                    Ok(HierarchyPath(trimmed.split('/').map(String::from).collect()))
+            let overlap: Vec<_> =
+                current_variants.intersection(&previous_variants).copied().collect();
+            if !overlap.is_empty() {
+                let current_rename = &entry.entry.rename_files;
+                let previous_rename = &flattened[previous_index].entry.rename_files;
+                if current_rename == previous_rename {
+                    return Err(MediaPmError::Workflow(format!(
+                        "hierarchy flattening produced duplicate path '{}' with overlapping variants {:?} and identical rename_files (entries #{previous_index} and #{index})",
+                        entry.path_str(),
+                        overlap
+                    )));
                 }
             }
+        }
 
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(
-                self,
-                mut seq: A,
-            ) -> Result<HierarchyPath, A::Error> {
-                let mut components = Vec::new();
-                while let Some(elem) = seq.next_element::<String>()? {
-                    components.push(elem);
-                }
-                Ok(HierarchyPath(components))
+        if let Some(hierarchy_id) = entry.hierarchy_id.as_deref()
+            && let Some(previous_path) =
+                seen_hierarchy_ids.insert(hierarchy_id.to_string(), entry.path_str())
+        {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy id '{hierarchy_id}' is duplicated by paths '{previous_path}' and '{}'",
+                entry.path_str()
+            )));
+        }
+    }
+
+    Ok(flattened)
+}
+
+/// Recursive helper for hierarchy flattening.
+fn flatten_hierarchy_nodes_inner(
+    nodes: &[HierarchyNode],
+    parent_path: &[String],
+    parent_sanitize: Option<&SanitizeNamesConfig>,
+    default_sanitize: &SanitizeNamesConfig,
+    output: &mut Vec<FlattenedHierarchyEntry>,
+) -> Result<(), String> {
+    for node in nodes {
+        let effective_sanitize = match &node.sanitize_names {
+            SanitizeNamesConfig::Inherit => parent_sanitize.unwrap_or(default_sanitize),
+            other => other,
+        };
+
+        let resolved_components = {
+            let mut components = parent_path.to_vec();
+            for component in node.path.components() {
+                // Validate each path component.
+                validate_hierarchy_path_component(component)?;
+                components.push(component.clone());
+            }
+            components
+        };
+
+        match node.kind {
+            HierarchyNodeKind::Folder => {
+                flatten_hierarchy_nodes_inner(
+                    &node.children,
+                    &resolved_components,
+                    Some(effective_sanitize),
+                    default_sanitize,
+                    output,
+                )?;
+            }
+            HierarchyNodeKind::Media => {
+                let media_id = node
+                    .media_id
+                    .clone()
+                    .ok_or_else(|| "media node must define media_id".to_string())?;
+                let variant = node
+                    .variant
+                    .clone()
+                    .ok_or_else(|| "media node must define variant".to_string())?;
+
+                output.push(FlattenedHierarchyEntry {
+                    path_components: resolved_components.clone(),
+                    hierarchy_id: node.id.clone(),
+                    entry: HierarchyEntry {
+                        kind: HierarchyEntryKind::Media,
+                        media_id,
+                        variants: vec![variant],
+                        rename_files: Vec::new(),
+                        format: PlaylistFormat::M3u8,
+                        ids: Vec::new(),
+                        sanitize_names: effective_sanitize.clone(),
+                    },
+                });
+            }
+            HierarchyNodeKind::MediaFolder => {
+                let media_id = node
+                    .media_id
+                    .clone()
+                    .ok_or_else(|| "media_folder node must define media_id".to_string())?;
+
+                output.push(FlattenedHierarchyEntry {
+                    path_components: resolved_components.clone(),
+                    hierarchy_id: node.id.clone(),
+                    entry: HierarchyEntry {
+                        kind: HierarchyEntryKind::MediaFolder,
+                        media_id,
+                        variants: node.variants.clone(),
+                        rename_files: node.rename_files.clone(),
+                        format: PlaylistFormat::M3u8,
+                        ids: Vec::new(),
+                        sanitize_names: effective_sanitize.clone(),
+                    },
+                });
+            }
+            HierarchyNodeKind::Playlist => {
+                output.push(FlattenedHierarchyEntry {
+                    path_components: resolved_components.clone(),
+                    hierarchy_id: node.id.clone(),
+                    entry: HierarchyEntry {
+                        kind: HierarchyEntryKind::Playlist,
+                        media_id: String::new(),
+                        variants: Vec::new(),
+                        rename_files: Vec::new(),
+                        format: node.format,
+                        ids: node.ids.clone(),
+                        sanitize_names: effective_sanitize.clone(),
+                    },
+                });
             }
         }
-        deserializer.deserialize_any(HierarchyPathVisitor)
-    }
-}
 
-/// One ordered hierarchy schema node.
-///
-/// Nodes form one recursive tree via `children`. Top-level `hierarchy` is an
-/// ordered array of these nodes, and folder nodes may use `path = ""` to act
-/// as an explicit root grouping container.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HierarchyNode {
-    /// Relative path for this node as a list of path components.
-    ///
-    /// Folder nodes may set this to empty for one root pass-through grouping
-    /// level. Non-folder leaf nodes must resolve to non-empty paths.
-    #[serde(default)]
-    pub path: HierarchyPath,
-    /// Node behavior kind.
-    #[serde(default, skip_serializing_if = "hierarchy_node_kind_is_folder")]
-    pub kind: HierarchyNodeKind,
-    /// Optional explicit hierarchy id used by playlist `ids` references.
-    ///
-    /// Any node kind may define this field when it needs stable identifier
-    /// semantics; only `media`/`media_folder` ids can be resolved as playlist
-    /// media targets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    /// Optional media context id inherited by descendant nodes.
-    ///
-    /// This field is allowed on any node kind. `media` and `media_folder`
-    /// nodes require a non-empty effective `media_id` (direct or inherited);
-    /// other kinds may provide it for context propagation only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_id: Option<String>,
-    /// Singular variant selector for `kind = "media"` nodes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<String>,
-    /// Ordered variant selector list for `kind = "media_folder"` nodes.
-    ///
-    /// Selector entries support exact-string and regex-object forms:
-    /// - `"variant_name"`
-    /// - `{ regex = "^subtitles/.+$" }`
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_variant_selector_list",
-        serialize_with = "serialize_variant_selector_list"
-    )]
-    pub variants: Vec<String>,
-    /// Optional ordered regex rewrite rules for `media_folder` extraction.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rename_files: Vec<HierarchyFolderRenameRule>,
-    /// Playlist output format for `kind = "playlist"` nodes.
-    #[serde(default, skip_serializing_if = "playlist_format_is_default")]
-    pub format: PlaylistFormat,
-    /// Ordered playlist item references for `kind = "playlist"` nodes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ids: Vec<PlaylistItemRef>,
-    /// Optional sanitizer policy for this node and its descendants.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_inherit")]
-    pub sanitize_names: SanitizeNamesConfig,
-    /// Ordered child nodes (folder recursion).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<HierarchyNode>,
-}
-
-/// Hierarchy schema node kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum HierarchyNodeKind {
-    /// Structural folder node; contributes only path grouping.
-    #[default]
-    Folder,
-    /// File-target media output node using singular `variant`.
-    Media,
-    /// Folder-target media output node using plural `variants`.
-    ///
-    /// Variants are treated as ZIP folder payloads extracted into the target
-    /// directory.
-    MediaFolder,
-    /// Playlist file generation node.
-    Playlist,
-}
-
-/// Returns whether one node kind keeps folder-default behavior.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn hierarchy_node_kind_is_folder(value: &HierarchyNodeKind) -> bool {
-    matches!(value, HierarchyNodeKind::Folder)
-}
-
-/// One flattened hierarchy leaf entry consumed by runtime materialization.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HierarchyEntry {
-    /// Entry behavior kind.
-    ///
-    /// - `media` places one media source file variant selection,
-    /// - `media_folder` extracts one or more folder-capture variants,
-    /// - `playlist` writes one playlist file that references media outputs.
-    #[serde(default, skip_serializing_if = "hierarchy_entry_kind_is_media")]
-    pub kind: HierarchyEntryKind,
-    /// Referenced media id in `media` map.
-    ///
-    /// This field is required for `kind = "media"` entries and must stay
-    /// empty for `kind = "playlist"` entries.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub media_id: String,
-    /// Logical variant keys for this placement.
-    ///
-    /// - `kind = "media"` must resolve exactly one file variant,
-    /// - `kind = "media_folder"` may resolve one or more folder variants and
-    ///   merges their extracted payload trees.
-    ///
-    /// Selector entries support both exact-string and regex-object forms:
-    /// - `"variant_name"`
-    /// - `{ regex = "^subtitles/.+$" }`
-    #[serde(
-        default,
-        skip_serializing_if = "Vec::is_empty",
-        deserialize_with = "deserialize_variant_selector_list",
-        serialize_with = "serialize_variant_selector_list"
-    )]
-    pub variants: Vec<String>,
-    /// Optional ordered regex rewrite rules applied to file members extracted
-    /// from folder-capture variants for this hierarchy entry.
-    ///
-    /// Rules are evaluated in declaration order against each normalized ZIP
-    /// member relative path (file entries only). Empty list means no rewrite.
-    ///
-    /// This field is only valid for `kind = "media_folder"`.
-    /// `kind = "media"` file targets must keep this list empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rename_files: Vec<HierarchyFolderRenameRule>,
-    /// Playlist output format used by `kind = "playlist"` entries.
-    #[serde(default, skip_serializing_if = "playlist_format_is_default")]
-    pub format: PlaylistFormat,
-    /// Ordered playlist references used by `kind = "playlist"` entries.
-    ///
-    /// Entries preserve declared order and may repeat the same id more than
-    /// once.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ids: Vec<PlaylistItemRef>,
-    /// Optional sanitizer policy inherited from the source hierarchy node.
-    #[serde(default, skip_serializing_if = "SanitizeNamesConfig::is_inherit")]
-    pub sanitize_names: SanitizeNamesConfig,
-}
-
-/// Hierarchy entry behavior kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum HierarchyEntryKind {
-    /// Materialize one file variant at this hierarchy path.
-    #[default]
-    Media,
-    /// Materialize one folder-merge from one or more folder variants.
-    MediaFolder,
-    /// Generate one playlist file at this hierarchy path.
-    Playlist,
-}
-
-/// Returns whether one hierarchy entry kind keeps media-placement defaults.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn hierarchy_entry_kind_is_media(value: &HierarchyEntryKind) -> bool {
-    matches!(value, HierarchyEntryKind::Media)
-}
-
-/// Supported hierarchy playlist output formats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum PlaylistFormat {
-    /// UTF-8 M3U playlist.
-    #[default]
-    M3u8,
-    /// Legacy M3U playlist.
-    M3u,
-    /// PLS playlist.
-    Pls,
-    /// XSPF XML playlist.
-    Xspf,
-    /// WPL XML playlist.
-    Wpl,
-    /// ASX XML playlist.
-    Asx,
-}
-
-/// Returns whether playlist format keeps default `m3u8` behavior.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-pub(super) fn playlist_format_is_default(value: &PlaylistFormat) -> bool {
-    matches!(value, PlaylistFormat::M3u8)
-}
-
-/// One playlist item declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PlaylistItemRef {
-    /// Referenced hierarchy-node id.
-    pub id: String,
-    /// Optional per-item path rendering override.
-    pub path: PlaylistEntryPathMode,
-}
-
-/// Wire representation for one playlist item declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-enum PlaylistItemRefWire {
-    /// String shorthand form (`"<id>"`).
-    Id(String),
-    /// Object form (`{ id = "...", path = "..." }`).
-    Object(PlaylistItemRefObjectWire),
-}
-
-/// Object wire representation for one playlist item declaration.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PlaylistItemRefObjectWire {
-    /// Referenced hierarchy-node id.
-    id: String,
-    /// Optional per-item path rendering override.
-    #[serde(default, skip_serializing_if = "playlist_entry_path_mode_is_relative")]
-    path: PlaylistEntryPathMode,
-}
-
-impl Serialize for PlaylistItemRef {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if playlist_entry_path_mode_is_relative(&self.path) {
-            return serializer.serialize_str(self.id.as_str());
-        }
-
-        PlaylistItemRefObjectWire { id: self.id.clone(), path: self.path }.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for PlaylistItemRef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match PlaylistItemRefWire::deserialize(deserializer)? {
-            PlaylistItemRefWire::Id(id) => Ok(Self { id, path: PlaylistEntryPathMode::Relative }),
-            PlaylistItemRefWire::Object(object) => Ok(Self { id: object.id, path: object.path }),
+        // Recurse into children for non-folder kinds too (playlists may have children).
+        if !matches!(node.kind, HierarchyNodeKind::Folder) && !node.children.is_empty() {
+            flatten_hierarchy_nodes_inner(
+                &node.children,
+                &resolved_components,
+                Some(effective_sanitize),
+                default_sanitize,
+                output,
+            )?;
         }
     }
+
+    Ok(())
 }
 
-impl PlaylistItemRef {
-    /// Returns declared hierarchy-node id text for this item.
-    #[must_use]
-    pub fn id(&self) -> &str {
-        self.id.as_str()
+/// Validates one hierarchy path component for disallowed characters.
+fn validate_hierarchy_path_component(component: &str) -> Result<(), String> {
+    if component.is_empty() {
+        return Err("hierarchy path components must be non-empty".to_string());
     }
 
-    /// Returns effective path mode for this item.
-    #[must_use]
-    pub const fn path_mode(&self) -> PlaylistEntryPathMode {
-        self.path
+    for ch in component.chars() {
+        match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => {
+                return Err(format!(
+                    "hierarchy path component '{component}' contains reserved character '{ch}'"
+                ));
+            }
+            _ => {}
+        }
     }
+
+    Ok(())
 }
 
-/// Path rendering mode for one playlist item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum PlaylistEntryPathMode {
-    /// Render path relative to playlist file directory.
-    #[default]
-    Relative,
-    /// Render absolute filesystem path.
-    Absolute,
-}
+/// Collects effective hierarchy-id → media-path mappings from a flattened
+/// hierarchy.
+pub fn collect_playlist_media_index(
+    flattened_hierarchy: &[FlattenedHierarchyEntry],
+) -> Result<BTreeMap<String, Vec<String>>, MediaPmError> {
+    let mut index = BTreeMap::new();
 
-/// Returns whether playlist path mode keeps default relative behavior.
-#[allow(clippy::trivially_copy_pass_by_ref)]
-fn playlist_entry_path_mode_is_relative(value: &PlaylistEntryPathMode) -> bool {
-    matches!(value, PlaylistEntryPathMode::Relative)
-}
+    for flattened_entry in flattened_hierarchy {
+        if !matches!(flattened_entry.entry.kind, HierarchyEntryKind::Media) {
+            continue;
+        }
 
-/// One ordered regex rewrite rule for hierarchy folder file names.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HierarchyFolderRenameRule {
-    /// Regex pattern evaluated against each normalized ZIP-member file path.
-    pub pattern: String,
-    /// Replacement text applied when `pattern` matches.
-    ///
-    /// Supports `${media.id}` and `${media.metadata.<key>}` placeholders, then
-    /// applies regex replacement semantics (`$0` = entire match;
-    /// `$1..$N` = explicit capture groups).
-    pub replacement: String,
+        let Some(hierarchy_id) = flattened_entry.hierarchy_id.as_deref() else {
+            continue;
+        };
+
+        if let Some(previous_path_components) =
+            index.insert(hierarchy_id.to_string(), flattened_entry.path_components.clone())
+            && previous_path_components != flattened_entry.path_components
+        {
+            return Err(MediaPmError::Workflow(format!(
+                "hierarchy id '{}' resolves to multiple media paths ('{}' and '{}')",
+                hierarchy_id,
+                previous_path_components.join("/"),
+                flattened_entry.path_str()
+            )));
+        }
+    }
+
+    Ok(index)
 }

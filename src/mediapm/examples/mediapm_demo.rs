@@ -1,20 +1,8 @@
-//! Persistent `mediapm` demo that produces inspectable artifacts.
+//! Persistent `mediapm` demo producing inspectable artifacts.
 //!
-//! This example demonstrates a fully local ingest + transform flow:
-//! - loads one bundled binary MP4 fixture,
-//! - imports fixture bytes into the workspace CAS,
-//! - defines one managed workflow chain
-//!   (`import -> ffmpeg -> rsgain -> media-tagger`),
-//! - writes inspectable artifacts under `examples/.artifacts/demo`.
-//!
-//! Default runtime behavior executes full sync (`run_sync = true`) in all
-//! runs. Operators can override via `MEDIAPM_DEMO_RUN_SYNC`.
-//!
-//! Intentional deviations from `mediapm media add-local` presets kept here:
-//! - explicit untagged hierarchy output alongside tagged output,
-//! - explicit `media-tagger` options (`recording_mbid`, `write_all_images=false`),
-//! - explicit runtime-default block so `mediapm.ncl` documents all knobs,
-//! - explicit playlist hierarchy entry with duplicated id refs/path modes.
+//! Demonstrates local ingest + transform flow: bundled MP4 fixture → CAS
+//! → `import -> ffmpeg -> rsgain -> media-tagger` pipeline.
+//! Default sync enabled; override via `MEDIAPM_DEMO_RUN_SYNC`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -26,11 +14,11 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mediapm::{
-    HierarchyNode, HierarchyNodeKind, HierarchyPath, MaterializationMethod, MediaMetadataValue,
-    MediaPmApi, MediaPmPaths, MediaPmService, MediaRuntimeStorage, MediaSourceSpec, MediaStep,
-    MediaStepTool, PlaylistEntryPathMode, PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig,
-    ToolRegistryRecord, ToolRequirement, ToolRequirementDependencies, TransformInputValue,
-    load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
+    ActiveToolInstance, AddInsertPosition, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataValue, MediaPmPaths, MediaPmService, MediaRuntimeStorage,
+    MediaSourceSpec, MediaStep, MediaStepTool, PlaylistFormat, PlaylistItemRef,
+    SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement, ToolRequirementDependencies,
+    TransformInputValue, load_mediapm_document, load_mediapm_state_document, save_mediapm_document,
     save_mediapm_state_document,
 };
 use mediapm_cas::{CasApi, FileSystemCas, Hash};
@@ -48,54 +36,19 @@ type ExampleResult<T> = Result<T, Box<dyn Error>>;
 /// Embedded tiny MP4 payload containing both video and audio tracks.
 const SAMPLE_AV_MP4_BYTES: &[u8] = include_bytes!("assets/sample-av.mp4");
 
-/// Canonical demo media id.
 const DEMO_MEDIA_ID: &str = "demo.local.dQw4w9WgXcQ";
-
-/// Hierarchy id used by playlist entries to reference the tagged media file.
-///
-/// Following the `.untagged` suffix convention, tagged hierarchy nodes omit a
-/// dedicated suffix so they naturally sort before untagged variants.
 const DEMO_PLAYLIST_TARGET_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ";
-
-/// Hierarchy id used by the untagged media node for id symmetry.
-///
-/// Untagged hierarchy nodes carry the `.untagged` suffix to distinguish them
-/// from tagged variants.
 const DEMO_UNTAGGED_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.untagged";
-
-/// Hierarchy id assigned to the media-containing folder node.
 const DEMO_MEDIA_FOLDER_HIERARCHY_ID: &str = "demo.local.dQw4w9WgXcQ.media_folder";
-
-/// Demo metadata title value used in hierarchy interpolation.
 const DEMO_METADATA_TITLE: &str = "Never Gonna Give You Up";
-
-/// Demo metadata artist value used in hierarchy interpolation.
 const DEMO_METADATA_ARTIST: &str = "Rick Astley";
-
-/// Demo metadata video-id value used in flattened hierarchy interpolation.
 const DEMO_METADATA_VIDEO_ID: &str = "dQw4w9WgXcQ";
-
-/// Demo metadata literal source value.
 const DEMO_METADATA_SOURCE_LITERAL: &str = "local-fixture";
-
-/// Top-level library folder used by demo hierarchy entries.
 const DEMO_LIBRARY_ROOT: &str = "music videos";
-
-/// Metadata-interpolated media-folder path under `DEMO_LIBRARY_ROOT`.
 const DEMO_MEDIA_FOLDER_TEMPLATE: &str =
     "${media.metadata.artist} - ${media.metadata.title} [${media.id}]";
-
-/// Import source kind expected by runtime for CAS-hash ingest.
 const IMPORT_KIND_CAS_HASH: &str = "cas_hash";
-
-/// Environment variable controlling whether this example runs full sync.
-///
-/// - unset: full sync enabled,
-/// - set to one of `0`, `false`, `no`, or `off` (case-insensitive): sync
-///   disabled and only artifact/config generation runs.
 const DEMO_RUN_SYNC_ENV_VAR: &str = "MEDIAPM_DEMO_RUN_SYNC";
-
-/// Explicit runtime materialization preference order showcased by this demo.
 const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Hardlink,
     MaterializationMethod::Symlink,
@@ -110,118 +63,56 @@ const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     reason = "demo manifest intentionally records many explicit invariant flags for regression inspection"
 )]
 struct DemoManifest {
-    /// Unix timestamp (seconds) when artifacts were generated.
     generated_unix_epoch_seconds: u64,
-    /// Artifact root for this demo run.
     artifact_root: String,
-    /// Demo workspace root (same path as artifact root).
     workspace_root: String,
-    /// Canonical media id configured by this demo.
     media_id: String,
-    /// Media id generated by one pre-configuration `add_local_source` call.
     auto_added_media_id: String,
-    /// Auto-populated title written by `add_local_source`.
     auto_added_source_title: String,
-    /// Auto-populated description written by `add_local_source`.
     auto_added_source_description: String,
-    /// Source local MP4 fixture path used for CAS ingest.
     source_file_path: String,
-    /// CAS hash string used by the `import` source step.
     source_hash: String,
-    /// Whether source bytes include a video-track marker.
     source_has_video_track_marker: bool,
-    /// Whether source bytes include an audio-track marker.
     source_has_audio_track_marker: bool,
-    /// Configured managed tool count in `mediapm.ncl`.
     configured_tool_count: usize,
-    /// Configured step count in the managed source workflow.
     configured_step_count: usize,
-    /// Whether tools-only stale-tool update precheck was executed.
     tool_update_precheck_executed: bool,
-    /// Number of tools updated during tools-only stale-tool precheck.
     tool_update_precheck_updated_tools: usize,
-    /// Number of tools added during tools-only stale-tool precheck.
     tool_update_precheck_added_tools: usize,
-    /// Number of tools unchanged during tools-only stale-tool precheck.
-    tool_update_precheck_unchanged_tools: usize,
-    /// Runtime materialization policy order written into `mediapm.ncl`.
     materialization_preference_order: Vec<String>,
-    /// Materialized output path #1.
     materialized_primary_path: String,
-    /// Materialized output path #2.
     materialized_secondary_path: String,
-    /// Whether output #1 exists after optional sync.
     materialized_primary_exists: bool,
-    /// Whether output #2 exists after optional sync.
     materialized_secondary_exists: bool,
-    /// Whether output #1 is verified as a hard link to CAS object bytes.
     materialized_primary_hardlinked_to_cas: bool,
-    /// Whether output #2 is verified as a hard link to CAS object bytes.
     materialized_secondary_hardlinked_to_cas: bool,
-    /// Whether full sync was executed during this demo run.
     sync_executed: bool,
-    /// Number of managed files recorded in lock state.
     lock_managed_files_count: usize,
-    /// Number of tool-registry rows in lock state.
     lock_tool_registry_count: usize,
-    /// Sync executed count.
     executed_instances: usize,
-    /// Sync cache-hit count.
     cached_instances: usize,
-    /// Sync rematerialized count.
     rematerialized_instances: usize,
-    /// Sync materialized path count.
     materialized_paths: usize,
-    /// Sync removed-path count.
     removed_paths: usize,
-    /// Sync warning count.
     warning_count: usize,
-    /// Path to conductor workflow profile JSON written after sync execution.
-    ///
-    /// The profile records per-step elapsed times for the managed pipeline.
-    /// Set `MEDIAPM_CONDUCTOR_PROFILE_JSON` to override the output path.
     profile_path: String,
-    /// Path to `mediapm.ncl`.
     mediapm_ncl_path: String,
-    /// Path to conductor user document.
     conductor_user_ncl_path: String,
-    /// Path to conductor machine document.
     conductor_machine_ncl_path: String,
-    /// Path to `.mediapm/state.ncl`.
     mediapm_state_ncl_path: String,
-    /// Path to resolved library root.
     library_root_path: String,
-    /// Logical CAS store footprint without delta compression (bytes).
     store_size_without_delta_bytes: u64,
-    /// Effective CAS store footprint with delta compression (bytes).
     store_size_with_delta_bytes: u64,
-    /// Ratio `with_delta / without_delta` for quick compression comparison.
-    ///
-    /// Values `< 1.0` indicate on-disk savings from delta compression; values
-    /// near `1.0` are expected when most payloads are already compressed.
-    ///
-    /// When `store_size_without_delta_bytes == 0`, this demo emits `1.0` so
-    /// empty/objectless stores report a neutral ratio instead of
-    /// divide-by-zero noise.
     store_size_ratio_with_delta_over_without: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Aggregate CAS store-size metrics shared by manifest serialization.
 struct StoreSizeStats {
-    /// Logical CAS store footprint without delta compression (bytes).
     without_delta_bytes: u64,
-    /// Effective CAS store footprint with delta compression (bytes).
     with_delta_bytes: u64,
 }
 
 impl StoreSizeStats {
-    /// Returns `with_delta / without_delta` for manifest reporting.
-    ///
-    /// Values `< 1.0` indicate on-disk savings from delta compression.
-    ///
-    /// For zero-byte logical stores, this returns `1.0` to represent a neutral
-    /// no-change baseline and avoid divide-by-zero artifacts.
     #[must_use]
     #[expect(
         clippy::cast_precision_loss,
@@ -236,35 +127,26 @@ impl StoreSizeStats {
     }
 }
 
-/// Paths printed at the end of demo execution.
 #[derive(Debug, Clone)]
 struct DemoRunPaths {
-    /// Artifact root containing all generated demo outputs.
     artifact_root: PathBuf,
-    /// Workspace root used by `MediaPmService`.
     workspace_root: PathBuf,
-    /// Manifest file path for quick human inspection.
     manifest_path: PathBuf,
-    /// Materialized media library path.
     library_root: PathBuf,
 }
 
-/// Returns deterministic artifact root for this persistent demo.
 fn artifact_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join(".artifacts").join("demo")
 }
 
-/// Returns current Unix timestamp in seconds.
 fn unix_timestamp_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_secs())
 }
 
-/// Converts one filesystem path to a slash-normalized display string.
 fn display_path(path: &Path) -> String {
     path.display().to_string().replace('\\', "/")
 }
 
-/// Recreates artifact root so every run starts clean.
 fn reset_artifact_root() -> ExampleResult<PathBuf> {
     let root = artifact_root();
     if root.exists()
@@ -280,7 +162,6 @@ fn reset_artifact_root() -> ExampleResult<PathBuf> {
     Ok(root)
 }
 
-/// Returns true when one cleanup error matches transient Windows lock failures.
 fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
     error.downcast_ref::<std::io::Error>().is_some_and(|io_error| {
         io_error.kind() == std::io::ErrorKind::PermissionDenied
@@ -288,7 +169,6 @@ fn is_share_violation_remove_error(error: &(dyn Error + 'static)) -> bool {
     })
 }
 
-/// Creates one unique fallback artifact root when canonical cleanup is locked.
 fn prepare_fallback_artifact_root(canonical_root: &Path) -> ExampleResult<PathBuf> {
     let suffix =
         SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
@@ -304,7 +184,6 @@ fn prepare_fallback_artifact_root(canonical_root: &Path) -> ExampleResult<PathBu
     Ok(fallback_root)
 }
 
-/// Removes one directory with short retry policy for Windows locking behavior.
 fn remove_dir_all_with_retry(path: &Path) -> ExampleResult<()> {
     const ATTEMPTS: usize = 6;
     const BACKOFF_MS: u64 = 40;
@@ -333,11 +212,6 @@ fn remove_dir_all_with_retry(path: &Path) -> ExampleResult<()> {
     }
 }
 
-/// Best-effort recursive readonly-bit clearing for Windows cleanup retries.
-///
-/// Managed demo outputs are marked read-only after sync commit. Clearing those
-/// flags before retrying `remove_dir_all` keeps repeated example runs and test
-/// execution deterministic on Windows hosts.
 #[cfg_attr(
     windows,
     expect(
@@ -378,7 +252,6 @@ fn clear_readonly_bits_recursively(path: &Path) {
     }
 }
 
-/// Writes one serializable value as pretty JSON.
 fn write_json_file<T>(path: &Path, value: &T) -> ExampleResult<()>
 where
     T: Serialize,
@@ -390,13 +263,11 @@ where
     Ok(())
 }
 
-/// Returns whether one path segment is a hexadecimal fragment.
 #[must_use]
 fn is_hex_segment(value: &str) -> bool {
     !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Parses one filesystem CAS object path into a canonical hash when possible.
 fn parse_hash_from_store_object_path(objects_root: &Path, path: &Path) -> Option<Hash> {
     let relative = path.strip_prefix(objects_root).ok()?;
     let mut components = relative.iter();
@@ -422,7 +293,6 @@ fn parse_hash_from_store_object_path(objects_root: &Path, path: &Path) -> Option
     Hash::from_str(&format!("{algorithm}:{hex}")).ok()
 }
 
-/// Recursively visits one CAS object directory and records discovered hashes.
 fn collect_store_object_hashes_recursive(
     objects_root: &Path,
     current_dir: &Path,
@@ -480,7 +350,6 @@ fn managed_relative_path(hierarchy_root: &Path, output_path: &Path) -> ExampleRe
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
-/// Returns whether one materialized file is hardlinked to one CAS object.
 fn output_is_hardlinked_to_cas_object(
     cas_root: &Path,
     hash: Hash,
@@ -495,7 +364,6 @@ fn output_is_hardlinked_to_cas_object(
         && fs::read(&source_path)? == fs::read(output_path)?)
 }
 
-/// Validates one materialized output file is hardlinked to its CAS object hash.
 fn assert_materialized_output_hardlinked_to_cas(
     cas_root: &Path,
     hierarchy_root: &Path,
@@ -503,23 +371,21 @@ fn assert_materialized_output_hardlinked_to_cas(
     output_path: &Path,
 ) -> ExampleResult<bool> {
     let relative_path = managed_relative_path(hierarchy_root, output_path)?;
-    let record = lock.managed_files.get(relative_path.as_str()).ok_or_else(|| {
-        std::io::Error::other(format!(
+    if !lock.managed_files.contains(relative_path.as_str()) {
+        return Err(std::io::Error::other(format!(
             "managed output '{relative_path}' missing from lockfile tracking"
         ))
-    })?;
-    let hash = Hash::from_str(record.hash.as_str()).map_err(|error| {
-        std::io::Error::other(format!(
-            "managed output '{}' has invalid CAS hash '{}': {error}",
-            relative_path, record.hash
-        ))
-    })?;
+        .into());
+    }
+
+    let bytes = std::fs::read(output_path)?;
+    let hash = Hash::from_content(&bytes);
 
     if !output_is_hardlinked_to_cas_object(cas_root, hash, output_path)? {
         return Err(std::io::Error::other(format!(
             "materialized output '{}' is not hardlinked to CAS object '{}'",
             output_path.display(),
-            record.hash
+            hash
         ))
         .into());
     }
@@ -527,7 +393,6 @@ fn assert_materialized_output_hardlinked_to_cas(
     Ok(true)
 }
 
-/// Computes logical and effective store-size totals from all persisted objects.
 async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats> {
     let cas = FileSystemCas::open(cas_root).await?;
     let mut without_delta = 0u64;
@@ -542,7 +407,6 @@ async fn summarize_store_sizes(cas_root: &Path) -> ExampleResult<StoreSizeStats>
     Ok(StoreSizeStats { without_delta_bytes: without_delta, with_delta_bytes: with_delta })
 }
 
-/// Writes one local MP4 fixture file from the embedded binary bytes.
 fn write_local_av_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -552,15 +416,10 @@ fn write_local_av_fixture(path: &Path) -> ExampleResult<Vec<u8>> {
     Ok(SAMPLE_AV_MP4_BYTES.to_vec())
 }
 
-/// Returns true when one byte payload contains one ASCII marker sequence.
 fn bytes_contain_ascii(bytes: &[u8], marker: &[u8]) -> bool {
     bytes.windows(marker.len()).any(|window| window == marker)
 }
 
-/// Parses optional env-var text into a sync-enabled flag.
-///
-/// Empty/missing values default to `true` so direct `cargo run --example demo`
-/// remains a full end-to-end execution.
 fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     let Some(raw) = value else {
         return true;
@@ -570,7 +429,6 @@ fn sync_enabled_from_env_value(value: Option<&str>) -> bool {
     !matches!(normalized.as_str(), "0" | "false" | "no" | "off")
 }
 
-/// Detects if running in a CI environment based on standard CI env vars.
 fn ci_mode_detected() -> bool {
     std::env::var("CI")
         .is_ok_and(|v| !v.to_ascii_lowercase().is_empty() && v != "0" && v != "false")
@@ -582,7 +440,6 @@ fn ci_mode_detected() -> bool {
         || std::env::var("DRONE").is_ok()
 }
 
-/// Resolves sync execution mode from `MEDIAPM_DEMO_RUN_SYNC`.
 fn demo_run_sync_enabled() -> bool {
     // CI mode always disables sync (config-only)
     if ci_mode_detected() {
@@ -591,7 +448,6 @@ fn demo_run_sync_enabled() -> bool {
     sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())
 }
 
-/// Imports one source payload into the runtime CAS store and returns its hash.
 async fn import_source_fixture_into_cas(
     cas: &FileSystemCas,
     source_bytes: &[u8],
@@ -600,8 +456,6 @@ async fn import_source_fixture_into_cas(
     Ok(hash)
 }
 
-/// Builds one demo `mediapm.ncl` document that demonstrates a local ingest
-/// pipeline (`import -> ffmpeg -> media-tagger -> rsgain`).
 #[expect(
     clippy::too_many_lines,
     reason = "this item intentionally keeps end-to-end control flow together so ordering invariants remain explicit during maintenance"
@@ -613,7 +467,7 @@ fn configure_document_for_local_tool_chain(
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
 
-    document.tools = BTreeMap::from([
+    document.runtime.tools = BTreeMap::from([
         (
             "import".to_string(),
             ToolRequirement {
@@ -642,9 +496,9 @@ fn configure_document_for_local_tool_chain(
                 version: None,
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some("inherit".to_string()),
+                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                     deno_version: None,
-                    sd_version: Some("inherit".to_string()),
+                    sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                 },
                 recheck_seconds: None,
                 max_input_slots: None,
@@ -668,7 +522,7 @@ fn configure_document_for_local_tool_chain(
                 version: None,
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some("inherit".to_string()),
+                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                     deno_version: None,
                     sd_version: None,
                 },
@@ -843,14 +697,8 @@ fn configure_document_for_local_tool_chain(
                 rename_files: Vec::new(),
                 format: PlaylistFormat::M3u8,
                 ids: vec![
-                    PlaylistItemRef {
-                        id: DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string(),
-                        path: PlaylistEntryPathMode::Relative,
-                    },
-                    PlaylistItemRef {
-                        id: DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string(),
-                        path: PlaylistEntryPathMode::Absolute,
-                    },
+                    PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
+                    PlaylistItemRef::Shorthand(DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()),
                 ],
                 sanitize_names: SanitizeNamesConfig::Inherit,
                 children: Vec::new(),
@@ -867,21 +715,15 @@ fn configure_document_for_local_tool_chain(
         // Materialized hierarchy root directory.
         // Default: workspace root containing `mediapm.ncl`.
         hierarchy_root_dir: Some("media".to_string()),
-        path_sanitization: None,
         // Ordered file-materialization method preference.
         // Default when omitted: hardlink -> symlink -> reflink -> copy.
-        materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec()),
+        materialization_preference_order: DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec(),
         // User-owned conductor config path relative to workspace root.
         // Default: `mediapm.conductor.ncl`.
         conductor_config: Some("mediapm.conductor.ncl".to_string()),
-        // Machine-managed conductor config path relative to workspace root.
-        // Default: `mediapm.conductor.machine.ncl`.
-        conductor_machine_config: Some("mediapm.conductor.machine.ncl".to_string()),
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
-        // path_sanitization remains None to accept the materializer default
-        // (non-NFD fallback behavior).
         // Conductor schema export directory relative to workspace root.
         // Default: `<mediapm_dir>/config/conductor`.
         conductor_schema_dir: Some(".mediapm/config/conductor".to_string()),
@@ -891,7 +733,7 @@ fn configure_document_for_local_tool_chain(
             let host_platform = std::env::consts::OS.to_ascii_lowercase();
             let mut map = BTreeMap::new();
             map.insert(host_platform, default_runtime_inherited_env_vars().into_keys().collect());
-            Some(map)
+            map
         },
         // Machine-managed mediapm state path relative to workspace root.
         // Default: `.mediapm/state.ncl`.
@@ -907,33 +749,15 @@ fn configure_document_for_local_tool_chain(
         mediapm_schema_dir: Some(Some(".mediapm/config/mediapm".to_string())),
         // Enable conductor profiling so every sync run produces a per-step
         // timing profile at `.mediapm/profile.json` for latency investigation.
-        profiler_enabled: Some(true),
-        // CAS integrity trusted by default; set to Some(true) to verify each
-        // materialized output against its CAS record.
-        verify_materialization: None,
-        // Optional default runtime GC TTL in seconds.
-        // Not set: inherits conductor's built-in default.
-        instance_ttl_seconds: None,
-        // CAS integrity re-verification strategies on read.
-        // Default: ["modified", "sample"].
-        verify_on_read: None,
-        // Sampling denominator for the "sample" verify-on-read strategy.
-        // Default: 100.
-        verify_on_read_sample_denominator: None,
-        // Timeout in seconds for the "stale" verify-on-read strategy.
-        // Default: 604800 (7 days).
-        verify_on_read_stale_timeout_secs: None,
-        // TTL in seconds for reconstructed bytes cache.
-        // Default: 3600 (1 hour).
-        reconstructed_bytes_cache_ttl_secs: None,
-        retry_impure: None,
+        profiler_enabled: true,
+        // All other fields use their respective defaults.
+        ..Default::default()
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;
-    Ok((document.tools.len(), configured_step_count))
+    Ok((document.runtime.tools.len(), configured_step_count))
 }
 
-/// Returns managed demo tool requirements used for tools-only prechecks.
 fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
     BTreeMap::from([
         (
@@ -964,9 +788,9 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                 version: None,
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some("inherit".to_string()),
+                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                     deno_version: None,
-                    sd_version: Some("inherit".to_string()),
+                    sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                 },
                 recheck_seconds: None,
                 max_input_slots: None,
@@ -990,7 +814,7 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                 version: None,
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some("inherit".to_string()),
+                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                     deno_version: None,
                     sd_version: None,
                 },
@@ -1002,20 +826,18 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
     ])
 }
 
-/// Writes one tools-only document with empty media/hierarchy for update checks.
 fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleResult<usize> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
-    document.tools = local_demo_tool_requirements();
+    document.runtime.tools = local_demo_tool_requirements();
     document.media.clear();
     document.hierarchy.clear();
     save_mediapm_document(&mediapm_ncl, &document)?;
-    Ok(document.tools.keys().filter(|name| !name.eq_ignore_ascii_case("import")).count())
+    Ok(document.runtime.tools.keys().filter(|name| !name.eq_ignore_ascii_case("import")).count())
 }
 
-/// Seeds one machine/lock pair with stale active tool ids for update checks.
 fn seed_old_synced_tools_state_for_update_precheck(
-    service: &MediaPmService<mediapm_cas::InMemoryCas>,
+    service: &MediaPmService<mediapm_cas::FileSystemCas>,
 ) -> ExampleResult<()> {
     service.refresh_runtime_configuration()?;
 
@@ -1045,22 +867,31 @@ fn seed_old_synced_tools_state_for_update_precheck(
                     success_codes: vec![0],
                 },
                 runtime: ToolRuntime {
-                    content_map: BTreeMap::from([(stale_relative_path, stale_hash.to_string())]),
+                    content_map: BTreeMap::from([(
+                        stale_relative_path.clone(),
+                        stale_hash.to_string(),
+                    )]),
                     ..ToolRuntime::default()
                 },
                 ..ToolSpec::default()
             },
         );
 
-        lock.active_tools.insert(logical_tool_name.clone(), stale_tool_id.clone());
+        lock.active_tools.insert(
+            logical_tool_name.clone(),
+            ActiveToolInstance {
+                tool_id: stale_tool_id.clone(),
+                content_hash: stale_hash.to_string(),
+                deployed_path: stale_relative_path.clone(),
+            },
+        );
         lock.tool_registry.insert(
             stale_tool_id,
-            ToolRegistryRecord {
-                name: logical_tool_name,
-                version: "old".to_string(),
-                source: "demo".to_string(),
-                registry_multihash: stale_hash.to_string(),
-                last_transition_unix_seconds: unix_timestamp_seconds(),
+            ToolRegistryEntry {
+                version: Some("old".to_string()),
+                tag: None,
+                fetch_hash: Some(stale_hash.to_string()),
+                deployed_at: Some(unix_timestamp_seconds()),
             },
         );
     }
@@ -1071,11 +902,10 @@ fn seed_old_synced_tools_state_for_update_precheck(
     Ok(())
 }
 
-/// Executes tools-only stale-tool update precheck with empty media/hierarchy.
-async fn run_tools_update_precheck(
-    service: &MediaPmService<mediapm_cas::InMemoryCas>,
+fn run_tools_update_precheck(
+    service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
-) -> ExampleResult<(usize, usize, usize)> {
+) -> ExampleResult<(usize, usize)> {
     let expected_updated_tools = configure_document_for_tools_only_precheck(workspace_root)?;
     seed_old_synced_tools_state_for_update_precheck(service)?;
 
@@ -1084,7 +914,7 @@ async fn run_tools_update_precheck(
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
-    let summary = service.sync_tools_with_tag_update_checks(false).await?;
+    let summary = service.sync_tools_with_tag_update_checks(false)?;
     if summary.updated_tools != expected_updated_tools {
         return Err(format!(
             "tools-update precheck expected {expected_updated_tools} updated tools but observed {}",
@@ -1093,10 +923,9 @@ async fn run_tools_update_precheck(
         .into());
     }
 
-    Ok((summary.updated_tools, summary.added_tools, summary.unchanged_tools))
+    Ok((summary.updated_tools, summary.added_tools))
 }
 
-/// Clears machine workflows so final demo sync regenerates only desired media workflows.
 fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
     let mut machine: NickelDocument = decode_document(fs::read(machine_path)?.as_slice())?;
     machine.workflows.clear();
@@ -1104,12 +933,6 @@ fn clear_machine_workflows(machine_path: &Path) -> ExampleResult<()> {
     Ok(())
 }
 
-/// Runs the persistent demo and returns generated paths.
-///
-/// `run_sync = true` executes full tool reconciliation + workflow execution.
-/// `run_sync = false` writes a complete showcase configuration and manifest
-/// without external network/tool download requirements (used by automated
-/// tests that still need to execute the real example entrypoint).
 #[expect(
     clippy::too_many_lines,
     reason = "this demo keeps end-to-end orchestration and manifest wiring in one place for maintainability"
@@ -1123,13 +946,13 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let source_has_video_track_marker = bytes_contain_ascii(&source_bytes, b"vide");
     let source_has_audio_track_marker = bytes_contain_ascii(&source_bytes, b"soun");
 
-    let ingest_service = MediaPmService::new_in_memory_at(&workspace_root);
+    let mut ingest_service = MediaPmService::new_fs_at(&workspace_root)?;
     let paths = ingest_service.paths().clone();
 
-    let (precheck_updated_tools, precheck_added_tools, precheck_unchanged_tools) = if run_sync {
-        run_tools_update_precheck(&ingest_service, &workspace_root).await?
+    let (precheck_updated_tools, precheck_added_tools) = if run_sync {
+        run_tools_update_precheck(&mut ingest_service, &workspace_root)?
     } else {
-        (0, 0, 0)
+        (0, 0)
     };
 
     let source_hash_text = {
@@ -1139,7 +962,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     };
 
     let auto_added_media_id =
-        ingest_service.add_local_source(&source_path, None, None, None, None, None, None).await?;
+        ingest_service.add_local_source(&source_path, "ffprobe", None, AddInsertPosition::End)?;
     let auto_added_document = load_mediapm_document(&paths.mediapm_ncl)?;
     let auto_added_source = auto_added_document.media.get(&auto_added_media_id).ok_or_else(|| {
         std::io::Error::other(format!(
@@ -1158,7 +981,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let (configured_tool_count, configured_step_count) =
         configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
 
-    let service = {
+    let mut service = {
         let store_root = workspace_root.join(".mediapm").join("store");
         let file_system_cas = FileSystemCas::open(&store_root).await?;
         let conductor = SimpleConductor::new(
@@ -1171,16 +994,13 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         clear_machine_workflows(&service.paths().conductor_machine_ncl)?;
     }
 
-    let maybe_summary = if run_sync { Some(service.sync_library().await?) } else { None };
-    let effective_paths = {
-        let document = load_mediapm_document(&service.paths().mediapm_ncl)?;
-        service.paths().with_runtime_storage(&document.runtime)
-    };
+    let maybe_summary = if run_sync { Some(service.sync_library(false)?) } else { None };
+    let effective_paths = service.paths().clone();
     let cas_root = service.paths().runtime_root.join("store");
     let store_size_stats = summarize_store_sizes(&cas_root).await?;
     let materialization_preference_order = DEMO_MATERIALIZATION_PREFERENCE_ORDER
         .iter()
-        .map(|method| method.as_label().to_string())
+        .map(|method| format!("{method:?}"))
         .collect::<Vec<_>>();
 
     let materialized_primary = effective_paths
@@ -1235,7 +1055,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         tool_update_precheck_executed: run_sync,
         tool_update_precheck_updated_tools: precheck_updated_tools,
         tool_update_precheck_added_tools: precheck_added_tools,
-        tool_update_precheck_unchanged_tools: precheck_unchanged_tools,
+
         materialization_preference_order,
         materialized_primary_path: display_path(&materialized_primary),
         materialized_secondary_path: display_path(&materialized_secondary),
@@ -1277,7 +1097,6 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
 }
 
 #[tokio::main]
-/// Runs the persistent demo and prints generated artifact paths.
 async fn main() -> ExampleResult<()> {
     let run_sync = demo_run_sync_enabled();
 

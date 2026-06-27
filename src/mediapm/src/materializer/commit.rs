@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::config::SanitizeNamesConfig;
+use crate::config::hierarchy_types::SanitizeNamesConfig;
 use crate::error::MediaPmError;
 
 /// Removes one path recursively when it is a directory, or as one file otherwise.
@@ -274,6 +274,7 @@ fn clear_directory_writable(path: &Path) -> Result<(), MediaPmError> {
 /// a joined path string, so `/` and `\` within a component are properly
 /// replaced rather than consumed as structural separators.
 #[must_use]
+#[allow(dead_code)]
 pub(super) fn sanitize_path_component(
     component: &str,
     replacements: &BTreeMap<char, char>,
@@ -285,6 +286,7 @@ pub(super) fn sanitize_path_component(
 ///
 /// This is the first NFD check — applied at the config level before any
 /// template placeholders are resolved.
+#[allow(dead_code)]
 pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError> {
     for component in components {
         let component_nfd = component.nfd().collect::<String>();
@@ -306,6 +308,7 @@ pub(super) fn check_nfd_source(components: &[String]) -> Result<(), MediaPmError
 /// - Must be Unicode NFD normalized (with a distinct message from the source check)
 ///
 /// Returns the validated components (consume-then-return for pipeline chaining).
+#[allow(dead_code)]
 pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, MediaPmError> {
     for component in components {
         if component.is_empty() {
@@ -346,6 +349,7 @@ pub(super) fn validate_components(components: &[String]) -> Result<Vec<String>, 
 /// # Errors
 ///
 /// Delegates to [`validate_components`] when any component fails validation.
+#[allow(dead_code)]
 pub(super) fn sanitize_and_validate_components(
     components: &[String],
     sanitize_names: &SanitizeNamesConfig,
@@ -355,8 +359,15 @@ pub(super) fn sanitize_and_validate_components(
     for component in &mut resolved {
         *component = component.nfd().collect::<String>();
     }
-    if sanitize_names.is_enabled() {
-        let effective = sanitize_names.replacement_map_with_defaults(default_replacements);
+    if matches!(sanitize_names, SanitizeNamesConfig::Enabled | SanitizeNamesConfig::Custom(..)) {
+        let effective = match sanitize_names {
+            SanitizeNamesConfig::Custom(custom) => {
+                let mut map = default_replacements.clone();
+                map.extend(custom.clone());
+                map
+            }
+            _ => default_replacements.clone(),
+        };
         for component in &mut resolved {
             *component = sanitize_path_component(component, &effective);
         }
@@ -365,11 +376,13 @@ pub(super) fn sanitize_and_validate_components(
 }
 
 /// Returns whether one character is forbidden by cross-platform filename rules.
+#[allow(dead_code)]
 fn is_rejected_char(ch: char) -> bool {
     matches!(ch, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '/' | '\\')
 }
 
 /// Returns current Unix epoch timestamp in seconds.
+#[allow(dead_code)]
 pub(super) fn now_unix_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }

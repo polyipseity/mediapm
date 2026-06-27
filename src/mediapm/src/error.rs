@@ -34,4 +34,14 @@ pub enum MediaPmError {
     /// Error propagated from the conductor.
     #[error("conductor error: {0}")]
     Conductor(#[from] ConductorError),
+    /// Conductor document I/O failure with operation context.
+    #[error("conductor document error while {operation} at '{path}': {detail}")]
+    ConductorDocument {
+        /// Human-readable operation label.
+        operation: String,
+        /// Filesystem target path.
+        path: PathBuf,
+        /// Underlying error description.
+        detail: String,
+    },
 }

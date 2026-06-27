@@ -1,9 +1,10 @@
-//! Unified managed-tool catalog and downloader runtime.
+//! Managed-tool catalog, downloader, and workflow synthesis.
 //!
-//! mediapm tool provisioning is intentionally grouped under one folder module
-//! so callers can reason about catalog metadata, release resolution, transfer
-//! behavior, and payload materialization in one place.
+//! This module groups tool provisioning (catalog metadata, release resolution,
+//! download, materialization) and per-tool workflow step synthesis under one
+//! folder module so callers reason about them in one place.
 
 pub(crate) mod catalog;
 pub(crate) mod downloader;
+pub(crate) mod models;
 pub(crate) mod workflows;

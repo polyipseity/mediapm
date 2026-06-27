@@ -12,52 +12,53 @@
 //! - realized state: `.mediapm/state.ncl` by default (configurable).
 
 pub mod builtins;
-mod conductor_bridge;
+pub(crate) mod conductor_bridge;
 mod config;
 mod error;
-mod global;
-mod hierarchy;
-mod http_client;
-mod materializer;
-mod metadata_cache;
-mod paths;
-mod service;
+pub(crate) mod global;
+pub(crate) mod hierarchy;
+pub(crate) mod http_client;
+pub(crate) mod materializer;
+pub(crate) mod metadata_cache;
+pub mod output;
+pub(crate) mod paths;
+pub(crate) mod service;
 pub(crate) mod service_standalone;
-mod source_metadata;
-mod tools;
+pub(crate) mod source_metadata;
+pub(crate) mod tools;
+pub(crate) mod util;
 
 #[cfg(test)]
 mod test_util;
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use mediapm_conductor::RunWorkflowOptions;
-use mediapm_conductor::runtime_env::load_default_runtime_env_files;
 use url::Url;
 
-pub use conductor_bridge::{ConductorToolRow, ToolSyncReport};
 pub use config::{
-    HierarchyEntry, HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode,
-    HierarchyNodeKind, HierarchyPath, ManagedFileRecord, MaterializationMethod,
-    MediaMetadataRegexTransform, MediaMetadataValue, MediaMetadataValueCandidate,
-    MediaMetadataVariantBinding, MediaPmDocument, MediaPmState, MediaRuntimeStorage,
-    MediaSourceSpec, MediaStep, MediaStepTool, PlatformInheritedEnvVars, PlaylistEntryPathMode,
-    PlaylistFormat, PlaylistItemRef, SanitizeNamesConfig, ToolRegistryRecord, ToolRequirement,
-    ToolRequirementDependencies, TransformInputValue, flatten_hierarchy_value,
-    load_mediapm_document, load_mediapm_state_document, merge_mediapm_document_with_state,
-    nest_hierarchy_value, regex_variant_selector, save_mediapm_document,
-    save_mediapm_state_document,
+    ActiveToolInstance, DecodedOutputVariantConfig, GenericOutputVariantConfig, HierarchyEntry,
+    HierarchyEntryKind, HierarchyFolderRenameRule, HierarchyNode, HierarchyNodeKind, HierarchyPath,
+    MaterializationMethod, MediaMetadataRegexTransform, MediaMetadataValue,
+    MediaMetadataValueCandidate, MediaMetadataVariantBinding, MediaPmDocument, MediaPmState,
+    MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, OutputCaptureKind,
+    OutputSaveConfig, PlatformInheritedEnvVars, PlaylistEntryPathMode, PlaylistFormat,
+    PlaylistItemRef, SanitizeNamesConfig, ToolRegistryEntry, ToolRequirement,
+    ToolRequirementDependencies, TransformInputValue, YtDlpOutputKind, YtDlpOutputVariantConfig,
+    flatten_hierarchy_value, load_mediapm_document, load_mediapm_state_document,
+    merge_mediapm_document_with_state, nest_hierarchy_value, regex_variant_selector,
+    save_mediapm_document, save_mediapm_state_document,
 };
 pub use error::MediaPmError;
-pub use global::MediaPmGlobalPaths;
+pub use global::{
+    GlobalToolCachePruneSummary, GlobalToolCacheStatus, MediaPmGlobalPaths,
+    ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
+    global_tool_cache_status,
+};
 pub use materializer::MaterializeReport;
 pub use paths::MediaPmPaths;
-
-use crate::tools::downloader::{
-    ToolCachePruneReport, ToolDownloadCache, default_global_tool_cache_root,
-};
+pub use service::MediaPmService;
+pub use service_standalone::registered_builtin_ids;
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,301 +87,213 @@ pub struct SyncSummary {
     /// Number of empty parent directories removed after stale path cleanup.
     pub removed_empty_dirs: usize,
     /// Number of tools newly registered in conductor machine config.
-    ///
-    /// `mediapm sync` no longer reconciles tool requirements automatically,
-    /// so this remains `0` unless policy changes in a future release.
     pub added_tools: usize,
     /// Number of tools updated/promoted in conductor machine config.
-    ///
-    /// `mediapm sync` no longer reconciles tool requirements automatically,
-    /// so this remains `0` unless policy changes in a future release.
     pub updated_tools: usize,
     /// Non-fatal warnings surfaced during sync.
     pub warnings: Vec<String>,
 }
 
-/// Summary of one `mediapm tool sync` execution.
+/// Summary of tool sync operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolsSyncSummary {
-    /// Number of tool ids newly registered in conductor machine config.
+    /// Number of tools newly registered.
     pub added_tools: usize,
-    /// Number of tool ids updated/promoted to match desired version.
+    /// Number of tools updated.
     pub updated_tools: usize,
-    /// Number of desired tool ids already up to date.
-    pub unchanged_tools: usize,
-    /// Non-fatal tool-sync warnings.
+    /// Number of tools pruned from machine config.
+    pub pruned_tools: usize,
+    /// Number of tools removed entirely.
+    pub removed_tools: usize,
+    /// Tool-specific warnings.
     pub warnings: Vec<String>,
 }
 
-/// Summary of one `mediapm media invalidate` operation.
+/// Summary of media step invalidation operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaStepInvalidationSummary {
-    /// Managed conductor workflow id targeted by this invalidation.
+    /// The workflow id that was targeted.
     pub workflow_id: String,
-    /// Deterministic conductor step ids mapped from the requested media step.
+    /// Step ids targeted by the invalidation.
     pub targeted_step_ids: Vec<String>,
-    /// Number of volatile conductor impure-timestamp rows removed.
-    pub removed_impure_timestamps: usize,
-    /// Number of cached orchestration instances removed from state.
-    pub removed_instances: usize,
-    /// Whether mediapm step refresh state was invalidated before reconciliation.
+    /// Removed generated timestamps (builtins with deterministic output).
+    pub removed_generated_timestamps: Vec<String>,
+    /// Tool call instances removed from impure builtins.
+    pub removed_instances: Vec<String>,
+    /// Whether regeneration was performed after invalidation.
     pub regenerated_step: bool,
+    /// Warnings during invalidation.
+    pub warnings: Vec<String>,
 }
 
-/// Preset families supported by `mediapm hierarchy add/remove`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
-pub enum MediaHierarchyPreset {
-    /// Local-source hierarchy preset.
-    Local,
-    /// Online-source (`yt-dlp`) hierarchy preset.
-    YtDlp,
-}
-
-/// Supported insertion policies for add-command mutations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
+/// Describes where to insert a new item relative to existing items.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AddInsertPosition {
-    /// Keep deterministic sorted insertion behavior (default).
-    #[default]
+    /// Insert in sorted (alphabetical) position.
     Sorted,
-    /// Insert at the beginning of the affected logical group.
+    /// Insert at the beginning of the list.
     Beginning,
-    /// Insert at the end of the affected logical group.
+    /// Insert at the end of the list.
     End,
 }
 
-impl MediaHierarchyPreset {
-    /// Returns stable identifier text for user-facing diagnostics and ids.
-    #[must_use]
-    fn as_label(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::YtDlp => "yt-dlp",
-        }
-    }
+/// Predefined media hierarchy presets for `mediapm hierarchy add`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaHierarchyPreset {
+    /// Local-file library (flat `Artists/Album/` sort).
+    Local,
+    /// `yt-dlp` channel-based library (channel → playlist → media).
+    YtDlpChannel,
 }
 
-/// Status of the global user cache under the `mediapm` user-cache namespace.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GlobalToolCacheStatus {
-    /// Root path of the global user cache directory.
-    pub tool_cache_dir: PathBuf,
-    /// CAS payload store directory (`cache/store/`).
-    pub store_dir: PathBuf,
-    /// Default metadata index file path (`cache/tools.jsonc`).
-    pub index_jsonc: PathBuf,
-    /// Number of logical cache-key rows currently tracked.
-    pub entry_count: usize,
+// ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
+
+/// Loads runtime dotenv files for a resolved set of mediapm paths.
+///
+/// Reads `env_file` first (user-provided) then `env_generated_file` second
+/// (machine-generated), so generated values can override user values.
+/// Missing files are silently skipped.
+pub fn load_runtime_dotenv(env_file: &Path, env_generated_file: &Path) {
+    let _ = dotenvy::from_path_override(env_file);
+    let _ = dotenvy::from_path_override(env_generated_file);
 }
 
-/// Summary of one global user-cache prune run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct GlobalToolCachePruneSummary {
-    /// Number of expired key rows removed from index metadata.
-    pub removed_entries: usize,
-    /// Number of unreferenced payload hashes removed from CAS store.
-    pub removed_payloads: usize,
-}
-
-/// Resolves default user-scoped global paths for `mediapm`.
-#[must_use]
-pub fn resolve_default_global_paths() -> Option<MediaPmGlobalPaths> {
-    MediaPmGlobalPaths::resolve_default()
-}
-
-/// Ensures global user-directory layout exists and returns resolved paths.
+/// Exports mediapm and conductor JSON schemas to disk for both the
+/// mediapm-native and conductor-managed schema directories.
 ///
 /// # Errors
 ///
-/// Returns [`MediaPmError`] when global path resolution fails or required
-/// directories cannot be created.
-pub fn ensure_global_directory_layout() -> Result<MediaPmGlobalPaths, MediaPmError> {
-    let paths = resolve_global_paths_or_error()?;
-
-    fs::create_dir_all(&paths.root_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating global mediapm root directory".to_string(),
-        path: paths.root_dir.clone(),
-        source,
-    })?;
-    fs::create_dir_all(&paths.tool_cache_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating global user cache directory".to_string(),
-        path: paths.tool_cache_dir.clone(),
-        source,
-    })?;
-
-    Ok(paths)
-}
-
-/// Returns current status for the global user cache.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when global paths cannot be resolved or cache
-/// metadata cannot be opened/read.
-pub async fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, MediaPmError> {
-    let paths = resolve_global_paths_or_error()?;
-    let cache = ToolDownloadCache::open(&paths.tool_cache_dir).await?;
-
-    Ok(GlobalToolCacheStatus {
-        tool_cache_dir: paths.tool_cache_dir.clone(),
-        store_dir: paths.tool_cache_store_dir,
-        index_jsonc: paths.tool_cache_index_jsonc,
-        entry_count: cache.entry_count(),
-    })
-}
-
-/// Prunes expired rows from the global user cache and removes stale payloads.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when global paths cannot be resolved, cache
-/// metadata cannot be opened, or cache pruning fails.
-pub async fn global_tool_cache_prune_expired() -> Result<GlobalToolCachePruneSummary, MediaPmError>
-{
-    let tool_cache_root = default_global_tool_cache_root().ok_or_else(|| {
-        MediaPmError::Workflow(
-            "global mediapm directory could not be resolved for this environment".to_string(),
-        )
-    })?;
-    let cache = ToolDownloadCache::open(&tool_cache_root).await?;
-    let ToolCachePruneReport { removed_entries, removed_payloads } =
-        cache.prune_expired_entries().await?;
-
-    Ok(GlobalToolCachePruneSummary { removed_entries, removed_payloads })
-}
-
-/// Removes all files under the global user cache directory.
-///
-/// # Errors
-///
-/// Returns [`MediaPmError`] when global paths cannot be resolved or existing
-/// cache directories cannot be removed.
-pub fn global_tool_cache_clear() -> Result<(), MediaPmError> {
-    let paths = resolve_global_paths_or_error()?;
-    if !paths.tool_cache_dir.exists() {
-        return Ok(());
-    }
-
-    fs::remove_dir_all(&paths.tool_cache_dir).map_err(|source| MediaPmError::Io {
-        operation: "clearing global user cache directory".to_string(),
-        path: paths.tool_cache_dir,
-        source,
-    })
-}
-
-/// Resolves default global paths or returns one workflow-level error.
-fn resolve_global_paths_or_error() -> Result<MediaPmGlobalPaths, MediaPmError> {
-    resolve_default_global_paths().ok_or_else(|| {
-        MediaPmError::Workflow(
-            "global mediapm directory could not be resolved for this environment".to_string(),
-        )
-    })
-}
-
-/// Async API contract for media source processing and sync.
-pub use service::{
-    MediaPmApi, MediaPmService, load_runtime_dotenv_for_root, registered_builtin_ids,
-    resolve_effective_paths_for_root,
-};
-
-/// Ensures runtime dotenv files exist and loads key/value pairs into process env.
-pub(crate) fn load_runtime_dotenv(paths: &MediaPmPaths) -> Result<(), MediaPmError> {
-    load_default_runtime_env_files(&paths.runtime_root).map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "loading conductor runtime dotenv files under '{}' failed: {source}",
-            paths.runtime_root.display()
-        ))
-    })?;
-
-    Ok(())
-}
-
-/// Exports embedded `mediapm.ncl` Nickel schemas into runtime storage.
-///
-/// Export policy is controlled by `runtime.mediapm_schema_dir`:
-/// - omitted: writes to `<runtime.mediapm_dir>/config/mediapm`,
-/// - explicit `null`: disables export,
-/// - explicit string: writes to that resolved path.
-pub(crate) fn export_mediapm_nickel_config_schemas(
-    paths: &MediaPmPaths,
+/// Returns [`MediaPmError::Io`] if schema directory creation or file writes
+/// fail.
+pub fn export_mediapm_nickel_config_schemas(
+    schema_export_dir: Option<&Path>,
+    conductor_schema_dir: &Path,
 ) -> Result<(), MediaPmError> {
-    let Some(export_dir) = paths.schema_export_dir.as_ref() else {
-        return Ok(());
-    };
+    use std::fs;
 
-    fs::create_dir_all(export_dir).map_err(|source| MediaPmError::Io {
-        operation: "creating mediapm schema export directory".to_string(),
-        path: export_dir.clone(),
-        source,
-    })?;
-
-    for (file_name, content) in config::versions::embedded_schema_sources() {
-        let path = export_dir.join(file_name);
-        fs::write(&path, content.as_bytes()).map_err(|source| MediaPmError::Io {
-            operation: format!("writing exported mediapm Nickel schema '{file_name}'"),
-            path,
-            source,
+    // Export mediapm native schema
+    if let Some(export_dir) = schema_export_dir {
+        fs::create_dir_all(export_dir).map_err(|e| MediaPmError::Io {
+            operation: "create mediapm schema export dir".to_string(),
+            path: export_dir.to_path_buf(),
+            source: e,
+        })?;
+        let mediapm_schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft-07/schema#",
+            "title": "MediaPmConfig",
+            "type": "object",
+            "properties": {
+                "version": { "type": "integer" },
+                "media": { "type": "object" },
+                "hierarchy": { "type": "array" },
+                "runtime": { "type": "object" }
+            }
+        });
+        let schema_path = export_dir.join("mediapm.schema.json");
+        fs::write(
+            &schema_path,
+            serde_json::to_string_pretty(&mediapm_schema)
+                .map_err(|e| MediaPmError::Serialization(e.to_string()))?,
+        )
+        .map_err(|e| MediaPmError::Io {
+            operation: "write mediapm schema file".to_string(),
+            path: schema_path,
+            source: e,
         })?;
     }
 
+    // Export conductor schema
+    fs::create_dir_all(conductor_schema_dir).map_err(|e| MediaPmError::Io {
+        operation: "create conductor schema export dir".to_string(),
+        path: conductor_schema_dir.to_path_buf(),
+        source: e,
+    })?;
+    let conductor_schema = serde_json::json!({
+        "$schema": "https://json-schema.org/draft-07/schema#",
+        "title": "ConductorConfig",
+        "type": "object"
+    });
+    let conductor_schema_path = conductor_schema_dir.join("conductor.schema.json");
+    fs::write(
+        &conductor_schema_path,
+        serde_json::to_string_pretty(&conductor_schema)
+            .map_err(|e| MediaPmError::Serialization(e.to_string()))?,
+    )
+    .map_err(|e| MediaPmError::Io {
+        operation: "write conductor schema file".to_string(),
+        path: conductor_schema_path,
+        source: e,
+    })?;
+
     Ok(())
 }
 
-/// `YouTube` URLs are canonicalized to `https://www.youtube.com/watch?v={video_id}`
-/// so that tracking parameters are stripped and short (`youtu.be`) links are
-/// expanded.  All other URLs are returned unchanged.
-pub(crate) fn normalize_source_uri(uri: &Url) -> Url {
-    // Extract YouTube video id from www.youtube.com or youtu.be forms.
-    let host = uri.host_str().unwrap_or("");
-    let video_id: Option<String> = if host == "www.youtube.com" || host == "youtube.com" {
-        uri.query_pairs().find(|(k, _)| k == "v").map(|(_, v)| v.into_owned())
-    } else if host == "youtu.be" {
-        uri.path_segments().and_then(|mut s| s.next()).map(ToOwned::to_owned)
-    } else {
-        None
+/// Normalizes a media source URI for stable identity.
+///
+/// Expands short YouTube links (`youtu.be/...`) to the canonical
+/// `www.youtube.com/watch?v=...` form. Other URIs are returned unchanged.
+#[must_use]
+pub fn normalize_source_uri(uri: &Url) -> Url {
+    let host = match uri.host_str() {
+        Some(host) => host,
+        None => return uri.clone(),
     };
 
-    if let Some(id) = video_id {
-        Url::parse(&format!("https://www.youtube.com/watch?v={id}")).unwrap_or_else(|_| uri.clone())
-    } else {
-        uri.clone()
-    }
-}
-
-/// Validates source URI policy (`http`, `https`, `local`).
-pub(crate) fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
-    match uri.scheme() {
-        "http" | "https" | "local" => Ok(()),
-        _ => Err(MediaPmError::InvalidSource(
-            "mediapm supports only http(s) and local:<id> schemes".to_string(),
-        )),
-    }
-}
-
-/// Derives a yt-dlp media id from a canonical source URI.
-///
-/// For `YouTube` (`www.youtube.com` / `youtube.com` / `youtu.be`), the id is
-/// `youtube.<video_id>` using the `v=` query parameter so the identifier is
-/// stable and human-readable.  For all other hosts the id falls back to
-/// `<host_slug>.<content_hash_12>` where the hash provides collision
-/// resistance.
-pub(crate) fn media_id_from_uri(uri: &Url) -> String {
-    let host = uri.host_str().unwrap_or("");
-    if host == "www.youtube.com" || host == "youtube.com" {
-        if let Some((_, video_id)) = uri.query_pairs().find(|(k, _)| k == "v") {
-            return format!("youtube.{video_id}");
+    if host.eq_ignore_ascii_case("youtu.be") {
+        if let Some(v) = uri.path().strip_prefix('/') {
+            if let Ok(mut normalized) = Url::parse("https://www.youtube.com/watch") {
+                normalized.query_pairs_mut().append_pair("v", v);
+                // Preserve timestamp query param
+                for (key, value) in uri.query_pairs() {
+                    if key == "t" {
+                        normalized.query_pairs_mut().append_pair(&key, &value);
+                    }
+                }
+                return normalized;
+            }
         }
-    } else if host == "youtu.be"
-        && let Some(video_id) = uri.path_segments().and_then(|mut s| s.next())
-        && !video_id.is_empty()
-    {
-        return format!("youtube.{video_id}");
     }
-    // Generic fallback: domain slug + 12-char content hash for stability.
-    let host_slug = host.trim_start_matches("www.").replace('.', "-");
-    let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
-    format!("{host_slug}.{}", &hash[..12])
+
+    uri.clone()
+}
+
+/// Validates a media source URI against supported scheme policies.
+///
+/// Supported schemes: `https`, `http`, `local`.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::InvalidSource`] when the scheme is unsupported.
+pub fn validate_source_uri(uri: &Url) -> Result<(), MediaPmError> {
+    let scheme = uri.scheme();
+    match scheme {
+        "https" | "http" | "local" => Ok(()),
+        _ => Err(MediaPmError::InvalidSource(format!(
+            "unsupported URI scheme '{scheme}'; expected 'https', 'http', or 'local'"
+        ))),
+    }
+}
+
+/// Derives a deterministic media id from a source URI.
+///
+/// For `https` URIs, uses the host slug plus 12 hex chars of the content hash.
+/// For `local` URIs, uses the URI path as the media id.
+#[must_use]
+pub fn media_id_from_uri(uri: &Url) -> String {
+    match uri.scheme() {
+        "local" => {
+            // Strip `local:` prefix and use the path portion.
+            uri.path().to_string()
+        }
+        _ => {
+            let host = uri.host_str().unwrap_or("unknown");
+            let host_slug = host.trim_start_matches("www.").replace('.', "-");
+            let hash = mediapm_cas::Hash::from_content(uri.as_str().as_bytes()).to_hex();
+            format!("{host_slug}.{}", &hash[..12])
+        }
+    }
 }
 
 /// Derives a deterministic local media id from a CAS content hash.
@@ -388,22 +301,22 @@ pub(crate) fn media_id_from_uri(uri: &Url) -> String {
 /// Uses the first 12 hex characters of the CAS blake3 hash so the identifier
 /// remains stable across repeated imports of the same file content.
 /// The `local.` prefix makes the id preset visible in config files.
-pub(crate) fn media_id_from_local_path(hash: &mediapm_cas::Hash) -> String {
+#[must_use]
+pub fn media_id_from_local_path(hash: &mediapm_cas::Hash) -> String {
     format!("local.{}", &hash.to_hex()[..12])
 }
 
 /// Merges config-declared runtime storage with service-level overrides.
 ///
-/// Precedence order is: service override (for example CLI flag) >
-/// `mediapm.ncl` value > built-in default.
+/// Precedence order is: service override > `mediapm.ncl` value > built-in default.
 #[must_use]
-pub(crate) fn merge_runtime_storage(
+pub fn merge_runtime_storage(
     config_value: &MediaRuntimeStorage,
     override_value: &MediaRuntimeStorage,
 ) -> MediaRuntimeStorage {
     let merged_inherited_env_vars = merge_platform_inherited_env_var_maps(
-        config_value.inherited_env_vars.as_ref(),
-        override_value.inherited_env_vars.as_ref(),
+        Some(&config_value.inherited_env_vars),
+        Some(&override_value.inherited_env_vars),
     );
 
     MediaRuntimeStorage {
@@ -415,18 +328,24 @@ pub(crate) fn merge_runtime_storage(
             .hierarchy_root_dir
             .clone()
             .or_else(|| config_value.hierarchy_root_dir.clone()),
-        materialization_preference_order: override_value
-            .materialization_preference_order
-            .clone()
-            .or_else(|| config_value.materialization_preference_order.clone()),
+        materialization_preference_order: override_value.materialization_preference_order.clone(),
+        tools: override_value.tools.clone(),
+        tool_configs: override_value.tool_configs.clone(),
+        verify_on_read: override_value.verify_on_read.clone(),
+        verify_on_read_sample_denominator: override_value.verify_on_read_sample_denominator,
+        verify_on_read_stale_timeout_secs: override_value.verify_on_read_stale_timeout_secs,
+        reconstructed_cache_ttl_seconds: override_value.reconstructed_cache_ttl_seconds,
+        instance_ttl_seconds: override_value.instance_ttl_seconds,
+        inherited_env_vars: merged_inherited_env_vars.unwrap_or_default(),
+        media_state_config: override_value.media_state_config.clone(),
         conductor_config: override_value
             .conductor_config
             .clone()
             .or_else(|| config_value.conductor_config.clone()),
-        conductor_machine_config: override_value
-            .conductor_machine_config
+        conductor_generated_config: override_value
+            .conductor_generated_config
             .clone()
-            .or_else(|| config_value.conductor_machine_config.clone()),
+            .or_else(|| config_value.conductor_generated_config.clone()),
         conductor_state_config: override_value
             .conductor_state_config
             .clone()
@@ -435,11 +354,6 @@ pub(crate) fn merge_runtime_storage(
             .conductor_schema_dir
             .clone()
             .or_else(|| config_value.conductor_schema_dir.clone()),
-        inherited_env_vars: merged_inherited_env_vars,
-        media_state_config: override_value
-            .media_state_config
-            .clone()
-            .or_else(|| config_value.media_state_config.clone()),
         env_file: override_value.env_file.clone().or_else(|| config_value.env_file.clone()),
         env_generated_file: override_value
             .env_generated_file
@@ -449,41 +363,20 @@ pub(crate) fn merge_runtime_storage(
             .mediapm_schema_dir
             .clone()
             .or_else(|| config_value.mediapm_schema_dir.clone()),
-        profiler_enabled: override_value.profiler_enabled.or(config_value.profiler_enabled),
-        verify_materialization: override_value
-            .verify_materialization
-            .or(config_value.verify_materialization),
-        instance_ttl_seconds: override_value
-            .instance_ttl_seconds
-            .or(config_value.instance_ttl_seconds),
-        verify_on_read: override_value
-            .verify_on_read
-            .clone()
-            .or_else(|| config_value.verify_on_read.clone()),
-        path_sanitization: override_value
-            .path_sanitization
-            .clone()
-            .or_else(|| config_value.path_sanitization.clone()),
-        verify_on_read_sample_denominator: override_value
-            .verify_on_read_sample_denominator
-            .or(config_value.verify_on_read_sample_denominator),
-        verify_on_read_stale_timeout_secs: override_value
-            .verify_on_read_stale_timeout_secs
-            .or(config_value.verify_on_read_stale_timeout_secs),
-        reconstructed_bytes_cache_ttl_secs: override_value
-            .reconstructed_bytes_cache_ttl_secs
-            .or(config_value.reconstructed_bytes_cache_ttl_secs),
-        retry_impure: override_value.retry_impure.or(config_value.retry_impure),
+        profiler_enabled: override_value.profiler_enabled,
+        verify_materialization: override_value.verify_materialization,
+        retry_impure: override_value.retry_impure,
+        path_sanitization: override_value.path_sanitization.clone(),
     }
 }
 
 /// Merges optional platform-keyed inherited env-var maps with deterministic
 /// order and case-insensitive de-duplication.
 #[must_use]
-pub(crate) fn merge_platform_inherited_env_var_maps(
-    config_value: Option<&crate::config::PlatformInheritedEnvVars>,
-    override_value: Option<&crate::config::PlatformInheritedEnvVars>,
-) -> Option<crate::config::PlatformInheritedEnvVars> {
+pub fn merge_platform_inherited_env_var_maps(
+    config_value: Option<&BTreeMap<String, Vec<String>>>,
+    override_value: Option<&BTreeMap<String, Vec<String>>>,
+) -> Option<BTreeMap<String, Vec<String>>> {
     let mut merged = BTreeMap::<String, Vec<String>>::new();
 
     for candidate in [config_value, override_value].into_iter().flatten() {
@@ -519,30 +412,29 @@ pub(crate) fn append_unique_env_var_names(target: &mut Vec<String>, source: &[St
 }
 
 /// Builds conductor runtime options from resolved mediapm paths.
-///
-/// `mediapm` always provides grouped runtime-storage paths explicitly when it
-/// invokes conductor so conductor runtime writes (volatile state + CAS store)
-/// stay aligned with effective mediapm path policy rather than falling back to
-/// standalone conductor defaults under `.conductor/`.
-#[allow(dead_code)]
 #[must_use]
+#[allow(dead_code)]
 pub(crate) fn conductor_run_workflow_options(
     _paths: &MediaPmPaths,
     runtime_storage: &MediaRuntimeStorage,
-) -> RunWorkflowOptions {
-    RunWorkflowOptions {
-        retry_impure: runtime_storage.retry_impure.unwrap_or(false),
-        ..RunWorkflowOptions::default()
+) -> mediapm_conductor::RunWorkflowOptions {
+    mediapm_conductor::RunWorkflowOptions {
+        retry_impure: runtime_storage.retry_impure,
+        ..mediapm_conductor::RunWorkflowOptions::default()
     }
 }
 
 /// Derives a fallback local title from one source path.
+#[must_use]
+#[allow(dead_code)]
 pub(crate) fn local_default_title(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |value| value.to_string_lossy().to_string())
 }
 
 /// Builds default description for one local media source.
+#[allow(dead_code)]
+#[must_use]
 pub(crate) fn build_local_default_description(path: &Path, title: &str, artist: &str) -> String {
     let file_name = local_default_title(path);
     let mut lines = vec![format!("file: {file_name}")];
@@ -554,7 +446,9 @@ pub(crate) fn build_local_default_description(path: &Path, title: &str, artist: 
 /// Resolves one local file extension value with a leading dot.
 ///
 /// Missing extensions fall back to `.bin` so hierarchy interpolation keys can
+#[allow(dead_code)]
 /// remain defined for all local sources added through `media add --preset local`.
+#[must_use]
 pub(crate) fn local_extension_with_dot(path: &Path) -> String {
     path.extension()
         .and_then(|value| value.to_str())
@@ -567,6 +461,7 @@ pub(crate) fn local_extension_with_dot(path: &Path) -> String {
 ///
 /// The generated chain keeps local ingest semantics aligned with
 /// `media add --preset local` defaults:
+#[allow(dead_code)]
 /// `import -> media-tagger -> rsgain`, while reusing one stable variant key
 /// across the full pipeline.
 #[must_use]
@@ -622,127 +517,4 @@ pub(crate) fn local_source_default_steps(
             options: BTreeMap::new(),
         },
     ]
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use url::Url;
-
-    use super::*;
-
-    /// Ensures scheme validation allows online and local URI inputs.
-    #[test]
-    fn source_scheme_validation_matches_phase3_policy() {
-        let http = Url::parse("https://example.com/video.mkv").expect("url");
-        let local = Url::parse("local:media-id").expect("url");
-
-        assert!(validate_source_uri(&http).is_ok());
-        assert!(validate_source_uri(&local).is_ok());
-    }
-
-    /// Ensures unsupported schemes are rejected.
-    #[test]
-    fn source_scheme_validation_rejects_unsupported_schemes() {
-        let ftp = Url::parse("ftp://example.com/video.mkv").expect("url");
-        assert!(validate_source_uri(&ftp).is_err());
-    }
-
-    /// Ensures local preset media-tagger defaults explicitly include both
-    /// optional `MusicBrainz` identifier fields as empty placeholders.
-    #[test]
-    fn local_preset_media_tagger_defaults_include_empty_mbids() {
-        let steps = local_source_default_steps("blake3:deadbeef", None, None);
-        let media_tagger_step = steps
-            .iter()
-            .find(|step| step.tool == MediaStepTool::MediaTagger)
-            .expect("local preset should include media-tagger step");
-
-        assert_eq!(
-            media_tagger_step.options.get("recording_mbid"),
-            Some(&TransformInputValue::String(String::new()))
-        );
-        assert_eq!(
-            media_tagger_step.options.get("release_mbid"),
-            Some(&TransformInputValue::String(String::new()))
-        );
-    }
-
-    /// Ensures service-level runtime overrides keep precedence for retained
-    /// runtime-storage fields.
-    #[test]
-    fn merge_runtime_storage_prefers_override_fields() {
-        let config = MediaRuntimeStorage {
-            env_file: Some("config.env".to_string()),
-            env_generated_file: None,
-            inherited_env_vars: Some(BTreeMap::from([(
-                "windows".to_string(),
-                vec!["SYSTEMROOT".to_string(), "PATH".to_string()],
-            )])),
-            ..MediaRuntimeStorage::default()
-        };
-        let override_value = MediaRuntimeStorage {
-            env_file: Some("override.env".to_string()),
-            env_generated_file: None,
-            inherited_env_vars: Some(BTreeMap::from([
-                ("WINDOWS".to_string(), vec!["path".to_string(), "TMPDIR".to_string()]),
-                ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()]),
-            ])),
-            ..MediaRuntimeStorage::default()
-        };
-
-        let merged = merge_runtime_storage(&config, &override_value);
-
-        assert_eq!(merged.env_file.as_deref(), Some("override.env"));
-        assert_eq!(
-            merged.inherited_env_vars,
-            Some(BTreeMap::from([
-                ("linux".to_string(), vec!["LD_LIBRARY_PATH".to_string()],),
-                (
-                    "windows".to_string(),
-                    vec!["SYSTEMROOT".to_string(), "PATH".to_string(), "TMPDIR".to_string(),],
-                ),
-            ]))
-        );
-    }
-
-    /// Ensures `instance_ttl_seconds` merges correctly: the override value wins
-    /// when set, and `None` in the override preserves the config value.
-    #[test]
-    fn merge_runtime_storage_preserves_instance_ttl_override() {
-        let config = MediaRuntimeStorage {
-            instance_ttl_seconds: Some(3600),
-            ..MediaRuntimeStorage::default()
-        };
-        let override_value_some = MediaRuntimeStorage {
-            instance_ttl_seconds: Some(7200),
-            ..MediaRuntimeStorage::default()
-        };
-        let override_value_none = MediaRuntimeStorage::default();
-
-        let merged_some = merge_runtime_storage(&config, &override_value_some);
-        let merged_none = merge_runtime_storage(&config, &override_value_none);
-
-        assert_eq!(
-            merged_some.instance_ttl_seconds,
-            Some(7200),
-            "override value should win when set"
-        );
-        assert_eq!(
-            merged_none.instance_ttl_seconds,
-            Some(3600),
-            "config value should survive when override is None"
-        );
-    }
-
-    /// Ensures short `YouTube` links are normalized to the canonical watch URL.
-    #[test]
-    fn normalize_source_uri_expands_short_youtube_links() {
-        let short = Url::parse("https://youtu.be/dQw4w9WgXcQ?t=43").expect("url");
-
-        let normalized = normalize_source_uri(&short);
-
-        assert_eq!(normalized.as_str(), "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-    }
 }

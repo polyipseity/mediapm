@@ -1,311 +1,345 @@
-//! Online and local source metadata resolution helpers.
+//! Source metadata resolution for online and local media sources.
+//!
+//! This module provides utilities for fetching and resolving metadata from
+//! online sources (via `yt-dlp`) and local files (via `ffprobe`), along with
+//! parsing helpers that extract structured metadata from tool outputs.
 
-use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::path::Path;
+use std::process::Command;
 
-use mediapm_conductor::NickelDocument;
-use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use url::Url;
 
+use crate::error::MediaPmError;
+use crate::metadata_cache::MetadataCache;
 use crate::paths::MediaPmPaths;
+use crate::util::first_non_empty_json_string;
 
-/// Metadata tuple fetched by downloader-aware online probes.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/// Metadata extracted from an online source.
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct OnlineSourceMetadata {
-    /// Best-effort media title.
-    pub(crate) title: Option<String>,
-    /// Best-effort artist/uploader label.
-    pub(crate) artist: Option<String>,
-    /// Best-effort textual description.
-    pub(crate) description: Option<String>,
+    /// Human-readable title.
+    pub title: String,
+    /// Human-readable artist.
+    pub artist: String,
+    /// Human-readable description.
+    pub description: String,
 }
 
-/// Remote metadata resolved for the online add flow.
-///
-/// This structure keeps the add-path-specific title, description, artist, and
-/// warning text together so service code can stay small while tests can assert
-/// the resolution policy directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Resolved metadata for a newly added online source.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedOnlineSourceMetadata {
-    /// Resolved title used when adding one online media source.
-    pub(crate) title: Option<String>,
-    /// Resolved description used when adding one online media source.
-    pub(crate) description: Option<String>,
-    /// Resolved artist/uploader label used when adding one online media source.
-    pub(crate) artist: Option<String>,
-    /// Optional warning emitted when yt-dlp metadata cannot be fetched.
-    pub(crate) warning: Option<String>,
+    /// Human-readable title.
+    pub title: String,
+    /// Human-readable description.
+    pub description: String,
+    /// Human-readable artist.
+    pub artist: String,
+    /// Non-fatal warning message (if any).
+    pub warning: Option<String>,
 }
 
-/// Metadata tuple fetched by local-file probes.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+/// Metadata extracted from a local file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LocalSourceMetadata {
-    /// Best-effort media title.
-    pub(crate) title: Option<String>,
-    /// Best-effort artist/uploader label.
-    pub(crate) artist: Option<String>,
-    /// Best-effort textual description.
-    pub(crate) description: Option<String>,
+    /// Human-readable title.
+    pub title: String,
+    /// Human-readable artist.
+    pub artist: String,
+    /// Human-readable description (may be empty).
+    pub description: String,
 }
 
-/// Resolves online metadata using a managed `yt-dlp` executable.
-pub(crate) fn fetch_online_source_metadata(
-    uri: &Url,
-    yt_dlp_command: &Path,
-) -> OnlineSourceMetadata {
-    try_fetch_online_source_metadata_with_yt_dlp(uri, yt_dlp_command).unwrap_or_default()
-}
+// ---------------------------------------------------------------------------
+// Online source metadata
+// ---------------------------------------------------------------------------
 
-/// Resolves add-flow metadata for one remote source.
+/// Fetches metadata for an online source URI using `yt-dlp`.
 ///
-/// When yt-dlp metadata is available, the fetched values are passed through
-/// as-is. The warning is carried through so the caller can report why
-/// metadata could not be fetched.
-pub(crate) fn resolve_online_source_metadata_for_add(
-    yt_dlp_metadata: Option<OnlineSourceMetadata>,
-    warning: Option<String>,
-) -> ResolvedOnlineSourceMetadata {
-    let metadata = yt_dlp_metadata.unwrap_or_default();
-    ResolvedOnlineSourceMetadata {
-        title: metadata.title,
-        description: metadata.description,
-        artist: metadata.artist,
-        warning,
-    }
-}
-
-/// Resolves local metadata using managed ffprobe when available.
-pub(crate) fn fetch_local_source_metadata(
-    path: &Path,
-    ffprobe_command: Option<&Path>,
-    cache: Option<&crate::metadata_cache::MetadataCache>,
-) -> LocalSourceMetadata {
-    let Some(ffprobe) = ffprobe_command else {
-        return LocalSourceMetadata::default();
-    };
-    try_fetch_local_source_metadata_with_ffprobe(path, ffprobe, cache).unwrap_or_default()
-}
-
-/// Fetches online metadata by invoking `yt-dlp` from one explicit executable path.
+/// Returns the raw JSON metadata from `yt-dlp --dump-json` as a
+/// `serde_json::Value`.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if `yt-dlp` is unavailable or returns
+/// a non-zero exit code.
+#[allow(dead_code)]
 pub(crate) fn try_fetch_online_source_metadata_with_yt_dlp(
     uri: &Url,
-    yt_dlp_command: &Path,
-) -> Option<OnlineSourceMetadata> {
-    let output = ProcessCommand::new(yt_dlp_command)
-        .arg("--dump-single-json")
-        .arg("--skip-download")
-        .arg("--no-warnings")
+    yt_dlp_command: &str,
+) -> Result<Value, MediaPmError> {
+    let output = Command::new(yt_dlp_command)
+        .args(["--dump-json", "--no-download", "--skip-download"])
         .arg(uri.as_str())
         .output()
-        .ok()?;
+        .map_err(|e| {
+            MediaPmError::Workflow(format!("failed to execute yt-dlp for metadata fetch: {e}"))
+        })?;
 
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(MediaPmError::Workflow(format!("yt-dlp metadata fetch failed: {stderr}")));
     }
 
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let metadata = parse_online_source_metadata(&value);
-
-    if metadata.title.is_none() && metadata.artist.is_none() && metadata.description.is_none() {
-        None
-    } else {
-        Some(metadata)
-    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| MediaPmError::Workflow(format!("failed to parse yt-dlp JSON output: {e}")))
 }
 
-/// Fetches local metadata by invoking managed `ffprobe`, with optional
-/// persistent cache.
-pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
-    path: &Path,
-    ffprobe_command: &Path,
-    cache: Option<&crate::metadata_cache::MetadataCache>,
-) -> Option<LocalSourceMetadata> {
-    // Compute cache key from canonicalized path for persistent metadata cache.
-    let cache_key = {
-        let canonical = std::fs::canonicalize(path).ok()?;
-        blake3::hash(canonical.to_string_lossy().as_bytes()).to_hex().to_string()
-    };
-
-    // Check persistent cache first.
-    if let Some(cache) = cache
-        && let Some(cached) = cache.get(&cache_key)
-        && let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached)
-    {
-        return Some(metadata);
-    }
-
-    let output = ProcessCommand::new(ffprobe_command)
-        .arg("-v")
-        .arg("error")
-        .arg("-print_format")
-        .arg("json")
-        .arg("-show_format")
-        .arg(path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    let metadata = parse_local_source_metadata_from_ffprobe_json(&value);
-
-    // Store in cache on success, then return.
-    if metadata.title.is_some() || metadata.artist.is_some() || metadata.description.is_some() {
-        if let Some(cache) = cache
-            && let Ok(value) = serde_json::to_value(&metadata)
-        {
-            cache.set(cache_key, value);
-        }
-        Some(metadata)
-    } else {
-        None
-    }
-}
-
-/// Parses online metadata fields from one downloader JSON payload.
-pub(crate) fn parse_online_source_metadata(value: &serde_json::Value) -> OnlineSourceMetadata {
-    let title = first_non_empty_json_string(value, &["fulltitle", "title", "track"]);
-    let artist = first_non_empty_json_string(
-        value,
-        &["uploader", "channel", "artist", "creator", "uploader_id"],
-    );
-    let description = first_non_empty_json_string(value, &["description", "summary"]);
+/// Parses `yt-dlp --dump-json` output into an [`OnlineSourceMetadata`].
+#[must_use]
+#[allow(dead_code)]
+pub(crate) fn parse_online_source_metadata(value: &Value) -> OnlineSourceMetadata {
+    let title = first_non_empty_json_string(value, &["title", "fulltitle", "webpage_url"])
+        .unwrap_or_else(|| "Untitled".to_string());
+    let artist = first_non_empty_json_string(value, &["uploader", "channel", "creator"])
+        .unwrap_or_else(|| "Unknown".to_string());
+    let description =
+        first_non_empty_json_string(value, &["description", "synopsis"]).unwrap_or_default();
 
     OnlineSourceMetadata { title, artist, description }
 }
 
-/// Parses local metadata fields from one ffprobe JSON payload.
-pub(crate) fn parse_local_source_metadata_from_ffprobe_json(
-    value: &serde_json::Value,
-) -> LocalSourceMetadata {
-    let tags = value
-        .get("format")
-        .and_then(|format| format.get("tags"))
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+/// Fetches and resolves online source metadata, returning a
+/// [`ResolvedOnlineSourceMetadata`].
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if the metadata fetch fails.
+#[allow(dead_code)]
+pub(crate) fn fetch_online_source_metadata(
+    uri: &Url,
+    yt_dlp_command: &str,
+) -> Result<ResolvedOnlineSourceMetadata, MediaPmError> {
+    let raw = try_fetch_online_source_metadata_with_yt_dlp(uri, yt_dlp_command)?;
+    Ok(resolve_online_source_metadata_for_add(&raw, None))
+}
 
-    let title = first_non_empty_json_string(&tags, &["title", "track"]);
-    let artist = first_non_empty_json_string(&tags, &["artist", "album_artist"]);
-    let description = first_non_empty_json_string(&tags, &["description", "comment", "synopsis"]);
+/// Resolves raw yt-dlp metadata into a clean [`ResolvedOnlineSourceMetadata`].
+#[must_use]
+#[allow(dead_code)]
+pub(crate) fn resolve_online_source_metadata_for_add(
+    yt_dlp_metadata: &Value,
+    warning: Option<String>,
+) -> ResolvedOnlineSourceMetadata {
+    let parsed = parse_online_source_metadata(yt_dlp_metadata);
+    ResolvedOnlineSourceMetadata {
+        title: parsed.title,
+        description: parsed.description,
+        artist: parsed.artist,
+        warning,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Local source metadata
+// ---------------------------------------------------------------------------
+
+/// Fetches metadata for a local file using `ffprobe`.
+///
+/// Returns the raw JSON metadata from `ffprobe -v quiet -print_format json`.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if `ffprobe` is unavailable or returns
+/// a non-zero exit code.
+pub(crate) fn try_fetch_local_source_metadata_with_ffprobe(
+    path: &Path,
+    ffprobe_command: &str,
+) -> Result<Value, MediaPmError> {
+    let output = Command::new(ffprobe_command)
+        .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
+        .arg(path)
+        .output()
+        .map_err(|e| {
+            MediaPmError::Workflow(format!("failed to execute ffprobe for metadata fetch: {e}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(MediaPmError::Workflow(format!("ffprobe metadata fetch failed: {stderr}")));
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| MediaPmError::Workflow(format!("failed to parse ffprobe JSON output: {e}")))
+}
+
+/// Parses ffprobe JSON output into a [`LocalSourceMetadata`].
+///
+/// Extracts title, artist, and description from the format tags.
+#[must_use]
+pub(crate) fn parse_local_source_metadata_from_ffprobe_json(value: &Value) -> LocalSourceMetadata {
+    let tags = parse_local_format_tags(value);
+
+    let title = first_non_empty_json_string(&tags, &["title", "TITLE"])
+        .or_else(|| {
+            value
+                .get("format")
+                .and_then(|f| f.get("filename"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "Untitled".to_string());
+
+    let artist =
+        first_non_empty_json_string(&tags, &["artist", "ARTIST", "album_artist", "ALBUM_ARTIST"])
+            .unwrap_or_else(|| "Unknown".to_string());
+
+    let description =
+        first_non_empty_json_string(&tags, &["description", "DESCRIPTION", "comment", "COMMENT"])
+            .unwrap_or_default();
 
     LocalSourceMetadata { title, artist, description }
 }
 
-/// Returns first non-empty string value from one JSON object key list.
-pub(crate) fn first_non_empty_json_string(
-    value: &serde_json::Value,
-    keys: &[&str],
-) -> Option<String> {
-    keys.iter().find_map(|key| {
-        value
-            .get(*key)
-            .or_else(|| {
-                value.as_object().and_then(|object| {
-                    object.iter().find_map(|(candidate, candidate_value)| {
-                        if candidate.eq_ignore_ascii_case(key) {
-                            Some(candidate_value)
-                        } else {
-                            None
-                        }
-                    })
-                })
-            })
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToString::to_string)
-    })
+/// Extracts format tags from ffprobe JSON output.
+#[must_use]
+fn parse_local_format_tags(value: &Value) -> Value {
+    value
+        .get("format")
+        .and_then(|f| f.get("tags"))
+        .cloned()
+        .unwrap_or(Value::Object(serde_json::Map::new()))
 }
 
-/// Resolves conductor CAS root from machine runtime storage with default fallback.
-pub(crate) fn resolve_conductor_cas_root(
-    paths: &MediaPmPaths,
-    _machine: &NickelDocument,
-) -> PathBuf {
-    paths.runtime_root.join("store")
+/// Fetches local source metadata, using an optional cache.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError::Workflow`] if `ffprobe` fails.
+pub(crate) fn fetch_local_source_metadata(
+    path: &Path,
+    ffprobe_command: &str,
+    cache: Option<&MetadataCache>,
+) -> Result<LocalSourceMetadata, MediaPmError> {
+    let cache_key = format!("ffprobe:{}", path.display());
+
+    // Check cache first
+    if let Some(cache) = cache {
+        if let Some(cached) = cache.get(&cache_key) {
+            if let Ok(metadata) = serde_json::from_value::<LocalSourceMetadata>(cached) {
+                return Ok(metadata);
+            }
+        }
+    }
+
+    let raw = try_fetch_local_source_metadata_with_ffprobe(path, ffprobe_command)?;
+    let metadata = parse_local_source_metadata_from_ffprobe_json(&raw);
+
+    // Update cache
+    if let Some(cache) = cache {
+        if let Ok(value) = serde_json::to_value(&metadata) {
+            cache.set(cache_key, value);
+        }
+    }
+
+    Ok(metadata)
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolves the conductor CAS store root path.
+#[must_use]
+pub(crate) fn resolve_conductor_cas_root(paths: &MediaPmPaths) -> std::path::PathBuf {
+    paths.runtime_root.join("cas_store")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use serde_json::json;
 
-    use super::*;
-
-    /// Ensures online metadata parsing extracts title/artist/description when
-    /// downloader JSON includes those fields.
+    /// Ensures parsing valid yt-dlp JSON extracts title, artist, and description.
     #[test]
-    fn parse_online_metadata_reads_title_artist_and_description() {
-        let payload = json!({
-            "fulltitle": "Demo Song",
-            "uploader": "Demo Artist",
-            "description": "A short description"
+    fn parse_online_source_metadata_extracts_fields() {
+        let input = json!({
+            "title": "Test Video",
+            "uploader": "Test Channel",
+            "description": "A test video description"
         });
-
-        let metadata = parse_online_source_metadata(&payload);
-        assert_eq!(
-            metadata,
-            OnlineSourceMetadata {
-                title: Some("Demo Song".to_string()),
-                artist: Some("Demo Artist".to_string()),
-                description: Some("A short description".to_string()),
-            }
-        );
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.title, "Test Video");
+        assert_eq!(metadata.artist, "Test Channel");
+        assert_eq!(metadata.description, "A test video description");
     }
 
-    /// Ensures remote add-flow metadata passes `None` through when yt-dlp is
-    /// not configured and emits the warning verbatim.
+    /// Ensures fallback to alternative yt-dlp keys works.
     #[test]
-    fn resolve_online_metadata_for_add_warns_when_yt_dlp_is_missing() {
-        let warning = "yt-dlp managed tool is not configured; cannot fetch title, description, or artist metadata for remote source 'https://example.com/demo-video'".to_string();
-        let resolved = resolve_online_source_metadata_for_add(None, Some(warning.clone()));
-
-        assert!(resolved.title.is_none());
-        assert!(resolved.artist.is_none());
-        assert!(resolved.description.is_none());
-        assert_eq!(resolved.warning.as_deref(), Some(warning.as_str()));
+    fn parse_online_source_metadata_falls_back_alternative_keys() {
+        let input = json!({
+            "fulltitle": "Fallback Title",
+            "channel": "Channel Name"
+        });
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.title, "Fallback Title");
+        assert_eq!(metadata.artist, "Channel Name");
     }
 
-    /// Ensures remote add-flow metadata passes through yt-dlp-fetched values
-    /// verbatim when the tool is configured.
+    /// Ensures missing description yields an empty string.
     #[test]
-    fn resolve_online_metadata_for_add_prefers_yt_dlp_values_when_configured() {
-        let fetched = OnlineSourceMetadata {
-            title: Some("Fetched Title".to_string()),
-            artist: Some("Fetched Artist".to_string()),
-            description: Some("Fetched Description".to_string()),
-        };
-
-        let resolved = resolve_online_source_metadata_for_add(Some(fetched), None);
-
-        assert_eq!(resolved.title.as_deref(), Some("Fetched Title"));
-        assert_eq!(resolved.artist.as_deref(), Some("Fetched Artist"));
-        assert_eq!(resolved.description.as_deref(), Some("Fetched Description"));
-        assert!(resolved.warning.is_none());
+    fn parse_online_source_metadata_missing_description_is_empty() {
+        let input = json!({
+            "title": "No Description",
+            "uploader": "Uploader"
+        });
+        let metadata = parse_online_source_metadata(&input);
+        assert_eq!(metadata.description, "");
     }
 
-    /// Ensures local metadata parsing extracts title/description from ffprobe
-    /// `format.tags` payloads with case-insensitive key matching.
+    /// Ensures ffprobe JSON with format tags is parsed correctly.
     #[test]
-    fn parse_local_metadata_reads_ffprobe_tags_case_insensitively() {
-        let payload = json!({
+    fn parse_local_source_metadata_from_ffprobe_json_extracts_fields() {
+        let input = json!({
             "format": {
+                "filename": "/path/to/file.mp3",
                 "tags": {
-                    "TITLE": "Local Demo",
-                    "Comment": "Local description"
+                    "title": "Song Title",
+                    "artist": "Song Artist"
                 }
             }
         });
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
+        assert_eq!(metadata.title, "Song Title");
+        assert_eq!(metadata.artist, "Song Artist");
+    }
 
-        let metadata = parse_local_source_metadata_from_ffprobe_json(&payload);
-        assert_eq!(
-            metadata,
-            LocalSourceMetadata {
-                title: Some("Local Demo".to_string()),
-                artist: None,
-                description: Some("Local description".to_string()),
+    /// Ensures ffprobe metadata falls back to filename when title is absent.
+    #[test]
+    fn parse_local_source_metadata_falls_back_to_filename() {
+        let input = json!({
+            "format": {
+                "filename": "/path/to/audio.mp3",
+                "tags": {}
             }
-        );
+        });
+        let metadata = parse_local_source_metadata_from_ffprobe_json(&input);
+        assert_eq!(metadata.title, "/path/to/audio.mp3");
+        assert_eq!(metadata.artist, "Unknown");
+    }
+
+    /// Ensures resolve_online_source_metadata_for_add maps fields correctly.
+    #[test]
+    fn resolve_online_source_metadata_for_add_maps_fields() {
+        let input = json!({
+            "title": "Resolved Title",
+            "uploader": "Resolved Uploader",
+            "description": "Resolved description."
+        });
+        let resolved = resolve_online_source_metadata_for_add(&input, None);
+        assert_eq!(resolved.title, "Resolved Title");
+        assert_eq!(resolved.artist, "Resolved Uploader");
+        assert_eq!(resolved.description, "Resolved description.");
+        assert!(resolved.warning.is_none());
     }
 }

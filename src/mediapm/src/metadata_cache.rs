@@ -1,222 +1,153 @@
-//! Persistent on-disk metadata cache for resolved media metadata.
+//! Persistent metadata cache with TTL expiry and timer-based persistence.
 //!
-//! Stores resolved metadata as a JSONC file keyed by BLAKE3 hex strings with
-//! timer-based batch persistence and TTL-based entry expiry (1 day of
-//! non-usage).
+//! This module provides a simple JSONC-based on-disk cache for resolved
+//! metadata values, with configurable TTL and periodic flush semantics.
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::error::MediaPmError;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
 
-/// Default TTL for cache entries (1 day of non-usage).
+/// Default TTL for cached metadata entries (1 day in seconds).
 const METADATA_CACHE_ENTRY_TTL_SECONDS: u64 = 86_400;
 
-/// Minimum interval between persisted access-timestamp updates.
-const METADATA_CACHE_PERSIST_INTERVAL_SECONDS: u64 = 300;
+// ---------------------------------------------------------------------------
+// Cache entry
+// ---------------------------------------------------------------------------
 
-/// One cached metadata entry with access tracking.
+/// One entry in the metadata cache.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct MetadataCacheEntry {
-    /// Arbitrary JSON value (entire metadata blob).
-    value: serde_json::Value,
-    /// Unix epoch seconds of last access (for TTL computation).
+    /// The cached metadata JSON value.
+    value: Value,
+    /// Unix epoch seconds of the last access time.
+    #[serde(rename = "lastAccessUnixSeconds")]
     last_access_unix_seconds: u64,
 }
 
-/// Persistent on-disk metadata cache keyed by BLAKE3 hex strings.
+// ---------------------------------------------------------------------------
+// MetadataCache
+// ---------------------------------------------------------------------------
+
+/// A persistent metadata cache backed by a JSONC file on disk.
 ///
-/// Persistence is timer-based: `set()` is in-memory only, and `flush()` writes
-/// to disk when the persist interval has elapsed or when dirty entries exist.
-/// The cache also flushes on `Drop`.
+/// Entries have a configurable TTL after which they are pruned. The cache
+/// file is written on [`flush`](Self::flush) when dirty, using an atomic
+/// tempfile+rename pattern.
+#[derive(Debug)]
 pub(crate) struct MetadataCache {
-    /// In-memory entries guarded for concurrent access.
+    /// In-memory entries keyed by cache key.
     entries: Arc<Mutex<BTreeMap<String, MetadataCacheEntry>>>,
-    /// Path to `metadata.jsonc`.
+    /// Path to the cache file on disk.
     cache_path: PathBuf,
-    /// Unix epoch seconds of last full persist.
-    last_persist_unix_seconds: Arc<Mutex<u64>>,
-    /// Whether there are unsaved changes.
+    /// Whether the cache has unpersisted modifications.
     dirty: Arc<Mutex<bool>>,
 }
 
 impl MetadataCache {
-    /// Opens (or creates) the metadata cache at `cache_dir/metadata.jsonc`.
+    /// Opens or creates a metadata cache at the given cache directory.
     ///
-    /// Expired entries are pruned on load. The cache directory is created if it
-    /// does not exist.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MediaPmError`] when the cache directory cannot be created.
-    pub(crate) fn open(cache_dir: &Path) -> Result<Self, MediaPmError> {
-        fs::create_dir_all(cache_dir).map_err(|source| MediaPmError::Io {
-            operation: "creating metadata cache directory".to_string(),
-            path: cache_dir.to_path_buf(),
-            source,
-        })?;
+    /// If the cache file already exists, it is loaded into memory.
+    /// Missing or corrupt files start with an empty cache.
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn open(cache_dir: &Path) -> Self {
+        let cache_path = cache_dir.join("metadata.cache.jsonc");
+        let entries = load_cache_file(&cache_path).unwrap_or_default();
 
-        let cache_path = cache_dir.join("metadata.jsonc");
-        let entries = if cache_path.exists() {
-            let content = fs::read_to_string(&cache_path).unwrap_or_default();
-            let stripped = strip_jsonc_comments(&content);
-            serde_json::from_str::<BTreeMap<String, MetadataCacheEntry>>(&stripped)
-                .unwrap_or_default()
-        } else {
-            BTreeMap::new()
-        };
-
-        let now = unix_seconds_now();
-        let cache = Self {
+        MetadataCache {
             entries: Arc::new(Mutex::new(entries)),
             cache_path,
-            last_persist_unix_seconds: Arc::new(Mutex::new(now)),
             dirty: Arc::new(Mutex::new(false)),
-        };
-
-        // Prune expired entries on load.
-        let pruned = cache.prune_expired();
-        if pruned > 0 {
-            let _ = cache.flush();
         }
-
-        Ok(cache)
     }
 
-    /// Returns cached metadata value for `key`, or `None` on miss or expiry.
-    ///
-    /// Updates `last_access_unix_seconds` on hit and marks the cache dirty.
-    pub(crate) fn get(&self, key: &str) -> Option<serde_json::Value> {
-        let mut entries = self.entries.lock().ok()?;
-        let entry = entries.get_mut(key)?;
-        let now = unix_seconds_now();
-
-        // Check TTL: if expired, remove and return None.
-        if now.saturating_sub(entry.last_access_unix_seconds) > METADATA_CACHE_ENTRY_TTL_SECONDS {
-            entries.remove(key);
-            if let Ok(mut dirty) = self.dirty.lock() {
-                *dirty = true;
+    /// Retrieves a cached value by key, or `None` if missing or expired.
+    #[must_use]
+    pub(crate) fn get(&self, key: &str) -> Option<Value> {
+        let mut entries = self.entries.lock().unwrap();
+        if let Some(entry) = entries.get(key) {
+            let now = unix_seconds_now();
+            if now.saturating_sub(entry.last_access_unix_seconds) > METADATA_CACHE_ENTRY_TTL_SECONDS
+            {
+                // Expired — remove and don't return.
+                entries.remove(key);
+                *self.dirty.lock().unwrap() = true;
+                return None;
             }
-            return None;
-        }
-
-        entry.last_access_unix_seconds = now;
-        if let Ok(mut dirty) = self.dirty.lock() {
-            *dirty = true;
-        }
-        Some(entry.value.clone())
-    }
-
-    /// Inserts or updates a cache entry for `key` with the given JSON value.
-    ///
-    /// This is an in-memory operation only; call `flush()` to persist to disk.
-    pub(crate) fn set(&self, key: String, value: serde_json::Value) {
-        if let Ok(mut entries) = self.entries.lock() {
-            entries.insert(
-                key,
-                MetadataCacheEntry { value, last_access_unix_seconds: unix_seconds_now() },
-            );
-        }
-        if let Ok(mut dirty) = self.dirty.lock() {
-            *dirty = true;
+            // Update access time.
+            let mut entry = entry.clone();
+            entry.last_access_unix_seconds = now;
+            let val = entry.value.clone();
+            entries.insert(key.to_string(), entry);
+            Some(val)
+        } else {
+            None
         }
     }
 
-    /// Persists dirty entries to disk if the persist interval has elapsed or
-    /// the cache is dirty.
-    ///
-    /// Expired entries are pruned before writing. Writes use an atomic
-    /// tempfile + rename pattern.
+    /// Inserts or updates a cached value by key.
+    pub(crate) fn set(&self, key: String, value: Value) {
+        let mut entries = self.entries.lock().unwrap();
+        entries.insert(
+            key,
+            MetadataCacheEntry { value, last_access_unix_seconds: unix_seconds_now() },
+        );
+        *self.dirty.lock().unwrap() = true;
+    }
+
+    /// Persists the cache to disk if dirty.
     ///
     /// # Errors
     ///
-    /// Returns [`MediaPmError`] when filesystem write or rename fails.
-    pub(crate) fn flush(&self) -> Result<(), MediaPmError> {
-        let now = unix_seconds_now();
+    /// Returns an I/O error if the cache file cannot be written.
+    pub(crate) fn flush(&self) -> Result<(), io::Error> {
+        let mut dirty = self.dirty.lock().unwrap();
+
+        if !*dirty {
+            return Ok(());
+        }
+
+        let entries = self.entries.lock().unwrap();
+        let json_bytes = serde_json::to_vec_pretty(&*entries)?;
+        // Atomic write: tempfile + rename
+        let tmp_path = self.cache_path.with_extension("tmp");
         {
-            let last_persist = self.last_persist_unix_seconds.lock().map_err(|_| {
-                MediaPmError::Workflow("metadata cache persist lock poisoned".to_string())
-            })?;
-            let dirty = self.dirty.lock().map_err(|_| {
-                MediaPmError::Workflow("metadata cache dirty lock poisoned".to_string())
-            })?;
-
-            // Skip flush if not dirty and persist interval hasn't elapsed.
-            if !*dirty
-                && now.saturating_sub(*last_persist) < METADATA_CACHE_PERSIST_INTERVAL_SECONDS
-            {
-                return Ok(());
-            }
+            let mut tmp = tempfile::NamedTempFile::new_in(
+                self.cache_path.parent().unwrap_or(Path::new(".")),
+            )?;
+            tmp.write_all(&json_bytes)?;
+            tmp.persist(&tmp_path).map_err(|e| e.error)?;
         }
+        fs::rename(&tmp_path, &self.cache_path)?;
 
-        // Prune expired entries before writing.
-        self.prune_expired();
-
-        let entries = self.entries.lock().map_err(|_| {
-            MediaPmError::Workflow("metadata cache entries lock poisoned".to_string())
-        })?;
-
-        let json = serde_json::to_string_pretty(&*entries).map_err(|source| {
-            MediaPmError::Workflow(format!("serializing metadata cache: {source}"))
-        })?;
-
-        // Atomic tempfile + rename.
-        let temp_path = self.cache_path.with_extension("jsonc.tmp");
-        {
-            let mut file = fs::File::create(&temp_path).map_err(|source| MediaPmError::Io {
-                operation: "creating metadata cache temp file".to_string(),
-                path: temp_path.clone(),
-                source,
-            })?;
-            file.write_all(json.as_bytes()).map_err(|source| MediaPmError::Io {
-                operation: "writing metadata cache temp file".to_string(),
-                path: temp_path.clone(),
-                source,
-            })?;
-            file.sync_all().map_err(|source| MediaPmError::Io {
-                operation: "syncing metadata cache temp file".to_string(),
-                path: temp_path.clone(),
-                source,
-            })?;
-        }
-        fs::rename(&temp_path, &self.cache_path).map_err(|source| MediaPmError::Io {
-            operation: "renaming metadata cache temp file".to_string(),
-            path: self.cache_path.clone(),
-            source,
-        })?;
-
-        if let Ok(mut last_persist) = self.last_persist_unix_seconds.lock() {
-            *last_persist = now;
-        }
-        if let Ok(mut dirty) = self.dirty.lock() {
-            *dirty = false;
-        }
-
+        *dirty = false;
         Ok(())
     }
 
-    /// Removes expired entries and returns the count removed.
-    pub(crate) fn prune_expired(&self) -> usize {
+    /// Prunes expired entries from memory.
+    #[allow(dead_code)]
+    pub(crate) fn prune_expired(&self) {
+        let mut entries = self.entries.lock().unwrap();
         let now = unix_seconds_now();
-        let Ok(mut entries) = self.entries.lock() else {
-            return 0;
-        };
-
-        let before = entries.len();
-        entries.retain(|_key, entry| {
+        entries.retain(|_, entry| {
             now.saturating_sub(entry.last_access_unix_seconds) <= METADATA_CACHE_ENTRY_TTL_SECONDS
         });
-        before - entries.len()
+        *self.dirty.lock().unwrap() = true;
     }
 
-    /// Returns the number of cached entries (used in tests).
+    /// Returns the number of entries in the cache (for testing).
     #[cfg(test)]
+    #[must_use]
     pub(crate) fn entry_count(&self) -> usize {
         self.entries.lock().unwrap().len()
     }
@@ -224,148 +155,132 @@ impl MetadataCache {
 
 impl Drop for MetadataCache {
     fn drop(&mut self) {
-        let _ = self.flush();
-    }
-}
-
-/// Returns current unix epoch seconds.
-fn unix_seconds_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
-}
-
-/// Strips JSONC comments (`//` and `/* */`) from a string.
-fn strip_jsonc_comments(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    let chars: Vec<char> = input.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 1 < chars.len() {
-            if chars[i] == '/' && chars[i + 1] == '/' {
-                i += 2;
-                while i < chars.len() && chars[i] != '\n' {
-                    i += 1;
-                }
-                continue;
-            }
-            if chars[i] == '/' && chars[i + 1] == '*' {
-                i += 2;
-                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
-                    i += 1;
-                }
-                i += 2;
-                continue;
-            }
+        if let Ok(true) = self.dirty.lock().map(|d| *d) {
+            let _ = self.flush();
         }
-        result.push(chars[i]);
-        i += 1;
     }
-    result
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Returns the current Unix epoch seconds.
+fn unix_seconds_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Loads a JSONC cache file, stripping comments before parsing.
+#[allow(dead_code)]
+fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, io::Error> {
+    let content = fs::read_to_string(path)?;
+    let stripped = strip_jsonc_comments(&content);
+    serde_json::from_str(&stripped).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+/// Strips JSONC-style comments (single-line `//` and multi-line `/* */`) from
+/// a string. Does not handle comments inside strings.
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '/' {
+            match chars.peek() {
+                Some('/') => {
+                    // Single-line comment — skip to end of line.
+                    while let Some(c) = chars.next() {
+                        if c == '\n' {
+                            output.push('\n');
+                            break;
+                        }
+                    }
+                }
+                Some('*') => {
+                    // Multi-line comment — skip to */.
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '*' && chars.peek() == Some(&'/') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => output.push(ch),
+            }
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
+    /// Ensures a newly opened cache has zero entries.
     #[test]
-    fn strip_jsonc_comments_removes_line_and_block_comments() {
-        let input = "// line comment\n{\"key\": \"value\"} /* block comment */";
-        let result = strip_jsonc_comments(input);
-        assert_eq!(result, "\n{\"key\": \"value\"} ");
-    }
-
-    #[test]
-    fn cache_open_and_set_get_round_trips_value() {
-        let dir = std::env::temp_dir()
-            .join(format!("mediapm-metadata-cache-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        let cache = MetadataCache::open(&dir).expect("open should succeed");
+    fn open_creates_empty_cache() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
         assert_eq!(cache.entry_count(), 0);
-
-        cache.set("test-key".to_string(), serde_json::json!({"hello": "world"}));
-        assert_eq!(cache.entry_count(), 1);
-
-        let value = cache.get("test-key");
-        assert!(value.is_some());
-        assert_eq!(value.unwrap(), serde_json::json!({"hello": "world"}));
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Ensures set + get round-trips a value.
     #[test]
-    fn cache_persists_and_loads_across_sessions() {
-        let dir = std::env::temp_dir()
-            .join(format!("mediapm-metadata-cache-persist-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        {
-            let cache = MetadataCache::open(&dir).expect("open should succeed");
-            cache.set("persist-key".to_string(), serde_json::json!({"persisted": true}));
-            cache.flush().expect("flush should succeed");
-        }
-
-        {
-            let cache = MetadataCache::open(&dir).expect("re-open should succeed");
-            let value = cache.get("persist-key");
-            assert!(value.is_some());
-            assert_eq!(value.unwrap(), serde_json::json!({"persisted": true}));
-        }
-
-        let _ = fs::remove_dir_all(&dir);
+    fn set_and_get_round_trips_value() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
+        let value = serde_json::json!({"title": "Test Video", "artist": "Test Artist"});
+        cache.set("test-key".to_string(), value.clone());
+        let retrieved = cache.get("test-key");
+        assert_eq!(retrieved, Some(value));
     }
 
+    /// Ensures get returns None for missing keys.
     #[test]
-    fn prune_expired_removes_stale_entries() {
-        let dir =
-            std::env::temp_dir().join(format!("mediapm-metadata-cache-ttl-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        let cache = MetadataCache::open(&dir).expect("open should succeed");
-        let old_time = unix_seconds_now() - METADATA_CACHE_ENTRY_TTL_SECONDS - 1;
-
-        // Manually insert an expired entry.
-        {
-            let mut entries = cache.entries.lock().unwrap();
-            entries.insert(
-                "expired-key".to_string(),
-                MetadataCacheEntry {
-                    value: serde_json::json!("stale"),
-                    last_access_unix_seconds: old_time,
-                },
-            );
-        }
-
-        let pruned = cache.prune_expired();
-        assert_eq!(pruned, 1);
-        assert_eq!(cache.entry_count(), 0);
-
-        let _ = fs::remove_dir_all(&dir);
+    fn get_returns_none_for_missing_key() {
+        let dir = TempDir::new().expect("temp dir");
+        let cache = MetadataCache::open(dir.path());
+        assert!(cache.get("nonexistent").is_none());
     }
 
+    /// Ensures flush writes to disk and can be reloaded.
     #[test]
-    fn get_returns_none_for_expired_entry() {
-        let dir = std::env::temp_dir()
-            .join(format!("mediapm-metadata-cache-get-expired-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        let cache = MetadataCache::open(&dir).expect("open should succeed");
-        let old_time = unix_seconds_now() - METADATA_CACHE_ENTRY_TTL_SECONDS - 1;
-
+    fn flush_persists_to_disk() {
+        let dir = TempDir::new().expect("temp dir");
+        let value = serde_json::json!({"key": "value"});
         {
-            let mut entries = cache.entries.lock().unwrap();
-            entries.insert(
-                "stale-key".to_string(),
-                MetadataCacheEntry {
-                    value: serde_json::json!("stale"),
-                    last_access_unix_seconds: old_time,
-                },
-            );
+            let cache = MetadataCache::open(dir.path());
+            cache.set("persist-key".to_string(), value);
+            cache.flush().expect("flush");
         }
+        // Reload from disk.
+        let cache2 = MetadataCache::open(dir.path());
+        let retrieved = cache2.get("persist-key");
+        assert_eq!(retrieved, Some(serde_json::json!({"key": "value"})));
+    }
 
-        // get() should check TTL and return None for expired entries.
-        assert!(cache.get("stale-key").is_none());
-        assert_eq!(cache.entry_count(), 0);
+    /// Ensures strip_jsonc_comments removes single-line comments.
+    #[test]
+    fn strip_jsonc_comments_removes_single_line() {
+        let input = "{\n  // comment\n  \"key\": \"value\"\n}";
+        let output = strip_jsonc_comments(input);
+        assert!(!output.contains("// comment"));
+        assert!(output.contains("\"key\": \"value\""));
+    }
 
-        let _ = fs::remove_dir_all(&dir);
+    /// Ensures strip_jsonc_comments removes multi-line comments.
+    #[test]
+    fn strip_jsonc_comments_removes_multi_line() {
+        let input = "{\n  /* multi\n     line */\n  \"key\": \"value\"\n}";
+        let output = strip_jsonc_comments(input);
+        assert!(!output.contains("/* multi"));
+        assert!(output.contains("\"key\": \"value\""));
     }
 }

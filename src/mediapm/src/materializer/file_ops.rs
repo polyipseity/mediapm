@@ -177,6 +177,16 @@ async fn attempt_materialization_method(
     }
 }
 
+/// Returns a human-readable label for a materialization method.
+fn materialization_method_label(method: MaterializationMethod) -> &'static str {
+    match method {
+        MaterializationMethod::Hardlink => "hardlink",
+        MaterializationMethod::Symlink => "symlink",
+        MaterializationMethod::Reflink => "reflink",
+        MaterializationMethod::Copy => "copy",
+    }
+}
+
 /// Materializes one managed file from CAS using ordered runtime policy.
 pub(super) async fn materialize_file_from_cas_with_order(
     cas: &FileSystemCas,
@@ -214,13 +224,13 @@ pub(super) async fn materialize_file_from_cas_with_order(
                 if method_index > 0 {
                     notices.push(format!(
                         "hierarchy file '{managed_relative_path}' materialization fell back to '{}'",
-                        method.as_label()
+                        materialization_method_label(*method)
                     ));
                 }
                 return Ok(());
             }
             Err(error) => {
-                failures.push(format!("{}: {error}", method.as_label()));
+                failures.push(format!("{}: {error}", materialization_method_label(*method)));
                 let _ = remove_existing_destination_path(destination_path).await;
             }
         }

@@ -19,9 +19,6 @@ pub(crate) const MEDIAPM_USER_AGENT: &str = "mediapm/0.0.0 (+https://github.com/
 const DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 30;
 
 /// Default request timeout used for payload and metadata requests.
-///
-/// The value is intentionally generous to support large payloads across slow
-/// links, and can be overridden per environment.
 const DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 60 * 30;
 
 /// Environment variable used to override request timeout seconds.
@@ -31,10 +28,6 @@ const REQUEST_TIMEOUT_ENV: &str = "MEDIAPM_DOWNLOAD_TIMEOUT_SECONDS";
 static SHARED_HTTP_CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
 
 /// Returns the process-wide shared async HTTP client.
-///
-/// The first successful call constructs the client and all later calls return
-/// the same instance, guaranteeing one client object for the entire process
-/// lifetime.
 pub(crate) fn shared_http_client() -> Result<&'static Client, MediaPmError> {
     match SHARED_HTTP_CLIENT.get_or_init(build_shared_http_client) {
         Ok(client) => Ok(client),

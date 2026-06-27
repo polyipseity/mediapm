@@ -1,421 +1,153 @@
-//! ZIP archive extraction, rename-rule compilation, and external data reference parsing.
+//! ZIP folder-variant extraction and hierarchy rename-rule compilation.
+//!
+//! Provides helpers for extracting ZIP-based folder variants into individual
+//! file entries and compiling user-defined folder rename rules (regex-based)
+//! into compiled forms.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::io::Read;
-use std::path::Path;
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use regex::Regex;
+use zip::ZipArchive;
 
-use mediapm_cas::Hash;
-
-use crate::config::HierarchyFolderRenameRule;
+use crate::config::hierarchy_types::HierarchyFolderRenameRule;
 use crate::error::MediaPmError;
 
-use super::CompiledHierarchyFolderRenameRule;
-use super::commit::sanitize_path_component;
+// ---------------------------------------------------------------------------
+// Compiled rename rule
+// ---------------------------------------------------------------------------
 
-/// Parsed `${step_output...}` binding reference metadata.
-pub(super) struct StepOutputReference<'a> {
-    /// Producer step id.
-    pub(super) step_id: &'a str,
-    /// Producer output name.
-    pub(super) output_name: &'a str,
-    /// Optional ZIP-member selector.
-    pub(super) zip_member: Option<&'a str>,
+/// A compiled folder rename rule with a cached [`Regex`].
+#[derive(Debug, Clone)]
+pub(super) struct CompiledFolderRenameRule {
+    /// Original pattern string (for diagnostics).
+    #[allow(dead_code)]
+    pub(super) pattern: String,
+    /// Replacement string template.
+    pub(super) replacement: String,
+    /// Compiled regex for pattern matching.
+    #[allow(dead_code)]
+    pub(super) regex: Regex,
 }
 
-/// Parses exact `${step_output.<step_id>.<output_name>}` references with
-/// optional `${step_output.<step_id>.<output_name>:zip(<member>)}` selector.
-pub(super) fn parse_step_output_reference(value: &str) -> Option<StepOutputReference<'_>> {
-    let content = value.strip_prefix("${step_output.")?.strip_suffix('}')?;
+// ---------------------------------------------------------------------------
+// ZIP extraction
+// ---------------------------------------------------------------------------
 
-    let (selector, zip_member) = if let Some(without_suffix) = content.strip_suffix(')') {
-        if let Some((prefix, member)) = without_suffix.rsplit_once(":zip(") {
-            if member.is_empty() || member.contains('/') || member.contains('\\') {
-                return None;
-            }
-            (prefix, Some(member))
-        } else {
-            (content, None)
-        }
-    } else {
-        (content, None)
-    };
-
-    let (step_id, output_name) = selector.rsplit_once('.')?;
-    if step_id.is_empty() || output_name.is_empty() {
-        return None;
-    }
-
-    Some(StepOutputReference { step_id, output_name, zip_member })
-}
-
-/// Extracts one file payload from ZIP bytes using one flat member key.
-pub(super) fn extract_zip_member_bytes(
-    zip_bytes: &[u8],
-    member_key: &str,
-) -> Result<Vec<u8>, String> {
-    if member_key.is_empty() || member_key.contains('/') || member_key.contains('\\') {
-        return Err(
-            "ZIP member key must be non-empty and must not contain path separators".to_string()
-        );
-    }
-
-    let reader = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(reader)
-        .map_err(|error| format!("decoding ZIP payload failed: {error}"))?;
-
-    let mut index = 0usize;
-    while index < archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|error| format!("reading ZIP entry #{index} failed: {error}"))?;
-        let entry_name = entry.name().replace('\\', "/");
-        if entry_name == member_key {
-            if entry.is_dir() {
-                return Err(format!("ZIP member '{member_key}' resolves to a directory"));
-            }
-            let mut bytes = Vec::new();
-            entry
-                .read_to_end(&mut bytes)
-                .map_err(|error| format!("reading ZIP member '{member_key}' failed: {error}"))?;
-            return Ok(bytes);
-        }
-        index = index.saturating_add(1);
-    }
-
-    Err(format!("ZIP member '{member_key}' not found"))
-}
-
-/// Extracts one ZIP folder payload into a staged directory with merge checks.
+/// Extracts all file entries from a ZIP archive stored in `data`, normalising
+/// entry paths and applying the given rename rules to the path components.
 ///
-/// Multiple hierarchy variants may contribute archive entries into the same
-/// destination directory. This helper enforces strict path-collision rules so
-/// no file or directory path can be overwritten by a later variant, except
-/// duplicate file paths where the first extracted file is retained.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "folder extraction requires explicit runtime context and mutable ledgers"
-)]
+/// Returns a sorted list of `(relative_path, bytes)` pairs. Directory entries
+/// are not included — only their file descendants.
 pub(super) fn extract_zip_folder_variant_bytes(
-    zip_bytes: &[u8],
-    target_dir: &Path,
-    hierarchy_path: &str,
-    media_id: &str,
-    variant: &str,
-    rename_rules: &[CompiledHierarchyFolderRenameRule],
-    entry_sanitization: &BTreeMap<char, char>,
-    extracted_entries: &mut BTreeMap<String, bool>,
-    extracted_entry_variants: &mut BTreeMap<String, String>,
-) -> Result<(), MediaPmError> {
-    let reader = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(reader).map_err(|error| {
-        MediaPmError::Workflow(format!(
-            "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' is expected to be a ZIP folder payload: {error}"
-        ))
-    })?;
+    data: &[u8],
+    rename_rules: &[CompiledFolderRenameRule],
+) -> Result<Vec<(PathBuf, Vec<u8>)>, MediaPmError> {
+    let mut archive = ZipArchive::new(std::io::Cursor::new(data))
+        .map_err(|e| MediaPmError::Workflow(format!("failed to open ZIP archive: {e}")))?;
 
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|error| {
-            MediaPmError::Workflow(format!(
-                "reading ZIP entry #{index} for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' failed: {error}"
-            ))
-        })?;
+    // Collect file entries, tracking directories to avoid stale dir entries.
+    let mut dirs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
 
-        let normalized = normalize_zip_entry_relative_path(entry.name()).map_err(|reason| {
-            MediaPmError::Workflow(format!(
-                "invalid ZIP entry '{}' for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}': {reason}",
-                entry.name()
-            ))
-        })?;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| MediaPmError::Workflow(format!("failed to read ZIP entry #{i}: {e}")))?;
 
-        if normalized.is_empty() {
-            continue;
-        }
+        let original_path = PathBuf::from(entry.name());
+        let normalized = normalize_zip_entry_relative_path(&original_path);
+        let renamed = apply_entry_rename_rules(&normalized, rename_rules);
 
         if entry.is_dir() {
-            register_zip_directory_entry(&normalized, extracted_entries).map_err(|reason| {
-                MediaPmError::Workflow(format!(
-                    "directory merge conflict for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}': {reason}"
-                ))
-            })?;
-
-            let directory_path = target_dir.join(&normalized);
-            fs::create_dir_all(&directory_path).map_err(|source| MediaPmError::Io {
-                operation: "creating staged hierarchy directory from ZIP payload".to_string(),
-                path: directory_path,
-                source,
-            })?;
+            dirs.insert(renamed);
         } else {
-            let renamed = apply_hierarchy_folder_rename_rules(
-                &normalized,
-                rename_rules,
-                hierarchy_path,
-                media_id,
-                variant,
-            )?;
-
-            // Preserve directory structure from the renamed ZIP entry path,
-            // applying character-level sanitization only to the filename
-            // component (not the directory prefix).  This keeps subdirectory
-            // ZIP entries like `sidecars/links.url` intact instead of
-            // flattening the `/` via `entry_sanitization`.
-            let sanitized = {
-                let (prefix, filename) = renamed
-                    .rsplit_once('/')
-                    .map(|(p, f)| (p.to_string(), f.to_string()))
-                    .unwrap_or((String::new(), renamed.clone()));
-                let sanitized_filename = sanitize_path_component(&filename, entry_sanitization);
-                if sanitized_filename.is_empty() {
-                    return Err(MediaPmError::Workflow(format!(
-                        "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' ZIP entry '{normalized}' after rename/sanitization produced empty filename",
-                    )));
-                }
-                if prefix.is_empty() {
-                    sanitized_filename
-                } else {
-                    format!("{prefix}/{sanitized_filename}")
-                }
-            };
-
-            let should_write_entry =
-                register_zip_file_entry(&sanitized, extracted_entries).map_err(|reason| {
-                    MediaPmError::Workflow(format!(
-                        "file merge conflict for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}': {reason}"
-                    ))
-                })?;
-
-            if !should_write_entry {
-                continue;
-            }
-
-            extracted_entry_variants.insert(sanitized.clone(), variant.to_string());
-
-            let file_path = target_dir.join(&sanitized);
-            if let Some(parent) = file_path.parent() {
-                fs::create_dir_all(parent).map_err(|source| MediaPmError::Io {
-                    operation: "creating staged hierarchy file parent from ZIP payload".to_string(),
-                    path: parent.to_path_buf(),
-                    source,
-                })?;
-            }
-
-            let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).map_err(|error| {
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            // We need to handle the entry read carefully since `by_index` returns a read-only archive.
+            drop(entry);
+            // Re-open the entry for extraction.
+            let mut entry_reader = archive.by_index(i).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to re-open ZIP entry #{i}: {e}"))
+            })?;
+            std::io::Read::read_to_end(&mut entry_reader, &mut bytes).map_err(|e| {
                 MediaPmError::Workflow(format!(
-                    "reading ZIP file entry '{}' for hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' failed: {error}",
-                    entry.name()
+                    "failed to read ZIP entry '{}' (#{i}): {e}",
+                    entry_reader.name()
                 ))
             })?;
-
-            fs::write(&file_path, bytes).map_err(|source| MediaPmError::Io {
-                operation: "writing staged hierarchy file from ZIP payload".to_string(),
-                path: file_path,
-                source,
-            })?;
+            files.push((renamed, bytes));
         }
     }
 
-    Ok(())
+    // Sort for deterministic output order.
+    files.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    Ok(files)
 }
 
-/// Compiles configured folder rename rules for one hierarchy entry.
+// ---------------------------------------------------------------------------
+// Rename rule compilation
+// ---------------------------------------------------------------------------
+
+/// Compiles a slice of [`HierarchyFolderRenameRule`] into
+/// [`CompiledFolderRenameRule`] instances.
+///
+/// Returns an error if any pattern fails to compile as a regex.
 pub(super) fn compile_hierarchy_folder_rename_rules(
     rules: &[HierarchyFolderRenameRule],
-    hierarchy_path: &str,
-    media_id: &str,
-) -> Result<Vec<CompiledHierarchyFolderRenameRule>, MediaPmError> {
-    rules
-        .iter()
-        .enumerate()
-        .map(|(rule_index, rule)| {
-            let pattern = rule.pattern.trim();
-            if pattern.is_empty() {
-                return Err(MediaPmError::Workflow(format!(
-                    "hierarchy path '{hierarchy_path}' media '{media_id}' has empty rename_files[{rule_index}] pattern"
-                )));
-            }
-            let regex = Regex::new(pattern).map_err(|error| {
-                MediaPmError::Workflow(format!(
-                    "hierarchy path '{hierarchy_path}' media '{media_id}' has invalid rename_files[{rule_index}] pattern '{pattern}': {error}"
-                ))
-            })?;
+) -> Result<Vec<CompiledFolderRenameRule>, MediaPmError> {
+    let mut compiled = Vec::with_capacity(rules.len());
 
-            Ok(CompiledHierarchyFolderRenameRule {
-                pattern: pattern.to_string(),
-                replacement: rule.replacement.clone(),
-                regex,
-            })
+    for rule in rules {
+        let regex = Regex::new(&rule.pattern).map_err(|e| {
+            MediaPmError::Workflow(format!("invalid folder rename pattern '{}': {e}", rule.pattern))
+        })?;
+
+        compiled.push(CompiledFolderRenameRule {
+            pattern: rule.pattern.clone(),
+            replacement: rule.replacement.clone(),
+            regex,
+        });
+    }
+
+    Ok(compiled)
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/// Normalises a ZIP entry path: strips `./` prefix and leading `/`, and
+/// collapses consecutive slashes.
+fn normalize_zip_entry_relative_path(path: &PathBuf) -> PathBuf {
+    let mut components: Vec<_> = path
+        .components()
+        .filter_map(|c| {
+            let s = c.as_os_str().to_string_lossy().to_string();
+            if s == "." || s.is_empty() { None } else { Some(s) }
         })
-        .collect()
+        .collect();
+
+    // Collapse empty segments produced by double slashes.
+    components.retain(|c| !c.is_empty());
+
+    PathBuf::from(components.join("/"))
 }
 
-/// Applies ordered rename rules to one normalized ZIP file member path.
-pub(super) fn apply_hierarchy_folder_rename_rules(
-    normalized_file_path: &str,
-    rules: &[CompiledHierarchyFolderRenameRule],
-    hierarchy_path: &str,
-    media_id: &str,
-    variant: &str,
-) -> Result<String, MediaPmError> {
-    if rules.is_empty() {
-        return Ok(normalized_file_path.to_string());
+/// Applies a sequence of compiled folder rename rules to a normalized path's
+/// file-name component (last segment). Non-leaf path components are not
+/// renamed.
+fn apply_entry_rename_rules(path: &PathBuf, rules: &[CompiledFolderRenameRule]) -> PathBuf {
+    let parent = path.parent().map(PathBuf::from);
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+
+    let mut renamed = file_name;
+    for rule in rules {
+        renamed = rule.regex.replace_all(&renamed, rule.replacement.as_str()).to_string();
     }
 
-    let renamed = rules.iter().fold(normalized_file_path.to_string(), |current, rule| {
-        rule.regex.replace_all(current.as_str(), rule.replacement.as_str()).into_owned()
-    });
-
-    let normalized_renamed = normalize_zip_entry_relative_path(&renamed).map_err(|reason| {
-        let patterns = rules.iter().map(|rule| rule.pattern.as_str()).collect::<Vec<_>>();
-        MediaPmError::Workflow(format!(
-            "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' rename_files {patterns:?} transformed ZIP file path '{normalized_file_path}' into invalid path '{renamed}': {reason}",
-        ))
-    })?;
-
-    if normalized_renamed.is_empty() {
-        let patterns = rules.iter().map(|rule| rule.pattern.as_str()).collect::<Vec<_>>();
-        return Err(MediaPmError::Workflow(format!(
-            "hierarchy path '{hierarchy_path}' media '{media_id}' variant '{variant}' rename_files {patterns:?} transformed ZIP file path '{normalized_file_path}' to an empty path",
-        )));
+    match parent {
+        Some(p) => p.join(renamed),
+        None => PathBuf::from(renamed),
     }
-
-    Ok(normalized_renamed)
-}
-
-/// Normalizes one ZIP entry path into a safe relative path.
-fn normalize_zip_entry_relative_path(entry_name: &str) -> Result<String, String> {
-    let mut normalized = entry_name.replace('\\', "/");
-    while let Some(stripped) = normalized.strip_prefix('/') {
-        normalized = stripped.to_string();
-    }
-    while let Some(stripped) = normalized.strip_prefix("./") {
-        normalized = stripped.to_string();
-    }
-
-    let mut components = Vec::new();
-    for segment in normalized.split('/') {
-        if segment.is_empty() {
-            continue;
-        }
-        if segment == "." || segment == ".." {
-            return Err("contains '.' or '..' path components".to_string());
-        }
-        if segment.contains(':') {
-            return Err("contains ':' path segment characters".to_string());
-        }
-        components.push(segment);
-    }
-
-    Ok(components.join("/"))
-}
-
-/// Registers one ZIP directory path, rejecting file/directory collisions.
-fn register_zip_directory_entry(
-    entry_path: &str,
-    extracted_entries: &mut BTreeMap<String, bool>,
-) -> Result<(), String> {
-    let mut cursor = String::new();
-
-    for segment in entry_path.split('/') {
-        if !cursor.is_empty() {
-            cursor.push('/');
-        }
-        cursor.push_str(segment);
-
-        match extracted_entries.get(&cursor).copied() {
-            Some(true) => {}
-            Some(false) => {
-                return Err(format!(
-                    "directory '{entry_path}' conflicts with existing file '{cursor}'"
-                ));
-            }
-            None => {
-                extracted_entries.insert(cursor.clone(), true);
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Registers one ZIP file path and returns whether caller should write bytes.
-///
-/// Return value semantics:
-/// - `Ok(true)`: caller should write file bytes,
-/// - `Ok(false)`: duplicate file path encountered; keep first-writer bytes,
-/// - `Err(..)`: invalid file/dir collision.
-pub(super) fn register_zip_file_entry(
-    entry_path: &str,
-    extracted_entries: &mut BTreeMap<String, bool>,
-) -> Result<bool, String> {
-    let mut parts = entry_path.split('/').collect::<Vec<_>>();
-    if parts.is_empty() {
-        return Err("file entry path is empty".to_string());
-    }
-
-    let file_name = parts.pop().expect("checked non-empty split result");
-    let mut parent = String::new();
-
-    for segment in parts {
-        if !parent.is_empty() {
-            parent.push('/');
-        }
-        parent.push_str(segment);
-
-        match extracted_entries.get(&parent).copied() {
-            Some(true) => {}
-            Some(false) => {
-                return Err(format!(
-                    "file '{entry_path}' has parent '{parent}' that is already a file"
-                ));
-            }
-            None => {
-                extracted_entries.insert(parent.clone(), true);
-            }
-        }
-    }
-
-    let full_file_path =
-        if parent.is_empty() { file_name.to_string() } else { format!("{parent}/{file_name}") };
-
-    match extracted_entries.get(&full_file_path).copied() {
-        Some(true) => {
-            Err(format!("file '{entry_path}' conflicts with existing directory '{full_file_path}'"))
-        }
-        Some(false) => {
-            // Keep first writer semantics for duplicate file names produced by
-            // overlapping sidecar families (for example subtitle vs
-            // auto-subtitle flattening into one media root).
-            Ok(false)
-        }
-        None => {
-            extracted_entries.insert(full_file_path, false);
-            Ok(true)
-        }
-    }
-}
-
-/// Parses exact `${external_data.<hash>}` references.
-#[allow(dead_code)]
-pub(super) fn parse_external_data_reference(value: &str) -> Result<Option<Hash>, MediaPmError> {
-    let Some(hash_text) =
-        value.strip_prefix("${external_data.").and_then(|text| text.strip_suffix('}'))
-    else {
-        return Ok(None);
-    };
-
-    if hash_text.is_empty() {
-        return Err(MediaPmError::Workflow(
-            "workflow binding '${external_data.<hash>}' requires a non-empty hash".to_string(),
-        ));
-    }
-
-    let hash = hash_text.parse::<Hash>().map_err(|source| {
-        MediaPmError::Workflow(format!(
-            "workflow binding references invalid external_data hash '{hash_text}': {source}"
-        ))
-    })?;
-    Ok(Some(hash))
 }

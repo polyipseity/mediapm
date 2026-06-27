@@ -1,18 +1,24 @@
 //! Media source, step, tool, and metadata types for mediapm configuration.
+//!
+//! These types model the `media.<id>` entries in `mediapm.ncl` plus the
+//! per-step tool taxonomy.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::{deserialize_variant_selector_list, serialize_variant_selector_list};
+use super::hierarchy_types::{deserialize_variant_selector_list, serialize_variant_selector_list};
+
+// ---------------------------------------------------------------------------
+// Metadata value types
+// ---------------------------------------------------------------------------
 
 /// One media metadata value source declared under `media.<id>.metadata`.
 ///
-/// Metadata values are intentionally strict and support three forms:
+/// Supports three forms:
 /// - `"text"` literal values,
-/// - object bindings that extract one key from one produced file variant.
-/// - ordered fallback lists of literal/object candidates where runtime
-///   resolves the first non-empty candidate.
+/// - object bindings that extract one key from one produced file variant,
+/// - ordered fallback lists of literal/object candidates.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum MediaMetadataValue {
@@ -21,7 +27,7 @@ pub enum MediaMetadataValue {
     /// Variant-file metadata lookup binding.
     Variant(MediaMetadataVariantBinding),
     /// Ordered fallback candidates evaluated top-to-bottom until one
-    /// candidate resolves to a non-empty metadata string.
+    /// resolves to a non-empty metadata string.
     Fallback(Vec<MediaMetadataValueCandidate>),
 }
 
@@ -44,11 +50,6 @@ pub struct MediaMetadataVariantBinding {
     /// Metadata key to extract from that variant file.
     pub metadata_key: String,
     /// Optional regex transform applied to the extracted metadata string.
-    ///
-    /// Transform semantics are full-match only: the `pattern` must match the
-    /// entire extracted value. When it matches, `replacement` is rendered using
-    /// regular regex capture-group substitution (`$0` = entire match;
-    /// `$1..$N` = explicit capture groups).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<MediaMetadataRegexTransform>,
 }
@@ -57,63 +58,42 @@ pub struct MediaMetadataVariantBinding {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaMetadataRegexTransform {
-    /// Regex pattern evaluated with full-match semantics against extracted
-    /// metadata text.
+    /// Regex pattern evaluated with full-match semantics.
     pub pattern: String,
     /// Replacement template applied when `pattern` matches.
     pub replacement: String,
 }
 
+// ---------------------------------------------------------------------------
+// Media source, step, and tool types
+// ---------------------------------------------------------------------------
+
 /// Source registry entry for one media item.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaSourceSpec {
-    /// Legacy media id override field.
-    ///
-    /// This field is intentionally rejected by runtime validation. Playlist
-    /// references must target explicit hierarchy node `id` values instead.
+    /// Legacy media id override (rejected by validation; use hierarchy ids).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// Optional human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Optional human-readable title used for readability and path templates.
+    /// Optional human-readable title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// Optional artist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artist: Option<String>,
     /// Optional explicit conductor workflow id override.
-    ///
-    /// When omitted, `mediapm` maps each media id to exactly one managed
-    /// workflow id using the default prefix policy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_id: Option<String>,
-    /// Optional strict metadata object for media-specific path interpolation.
-    ///
-    /// Each key maps to one of:
-    /// - one literal string value, or
-    /// - one `{ variant, metadata_key, transform? }` object that
-    ///   resolves metadata from a
-    ///   file variant produced by this media source, or
-    /// - one ordered list of string/object candidates where runtime picks the
-    ///   first non-empty value.
+    /// Optional metadata keyed by attribute name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, MediaMetadataValue>>,
     /// Optional pre-seeded CAS hash pointers keyed by variant name.
-    ///
-    /// These variants seed step input bindings before the ordered step graph
-    /// executes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variant_hashes: BTreeMap<String, String>,
     /// Ordered media-processing steps.
-    ///
-    /// Every step declares tool-specific `options`, `input_variants` for
-    /// non-source-ingest transforms, and `output_variants` keyed by output
-    /// variant name.
-    /// Source-ingest tools (`yt-dlp`, `import`) must keep
-    /// `input_variants` empty.
-    /// Variant outputs flow top-to-bottom across this ordered list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<MediaStep>,
 }
@@ -125,14 +105,6 @@ pub struct MediaStep {
     /// Tool kind used for this step.
     pub tool: MediaStepTool,
     /// Input variants consumed by this step.
-    ///
-    /// Source-ingest tools must keep this list empty because they originate
-    /// content directly from their own options (for example `options.uri` or
-    /// `options.hash`) rather than from prior step outputs.
-    ///
-    /// Selector entries support both exact-string and regex-object forms:
-    /// - `"variant_name"`
-    /// - `{ regex = "^subtitles/.+$" }`
     #[serde(
         default,
         skip_serializing_if = "Vec::is_empty",
@@ -141,31 +113,9 @@ pub struct MediaStep {
     )]
     pub input_variants: Vec<String>,
     /// Output variants produced by this step.
-    ///
-    /// Each key is one produced output variant name and each value is one
-    /// tool-specific output config value.
-    ///
-    /// Key names are identity-only and have no built-in tool semantics.
-    /// Tool behavior is decoded entirely from each value.
-    ///
-    /// Value-shape policy:
-    /// - values must always be objects,
-    /// - all values must define `kind`,
-    /// - `save` defaults to `true` when omitted,
-    /// - ffmpeg values must also define numeric `idx`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_variants: BTreeMap<String, Value>,
     /// Operation-specific option map.
-    ///
-    /// Unknown option keys are rejected at document-load validation time.
-    /// For online downloaders, the source URL is declared in this map as
-    /// `options.uri`.
-    ///
-    /// For generated boolean-style option inputs, runtime command templates
-    /// only enable boolean toggles when the value is exactly `"true"`.
-    /// Any other value is treated as disabled.
-    ///
-    /// Values are always scalar strings.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, TransformInputValue>,
 }
@@ -175,6 +125,7 @@ pub struct MediaStep {
 #[serde(rename_all = "kebab-case")]
 pub enum MediaStepTool {
     /// `yt-dlp` online-media downloader.
+    #[serde(rename = "yt-dlp")]
     YtDlp,
     /// `import` builtin source ingestion from existing CAS payload hash.
     Import,
@@ -212,13 +163,16 @@ impl MediaStepTool {
     }
 
     /// Returns true when the given tool name identifies a builtin
-    /// source-ingest step that is never downloader-provisioned and therefore
-    /// does not require a release selector (version or tag).
+    /// source-ingest step that is never downloader-provisioned.
     #[must_use]
     pub fn is_builtin_source_ingest_name(tool_name: &str) -> bool {
         tool_name.eq_ignore_ascii_case("import")
     }
 }
+
+// ---------------------------------------------------------------------------
+// Step option accessors
+// ---------------------------------------------------------------------------
 
 /// One transform input-option binding value.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -230,7 +184,8 @@ pub enum TransformInputValue {
 
 /// Resolves one option key to a scalar string value when present.
 #[must_use]
-pub(super) fn step_option_scalar<'a>(step: &'a MediaStep, key: &str) -> Option<&'a str> {
+#[allow(dead_code)]
+pub fn step_option_scalar<'a>(step: &'a MediaStep, key: &str) -> Option<&'a str> {
     match step.options.get(key) {
         Some(TransformInputValue::String(value)) => Some(value.as_str()),
         _ => None,
@@ -239,6 +194,7 @@ pub(super) fn step_option_scalar<'a>(step: &'a MediaStep, key: &str) -> Option<&
 
 /// Returns true when one option key currently stores a scalar value.
 #[must_use]
-pub(super) fn has_step_option_scalar(step: &MediaStep, key: &str) -> bool {
+#[allow(dead_code)]
+pub fn has_step_option_scalar(step: &MediaStep, key: &str) -> bool {
     step_option_scalar(step, key).is_some()
 }

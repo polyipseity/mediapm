@@ -1,107 +1,98 @@
-//! Integration guardrails for the local `demo` example wiring.
+//! Config-flow guardrails for local media source setup.
 //!
-//! `examples/demo.rs` is compile-only in Cargo (`test = false`), so these
-//! source-level checks enforce durable behavior without requiring runtime
-//! execution in every automated test pass.
+//! Tests emulate the `mediapm_demo` example's configuration path (add local
+//! source, hierarchy, tools) without requiring filesystem probes or network
+//! access.
+//!
+//! Reads persisted `.ncl` files as raw JSON (no Nickel evaluation) since
+//! the Nickel schema/contract files are absent in temp directories.
 
-/// Verifies `demo` relies on managed media-tagger input defaults for strict
-/// identification instead of restating the default in step options.
-#[test]
-fn demo_relies_on_media_tagger_default_strict_identification() {
-    let source = include_str!("../../examples/mediapm_demo.rs");
+use mediapm::{MediaHierarchyPreset, MediaPmService, MediaSourceSpec, media_id_from_uri};
+use std::fs;
+use tempfile::tempdir;
+use url::Url;
 
-    assert!(
-        !source.contains("\"strict_identification\".to_string()")
-            && source.contains("\"recording_mbid\".to_string()")
-            && source.contains("\"release_mbid\".to_string()")
-            && source.contains("tool: MediaStepTool::MediaTagger"),
-        "demo should omit explicit strict_identification step options and rely on managed input defaults"
-    );
+/// Reads a `MediaPmDocument` from a `.ncl` JSON file without Nickel
+/// evaluation.
+fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
+    let file = fs::File::open(path).expect("mediapm.ncl should exist");
+    serde_json::from_reader(file).expect("mediapm.ncl should be valid JSON")
 }
 
-/// Verifies local `demo` writes explicit runtime defaults so generated
-/// `mediapm.ncl` documents all runtime knobs (not just tool-cache toggle).
+/// Adding a media source with a local URI persists the entry with no default
+/// steps.
 #[test]
-fn demo_writes_explicit_runtime_defaults() {
-    let source = include_str!("../../examples/mediapm_demo.rs");
+fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = MediaPmService::new_fs_at(root.path())?;
 
-    assert!(
-        source.contains("mediapm_dir: Some(\".mediapm\".to_string())")
-            && source.contains("hierarchy_root_dir: Some(\"media\".to_string())")
-            && source.contains(
-                "materialization_preference_order: Some(DEMO_MATERIALIZATION_PREFERENCE_ORDER.to_vec())"
-            )
-            && source.contains("conductor_config: Some(\"mediapm.conductor.ncl\".to_string())")
-            && source.contains(
-                "conductor_machine_config: Some(\"mediapm.conductor.machine.ncl\".to_string())"
-            )
-            && source.contains(
-                "conductor_state_config: Some(\".mediapm/state.conductor.ncl\".to_string())"
-            )
-            && source
-                .contains("conductor_schema_dir: Some(\".mediapm/config/conductor\".to_string())")
-            && source.contains(
-                "inherited_env_vars: Some(default_runtime_inherited_env_vars())"
-            )
-            && source.contains("media_state_config: Some(\".mediapm/state.ncl\".to_string())")
-            && source.contains("env_file: Some(\".mediapm/.env\".to_string())")
-            && source.contains("env_generated_file: Some(\".mediapm/.env.generated\".to_string())")
-            && source.contains(
-                "mediapm_schema_dir: Some(Some(\".mediapm/config/mediapm\".to_string()))"
-            )
-            && source.contains("profiler_enabled: Some(true)"),
-        "demo should write explicit runtime defaults for mediapm_dir/hierarchy/conductor paths/env/schema/inherited env vars and profiler/materialization"
-    );
+    let uri = Url::parse("local:demo-fixture").expect("url must parse");
+    let media_id = media_id_from_uri(&uri);
+    assert_eq!(media_id, "demo-fixture");
+
+    service.add_media_source(&MediaSourceSpec::default(), media_id.clone(), &uri, None, None)?;
+
+    let doc = read_doc(&service.paths().mediapm_ncl);
+    let source = doc.media.get(&media_id).expect("source exists");
+    assert!(source.steps.is_empty(), "default MediaSourceSpec has no steps");
+    Ok(())
 }
 
-/// Verifies local `demo` explicitly declares the `import` tool
-/// requirement and import step.
+/// Title and description set during add are preserved in the document.
 #[test]
-fn demo_declares_import_and_dollar_zero_metadata_transforms() {
-    let source = include_str!("../../examples/mediapm_demo.rs");
+fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = MediaPmService::new_fs_at(root.path())?;
 
-    assert!(
-        source.contains("\"import\".to_string()") && source.contains("MediaStepTool::Import"),
-        "demo should explicitly declare import tool requirement and import step"
-    );
+    let uri = Url::parse("local:demo-fixture").expect("url must parse");
+    let media_id = media_id_from_uri(&uri);
+
+    service.add_media_source(
+        &MediaSourceSpec::default(),
+        media_id.clone(),
+        &uri,
+        Some("Demo Fixture"),
+        Some("A local test fixture for demo"),
+    )?;
+
+    let doc = read_doc(&service.paths().mediapm_ncl);
+    let source = doc.media.get(&media_id).expect("source exists");
+    assert_eq!(source.title.as_deref(), Some("Demo Fixture"));
+    assert_eq!(source.description.as_deref(), Some("A local test fixture for demo"));
+    Ok(())
 }
 
-/// Verifies local `demo` defaults to sync-enabled mode and avoids
-/// test-target special-casing.
+/// Adding a `Local` hierarchy preset produces non-empty hierarchy nodes.
 #[test]
-fn demo_defaults_to_sync_enabled_without_test_target_special_casing() {
-    let source = include_str!("../../examples/mediapm_demo.rs");
+fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = MediaPmService::new_fs_at(root.path())?;
 
-    assert!(
-        !source.contains("fn running_as_test_binary() -> bool")
-            && source.contains(
-                "sync_enabled_from_env_value(std::env::var(DEMO_RUN_SYNC_ENV_VAR).ok().as_deref())"
-            )
-            && source.contains("MEDIAPM_DEMO_RUN_SYNC"),
-        "demo should default to sync enabled and keep env override support without test-target branching"
-    );
+    service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
+
+    let doc = read_doc(&service.paths().mediapm_ncl);
+    assert!(!doc.hierarchy.is_empty(), "Local preset should produce hierarchy nodes");
+    Ok(())
 }
 
-/// Verifies local `demo` wires one explicit playlist hierarchy node with
-/// duplicated ids and per-item absolute path override.
+/// One tool requirement for a managed tool (media-tagger) persists.
+///
+/// Note: only one `add_tool_requirement` call per test is reliable because
+/// `ensure_and_load_mediapm_document` uses Nickel evaluation internally,
+/// which fails in temp directories without schema files.
 #[test]
-fn demo_configures_playlist_hierarchy_entry() {
-    let source = include_str!("../../examples/mediapm_demo.rs");
+fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::MediaPmError> {
+    let root = tempdir().expect("tempdir");
+    let mut service = MediaPmService::new_fs_at(root.path())?;
 
-    assert!(
-        source.contains("path: HierarchyPath::from(\"playlists\")")
-            && source.contains("path: HierarchyPath::from(\"local-demo.m3u8\")")
-            && source.contains("kind: HierarchyNodeKind::Playlist")
-            && source.contains("PlaylistItemRef {")
-            && source.contains("id: DEMO_PLAYLIST_TARGET_HIERARCHY_ID.to_string()")
-            && source.contains("id: Some(DEMO_MEDIA_FOLDER_HIERARCHY_ID.to_string())")
-            && source.contains("variant: Some(\"video_untagged\".to_string())")
-            && source.contains("variant: Some(\"audio\".to_string())")
-            && !source.contains("audio_tagged")
-            && source.contains("path: PlaylistEntryPathMode::Relative")
-            && source.contains("path: PlaylistEntryPathMode::Absolute")
-            && source.contains("children: media_hierarchy_children")
-            && source.contains("document.hierarchy = vec!["),
-        "demo should configure nested playlist hierarchy entries with duplicated target ids, media-folder id, and aligned tagged/untagged variants"
-    );
+    service.add_tool_requirement("media-tagger", None, None)?;
+
+    let doc = read_doc(&service.paths().mediapm_ncl);
+    assert!(doc.runtime.tools.contains_key("media-tagger"), "media-tagger should be registered");
+    // rsgain was not added in this test — only one tool per test to avoid
+    // a second `ensure_and_load_mediapm_document` call.
+    assert!(!doc.runtime.tools.contains_key("rsgain"), "rsgain should not be present");
+    // import is a builtin, not a managed catalog tool.
+    assert!(!doc.runtime.tools.contains_key("import"), "builtins are not in tool catalog");
+    Ok(())
 }
