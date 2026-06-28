@@ -348,7 +348,7 @@ let NickelDocumentV1 = {
   version | VersionOneV1,
   # Grouped runtime storage path configuration.
   # Defaults are resolved by runtime when fields are omitted.
-  runtime | RuntimeStorageV1 | optional,
+  runtime | RuntimeStorageV1,
   # External-data map keys are CAS hash strings parsed by Rust.
   external_data | { _ : ExternalContentRefV1 } | optional,
   tools | { _ : ToolSpecV1 } | optional,
@@ -481,7 +481,7 @@ let migrate_v2_to_v1 = fun data =>
   in
   {
     version = 1,
-    runtime = null,
+    runtime = {},
     external_data = {},
     tools = tools_v1,
     workflows = workflows_v1,

@@ -153,7 +153,7 @@ let NickelDocumentV2 = {
   tools | { _ : ToolSpecV2 } | optional,
   workflows | Array WorkflowSpecV2 | optional,
   external_data | { _ : ExternalContentRefV2 } | optional,
-  runtime | ConductorRuntimeConfigV2 | optional,
+  runtime | ConductorRuntimeConfigV2,
 }
 in
 
@@ -330,7 +330,7 @@ let migrate_v1_to_v2 = fun data =>
           if std.record.has_field "inherited_env_vars" rt then rt.inherited_env_vars else null,
       }
     else
-      null
+      {}
   in
   let external_data_v2 =
     if std.record.has_field "external_data" data then

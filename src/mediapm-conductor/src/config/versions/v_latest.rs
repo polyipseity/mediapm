@@ -15,9 +15,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    ConductorRuntimeConfig, NickelDocument, NickelDocumentMetadata, NickelIdentity,
-    OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
-    WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, ToolInputKind,
+    ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
@@ -106,7 +105,7 @@ pub(crate) struct ToolRuntimeLatest {
 }
 
 /// Runtime configuration for the conductor itself (not per-tool).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ConductorRuntimeConfigLatest {
     /// Whether impure tool calls may be retried automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,7 +253,7 @@ pub(crate) struct NickelEnvelopeLatest {
     pub(crate) external_data: BTreeMap<mediapm_cas::Hash, ExternalDataEntryLatest>,
     /// Conductor-level runtime configuration.
     #[serde(default)]
-    pub(crate) runtime: Option<ConductorRuntimeConfigLatest>,
+    pub(crate) runtime: ConductorRuntimeConfigLatest,
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +296,7 @@ impl From<NickelEnvelopeLatest> for NickelDocument {
                     )
                 })
                 .collect(),
-            runtime: conductor_runtime_from_latest(envelope.runtime),
+            runtime: envelope.runtime.into(),
         }
     }
 }
@@ -341,7 +340,7 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
                     )
                 })
                 .collect(),
-            runtime: conductor_runtime_to_latest(doc.runtime),
+            runtime: doc.runtime.into(),
         }
     }
 }
@@ -349,6 +348,24 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig {
+    fn from(rt: ConductorRuntimeConfigLatest) -> Self {
+        super::super::ConductorRuntimeConfig {
+            retry_impure: rt.retry_impure,
+            platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
+        }
+    }
+}
+
+impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest {
+    fn from(rt: super::super::ConductorRuntimeConfig) -> Self {
+        ConductorRuntimeConfigLatest {
+            retry_impure: rt.retry_impure,
+            platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
+        }
+    }
+}
 
 fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
     ToolSpec {
@@ -454,28 +471,6 @@ fn tool_runtime_to_latest(rt: ToolRuntime) -> ToolRuntimeLatest {
     }
 }
 
-fn conductor_runtime_from_latest(
-    rt: Option<ConductorRuntimeConfigLatest>,
-) -> ConductorRuntimeConfig {
-    match rt {
-        Some(rt) => ConductorRuntimeConfig {
-            retry_impure: rt.retry_impure,
-            platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
-        },
-        None => ConductorRuntimeConfig::default(),
-    }
-}
-
-fn conductor_runtime_to_latest(rt: ConductorRuntimeConfig) -> Option<ConductorRuntimeConfigLatest> {
-    if rt.retry_impure.is_none() && rt.platform_inherited_env_var_names.is_empty() {
-        return None;
-    }
-    Some(ConductorRuntimeConfigLatest {
-        retry_impure: rt.retry_impure,
-        platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
-    })
-}
-
 fn workflow_spec_from_latest(spec: WorkflowSpecLatest) -> WorkflowSpec {
     WorkflowSpec {
         name: spec.name,
@@ -566,7 +561,7 @@ mod tests {
                 },
             )]),
             workflows: vec![],
-            runtime: None,
+            runtime: ConductorRuntimeConfigLatest::default(),
             external_data: BTreeMap::new(),
         };
 
