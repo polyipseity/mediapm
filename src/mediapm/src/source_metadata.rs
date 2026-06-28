@@ -247,7 +247,7 @@ pub(crate) fn fetch_local_source_metadata(
 /// Resolves the conductor CAS store root path.
 #[must_use]
 pub(crate) fn resolve_conductor_cas_root(paths: &MediaPmPaths) -> std::path::PathBuf {
-    paths.runtime_root.join("cas_store")
+    paths.runtime_root.join("store")
 }
 
 // ---------------------------------------------------------------------------
