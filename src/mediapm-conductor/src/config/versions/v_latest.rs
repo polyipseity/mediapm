@@ -24,11 +24,13 @@ pub(crate) const NICKEL_VERSION_LATEST: u32 = 2;
 
 /// Returns whether `marker` matches the latest Rust bridge schema marker.
 #[must_use]
+#[expect(dead_code)]
 pub(crate) const fn is_nickel_version_latest(marker: u32) -> bool {
     marker == NICKEL_VERSION_LATEST
 }
 
 /// Expected `version` field name in Nickel documents.
+#[expect(dead_code)]
 pub(crate) const VERSION_FIELD: &str = "version";
 
 // ---------------------------------------------------------------------------

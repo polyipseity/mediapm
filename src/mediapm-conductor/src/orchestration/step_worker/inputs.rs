@@ -60,6 +60,7 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
 ///
 /// Uses regex-based substitution to remain synchronous and runtime-independent.
 /// The async [`resolve_step_inputs`] entry point uses the full template engine.
+#[cfg_attr(not(test), expect(dead_code))]
 pub(super) fn resolve_step_output_refs(
     value: &str,
     step_outputs: &StepOutputs,

@@ -31,6 +31,7 @@ pub(crate) enum ConductorMessage {
         /// Workflow name to execute.
         workflow_name: String,
         /// Run options.
+        #[expect(dead_code)]
         options: RunWorkflowOptions,
         /// Unified configuration documents.
         unified: UnifiedNickelDocument,

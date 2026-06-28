@@ -15,6 +15,7 @@ pub(crate) const ORCHESTRATION_STATE_VERSION_V1: u32 = 1;
 
 /// Returns whether `marker` matches V1.
 #[must_use]
+#[expect(dead_code)]
 pub(crate) const fn is_orchestration_state_version_v1(marker: u32) -> bool {
     marker == ORCHESTRATION_STATE_VERSION_V1
 }

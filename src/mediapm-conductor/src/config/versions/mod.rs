@@ -19,6 +19,7 @@ pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
 pub(crate) const V2_NCL_SOURCE: &str = include_str!("v2.ncl");
 
 /// Active version marker for conductor Nickel documents.
+#[expect(dead_code)]
 pub(crate) const NICKEL_VERSION: u32 = v_latest::NICKEL_VERSION_LATEST;
 
 /// Fixed embedded migration helper module.
@@ -41,6 +42,7 @@ pub(super) fn resolve_version_contract(
 
 /// Returns the latest supported config schema version.
 #[must_use]
+#[expect(dead_code)]
 pub(crate) const fn latest_config_version() -> u32 {
     v_latest::NICKEL_VERSION_LATEST
 }
@@ -108,6 +110,7 @@ pub(crate) fn compile_configuration_source(
 
 /// Evaluates one Nickel source through the full migration pipeline for
 /// validation side effects, discarding the result.
+#[expect(dead_code)]
 pub(crate) fn evaluate_configuration_source(source: &str) -> Result<(), ConductorError> {
     let _ = compile_configuration_source(source)?;
     Ok(())

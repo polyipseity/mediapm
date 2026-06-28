@@ -115,6 +115,7 @@ pub(crate) struct OrchestrationStateV2 {
 /// Each instance reference in the V1 envelope is resolved through CAS,
 /// deserialized as a V2 instance, and collected into a flat
 /// `OrchestrationStateV2` with the V2 version marker.
+#[expect(dead_code)]
 pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
     cas: &C,
     envelope: v1::OrchestrationStateEnvelopeV1,

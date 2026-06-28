@@ -249,6 +249,7 @@ pub async fn resolve_template<C: mediapm_cas::CasApi + Send + Sync>(
 /// For references that resolve to binary (`external_data`, zip members, unpack
 /// tokens), the raw bytes are returned. For string values, UTF-8 encoding
 /// is used.
+#[cfg_attr(not(test), expect(dead_code))]
 pub async fn resolve_content<C: mediapm_cas::CasApi + Send + Sync>(
     template: &str,
     ctx: &TemplateContext<'_, C>,

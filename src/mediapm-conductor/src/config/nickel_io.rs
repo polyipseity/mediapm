@@ -234,6 +234,7 @@ pub(super) fn read_document_version_marker(
 
 /// Determines one in-memory migration target by reading the document version
 /// marker and selecting the latest compatible version.
+#[expect(dead_code)]
 pub(super) fn latest_version_for_source(
     source: &str,
     document_kind: &str,

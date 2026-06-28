@@ -47,6 +47,7 @@ pub(crate) fn default_worker_pool_size() -> usize {
 /// Clamped to `(0.0, 1.0]` when a valid env value is provided; otherwise
 /// falls back to [`crate::defaults::DEFAULT_EWMA_ALPHA`].
 #[must_use]
+#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn scheduler_ewma_alpha() -> f64 {
     let v = env_parse_or::<f64>(ENV_SCHEDULER_EWMA_ALPHA, crate::defaults::DEFAULT_EWMA_ALPHA);
     if (0.0..=1.0).contains(&v) && v > 0.0 { v } else { crate::defaults::DEFAULT_EWMA_ALPHA }
