@@ -142,7 +142,12 @@ pub(crate) enum ToolKindLatest {
 }
 
 /// Latest persisted tool spec.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Custom Serialize/Deserialize flattens the tagged `kind` enum into a flat
+/// record shape matching the Nickel v2 contract: `kind = "builtin"` as a plain
+/// string with variant-specific fields (`name`, `version`, `command`, etc.) as
+/// sibling entries rather than nested under `kind = { kind = "builtin", ... }`.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolSpecLatest {
     /// Tool kind.
     pub(crate) kind: ToolKindLatest,
@@ -151,17 +156,193 @@ pub(crate) struct ToolSpecLatest {
     /// Tool version.
     pub(crate) version: String,
     /// Declared inputs.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) inputs: BTreeMap<String, ToolInputSpecLatest>,
     /// Default input values.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) default_inputs: BTreeMap<String, String>,
     /// Declared output specs keyed by output name.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) outputs: BTreeMap<String, OutputCaptureSpecLatest>,
     /// Runtime config.
-    #[serde(default)]
     pub(crate) runtime: ToolRuntimeLatest,
+}
+
+impl Serialize for ToolSpecLatest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+
+        let mut map = serializer.serialize_map(None)?;
+
+        match &self.kind {
+            ToolKindLatest::Builtin { .. } => {
+                map.serialize_entry("kind", "builtin")?;
+            }
+            ToolKindLatest::Executable { command, env_vars, success_codes } => {
+                map.serialize_entry("kind", "executable")?;
+                map.serialize_entry("command", command)?;
+                if !env_vars.is_empty() {
+                    map.serialize_entry("env_vars", env_vars)?;
+                }
+                if !success_codes.is_empty() {
+                    map.serialize_entry("success_codes", success_codes)?;
+                }
+            }
+        }
+
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("version", &self.version)?;
+
+        if !self.inputs.is_empty() {
+            map.serialize_entry("inputs", &self.inputs)?;
+        }
+        if !self.default_inputs.is_empty() {
+            map.serialize_entry("default_inputs", &self.default_inputs)?;
+        }
+        if !self.outputs.is_empty() {
+            map.serialize_entry("outputs", &self.outputs)?;
+        }
+        map.serialize_entry("runtime", &self.runtime)?;
+
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolSpecLatest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+
+        // Capture the entire record as a JSON value then extract fields.
+        // This intermediate step lets us flatten the tagged `kind` enum into a
+        // flat string + sibling variant fields.
+        let mut value = serde_json::Value::deserialize(deserializer)?;
+
+        // The Nickel deserializer exports all numbers as f64 (including
+        // integers).  serde_json::from_value for Rust integer types (such as
+        // `usize` in ToolRuntimeLatest) rejects f64 values.  Walk the value
+        // tree and convert any float representing a whole number into its
+        // corresponding integer representation so downstream
+        // serde_json::from_value calls succeed.
+        fn normalize_numbers(val: &mut serde_json::Value) {
+            const MAX_U64_AS_F64: f64 = u64::MAX as f64;
+            const MAX_I64_AS_F64: f64 = i64::MAX as f64;
+            const MIN_I64_AS_F64: f64 = i64::MIN as f64;
+
+            match val {
+                serde_json::Value::Number(n) => {
+                    if let Some(f) = n.as_f64() {
+                        if f.is_finite() && f.fract() == 0.0 {
+                            if f >= 0.0 && f <= MAX_U64_AS_F64 {
+                                *val =
+                                    serde_json::Value::Number(serde_json::Number::from(f as u64));
+                            } else if f >= MIN_I64_AS_F64 && f <= MAX_I64_AS_F64 {
+                                *val =
+                                    serde_json::Value::Number(serde_json::Number::from(f as i64));
+                            }
+                        }
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    arr.iter_mut().for_each(normalize_numbers);
+                }
+                serde_json::Value::Object(obj) => {
+                    obj.values_mut().for_each(normalize_numbers);
+                }
+                _ => {}
+            }
+        }
+
+        normalize_numbers(&mut value);
+
+        let map = value
+            .as_object()
+            .ok_or_else(|| D::Error::custom("expected a map for ToolSpecLatest"))?;
+
+        let kind_str = map
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| D::Error::missing_field("kind"))?;
+
+        let name = map
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| D::Error::missing_field("name"))?
+            .to_string();
+
+        let version = map
+            .get("version")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| D::Error::missing_field("version"))?
+            .to_string();
+
+        let kind = match kind_str {
+            "builtin" => ToolKindLatest::Builtin { name: name.clone(), version: version.clone() },
+            "executable" => {
+                let command: Vec<String> = map
+                    .get("command")
+                    .ok_or_else(|| D::Error::missing_field("command"))?
+                    .as_array()
+                    .ok_or_else(|| D::Error::custom("expected command to be an array of strings"))?
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .ok_or_else(|| {
+                                D::Error::custom("expected command element to be a string")
+                            })
+                            .map(String::from)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let env_vars = map
+                    .get("env_vars")
+                    .map(|v| serde_json::from_value(v.clone()))
+                    .transpose()
+                    .map_err(|e| D::Error::custom(format!("invalid env_vars: {e}")))?
+                    .unwrap_or_default();
+
+                let success_codes = map
+                    .get("success_codes")
+                    .map(|v| serde_json::from_value(v.clone()))
+                    .transpose()
+                    .map_err(|e| D::Error::custom(format!("invalid success_codes: {e}")))?
+                    .unwrap_or_default();
+
+                ToolKindLatest::Executable { command, env_vars, success_codes }
+            }
+            other => {
+                return Err(D::Error::custom(format!(
+                    "unknown tool kind '{other}'; expected 'builtin' or 'executable'"
+                )));
+            }
+        };
+
+        let inputs = map
+            .get("inputs")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| D::Error::custom(format!("invalid inputs: {e}")))?
+            .unwrap_or_default();
+
+        let default_inputs = map
+            .get("default_inputs")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| D::Error::custom(format!("invalid default_inputs: {e}")))?
+            .unwrap_or_default();
+
+        let outputs = map
+            .get("outputs")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| D::Error::custom(format!("invalid outputs: {e}")))?
+            .unwrap_or_default();
+
+        let runtime = map
+            .get("runtime")
+            .map(|v| serde_json::from_value(v.clone()))
+            .transpose()
+            .map_err(|e| D::Error::custom(format!("invalid runtime: {e}")))?
+            .unwrap_or_default();
+
+        Ok(ToolSpecLatest { kind, name, version, inputs, default_inputs, outputs, runtime })
+    }
 }
 
 /// Latest persisted workflow step spec.
@@ -497,7 +678,8 @@ fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
 
 #[cfg(test)]
 mod tests {
-    //! Tests for latest envelope ↔ runtime config conversion.
+    //! Tests for latest envelope ↔ runtime config conversion and
+    //! serialization round-trip through the Nickel encoding pipeline.
     use super::*;
 
     /// Verifies that `NickelEnvelopeLatest` round-trips through
@@ -533,5 +715,92 @@ mod tests {
         assert_eq!(envelope.tools.len(), back.tools.len());
         assert!(back.tools.contains_key("echo"));
         assert_eq!(back.tools["echo"].name, "echo".to_string());
+    }
+
+    /// Verifies that a document containing both Builtin and Executable tools
+    /// survives a full `encode_document` → `decode_document` round-trip
+    /// through the Nickel rendering and evaluation pipeline.
+    #[test]
+    fn tool_spec_encode_decode_round_trip() {
+        let doc = NickelDocument {
+            tools: BTreeMap::from([
+                (
+                    "echo".to_string(),
+                    ToolSpec {
+                        kind: ToolKindSpec::Builtin {
+                            name: "echo".to_string(),
+                            version: "1.0.0".to_string(),
+                        },
+                        name: "echo".to_string(),
+                        version: "1.0.0".to_string(),
+                        inputs: BTreeMap::new(),
+                        default_inputs: BTreeMap::new(),
+                        outputs: BTreeMap::new(),
+                        runtime: ToolRuntime::default(),
+                    },
+                ),
+                (
+                    "ffmpeg".to_string(),
+                    ToolSpec {
+                        kind: ToolKindSpec::Executable {
+                            command: vec!["ffmpeg".to_string()],
+                            env_vars: BTreeMap::from([(
+                                "PATH".to_string(),
+                                "/usr/bin".to_string(),
+                            )]),
+                            success_codes: vec![0, 1],
+                        },
+                        name: "ffmpeg".to_string(),
+                        version: "7.0".to_string(),
+                        inputs: BTreeMap::from([(
+                            "input_file".to_string(),
+                            ToolInputSpec {
+                                kind: ToolInputKind::Content,
+                                description: "Input video file".to_string(),
+                                required: true,
+                            },
+                        )]),
+                        default_inputs: BTreeMap::new(),
+                        outputs: BTreeMap::from([(
+                            "output".to_string(),
+                            OutputCaptureSpec {
+                                name: "output".to_string(),
+                                capture: "stdout".to_string(),
+                                save: false,
+                            },
+                        )]),
+                        runtime: ToolRuntime {
+                            content_map: BTreeMap::new(),
+                            impure: true,
+                            inherited_env_vars: BTreeMap::new(),
+                            max_concurrent_calls: 2,
+                            max_retries: 1,
+                        },
+                    },
+                ),
+            ]),
+            workflows: vec![],
+            runtime: crate::config::ConductorRuntimeConfig::default(),
+            external_data: BTreeMap::new(),
+        };
+
+        let encoded = super::super::encode_document(doc.clone()).expect("encode");
+        let decoded = super::super::decode_document(&encoded).expect("decode");
+
+        assert_eq!(doc.tools.len(), decoded.tools.len(), "tool count mismatch");
+
+        // Verify Builtin tool round-trip.
+        let echo_orig = doc.tools.get("echo").expect("echo in original");
+        let echo_decoded = decoded.tools.get("echo").expect("echo in decoded");
+        assert_eq!(echo_orig.kind, echo_decoded.kind, "echo kind mismatch");
+        assert_eq!(echo_orig.name, echo_decoded.name, "echo name mismatch");
+        assert_eq!(echo_orig.version, echo_decoded.version, "echo version mismatch");
+
+        // Verify Executable tool round-trip.
+        let ffmpeg_orig = doc.tools.get("ffmpeg").expect("ffmpeg in original");
+        let ffmpeg_decoded = decoded.tools.get("ffmpeg").expect("ffmpeg in decoded");
+        assert_eq!(ffmpeg_orig.kind, ffmpeg_decoded.kind, "ffmpeg kind mismatch");
+        assert_eq!(ffmpeg_orig.name, ffmpeg_decoded.name, "ffmpeg name mismatch");
+        assert_eq!(ffmpeg_orig.version, ffmpeg_decoded.version, "ffmpeg version mismatch");
     }
 }
