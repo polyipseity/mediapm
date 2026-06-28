@@ -41,35 +41,9 @@ impl UserLevelCache {
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
     pub async fn open(root: &Path) -> Result<Self, ConductorError> {
-        Cache::open(root).await.map(Self)
-    }
-
-    /// Opens the user-level cache at `root` with a custom TTL and default
-    /// index file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_ttl(
-        root: &Path,
-        entry_ttl_seconds: u64,
-    ) -> Result<Self, ConductorError> {
-        Cache::open_with_ttl(root, entry_ttl_seconds).await.map(Self)
-    }
-
-    /// Opens the user-level cache at `root` with a specific index file and
-    /// the default TTL (30 days).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_index_file_name(
-        root: &Path,
-        index_file_name: &str,
-    ) -> Result<Self, ConductorError> {
-        Cache::open_with_index_file_name(root, index_file_name).await.map(Self)
+        Cache::open_with_index_file_name_and_ttl(root, "tools.jsonc", 30 * 24 * 60 * 60)
+            .await
+            .map(Self)
     }
 
     /// Opens the user-level cache at `root` with a custom TTL and a specific

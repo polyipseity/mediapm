@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::defaults;
 use crate::error::ConductorError;
+use crate::provision::helpers::sanitize_tool_id;
 
 // ---------------------------------------------------------------------------
 // Runtime storage paths
@@ -244,11 +245,6 @@ pub async fn resolve_managed_tool_executable_with_filesystem_cas(
     Ok(ManagedToolExecutableResolution { executable_path, content_hash })
 }
 
-/// Sanitizes a tool ID for use as a filesystem directory name.
-fn sanitize_tool_id(tool_id: &str) -> String {
-    tool_id.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.', "_")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,11 +271,5 @@ mod tests {
         );
         assert_eq!(paths.cas_store_dir, Path::new("/tmp/conductor/custom-store"));
         assert_eq!(paths.conductor_tools_dir, Path::new("/absolute/tools"));
-    }
-
-    #[test]
-    fn sanitize_tool_id_replaces_special_chars() {
-        assert_eq!(sanitize_tool_id("yt-dlp@2024.1.0"), "yt-dlp_2024.1.0");
-        assert_eq!(sanitize_tool_id("simple-tool"), "simple-tool");
     }
 }

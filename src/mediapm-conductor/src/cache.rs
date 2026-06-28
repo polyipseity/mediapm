@@ -72,36 +72,8 @@ impl Cache {
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
     pub async fn open(root: &Path) -> Result<Self, ConductorError> {
-        Self::open_with_ttl(root, ENTRY_TTL_SECONDS).await
-    }
-
-    /// Opens (or bootstraps) one cache root with a custom TTL and default index
-    /// file.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_ttl(
-        root: &Path,
-        entry_ttl_seconds: u64,
-    ) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, DEFAULT_INDEX_FILE_NAME, entry_ttl_seconds)
+        Self::open_with_index_file_name_and_ttl(root, DEFAULT_INDEX_FILE_NAME, ENTRY_TTL_SECONDS)
             .await
-    }
-
-    /// Opens one cache root and binds this handle to a specific index file
-    /// with the default TTL (30 days).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_with_index_file_name(
-        root: &Path,
-        index_file_name: &str,
-    ) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, index_file_name, ENTRY_TTL_SECONDS).await
     }
 
     /// Opens one cache root and binds this handle to a specific index file
@@ -433,21 +405,10 @@ fn now_unix_seconds() -> u64 {
 mod tests {
     use super::{Cache, ENTRY_TTL_SECONDS, PRUNE_INTERVAL_SECONDS, TOUCH_PERSIST_INTERVAL_SECONDS};
 
-    /// Verifies the TTL constants are at least one day (no accidental
-    /// short-duration defaults).
-    #[test]
-    #[expect(clippy::assertions_on_constants)]
-    fn ttl_constants_are_reasonably_large() {
-        assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60, "ENTRY_TTL_SECONDS should be at least one day");
-        assert!(
-            PRUNE_INTERVAL_SECONDS >= 60 * 60,
-            "PRUNE_INTERVAL_SECONDS should be at least one hour"
-        );
-        assert!(
-            TOUCH_PERSIST_INTERVAL_SECONDS >= 60,
-            "TOUCH_PERSIST_INTERVAL_SECONDS should be at least one minute"
-        );
-    }
+    // Compile-time assertions: TTL constants must be at least one day/hour/minute.
+    const _: () = assert!(ENTRY_TTL_SECONDS >= 24 * 60 * 60);
+    const _: () = assert!(PRUNE_INTERVAL_SECONDS >= 60 * 60);
+    const _: () = assert!(TOUCH_PERSIST_INTERVAL_SECONDS >= 60);
 
     /// Protects shared-cache behavior by ensuring key-based round trips return
     /// the original payload bytes.

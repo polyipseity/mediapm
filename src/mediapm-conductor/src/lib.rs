@@ -6,8 +6,8 @@
 //! state model, and the deterministic workflow coordinator that drives
 //! step execution across a pool of actor-backed workers.
 //!
-//! Allow dead code during incremental implementation — most orchestration
-//! scaffolding will be wired as feature implementation progresses.
+// Targeted dead-code allows for incremental-implementation modules.
+// Remove each allow when the corresponding items are wired.
 #![allow(dead_code)]
 
 pub mod api;

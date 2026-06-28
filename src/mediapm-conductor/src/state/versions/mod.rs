@@ -10,21 +10,11 @@
 //! - Consumers outside `state/versions/` must use only the APIs
 //!   re-exported from this module, never `versions::v<N>` directly.
 
-use std::collections::BTreeMap;
-
-use mediapm_cas::{CasApi, Hash};
-
 use crate::error::ConductorError;
 use crate::state::{OrchestrationState, ToolCallInstance};
 
 mod v1;
 mod v2;
-
-/// Returns the latest supported orchestration-state schema marker.
-#[must_use]
-pub(crate) const fn latest_state_version() -> u32 {
-    v2::ORCHESTRATION_STATE_VERSION_V2
-}
 
 // ---------------------------------------------------------------------------
 // Bridge: V2 wire types ↔ runtime types
@@ -42,11 +32,12 @@ impl From<v2::AuxDataV2> for crate::state::AuxData {
 }
 
 impl From<crate::state::AuxData> for v2::AuxDataV2 {
-    #[allow(clippy::cast_possible_truncation)]
     fn from(aux: crate::state::AuxData) -> Self {
         Self {
             tool_call_instance_counter: aux.tool_call_instance_counter,
-            conductor_gc_epoch: v2::ImpureTimestampV2(aux.conductor_gc_epoch.as_unix_nanos() as u64),
+            conductor_gc_epoch: v2::ImpureTimestampV2(
+                u64::try_from(aux.conductor_gc_epoch.as_unix_nanos()).unwrap_or(u64::MAX),
+            ),
         }
     }
 }
@@ -113,7 +104,6 @@ impl From<v2::ToolCallInstanceV2> for ToolCallInstance {
 }
 
 impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
-    #[allow(clippy::cast_possible_truncation)]
     fn from(inst: ToolCallInstance) -> Self {
         Self {
             instance_key: inst.instance_key,
@@ -124,7 +114,8 @@ impl From<ToolCallInstance> for v2::ToolCallInstanceV2 {
             executed: inst.executed,
             rematerialized: inst.rematerialized,
             conductor_gc_last_referenced_at: v2::ImpureTimestampV2(
-                inst.conductor_gc_last_referenced_at.as_unix_nanos() as u64,
+                u64::try_from(inst.conductor_gc_last_referenced_at.as_unix_nanos())
+                    .unwrap_or(u64::MAX),
             ),
         }
     }
@@ -158,68 +149,7 @@ impl From<OrchestrationState> for v2::OrchestrationStateV2 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CAS-based encoding / decoding (kept for backward compatibility with old
-// persisted state; currently unused — new state is stored as inline JSON)
-// ---------------------------------------------------------------------------
-
-/// Encodes runtime orchestration state using CAS-backed version 1 format.
-///
-/// Each instance is individually encoded and stored in CAS. The envelope
-/// (containing instance refs) is also stored in CAS. Returns the envelope hash.
-pub(crate) async fn encode_state<C: CasApi>(
-    cas: &C,
-    mut state: OrchestrationState,
-) -> Result<Hash, ConductorError> {
-    state.version = v1::ORCHESTRATION_STATE_VERSION_V1;
-
-    let mut instance_refs = BTreeMap::new();
-    for (key, instance) in state.tool_call_instances {
-        let encoded = serde_json::to_vec(&instance)
-            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        let hash = cas.put(encoded.into()).await?;
-        instance_refs.insert(key, v1::InstanceRefV1 { hash });
-    }
-
-    let envelope = v1::OrchestrationStateEnvelopeV1 {
-        version: v1::ORCHESTRATION_STATE_VERSION_V1,
-        instances: instance_refs,
-        aux: state.aux,
-    };
-
-    let envelope_bytes =
-        serde_json::to_vec(&envelope).map_err(|e| ConductorError::Serialization(e.to_string()))?;
-    let envelope_hash = cas.put(envelope_bytes.into()).await?;
-    Ok(envelope_hash)
-}
-
-/// Decodes orchestration state from a CAS envelope hash.
-///
-/// Supports v1 (CAS-backed, migrated through V2) format. V2 (JSON inline)
-/// state should use [`decode_state_json`] instead.
-pub(crate) async fn decode_state<C: CasApi>(
-    cas: &C,
-    envelope_hash: &Hash,
-) -> Result<OrchestrationState, ConductorError> {
-    let envelope_bytes = cas.get(*envelope_hash).await?;
-
-    // Peek the version marker.
-    let version = peek_version_marker(&envelope_bytes)?;
-
-    if v1::is_orchestration_state_version_v1(version) {
-        let envelope: v1::OrchestrationStateEnvelopeV1 = serde_json::from_slice(&envelope_bytes)
-            .map_err(|e| ConductorError::Serialization(e.to_string()))?;
-        let v2_state = v2::migrate_v1_to_v2(cas, envelope).await?;
-        Ok(v2_state.into())
-    } else {
-        Err(ConductorError::Serialization(format!(
-            "unsupported CAS orchestration state version: {version}"
-        )))
-    }
-}
-
 /// Extracts the numeric `version` field from a JSON blob.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| ConductorError::Serialization(e.to_string()))?;
@@ -228,7 +158,9 @@ pub(crate) fn peek_version_marker(bytes: &[u8]) -> Result<u32, ConductorError> {
             "missing or non-numeric 'version' field in state JSON".to_string(),
         )
     })?;
-    Ok(marker as u32)
+    u32::try_from(marker).map_err(|_| {
+        ConductorError::Serialization(format!("version marker {marker} exceeds u32 range"))
+    })
 }
 
 // ---------------------------------------------------------------------------

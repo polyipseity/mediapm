@@ -264,8 +264,8 @@ where
 
     /// Returns a default runtime diagnostics snapshot.
     #[must_use]
-    #[allow(clippy::unused_self)]
     pub(crate) fn runtime_diagnostics(&self) -> RuntimeDiagnostics {
+        let _ = self;
         RuntimeDiagnostics::default()
     }
 

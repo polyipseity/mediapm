@@ -66,15 +66,6 @@ pub(crate) struct UnifiedNickelDocument {
     pub runtime: crate::config::ConductorRuntimeConfig,
 }
 
-/// Result of loading, evaluating, and unifying configuration documents.
-#[derive(Debug, Clone)]
-pub(super) struct LoadedDocuments {
-    /// Prior state pointer resolved across all documents.
-    pub prior_state_pointer: Option<Hash>,
-    /// Effective configuration used for workflow execution.
-    pub unified: UnifiedNickelDocument,
-}
-
 /// One step execution request sent from the coordinator to a worker actor.
 #[derive(Debug, Clone)]
 pub(crate) struct StepExecutionRequest {
@@ -156,32 +147,4 @@ pub(crate) struct StepExecutionBundle {
     pub elapsed_ms: f64,
     /// Fine-grained timing breakdown for internal execution phases.
     pub phase_timings: StepPhaseTiming,
-}
-
-/// Scheduler-facing completion facts derived from one finished step.
-#[derive(Debug, Clone)]
-pub(crate) struct StepCompletionRecord {
-    /// Completed step id.
-    pub step_id: String,
-    /// Immutable tool name used for runtime estimation.
-    pub tool_name: String,
-    /// Worker index that handled the step.
-    pub worker_index: usize,
-    /// Whether the step performed real execution work.
-    pub executed: bool,
-    /// Observed runtime in milliseconds.
-    pub observed_ms: f64,
-}
-
-/// Request sent to the state-store actor after one workflow run finishes.
-#[derive(Debug, Clone)]
-pub(super) struct CommitStateRequest {
-    /// Final orchestration state to persist and publish as current state.
-    pub next_state: OrchestrationState,
-    /// Unsaved output hashes eligible for deletion after persistence completes.
-    pub pending_unsaved_hashes: BTreeSet<Hash>,
-    /// Unified configuration whose references protect hashes from deletion.
-    pub unified: UnifiedNickelDocument,
-    /// State pointer that was active before the current run started, if any.
-    pub prior_state_pointer: Option<Hash>,
 }

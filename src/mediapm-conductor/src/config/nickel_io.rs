@@ -243,8 +243,6 @@ pub(super) fn latest_version_for_source(
     Ok(version)
 }
 
-/// Returns whether `key` can be emitted as a bare Nickel identifier.
-
 /// Evaluates one document source through the embedded Nickel migration wrapper
 /// into one requested persisted schema version.
 ///

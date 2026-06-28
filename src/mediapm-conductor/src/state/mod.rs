@@ -9,7 +9,6 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ImpureTimestamp;
-use crate::error::ConductorError;
 
 pub mod versions;
 
@@ -128,15 +127,6 @@ impl OrchestrationState {
         }
     }
 
-    /// Checks whether this state carries a known schema version.
-    ///
-    /// Returns `Ok(())` if `version` matches `STATE_VERSION`, or if the
-    /// version points to a known format that can be migrated forward.
-    /// Unknown / unsupported versions produce `ConductorError::Serialization`.
-    pub(crate) fn check_version(&self) -> Result<(), ConductorError> {
-        check_and_migrate_state(self)
-    }
-
     /// Runs conductor GC on instances: refreshes `conductor_gc_last_referenced_at`
     /// for referenced instances, evicts unreferenced instances past the TTL
     /// grace period, then updates `conductor_gc_epoch`.
@@ -167,26 +157,5 @@ impl OrchestrationState {
 impl Default for OrchestrationState {
     fn default() -> Self {
         Self::new_empty()
-    }
-}
-
-/// Checks the version of an `OrchestrationState` and migrates it if necessary.
-///
-/// Currently only the latest version (`STATE_VERSION`) is supported; older
-/// persisted formats (v0, v1) are rejected with a migration hint. This
-/// function serves as the hook where forward-migration logic would be added
-/// when old JSON formats need to be supported.
-fn check_and_migrate_state(state: &OrchestrationState) -> Result<(), ConductorError> {
-    match state.version {
-        v if v == STATE_VERSION => Ok(()),
-        0 | 1 => Err(ConductorError::Serialization(format!(
-            "orchestration state version {} is no longer supported. \
-             Reset the state by removing the state file, or implement \
-             a forward migration in the `state/versions/` module.",
-            state.version
-        ))),
-        v => Err(ConductorError::Serialization(format!(
-            "unsupported orchestration state version: {v} (expected {STATE_VERSION})",
-        ))),
     }
 }
