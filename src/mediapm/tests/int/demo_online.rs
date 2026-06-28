@@ -23,10 +23,10 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 ///
 /// Note: `media_id_from_uri` for remote URIs uses the host slug + content
 /// hash prefix, not URL query parameters.
-#[test]
-fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("https://www.youtube.com/watch?v=dQw4w9WgXcQ").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -43,10 +43,11 @@ fn add_remote_source_works() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Adding a `YtDlpChannel` hierarchy preset creates non-empty hierarchy nodes.
-#[test]
-fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError>
+{
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
 
@@ -60,10 +61,10 @@ fn add_channel_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::
 ///
 /// Note: only one `add_tool_requirement` call per test is reliable because
 /// `ensure_and_load_mediapm_document` uses Nickel evaluation internally.
-#[test]
-fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_tool_requirement("yt-dlp", None, None)?;
 

@@ -58,11 +58,11 @@ fn write_dummy_local_source(root: &Path) -> ExampleResult<PathBuf> {
     Ok(local_source_path)
 }
 
-fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
+async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let root = artifact_root();
     reset_artifact_root(&root)?;
 
-    let mut service = MediaPmService::new_fs_at(&root)?;
+    let mut service = MediaPmService::new_fs_at(&root).await?;
 
     let local_source_path = write_dummy_local_source(&root)?;
     let local_media_id =
@@ -100,7 +100,7 @@ fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
 
 #[tokio::main]
 async fn main() -> ExampleResult<()> {
-    let manifest = run_add_sources_example()?;
+    let manifest = run_add_sources_example().await?;
 
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
@@ -124,7 +124,7 @@ mod tests {
 
     #[tokio::test]
     async fn cli_add_sources_writes_expected_config_documents() {
-        let manifest = run_add_sources_example().expect("run add-sources example");
+        let manifest = run_add_sources_example().await.expect("run add-sources example");
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");

@@ -902,7 +902,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     Ok(())
 }
 
-fn run_tools_update_precheck(
+async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::FileSystemCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize)> {
@@ -914,7 +914,7 @@ fn run_tools_update_precheck(
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
-    let summary = service.sync_tools_with_tag_update_checks(false)?;
+    let summary = service.sync_tools_with_tag_update_checks(false).await?;
     if summary.updated_tools != expected_updated_tools {
         return Err(format!(
             "tools-update precheck expected {expected_updated_tools} updated tools but observed {}",
@@ -946,11 +946,11 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
     let source_has_video_track_marker = bytes_contain_ascii(&source_bytes, b"vide");
     let source_has_audio_track_marker = bytes_contain_ascii(&source_bytes, b"soun");
 
-    let mut ingest_service = MediaPmService::new_fs_at(&workspace_root)?;
+    let mut ingest_service = MediaPmService::new_fs_at(&workspace_root).await?;
     let paths = ingest_service.paths().clone();
 
     let (precheck_updated_tools, precheck_added_tools) = if run_sync {
-        run_tools_update_precheck(&mut ingest_service, &workspace_root)?
+        run_tools_update_precheck(&mut ingest_service, &workspace_root).await?
     } else {
         (0, 0)
     };
@@ -994,7 +994,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         clear_machine_workflows(&service.paths().conductor_machine_ncl)?;
     }
 
-    let maybe_summary = if run_sync { Some(service.sync_library(false)?) } else { None };
+    let maybe_summary = if run_sync { Some(service.sync_library(false).await?) } else { None };
     let effective_paths = service.paths().clone();
     let cas_root = service.paths().runtime_root.join("store");
     let store_size_stats = summarize_store_sizes(&cas_root).await?;

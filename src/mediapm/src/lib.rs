@@ -28,9 +28,6 @@ pub(crate) mod source_metadata;
 pub(crate) mod tools;
 pub(crate) mod util;
 
-#[cfg(test)]
-mod test_util;
-
 use std::collections::BTreeMap;
 use std::path::Path;
 

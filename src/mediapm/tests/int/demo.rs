@@ -21,10 +21,10 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 
 /// Adding a media source with a local URI persists the entry with no default
 /// steps.
-#[test]
-fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -39,10 +39,11 @@ fn add_local_source_works() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Title and description set during add are preserved in the document.
-#[test]
-fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm::MediaPmError>
+{
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:demo-fixture").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -63,10 +64,10 @@ fn add_local_source_with_explicit_title_and_description() -> Result<(), mediapm:
 }
 
 /// Adding a `Local` hierarchy preset produces non-empty hierarchy nodes.
-#[test]
-fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
 
@@ -80,10 +81,10 @@ fn add_local_hierarchy_preset_creates_expected_nodes() -> Result<(), mediapm::Me
 /// Note: only one `add_tool_requirement` call per test is reliable because
 /// `ensure_and_load_mediapm_document` uses Nickel evaluation internally,
 /// which fails in temp directories without schema files.
-#[test]
-fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_tool_requirement("media-tagger", None, None)?;
 

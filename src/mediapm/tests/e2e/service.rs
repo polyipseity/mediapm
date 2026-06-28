@@ -1,9 +1,5 @@
 //! API-level end-to-end tests using programmatic `MediaPmService` flows.
 //!
-//! All tests use [`tempfile::tempdir`] for isolated filesystem roots and
-//! plain `#[test]` (no tokio attribute) to avoid runtime-in-runtime conflicts
-//! with [`MediaPmService::new_fs_at`]'s internal runtime.
-//!
 //! Reads persisted `.ncl` files as raw JSON (no Nickel evaluation) since
 //! the Nickel schema/contract files are absent in temp directories.
 
@@ -28,10 +24,10 @@ fn read_doc(path: &std::path::Path) -> mediapm::MediaPmDocument {
 /// Note: tests with more than one service write-call are unreliable due
 /// to Nickel evaluation constraints in temp directories (the second call
 /// invokes `ensure_and_load_mediapm_document` which reads via Nickel).
-#[test]
-fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:test-asset").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -44,10 +40,10 @@ fn add_source_persists() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Adding a source with a title and description preserves the metadata.
-#[test]
-fn add_source_with_metadata() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_source_with_metadata() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     let uri = Url::parse("local:test-asset").expect("url must parse");
     let media_id = media_id_from_uri(&uri);
@@ -98,10 +94,10 @@ fn media_id_parsing() {
 ///
 /// Note: only one `add_tool_requirement` call per test is reliable due to
 /// Nickel evaluation constraints in temp directories.
-#[test]
-fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_tool_requirement("ffmpeg", None, None)?;
 
@@ -117,10 +113,10 @@ fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError> {
 // ---------------------------------------------------------------------------
 
 /// Adding a Local hierarchy preset creates non-empty hierarchy nodes.
-#[test]
-fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::Local)?;
 
@@ -131,10 +127,10 @@ fn add_local_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
 }
 
 /// Adding a `YtDlpChannel` hierarchy preset creates non-empty hierarchy nodes.
-#[test]
-fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     service.add_media_hierarchy_preset(MediaHierarchyPreset::YtDlpChannel)?;
 
@@ -150,10 +146,10 @@ fn add_channel_hierarchy_preset() -> Result<(), mediapm::MediaPmError> {
 
 /// The service accepts any URI scheme without validation (scheme
 /// enforcement is not implemented).
-#[test]
-fn source_accepts_any_scheme() -> Result<(), mediapm::MediaPmError> {
+#[tokio::test]
+async fn source_accepts_any_scheme() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
-    let mut service = MediaPmService::new_fs_at(root.path())?;
+    let mut service = MediaPmService::new_fs_at(root.path()).await?;
 
     // The service currently does not validate URI schemes; any scheme is
     // accepted.

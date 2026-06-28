@@ -1293,7 +1293,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     Ok(())
 }
 
-fn run_tools_update_precheck(
+async fn run_tools_update_precheck(
     service: &mut MediaPmService<mediapm_cas::InMemoryCas>,
     workspace_root: &Path,
 ) -> ExampleResult<(usize, usize, usize)> {
@@ -1309,7 +1309,7 @@ fn run_tools_update_precheck(
         return Err("tools-update precheck must start with empty media/hierarchy".into());
     }
 
-    let summary = service.sync_tools_with_tag_update_checks(false)?;
+    let summary = service.sync_tools_with_tag_update_checks(false).await?;
     if summary.updated_tools != logical_tool_ids.len() {
         return Err(format!(
             "tools-update precheck expected {} updated tools but observed {}",
@@ -2275,7 +2275,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
     };
     let (precheck_updated_tools, precheck_added_tools, precheck_pruned_tools) =
-        run_tools_update_precheck(&mut service, &workspace_root)?;
+        run_tools_update_precheck(&mut service, &workspace_root).await?;
     let logical_tool_ids = configure_document_for_online_demo(&workspace_root)?;
 
     // Phase 2: full library sync with a filesystem-backed CAS so that tool
@@ -2301,6 +2301,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
 
     let summary = sync_service
         .sync_library_with_tag_update_checks(true, false)
+        .await
         .map_err(|error| format!("online demo sync failed: {error}"))?;
 
     eprintln!(
