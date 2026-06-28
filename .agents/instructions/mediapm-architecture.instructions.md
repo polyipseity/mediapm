@@ -210,8 +210,7 @@ Avoid `#[path = "..."]` for routine in-crate module/test wiring unless there is 
 ## Cache policy
 
 - All caches in CAS and downstream should be TTL-based, not bounded by entry count. This avoids memory-pressure tuning loops and keeps behavior predictable under varying DB sizes.
-- The CAS integrity verification cache (`FileSystemState.integrity_cache`) uses `cache_ttl` from `CasIntegrityConfig` per-entry TTL. Entries are evicted naturally on TTL expiry; there is no LRU or entry-cap eviction.
-- The optional verified-content in-memory cache (an extension of the integrity cache) follows the same TTL-based policy — no entry cap, no LRU.
+- CAS-specific cache details (integrity cache TTL, verified-content in-memory cache) are documented in `src/mediapm-cas/AGENTS.md`.
 
 ## Documentation requirements for Rust code
 
@@ -251,56 +250,7 @@ When you add or change public APIs in `src/`:
 
 ## CAS integrity verification
 
-CAS integrity verification ensures stored objects have not been corrupted.
-The system uses a configurable strategy set to decide when to verify objects on read (`get()`).
-
-### Trust model
-
-CAS objects are trusted by default at materialization time — verification happens at CAS `get()` time, not at materialization. Pure workflows may auto-recover from integrity failure (warn + drop + retry once); impure workflows fail without auto-retry.
-
-### TTL cache fast path
-
-A TTL cache (`HashMap<Hash, (Instant, Arc<[u8]>)>`) in `FileSystemState` supplements `content_cache` for recently verified objects. On `get()`:
-
-1. If the TTL cache has a non-expired entry, skip verification and return the cached bytes immediately.
-2. On cache miss, evaluate configured strategies. If any triggers, perform full hash re-computation, update `verify_time` in the primary header, and populate the TTL cache on success.
-3. On cache miss with no trigger, return the stored bytes directly without updating `verify_time`.
-
-The TTL cache has a configurable TTL (default 60 seconds) and is bounded per `FileSystemState` — entries are evicted when the underlying object is deleted or pruned, or on maintenance operations.
-
-### Verify-on-read strategies
-
-Four `VerifyTriggerStrategy` variants control verification:
-
-| Strategy   | Trigger condition                                                   |
-| ---------- | ------------------------------------------------------------------- |
-| `Always`   | Every `get()` call triggers a full hash re-computation.             |
-| `Modified` | Verify only when file mtime changed since last `verify_time`.       |
-| `Sample`   | Verify a random fraction (default 1%) of recently-fetched objects.  |
-| `Stale`    | Verify when `now - verify_time > stale_threshold` (default 7 days). |
-
-Default strategy list: `[Modified, Sample]`.
-
-### `verify_time` field
-
-The `PrimaryHeaderV1` struct uses a `verify_time` field (Unix epoch seconds) to track when each object was last verified. A value of 0 means the object has never been verified (e.g., migrated from `INDEX_SCHEMA_VERSION` 1 or newly stored). The header size increased from 56 to 64 bytes with this field.
-
-### Configuration
-
-Config keys are flat under `runtime.*`:
-
-- `runtime.verify_on_read_strategies: Array<String>` — default `["modified", "sample"]`
-- `runtime.verify_on_read_stale_threshold_secs: Number` — default 604800
-- `runtime.verify_on_read_sample_rate: Number` — default 0.01
-- `runtime.verify_on_read_ttl_cache_ttl_secs: Number` — default 60
-
-### Schema migration
-
-`INDEX_SCHEMA_VERSION` bumps from 1 to 2. Migration initializes `verify_time` to 0 for all existing objects. The schema version is stored in the index header and checked at startup.
-
-## Specification references
-
-- Deleted monolithic files (`crate-specifications.md`, `elaboration-pass-edge-cases.md`). Use `.agents/instructions/spec-development-index.instructions.md` to locate the relevant per-crate AGENTS.md for any specification or edge-case content.
+CAS integrity verification ensures stored objects have not been corrupted on read. See `src/mediapm-cas/AGENTS.md` for the full specification (trust model, verify-on-read strategies, TTL cache, `verify_time` field, configuration, and schema migration).
 
 **Progress message format:**
 
@@ -310,37 +260,6 @@ Config keys are flat under `runtime.*`:
 
 ## Validation checklist after Rust edits
 
-This repository relies on `prek.toml` for local git-hook validation.
+See `.agents/instructions/rust-workflow.instructions.md` for the canonical development and pre-submission validation workflow. The `prek.toml` hooks enforce formatting, linting, and testing automatically on commit and push.
 
-- `pre-commit` stage on `git commit` runs:
-  - `check-case-conflict`
-  - `check-executables-have-shebangs`
-  - `check-illegal-windows-names`
-  - `check-merge-conflict`
-  - `check-shebang-scripts-are-executable`
-  - `check-symlinks`
-  - `destroyed-symlinks`
-  - `detect-private-key`
-  - `end-of-file-fixer`
-  - `fix-byte-order-marker`
-  - `name-tests-test`
-  - `trailing-whitespace`
-  - `rumdl-fmt`
-  - `fmt` (runs `cargo fmt` on changed `.rs` files)
-- `commit-msg` stage runs `commitlint`
-- `pre-push` stage runs workspace `cargo-check`, `clippy`, and `test`
-
-All format/check/clippy/test validation is automatic via `prek.toml` hooks.
-During development, use targeted crate validation when needed:
-
-- `cargo test-pkg <crate>` (e.g., `cargo test-pkg mediapm`)
-- `cargo build-pkg <crate>` (e.g., `cargo build-pkg mediapm`)
-
-The only required manual runtime verification before completion is running both mediapm demos:
-
-- `cargo run --package mediapm --example mediapm_demo`
-- `cargo run --package mediapm --example mediapm_demo_online`
-
-If you intentionally change behavior, update tests and docs in the same change.
-
-- Update the relevant per-crate `AGENTS.md` (use `.agents/instructions/spec-development-index.instructions.md` to find the right file) when the change affects any contract, invariant, or edge case documented there.
+If you intentionally change behavior, update tests and docs in the same change. Use `.agents/instructions/spec-development-index.instructions.md` to find the relevant per-crate `AGENTS.md` for any affected contracts, invariants, or edge cases.
