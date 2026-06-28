@@ -48,12 +48,6 @@ enum CliCommand {
     Run {
         /// Name of the workflow to execute.
         workflow: String,
-        /// Allow tool redefinition across config sources.
-        #[arg(long)]
-        allow_tool_redefinition: bool,
-        /// Number of concurrent worker tasks (default: env or 4).
-        #[arg(long)]
-        workers: Option<usize>,
     },
     /// Inspect or manipulate orchestration state.
     State(StateArgs),
@@ -234,9 +228,7 @@ async fn run(cli: Cli) -> Result<(), ConductorError> {
         },
     );
     match cli.command {
-        CliCommand::Run { workflow, allow_tool_redefinition, workers } => {
-            cmd_run(&workflow, allow_tool_redefinition, workers).await
-        }
+        CliCommand::Run { workflow } => cmd_run(&workflow).await,
         CliCommand::State(state_args) => cmd_state(state_args).await,
         CliCommand::Import(import_args) => cmd_import(import_args).await,
         CliCommand::Remove(remove_args) => cmd_remove(remove_args).await,
@@ -271,11 +263,7 @@ async fn ensure_conductor() -> Result<&'static SimpleConductor<ConfiguredCas>, C
         .await
 }
 
-async fn cmd_run(
-    workflow_name: &str,
-    _allow_tool_redefinition: bool,
-    _workers: Option<usize>,
-) -> Result<(), ConductorError> {
+async fn cmd_run(workflow_name: &str) -> Result<(), ConductorError> {
     let conductor = ensure_conductor().await?;
     let options = RunWorkflowOptions { retry_impure: false, tool_selector: None };
     let summary = conductor.run_workflow(workflow_name, options).await?;
