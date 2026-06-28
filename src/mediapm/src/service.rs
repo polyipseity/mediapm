@@ -774,7 +774,8 @@ impl MediaPmService<FileSystemCas> {
             path: conductor_cas_root.clone(),
             source: e,
         })?;
-        let cas = FileSystemCas::open(&conductor_cas_root)
+        let strategies = runtime_storage_overrides.to_verify_strategies();
+        let cas = FileSystemCas::open_with_strategies(&conductor_cas_root, strategies)
             .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}")))?;
 
@@ -842,9 +843,12 @@ impl MediaPmService<FileSystemCas> {
         // 5 – 6. Open CAS and run the materializer.
         let materialize_report = {
             let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
-            let cas = FileSystemCas::open(&conductor_cas_root).await.map_err(|e| {
-                MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}"))
-            })?;
+            let strategies = merged.to_verify_strategies();
+            let cas = FileSystemCas::open_with_strategies(&conductor_cas_root, strategies)
+                .await
+                .map_err(|e| {
+                    MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}"))
+                })?;
             materializer::sync_hierarchy(
                 &effective_paths,
                 &document,

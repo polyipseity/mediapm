@@ -18,6 +18,7 @@ use super::versions::{hash_to_delta_path, hash_to_path};
 use crate::api::{ObjectEncoding, VerifyTriggerStrategy};
 use crate::error::CasError;
 use crate::hash::Hash;
+use crate::verify::VerifyEvaluator;
 
 /// Filesystem-backed [`BlobStore`] with hash-derived directory layout.
 ///
@@ -45,7 +46,7 @@ use crate::hash::Hash;
 #[derive(Clone, Debug)]
 pub struct FileSystemBlobStore {
     root: PathBuf,
-    verify_strategies: Vec<VerifyTriggerStrategy>,
+    verify_evaluator: VerifyEvaluator,
 }
 
 impl FileSystemBlobStore {
@@ -61,7 +62,7 @@ impl FileSystemBlobStore {
         verify_strategies: Vec<VerifyTriggerStrategy>,
     ) -> Result<Self, CasError> {
         fs::create_dir_all(&root).await.map_err(CasError::Io)?;
-        Ok(Self { root, verify_strategies })
+        Ok(Self { root, verify_evaluator: VerifyEvaluator::new(verify_strategies) })
     }
 
     /// Convenience: create a store with no integrity verification.
@@ -71,17 +72,6 @@ impl FileSystemBlobStore {
     /// Delegates to [`create`](Self::create).
     pub async fn new(root: PathBuf) -> Result<Self, CasError> {
         Self::create(root, Vec::new()).await
-    }
-
-    /// Returns `true` when the read-path should verify the content hash
-    /// against the stored hash.
-    ///
-    /// Only [`VerifyTriggerStrategy::Always`] triggers inline verification;
-    /// `Modified`, `Sample`, and `Stale` are not yet implemented and
-    /// silently treated as off.
-    #[must_use]
-    fn should_verify(&self) -> bool {
-        self.verify_strategies.iter().any(|s| matches!(s, VerifyTriggerStrategy::Always))
     }
 
     /// Return the root path.
@@ -155,14 +145,21 @@ impl BlobStore for FileSystemBlobStore {
             ObjectEncoding::Delta { .. } => hash_to_delta_path(&self.root, &hash),
         };
         Self::atomic_write(&path, &data).await?;
+        // Seed mtime for verify-on-read tracking.
+        if let Ok(meta) = fs::metadata(&path).await {
+            self.verify_evaluator.record_verification(&hash, meta.modified().ok());
+        }
         Ok(())
     }
 
     async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_path(&self.root, hash);
+        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime = meta.modified().ok();
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        if self.should_verify() {
+        if self.verify_evaluator.should_verify(hash, mtime) {
             Self::verify_hash(&path, hash).await?;
+            self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
     }
@@ -173,8 +170,10 @@ impl BlobStore for FileSystemBlobStore {
         writer: &mut (dyn AsyncWrite + Send + Unpin),
     ) -> Result<(), CasError> {
         let path = hash_to_path(&self.root, hash);
+        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime = meta.modified().ok();
         let mut file = fs::File::open(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        if self.should_verify() {
+        if self.verify_evaluator.should_verify(hash, mtime) {
             // Verify hash while streaming: compute hash incrementally
             let mut hasher = blake3::Hasher::new();
             let mut buf = vec![0u8; Self::stream_buffer_size()];
@@ -196,6 +195,7 @@ impl BlobStore for FileSystemBlobStore {
                     ),
                 });
             }
+            self.verify_evaluator.record_verification(hash, mtime);
         } else {
             // No verification: simple copy
             tokio::io::copy_buf(&mut tokio::io::BufReader::new(&mut file), writer)
@@ -250,14 +250,21 @@ impl BlobStore for FileSystemBlobStore {
 
         // Atomic rename
         fs::rename(&tmp_path, &path).await.map_err(CasError::Io)?;
+        // Seed mtime for verify-on-read tracking.
+        if let Ok(meta) = fs::metadata(&path).await {
+            self.verify_evaluator.record_verification(&hash, meta.modified().ok());
+        }
         Ok(())
     }
 
     async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
         let path = hash_to_delta_path(&self.root, hash);
+        let meta = fs::metadata(&path).await.map_err(|_| CasError::NotFound(*hash))?;
+        let mtime = meta.modified().ok();
         let data = fs::read(&path).await.map_err(|_| CasError::NotFound(*hash))?;
-        if self.should_verify() {
+        if self.verify_evaluator.should_verify(hash, mtime) {
             Self::verify_hash(&path, hash).await?;
+            self.verify_evaluator.record_verification(hash, mtime);
         }
         Ok(Bytes::from(data))
     }
@@ -331,6 +338,10 @@ impl BlobStore for FileSystemBlobStore {
         };
         self.ensure_parent(&hash).await?;
         fs::rename(&tmp_path, &final_path).await.map_err(CasError::Io)?;
+        // Seed mtime for verify-on-read tracking.
+        if let Ok(meta) = fs::metadata(&final_path).await {
+            self.verify_evaluator.record_verification(&hash, meta.modified().ok());
+        }
         Ok((hash, total))
     }
 
@@ -507,5 +518,103 @@ mod tests {
             .delete_encoding(hash, ObjectEncoding::Delta { base_hash: Hash::from_content(b"x") })
             .await
             .expect("delete_encoding on missing delta must succeed");
+    }
+
+    // --- VerifyTriggerStrategy integration tests ---
+
+    #[tokio::test]
+    async fn modified_skips_second_read_on_unchanged_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Modified],
+        )
+        .await
+        .unwrap();
+
+        let data = Bytes::from_static(b"stable content");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
+
+        // First read: hash unknown to evaluator, must verify.
+        let retrieved = store.read(&hash).await.unwrap();
+        assert_eq!(retrieved, data);
+
+        // Second read: mtime unchanged, should skip verification.
+        let retrieved = store.read(&hash).await.unwrap();
+        assert_eq!(retrieved, data);
+    }
+
+    #[tokio::test]
+    async fn modified_catches_tampered_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Modified],
+        )
+        .await
+        .unwrap();
+
+        let original = Bytes::from_static(b"original content");
+        let hash = Hash::from_content(&original);
+        store.write(hash, ObjectEncoding::Full, original).await.unwrap();
+
+        // Overwrite blob file with different content.
+        let path = hash_to_path(dir.path(), &hash);
+        // Ensure clocks tick so mtime is distinct.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        fs::write(&path, b"corrupted content").await.unwrap();
+
+        // Read should detect corruption.
+        let err = store.read(&hash).await.unwrap_err();
+        assert!(
+            matches!(err, CasError::CorruptObject { .. }),
+            "expected CorruptObject, got {err:?}",
+        );
+    }
+
+    #[tokio::test]
+    async fn sample_triggers_at_denominator_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Sample { denominator: 3 }],
+        )
+        .await
+        .unwrap();
+
+        let data = Bytes::from_static(b"sample test");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
+
+        // Read 1: counter 0 → verify. Record happens inside read.
+        assert_eq!(store.read(&hash).await.unwrap(), data);
+        // Read 2: counter 1 → skip.
+        assert_eq!(store.read(&hash).await.unwrap(), data);
+        // Read 3: counter 2 → skip.
+        assert_eq!(store.read(&hash).await.unwrap(), data);
+        // Read 4: counter 3 → verify (3 % 3 == 0).
+        assert_eq!(store.read(&hash).await.unwrap(), data);
+    }
+
+    #[tokio::test]
+    async fn stale_retriggers_after_timeout_expiry() {
+        // Use a zero-length timeout so the first read records, second triggers.
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileSystemBlobStore::create(
+            dir.path().to_path_buf(),
+            vec![VerifyTriggerStrategy::Stale { timeout: std::time::Duration::ZERO }],
+        )
+        .await
+        .unwrap();
+
+        let data = Bytes::from_static(b"stale test");
+        let hash = Hash::from_content(&data);
+        store.write(hash, ObjectEncoding::Full, data.clone()).await.unwrap();
+
+        // Read 1: hash unknown → verify + record.
+        assert_eq!(store.read(&hash).await.unwrap(), data);
+        // Read 2: elapsed >= 0 → stale immediately.
+        assert_eq!(store.read(&hash).await.unwrap(), data);
     }
 }

@@ -270,6 +270,36 @@ pub struct MediaRuntimeStorage {
     pub path_sanitization: hierarchy_types::SanitizeNamesConfig,
 }
 
+impl MediaRuntimeStorage {
+    /// Map the string-based verify-on-read configuration to CAS enum variants.
+    ///
+    /// Unknown strategy names are silently ignored.
+    #[must_use]
+    pub fn to_verify_strategies(&self) -> Vec<mediapm_cas::VerifyTriggerStrategy> {
+        use mediapm_cas::VerifyTriggerStrategy;
+
+        let mut strategies: Vec<VerifyTriggerStrategy> = Vec::new();
+
+        for name in &self.verify_on_read {
+            match name.as_str() {
+                "always" => strategies.push(VerifyTriggerStrategy::Always),
+                "modified" => strategies.push(VerifyTriggerStrategy::Modified),
+                "sample" => strategies.push(VerifyTriggerStrategy::Sample {
+                    denominator: self.verify_on_read_sample_denominator.max(1) as u32,
+                }),
+                "stale" => strategies.push(VerifyTriggerStrategy::Stale {
+                    timeout: std::time::Duration::from_secs(self.verify_on_read_stale_timeout_secs),
+                }),
+                _ => {
+                    // Unknown strategy names are silently ignored.
+                }
+            }
+        }
+
+        strategies
+    }
+}
+
 impl Default for MediaRuntimeStorage {
     fn default() -> Self {
         Self {

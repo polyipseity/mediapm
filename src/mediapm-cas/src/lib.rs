@@ -39,6 +39,7 @@ pub(crate) mod delta;
 pub mod error;
 pub mod hash;
 pub mod storage;
+pub(crate) mod verify;
 
 #[cfg(feature = "cli")]
 pub mod cli;
