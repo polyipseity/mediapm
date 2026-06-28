@@ -188,7 +188,14 @@ pub(crate) async fn reconcile_desired_tools(
     // 5. Ensure internal launcher content entries exist and regenerate launcher.
     let tools_dir = &paths.tools_dir;
     ensure_internal_launcher_content_entries_exist(&mut generated_doc, tools_dir);
-    regenerate_media_tagger_internal_launcher_file(tools_dir)?;
+    regenerate_media_tagger_internal_launcher_file(
+        tools_dir,
+        &std::env::current_exe().map_err(|source| crate::error::MediaPmError::Io {
+            operation: "resolving current executable path".to_string(),
+            path: std::path::PathBuf::new(),
+            source,
+        })?,
+    )?;
 
     // 6. Inject generated env vars into tool runtimes.
     ensure_machine_runtime_inherits_generated_env_vars(
