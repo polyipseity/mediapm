@@ -139,26 +139,10 @@ For newcomers with no codebase context:
 
 ## Validation commands
 
-Before finishing, run targeted validation on affected crates:
+See `.agents/instructions/rust-workflow.instructions.md` for the canonical validation workflow (selective tests during development, demo runs before completion, full-workspace checks via `prek.toml` commit hooks).
 
-**Standard development workflow:**
+Before finishing work that touches tests or APIs:
 
-- `cargo test-pkg <crate>` (affected crate testing; e.g., `cargo test-pkg mediapm`)
-- `cargo build-pkg <crate>` (affected crate build; e.g., `cargo build-pkg mediapm`)
-- Run both demo commands in normal sequence (not concurrently):
-  - `cargo run --package mediapm --example mediapm_demo`
-  - `cargo run --package mediapm --example mediapm_demo_online`
-- Do not run manual `cargo fmt`, `cargo check`, or `cargo clippy` in normal development loops; `prek.toml` commit hooks already enforce formatting and lint/check gates.
-- Add or update tests selectively for the touched behavior; avoid full test suite runs during development.
-
-**Before submitting (pre-push):**
-
-- `cargo fmt-check` (all files)
-- `cargo clippy-all` (full workspace)
-- `cargo test-all` (full workspace)
-
-See `.cargo/config.toml` for complete alias definitions.
-
-## Specification references
-
-- Deleted monolithic files (`crate-specifications.md`, `elaboration-pass-edge-cases.md`). Use `.agents/instructions/spec-development-index.instructions.md` to locate the relevant per-crate AGENTS.md for any specification or edge-case content.
+- `cargo test-pkg <crate>` (affected crate testing)
+- `cargo build-pkg <crate>` (affected crate build)
+- Run both demos in sequence: `cargo run --package mediapm --example mediapm_demo` and `cargo run --package mediapm --example mediapm_demo_online`
