@@ -55,7 +55,7 @@ impl WorkflowRunProfile {
             run_started_unix_nanos,
             run_finished_unix_nanos,
             generated_unix_nanos: ImpureTimestamp::now().as_unix_nanos(),
-            conductor_dir_path: display_path(conductor_dir_path),
+            conductor_dir_path: conductor_dir_path.display().to_string().replace('\\', "/"),
             summary,
             step_executions,
             runtime_diagnostics,
@@ -119,12 +119,6 @@ pub(crate) fn write_profile_json(
 
     fs::write(output_path, bytes)
         .map_err(|source| ConductorError::io("writing profiler JSON artifact", output_path, source))
-}
-
-/// Renders one path as slash-normalized display text.
-#[must_use]
-fn display_path(path: &Path) -> String {
-    path.display().to_string().replace('\\', "/")
 }
 
 #[cfg(test)]

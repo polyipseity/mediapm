@@ -105,17 +105,9 @@ pub(super) async fn run_builtin(
     outermost_config_dir: &Path,
     sandbox_dir: &Path,
 ) -> Result<ExecutionResult, ConductorError> {
-    let _registration = crate::tools::find_builtin(tool_name).ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "unknown builtin tool '{tool_name}' (not in tool registry)"
-        ))
-    })?;
-
-    let params = args; // treat all resolved step inputs as params
-
     match tool_name {
         "echo" => {
-            let result = mediapm_conductor_builtin_echo::execute(params, &BTreeMap::new())
+            let result = mediapm_conductor_builtin_echo::execute(args, &BTreeMap::new())
                 .map_err(|e| ConductorError::Workflow(format!("echo builtin failed: {e}")))?;
             // Serialize the StringMap to JSON stdout.
             let stdout = serde_json::to_vec(&result)
@@ -123,7 +115,7 @@ pub(super) async fn run_builtin(
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
         "fs" => {
-            mediapm_conductor_builtin_fs::execute_string_map(sandbox_dir, params, &BTreeMap::new())
+            mediapm_conductor_builtin_fs::execute_string_map(sandbox_dir, args, &BTreeMap::new())
                 .map_err(|e| ConductorError::Workflow(format!("fs builtin failed: {e}")))?;
             // fs impure — success payload is the filesystem side effect.
             Ok(ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 })
@@ -131,7 +123,7 @@ pub(super) async fn run_builtin(
         "import" => {
             let bytes = mediapm_conductor_builtin_import::execute_content_map(
                 outermost_config_dir,
-                params,
+                args,
                 &BTreeMap::new(),
             )
             .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?;
@@ -139,7 +131,7 @@ pub(super) async fn run_builtin(
         }
         "archive" => {
             let bytes = mediapm_conductor_builtin_archive::execute_content_map(
-                params,
+                args,
                 &BTreeMap::<String, Vec<u8>>::new(),
             )
             .map_err(|e| ConductorError::Workflow(format!("archive builtin failed: {e}")))?;
@@ -148,7 +140,7 @@ pub(super) async fn run_builtin(
         "export" => {
             let result = mediapm_conductor_builtin_export::execute_string_map(
                 outermost_config_dir,
-                params,
+                args,
                 &BTreeMap::<String, Vec<u8>>::new(),
             )
             .map_err(|e| ConductorError::Workflow(format!("export builtin failed: {e}")))?;

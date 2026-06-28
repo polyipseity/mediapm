@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use ractor::rpc::CallResult;
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use std::time::Duration;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi};
 
@@ -170,7 +169,7 @@ impl ConductorActorClient {
                     state,
                     reply,
                 },
-                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
+                Some(self.rpc_timeout),
             )
             .await
         {
@@ -188,10 +187,7 @@ impl ConductorActorClient {
     pub(crate) async fn runtime_diagnostics(&self) -> Result<RuntimeDiagnostics, ConductorError> {
         match self
             .actor_ref
-            .call(
-                |reply| ConductorMessage::GetRuntimeDiagnostics { reply },
-                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
-            )
+            .call(|reply| ConductorMessage::GetRuntimeDiagnostics { reply }, Some(self.rpc_timeout))
             .await
         {
             Ok(CallResult::Success(diag)) => Ok(diag),
@@ -219,7 +215,7 @@ impl ConductorActorClient {
             .actor_ref
             .call(
                 |reply| ConductorMessage::RunGc { referenced_keys, state, unified, reply },
-                Some(Duration::from_millis(u64::try_from(self.rpc_timeout.as_millis()).unwrap())),
+                Some(self.rpc_timeout),
             )
             .await
         {

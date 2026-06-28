@@ -4,8 +4,6 @@
 //! step workers.  Core default values live in [`crate::defaults`]; this module
 //! adds env-override convenience wrappers.
 
-use std::num::NonZeroUsize;
-
 /// Environment override key for worker pool size.
 pub(crate) const ENV_WORKER_POOL_SIZE: &str = "MEDIAPM_CONDUCTOR_WORKER_POOL_SIZE";
 
@@ -40,11 +38,8 @@ pub(crate) fn default_worker_pool_size() -> usize {
     std::env::var(ENV_WORKER_POOL_SIZE)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .and_then(NonZeroUsize::new)
-        .map_or_else(
-            || std::thread::available_parallelism().map_or(1, usize::from).max(1),
-            NonZeroUsize::get,
-        )
+        .filter(|&v| v > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from).max(1))
 }
 
 /// Returns the EWMA alpha used by the adaptive scheduler.

@@ -265,7 +265,6 @@ where
     /// Returns a default runtime diagnostics snapshot.
     #[must_use]
     pub(crate) fn runtime_diagnostics(&self) -> RuntimeDiagnostics {
-        let _ = self;
         RuntimeDiagnostics::default()
     }
 
