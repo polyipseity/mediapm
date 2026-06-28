@@ -204,7 +204,6 @@ where
                     } else {
                         None
                     },
-                    workflow_name: workflow_name.to_string(),
                     state_snapshot: state_snapshot.clone(),
                     outermost_config_dir: Path::new(".").to_path_buf(),
                     conductor_tmp_dir: std::env::temp_dir().join("mediapm-conductor"),

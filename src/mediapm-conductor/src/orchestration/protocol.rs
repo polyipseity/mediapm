@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use mediapm_cas::Hash;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::config::{
     ImpureTimestamp, OutputCaptureSpec, ToolInputSpec, WorkflowSpec, WorkflowStepSpec,
@@ -75,8 +75,6 @@ pub(crate) struct StepExecutionRequest {
     pub step: WorkflowStepSpec,
     /// Impure timestamp captured before the level starts, when required.
     pub impure_timestamp: Option<ImpureTimestamp>,
-    /// Workflow name for diagnostics and error reporting.
-    pub workflow_name: String,
     /// State snapshot used for cache-key and rematerialization checks.
     pub state_snapshot: Arc<OrchestrationState>,
     /// Absolute directory that directly contains the outermost conductor
@@ -96,55 +94,9 @@ pub(crate) struct StepExecutionRequest {
     pub required_output_names: BTreeSet<String>,
 }
 
-/// Fine-grained phase timings captured within one step execution.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[allow(clippy::struct_field_names)]
-pub(crate) struct StepPhaseTiming {
-    /// Time spent resolving step/default input bindings.
-    pub resolve_inputs_ms: f64,
-    /// Time spent evaluating rematerialization requirements.
-    pub cache_probe_ms: f64,
-    /// Time spent preparing execution sandbox content before process start.
-    pub materialization_ms: f64,
-    /// Time spent running the tool process or builtin implementation.
-    pub execution_ms: f64,
-    /// Time spent capturing declared outputs into CAS.
-    pub capture_outputs_ms: f64,
-    /// Time spent applying persistence policies and CAS save hints.
-    pub persistence_merge_ms: f64,
-}
-
 /// Result of one worker step execution.
 #[derive(Debug)]
 pub(crate) struct StepExecutionBundle {
-    /// Completed step id.
-    #[expect(
-        dead_code,
-        reason = "field is populated but not yet read by any consumer; kept for observability"
-    )]
-    pub step_id: String,
-    /// Immutable tool name used by the step.
-    pub tool_name: String,
-    /// Worker index that produced the result.
-    #[expect(
-        dead_code,
-        reason = "field is populated but not yet read by any consumer; kept for observability"
-    )]
-    pub worker_index: usize,
-    /// Deterministic tool call instance key for deduplication and cache lookup.
-    pub instance_key: String,
     /// Final tool call instance snapshot to merge into orchestration state.
     pub instance: ToolCallInstance,
-    /// Outputs the caller asked to materialize for this run.
-    pub requested_output_names: Vec<String>,
-    /// Whether the step had to execute instead of reusing cached outputs.
-    pub executed: bool,
-    /// Whether execution was triggered by missing cached outputs.
-    pub rematerialized: bool,
-    /// Hashes that should be deleted later unless another saved reference protects them.
-    pub pending_unsaved_hashes: BTreeSet<Hash>,
-    /// Observed execution duration in milliseconds.
-    pub elapsed_ms: f64,
-    /// Fine-grained timing breakdown for internal execution phases.
-    pub phase_timings: StepPhaseTiming,
 }

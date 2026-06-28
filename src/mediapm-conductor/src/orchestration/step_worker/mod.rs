@@ -132,7 +132,7 @@ pub(crate) async fn spawn_step_worker_pool<C: CasApi + Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::config::ImpureTimestamp;
-    use crate::orchestration::protocol::{OrchestrationState, StepOutputs, UnifiedToolSpec};
+    use crate::orchestration::protocol::{OrchestrationState, StepOutputs};
     use crate::state::{OutputRef, OutputSaveMode, ResolvedInput, ToolCallInstance};
     use mediapm_cas::Hash;
     use std::collections::{BTreeMap, BTreeSet};
@@ -167,46 +167,22 @@ mod tests {
     /// Verifies `derive_instance_key` produces deterministic keys.
     #[test]
     fn derive_instance_key_is_deterministic() {
-        let tool_spec = UnifiedToolSpec {
-            is_impure: false,
-            max_concurrent_calls: 1,
-            max_retries: 0,
-            inputs: BTreeMap::new(),
-            default_inputs: BTreeMap::new(),
-            command_parts: Vec::new(),
-            success_codes: vec![0],
-            execution_env_vars: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            tool_content_map: BTreeMap::new(),
-        };
         let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
 
-        let key1 = cache::derive_instance_key(&tool_spec, &inputs, None);
-        let key2 = cache::derive_instance_key(&tool_spec, &inputs, None);
+        let key1 = cache::derive_instance_key(&inputs, None);
+        let key2 = cache::derive_instance_key(&inputs, None);
         assert_eq!(key1, key2);
     }
 
     /// Verifies `derive_instance_key` varies with impure timestamp.
     #[test]
     fn derive_instance_key_varies_with_impure_timestamp() {
-        let tool_spec = UnifiedToolSpec {
-            is_impure: false,
-            max_concurrent_calls: 1,
-            max_retries: 0,
-            inputs: BTreeMap::new(),
-            default_inputs: BTreeMap::new(),
-            command_parts: Vec::new(),
-            success_codes: vec![0],
-            execution_env_vars: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            tool_content_map: BTreeMap::new(),
-        };
         let inputs = vec![ResolvedInput { key: "message".to_string(), value: "hello".to_string() }];
 
         let ts1 = ImpureTimestamp::from_unix_nanos(1000);
         let ts2 = ImpureTimestamp::from_unix_nanos(2000);
-        let key1 = cache::derive_instance_key(&tool_spec, &inputs, Some(ts1));
-        let key2 = cache::derive_instance_key(&tool_spec, &inputs, Some(ts2));
+        let key1 = cache::derive_instance_key(&inputs, Some(ts1));
+        let key2 = cache::derive_instance_key(&inputs, Some(ts2));
         assert_ne!(key1, key2);
     }
 
