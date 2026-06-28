@@ -49,14 +49,6 @@ impl<C: std::fmt::Debug> std::fmt::Debug for ProvisionCache<C> {
 }
 
 impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
-    /// Creates a new provisioning cache rooted at `tools_dir`.
-    ///
-    /// # Arguments
-    ///
-    /// * `tools_dir` — Directory under which per-tool cache entries are stored.
-    /// * `cas` — CAS client for fetching payload bytes.
-    /// * `max_concurrent` — Maximum number of concurrent extraction tasks
-    ///   (`None` uses a reasonable default).
     #[must_use]
     pub fn new(tools_dir: PathBuf, cas: Arc<C>, max_concurrent: Option<usize>) -> Self {
         Self {
@@ -104,7 +96,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         loop {
             // Fast path: non-blocking shared lock + freshness check.
             if let Some(guard) = Self::try_lock_fast_path(
-                &entry_dir,
                 &lock_path,
                 &payload_dir,
                 &metadata_path,
@@ -158,24 +149,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         }
     }
 
-    /// Hard-links (or copies as fallback) all files from a cached `payload/`
-    /// directory into an execution sandbox directory.
-    ///
-    /// Because all steps that use the same conductor tool share a single
-    /// `payload/` tree, this is the only step-specific operation: files are
-    /// linked into the per-step sandbox without re-extracting or copying bytes.
-    ///
-    /// Hard links are attempted first (near-zero-cost metadata operation).  If
-    /// the link fails (e.g. cross-device), a byte-for-byte copy with
-    /// permission preservation is used as fallback.
-    ///
-    /// Top-level subdirectories whose name matches a known foreign-platform
-    /// identifier are skipped so platform-foreign binaries are never linked.
-    ///
-    /// # Errors
-    ///
-    /// Returns a descriptive `String` on failure.  Callers should wrap this
-    /// into an appropriate [`ConductorError`] variant.
     #[allow(clippy::similar_names)]
     pub fn link_to_sandbox(payload_dir: &Path, sandbox_dir: &Path) -> Result<(), String> {
         if !payload_dir.exists() {
@@ -308,7 +281,6 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         .map_err(|join_err| ConductorError::Internal(format!("prune task panicked: {join_err}")))?
     }
 
-    /// Runs the full extraction pipeline: CAS pre-fetch + blocking I/O.
     async fn do_extract(
         &self,
         content_map: &BTreeMap<String, Hash>,
@@ -337,15 +309,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         })?
     }
 
-    /// Attempts a non-blocking shared lock and cache-hit check on one entry.
-    ///
-    /// Returns `Ok(Some(guard))` on cache hit (shared lock acquired, metadata
-    /// valid, payload exists).  Returns `Ok(None)` when the entry does not
-    /// exist, the lock file is missing, the lock is held exclusively, or the
-    /// entry data is stale.  Returns `Err` on actual I/O errors.
-    #[allow(clippy::too_many_arguments)]
     fn try_lock_fast_path(
-        _entry_dir: &Path,
         lock_path: &Path,
         payload_dir: &Path,
         metadata_path: &Path,

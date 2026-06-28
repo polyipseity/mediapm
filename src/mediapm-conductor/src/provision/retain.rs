@@ -20,9 +20,9 @@ use super::{LOCK_FILE_NAME, METADATA_FILE_NAME, TTL_SECONDS, VERSION};
 ///
 /// # Errors
 /// Returns [`ConductorError`] if directory listing or removal fails.
-pub async fn retain_only_tool_dirs<S: std::hash::BuildHasher>(
+pub async fn retain_only_tool_dirs(
     tools_dir: PathBuf,
-    active_tool_ids: HashSet<String, S>,
+    active_tool_ids: HashSet<String>,
 ) -> Result<(), ConductorError> {
     let active: HashSet<String> =
         active_tool_ids.into_iter().map(|id| sanitize_tool_id(&id)).collect();

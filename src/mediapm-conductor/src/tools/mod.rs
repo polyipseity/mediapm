@@ -1,31 +1,16 @@
 //! Tool presets, builtins, and builtin registry.
 //!
 //! This module organizes every tool preset and builtin tool that conductor
-//! can discover or invoke. Each preset or builtin lives in its own
-//! subdirectory under `tools/`.
+//! can discover or invoke.
 //!
 //! - **Tool presets** (feature `tool-presets`) — source-fetched common
 //!   executables such as `sd`.
 //! - **Builtins** — always-compiled crates (`echo`, `fs`, `import`,
 //!   `archive`, `export`) registered in [`ALL_BUILTINS`] and discoverable
-//!   via [`registered_builtin_ids`] or [`find_builtin`].
-//!
-//! This module also re-exports the provisioning layer
-//! ([`ProvisionCache`], [`ProvisionedTool`]) and the user-level download
-//! cache ([`UserLevelCache`]) for caller convenience.
+//!   via [`registered_builtin_ids`].
 
-pub use crate::cache_user_level::{
-    UserLevelCache, default_mediapm_user_download_cache_root, default_user_download_cache_root,
-};
 #[cfg(feature = "tool-presets")]
 pub mod preset_sd;
-
-// Builtin tool implementations (always compiled).
-pub mod builtin_archive;
-pub mod builtin_echo;
-pub mod builtin_export;
-pub mod builtin_fs;
-pub mod builtin_import;
 
 #[cfg(all(feature = "cli", feature = "tool-presets"))]
 use clap::ValueEnum;
@@ -35,17 +20,11 @@ use crate::error::ConductorError;
 
 use std::collections::HashSet;
 
-pub use crate::provision::ProvisionCache;
-pub use crate::provision::ProvisionedTool;
-
 // ---------------------------------------------------------------------------
 // Builtin registry
 // ---------------------------------------------------------------------------
 
 /// Static metadata for a registered builtin tool in this crate.
-///
-/// Each entry corresponds to one module file under `tools/` and is
-/// populated from that module's exposed constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinRegistration {
     /// Canonical qualified tool identifier (e.g. `"builtins.echo@1.0.0"`).
@@ -61,42 +40,39 @@ pub struct BuiltinRegistration {
 }
 
 /// All builtin tools registered in this crate.
-///
-/// Add a new entry here (and a corresponding `pub mod` declaration above)
-/// when wiring up a new builtin.
 pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
     BuiltinRegistration {
-        id: builtin_archive::TOOL_ID,
-        name: builtin_archive::TOOL_NAME,
-        version: builtin_archive::TOOL_VERSION,
+        id: mediapm_conductor_builtin_archive::TOOL_ID,
+        name: mediapm_conductor_builtin_archive::TOOL_NAME,
+        version: mediapm_conductor_builtin_archive::TOOL_VERSION,
         is_impure: false,
         summary: "pure archive builtin runtime transforming bytes to bytes",
     },
     BuiltinRegistration {
-        id: builtin_echo::TOOL_ID,
-        name: builtin_echo::TOOL_NAME,
-        version: builtin_echo::TOOL_VERSION,
+        id: mediapm_conductor_builtin_echo::TOOL_ID,
+        name: mediapm_conductor_builtin_echo::TOOL_NAME,
+        version: mediapm_conductor_builtin_echo::TOOL_VERSION,
         is_impure: false,
         summary: "echo-like builtin returning text as stdout/stderr string-map",
     },
     BuiltinRegistration {
-        id: builtin_export::TOOL_ID,
-        name: builtin_export::TOOL_NAME,
-        version: builtin_export::TOOL_VERSION,
+        id: mediapm_conductor_builtin_export::TOOL_ID,
+        name: mediapm_conductor_builtin_export::TOOL_NAME,
+        version: mediapm_conductor_builtin_export::TOOL_VERSION,
         is_impure: true,
         summary: "export builtin runtime that writes file/folder payloads to host paths",
     },
     BuiltinRegistration {
-        id: builtin_fs::TOOL_ID,
-        name: builtin_fs::TOOL_NAME,
-        version: builtin_fs::TOOL_VERSION,
+        id: mediapm_conductor_builtin_fs::TOOL_ID,
+        name: mediapm_conductor_builtin_fs::TOOL_NAME,
+        version: mediapm_conductor_builtin_fs::TOOL_VERSION,
         is_impure: true,
         summary: "filesystem operation builtin runtime with impure side-effecting behavior",
     },
     BuiltinRegistration {
-        id: builtin_import::TOOL_ID,
-        name: builtin_import::TOOL_NAME,
-        version: builtin_import::TOOL_VERSION,
+        id: mediapm_conductor_builtin_import::TOOL_ID,
+        name: mediapm_conductor_builtin_import::TOOL_NAME,
+        version: mediapm_conductor_builtin_import::TOOL_VERSION,
         is_impure: true,
         summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
     },
@@ -110,14 +86,6 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
 #[must_use]
 pub fn registered_builtin_ids() -> HashSet<String> {
     ALL_BUILTINS.iter().map(|e| e.name.to_string()).collect()
-}
-
-/// Looks up a [`BuiltinRegistration`] by tool name.
-///
-/// Returns `None` when the name is not a registered builtin.
-#[must_use]
-pub fn find_builtin(name: &str) -> Option<&'static BuiltinRegistration> {
-    ALL_BUILTINS.iter().find(|e| e.name == name)
 }
 
 // ---------------------------------------------------------------------------
@@ -192,16 +160,5 @@ mod tests {
             assert!(ids.contains(entry.name), "missing: {}", entry.name);
         }
         assert_eq!(ids.len(), super::ALL_BUILTINS.len());
-    }
-
-    /// Lookup by name round-trips correctly for every registered builtin.
-    #[test]
-    fn find_builtin_round_trip() {
-        for entry in super::ALL_BUILTINS {
-            let found = super::find_builtin(entry.name).unwrap();
-            assert_eq!(found.name, entry.name);
-            assert_eq!(found.id, entry.id);
-        }
-        assert!(super::find_builtin("nonexistent-tool").is_none());
     }
 }

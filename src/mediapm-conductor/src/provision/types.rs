@@ -37,14 +37,6 @@ impl std::ops::Deref for ProvisionedTool {
     }
 }
 
-impl ProvisionedTool {
-    /// Returns the payload directory path.
-    #[must_use]
-    pub fn payload_dir(&self) -> &std::path::Path {
-        &self.payload_dir
-    }
-}
-
 /// Per-entry cached metadata.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Metadata {
