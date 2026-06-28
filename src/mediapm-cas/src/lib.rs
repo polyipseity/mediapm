@@ -9,7 +9,8 @@
 //! # use mediapm_cas::api::CasApi;
 //! # use bytes::Bytes;
 //! #
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let cas = new_in_memory_cas();
 //!
 //! // Store some data.
@@ -29,9 +30,6 @@
 //! assert!(cas.get(hash).await.is_err());
 //! # Ok(())
 //! # }
-//! #
-//! # let rt = tokio::runtime::Runtime::new().unwrap();
-//! # rt.block_on(example()).unwrap();
 //! ```
 
 pub mod api;
