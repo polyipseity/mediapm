@@ -107,20 +107,33 @@ pub fn save_mediapm_document(
 }
 
 /// Loads and parses a `state.ncl` file.
+///
+/// Returns [`MediaPmState::default()`] when the file does not yet exist (first
+/// run or reset state).
 #[allow(clippy::missing_errors_doc)]
 pub fn load_mediapm_state_document(
     path: &Path,
 ) -> Result<crate::config::MediaPmState, MediaPmError> {
+    if !path.exists() {
+        return Ok(crate::config::MediaPmState::default());
+    }
     load_json_document(path, "mediapm state")
 }
 
-/// Serializes and writes a `state.ncl` document.
+/// Serializes and writes a `state.ncl` document as proper Nickel source.
 #[allow(clippy::missing_errors_doc)]
 pub fn save_mediapm_state_document(
     path: &Path,
     state: &crate::config::MediaPmState,
 ) -> Result<(), MediaPmError> {
-    save_json_document(path, state, "mediapm state")
+    let bytes = mediapm_utils::nickel::render_document_as_nickel(state, "mediapm state")
+        .map_err(MediaPmError::Serialization)?;
+    std::fs::write(path, bytes).map_err(|err| MediaPmError::Io {
+        operation: "write mediapm state".to_string(),
+        path: path.to_path_buf(),
+        source: err,
+    })?;
+    Ok(())
 }
 
 /// Merges runtime state into a [`MediaPmDocument`].
