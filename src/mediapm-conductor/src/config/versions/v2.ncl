@@ -151,7 +151,7 @@ in
 # ||| merge tool_configs into each tool's inline runtime,
 # ||| drop v1-only top-level fields (runtime, external_data,
 # ||| impure_timestamps, state_pointer).
-let migrate_v1_to_v2 = fun data =>
+let migrate_v1_to_v2_fn = fun data =>
   let config_runtime_map =
     if std.record.has_field "tool_configs" data then
       std.record.fields data.tool_configs
@@ -345,5 +345,5 @@ in
   envelope_contract_v2 = NickelDocumentV2,
 
   # ||| Migrates a v1 document to schema v2.
-  migrate_v1_to_v2,
+  migrate_v1_to_v2 = migrate_v1_to_v2_fn,
 }
