@@ -42,7 +42,3 @@ applyTo: "scripts/**"
 - Keep script-level policies in active instruction files; do not rely on deleted standalone planning docs for operational requirements.
 - If a script wraps project tooling, keep the underlying canonical commands discoverable in docs and config instead of hiding the real workflow.
 - When script location or behavior changes, re-check `.github/workflows/ci.yml`, `.vscode/settings.json`, and any prompt or instruction files that reference it.
-
-## Specification references
-
-- Deleted monolithic files (`crate-specifications.md`, `elaboration-pass-edge-cases.md`). Use `.agents/instructions/spec-development-index.instructions.md` to locate the relevant per-crate AGENTS.md for any specification or edge-case content.

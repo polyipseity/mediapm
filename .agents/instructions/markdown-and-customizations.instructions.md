@@ -61,7 +61,3 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, README.md, .agents/**/*.md, .opencode/**/
 - If temporary repo memory notes are created while drafting, merge their durable content into instruction files and remove those notes in the same workflow.
 - Prefer relative file references that remain valid when the repo is cloned to a different path.
 - When mentioning future manifests, task files, or tool configs, distinguish between "present now" and "expected after initialization."
-
-## Specification references
-
-- Deleted monolithic files (`crate-specifications.md`, `elaboration-pass-edge-cases.md`). Use `.agents/instructions/spec-development-index.instructions.md` to locate the relevant per-crate AGENTS.md for any specification or edge-case content.

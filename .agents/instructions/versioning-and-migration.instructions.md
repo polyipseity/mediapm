@@ -58,8 +58,3 @@ applyTo: "src/**/*.rs"
 
 - Do not apply Unicode NFD normalization in versioned structs or envelope fields.
 - NFD normalization is reserved for mediapm internal filepath handling.
-
-## Specification references
-
-- Consolidated technical specification: `.agents/instructions/crate-specifications.md`.
-- Edge-case and ambiguity analysis: `.agents/instructions/elaboration-pass-edge-cases.md`.

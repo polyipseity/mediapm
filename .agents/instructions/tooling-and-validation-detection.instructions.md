@@ -43,7 +43,3 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md, opencode.js
 - If a repository gains a clearly defined language or framework setup, add a dedicated instruction file for it rather than overloading generic tooling guidance.
 - Make the added instruction thorough and evidence-backed: commands, key config files, source locations, testing expectations, and common failure modes.
 - Keep `applyTo` globs narrow so the detailed instruction only loads for the files it truly governs.
-
-## Specification references
-
-- Deleted monolithic files (`crate-specifications.md`, `elaboration-pass-edge-cases.md`). Use `.agents/instructions/spec-development-index.instructions.md` to locate the relevant per-crate AGENTS.md for any specification or edge-case content.

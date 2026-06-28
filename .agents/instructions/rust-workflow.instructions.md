@@ -189,8 +189,3 @@ SKIP=cargo-test git commit -m "message"
   - API validation and failure semantics should match CLI-backed behavior,
   - CLI-only ergonomic sugar is acceptable, capability gaps are not.
 - When adding or renaming CLI operations, update tests so parser behavior and API-backed execution paths are both covered.
-
-## Specification references
-
-- Consolidated technical specification: `.agents/instructions/crate-specifications.md`.
-- Edge-case and ambiguity analysis: `.agents/instructions/elaboration-pass-edge-cases.md`.
