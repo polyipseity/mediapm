@@ -19,13 +19,12 @@ use crate::error::ConductorError;
 /// Returns [`ConductorError::Io`] when the file cannot be read, or wraps
 /// any Nickel evaluation or version‑migration error.
 pub(crate) fn load_document(path: &Path) -> Result<NickelDocument, ConductorError> {
-    let source = std::fs::read_to_string(path).map_err(|source| ConductorError::Io {
+    let bytes = std::fs::read(path).map_err(|source| ConductorError::Io {
         operation: "reading config document".to_string(),
         path: path.to_path_buf(),
         source,
     })?;
-    let bytes = source.as_bytes();
-    crate::config::versions::decode_document(bytes)
+    crate::config::versions::decode_document(&bytes)
 }
 
 /// Saves a `NickelDocument` to a `.ncl` file.

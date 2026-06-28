@@ -157,7 +157,10 @@ pub trait ConductorApi<C: CasApi>: Send + Sync {
     fn run_workflow(
         &self,
         workflow_name: &str,
-    ) -> impl std::future::Future<Output = Result<RunSummary, ConductorError>> + Send;
+    ) -> impl std::future::Future<Output = Result<RunSummary, ConductorError>> + Send {
+        let wf = workflow_name.to_owned();
+        async move { self.run_workflow_with_options(&wf, RunWorkflowOptions::default()).await }
+    }
 
     /// Returns a snapshot of runtime diagnostics.
     fn get_runtime_diagnostics(

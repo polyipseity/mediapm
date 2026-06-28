@@ -99,26 +99,6 @@ where
         client.run_workflow(workflow_name, options, unified, state).await
     }
 
-    /// Runs a workflow directly, bypassing the actor layer.
-    ///
-    /// Creates a fresh [`WorkflowCoordinator`] and runs the workflow with the
-    /// current unified config and state. Useful for one-shot runs without
-    /// actor lifecycle overhead.
-    ///
-    /// # Errors
-    ///
-    /// Delegates to [`WorkflowCoordinator::run_workflow`].
-    pub(crate) async fn run_workflow_direct(
-        &self,
-        workflow_name: &str,
-        _options: RunWorkflowOptions,
-    ) -> Result<RunSummary, ConductorError> {
-        let (unified, mut state) = load_unified_config_and_state(self.storage_paths())?;
-        let mut coordinator =
-            crate::orchestration::coordinator::WorkflowCoordinator::new(self.cas.clone());
-        coordinator.run_workflow(workflow_name, &unified, &mut state).await
-    }
-
     /// Returns a snapshot of runtime diagnostics.
     ///
     /// # Errors
@@ -199,11 +179,9 @@ where
             NickelDocument::default()
         };
 
-        let command_parts = executable.map_or(vec![], |cmd| vec![cmd.to_string()]);
-
         let tool = crate::config::ToolSpec {
             kind: crate::config::ToolKindSpec::Executable {
-                command: command_parts.clone(),
+                command: executable.map_or(vec![], |cmd| vec![cmd.to_string()]),
                 env_vars: BTreeMap::new(),
                 success_codes: vec![0],
             },
@@ -227,10 +205,7 @@ where
     ///
     /// Delegates to the CAS store.
     pub async fn remove_external_data(&self, hash: &Hash) -> Result<(), ConductorError> {
-        self.cas
-            .delete(*hash)
-            .await
-            .map_err(|e| ConductorError::Workflow(format!("removing external data failed: {e}")))
+        Ok(self.cas.delete(*hash).await?)
     }
 
     /// Removes a tool configuration from the first config document.
@@ -389,14 +364,6 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
     ) -> impl std::future::Future<Output = Result<RunSummary, ConductorError>> + Send {
         let wf = workflow_name.to_owned();
         async move { self.run_workflow(&wf, options).await }
-    }
-
-    fn run_workflow(
-        &self,
-        workflow_name: &str,
-    ) -> impl std::future::Future<Output = Result<RunSummary, ConductorError>> + Send {
-        let wf = workflow_name.to_owned();
-        async move { self.run_workflow_with_options(&wf, RunWorkflowOptions::default()).await }
     }
 
     #[allow(clippy::manual_async_fn)]

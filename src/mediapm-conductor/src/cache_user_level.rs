@@ -63,16 +63,6 @@ impl UserLevelCache {
             .map(Self)
     }
 
-    /// Opens a tools.jsonc cache with 30-day TTL.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when filesystem preparation or CAS opening
-    /// fails.
-    pub async fn open_tools_cache(root: &Path) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, "tools.jsonc", 30 * 24 * 60 * 60).await
-    }
-
     /// Opens a `tool_metadata.jsonc` cache with 1-day TTL.
     ///
     /// # Errors
@@ -83,34 +73,24 @@ impl UserLevelCache {
         Self::open_with_index_file_name_and_ttl(root, "tool_metadata.jsonc", 24 * 60 * 60).await
     }
 
-    /// Looks up cached payload bytes for one logical download key.
     #[must_use]
     pub async fn lookup_bytes(&self, cache_key: &str) -> Option<Vec<u8>> {
         self.0.lookup_bytes(cache_key).await
     }
 
-    /// Stores payload bytes under one logical download key.
     pub async fn store_bytes(&self, cache_key: &str, payload: &[u8]) {
         self.0.store_bytes(cache_key, payload).await;
     }
 
-    /// Returns current number of logical cache-key rows in index metadata.
     #[must_use]
     pub fn entry_count(&self) -> usize {
         self.0.entry_count()
     }
 
-    /// Updates `last_access_unix_seconds` for a cache key without changing its
-    /// hash.
     pub fn refresh_last_used(&self, key: &str) {
         self.0.refresh_last_used(key);
     }
 
-    /// Removes expired index rows and their unreferenced CAS payloads.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConductorError`] when index locking or persistence fails.
     pub async fn prune_expired_entries(&self) -> Result<CachePruneReport, ConductorError> {
         self.0.prune_expired_entries().await
     }

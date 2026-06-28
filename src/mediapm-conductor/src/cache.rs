@@ -49,7 +49,7 @@ pub struct CachePruneReport {
 /// Generic CAS-backed logical-key cache.
 ///
 /// This is the core cache engine.  Wrap it in a domain-typed struct (e.g.
-/// [`UserLevelCache`](self::user_level::UserLevelCache)) to attach
+/// [`UserLevelCache`](crate::cache_user_level::UserLevelCache)) to attach
 /// scope-specific constructors and policies.
 #[derive(Clone)]
 pub struct Cache {

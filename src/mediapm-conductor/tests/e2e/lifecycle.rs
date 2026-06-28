@@ -1,14 +1,4 @@
-//! Comprehensive workflow-lifecycle integration test covering the full cache,
-//! GC, and tool-update lifecycle:
-//!
-//! 1. initial → first execution (`executed=1`, `cached=0`)
-//! 2. second run → cache hit (`executed=0`, `cached=1`)
-//! 3. run GC → referenced instance survives
-//! 4. third run → cache hit post-GC (`executed=0`, `cached=1`)
-//! 5. new tool_id + new workflow → old tool cached, new tool executes (`executed=1`, `cached=0`)
-//! 6. both workflows cached (`executed=0`, `cached=2`)
-//! 7. GC preserves both instances
-//! 8. both cached post-GC (`executed=0`, `cached=2`)
+//! Comprehensive workflow-lifecycle test covering cache, GC, and tool-update behavior.
 
 use crate::{TestConductor, dual_echo_doc, single_echo_doc};
 use mediapm_conductor::api::RunWorkflowOptions;

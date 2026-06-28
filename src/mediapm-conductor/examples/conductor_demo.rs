@@ -21,7 +21,6 @@ use mediapm_conductor::{
 use support::{ExampleResult, create_ephemeral_run_dir, write_text_file};
 
 fn build_document() -> NickelDocument {
-    // Demo document with one echo tool and a simple workflow.
     NickelDocument {
         tools: BTreeMap::from([(
             "echo@1.0.0".into(),

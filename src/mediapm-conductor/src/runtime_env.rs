@@ -175,7 +175,9 @@ pub fn load_runtime_env_files(
     for file_name in file_names {
         let path = conductor_dir.join(file_name);
         let names = read_dotenv_variable_names(&path)?;
-        append_unique_env_var_names(&mut inherited_names, &names);
+        for name in &names {
+            append_unique_env_var_name(&mut inherited_names, name);
+        }
 
         if path.exists() {
             dotenvy::from_path_override(&path).map_err(|source| {
@@ -251,13 +253,6 @@ fn append_unique_env_var_name(target: &mut Vec<String>, raw_name: &str) {
     }
 
     target.push(trimmed.to_string());
-}
-
-/// Appends env-var names with case-insensitive de-duplication.
-fn append_unique_env_var_names(target: &mut Vec<String>, source: &[String]) {
-    for name in source {
-        append_unique_env_var_name(target, name);
-    }
 }
 
 /// Discovers the project root by walking up from the current working directory.

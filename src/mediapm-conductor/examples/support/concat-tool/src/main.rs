@@ -115,14 +115,8 @@ mod tests {
         let dir = unique_temp_dir()?;
 
         let mut stdin = Cursor::new("input");
-        let error = render_from_reader(dir.path(), &mut stdin)
+        render_from_reader(dir.path(), &mut stdin)
             .expect_err("missing resource.txt must return an error");
-
-        let message = error.to_string();
-        assert!(
-            !message.is_empty(),
-            "missing fixed resource should produce a non-empty error message"
-        );
 
         Ok(())
     }

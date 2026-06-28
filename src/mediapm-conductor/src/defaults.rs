@@ -1,7 +1,7 @@
 //! Centralized defaults for all conductor configuration.
 //!
 //! All config defaults live here so core config types can drop `Option`
-//! wrappers and use concrete values directly.  See PLAN.md §3.7 (P5).
+//! wrappers and use concrete values directly.
 
 /// Default conductor config directory name.
 pub const DEFAULT_CONDUCTOR_DIR_NAME: &str = ".conductor";

@@ -1,8 +1,7 @@
 //! Integration test harness for `mediapm-conductor`.
 //!
-//! The `int` module covers contract-focused integration behavior, `e2e`
-//! contains multi-step workflow scenarios, and `prop` is reserved for
-//! property-driven coverage as the conductor evolves.
+//! `int` covers contract-focused integration behavior, `e2e` contains
+//! multi-step workflows, and `prop` provides property-test scaffolding.
 
 use std::collections::BTreeMap;
 
