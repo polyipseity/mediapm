@@ -126,6 +126,11 @@ const fn default_save_output() -> bool {
     true
 }
 
+/// Returns `true` when `save` matches the default, skipping serialization.
+fn is_save_default(save: &bool) -> bool {
+    *save == default_save_output()
+}
+
 /// Capture/output spec for a step.
 ///
 /// Describes how output bytes are captured from a tool execution:
@@ -141,7 +146,7 @@ pub struct OutputCaptureSpec {
     /// `file_regex:<pattern>`, etc.).
     pub capture: String,
     /// Whether to persist this output to CAS. Defaults to `true`.
-    #[serde(default = "default_save_output")]
+    #[serde(default = "default_save_output", skip_serializing_if = "is_save_default")]
     pub save: bool,
 }
 

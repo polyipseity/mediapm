@@ -39,12 +39,6 @@ pub(super) fn resolve_version_contract(
     }
 }
 
-/// Returns the latest supported config schema version.
-#[must_use]
-pub(crate) const fn latest_config_version() -> u32 {
-    v_latest::NICKEL_VERSION_LATEST
-}
-
 // ---------------------------------------------------------------------------
 // Document encoding / decoding (inlined from the removed iso.rs)
 // ---------------------------------------------------------------------------
