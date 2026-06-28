@@ -115,7 +115,6 @@ pub(crate) struct OrchestrationStateV2 {
 /// Each instance reference in the V1 envelope is resolved through CAS,
 /// deserialized as a V2 instance, and collected into a flat
 /// `OrchestrationStateV2` with the V2 version marker.
-#[allow(clippy::cast_possible_truncation)]
 pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
     cas: &C,
     envelope: v1::OrchestrationStateEnvelopeV1,
@@ -134,7 +133,7 @@ pub(crate) async fn migrate_v1_to_v2<C: CasApi>(
         aux: AuxDataV2 {
             tool_call_instance_counter: envelope.aux.tool_call_instance_counter,
             conductor_gc_epoch: ImpureTimestampV2(
-                envelope.aux.conductor_gc_epoch.as_unix_nanos() as u64
+                u64::try_from(envelope.aux.conductor_gc_epoch.as_unix_nanos()).unwrap_or(u64::MAX),
             ),
         },
     })

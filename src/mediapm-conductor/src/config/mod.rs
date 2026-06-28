@@ -36,10 +36,9 @@ impl ImpureTimestamp {
     /// Falls back to `UNIX_EPOCH` when the system clock is set before the
     /// epoch (extremely unlikely in practice).
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn now() -> Self {
         let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        Self(duration.as_nanos() as u64)
+        Self(u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX))
     }
 
     /// Returns the timestamp as Unix nanoseconds since epoch.
@@ -50,9 +49,8 @@ impl ImpureTimestamp {
 
     /// Constructs an `ImpureTimestamp` from Unix nanoseconds since epoch.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn from_unix_nanos(nanos: u128) -> Self {
-        Self(nanos as u64)
+        Self(u64::try_from(nanos).unwrap_or(u64::MAX))
     }
 }
 
