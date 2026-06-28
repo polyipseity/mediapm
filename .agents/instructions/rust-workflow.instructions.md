@@ -9,8 +9,7 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 ## Scope
 
 - Apply this guidance when working on Rust source or Rust-specific tooling.
-- Treat this repository as an implemented mediapm MVP with functional-core-style
-  architecture and sidecar-backed state.
+- Treat this repository as an implemented mediapm MVP with functional-core-style architecture and sidecar-backed state.
 
 ## Source-of-truth files
 
@@ -20,17 +19,14 @@ applyTo: "**/*.rs, Cargo.toml, Cargo.lock, rust-toolchain.toml, rustfmt.toml, cl
 - `rustfmt.toml` and `clippy.toml` for style and lint policy.
 - `.github/workflows/ci.yml` for canonical CI validation behavior.
 - `prek.toml` for local git hooks (pre-commit framework configured as TOML).
-- `AGENTS.md` + `.agents/instructions/*.instructions.md` for active
-  architecture and implementation contract.
+- `AGENTS.md` + `.agents/instructions/*.instructions.md` for active architecture and implementation contract.
 - `src/` workspace member crates for current module boundaries:
   - `src/mediapm-cas/` (CAS)
   - `src/mediapm-conductor/` (Conductor)
   - `src/mediapm-conductor-builtins/*/` (conductor built-ins)
   - `src/mediapm/` (mediapm application)
 
-If planning docs mention `application`, `configuration`, `domain`,
-`infrastructure`, and `support`, treat them as conceptual layering terms unless
-matching directories are explicitly introduced.
+If planning docs mention `application`, `configuration`, `domain`, `infrastructure`, and `support`, treat them as conceptual layering terms unless matching directories are explicitly introduced.
 
 ## Validation workflow
 
@@ -119,8 +115,7 @@ SKIP=cargo-test git commit -m "message"
 
 ## Editing conventions
 
-- Keep changes minimal, deterministic, and aligned with the repository's
-  functional-core direction documented in active instruction files.
+- Keep changes minimal, deterministic, and aligned with the repository's functional-core direction documented in active instruction files.
 - Keep dependency and feature surfaces explicit:
   - prefer existing workspace dependencies before adding new crates,
   - remove direct dependencies that become unused after refactors,
@@ -128,28 +123,19 @@ SKIP=cargo-test git commit -m "message"
   - avoid hidden feature fan-out through default features.
 - Avoid adding hidden mutable state or introducing databases unless explicitly requested.
 - Keep stack-specific detail in this file rather than growing root `AGENTS.md`.
-- Keep Rust code fully documented with module-level `//!` and item-level
-  `///` docs for public and private items in touched files.
-- Prefer detailed docstrings over brief labels; include semantics,
-  invariants, side effects, and error behavior.
-- Do not assume bootstrap-template structure (`Cargo.toml` +
-  `rust-toolchain.toml` + single `src/main.rs`) when changing workspace-wide
-  guidance; verify the real workspace members first.
+- Keep Rust code fully documented with module-level `//!` and item-level `///` docs for public and private items in touched files.
+- Prefer detailed docstrings over brief labels; include semantics, invariants, side effects, and error behavior.
+- Do not assume bootstrap-template structure (`Cargo.toml` + `rust-toolchain.toml` + single `src/main.rs`) when changing workspace-wide guidance; verify the real workspace members first.
 
 ## Rust module split layout convention
 
-- When a module grows and is split into multiple files, use folder-module
-  layout by default:
+- When a module grows and is split into multiple files, use folder-module layout by default:
   - move `foo.rs` to `foo/mod.rs`,
   - place submodules as `foo/<submodule>.rs`,
-  - place unit tests as `#[cfg(test)]` blocks inline in the source file they
-    test. If the inline block exceeds ~300 lines, split into a themed sibling
-    file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
-- In `foo/mod.rs`, prefer conventional declarations (`mod tests;`) instead of
-  `#[path = "..."]` for routine in-folder test/module wiring.
+  - place unit tests as `#[cfg(test)]` blocks inline in the source file they test. If the inline block exceeds ~300 lines, split into a themed sibling file `foo_<theme>.rs` declared with `#[cfg(test)] mod foo_<theme>;`.
+- In `foo/mod.rs`, prefer conventional declarations (`mod tests;`) instead of `#[path = "..."]` for routine in-folder test/module wiring.
 - Do not keep both `foo.rs` and `foo/mod.rs` for the same module.
-- Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module
-  purpose stays discoverable.
+- Keep module-level docs (`//!`) on `foo/mod.rs` after the move so crate/module purpose stays discoverable.
 - After a split, run targeted validation:
   - `cargo test -p <crate> <focused_test_name>` (affected behavior)
   - `cargo build-pkg <crate>` (affected crate build)
@@ -174,29 +160,20 @@ SKIP=cargo-test git commit -m "message"
   - top-level constants and types,
   - helper functions and internal state structures,
   - tests with explicit guarantee statements.
-- Avoid shallow docs that only rename symbols; write newcomer-oriented
-  explanations that clarify intent and boundaries.
+- Avoid shallow docs that only rename symbols; write newcomer-oriented explanations that clarify intent and boundaries.
 
 ## Lint suppression policy
 
-- Do not add bare suppression attributes (`#[allow(...)]` or `#![allow(...)]`)
-  for rustc/clippy lints.
+- Do not add bare suppression attributes (`#[allow(...)]` or `#![allow(...)]`) for rustc/clippy lints.
 - Prefer direct code fixes for lint findings first.
-- When suppression is truly unavoidable, use item-scoped
-  `#[expect(<lint>, reason = "<substantive rationale>")]`.
+- When suppression is truly unavoidable, use item-scoped `#[expect(<lint>, reason = "<substantive rationale>")]`.
   - Keep scope as narrow as possible (single item/block, never crate-wide).
-  - The `reason` must explain _why the code shape is required now_, not just
-    restate the lint name.
-  - Good reasons reference concrete constraints such as platform behavior,
-    API-shape compatibility, or orchestration-ordering invariants.
+  - The `reason` must explain _why the code shape is required now_, not just restate the lint name.
+  - Good reasons reference concrete constraints such as platform behavior, API-shape compatibility, or orchestration-ordering invariants.
 - Treat `#[expect(...)]` as temporary technical debt:
   - remove it when refactors make the lint unnecessary,
-  - and investigate any `unfulfilled_lint_expectations` warning rather than
-    suppressing it.
-- For platform edge cases (for example
-  `clippy::permissions_set_readonly_false`) and diagnostic-only numeric
-  conversions (for example `clippy::cast_precision_loss`), include explicit
-  safety/correctness boundaries in the `reason` string.
+  - and investigate any `unfulfilled_lint_expectations` warning rather than suppressing it.
+- For platform edge cases (for example `clippy::permissions_set_readonly_false`) and diagnostic-only numeric conversions (for example `clippy::cast_precision_loss`), include explicit safety/correctness boundaries in the `reason` string.
 
 ## Core architectural constraints
 
@@ -207,17 +184,13 @@ SKIP=cargo-test git commit -m "message"
 
 ## CLI/API parity contract
 
-- For crates that expose both a CLI binary and a library API, keep behavior
-  parity as an explicit invariant:
+- For crates that expose both a CLI binary and a library API, keep behavior parity as an explicit invariant:
   - new CLI operations should route through library/API entry points,
   - API validation and failure semantics should match CLI-backed behavior,
   - CLI-only ergonomic sugar is acceptable, capability gaps are not.
-- When adding or renaming CLI operations, update tests so parser behavior and
-  API-backed execution paths are both covered.
+- When adding or renaming CLI operations, update tests so parser behavior and API-backed execution paths are both covered.
 
 ## Specification references
 
-- Consolidated technical specification:
-  `.agents/instructions/crate-specifications.md`.
-- Edge-case and ambiguity analysis:
-  `.agents/instructions/elaboration-pass-edge-cases.md`.
+- Consolidated technical specification: `.agents/instructions/crate-specifications.md`.
+- Edge-case and ambiguity analysis: `.agents/instructions/elaboration-pass-edge-cases.md`.

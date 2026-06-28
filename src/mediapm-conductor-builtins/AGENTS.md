@@ -5,20 +5,17 @@
 > deterministic payloads for pure tools, clean side effects for impure ones.
 
 This file defines crate-local guidance for `src/mediapm-conductor-builtins/`.
-Follow this together with workspace-wide policy in `AGENTS.md` and focused
-instruction files in `.agents/instructions/`.
+Follow this together with workspace-wide policy in `AGENTS.md` and focused instruction files in `.agents/instructions/`.
 
 ## Scope
 
 - Applies to all files under `src/mediapm-conductor-builtins/`.
-- Sub-crates under this directory each ship their own `AGENTS.md` for
-  builtin-specific details.
+- Sub-crates under this directory each ship their own `AGENTS.md` for builtin-specific details.
 
 ## Conventions
 
 - Each builtin provides a library API and an optional CLI binary.
-- All builtins share the same input conventions: `BTreeMap<String, String>`
-  args plus optional raw payload bytes for content-oriented operations.
+- All builtins share the same input conventions: `BTreeMap<String, String>` args plus optional raw payload bytes for content-oriented operations.
 - Fail fast on undeclared or missing input keys.
 
 ---

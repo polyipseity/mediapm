@@ -6,11 +6,7 @@ applyTo: "AGENTS.md, src/**/AGENTS.md, .agents/instructions/**/*.md"
 
 # Specification Development Index
 
-This file is the replacement for the deleted monolithic
-`.agents/instructions/crate-specifications.md` and
-`.agents/instructions/elaboration-pass-edge-cases.md`. All content from those
-files has been distributed to per-crate `AGENTS.md` files. Use this index to
-locate the relevant specification or edge-case content by crate.
+This file is the replacement for the deleted monolithic `.agents/instructions/crate-specifications.md` and `.agents/instructions/elaboration-pass-edge-cases.md`. All content from those files has been distributed to per-crate `AGENTS.md` files. Use this index to locate the relevant specification or edge-case content by crate.
 
 ## Per-Crate AGENTS.md Files
 
@@ -62,9 +58,7 @@ locate the relevant specification or edge-case content by crate.
 
 ## Source Temp File Distribution
 
-The following temp files from the original monolithic-specs deletion were
-verified against current per-crate AGENTS.md. All content is already covered
-(no new content needed).
+The following temp files from the original monolithic-specs deletion were verified against current per-crate AGENTS.md. All content is already covered (no new content needed).
 
 | Temp file              | Internal section                                                                                                        | Covered in                                                                                                                                                                           |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -80,8 +74,7 @@ verified against current per-crate AGENTS.md. All content is already covered
 
 ## Cross-Crate Contracts
 
-Cross-crate content from the deleted monolithic files has been distributed to
-per-crate AGENTS.md files. Key cross-crate reference points:
+Cross-crate content from the deleted monolithic files has been distributed to per-crate AGENTS.md files. Key cross-crate reference points:
 
 ### Verified Cross-Crate Contracts (all already in AGENTS.md)
 
@@ -105,9 +98,7 @@ per-crate AGENTS.md files. Key cross-crate reference points:
 
 ### Testing Gaps (Cross-Crate)
 
-The following cross-crate integration test scenarios are identified in
-`src/mediapm/AGENTS.md` (missing test coverage sections) and are not yet
-fully covered by dedicated e2e tests:
+The following cross-crate integration test scenarios are identified in `src/mediapm/AGENTS.md` (missing test coverage sections) and are not yet fully covered by dedicated e2e tests:
 
 - CAS version + Conductor version mismatch
 - Builtin validation error → Conductor doesn't retry
