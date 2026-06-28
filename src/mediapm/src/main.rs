@@ -26,11 +26,11 @@ use mediapm::{
 #[cfg(feature = "cli")]
 use url::Url;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "cli")]
     {
-        let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(main_cli())?;
+        main_cli().await?;
         Ok(())
     }
 
@@ -93,11 +93,13 @@ async fn main_cli() -> anyhow::Result<()> {
             let root = &cli.root;
             let paths = MediaPmPaths::from_root(root);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            let mut service =
+                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
             let check_tag_updates = args.tag_update_policy.resolve(true);
             let verify_materialization = args.verify_materialization.resolve(true);
             let summary = service
-                .sync_library_with_tag_update_checks(verify_materialization, check_tag_updates)?;
+                .sync_library_with_tag_update_checks(verify_materialization, check_tag_updates)
+                .await?;
             mediapm::output::print_sync_summary(&summary);
             Ok(())
         }
@@ -115,7 +117,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 let paths = MediaPmPaths::from_root(root);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.add_tool_requirement(&name, None, None)?;
                 println!(
                     "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
@@ -127,9 +129,9 @@ async fn main_cli() -> anyhow::Result<()> {
                 let paths = MediaPmPaths::from_root(root);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 let check_tag_updates = args.tag_update_policy.resolve(true);
-                let summary = service.sync_tools_with_tag_update_checks(check_tag_updates)?;
+                let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
                 println!(
                     "tool sync complete: added={}, updated={}, pruned={}, removed={}",
                     summary.added_tools,
@@ -152,7 +154,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 let paths = MediaPmPaths::from_root(root);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
-                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.remove_tool_requirement(&name)?;
                 println!(
                     "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
@@ -171,7 +173,8 @@ async fn main_cli() -> anyhow::Result<()> {
                 let root = &cli.root;
                 let paths = MediaPmPaths::from_root(root);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-                let service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+                let service =
+                    MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.refresh_runtime_configuration()?;
                 println!(
                     "refreshed mediapm-managed conductor runtime configuration and dotenv files"
@@ -183,7 +186,8 @@ async fn main_cli() -> anyhow::Result<()> {
             let root = &cli.root;
             let paths = MediaPmPaths::from_root(root);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            let mut service =
+                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
             match command {
                 MediaCommand::Add(args) => {
                     let media_id = match args.preset {
@@ -282,7 +286,8 @@ async fn main_cli() -> anyhow::Result<()> {
             let root = &cli.root;
             let paths = MediaPmPaths::from_root(root);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
-            let mut service = MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt)?;
+            let mut service =
+                MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
             match command {
                 HierarchyCommand::Add(args) => {
                     if args.overwrite {

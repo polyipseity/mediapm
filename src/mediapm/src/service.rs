@@ -41,12 +41,6 @@ use crate::{
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Creates a Tokio runtime for async operations.
-fn create_tokio_runtime() -> Result<tokio::runtime::Runtime, MediaPmError> {
-    tokio::runtime::Runtime::new()
-        .map_err(|e| MediaPmError::Workflow(format!("failed to create tokio runtime: {e}")))
-}
-
 // ---------------------------------------------------------------------------
 // Service struct
 // ---------------------------------------------------------------------------
@@ -637,8 +631,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// # Errors
     ///
     /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
-    pub fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
-        self.sync_tools_with_tag_update_checks(false)
+    pub async fn sync_tools(&mut self) -> Result<ToolsSyncSummary, MediaPmError> {
+        self.sync_tools_with_tag_update_checks(false).await
     }
 
     /// Runs a full tool sync with optional tag-update checks.
@@ -646,14 +640,14 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// # Errors
     ///
     /// Delegates to [`sync_tools_from_document`](Self::sync_tools_from_document).
-    pub fn sync_tools_with_tag_update_checks(
+    pub async fn sync_tools_with_tag_update_checks(
         &mut self,
         check_tag_updates: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
         let effective_paths = self.resolve_effective_paths();
         let merged = self.resolve_effective_runtime_storage();
 
-        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates)
+        self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates).await
     }
 
     /// Internal tool-sync implementation that reconciles desired tools from
@@ -663,7 +657,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Io`] if document loading fails, or
     /// [`MediaPmError::Conductor`] if reconciliation fails.
-    fn sync_tools_from_document(
+    async fn sync_tools_from_document(
         &mut self,
         effective_paths: &MediaPmPaths,
         runtime_storage: &MediaRuntimeStorage,
@@ -688,13 +682,14 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let inherited_env_vars = runtime_storage.inherited_env_vars.clone();
 
         // Run the reconciliation.
-        let report = create_tokio_runtime()?.block_on(reconcile_desired_tools(
+        let report = reconcile_desired_tools(
             &**self.conductor.cas(),
             effective_paths,
             &desired_tools,
             &inherited_env_vars,
             check_tag_updates,
-        ))?;
+        )
+        .await?;
 
         // Load and update state with reconciled tools.
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
@@ -745,8 +740,9 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// Returns [`MediaPmError::Io`] if the CAS cannot be created or the
     /// conductor fails to initialise.
-    pub fn new_fs_at(root_dir: impl Into<std::path::PathBuf>) -> Result<Self, MediaPmError> {
+    pub async fn new_fs_at(root_dir: impl Into<std::path::PathBuf>) -> Result<Self, MediaPmError> {
         Self::new_fs_at_with_runtime_storage_overrides(root_dir, MediaRuntimeStorage::default())
+            .await
     }
 
     /// Creates a new filesystem-backed service at the given workspace root
@@ -756,7 +752,7 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// Returns [`MediaPmError::Io`] if the CAS cannot be created or the
     /// conductor fails to initialise.
-    pub fn new_fs_at_with_runtime_storage_overrides(
+    pub async fn new_fs_at_with_runtime_storage_overrides(
         root_dir: impl Into<std::path::PathBuf>,
         runtime_storage_overrides: MediaRuntimeStorage,
     ) -> Result<Self, MediaPmError> {
@@ -778,8 +774,8 @@ impl MediaPmService<FileSystemCas> {
             path: conductor_cas_root.clone(),
             source: e,
         })?;
-        let cas = create_tokio_runtime()?
-            .block_on(FileSystemCas::open(&conductor_cas_root))
+        let cas = FileSystemCas::open(&conductor_cas_root)
+            .await
             .map_err(|e| MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}")))?;
 
         // Build the conductor.
@@ -799,11 +795,11 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// Delegates to
     /// [`sync_library_with_tag_update_checks`](Self::sync_library_with_tag_update_checks).
-    pub fn sync_library(
+    pub async fn sync_library(
         &mut self,
         verify_materialization: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        self.sync_library_with_tag_update_checks(verify_materialization, false)
+        self.sync_library_with_tag_update_checks(verify_materialization, false).await
     }
 
     /// Runs a full library sync with optional tag-update checks.
@@ -819,7 +815,7 @@ impl MediaPmService<FileSystemCas> {
     ///
     /// Returns the first critical error encountered; non-fatal issues are
     /// collected as warnings.
-    pub fn sync_library_with_tag_update_checks(
+    pub async fn sync_library_with_tag_update_checks(
         &mut self,
         verify_materialization: bool,
         check_tag_updates: bool,
@@ -834,7 +830,7 @@ impl MediaPmService<FileSystemCas> {
 
         // 2. Sync tools.
         let tools_report =
-            self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates)?;
+            self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates).await?;
 
         // 3. Load mediapm document and state.
         let document = load_mediapm_document(&effective_paths.mediapm_ncl)?;
@@ -843,20 +839,20 @@ impl MediaPmService<FileSystemCas> {
         // 4. Check if any tools require sync.
         self.append_tool_sync_hint_warning(&mut warnings, &state);
 
-        // 5 – 6. Create a tokio runtime, open CAS, and run the materializer.
+        // 5 – 6. Open CAS and run the materializer.
         let materialize_report = {
-            let runtime = create_tokio_runtime()?;
             let conductor_cas_root = resolve_conductor_cas_root(&effective_paths);
-            let cas = runtime.block_on(FileSystemCas::open(&conductor_cas_root)).map_err(|e| {
+            let cas = FileSystemCas::open(&conductor_cas_root).await.map_err(|e| {
                 MediaPmError::Workflow(format!("failed to open filesystem CAS: {e}"))
             })?;
-            runtime.block_on(materializer::sync_hierarchy(
+            materializer::sync_hierarchy(
                 &effective_paths,
                 &document,
                 &state,
                 &cas,
                 verify_materialization,
-            ))?
+            )
+            .await?
         };
 
         // 7. Gather warnings from materializer.
