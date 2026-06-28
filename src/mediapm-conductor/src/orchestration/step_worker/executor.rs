@@ -4,24 +4,61 @@
 //! probe, materialization, execution, output capture, and persistence merge.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::Instant;
 
 use mediapm_cas::CasApi;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest, StepPhaseTiming};
-use crate::state::{PersistenceFlags, ToolCallInstance};
+use crate::orchestration::protocol::{
+    StepExecutionBundle, StepExecutionRequest, StepPhaseTiming, UnifiedToolSpec,
+};
+use crate::state::{PersistenceFlags, ResolvedInput, ToolCallInstance};
 
 use super::cache::{derive_instance_key, probe_cache};
 use super::capture::capture_outputs;
 use super::inputs::resolve_step_inputs;
-use super::process::{run_builtin, run_executable_process};
+use super::process::{ExecutionResult, run_builtin, run_executable_process};
 use super::sandbox::{create_sandbox, materialize_content_map};
 use super::template::{TemplateContext, resolve_command_parts};
 
+/// Dispatches execution: runs a builtin or resolves and runs an executable process.
+async fn dispatch_tool_execution<C: CasApi + Send + Sync>(
+    cas: &C,
+    tool_spec: &UnifiedToolSpec,
+    request: &StepExecutionRequest,
+    resolved_inputs: &[ResolvedInput],
+    sandbox_dir: &Path,
+) -> Result<ExecutionResult, ConductorError> {
+    if tool_spec.command_parts.is_empty() {
+        let args: BTreeMap<String, String> =
+            resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
+        run_builtin(&request.step.tool, &args, &request.outermost_config_dir, sandbox_dir).await
+    } else {
+        let resolved_inputs_map: BTreeMap<String, String> =
+            resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
+        let cmd_ctx = TemplateContext::<C> {
+            cas: Some(cas),
+            step_outputs: &request.step_outputs,
+            env_vars: &BTreeMap::new(),
+            tokens: &BTreeMap::new(),
+            sandbox_dir: Some(sandbox_dir),
+            host_os: std::env::consts::OS,
+            inputs: &resolved_inputs_map,
+        };
+        let resolved_parts = resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
+        run_executable_process(
+            &resolved_parts,
+            &tool_spec.success_codes,
+            sandbox_dir,
+            &tool_spec.execution_env_vars,
+        )
+        .await
+    }
+}
+
 /// Executes one step: resolves inputs, runs the tool, captures outputs.
-#[allow(clippy::too_many_lines)]
 pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     cas: &C,
     request: StepExecutionRequest,
@@ -82,33 +119,8 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
 
     // Phase 4: Execute.
     let t3 = Instant::now();
-    let execution_result = if tool_spec.command_parts.is_empty() {
-        // Builtin execution: collect inputs as args map.
-        let args: BTreeMap<String, String> =
-            resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
-        run_builtin(&request.step.tool, &args, &request.outermost_config_dir, &sandbox_dir).await?
-    } else {
-        // Resolve template references in command parts against resolved inputs.
-        let resolved_inputs_map: BTreeMap<String, String> =
-            resolved_inputs.iter().map(|ri| (ri.key.clone(), ri.value.clone())).collect();
-        let cmd_ctx = TemplateContext::<C> {
-            cas: Some(cas),
-            step_outputs: &request.step_outputs,
-            env_vars: &BTreeMap::new(),
-            tokens: &BTreeMap::new(),
-            sandbox_dir: Some(&sandbox_dir),
-            host_os: std::env::consts::OS,
-            inputs: &resolved_inputs_map,
-        };
-        let resolved_parts = resolve_command_parts(&tool_spec.command_parts, &cmd_ctx).await?;
-        run_executable_process(
-            &resolved_parts,
-            &tool_spec.success_codes,
-            &sandbox_dir,
-            &tool_spec.execution_env_vars,
-        )
-        .await?
-    };
+    let execution_result =
+        dispatch_tool_execution(cas, tool_spec, &request, &resolved_inputs, &sandbox_dir).await?;
     phase_timings.execution_ms = t3.elapsed().as_secs_f64() * 1000.0;
 
     // Phase 5: Capture outputs.

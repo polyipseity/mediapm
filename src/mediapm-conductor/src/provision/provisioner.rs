@@ -11,7 +11,7 @@ use tokio::sync::{Notify, Semaphore};
 
 use crate::error::ConductorError;
 
-use super::extract::{extract_sync, fetch_all_cas_entries};
+use super::extract::{ExtractPaths, extract_sync, fetch_all_cas_entries};
 use super::helpers::{
     copy_directory_recursive, ensure_payload_tree_user_execute_bits, now_unix_seconds,
     persist_cache_metadata, sanitize_tool_id,
@@ -328,14 +328,8 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         let content_map = content_map.clone();
 
         tokio::task::spawn_blocking(move || {
-            extract_sync(
-                &entry_dir,
-                &lock_path,
-                &payload_dir,
-                &metadata_path,
-                &content_map,
-                entries_with_bytes,
-            )
+            let extract_paths = ExtractPaths { entry_dir, lock_path, payload_dir, metadata_path };
+            extract_sync(&extract_paths, &content_map, &entries_with_bytes)
         })
         .await
         .map_err(|join_err| {

@@ -1,6 +1,6 @@
 //! Captures declared step outputs from execution results and persists to CAS.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use mediapm_cas::CasApi;
 
@@ -10,8 +10,33 @@ use crate::state::{OutputRef, OutputSaveMode, PersistenceFlags};
 
 use super::process::ExecutionResult;
 
+/// Recursively walks a directory and returns all file paths found.
+async fn walk_and_collect_file_paths(root: &Path) -> Result<Vec<PathBuf>, ConductorError> {
+    let mut file_paths = Vec::new();
+    let mut dir_entries = vec![root.to_path_buf()];
+    while let Some(dir) = dir_entries.pop() {
+        if !dir.exists() {
+            continue;
+        }
+        let mut read_dir = tokio::fs::read_dir(&dir).await.map_err(|e| {
+            ConductorError::Workflow(format!("failed to read directory '{}': {e}", dir.display()))
+        })?;
+        while let Some(entry) = read_dir
+            .next_entry()
+            .await
+            .map_err(|e| ConductorError::Workflow(format!("failed to read entry: {e}")))?
+        {
+            if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
+                dir_entries.push(entry.path());
+            } else {
+                file_paths.push(entry.path());
+            }
+        }
+    }
+    Ok(file_paths)
+}
+
 /// Captures declared outputs from the execution result and persists to CAS.
-#[allow(clippy::too_many_lines)]
 pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
     cas: &C,
     output_specs: &std::collections::BTreeMap<String, OutputCaptureSpec>,
@@ -61,64 +86,24 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 let regex = regex::Regex::new(pattern).map_err(|e| {
                     ConductorError::Workflow(format!("invalid file_regex pattern '{pattern}': {e}"))
                 })?;
-                // Walk sandbox_dir, find files matching the regex.
-                let mut matched = Vec::new();
-                let mut dir_entries = vec![sandbox_dir.to_path_buf()];
-                while let Some(dir) = dir_entries.pop() {
-                    let mut read_dir = tokio::fs::read_dir(&dir).await.map_err(|e| {
-                        ConductorError::Workflow(format!(
-                            "failed to read directory '{}': {e}",
-                            dir.display()
-                        ))
-                    })?;
-                    while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
-                        ConductorError::Workflow(format!("failed to read entry: {e}"))
-                    })? {
-                        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
-                            dir_entries.push(entry.path());
-                        } else if regex.is_match(&entry.file_name().to_string_lossy()) {
-                            matched.push(entry.path());
-                        }
-                    }
-                }
-                // Read first matching file.
-                match matched.first() {
+                let file_paths = walk_and_collect_file_paths(sandbox_dir).await?;
+                let matched = file_paths.iter().find(|p| {
+                    p.file_name().is_some_and(|name| regex.is_match(&name.to_string_lossy()))
+                });
+                match matched {
                     Some(path) => tokio::fs::read(path).await.map_err(|e| {
                         ConductorError::Workflow(format!(
                             "failed to read matched file '{}': {e}",
                             path.display()
                         ))
                     })?,
-                    None => continue, // No match — optional output.
+                    None => continue,
                 }
             }
             capture if capture.starts_with("folder:") => {
                 let relative_path = &capture[7..];
                 let full_path = sandbox_dir.join(relative_path);
-                // Recursively collect all file paths.
-                let mut file_paths = Vec::new();
-                let mut dir_entries = vec![full_path.clone()];
-                while let Some(dir) = dir_entries.pop() {
-                    if !dir.exists() {
-                        continue;
-                    }
-                    let mut read_dir = tokio::fs::read_dir(&dir).await.map_err(|e| {
-                        ConductorError::Workflow(format!(
-                            "failed to read directory '{}': {e}",
-                            dir.display()
-                        ))
-                    })?;
-                    while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
-                        ConductorError::Workflow(format!("failed to read entry: {e}"))
-                    })? {
-                        if entry.file_type().await.is_ok_and(|t| t.is_dir()) {
-                            dir_entries.push(entry.path());
-                        } else {
-                            file_paths.push(entry.path());
-                        }
-                    }
-                }
-                // Serialize file paths as JSON list.
+                let file_paths = walk_and_collect_file_paths(&full_path).await?;
                 let file_list: Vec<String> = file_paths
                     .iter()
                     .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
