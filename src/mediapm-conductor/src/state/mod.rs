@@ -13,7 +13,10 @@ use crate::config::ImpureTimestamp;
 pub mod versions;
 
 /// Current orchestration-state schema version.
-const STATE_VERSION: u32 = 2;
+///
+/// Must be bumped when the persisted JSON layout changes. Backward
+/// compatibility is handled via the `state/versions/` module.
+pub(crate) const STATE_VERSION: u32 = 2;
 
 /// Persistence status for one output within a tool-call instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,6 +38,12 @@ pub struct PersistenceFlags {
     /// Whether to force full data persistence instead of hash-only.
     #[serde(default)]
     pub force_full: bool,
+}
+
+/// Merges two `PersistenceFlags` into one: `save` uses AND, `force_full` uses OR.
+#[must_use]
+pub fn merge_persistence_flags(a: PersistenceFlags, b: PersistenceFlags) -> PersistenceFlags {
+    PersistenceFlags { save: a.save && b.save, force_full: a.force_full || b.force_full }
 }
 
 /// A resolved input key-value pair for a tool-call instance.
@@ -77,8 +86,12 @@ pub struct ToolCallInstance {
     /// Conductor GC timestamp: refreshed to `aux.conductor_gc_epoch`
     /// whenever this instance is referenced during step execution.
     /// Used for grace-period comparisons during GC sweep.
-    #[serde(default)]
+    #[serde(default = "default_impure_timestamp_zero")]
     pub conductor_gc_last_referenced_at: ImpureTimestamp,
+}
+
+fn default_impure_timestamp_zero() -> ImpureTimestamp {
+    ImpureTimestamp::default()
 }
 
 /// Auxiliary metadata attached to the orchestration state.
