@@ -184,23 +184,18 @@ mod tests {
 
     /// Protects shared-cache behavior by ensuring key-based round trips return
     /// the original payload bytes.
-    #[test]
-    fn cache_round_trips_bytes_by_logical_key() {
+    #[tokio::test]
+    async fn cache_round_trips_bytes_by_logical_key() {
         let root = tempfile::tempdir().expect("tempdir");
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .enable_all()
-            .build()
-            .expect("build runtime");
-        let cache = runtime.block_on(UserLevelCache::open(root.path())).expect("open cache");
+        let cache = UserLevelCache::open(root.path()).await.expect("open cache");
         let payload = b"shared-download-cache".to_vec();
         let key = "test-tool-v1.0.0";
-        runtime.block_on(cache.store_bytes(key, &payload));
-        let retrieved = runtime.block_on(cache.lookup_bytes(key));
+        cache.store_bytes(key, &payload).await;
+        let retrieved = cache.lookup_bytes(key).await;
         assert_eq!(retrieved, Some(payload.clone()), "round-trip must return original bytes");
-        runtime.block_on(cache.prune_expired_entries()).expect("prune should succeed");
+        cache.prune_expired_entries().await.expect("prune should succeed");
         // Immediate prune should not remove fresh entry
-        let retrieved_after = runtime.block_on(cache.lookup_bytes(key));
+        let retrieved_after = cache.lookup_bytes(key).await;
         assert_eq!(retrieved_after, Some(payload), "fresh entry must survive prune");
     }
 }
