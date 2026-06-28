@@ -6,9 +6,7 @@
 //! state model, and the deterministic workflow coordinator that drives
 //! step execution across a pool of actor-backed workers.
 //!
-// Targeted dead-code allows for incremental-implementation modules.
-// Remove each allow when the corresponding items are wired.
-#![allow(dead_code)]
+// Targeted dead-code suppressions for intentional placeholder items.
 
 pub mod api;
 pub mod cache;
