@@ -11,7 +11,7 @@ pub(crate) mod v_latest;
 
 use crate::error::ConductorError;
 
-use super::nickel_io::{evaluate_document_source, render_document_as_nickel};
+use super::nickel_io::evaluate_document_source;
 
 /// Source of the v1 Nickel contract (needed for backward migration validation).
 pub(crate) const V1_NCL_SOURCE: &str = include_str!("v1.ncl");
@@ -60,7 +60,8 @@ pub(crate) const fn latest_config_version() -> u32 {
 /// latest schema, validation fails, or Nickel rendering fails.
 pub fn encode_document(document: crate::config::NickelDocument) -> Result<Vec<u8>, ConductorError> {
     let envelope: v_latest::NickelEnvelopeLatest = document.into();
-    render_document_as_nickel(&envelope, "configuration document")
+    mediapm_utils::nickel::render_document_as_nickel(&envelope, "configuration document")
+        .map_err(ConductorError::Serialization)
 }
 
 /// Decodes bytes through the embedded Nickel migration wrapper into a runtime
