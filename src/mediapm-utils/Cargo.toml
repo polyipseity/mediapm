@@ -10,12 +10,15 @@ description = "Shared utility types, path helpers, and builtin boilerplate for m
 [features]
 default = []
 cli = ["dep:clap"]
+nickel = ["dep:serde", "dep:serde_json"]
 
 [lints]
 workspace = true
 
 [dependencies]
 clap = { workspace = true, features = ["derive", "std"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

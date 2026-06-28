@@ -1973,6 +1973,7 @@ dependencies = [
  "libc",
  "mediapm-cas",
  "mediapm-conductor",
+ "mediapm-utils",
  "musicbrainz_rs",
  "nickel-lang-core",
  "pulsebar",
@@ -2034,6 +2035,7 @@ dependencies = [
  "mediapm-conductor-builtin-export",
  "mediapm-conductor-builtin-fs",
  "mediapm-conductor-builtin-import",
+ "mediapm-utils",
  "nickel-lang-core",
  "ractor",
  "regex",
@@ -2113,6 +2115,8 @@ name = "mediapm-utils"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

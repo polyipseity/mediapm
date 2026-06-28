@@ -25,4 +25,7 @@ pub mod builtin;
 pub mod path;
 pub mod types;
 
+#[cfg(feature = "nickel")]
+pub mod nickel;
+
 pub use types::{BinaryInputMap, StringMap};
