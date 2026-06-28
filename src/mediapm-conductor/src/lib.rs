@@ -39,9 +39,8 @@ pub use api::{
 pub use config::documents::NickelDocument;
 pub use config::versions::{decode_document, encode_document};
 pub use config::{
-    ImpureTimestamp, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, OutputPolicy,
-    ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec,
-    WorkflowStepSpec, default_runtime_inherited_env_vars,
+    ImpureTimestamp, OutputCaptureSpec, OutputPolicy, ToolInputKind, ToolInputSpec, ToolKindSpec,
+    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec, default_runtime_inherited_env_vars,
 };
 pub use error::ConductorError;
 pub use simple_conductor::SimpleConductor;

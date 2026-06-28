@@ -140,16 +140,6 @@ in
 # ||| Top-level persisted Nickel document envelope for schema version 2.
 let NickelDocumentV2 = {
   version | VersionTwoV2,
-  metadata
-    | {
-      id | NonEmptyStringV2,
-      identity
-        | {
-          first | NonEmptyStringV2,
-          last | NonEmptyStringV2,
-        },
-    }
-    | optional,
   tools | { _ : ToolSpecV2 } | optional,
   workflows | Array WorkflowSpecV2 | optional,
   external_data | { _ : ExternalContentRefV2 } | optional,
@@ -340,7 +330,6 @@ let migrate_v1_to_v2 = fun data =>
   in
   {
     version = 2,
-    metadata = null,
     tools = tools_v2,
     workflows = workflows_v2,
     external_data = external_data_v2,

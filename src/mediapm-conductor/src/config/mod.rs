@@ -56,36 +56,6 @@ impl ImpureTimestamp {
     }
 }
 
-/// Identity metadata embedded in Nickel-produced config documents.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NickelIdentity {
-    /// Leading identity component.
-    pub first: String,
-    /// Trailing identity component.
-    pub last: String,
-}
-
-impl Default for NickelIdentity {
-    fn default() -> Self {
-        Self { first: "default".to_string(), last: "identity".to_string() }
-    }
-}
-
-/// Metadata block from evaluated Nickel config.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NickelDocumentMetadata {
-    /// Stable logical configuration id.
-    pub id: String,
-    /// Split identity fields used by the versioned schema.
-    pub identity: NickelIdentity,
-}
-
-impl Default for NickelDocumentMetadata {
-    fn default() -> Self {
-        Self { id: "default-config".to_string(), identity: NickelIdentity::default() }
-    }
-}
-
 /// Optional per-output persistence override.
 ///
 /// Controls whether a workflow step output is saved to CAS, and with what

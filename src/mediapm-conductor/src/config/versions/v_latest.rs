@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NickelDocument, NickelDocumentMetadata, NickelIdentity, OutputCaptureSpec, ToolInputKind,
-    ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime,
+    ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
@@ -202,24 +202,6 @@ pub(crate) struct WorkflowSpecLatest {
     pub(crate) steps: Vec<WorkflowStepSpecLatest>,
 }
 
-/// Latest persisted metadata block.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct NickelMetadataLatest {
-    /// Config id.
-    pub(crate) id: String,
-    /// Identity fields.
-    pub(crate) identity: NickelIdentityLatest,
-}
-
-/// Latest persisted identity fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct NickelIdentityLatest {
-    /// Leading component.
-    pub(crate) first: String,
-    /// Trailing component.
-    pub(crate) last: String,
-}
-
 /// Latest persisted external data entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ExternalDataEntryLatest {
@@ -239,9 +221,6 @@ pub(crate) struct ExternalDataEntryLatest {
 pub(crate) struct NickelEnvelopeLatest {
     /// Schema version marker.
     pub(crate) version: u32,
-    /// Document metadata.
-    #[serde(default)]
-    pub(crate) metadata: Option<NickelMetadataLatest>,
     /// Tool definitions keyed by tool name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(crate) tools: BTreeMap<String, ToolSpecLatest>,
@@ -263,12 +242,6 @@ pub(crate) struct NickelEnvelopeLatest {
 impl From<NickelEnvelopeLatest> for NickelDocument {
     fn from(envelope: NickelEnvelopeLatest) -> Self {
         NickelDocument {
-            metadata: envelope.metadata.map_or_else(NickelDocumentMetadata::default, |m| {
-                NickelDocumentMetadata {
-                    id: m.id,
-                    identity: NickelIdentity { first: m.identity.first, last: m.identity.last },
-                }
-            }),
             tools: envelope
                 .tools
                 .into_iter()
@@ -305,13 +278,6 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
     fn from(doc: NickelDocument) -> Self {
         NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
-            metadata: Some(NickelMetadataLatest {
-                id: doc.metadata.id,
-                identity: NickelIdentityLatest {
-                    first: doc.metadata.identity.first,
-                    last: doc.metadata.identity.last,
-                },
-            }),
             tools: doc
                 .tools
                 .into_iter()
@@ -538,13 +504,6 @@ mod tests {
     fn envelope_round_trip() {
         let envelope = NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
-            metadata: Some(NickelMetadataLatest {
-                id: "test-config".to_string(),
-                identity: NickelIdentityLatest {
-                    first: "test".to_string(),
-                    last: "identity".to_string(),
-                },
-            }),
             tools: BTreeMap::from([(
                 "echo".to_string(),
                 ToolSpecLatest {

@@ -15,7 +15,7 @@ use mediapm_cas::Hash;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ConductorRuntimeConfig, NickelDocumentMetadata, ToolKindSpec, ToolSpec, WorkflowSpec,
+    ConductorRuntimeConfig, ToolKindSpec, ToolSpec, WorkflowSpec,
     default_runtime_inherited_env_vars,
 };
 use crate::error::ConductorError;
@@ -32,8 +32,6 @@ use crate::orchestration::protocol::{UnifiedNickelDocument, UnifiedToolSpec};
 /// separate `tool_runtimes` map.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NickelDocument {
-    /// Document metadata (identity, version marker).
-    pub metadata: NickelDocumentMetadata,
     /// Tool definitions in this document keyed by tool name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, ToolSpec>,
