@@ -85,7 +85,7 @@ where
         options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, state) = load_unified_config_and_state(self.storage_paths()).await?;
+        let (unified, state) = load_unified_config_and_state(self.storage_paths())?;
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
@@ -113,7 +113,7 @@ where
         workflow_name: &str,
         _options: RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
-        let (unified, mut state) = load_unified_config_and_state(self.storage_paths()).await?;
+        let (unified, mut state) = load_unified_config_and_state(self.storage_paths())?;
         let mut coordinator =
             crate::orchestration::coordinator::WorkflowCoordinator::new(self.cas.clone());
         coordinator.run_workflow(workflow_name, &unified, &mut state).await
@@ -130,29 +130,23 @@ where
         client.runtime_diagnostics().await
     }
 
-    /// Returns the current orchestration state.
+    /// Returns the current orchestration state (always default fresh state).
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// read.
-    #[allow(clippy::unused_async)]
-    pub async fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
-        Ok(load_state(self.storage_paths()))
+    pub fn get_state(&self) -> Result<OrchestrationState, ConductorError> {
+        Ok(OrchestrationState::default())
     }
 
-    /// Replaces the persisted orchestration state.
+    /// Replaces the persisted orchestration state (currently a no-op).
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError::Io`] when the persisted state file cannot be
     /// written.
-    #[allow(clippy::unused_async)]
-    pub async fn replace_resolved_state(
-        &self,
-        state: OrchestrationState,
-    ) -> Result<(), ConductorError> {
-        save_state(self.storage_paths(), &state);
+    pub fn replace_resolved_state(&self, _state: OrchestrationState) -> Result<(), ConductorError> {
         Ok(())
     }
 
@@ -276,7 +270,7 @@ where
         tool: &str,
         args: &[String],
     ) -> Result<i32, ConductorError> {
-        let (unified, _state) = load_unified_config_and_state(self.storage_paths()).await?;
+        let (unified, _state) = load_unified_config_and_state(self.storage_paths())?;
 
         let tool_spec = unified.tools.get(tool).ok_or_else(|| {
             ConductorError::Workflow(format!("tool '{tool}' not found in unified config"))
@@ -364,10 +358,9 @@ where
     /// Delegates to the conductor actor.
     pub async fn run_gc(&self) -> Result<(), ConductorError> {
         let client = self.ensure_actor_client().await?;
-        let (unified, state) = load_unified_config_and_state(self.storage_paths()).await?;
+        let (unified, state) = load_unified_config_and_state(self.storage_paths())?;
         let referenced_keys = std::collections::BTreeSet::new();
-        let new_state = client.run_gc(referenced_keys, state, unified).await?;
-        save_state(self.storage_paths(), &new_state);
+        let _new_state = client.run_gc(referenced_keys, state, unified).await?;
         Ok(())
     }
 
@@ -378,8 +371,8 @@ where
     /// # Errors
     ///
     /// Delegates to [`load_unified_config_and_state`].
-    pub(crate) async fn get_unified_config(&self) -> Result<UnifiedNickelDocument, ConductorError> {
-        let (unified, _state) = load_unified_config_and_state(self.storage_paths()).await?;
+    pub(crate) fn get_unified_config(&self) -> Result<UnifiedNickelDocument, ConductorError> {
+        let (unified, _state) = load_unified_config_and_state(self.storage_paths())?;
         Ok(unified)
     }
 }
@@ -425,11 +418,10 @@ impl<C: CasApi + CasMaintenanceApi + Send + Sync + 'static> ConductorApi<C> for 
 /// at the parent of `conductor_dir`.  Each file is independently evaluated
 /// through the versioned Nickel pipeline.  All evaluated documents are merged
 /// with error-on-conflict semantics.  The state document is loaded separately.
-#[allow(clippy::unused_async)]
-pub(crate) async fn load_unified_config_and_state(
+pub(crate) fn load_unified_config_and_state(
     storage_paths: &RuntimeStoragePaths,
 ) -> Result<(UnifiedNickelDocument, OrchestrationState), ConductorError> {
-    let state = load_state(storage_paths);
+    let state = OrchestrationState::default();
     let config_paths = discover_config_paths(storage_paths);
 
     let source_docs: Vec<SourceDocument> = config_paths
@@ -500,14 +492,6 @@ fn find_first_config(conductor_dir: &Path) -> Option<PathBuf> {
     }
     None
 }
-
-/// Returns the default orchestration state (filesystem persistence removed).
-fn load_state(_storage_paths: &RuntimeStoragePaths) -> OrchestrationState {
-    OrchestrationState::default()
-}
-
-/// No-op: state persistence is via CAS pointers, not filesystem.
-fn save_state(_storage_paths: &RuntimeStoragePaths, _state: &OrchestrationState) {}
 
 /// Locates the `mediapm-cas` binary by searching the conductor binary's
 /// directory first, then `PATH`.

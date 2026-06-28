@@ -292,14 +292,14 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
         }
         Some(StateCommand::Compile) => {
             let conductor = ensure_conductor().await?;
-            let unified = conductor.get_unified_config().await?;
+            let unified = conductor.get_unified_config()?;
             let json = serde_json::to_string_pretty(&unified)
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             println!("{json}");
         }
         Some(StateCommand::Export { path }) => {
             let conductor = ensure_conductor().await?;
-            let state = conductor.get_state().await?;
+            let state = conductor.get_state()?;
             let json = serde_json::to_string_pretty(&state)
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             std::fs::write(&path, &json)
@@ -312,14 +312,14 @@ async fn cmd_state(args: StateArgs) -> Result<(), ConductorError> {
             let state: OrchestrationState = decode_state_json(json.as_bytes())
                 .map_err(|e| ConductorError::Serialization(e.to_string()))?;
             let conductor = ensure_conductor().await?;
-            conductor.replace_resolved_state(state).await?;
+            conductor.replace_resolved_state(state)?;
             println!("State imported from '{}'", path.display());
         }
         Some(StateCommand::InvalidateToolCall { key }) => {
             let conductor = ensure_conductor().await?;
-            let mut state = conductor.get_state().await?;
+            let mut state = conductor.get_state()?;
             if state.tool_call_instances.remove(&key).is_some() {
-                conductor.replace_resolved_state(state).await?;
+                conductor.replace_resolved_state(state)?;
                 println!("Invalidated tool call instance '{key}'");
             } else {
                 eprintln!("Tool call instance '{key}' not found");
@@ -395,7 +395,7 @@ async fn cmd_tool(args: ToolArgs) -> Result<(), ConductorError> {
         }
         ToolCommand::List => {
             let conductor = ensure_conductor().await?;
-            let unified = conductor.get_unified_config().await?;
+            let unified = conductor.get_unified_config()?;
             println!("tool_id\tbinary_present");
             for (name, spec) in &unified.tools {
                 let binary_present = if spec.command_parts.is_empty() {

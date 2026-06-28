@@ -38,7 +38,7 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
 
     // ---- Phase 3: GC preserves referenced instance ----
     tc.conductor().run_gc().await.expect("phase 3: run_gc succeeds");
-    let state = tc.conductor().get_state().await.expect("phase 3: get_state");
+    let state = tc.conductor().get_state().expect("phase 3: get_state");
     assert_eq!(state.tool_call_instances.len(), 1, "phase 3: instance survives GC");
 
     // ---- Phase 4: cache hit post-GC ----
@@ -89,7 +89,7 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
 
     // ---- Phase 7: GC preserves both instances ----
     tc.conductor().run_gc().await.expect("phase 7: run_gc succeeds");
-    let state = tc.conductor().get_state().await.expect("phase 7: get_state");
+    let state = tc.conductor().get_state().expect("phase 7: get_state");
     assert_eq!(state.tool_call_instances.len(), 2, "phase 7: both instances survive GC");
 
     // ---- Phase 8: both cached post-GC ----

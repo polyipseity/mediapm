@@ -28,7 +28,7 @@ async fn run_workflow_bootstraps_missing_documents() {
     assert_eq!(summary.executed_steps, 1);
     assert_eq!(summary.cached_steps, 0);
 
-    let state = tc.conductor().get_state().await.expect("state snapshot");
+    let state = tc.conductor().get_state().expect("state snapshot");
     assert_eq!(state.tool_call_instances.len(), 1);
 }
 
