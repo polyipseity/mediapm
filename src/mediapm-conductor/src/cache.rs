@@ -55,7 +55,7 @@ pub struct CachePruneReport {
 pub struct Cache {
     /// Shared CAS store that persists cached payload bytes.
     cas: Arc<FileSystemCas>,
-    /// Path to one JSONC metadata index file.
+    /// Path to one JSON metadata index file.
     index_path: PathBuf,
     /// In-memory index guarded for concurrent worker access.
     index: Arc<Mutex<CacheIndex>>,

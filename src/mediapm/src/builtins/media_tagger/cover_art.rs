@@ -148,7 +148,7 @@ pub(super) struct CachedValue<T> {
     pub(super) is_fresh: bool,
 }
 
-/// JSONC cache index for media-tagger HTTP response rows.
+/// JSON cache index for media-tagger HTTP response rows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct MediaTaggerCacheIndex {
     /// Envelope version marker.
@@ -164,7 +164,7 @@ impl Default for MediaTaggerCacheIndex {
     }
 }
 
-/// One media-tagger cache metadata row persisted inside `media-tagger.jsonc`.
+/// One media-tagger cache metadata row persisted inside `media-tagger.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct MediaTaggerCacheIndexEntry {
     /// CAS hash text pointing at cached payload bytes under `store/`.
@@ -178,7 +178,7 @@ pub(super) struct MediaTaggerCacheIndexEntry {
 pub(super) struct MediaTaggerHttpCache {
     /// Optional CAS storage directory under the cache root.
     store_dir: Option<PathBuf>,
-    /// Optional JSONC index path under the cache root.
+    /// Optional JSON index path under the cache root.
     index_path: Option<PathBuf>,
     /// In-memory cache index rows guarded for concurrent access.
     index: Arc<Mutex<MediaTaggerCacheIndex>>,
@@ -328,7 +328,7 @@ impl MediaTaggerHttpCache {
         })
     }
 
-    /// Writes one JSON payload row to CAS and updates the JSONC index.
+    /// Writes one JSON payload row to CAS and updates the JSON index.
     pub(super) async fn write_json_payload<T: Serialize>(
         &self,
         namespace: &str,
@@ -348,7 +348,7 @@ impl MediaTaggerHttpCache {
         self.upsert_index_entry(Self::cache_key(namespace, key), hash)
     }
 
-    /// Writes one raw-bytes payload row to CAS and updates the JSONC index.
+    /// Writes one raw-bytes payload row to CAS and updates the JSON index.
     pub(super) async fn write_bytes_payload(
         &self,
         namespace: &str,
@@ -379,7 +379,7 @@ impl MediaTaggerHttpCache {
         Ok(Some(cas))
     }
 
-    /// Upserts one cache metadata row and persists updated index JSONC.
+    /// Upserts one cache metadata row and persists updated index JSON.
     pub(super) fn upsert_index_entry(&self, cache_key: String, hash: Hash) -> anyhow::Result<()> {
         let mut index = self
             .index
@@ -396,7 +396,7 @@ impl MediaTaggerHttpCache {
         self.write_index_file(&index)
     }
 
-    /// Removes one corrupted cache metadata row and persists updated index JSONC.
+    /// Removes one corrupted cache metadata row and persists updated index JSON.
     pub(super) fn remove_index_entry(&self, cache_key: &str) {
         let Ok(mut index) = self.index.lock() else {
             return;
@@ -407,7 +407,7 @@ impl MediaTaggerHttpCache {
         }
     }
 
-    /// Persists current media-tagger cache index JSONC with replace-on-rename semantics.
+    /// Persists current media-tagger cache index JSON with replace-on-rename semantics.
     pub(super) fn write_index_file(&self, index: &MediaTaggerCacheIndex) -> anyhow::Result<()> {
         let Some(path) = self.index_path.as_ref() else {
             return Ok(());

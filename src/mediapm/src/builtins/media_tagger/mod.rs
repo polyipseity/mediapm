@@ -450,7 +450,7 @@ mod tests {
         assert!(!one_second.is_fresh(98, 100));
     }
 
-    /// Protects media-tagger JSONC cache persistence so cached cover-art rows
+    /// Protects media-tagger JSON cache persistence so cached cover-art rows
     /// can be reused after transient upstream failures.
     #[tokio::test]
     async fn media_tagger_http_cache_round_trips_cover_entries() {
@@ -479,7 +479,7 @@ mod tests {
         assert_eq!(loaded.payload, entries);
 
         assert!(root.path().join("cache-store").join("store").exists());
-        assert!(root.path().join("cache-store").join("media-tagger.jsonc").exists());
+        assert!(root.path().join("cache-store").join("media-tagger.json").exists());
         assert!(!root.path().join("cache-store").join("store").join("media-tagger").exists());
     }
 
@@ -623,10 +623,10 @@ pub const DEFAULT_ENABLE_TAG_SAVING: bool = true;
 pub const DEFAULT_RELEASE_ARS: bool = true;
 /// Default media-tagger HTTP cache expiry budget in seconds (one day).
 pub const DEFAULT_CACHE_EXPIRY_SECONDS: i64 = 24 * 60 * 60;
-/// Cache-index format marker for media-tagger JSONC metadata rows.
+/// Cache-index format marker for media-tagger JSON metadata rows.
 const MEDIA_TAGGER_CACHE_INDEX_VERSION: u32 = 1;
 /// Default media-tagger metadata index file name under cache root.
-const MEDIA_TAGGER_CACHE_INDEX_FILE_NAME: &str = "media-tagger.jsonc";
+const MEDIA_TAGGER_CACHE_INDEX_FILE_NAME: &str = "media-tagger.json";
 /// Retry count for transient media-tagger HTTP request failures.
 const MEDIA_TAGGER_HTTP_RETRY_ATTEMPTS: usize = 3;
 /// Initial retry backoff for transient media-tagger HTTP request failures.
@@ -668,7 +668,7 @@ pub struct InternalMediaTaggerOptions {
     /// When provided, endpoint and cover-art payload responses are cached
     /// through one shared cache layout:
     /// - `<cache_dir>/store/` CAS payload objects,
-    /// - `<cache_dir>/media-tagger.jsonc` key-to-hash metadata index.
+    /// - `<cache_dir>/media-tagger.json` key-to-hash metadata index.
     ///
     /// This keeps media-tagger cache semantics aligned with the workspace/user
     /// managed cache model and avoids dedicated per-tool directories inside

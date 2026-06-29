@@ -334,7 +334,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 println!("global_dir={}", paths.root_dir.display());
                 println!("tool_cache_dir={}", paths.tool_cache_dir.display());
                 println!("tool_cache_store={}", paths.tool_cache_store_dir.display());
-                println!("tool_cache_index={}", paths.tool_cache_index_jsonc.display());
+                println!("tool_cache_index={}", paths.tool_cache_index.display());
                 Ok(())
             }
             GlobalCommand::Init => {
@@ -348,7 +348,7 @@ async fn main_cli() -> anyhow::Result<()> {
                     let status = global_tool_cache_status()?;
                     println!("tool_cache_dir={}", status.tool_cache_dir.display());
                     println!("store_dir={}", status.store_dir.display());
-                    println!("index_jsonc={}", status.index_jsonc.display());
+                    println!("index={}", status.index.display());
                     println!("entry_count={}", status.entry_count);
                     Ok(())
                 }

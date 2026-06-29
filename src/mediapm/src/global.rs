@@ -5,7 +5,7 @@
 //!
 //! Cache layout under the resolved root:
 //! - `<root>/cache/store/` — CAS payload objects
-//! - `<root>/cache/tools.jsonc` — default managed-tool metadata index
+//! - `<root>/cache/tools.json` — default managed-tool metadata index
 //!
 //! This user-level managed-download cache is intentionally separate from the
 //! workspace conductor tool-content cache (`<mediapm_dir>/tools/` for
@@ -28,8 +28,8 @@ pub struct MediaPmGlobalPaths {
     pub tool_cache_dir: PathBuf,
     /// CAS payload store directory for cache objects.
     pub tool_cache_store_dir: PathBuf,
-    /// Default managed-tool JSONC index file path.
-    pub tool_cache_index_jsonc: PathBuf,
+    /// Default managed-tool JSON index file path.
+    pub tool_cache_index: PathBuf,
 }
 
 impl MediaPmGlobalPaths {
@@ -37,7 +37,7 @@ impl MediaPmGlobalPaths {
     ///
     /// The resulting layout is:
     /// - `<base>/mediapm/cache/store/`
-    /// - `<base>/mediapm/cache/tools.jsonc`
+    /// - `<base>/mediapm/cache/tools.json`
     #[must_use]
     pub fn from_cache_base_dir(cache_base_dir: impl Into<PathBuf>) -> Self {
         let root_dir = cache_base_dir.into().join("mediapm");
@@ -64,8 +64,8 @@ impl MediaPmGlobalPaths {
     /// Builds canonical global paths from explicit root and tool-cache paths.
     fn from_tool_cache_dir_with_root(tool_cache_dir: PathBuf, root_dir: PathBuf) -> Self {
         let tool_cache_store_dir = tool_cache_dir.join("store");
-        let tool_cache_index_jsonc = tool_cache_dir.join("tools.jsonc");
-        Self { root_dir, tool_cache_dir, tool_cache_store_dir, tool_cache_index_jsonc }
+        let tool_cache_index = tool_cache_dir.join("tools.json");
+        Self { root_dir, tool_cache_dir, tool_cache_store_dir, tool_cache_index }
     }
 
     /// Resolves default global-directory paths for the current user profile.
@@ -106,8 +106,8 @@ pub fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, std::io::Erro
     let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "cannot resolve global cache root")
     })?;
-    let entry_count = if paths.tool_cache_index_jsonc.is_file() {
-        // TODO: Parse the actual tools.jsonc index to count entries.
+    let entry_count = if paths.tool_cache_index.is_file() {
+        // TODO: Parse the actual tools.json index to count entries.
         0
     } else {
         0
@@ -115,7 +115,7 @@ pub fn global_tool_cache_status() -> Result<GlobalToolCacheStatus, std::io::Erro
     Ok(GlobalToolCacheStatus {
         tool_cache_dir: paths.tool_cache_dir,
         store_dir: paths.tool_cache_store_dir,
-        index_jsonc: paths.tool_cache_index_jsonc,
+        index: paths.tool_cache_index,
         entry_count,
     })
 }
@@ -131,8 +131,8 @@ pub struct GlobalToolCacheStatus {
     pub tool_cache_dir: PathBuf,
     /// CAS payload subdirectory (`<tool_cache_dir>/store`).
     pub store_dir: PathBuf,
-    /// Metadata index file path (`<tool_cache_dir>/tools.jsonc`).
-    pub index_jsonc: PathBuf,
+    /// Metadata index file path (`<tool_cache_dir>/tools.json`).
+    pub index: PathBuf,
     /// Number of entries in the tool cache index.
     pub entry_count: u64,
 }
@@ -186,7 +186,7 @@ mod tests {
         assert_eq!(paths.root_dir, base.join("mediapm"));
         assert_eq!(paths.tool_cache_dir, base.join("mediapm").join("cache"));
         assert_eq!(paths.tool_cache_store_dir, paths.tool_cache_dir.join("store"));
-        assert_eq!(paths.tool_cache_index_jsonc, paths.tool_cache_dir.join("tools.jsonc"));
+        assert_eq!(paths.tool_cache_index, paths.tool_cache_dir.join("tools.json"));
     }
 
     #[test]
@@ -196,6 +196,6 @@ mod tests {
         assert_eq!(paths.root_dir, PathBuf::from("/tmp/cache-base/mediapm"));
         assert_eq!(paths.tool_cache_dir, tool_cache_dir);
         assert_eq!(paths.tool_cache_store_dir, paths.tool_cache_dir.join("store"));
-        assert_eq!(paths.tool_cache_index_jsonc, paths.tool_cache_dir.join("tools.jsonc"));
+        assert_eq!(paths.tool_cache_index, paths.tool_cache_dir.join("tools.json"));
     }
 }
