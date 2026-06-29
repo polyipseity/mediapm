@@ -1,6 +1,6 @@
 //! Persistent metadata cache with TTL expiry and timer-based persistence.
 //!
-//! This module provides a simple JSONC-based on-disk cache for resolved
+//! This module provides a simple JSON-based on-disk cache for resolved
 //! metadata values, with configurable TTL and periodic flush semantics.
 
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ struct MetadataCacheEntry {
 // MetadataCache
 // ---------------------------------------------------------------------------
 
-/// A persistent metadata cache backed by a JSONC file on disk.
+/// A persistent metadata cache backed by a JSON file on disk.
 ///
 /// Entries have a configurable TTL after which they are pruned. The cache
 /// file is written on [`flush`](Self::flush) when dirty, using an atomic
@@ -61,7 +61,7 @@ impl MetadataCache {
     #[must_use]
     #[allow(dead_code)]
     pub(crate) fn open(cache_dir: &Path) -> Self {
-        let cache_path = cache_dir.join("metadata.cache.jsonc");
+        let cache_path = cache_dir.join("metadata.cache.json");
         let entries = load_cache_file(&cache_path).unwrap_or_default();
 
         MetadataCache {
@@ -170,49 +170,10 @@ fn unix_seconds_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Loads a JSONC cache file, stripping comments before parsing.
-#[allow(dead_code)]
+/// Loads a JSON cache file directly.
 fn load_cache_file(path: &Path) -> Result<BTreeMap<String, MetadataCacheEntry>, io::Error> {
     let content = fs::read_to_string(path)?;
-    let stripped = strip_jsonc_comments(&content);
-    serde_json::from_str(&stripped).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-/// Strips JSONC-style comments (single-line `//` and multi-line `/* */`) from
-/// a string. Does not handle comments inside strings.
-#[allow(clippy::while_let_on_iterator)]
-fn strip_jsonc_comments(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '/' {
-            match chars.peek() {
-                Some('/') => {
-                    // Single-line comment — skip to end of line.
-                    while let Some(c) = chars.next() {
-                        if c == '\n' {
-                            output.push('\n');
-                            break;
-                        }
-                    }
-                }
-                Some('*') => {
-                    // Multi-line comment — skip to */.
-                    chars.next();
-                    while let Some(c) = chars.next() {
-                        if c == '*' && chars.peek() == Some(&'/') {
-                            chars.next();
-                            break;
-                        }
-                    }
-                }
-                _ => output.push(ch),
-            }
-        } else {
-            output.push(ch);
-        }
-    }
-    output
+    serde_json::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 // ---------------------------------------------------------------------------
@@ -265,23 +226,5 @@ mod tests {
         let cache2 = MetadataCache::open(dir.path());
         let retrieved = cache2.get("persist-key");
         assert_eq!(retrieved, Some(serde_json::json!({"key": "value"})));
-    }
-
-    /// Ensures `strip_jsonc_comments` removes single-line comments.
-    #[test]
-    fn strip_jsonc_comments_removes_single_line() {
-        let input = "{\n  // comment\n  \"key\": \"value\"\n}";
-        let output = strip_jsonc_comments(input);
-        assert!(!output.contains("// comment"));
-        assert!(output.contains("\"key\": \"value\""));
-    }
-
-    /// Ensures `strip_jsonc_comments` removes multi-line comments.
-    #[test]
-    fn strip_jsonc_comments_removes_multi_line() {
-        let input = "{\n  /* multi\n     line */\n  \"key\": \"value\"\n}";
-        let output = strip_jsonc_comments(input);
-        assert!(!output.contains("/* multi"));
-        assert!(output.contains("\"key\": \"value\""));
     }
 }
