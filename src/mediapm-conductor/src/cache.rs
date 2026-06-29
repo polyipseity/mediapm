@@ -4,7 +4,7 @@
 //! conductor subsystems.  The cache layout is always:
 //!
 //! - `<root>/store/` — CAS payload objects.
-//! - `<root>/*.jsonc` — key-to-hash metadata index(es).
+//! - `<root>/*.json` — key-to-hash metadata index(es).
 //!
 //! Where the root is placed determines the effective scope (user-level cache,
 //! workspace cache, project cache, etc.).
@@ -28,7 +28,7 @@ use crate::error::ConductorError;
 /// Current on-disk index format marker.
 const INDEX_VERSION: u32 = 1;
 /// Default metadata index file name.
-const DEFAULT_INDEX_FILE_NAME: &str = "tools.jsonc";
+const DEFAULT_INDEX_FILE_NAME: &str = "tools.json";
 
 /// Fixed entry TTL for automatic cache eviction (30 days).
 pub const ENTRY_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
@@ -210,7 +210,7 @@ impl Cache {
             return Ok(CachePruneReport::default());
         }
 
-        let active_hash_union = collect_referenced_hashes_from_jsonc_indexes(
+        let active_hash_union = collect_referenced_hashes_from_indexes(
             self.index_path.parent().unwrap_or(Path::new("")),
         );
         let mut removed_payloads = 0usize;
@@ -264,7 +264,7 @@ impl Cache {
     }
 }
 
-/// Returns a safe JSONC filename for one cache index.
+/// Returns a safe JSON filename for one cache index.
 #[must_use]
 fn normalize_index_file_name(value: &str) -> String {
     let trimmed = value.trim();
@@ -279,15 +279,15 @@ fn normalize_index_file_name(value: &str) -> String {
     if Path::new(candidate)
         .extension()
         .and_then(OsStr::to_str)
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonc"))
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
     {
         candidate.to_string()
     } else {
-        format!("{candidate}.jsonc")
+        format!("{candidate}.json")
     }
 }
 
-/// Persisted cache index file envelope (`*.jsonc`).
+/// Persisted cache index file envelope (`*.json`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CacheIndex {
     /// Envelope version marker.
@@ -328,24 +328,24 @@ fn load_index_file(index_path: &Path) -> CacheIndex {
     if parsed.version == INDEX_VERSION { parsed } else { CacheIndex::default() }
 }
 
-/// Collects active hash references from all JSONC index files under one cache
+/// Collects active hash references from all index files under one cache
 /// root.
 ///
 /// Malformed or version-incompatible index files are ignored so pruning stays
 /// best-effort and never blocks provisioning.
 #[must_use]
-fn collect_referenced_hashes_from_jsonc_indexes(cache_root: &Path) -> BTreeSet<String> {
+fn collect_referenced_hashes_from_indexes(cache_root: &Path) -> BTreeSet<String> {
     let mut referenced = BTreeSet::new();
     let Ok(entries) = fs::read_dir(cache_root) else {
         return referenced;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_jsonc = path
+        let is_index = path
             .extension()
             .and_then(OsStr::to_str)
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonc"));
-        if !is_jsonc {
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"));
+        if !is_index {
             continue;
         }
         let index = load_index_file(&path);

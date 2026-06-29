@@ -41,7 +41,7 @@ impl UserLevelCache {
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
     pub async fn open(root: &Path) -> Result<Self, ConductorError> {
-        Cache::open_with_index_file_name_and_ttl(root, "tools.jsonc", 30 * 24 * 60 * 60)
+        Cache::open_with_index_file_name_and_ttl(root, "tools.json", 30 * 24 * 60 * 60)
             .await
             .map(Self)
     }
@@ -63,14 +63,14 @@ impl UserLevelCache {
             .map(Self)
     }
 
-    /// Opens a `tool_metadata.jsonc` cache with 1-day TTL.
+    /// Opens a `tool_metadata.json` cache with 1-day TTL.
     ///
     /// # Errors
     ///
     /// Returns [`ConductorError`] when filesystem preparation or CAS opening
     /// fails.
     pub async fn open_metadata_cache(root: &Path) -> Result<Self, ConductorError> {
-        Self::open_with_index_file_name_and_ttl(root, "tool_metadata.jsonc", 24 * 60 * 60).await
+        Self::open_with_index_file_name_and_ttl(root, "tool_metadata.json", 24 * 60 * 60).await
     }
 
     #[must_use]
