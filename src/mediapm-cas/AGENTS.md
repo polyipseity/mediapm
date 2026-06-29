@@ -139,7 +139,7 @@ cas.put(bytes).await?;
 ```
 
 Newtype around `CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>`.
-WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) are saved per fan-out directory alongside blob files (see `FileSystemBlobStore` aux-file API).
+WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) are saved per fan-out directory alongside blob files as versioned aux files (`metadata-v1.json`, see `FileSystemBlobStore` aux-file API).
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>` (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
 
@@ -285,7 +285,7 @@ Pluggable payload backend.
 Object metadata index. Both implementations share the same trait.
 
 - **`InMemoryMetadataStore`**: `Arc<DashMap<Hash, MetadataEntry>>` for payload metadata (`MetadataEntry { len, encoding }`). Constraint data is stored in a separate map: `constraints: Arc<DashMap<Hash, BTreeSet<Hash>>>`.
-- **`FileSystemMetadataStore`**: Wraps `InMemoryMetadataStore` with persistent snapshot. On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), writes full snapshot (entries + constraints) to a V1 JSON file atomically (temp+rename). Flushes are batched via an `AtomicBool` dirty flag: concurrent mutations coalesce into a single write, avoiding redundant I/O. On `rebuild_from_wal`, replays WAL then overlays persisted state.
+- **`FileSystemMetadataStore`**: Wraps `InMemoryMetadataStore` with persistent per-directory snapshots. On mutation (`put`/`delete`/`set_constraint`/`prune_targets`), flushes only the affected fan-out directory's entries + constraints as a versioned JSON file (`metadata-v1.json`) via the blob store aux-file API. On `rebuild_from_wal`, replays WAL then overlays persisted state from all known aux filenames, enabling transparent format migration.
 
 **Constraint separation**: Object metadata (`put`/`get`/`delete`) and constraint data (`set_constraint`/`get_constraint`) are stored in independent maps. Put entries from WAL replay do not touch the constraint map; only `Constraint` WAL entries populate it. This removes `Option` from constraint representation.
 

@@ -5,6 +5,10 @@
 //! (one per fan-out directory `v1/blake3/ab/cd/`), using the
 //! [`BlobStore`](super::super::blob_store::BlobStore) auxiliary-file API so each
 //! mutation flushes only its hash's directory — O(N/D) I/O instead of O(N).
+//!
+//! Snapshot files use a versioned filename (`metadata-v1.json`) so future format
+//! changes are detectable and migratable. See [`LATEST_METADATA_FORMAT`] and
+//! [`METADATA_FORMAT_NAMES`].
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -20,14 +24,26 @@ use super::mem::InMemoryMetadataStore;
 use super::versions;
 use super::{MetadataEntry, MetadataStore};
 
-/// Auxiliary file name for per-directory metadata snapshots.
-const METADATA_AUX_NAME: &str = "metadata.json";
+/// The per-directory metadata filename written on flush (latest format).
+///
+/// When bumping the format, update this name and add the old name to
+/// [`METADATA_FORMAT_NAMES`] so old files are still readable on open.
+/// Must be the first element of [`METADATA_FORMAT_NAMES`].
+const LATEST_METADATA_FORMAT: &str = "metadata-v1.json";
+
+/// All known per-directory metadata filenames, newest-first.
+///
+/// [`rebuild_from_wal`] scans all of them so both current and legacy
+/// format files are loaded during startup. Add old format names here
+/// when changing `LATEST_METADATA_FORMAT`.
+const METADATA_FORMAT_NAMES: &[&str] = &[LATEST_METADATA_FORMAT];
 
 /// In-memory metadata with per-directory persistent snapshots.
 ///
 /// Delegates all operations to an [`InMemoryMetadataStore`]. After every
 /// mutation, only the fan-out directory of the affected hash is flushed to
-/// disk as a small JSON file via the blob store's aux-file API.
+/// disk as a small JSON file (with a versioned filename like
+/// `metadata-v1.json`) via the blob store's aux-file API.
 ///
 /// On startup, [`rebuild_from_wal`](MetadataStore::rebuild_from_wal) replays
 /// the WAL then overlays all per-directory snapshots to recover data that
@@ -48,8 +64,12 @@ impl FileSystemMetadataStore {
     }
 
     /// Flush all entries and constraints whose hash falls into the same fan-out
-    /// directory as `hash`. Writes a single `metadata.json` aux file for that
-    /// directory, or removes it if both entries and constraints are empty.
+    /// directory as `hash`. Writes a `metadata-v1.json` aux file for that
+    /// directory in the latest format, or removes it if both entries and
+    /// constraints are empty.
+    ///
+    /// After writing the latest format, any older format files in the same
+    /// directory are cleaned up (future-proof for format bumps).
     async fn flush_dir(&self, hash: &Hash) -> Result<(), CasError> {
         let prefix = &hash.to_hex()[..4];
 
@@ -73,10 +93,19 @@ impl FileSystemMetadataStore {
         }
 
         if constraints.is_empty() && entries.is_empty() {
-            self.blob_store.delete_aux(hash, METADATA_AUX_NAME).await?;
+            // Remove all known format files when the directory is empty.
+            for name in METADATA_FORMAT_NAMES {
+                self.blob_store.delete_aux(hash, name).await?;
+            }
         } else {
             let json = versions::save_to_vec(&constraints, &entries)?;
-            self.blob_store.write_aux(hash, METADATA_AUX_NAME, Bytes::from(json)).await?;
+            self.blob_store.write_aux(hash, LATEST_METADATA_FORMAT, Bytes::from(json)).await?;
+            // Clean up any legacy format files in this directory.
+            for name in METADATA_FORMAT_NAMES {
+                if *name != LATEST_METADATA_FORMAT {
+                    self.blob_store.delete_aux(hash, name).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -170,14 +199,17 @@ impl MetadataStore for FileSystemMetadataStore {
     async fn rebuild_from_wal(&self, wal: &dyn Wal) -> Result<(), CasError> {
         self.inner.rebuild_from_wal(wal).await?;
 
-        // Overlay per-directory snapshots (entries + constraints survive WAL trim).
-        for bytes in self.blob_store.all_aux(METADATA_AUX_NAME).await? {
-            let (persisted_constraints, persisted_entries) = versions::load_from_bytes(&bytes)?;
-            for (target, bases) in persisted_constraints {
-                self.inner.set_constraint(target, bases).await?;
-            }
-            for (hash, (len, encoding)) in persisted_entries {
-                self.inner.put(hash, MetadataEntry { len, encoding }).await?;
+        // Overlay per-directory snapshots from all known format names.
+        // This transparently handles both current and legacy format files.
+        for name in METADATA_FORMAT_NAMES {
+            for bytes in self.blob_store.all_aux(name).await? {
+                let (persisted_constraints, persisted_entries) = versions::load_from_bytes(&bytes)?;
+                for (target, bases) in persisted_constraints {
+                    self.inner.set_constraint(target, bases).await?;
+                }
+                for (hash, (len, encoding)) in persisted_entries {
+                    self.inner.put(hash, MetadataEntry { len, encoding }).await?;
+                }
             }
         }
 
