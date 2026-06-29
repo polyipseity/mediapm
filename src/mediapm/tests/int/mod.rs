@@ -3,3 +3,4 @@
 mod builtins;
 mod demo;
 mod demo_online;
+mod sync;
