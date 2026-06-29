@@ -136,12 +136,10 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     #[must_use]
     pub fn resolve_effective_runtime_storage(&self) -> MediaRuntimeStorage {
         let effective_paths = MediaPmPaths::from_root(&self.paths.root_dir);
-        let config_storage = match load_mediapm_document(&effective_paths.mediapm_ncl) {
+        let config_storage = match ensure_and_load_mediapm_document(&effective_paths) {
             Ok(doc) => doc.runtime,
             Err(e) => {
-                tracing::warn!(
-                    "failed to load mediapm.ncl (tools will be empty unless provided via CLI): {e}",
-                );
+                tracing::error!("failed to load mediapm.ncl: {e}");
                 MediaRuntimeStorage::default()
             }
         };
