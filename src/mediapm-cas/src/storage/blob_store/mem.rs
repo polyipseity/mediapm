@@ -22,13 +22,18 @@ use super::BlobStore;
 #[derive(Clone)]
 pub struct InMemoryBlobStore {
     data: Arc<DashMap<Hash, (Bytes, ObjectEncoding)>>,
+    aux: Arc<DashMap<(Hash, String), Bytes>>,
     #[allow(dead_code)]
     verify_strategies: Vec<VerifyTriggerStrategy>,
 }
 
 impl Default for InMemoryBlobStore {
     fn default() -> Self {
-        Self { data: Arc::new(DashMap::new()), verify_strategies: Vec::new() }
+        Self {
+            data: Arc::new(DashMap::new()),
+            aux: Arc::new(DashMap::new()),
+            verify_strategies: Vec::new(),
+        }
     }
 }
 
@@ -45,7 +50,11 @@ impl InMemoryBlobStore {
     /// data is always consistent.
     #[must_use]
     pub fn with_strategies(strategies: Vec<VerifyTriggerStrategy>) -> Self {
-        Self { data: Arc::new(DashMap::new()), verify_strategies: strategies }
+        Self {
+            data: Arc::new(DashMap::new()),
+            aux: Arc::new(DashMap::new()),
+            verify_strategies: strategies,
+        }
     }
 }
 
@@ -74,6 +83,27 @@ impl BlobStore for InMemoryBlobStore {
     async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
         self.data.remove(hash);
         Ok(())
+    }
+
+    async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {
+        self.aux.insert((*hash, name.to_owned()), data);
+        Ok(())
+    }
+
+    async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {
+        self.aux
+            .get(&(*hash, name.to_owned()))
+            .map(|r| r.value().clone())
+            .ok_or(CasError::NotFound(*hash))
+    }
+
+    async fn delete_aux(&self, hash: &Hash, name: &str) -> Result<(), CasError> {
+        self.aux.remove(&(*hash, name.to_owned()));
+        Ok(())
+    }
+
+    async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
+        Ok(self.aux.iter().filter(|r| r.key().1 == name).map(|r| r.value().clone()).collect())
     }
 }
 

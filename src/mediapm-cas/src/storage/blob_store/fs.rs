@@ -102,6 +102,18 @@ impl FileSystemBlobStore {
         Ok(())
     }
 
+    /// Derive the auxiliary-file path for `hash` with the given `name`.
+    ///
+    /// Auxiliary files live in the hash's fan-out parent directory so they
+    /// share the same 2‑level prefix layout as object blobs but without
+    /// the trailing hex leaf:
+    /// `<root>/v1/blake3/ab/cd/<name>`
+    fn aux_path(&self, hash: &Hash, name: &str) -> PathBuf {
+        let blob_path = hash_to_path(&self.root, hash);
+        // parent is `root/v1/blake3/ab/cd/`
+        blob_path.parent().unwrap_or(&self.root).join(name)
+    }
+
     /// Verify that the content at `path` hashes to `expected`.
     /// Uses incremental hashing to avoid loading the entire file.
     async fn verify_hash(path: &Path, expected: &Hash) -> Result<(), CasError> {
@@ -347,6 +359,72 @@ impl BlobStore for FileSystemBlobStore {
 
     fn materialized_path(&self, hash: &Hash) -> Option<PathBuf> {
         Some(hash_to_path(&self.root, hash))
+    }
+
+    async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {
+        if name.contains('/') || name.contains("..") {
+            return Err(CasError::InvalidArgument(format!(
+                "aux name must not contain '/' or '..': {name:?}"
+            )));
+        }
+        let path = self.aux_path(hash, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.map_err(CasError::Io)?;
+        }
+        Self::atomic_write(&path, &data).await
+    }
+
+    async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {
+        if name.contains('/') || name.contains("..") {
+            return Err(CasError::InvalidArgument(format!(
+                "aux name must not contain '/' or '..': {name:?}"
+            )));
+        }
+        let path = self.aux_path(hash, name);
+        fs::read(&path).await.map(Bytes::from).map_err(|_| CasError::NotFound(*hash))
+    }
+
+    async fn delete_aux(&self, hash: &Hash, name: &str) -> Result<(), CasError> {
+        if name.contains('/') || name.contains("..") {
+            return Err(CasError::InvalidArgument(format!(
+                "aux name must not contain '/' or '..': {name:?}"
+            )));
+        }
+        let path = self.aux_path(hash, name);
+        match fs::remove_file(&path).await {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(CasError::Io(e)),
+            Ok(()) => Ok(()),
+        }
+    }
+
+    async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
+        let fanout_root = self.root.join("v1").join("blake3");
+        let mut results = Vec::new();
+
+        let mut level1 = match fs::read_dir(&fanout_root).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(CasError::Io(e)),
+        };
+        while let Some(l1_entry) = level1.next_entry().await.map_err(CasError::Io)? {
+            if !l1_entry.file_type().await.map_err(CasError::Io)?.is_dir() {
+                continue;
+            }
+            let mut level2 = fs::read_dir(l1_entry.path()).await.map_err(CasError::Io)?;
+            while let Some(l2_entry) = level2.next_entry().await.map_err(CasError::Io)? {
+                if !l2_entry.file_type().await.map_err(CasError::Io)?.is_dir() {
+                    continue;
+                }
+                let aux_path = l2_entry.path().join(name);
+                match fs::read(&aux_path).await {
+                    Ok(data) => results.push(Bytes::from(data)),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(CasError::Io(e)),
+                }
+            }
+        }
+        Ok(results)
     }
 }
 

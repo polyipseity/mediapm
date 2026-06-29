@@ -133,4 +133,50 @@ pub trait BlobStore: Send + Sync {
         self.write(hash, encoding, Bytes::from(buf)).await?;
         Ok((hash, len))
     }
+
+    // -----------------------------------------------------------------------
+    // Auxiliary-file API
+    // -----------------------------------------------------------------------
+
+    /// Write an auxiliary file into the same fan-out directory tree as `hash`.
+    ///
+    /// Auxiliary files live alongside object blobs in the hash-derived fan-out
+    /// directory (`<root>/v1/blake3/ab/cd/<name>`). They are not part of the
+    /// content-addressed CAS — they are side-channel storage for metadata and
+    /// other non-content data keyed by a hash's directory locality.
+    ///
+    /// # Name validation
+    ///
+    /// Implementations should reject names containing `/` or `..` to prevent
+    /// directory traversal.
+    async fn write_aux(&self, hash: &Hash, name: &str, data: Bytes) -> Result<(), CasError> {
+        let _ = (hash, name, data);
+        Ok(())
+    }
+
+    /// Read an auxiliary file from `hash`'s fan-out directory.
+    ///
+    /// Returns [`CasError::NotFound`] when the aux file does not exist.
+    async fn read_aux(&self, hash: &Hash, name: &str) -> Result<Bytes, CasError> {
+        let _ = (hash, name);
+        Err(CasError::NotFound(*hash))
+    }
+
+    /// Delete an auxiliary file from `hash`'s fan-out directory.
+    ///
+    /// Succeeds silently if the aux file does not exist.
+    async fn delete_aux(&self, hash: &Hash, name: &str) -> Result<(), CasError> {
+        let _ = (hash, name);
+        Ok(())
+    }
+
+    /// Return contents of all auxiliary files named `name` across all fan-out
+    /// directories. Used during startup to rebuild state from per-directory
+    /// metadata snapshots.
+    ///
+    /// Implementations return an empty `Vec` when no such aux files exist.
+    async fn all_aux(&self, name: &str) -> Result<Vec<Bytes>, CasError> {
+        let _ = name;
+        Ok(vec![])
+    }
 }
