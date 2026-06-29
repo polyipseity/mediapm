@@ -255,3 +255,66 @@ const MEDIA_TAGGER_INPUT_DEFAULTS: &[(&str, &str)] = &[
     ("cache_dir", ""),
     ("cache_expiry_seconds", "86400"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    #[test]
+    fn build_tool_spec_returns_executable_kind() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("./linux/sd".into(), "hash123".into());
+        content_map.insert("./macos/sd".into(), "hash456".into());
+        content_map.insert("./windows/sd.exe".into(), "hash789".into());
+
+        let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
+        let (spec, runtime) = build_tool_spec("sd", content_map.clone(), "sd", limits);
+
+        let ToolKindSpec::Executable { command, .. } = &spec.kind else {
+            panic!("expected Executable kind");
+        };
+        assert_eq!(command, &vec!["sd".to_string()]);
+        assert_eq!(runtime.content_map, content_map);
+        assert!(!runtime.impure);
+        assert_eq!(spec.name, "sd");
+    }
+
+    #[test]
+    fn build_tool_spec_preserves_content_map() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("./linux/sd".into(), "abc".into());
+        content_map.insert("./macos/sd".into(), "def".into());
+        content_map.insert("./windows/sd.exe".into(), "ghi".into());
+
+        let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
+        let (_spec, runtime) = build_tool_spec("sd", content_map.clone(), "sd", limits);
+
+        assert_eq!(runtime.content_map.len(), 3);
+        assert_eq!(runtime.content_map["./linux/sd"], "abc");
+        assert_eq!(runtime.content_map["./macos/sd"], "def");
+        assert_eq!(runtime.content_map["./windows/sd.exe"], "ghi");
+    }
+
+    #[test]
+    fn build_tool_spec_sets_runtime_defaults() {
+        let content_map = BTreeMap::new();
+        let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
+        let (_spec, runtime) = build_tool_spec("ffmpeg", content_map, "ffmpeg", limits);
+
+        assert_eq!(runtime.max_concurrent_calls, 0);
+        assert_eq!(runtime.max_retries, 0);
+        assert!(runtime.inherited_env_vars.is_empty());
+    }
+
+    #[test]
+    fn yt_dlp_increases_concurrency_and_retries() {
+        let content_map = BTreeMap::new();
+        let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
+        let (_spec, runtime) = build_tool_spec("yt-dlp", content_map, "yt-dlp", limits);
+
+        assert_eq!(runtime.max_concurrent_calls, 1);
+        assert_eq!(runtime.max_retries, 1);
+    }
+}

@@ -9,3 +9,7 @@ mod schema_sync;
 // CAUTION: This is tool-sync integration (MediaPmService::sync_tools()).
 // Do NOT put workflow-sync or state-sync tests here.
 mod tool_sync;
+
+/// All-platform document structure integration: verifies that managed
+/// tools have per-OS content-map entries and non-empty command selectors.
+mod all_platform;

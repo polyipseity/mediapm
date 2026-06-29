@@ -580,3 +580,173 @@ fn build_content_entries(
     );
     entries
 }
+
+#[cfg(test)]
+mod tests {
+    use tempfile::{TempDir, tempdir};
+
+    use super::*;
+    use crate::tools::catalog::PlatformValue;
+
+    // ── Test fixture helpers ──────────────────────────────────────────
+
+    fn entry_all_platforms() -> ToolCatalogEntry {
+        ToolCatalogEntry {
+            id: "test-tool",
+            description: "Test tool with all three platforms",
+            homepage: "https://example.com",
+            latest: "1.0.0",
+            platforms: vec![
+                (
+                    ToolOs::Linux,
+                    vec![PlatformValue {
+                        url: "https://example.com/linux.zip",
+                        arch: "x86_64",
+                        checksum_sha256: None,
+                        archive_format: Some(ARCHIVE_ZIP),
+                    }],
+                ),
+                (
+                    ToolOs::Macos,
+                    vec![PlatformValue {
+                        url: "https://example.com/macos.tar.gz",
+                        arch: "x86_64",
+                        checksum_sha256: None,
+                        archive_format: Some(ARCHIVE_TAR_GZ),
+                    }],
+                ),
+                (
+                    ToolOs::Windows,
+                    vec![PlatformValue {
+                        url: "https://example.com/windows.zip",
+                        arch: "x86_64",
+                        checksum_sha256: None,
+                        archive_format: None, /* falls back to ARCHIVE_BINARY */
+                    }],
+                ),
+            ],
+            archive_format: ARCHIVE_BINARY,
+        }
+    }
+
+    fn entry_internal_launcher() -> ToolCatalogEntry {
+        ToolCatalogEntry {
+            id: "internal-test",
+            description: "Internal launcher entry",
+            homepage: "https://example.com",
+            latest: "1.0.0",
+            platforms: vec![],
+            archive_format: ARCHIVE_BINARY,
+        }
+    }
+
+    fn entry_partial() -> ToolCatalogEntry {
+        ToolCatalogEntry {
+            id: "partial-tool",
+            description: "Tool with linux+macos only (no windows)",
+            homepage: "https://example.com",
+            latest: "2.0.0",
+            platforms: vec![
+                (
+                    ToolOs::Linux,
+                    vec![PlatformValue {
+                        url: "https://example.com/linux.tar.xz",
+                        arch: "x86_64",
+                        checksum_sha256: None,
+                        archive_format: None,
+                    }],
+                ),
+                (
+                    ToolOs::Macos,
+                    vec![PlatformValue {
+                        url: "https://example.com/macos.tar.xz",
+                        arch: "x86_64",
+                        checksum_sha256: None,
+                        archive_format: None,
+                    }],
+                ),
+            ],
+            archive_format: ARCHIVE_TAR_XZ,
+        }
+    }
+
+    async fn create_cache() -> (TempDir, ToolDownloadCache) {
+        let dir = tempdir().expect("tempdir");
+        let cache = ToolDownloadCache::open(dir.path()).await.expect("open cache");
+        (dir, cache)
+    }
+
+    // ── resolve_download_plan ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn plan_includes_all_platforms() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_all_platforms(), &cache).await.unwrap();
+
+        assert!(plan.per_os_actions.contains_key(&ToolOs::Linux));
+        assert!(plan.per_os_actions.contains_key(&ToolOs::Macos));
+        assert!(plan.per_os_actions.contains_key(&ToolOs::Windows));
+        assert_eq!(plan.per_os_actions.len(), 3);
+        assert!(!plan.internal_launcher);
+    }
+
+    #[tokio::test]
+    async fn plan_includes_host_os() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_all_platforms(), &cache).await.unwrap();
+
+        assert!(
+            plan.per_os_actions.contains_key(&current_tool_os()),
+            "host OS should be in the plan",
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_respects_per_platform_archive_format_override() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_all_platforms(), &cache).await.unwrap();
+
+        assert_eq!(plan.per_os_actions[&ToolOs::Linux].archive_format, ARCHIVE_ZIP);
+        assert_eq!(plan.per_os_actions[&ToolOs::Macos].archive_format, ARCHIVE_TAR_GZ);
+        // Windows has no per-platform override → falls back to entry-level
+        assert_eq!(plan.per_os_actions[&ToolOs::Windows].archive_format, ARCHIVE_BINARY);
+    }
+
+    #[tokio::test]
+    async fn plan_internal_launcher_is_empty() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_internal_launcher(), &cache).await.unwrap();
+
+        assert!(plan.per_os_actions.is_empty());
+        assert!(plan.internal_launcher);
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plan_preserves_urls() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_all_platforms(), &cache).await.unwrap();
+
+        assert_eq!(plan.per_os_actions[&ToolOs::Linux].urls, vec!["https://example.com/linux.zip"],);
+        assert_eq!(
+            plan.per_os_actions[&ToolOs::Macos].urls,
+            vec!["https://example.com/macos.tar.gz"],
+        );
+        assert_eq!(
+            plan.per_os_actions[&ToolOs::Windows].urls,
+            vec!["https://example.com/windows.zip"],
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_missing_host_os_produces_warning() {
+        let (_dir, cache) = create_cache().await;
+        let plan = resolve_download_plan(&entry_partial(), &cache).await.unwrap();
+
+        assert_eq!(plan.per_os_actions.len(), 2);
+        let host = current_tool_os();
+        if host == ToolOs::Windows {
+            assert!(!plan.warnings.is_empty(), "windows is missing → should warn");
+        }
+    }
+}
