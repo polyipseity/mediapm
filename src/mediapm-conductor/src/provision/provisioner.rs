@@ -149,8 +149,15 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         }
     }
 
+    /// Same as [`link_to_sandbox`] but accepts an explicit list of foreign
+    /// platform directory names, making it testable without depending on
+    /// the compile-time `#[cfg]` constants.
     #[allow(clippy::similar_names)]
-    pub fn link_to_sandbox(payload_dir: &Path, sandbox_dir: &Path) -> Result<(), String> {
+    pub fn link_to_sandbox_filtered(
+        payload_dir: &Path,
+        sandbox_dir: &Path,
+        foreign_platform_dirs: &[&str],
+    ) -> Result<(), String> {
         if !payload_dir.exists() {
             return Err(format!(
                 "tool-content cache payload directory '{}' does not exist",
@@ -179,7 +186,7 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
             })?;
 
             // Skip top-level directories that belong to a foreign platform.
-            if file_type.is_dir() && FOREIGN_PLATFORM_DIRS.contains(&name.as_ref()) {
+            if file_type.is_dir() && foreign_platform_dirs.contains(&name.as_ref()) {
                 continue;
             }
 
@@ -213,6 +220,16 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
         }
 
         Ok(())
+    }
+
+    /// Links or copies files from `payload_dir` to `sandbox_dir`, skipping
+    /// foreign-platform directories determined by compile-time `#[cfg]`.
+    ///
+    /// This is a thin wrapper around [`link_to_sandbox_filtered`] that
+    /// passes the host-specific [`FOREIGN_PLATFORM_DIRS`].
+    #[allow(clippy::similar_names)]
+    pub fn link_to_sandbox(payload_dir: &Path, sandbox_dir: &Path) -> Result<(), String> {
+        Self::link_to_sandbox_filtered(payload_dir, sandbox_dir, FOREIGN_PLATFORM_DIRS)
     }
 
     /// Removes provisioned entries that have not been used within the TTL.
@@ -374,5 +391,86 @@ impl<C: CasApi + Send + Sync + 'static> ProvisionCache<C> {
                 source: e,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use mediapm_cas::InMemoryCas;
+
+    use super::ProvisionCache;
+
+    #[test]
+    fn link_to_sandbox_filtered_skips_foreign_platform_dirs() {
+        let payload = tempfile::tempdir().unwrap();
+        let sandbox = tempfile::tempdir().unwrap();
+
+        for os in &["linux", "macos", "windows"] {
+            let dir = payload.path().join(os);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("tool"), "content").unwrap();
+        }
+
+        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
+            payload.path(),
+            sandbox.path(),
+            &["linux"],
+        )
+        .unwrap();
+
+        assert!(!sandbox.path().join("linux").exists(), "foreign platform dir was linked");
+        assert!(sandbox.path().join("macos").exists(), "native platform dir was skipped");
+        assert!(sandbox.path().join("windows").exists(), "native platform dir was skipped");
+    }
+
+    #[test]
+    fn link_to_sandbox_filtered_no_foreign_dirs_copies_all() {
+        let payload = tempfile::tempdir().unwrap();
+        let sandbox = tempfile::tempdir().unwrap();
+
+        for os in &["linux", "windows"] {
+            let dir = payload.path().join(os);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("tool"), "content").unwrap();
+        }
+
+        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
+            payload.path(),
+            sandbox.path(),
+            &[],
+        )
+        .unwrap();
+
+        assert!(sandbox.path().join("linux").exists());
+        assert!(sandbox.path().join("windows").exists());
+    }
+
+    #[test]
+    fn link_to_sandbox_filtered_empty_payload_creates_empty_sandbox() {
+        let payload = tempfile::tempdir().unwrap();
+        let sandbox = tempfile::tempdir().unwrap();
+
+        ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
+            payload.path(),
+            sandbox.path(),
+            &["linux"],
+        )
+        .unwrap();
+
+        assert!(sandbox.path().exists());
+        assert!(sandbox.path().read_dir().unwrap().next().is_none());
+    }
+
+    #[test]
+    fn link_to_sandbox_filtered_nonexistent_payload_errors() {
+        let sandbox = tempfile::tempdir().unwrap();
+        let result = ProvisionCache::<InMemoryCas>::link_to_sandbox_filtered(
+            &PathBuf::from("/nonexistent/payload"),
+            sandbox.path(),
+            &["linux"],
+        );
+        assert!(result.is_err());
     }
 }
