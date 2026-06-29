@@ -6,8 +6,8 @@
 //!
 //! - No `Option` wrappers on config fields where sensible defaults exist;
 //!   defaults are centralized in `crate::defaults`.
-//! - `tool_configs` merged into `ToolSpec.runtime` — what was previously a
-//!   separate map of runtime-execution tuning now lives inline on each tool.
+//! - Per-tool `runtime` (replaces the old separate `tool_configs` map) —
+//!   runtime-execution tuning now lives inline on each tool.
 //! - No `PlatformInheritedEnvVars` — simplified to a single flat map.
 //! - No `fp-library` optics; versioning follows `mediapm-cas` pattern.
 
@@ -151,8 +151,8 @@ impl Default for OutputCaptureSpec {
     }
 }
 
-/// Runtime configuration for a tool (replaces the old separate
-/// `ToolConfigSpec` map).
+/// Runtime configuration for a tool (replaces the old separate `tool_configs`
+/// map in the V1 schema).
 ///
 /// The `runtime` property on a tool holds fields that must NOT be part of the
 /// tool-call-instance identity computation.  Changes to runtime fields affect

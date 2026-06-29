@@ -126,7 +126,7 @@ When editing tool/config schema behavior, preserve these invariants:
 
 5. Workflow step `inputs` are always tool-call input data (for both executable and builtin tools).
 
-6. For executable tools, workflow step inputs must reference declared executable tool inputs; missing required inputs are errors unless `tool_configs.<tool>.input_defaults` provides the input. Tool-level defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
+6. For executable tools, workflow step inputs must reference declared executable tool inputs; missing required inputs are errors unless `tools.<tool>.runtime.input_defaults` provides the input. Tool-level defaults under `tools.<tool>.inputs.<input>.default` are unsupported.
 
 7. For builtin tools, step inputs are pass-through bindings and builtin crates enforce their own strict argument/input contracts.
 
@@ -142,10 +142,10 @@ When editing tool/config schema behavior, preserve these invariants:
 
 13. Step `outputs` configure per-output persistence policy (`save`, `force_full`) only and can only target declared tool outputs.
 
-14. `tool_configs.<tool>.content_map` is executable-only and sandbox-relative: keys ending with `/` or `\\` mean destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash mean destination files whose mapped bytes are written directly; `./` (or `.\\`) is valid and means sandbox-root unpack;
+14. `tools.<tool>.runtime.content_map` is executable-only and sandbox-relative: keys ending with `/` or `\\` mean destination directories whose mapped CAS bytes must be ZIP payloads to unpack there; keys without a trailing slash/backslash mean destination files whose mapped bytes are written directly; `./` (or `.\\`) is valid and means sandbox-root unpack;
     separate content-map entries must not overwrite the same target file path; every referenced hash must be rooted in top-level `external_data`; absolute and escaping paths are invalid.
 
-15. `tool_configs.<tool>.description` is optional human-facing metadata only;
+15. `tools.<tool>.runtime.description` is optional human-facing metadata only;
     it must not affect instance identity, scheduler behavior, or cache keys.
 
 16. Workflow `name` and `description` are optional human-facing metadata only;
@@ -176,7 +176,7 @@ When editing tool/config schema behavior, preserve these invariants:
 
     checks, conductor may auto-recover only for pure workflows by warning, dropping affected cached instances, deleting the corrupt hash, and retrying the workflow once. Impure workflows fail without auto-retry unless `retry_impure` is enabled. When `retry_impure` is `true`, conductor applies the same cache-invalidation and retry logic to both pure and impure steps. Configure `retry_impure` via `RunWorkflowOptions.retry_impure` (API), `runtime.retry_impure` (conductor.ncl), or `--retry-impure` (CLI).
 
-26. `tool_configs.<tool>.max_retries` controls per-tool outer retry budget
+26. `tools.<tool>.runtime.max_retries` controls per-tool outer retry budget
 
     after the initial failed call. Valid values are `-1` (use runtime default) or non-negative integers. Runtime unified execution normalizes `-1` to the current default retry policy.
 
@@ -325,7 +325,7 @@ The tool-content cache lives at `<conductor_tools_dir>/` (default `<conductor_di
 
 Design invariants (implemented in `src/mediapm-conductor/src/tool_cache/mod.rs`):
 
-- **Cache key**: the tool id from the conductor config (the map key in `tool_configs`), sanitized to a filesystem-safe name. One cache entry per tool id: `<conductor_tools_dir>/<sanitized_tool_id>/`.
+- **Cache key**: the tool id from the conductor config (the map key in `tools`), sanitized to a filesystem-safe name. One cache entry per tool id: `<conductor_tools_dir>/<sanitized_tool_id>/`.
 
 - **Cache-hit check**: `<entry>/metadata.json` stores the complete `tool_content_map` (`BTreeMap<String, Hash>`) alongside a version sentinel and a last-used Unix timestamp. A cache hit requires the stored map to equal the current map exactly; any change in keys or hashes causes a miss and triggers full re-extraction.
 
@@ -503,7 +503,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 - **Output capture**: Step outputs are persisted to CAS; `outputs` in `ToolCallInstance` reference CAS hashes.
 - **GC coordination**: Conductor provides root set (external data, state pointer, instance outputs, instance blob hashes) for CAS GC sweep.
 - **Existence checks**: `CasExistenceBitmap` for batch cache probing across step outputs.
-- **Content map materialization**: `tool_configs.<tool>.content_map` entries are resolved from CAS into step sandbox directories.
+- **Content map materialization**: `tools.<tool>.runtime.content_map` entries are resolved from CAS into step sandbox directories.
 
 ### Conductor ↔ Builtins
 
@@ -518,7 +518,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 - **Workflow synthesis**: MediaPM synthesizes workflows from `mediapm.ncl` definitions and passes them to Conductor for execution via `ConductorApi`.
 - **Progress events**: Conductor emits `WorkflowStepEvent` through an optional channel; MediaPM renders progress bars from these events.
 - **Runtime storage paths**: MediaPM passes grouped runtime paths (`conductor_dir`, `conductor_state_config`, `cas_store_dir`, `conductor_tools_dir`) via `RunWorkflowOptions.runtime_storage_paths`.
-- **Tool provisioning**: MediaPM provisions managed tools and populates `machine.tool_configs`; Conductor materializes content maps into step sandboxes.
+- **Tool provisioning**: MediaPM provisions managed tools and populates `machine.tools` with runtime fields; Conductor materializes content maps into step sandboxes.
 - **State persistence**: MediaPM persists machine state (`state.ncl`) and conductor state blob independently; consistency is verified on startup.
 
 ## D. Orchestration State Decode Migration
@@ -718,7 +718,7 @@ Per-entry `flock` advisory locking via `fs4::FileExt`:
 
 ### Sync-Time Stale-Content Pruning
 
-During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool is replaced by a newer version, the old tool's `content_map` is cleared in `machine.tool_configs`. This prevents conductor step-tool preservation from matching stale content references against the old tool ID. The old tool ID's registry entry remains in `tool_registry` as a historical record, but without content references it will not be materialized.
+During `reconcile_desired_tools` in `sync/mod.rs`, when an existing active tool is replaced by a newer version, the old tool's `content_map` is cleared from `machine.tools[*].runtime.content_map`. This prevents conductor step-tool preservation from matching stale content references against the old tool ID. The old tool ID's registry entry remains in `tool_registry` as a historical record, but without content references it will not be materialized.
 
 ## K. Performance (Conductor-Relevant)
 
@@ -904,7 +904,7 @@ Three race scenarios in the tool content cache:
 
 ### N.10 Tool Max Concurrency Enforcement (§2.10)
 
-**Issue**: `tool_configs.<tool>.max_concurrency` controls per-tool concurrency limits. Steps dispatched beyond this limit must wait.
+**Issue**: `tools.<tool>.runtime.max_concurrency` controls per-tool concurrency limits. Steps dispatched beyond this limit must wait.
 
 **Current behavior**: The coordinator uses a per-tool `Semaphore` (tokio). Before dispatching a step, the semaphore is acquired (async wait). On step completion, the permit is released. Steps waiting on the semaphore do not block the actor — they yield to other ready steps from different tools.
 
@@ -916,7 +916,7 @@ Three race scenarios in the tool content cache:
 
 ### N.11 Tool Max Retries Enforcement (§2.11)
 
-**Issue**: `tool_configs.<tool>.max_retries` controls the outer retry budget for failed steps.
+**Issue**: `tools.<tool>.runtime.max_retries` controls the outer retry budget for failed steps.
 
 **Current behavior**: The coordinator wraps step execution in a retry loop: `attempt = 0..=max_retries`. On each attempt, the step is dispatched to a worker. If the worker returns an error and `attempt < max_retries`, the step is re-dispatched after a delay. If all retries are exhausted, the step fails permanently and the workflow enters error state.
 
@@ -937,7 +937,7 @@ Three race scenarios in the tool content cache:
 
 2. **Step with changed tool identity (any tool)**: When `previous.tool != generated.tool`, the function checks whether the previous tool is still valid (exists in `machine.tools` with required `content_map` for `Executable` kinds). If valid, `generated.tool` is rewritten to `previous.tool.clone()`, preserving the old tool id. Only when the previous tool is no longer valid is the step marked as unmatched.
 
-3. **Stale previous tool**: If the previous tool id no longer exists in `machine.tools`, or is an `Executable` kind whose `machine.tool_configs` entry lacks a `content_map`, the step is unmatched regardless of kind.
+3. **Stale previous tool**: If the previous tool id no longer exists in `machine.tools`, or is an `Executable` kind whose `machine.tools` entry lacks a `content_map`, the step is unmatched regardless of kind.
 
 4. **Tool version update with valid previous tool**: When a managed tool version changes, the generated tool identity differs from the previous one. Since the previous tool is still valid, the old tool id IS preserved. Tool version updates do NOT cause a refresh (`requires_refresh` is not triggered).
 
@@ -1090,7 +1090,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 | Symptom | Cause | Resolution |
 |---|---|---|
 | Steps not advancing past timeout | Builtin crash without output | Add `timeout_ms` to step config; check builtin stderr |
-| Same | Network timeout with no timeout configured | Set tool-level timeout in `tool_configs` |
+| Same | Network timeout with no timeout configured | Set tool-level timeout in `tools.<tool>.runtime` |
 | Same | DAG cycle (validation bug) | Run `conductor.validate_workflow()` to detect cycles |
 | Same | Resource exhaustion | Reduce concurrent workers; check I/O pressure |
 
@@ -1123,7 +1123,7 @@ Separation of concerns: user intent (`mediapm.ncl`), machine setup (`state.ncl`)
 
 #### Tool ID Format (§7.4)
 
-Tool IDs are arbitrary strings; deduplication is exact string match (case-sensitive). No semver requirement on the ID format itself — version is tracked separately in `tool_configs.<id>.version`.
+Tool IDs are arbitrary strings; deduplication is exact string match (case-sensitive). No semver requirement on the ID format itself — version is tracked separately in `tools.<id>.runtime.version`.
 
 #### Config Document Versioning (§7.7)
 
