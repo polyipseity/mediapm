@@ -1,25 +1,30 @@
-//! Tool payload provisioning: download, extract, and import to CAS.
+//! Tool payload provisioning: download, extract, pack to ZIP, and import to CAS.
 //!
 //! This module provides [`fetch_and_import_tool_payload`] which handles the
 //! full lifecycle for one tool: look up catalog → resolve download plan →
-//! download → extract → walk files → CAS import → content map.
+//! download → extract → pack to uncompressed ZIP → CAS import → content map.
 //!
 //! # All-platform download principle
 //!
 //! Tool payloads are downloaded for **all supported platforms** regardless of
 //! the host OS. Each platform's archive is extracted to a separate
-//! `{os}/` subdirectory, and every file is imported to CAS with a
-//! `./{os}/…` content-map key prefix. The command selector is emitted as a
-//! `${context.os == "…" ? ./…/… : …}` template expression so the conductor
-//! resolves the correct executable at runtime. The conductor's
+//! `{os}/` subdirectory. For archive formats (ZIP, tar.gz, tar.xz) the
+//! extracted directory is repacked into a single uncompressed ZIP and
+//! imported to CAS as one blob, producing a single trailing-slash entry
+//! (`./{os}/` → ZIP hash). The [`ARCHIVE_BINARY`] format keeps a file-level
+//! entry (`./{os}/{tool_id}` → binary hash). The command selector is emitted
+//! as a `${context.os == "…" ? ./…/… : …}` template expression so the
+//! conductor resolves the correct executable at runtime. The conductor's
 //! [`link_to_sandbox`] then skips foreign-platform directories via
 //! [`FOREIGN_PLATFORM_DIRS`], materialising only the host-native payload.
 
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 use mediapm_cas::CasApi;
+use zip::write::SimpleFileOptions;
 
 use crate::error::MediaPmError;
 use crate::tools::catalog::{ARCHIVE_BINARY, tool_catalog_entry};
@@ -31,8 +36,10 @@ use crate::tools::downloader::{
 #[derive(Debug, Clone)]
 pub(super) struct FetchedToolPayload {
     /// Content map: sandbox-relative path → CAS hash hex string.
-    /// Keys use `./{os}/…` prefixes (e.g. `./linux/sd`, `./windows/sd.exe`)
-    /// so the conductor's platform filtering works correctly.
+    /// For archive formats the key is a trailing-slash directory entry
+    /// (`./{os}/`); for [`ARCHIVE_BINARY`] it is a file-level entry
+    /// (`./{os}/{tool_id}`).  The conductor's platform filtering resolves
+    /// files through the unpacked directory tree.
     pub(super) content_map: BTreeMap<String, String>,
     /// Sandbox-relative path to the main executable, emitted as a
     /// `${context.os == "…" ? ./…/… : …}` template expression when multiple
@@ -118,55 +125,66 @@ pub(super) async fn fetch_and_import_tool_payload(
     Ok(Some(FetchedToolPayload { content_map, command_selector }))
 }
 
-/// Recursively walks `dir`, imports each file to CAS, and records the
-/// mapping `./{os_prefix}/relative/path → hash_hex` in `content_map`.
-async fn walk_dir_and_import_to_cas(
-    cas: &impl CasApi,
+/// Packs one directory tree into uncompressed ZIP bytes.
+///
+/// # Errors
+///
+/// Returns [`MediaPmError`] when directory reading or ZIP writing fails.
+fn pack_directory_to_uncompressed_zip_bytes(dir: &Path) -> Result<Vec<u8>, MediaPmError> {
+    let mut buf = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        pack_directory_entries(&mut writer, dir, dir, &options)?;
+
+        writer
+            .finish()
+            .map_err(|e| MediaPmError::Workflow(format!("failed to finalize zip archive: {e}")))?;
+    }
+    Ok(buf)
+}
+
+/// Recursively adds directory entries to the zip writer.
+fn pack_directory_entries(
+    writer: &mut zip::ZipWriter<std::io::Cursor<&mut Vec<u8>>>,
+    root: &Path,
     dir: &Path,
-    content_map: &mut BTreeMap<String, String>,
-    os_prefix: &str,
+    options: &SimpleFileOptions,
 ) -> Result<(), MediaPmError> {
-    let mut stack: Vec<PathBuf> = vec![dir.to_path_buf()];
-    while let Some(current) = stack.pop() {
-        let mut read_dir = match std::fs::read_dir(&current) {
-            Ok(r) => r,
-            Err(source) => {
-                return Err(MediaPmError::Io {
-                    operation: format!("reading directory '{}'", current.display()),
-                    path: current,
-                    source,
-                });
-            }
-        };
-        while let Some(entry) = {
-            match read_dir.next() {
-                Some(Ok(e)) => Some(e),
-                Some(Err(source)) => {
-                    return Err(MediaPmError::Io {
-                        operation: format!("reading entry in '{}'", current.display()),
-                        path: current,
-                        source,
-                    });
-                }
-                None => None,
-            }
-        } {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.is_file() {
-                let relative = path.strip_prefix(dir).unwrap_or(&path);
-                let key = format!("./{}/{}", os_prefix, relative.to_string_lossy());
-                let file_bytes = std::fs::read(&path).map_err(|source| MediaPmError::Io {
-                    operation: format!("reading file '{}' for CAS import", path.display()),
-                    path: path.clone(),
-                    source,
-                })?;
-                let hash = cas.put(Bytes::from(file_bytes)).await.map_err(|e| {
-                    MediaPmError::Workflow(format!("CAS put failed for '{key}': {e}"))
-                })?;
-                content_map.insert(key, hash.to_hex());
-            }
+    for entry in std::fs::read_dir(dir).map_err(|source| MediaPmError::Io {
+        operation: format!("reading directory '{}'", dir.display()),
+        path: dir.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| MediaPmError::Io {
+            operation: format!("reading directory entry in '{}'", dir.display()),
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            pack_directory_entries(writer, root, &path, options)?;
+        } else {
+            let relative = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+            let mut file = std::fs::File::open(&path).map_err(|source| MediaPmError::Io {
+                operation: format!("opening file '{}' for zip", path.display()),
+                path: path.clone(),
+                source,
+            })?;
+            writer.start_file(relative.clone(), *options).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to start zip entry '{relative}': {e}"))
+            })?;
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents).map_err(|source| MediaPmError::Io {
+                operation: format!("reading file '{}' for zip", path.display()),
+                path: path.clone(),
+                source,
+            })?;
+            writer.write_all(&contents).map_err(|e| {
+                MediaPmError::Workflow(format!("failed to write zip entry '{relative}': {e}"))
+            })?;
         }
     }
     Ok(())
@@ -202,14 +220,19 @@ fn find_file_relative(root: &Path, dir: &Path, target: &str) -> Option<PathBuf> 
     None
 }
 
-/// Processes one already-downloaded archive through extraction, binary rename,
+/// Processes one already-downloaded archive through extraction,
 /// CAS import, and executable lookup for a single OS.
+///
+/// For archive formats (ZIP, tar.gz, tar.xz) the extracted directory is
+/// repacked into a single uncompressed ZIP and imported to CAS, producing
+/// a single trailing-slash content-map key (`./{os_label}/`).  For
+/// [`ARCHIVE_BINARY`] the single binary is imported as a file-level entry
+/// (`./{os_label}/{tool_id}`).
 ///
 /// # Returns
 ///
 /// A tuple `(content_map_entries, exec_path)` where:
-/// - `content_map_entries` maps `./{os_label}/relative/path → hash_hex` for
-///   every file extracted from the archive.
+/// - `content_map_entries` maps content-map keys → CAS hash hex strings.
 /// - `exec_path` is the path to the executable relative to `os_dir`.
 async fn process_downloaded_archive(
     bytes: &[u8],
@@ -227,13 +250,13 @@ async fn process_downloaded_archive(
 
     extract_archive(bytes, archive_format, os_dir)?;
 
-    // ── binary format: rename `tool` → `{tool_id}` ────────────────────
     if archive_format == ARCHIVE_BINARY {
+        // ── binary format: single file entry ────────────────────────
         let exe_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
         let old_path = os_dir.join(exe_name);
-        let new_path = os_dir.join(tool_id);
+        let tool_path = os_dir.join(tool_id);
         if old_path.exists() {
-            std::fs::rename(&old_path, &new_path).map_err(|source| MediaPmError::Io {
+            std::fs::rename(&old_path, &tool_path).map_err(|source| MediaPmError::Io {
                 operation: format!(
                     "renaming extracted binary from {exe_name} to {tool_id} for {os_label}"
                 ),
@@ -241,18 +264,34 @@ async fn process_downloaded_archive(
                 source,
             })?;
         }
-    }
 
-    let mut content_map = BTreeMap::new();
-    walk_dir_and_import_to_cas(cas, os_dir, &mut content_map, os_label).await?;
-
-    let exec_path = if archive_format == ARCHIVE_BINARY {
-        tool_id.to_string()
+        let file_bytes = std::fs::read(&tool_path).map_err(|source| MediaPmError::Io {
+            operation: format!("reading binary '{tool_id}' for CAS import"),
+            path: tool_path,
+            source,
+        })?;
+        let hash = cas.put(Bytes::from(file_bytes)).await.map_err(|e| {
+            MediaPmError::Workflow(format!("CAS put failed for binary '{tool_id}': {e}"))
+        })?;
+        let key = format!("./{os_label}/{tool_id}");
+        let mut content_map = BTreeMap::new();
+        content_map.insert(key, hash.to_hex());
+        Ok((content_map, tool_id.to_string()))
     } else {
-        find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string())
-    };
+        // ── archive format: pack OS directory, single dir entry ─────
+        let exec_path = find_os_executable(os_dir, tool_id).unwrap_or_else(|| tool_id.to_string());
 
-    Ok((content_map, exec_path))
+        let zip_bytes = pack_directory_to_uncompressed_zip_bytes(os_dir)?;
+        let hash = cas.put(Bytes::from(zip_bytes)).await.map_err(|e| {
+            MediaPmError::Workflow(format!(
+                "CAS put failed for tool '{tool_id}' {os_label} zip: {e}"
+            ))
+        })?;
+        let key = format!("./{os_label}/");
+        let mut content_map = BTreeMap::new();
+        content_map.insert(key, hash.to_hex());
+        Ok((content_map, exec_path))
+    }
 }
 
 /// Builds a `${context.os == "linux" ? ./linux/sd : context.os == "macos" ? ./macos/sd : ./windows/sd}`
@@ -470,7 +509,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./linux/sd"));
+        assert!(cmap.contains_key("./linux/"));
         assert_eq!(exec, "sd");
     }
 
@@ -490,7 +529,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./macos/sd"));
+        assert!(cmap.contains_key("./macos/"));
         assert_eq!(exec, "sd");
     }
 
@@ -510,7 +549,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./windows/sd.exe"));
+        assert!(cmap.contains_key("./windows/"));
         assert_eq!(exec, "sd.exe");
     }
 
@@ -550,11 +589,11 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(cmap.contains_key("./linux/bin/sd"));
+        assert!(cmap.contains_key("./linux/"));
         assert_eq!(exec, "bin/sd");
     }
 
-    /// Verifies that each OS label produces the correct content-map prefix.
+    /// Verifies that each OS label produces the correct trailing-slash content-map key.
     #[tokio::test]
     async fn process_all_three_os_labels_independently() {
         let zip = synthetic_zip(&[("sd", EXEC_BYTES)]);
@@ -572,7 +611,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let expected_key = format!("./{}/sd", os_label);
+            let expected_key = format!("./{}/", os_label);
             assert!(
                 cmap.contains_key(&expected_key),
                 "missing key '{expected_key}' for os '{os_label}'"
@@ -581,9 +620,55 @@ mod tests {
         }
     }
 
-    /// Two different tool payloads produce non-overlapping content-map keys.
+    /// A multi-file archive (3 files) produces exactly one trailing-slash entry.
     #[tokio::test]
-    async fn process_two_tools_content_maps_are_disjoint() {
+    async fn process_multi_file_archive_produces_one_entry() {
+        let zip = synthetic_zip(&[
+            ("bin/sd", EXEC_BYTES),
+            ("config/default.toml", b"setting=true\n"),
+            ("share/help.txt", b"usage\n"),
+        ]);
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let (cmap, exec) = process_downloaded_archive(
+            &zip,
+            crate::tools::catalog::ARCHIVE_ZIP,
+            "linux",
+            "sd",
+            os_dir.path(),
+            &cas,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmap.len(), 1);
+        assert!(cmap.contains_key("./linux/"), "expected single directory entry");
+        assert_eq!(exec, "bin/sd");
+    }
+
+    /// An empty directory produces a valid ZIP with a single trailing-slash entry.
+    #[tokio::test]
+    async fn process_empty_archive_produces_valid_zip_entry() {
+        let zip = synthetic_zip(&[]);
+        let cas = InMemoryCas::default();
+        let os_dir = tempfile::tempdir().unwrap();
+        let (cmap, exec) = process_downloaded_archive(
+            &zip,
+            crate::tools::catalog::ARCHIVE_ZIP,
+            "linux",
+            "sd",
+            os_dir.path(),
+            &cas,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cmap.len(), 1);
+        assert!(cmap.contains_key("./linux/"), "expected directory entry for empty archive");
+        assert_eq!(exec, "sd");
+    }
+
+    /// Each tool content map has exactly one trailing-slash directory entry.
+    #[tokio::test]
+    async fn process_two_tools_each_has_single_dir_entry() {
         let zip_a = synthetic_zip(&[("alpha", EXEC_BYTES)]);
         let zip_b = synthetic_zip(&[("beta", b"#!/bin/sh\necho other\n")]);
         let cas = InMemoryCas::default();
@@ -612,11 +697,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Merge and verify no duplicates
-        let mut merged = cmap_a.clone();
-        for (k, v) in &cmap_b {
-            assert!(!merged.contains_key(k), "duplicate content-map key '{k}' across tools");
-            merged.insert(k.clone(), v.clone());
-        }
+        // Each tool map has exactly one key: "./linux/"
+        assert_eq!(cmap_a.len(), 1);
+        assert!(cmap_a.contains_key("./linux/"));
+        assert_eq!(cmap_b.len(), 1);
+        assert!(cmap_b.contains_key("./linux/"));
     }
 }
