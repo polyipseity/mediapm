@@ -1,8 +1,10 @@
 //! V1 persistence format for the CAS metadata store.
 //!
-//! Stores constraints and metadata entries together in a versioned JSON
-//! structure (serialized to/from `Vec<u8>`). The `entries` field uses
-//! `#[serde(default)]` so old files (constraints-only) remain loadable.
+//! Stores constraints and metadata entries together in a JSON structure
+//! (serialized to/from `Vec<u8>`). The format is identified by the
+//! filename (`metadata-v1.json`), not by an internal version field.
+//! The `entries` field uses `#[serde(default)]` so old files
+//! (constraints-only) remain loadable.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,9 +30,11 @@ struct EntryData {
 }
 
 /// On-disk representation of the V1 persistence file.
+///
+/// The format is identified by the filename (`metadata-v1.json`), not
+/// by an internal version field.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SnapshotFile {
-    version: u32,
     /// Map from hex-encoded target hash → constraint entry.
     constraints: BTreeMap<String, ConstraintEntry>,
     /// Index entries (hex-encoded hash → entry data).
@@ -51,13 +55,6 @@ pub(crate) fn parse_v1_snapshot(data: &[u8]) -> Result<Option<SnapshotData>, Cas
         hash: None,
         details: format!("failed to parse snapshot file: {e}"),
     })?;
-
-    if file.version != 1 {
-        return Err(CasError::CorruptObject {
-            hash: None,
-            details: format!("unsupported snapshot file version: {}", file.version),
-        });
-    }
 
     // --- Constraints ---
     let mut constraints = BTreeMap::new();
@@ -110,8 +107,7 @@ pub(crate) fn serialize_v1_snapshot(
     constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
     entries: &BTreeMap<Hash, (u64, ObjectEncoding)>,
 ) -> Result<Vec<u8>, CasError> {
-    let mut file =
-        SnapshotFile { version: 1, constraints: BTreeMap::new(), entries: BTreeMap::new() };
+    let mut file = SnapshotFile { constraints: BTreeMap::new(), entries: BTreeMap::new() };
 
     for (target, bases) in constraints {
         let entry = ConstraintEntry { bases: bases.iter().map(ToString::to_string).collect() };
