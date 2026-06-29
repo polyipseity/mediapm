@@ -110,9 +110,13 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
     /// Resolves effective paths by applying runtime storage overrides on top
     /// of the base paths.
-    #[must_use]
-    pub fn resolve_effective_paths(&self) -> MediaPmPaths {
-        let merged = self.resolve_effective_runtime_storage();
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if the document cannot be read, or
+    /// [`MediaPmError::Serialization`] if it cannot be parsed.
+    pub fn resolve_effective_paths(&self) -> Result<MediaPmPaths, MediaPmError> {
+        let merged = self.resolve_effective_runtime_storage()?;
         let mut overrides = MediaPmPathOverrides {
             mediapm_dir: None,
             hierarchy_root_dir: None,
@@ -128,22 +132,20 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         if let Some(ref dir) = merged.mediapm_dir {
             overrides.mediapm_dir = Some(Path::new(dir).to_path_buf());
         }
-        self.paths.with_overrides(&overrides)
+        Ok(self.paths.with_overrides(&overrides))
     }
 
     /// Resolves effective runtime storage by merging config-declared values
     /// with service-level overrides.
-    #[must_use]
-    pub fn resolve_effective_runtime_storage(&self) -> MediaRuntimeStorage {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if the document cannot be read, or
+    /// [`MediaPmError::Serialization`] if it cannot be parsed.
+    pub fn resolve_effective_runtime_storage(&self) -> Result<MediaRuntimeStorage, MediaPmError> {
         let effective_paths = MediaPmPaths::from_root(&self.paths.root_dir);
-        let config_storage = match ensure_and_load_mediapm_document(&effective_paths) {
-            Ok(doc) => doc.runtime,
-            Err(e) => {
-                tracing::error!("failed to load mediapm.ncl: {e}");
-                MediaRuntimeStorage::default()
-            }
-        };
-        merge_runtime_storage(&config_storage, &self.runtime_storage_overrides)
+        let doc = ensure_and_load_mediapm_document(&effective_paths)?;
+        Ok(merge_runtime_storage(&doc.runtime, &self.runtime_storage_overrides))
     }
 
     // -----------------------------------------------------------------------
@@ -154,41 +156,57 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns `true` if the tool is missing from the state's tool table or
     /// its requirements have changed.
-    #[must_use]
-    pub fn logical_tool_requires_sync(&self, tool_id: &str, state: &MediaPmState) -> bool {
+    pub fn logical_tool_requires_sync(
+        &self,
+        tool_id: &str,
+        state: &MediaPmState,
+    ) -> Result<bool, MediaPmError> {
         if let Some(existing) = state.tools.get(tool_id) {
-            let effective = self.resolve_effective_runtime_storage();
+            let effective = self.resolve_effective_runtime_storage()?;
             let desired = effective.tools.get(tool_id);
             // If no desired requirement is declared, the tool is considered
             // up-to-date when present in state.
-            desired.is_some_and(|req| req.version != existing.version || req.tag != existing.tag)
+            Ok(desired
+                .is_some_and(|req| req.version != existing.version || req.tag != existing.tag))
         } else {
-            true // missing from state → requires sync
+            Ok(true) // missing from state → requires sync
         }
     }
 
     /// Collects tool ids that require a sync based on state comparison.
-    #[must_use]
-    pub fn collect_tools_requiring_sync(&self, state: &MediaPmState) -> Vec<String> {
-        let effective = self.resolve_effective_runtime_storage();
+    pub fn collect_tools_requiring_sync(
+        &self,
+        state: &MediaPmState,
+    ) -> Result<Vec<String>, MediaPmError> {
+        let effective = self.resolve_effective_runtime_storage()?;
         let mut needing_sync = Vec::new();
         for tool_id in effective.tools.keys() {
-            if self.logical_tool_requires_sync(tool_id, state) {
+            if self.logical_tool_requires_sync(tool_id, state)? {
                 needing_sync.push(tool_id.clone());
             }
         }
-        needing_sync
+        Ok(needing_sync)
     }
 
     /// Appends a warning message when tools require syncing.
-    pub fn append_tool_sync_hint_warning(&self, warnings: &mut Vec<String>, state: &MediaPmState) {
-        let needing_sync = self.collect_tools_requiring_sync(state);
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MediaPmError::Io`] if the document cannot be read, or
+    /// [`MediaPmError::Serialization`] if it cannot be parsed.
+    pub fn append_tool_sync_hint_warning(
+        &self,
+        warnings: &mut Vec<String>,
+        state: &MediaPmState,
+    ) -> Result<(), MediaPmError> {
+        let needing_sync = self.collect_tools_requiring_sync(state)?;
         if !needing_sync.is_empty() {
             warnings.push(format!(
                 "tools require sync before library sync: {}",
                 needing_sync.join(", ")
             ));
         }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -244,7 +262,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -311,7 +329,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         _position: AddInsertPosition,
         overwrite: bool,
     ) -> Result<String, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -387,7 +405,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         preset: MediaHierarchyPreset,
         position: AddInsertPosition,
     ) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -418,7 +436,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Workflow`] if the media id does not exist.
     pub fn remove_media_source(&mut self, media_id: &str) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -439,7 +457,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Workflow`] if the node id is not found.
     pub fn remove_media_hierarchy_preset(&mut self, node_id: &str) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -464,7 +482,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         &mut self,
         media_id: &str,
     ) -> Result<usize, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -485,7 +503,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// Delegates to [`list_tools`].
     #[allow(dead_code)]
     pub(crate) fn list_tools(&self) -> Result<Vec<ConductorToolRow>, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         list_tools(&effective_paths)
     }
 
@@ -512,7 +530,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             )));
         }
 
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -534,7 +552,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     ///
     /// Returns [`MediaPmError::Workflow`] if the tool id is not present.
     pub fn remove_tool_requirement(&mut self, tool_id: &str) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
@@ -567,7 +585,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         invalidate_calls: bool,
         regenerate: bool,
     ) -> Result<MediaStepInvalidationSummary, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
         let mut state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
 
         if !state.media.contains_key(media_id) {
@@ -611,7 +629,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// Returns [`MediaPmError::Conductor`] if env file creation fails, or
     /// [`MediaPmError::Io`] if schema export fails.
     pub fn refresh_runtime_configuration(&self) -> Result<(), MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
+        let effective_paths = self.resolve_effective_paths()?;
 
         // Load dotenv files.
         load_runtime_dotenv(&effective_paths.env_file, &effective_paths.env_generated_file);
@@ -646,8 +664,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         &mut self,
         check_tag_updates: bool,
     ) -> Result<ToolsSyncSummary, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
-        let merged = self.resolve_effective_runtime_storage();
+        let effective_paths = self.resolve_effective_paths()?;
+        let merged = self.resolve_effective_runtime_storage()?;
 
         self.sync_tools_from_document(&effective_paths, &merged, check_tag_updates).await
     }
@@ -823,8 +841,8 @@ impl MediaPmService<FileSystemCas> {
         verify_materialization: bool,
         check_tag_updates: bool,
     ) -> Result<SyncSummary, MediaPmError> {
-        let effective_paths = self.resolve_effective_paths();
-        let merged = self.resolve_effective_runtime_storage();
+        let effective_paths = self.resolve_effective_paths()?;
+        let merged = self.resolve_effective_runtime_storage()?;
 
         let mut warnings: Vec<String> = Vec::new();
 
@@ -840,7 +858,7 @@ impl MediaPmService<FileSystemCas> {
         let state = load_mediapm_state_document(&effective_paths.mediapm_state_ncl)?;
 
         // 4. Check if any tools require sync.
-        self.append_tool_sync_hint_warning(&mut warnings, &state);
+        self.append_tool_sync_hint_warning(&mut warnings, &state)?;
 
         // 5 – 6. Open CAS and run the materializer.
         let materialize_report = {

@@ -130,7 +130,7 @@ async fn sync_tool_requires_sync_when_missing() -> Result<(), mediapm::MediaPmEr
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
-    assert!(service.logical_tool_requires_sync("non-existent", &state));
+    assert!(service.logical_tool_requires_sync("non-existent", &state)?);
     Ok(())
 }
 
@@ -157,7 +157,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
             ..Default::default()
         },
     );
-    assert!(!service.logical_tool_requires_sync("demo-tool", &state));
+    assert!(!service.logical_tool_requires_sync("demo-tool", &state)?);
     Ok(())
 }
 
@@ -168,7 +168,7 @@ async fn sync_no_tools_need_sync_when_none_desired() -> Result<(), mediapm::Medi
     let root = tempdir().expect("tempdir");
     let service = MediaPmService::new_fs_at(root.path()).await?;
     let state = MediaPmState::default();
-    let needing = service.collect_tools_requiring_sync(&state);
+    let needing = service.collect_tools_requiring_sync(&state)?;
     assert!(needing.is_empty(), "no desired tools → nothing needs sync");
     Ok(())
 }
@@ -189,7 +189,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     let service =
         MediaPmService::new_fs_at_with_runtime_storage_overrides(root.path(), overrides).await?;
     let state = MediaPmState::default();
-    let needing = service.collect_tools_requiring_sync(&state);
+    let needing = service.collect_tools_requiring_sync(&state)?;
     assert_eq!(needing, vec!["media-tagger"]);
     Ok(())
 }

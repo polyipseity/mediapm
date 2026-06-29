@@ -2319,7 +2319,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     let yt_dlp_max_concurrent_calls = assert_yt_dlp_concurrency_policy(&machine, &yt_dlp_tool_id)?;
     let yt_dlp_max_retries = assert_yt_dlp_retry_policy(&machine, &yt_dlp_tool_id)?;
     let (workflow_id, workflow_step_count) = assert_demo_workflow_shape(&machine)?;
-    let hierarchy_root = sync_service.resolve_effective_paths().hierarchy_root_dir;
+    let hierarchy_root = sync_service.resolve_effective_paths()?.hierarchy_root_dir;
     let (output_video_path, output_tagged_video_path, output_sidecar_paths) =
         resolve_demo_output_paths(&hierarchy_root)?;
     assert_tagged_media_replaygain_tags(&output_tagged_video_path).await?;
