@@ -113,12 +113,12 @@ mod tests {
         let hash = cas.put(bytes::Bytes::from(zip_bytes.clone())).await.unwrap();
 
         let mut cmap = BTreeMap::new();
-        cmap.insert("./linux/".to_string(), hash.to_hex());
+        cmap.insert("linux/".to_string(), hash.to_hex());
 
         let sandbox_dir = tempfile::tempdir().unwrap();
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
-        let unpacked = sandbox_dir.path().join("./linux/foo.txt");
+        let unpacked = sandbox_dir.path().join("linux/foo.txt");
         let content = std::fs::read(&unpacked).unwrap();
         assert_eq!(content, b"hello");
     }
@@ -130,12 +130,12 @@ mod tests {
         let hash = cas.put(bytes::Bytes::from(content.to_vec())).await.unwrap();
 
         let mut cmap = BTreeMap::new();
-        cmap.insert("./linux/sd".to_string(), hash.to_hex());
+        cmap.insert("linux/sd".to_string(), hash.to_hex());
 
         let sandbox_dir = tempfile::tempdir().unwrap();
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
-        let file_path = sandbox_dir.path().join("./linux/sd");
+        let file_path = sandbox_dir.path().join("linux/sd");
         let written = std::fs::read(&file_path).unwrap();
         assert_eq!(written, content);
     }
@@ -153,14 +153,14 @@ mod tests {
         let file_hash = cas.put(bytes::Bytes::from(file_content.to_vec())).await.unwrap();
 
         let mut cmap = BTreeMap::new();
-        cmap.insert("./linux/".to_string(), zip_hash.to_hex());
+        cmap.insert("linux/".to_string(), zip_hash.to_hex());
         cmap.insert("./cfg".to_string(), file_hash.to_hex());
 
         let sandbox_dir = tempfile::tempdir().unwrap();
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // ZIP-unpacked file
-        let tool_path = sandbox_dir.path().join("./linux/bin/tool");
+        let tool_path = sandbox_dir.path().join("linux/bin/tool");
         assert!(tool_path.exists(), "ZIP-unpacked file should exist");
         assert_eq!(std::fs::read(&tool_path).unwrap(), b"binary");
 
@@ -174,13 +174,13 @@ mod tests {
     async fn materialize_invalid_hash_skips_silently() {
         let cas = InMemoryCas::default();
         let mut cmap = BTreeMap::new();
-        cmap.insert("./linux/".to_string(), "not-a-hash".to_string());
+        cmap.insert("linux/".to_string(), "not-a-hash".to_string());
 
         let sandbox_dir = tempfile::tempdir().unwrap();
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // No file should be created (the invalid hash is skipped).
-        let path = sandbox_dir.path().join("./linux/");
+        let path = sandbox_dir.path().join("linux/");
         assert!(!path.exists());
     }
 
@@ -191,13 +191,13 @@ mod tests {
         let hash = cas.put(bytes::Bytes::from(zip_bytes)).await.unwrap();
 
         let mut cmap = BTreeMap::new();
-        cmap.insert("./linux/".to_string(), hash.to_hex());
+        cmap.insert("linux/".to_string(), hash.to_hex());
 
         let sandbox_dir = tempfile::tempdir().unwrap();
         materialize_content_map(&cas, &cmap, sandbox_dir.path()).await.unwrap();
 
         // The directory entry was created (empty).
-        let dir = sandbox_dir.path().join("./linux/");
+        let dir = sandbox_dir.path().join("linux/");
         assert!(dir.is_dir());
         // No files inside.
         let mut entries = std::fs::read_dir(&dir).unwrap();

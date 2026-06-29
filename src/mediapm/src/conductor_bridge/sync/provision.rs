@@ -273,7 +273,7 @@ async fn process_downloaded_archive(
         let hash = cas.put(Bytes::from(file_bytes)).await.map_err(|e| {
             MediaPmError::Workflow(format!("CAS put failed for binary '{tool_id}': {e}"))
         })?;
-        let key = format!("./{os_label}/{tool_id}");
+        let key = format!("{os_label}/{tool_id}");
         let mut content_map = BTreeMap::new();
         content_map.insert(key, hash.to_hex());
         Ok((content_map, tool_id.to_string()))
@@ -287,14 +287,14 @@ async fn process_downloaded_archive(
                 "CAS put failed for tool '{tool_id}' {os_label} zip: {e}"
             ))
         })?;
-        let key = format!("./{os_label}/");
+        let key = format!("{os_label}/");
         let mut content_map = BTreeMap::new();
         content_map.insert(key, hash.to_hex());
         Ok((content_map, exec_path))
     }
 }
 
-/// Builds a `${context.os == "linux" ? ./linux/sd : context.os == "macos" ? ./macos/sd : ./windows/sd}`
+/// Builds a `${context.os == "linux" ? linux/sd : context.os == "macos" ? macos/sd : windows/sd}`
 /// template string from the per-OS executable suffix map.
 ///
 /// When only one OS is provisioned the template collapses to a plain path.
@@ -305,11 +305,11 @@ fn build_os_conditional_selector(per_os_exec: &BTreeMap<String, String>) -> Stri
     let mut iter = per_os_exec.iter();
     let (first_os, first_path) = iter.next().expect("non-empty per_os_exec");
     if per_os_exec.len() == 1 {
-        return format!("./{first_os}/{first_path}");
+        return format!("{first_os}/{first_path}");
     }
-    let mut result = format!("${{context.os == \"{first_os}\" ? ./{first_os}/{first_path}");
+    let mut result = format!("${{context.os == \"{first_os}\" ? {first_os}/{first_path}");
     for (os, path) in iter.by_ref() {
-        result.push_str(&format!(" : context.os == \"{os}\" ? ./{os}/{path}"));
+        result.push_str(&format!(" : context.os == \"{os}\" ? {os}/{path}"));
     }
     result.push('}');
     result
@@ -386,7 +386,7 @@ mod tests {
     fn selector_single_os_returns_plain_path() {
         let mut map: BTreeMap<String, String> = BTreeMap::new();
         map.insert("linux".into(), "sd".into());
-        assert_eq!(build_os_conditional_selector(&map), "./linux/sd");
+        assert_eq!(build_os_conditional_selector(&map), "linux/sd");
     }
 
     #[test]
@@ -396,11 +396,11 @@ mod tests {
         map.insert("macos".into(), "sd".into());
         let result = build_os_conditional_selector(&map);
         assert!(result.starts_with("${context.os == \""));
-        assert!(result.contains("./linux/sd"));
-        assert!(result.contains("./macos/sd"));
+        assert!(result.contains("linux/sd"));
+        assert!(result.contains("macos/sd"));
         assert!(result.ends_with('}'));
         // The first condition should be Windows-free: macOS sorts after linux
-        assert!(!result.contains("./windows/sd"));
+        assert!(!result.contains("windows/sd"));
     }
 
     #[test]
@@ -410,9 +410,9 @@ mod tests {
         map.insert("macos".into(), "sd".into());
         map.insert("windows".into(), "sd.exe".into());
         let result = build_os_conditional_selector(&map);
-        assert!(result.contains("./linux/sd"));
-        assert!(result.contains("./macos/sd"));
-        assert!(result.contains("./windows/sd.exe"));
+        assert!(result.contains("linux/sd"));
+        assert!(result.contains("macos/sd"));
+        assert!(result.contains("windows/sd.exe"));
         // linux first, then macos, then windows (BTreeMap order)
         assert!(result.starts_with("${context.os == \"linux\""));
     }
@@ -422,7 +422,7 @@ mod tests {
         let mut map: BTreeMap<String, String> = BTreeMap::new();
         map.insert("linux".into(), "bin/sd".into());
         let result = build_os_conditional_selector(&map);
-        assert_eq!(result, "./linux/bin/sd");
+        assert_eq!(result, "linux/bin/sd");
     }
 
     // ── find_file_relative ────────────────────────────────────────────
@@ -509,7 +509,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./linux/"));
+        assert!(cmap.contains_key("linux/"));
         assert_eq!(exec, "sd");
     }
 
@@ -529,7 +529,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./macos/"));
+        assert!(cmap.contains_key("macos/"));
         assert_eq!(exec, "sd");
     }
 
@@ -549,7 +549,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./windows/"));
+        assert!(cmap.contains_key("windows/"));
         assert_eq!(exec, "sd.exe");
     }
 
@@ -570,7 +570,7 @@ mod tests {
         .unwrap();
         // ARCHIVE_BINARY writes bytes as "tool" (non-Windows) / "tool.exe" (Windows)
         // then renames to tool_id ("sd"). The walk finds the renamed file.
-        assert!(cmap.contains_key("./linux/sd"));
+        assert!(cmap.contains_key("linux/sd"));
         assert_eq!(exec, "sd");
     }
 
@@ -589,7 +589,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(cmap.contains_key("./linux/"));
+        assert!(cmap.contains_key("linux/"));
         assert_eq!(exec, "bin/sd");
     }
 
@@ -611,7 +611,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let expected_key = format!("./{}/", os_label);
+            let expected_key = format!("{}/", os_label);
             assert!(
                 cmap.contains_key(&expected_key),
                 "missing key '{expected_key}' for os '{os_label}'"
@@ -641,7 +641,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./linux/"), "expected single directory entry");
+        assert!(cmap.contains_key("linux/"), "expected single directory entry");
         assert_eq!(exec, "bin/sd");
     }
 
@@ -662,7 +662,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cmap.len(), 1);
-        assert!(cmap.contains_key("./linux/"), "expected directory entry for empty archive");
+        assert!(cmap.contains_key("linux/"), "expected directory entry for empty archive");
         assert_eq!(exec, "sd");
     }
 
@@ -697,10 +697,10 @@ mod tests {
         .await
         .unwrap();
 
-        // Each tool map has exactly one key: "./linux/"
+        // Each tool map has exactly one key: "linux/"
         assert_eq!(cmap_a.len(), 1);
-        assert!(cmap_a.contains_key("./linux/"));
+        assert!(cmap_a.contains_key("linux/"));
         assert_eq!(cmap_b.len(), 1);
-        assert!(cmap_b.contains_key("./linux/"));
+        assert!(cmap_b.contains_key("linux/"));
     }
 }

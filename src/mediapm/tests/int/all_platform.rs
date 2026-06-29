@@ -50,12 +50,12 @@ async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::
             continue;
         }
         for key in spec.runtime.content_map.keys() {
-            let has_os_prefix = key.starts_with("./linux/")
-                || key.starts_with("./macos/")
-                || key.starts_with("./windows/");
+            let has_os_prefix = key.starts_with("linux/")
+                || key.starts_with("macos/")
+                || key.starts_with("windows/");
             assert!(
                 has_os_prefix,
-                "tool {tool_id}: content_map key '{key}' should start with ./<os>/",
+                "tool {tool_id}: content_map key '{key}' should start with <os>/",
             );
         }
     }

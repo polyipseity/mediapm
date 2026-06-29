@@ -265,9 +265,9 @@ mod tests {
     #[test]
     fn build_tool_spec_returns_executable_kind() {
         let mut content_map = BTreeMap::new();
-        content_map.insert("./linux/sd".into(), "hash123".into());
-        content_map.insert("./macos/sd".into(), "hash456".into());
-        content_map.insert("./windows/sd.exe".into(), "hash789".into());
+        content_map.insert("linux/sd".into(), "hash123".into());
+        content_map.insert("macos/sd".into(), "hash456".into());
+        content_map.insert("windows/sd.exe".into(), "hash789".into());
 
         let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
         let (spec, runtime) = build_tool_spec("sd", content_map.clone(), "sd", limits);
@@ -284,17 +284,17 @@ mod tests {
     #[test]
     fn build_tool_spec_preserves_content_map() {
         let mut content_map = BTreeMap::new();
-        content_map.insert("./linux/sd".into(), "abc".into());
-        content_map.insert("./macos/sd".into(), "def".into());
-        content_map.insert("./windows/sd.exe".into(), "ghi".into());
+        content_map.insert("linux/sd".into(), "abc".into());
+        content_map.insert("macos/sd".into(), "def".into());
+        content_map.insert("windows/sd.exe".into(), "ghi".into());
 
         let limits = FfmpegSlotLimits { max_input_slots: 2, max_output_slots: 2 };
         let (_spec, runtime) = build_tool_spec("sd", content_map.clone(), "sd", limits);
 
         assert_eq!(runtime.content_map.len(), 3);
-        assert_eq!(runtime.content_map["./linux/sd"], "abc");
-        assert_eq!(runtime.content_map["./macos/sd"], "def");
-        assert_eq!(runtime.content_map["./windows/sd.exe"], "ghi");
+        assert_eq!(runtime.content_map["linux/sd"], "abc");
+        assert_eq!(runtime.content_map["macos/sd"], "def");
+        assert_eq!(runtime.content_map["windows/sd.exe"], "ghi");
     }
 
     #[test]

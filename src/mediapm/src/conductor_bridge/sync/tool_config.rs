@@ -94,8 +94,9 @@ pub(super) fn prefix_same_step_companion_content_entries(
 /// Writes the generated runtime `.env` file with tool binary paths.
 ///
 /// Iterates over resolved tool runtimes and emits one dotenv entry per
-/// content-map key mapping the resolved tool id and relative path to an
-/// env var of the form `MEDIAPM_<TOOL_ID_UPPER>_<KEY_UPPER>=<full_path>`.
+/// content-map key mapping the resolved tool id and OS label to an
+/// env var of the form `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>` (binary entry)
+/// or `MEDIAPM_<TOOL_ID_UPPER>_<OS_UPPER>_DIR` (archive directory entry).
 pub(super) fn write_generated_runtime_env_file(
     paths: &MediaPmPaths,
     tool_runtimes: &BTreeMap<String, ToolRuntime>,
@@ -105,12 +106,9 @@ pub(super) fn write_generated_runtime_env_file(
     let mut content = String::from(GENERATED_RUNTIME_ENV_HEADER);
     for (tool_id, runtime) in tool_runtimes {
         for key in runtime.content_map.keys() {
-            let env_name = format!(
-                "MEDIAPM_{}_{}",
-                tool_id.to_uppercase().replace(['-', '.'], "_"),
-                key.to_uppercase().replace(['-', '.'], "_"),
-            );
-            let env_value = paths.tools_dir.join(key).to_string_lossy().to_string();
+            let tool_id_upper = tool_id.to_uppercase().replace(['-', '.'], "_");
+            let (env_name, env_key) = content_key_to_env_name(&tool_id_upper, key);
+            let env_value = paths.tools_dir.join(env_key).to_string_lossy().to_string();
             let _ = writeln!(content, "{env_name}={}", render_dotenv_quoted_value(&env_value));
         }
     }
@@ -174,4 +172,38 @@ fn render_dotenv_quoted_value(value: &str) -> String {
         .replace('\r', "\\r")
         .replace('\t', "\\t");
     format!("\"{escaped}\"")
+}
+
+/// Derives an env var name from an already-uppercased tool id and a
+/// content-map key.
+///
+/// The key has the form `{os}/` (archive directory entry) or
+/// `{os}/{tool_id}` (binary entry).  Returns the env var name and the
+/// key to use for the filesystem path.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_eq!(
+///     content_key_to_env_name("YT_DLP", "linux/yt-dlp"),
+///     ("MEDIAPM_YT_DLP_LINUX", "linux/yt-dlp"),
+/// );
+/// assert_eq!(
+///     content_key_to_env_name("FFMPEG", "linux/"),
+///     ("MEDIAPM_FFMPEG_LINUX_DIR", "linux/"),
+/// );
+/// ```
+#[must_use]
+fn content_key_to_env_name<'a>(tool_id_upper: &str, key: &'a str) -> (String, &'a str) {
+    let mut parts = key.splitn(2, '/');
+    let os = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("");
+    let os_upper = os.to_uppercase();
+    if rest.is_empty() {
+        // Archive directory entry: {os}/
+        (format!("MEDIAPM_{tool_id_upper}_{os_upper}_DIR"), key)
+    } else {
+        // Binary entry: {os}/{tool_id}
+        (format!("MEDIAPM_{tool_id_upper}_{os_upper}"), key)
+    }
 }
