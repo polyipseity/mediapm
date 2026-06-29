@@ -16,7 +16,7 @@ pub(super) fn entry() -> ToolCatalogEntry {
                     url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
                     arch: "x86_64",
                     checksum_sha256: None,
-                    archive_format: None,
+                    archive_format: ARCHIVE_BINARY,
                 }],
             ),
             (
@@ -25,7 +25,7 @@ pub(super) fn entry() -> ToolCatalogEntry {
                     url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
                     arch: "x86_64",
                     checksum_sha256: None,
-                    archive_format: None,
+                    archive_format: ARCHIVE_BINARY,
                 }],
             ),
             (
@@ -34,7 +34,7 @@ pub(super) fn entry() -> ToolCatalogEntry {
                     url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
                     arch: "x86_64",
                     checksum_sha256: None,
-                    archive_format: None,
+                    archive_format: ARCHIVE_BINARY,
                 }],
             ),
         ],

@@ -258,8 +258,7 @@ pub(crate) async fn resolve_download_plan(
 
     for (os, values) in &entry.platforms {
         let urls: Vec<String> = values.iter().map(|pv| pv.url.to_string()).collect();
-        let archive_format =
-            values.iter().find_map(|pv| pv.archive_format).unwrap_or(entry.archive_format);
+        let archive_format = values[0].archive_format;
         per_os_actions.insert(*os, OsDownloadAction { os: *os, urls, archive_format });
     }
 
@@ -603,7 +602,7 @@ mod tests {
                         url: "https://example.com/linux.zip",
                         arch: "x86_64",
                         checksum_sha256: None,
-                        archive_format: Some(ARCHIVE_ZIP),
+                        archive_format: ARCHIVE_ZIP,
                     }],
                 ),
                 (
@@ -612,7 +611,7 @@ mod tests {
                         url: "https://example.com/macos.tar.gz",
                         arch: "x86_64",
                         checksum_sha256: None,
-                        archive_format: Some(ARCHIVE_TAR_GZ),
+                        archive_format: ARCHIVE_TAR_GZ,
                     }],
                 ),
                 (
@@ -621,7 +620,7 @@ mod tests {
                         url: "https://example.com/windows.zip",
                         arch: "x86_64",
                         checksum_sha256: None,
-                        archive_format: None, /* falls back to ARCHIVE_BINARY */
+                        archive_format: ARCHIVE_ZIP,
                     }],
                 ),
             ],
@@ -653,7 +652,7 @@ mod tests {
                         url: "https://example.com/linux.tar.xz",
                         arch: "x86_64",
                         checksum_sha256: None,
-                        archive_format: None,
+                        archive_format: ARCHIVE_TAR_XZ,
                     }],
                 ),
                 (
@@ -662,7 +661,7 @@ mod tests {
                         url: "https://example.com/macos.tar.xz",
                         arch: "x86_64",
                         checksum_sha256: None,
-                        archive_format: None,
+                        archive_format: ARCHIVE_TAR_XZ,
                     }],
                 ),
             ],
@@ -708,8 +707,8 @@ mod tests {
 
         assert_eq!(plan.per_os_actions[&ToolOs::Linux].archive_format, ARCHIVE_ZIP);
         assert_eq!(plan.per_os_actions[&ToolOs::Macos].archive_format, ARCHIVE_TAR_GZ);
-        // Windows has no per-platform override → falls back to entry-level
-        assert_eq!(plan.per_os_actions[&ToolOs::Windows].archive_format, ARCHIVE_BINARY);
+        // Windows uses explicit ARCHIVE_ZIP (matching its .zip URL)
+        assert_eq!(plan.per_os_actions[&ToolOs::Windows].archive_format, ARCHIVE_ZIP);
     }
 
     #[tokio::test]
@@ -748,5 +747,59 @@ mod tests {
         if host == ToolOs::Windows {
             assert!(!plan.warnings.is_empty(), "windows is missing → should warn");
         }
+    }
+
+    // ── extract_archive format-mismatch errors ────────────────────────
+
+    #[test]
+    fn extract_zip_rejects_tar_xz_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let bad_bytes = b"this is not a zip, it looks more like tar.xz junk\x00\x01\x02";
+        let result = extract_archive(bad_bytes, ARCHIVE_ZIP, dir.path());
+        assert!(result.is_err(), "tar.xz bytes should fail ZIP extraction");
+    }
+
+    #[test]
+    fn extract_zip_rejects_empty_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let result = extract_archive(b"", ARCHIVE_ZIP, dir.path());
+        assert!(result.is_err(), "empty bytes should fail ZIP extraction");
+    }
+
+    #[test]
+    fn extract_tar_gz_rejects_zip_bytes() {
+        let dir = tempdir().expect("tempdir");
+        // Minimal ZIP bytes (empty zip archive)
+        let empty_zip =
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let result = extract_archive(empty_zip, ARCHIVE_TAR_GZ, dir.path());
+        assert!(result.is_err(), "ZIP bytes should fail tar.gz extraction");
+    }
+
+    #[test]
+    fn extract_tar_xz_rejects_zip_bytes() {
+        let dir = tempdir().expect("tempdir");
+        let empty_zip =
+            b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        let result = extract_archive(empty_zip, ARCHIVE_TAR_XZ, dir.path());
+        assert!(result.is_err(), "ZIP bytes should fail tar.xz extraction");
+    }
+
+    #[test]
+    fn extract_binary_writes_bytes_as_file() {
+        let dir = tempdir().expect("tempdir");
+        let payload = b"#!/bin/sh\necho hello\n";
+        extract_archive(payload, ARCHIVE_BINARY, dir.path()).expect("binary extraction");
+        let file_path = dir.path().join("tool");
+        assert!(file_path.exists(), "binary payload should be written as a file");
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(content, "#!/bin/sh\necho hello\n");
+    }
+
+    #[test]
+    fn extract_unknown_format_returns_error() {
+        let dir = tempdir().expect("tempdir");
+        let result = extract_archive(b"some bytes", "nonexistent-format", dir.path());
+        assert!(result.is_err(), "unknown format should return error");
     }
 }
