@@ -3,6 +3,15 @@
 //! Catalog entries are split into one Rust file per logical tool so source
 //! details remain isolated and easy to review. Each entry defines per-platform
 //! download URLs, archive format, and checksums.
+//!
+//! # All-platform design
+//!
+//! Every [`ToolCatalogEntry`] defines [`PlatformValue`] entries for each
+//! supported OS (`linux`, `macos`, `windows`). The downloader and provisioner
+//! fetch and CAS-import payloads for **all** platforms, not just the host OS.
+//! The conductor's content-map key prefix (`./{os}/…`) and its
+//! [`FOREIGN_PLATFORM_DIRS`] filtering ensure only the host-native files
+//! are materialised into the sandbox at runtime.
 
 mod deno;
 mod ffmpeg;

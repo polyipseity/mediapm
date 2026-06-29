@@ -227,6 +227,11 @@ use crate::tools::models::GITHUB_API_BASE;
 /// Resolves a download plan for the given catalog entry, determining URLs,
 /// archive format, and whether it is a static or dynamic (GitHub API) plan.
 ///
+/// **All-platform output**: the returned plan includes one
+/// [`OsDownloadAction`] per [`ToolOs`] variant in `entry.platforms`, so
+/// callers can download and provision executables for every supported OS
+/// regardless of the host.
+///
 /// # Errors
 ///
 /// Returns [`MediaPmError`] when required metadata cannot be resolved.

@@ -38,6 +38,19 @@ applyTo: "src/**/*.rs"
   - media-facing API
   - CLI shell and composition over conductor + CAS
 
+## All-platform download principle (tool payloads)
+
+- Managed tool payloads (yt-dlp, ffmpeg, rsgain, sd, media-tagger, deno) are
+  downloaded and CAS-imported for **all supported OSes** regardless of the
+  host platform.
+- Content-map keys use the `./{os}/…` prefix pattern so
+  the conductor's [`FOREIGN_PLATFORM_DIRS`] filtering materialises only the
+  host-native files into the sandbox.
+- The command selector is emitted as a `${context.os == "..." ? ./{os}/… : …}`
+  template expression that resolves at runtime.
+- Never filter by host OS in the provisioner; always iterate
+  [`ResolvedDownloadPlan::per_os_actions`] unconditionally.
+
 If you introduce a new file, place it in the crate that owns that concern. Avoid re-introducing flat `src/*.rs` module sprawl at workspace root.
 
 When splitting one Rust module into multiple files under `src/`, prefer folder-module layout:
