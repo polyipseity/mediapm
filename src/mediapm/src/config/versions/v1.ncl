@@ -5,6 +5,22 @@
 
 let shared = import "mod.ncl" in
 
+let ToolRequirementV1 = {
+  version | String | { .. } | optional,
+  tag | String | optional,
+  dependencies | {
+    ffmpeg_version | String | { .. } | optional,
+    deno_version | String | { .. } | optional,
+    sd_version | String | { .. } | optional,
+    ..
+  } | default = {},
+  recheck_seconds | Number | optional,
+  max_input_slots | Number | optional,
+  max_output_slots | Number | optional,
+  ..
+}
+in
+
 {
   // MediaPmDocument V1 envelope for `mediapm.ncl` user config.
   MediaPmDocumentV1 = {
@@ -61,9 +77,9 @@ let shared = import "mod.ncl" in
         }
       | default
     = [],
+    tools | { : ToolRequirementV1 } | default = {},
     runtime | {
       mediapm_dir | String | optional,
-      tools | { .. } | optional,
       materialization_preference_order
         | Array (
             String
@@ -78,7 +94,6 @@ let shared = import "mod.ncl" in
     }
       | default
     = {},
-    conductor | { .. } | optional,
   },
 
   // MediaPmState V1 envelope for `<mediapm_dir>/state.ncl`.

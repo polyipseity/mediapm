@@ -139,11 +139,12 @@ in
 
 # ||| Top-level persisted Nickel document envelope for schema version 2.
 let NickelDocumentV2 = {
-  version | VersionTwoV2,
+  version | VersionTwoV2 | optional,
   tools | { _ : ToolSpecV2 } | optional,
   workflows | Array WorkflowSpecV2 | optional,
   external_data | { _ : ExternalContentRefV2 } | optional,
-  runtime | ConductorRuntimeConfigV2,
+  runtime | ConductorRuntimeConfigV2 | optional,
+  ..
 }
 in
 
