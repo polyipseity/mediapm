@@ -1,5 +1,13 @@
-//! Tool-sync integration tests that verify structural side effects of
-//! `MediaPmService::sync_tools()`.
+//! # Tool-sync integration tests
+//!
+//! Tests for [`MediaPmService::sync_tools()`] — the managed-tool
+//! reconciliation pipeline (download, register, provision, content-import,
+//! lifecycle, env generation).
+//!
+//! **Do NOT add workflow-sync or state-sync tests here.** This file is
+//! exclusively for the tool provisioning / syncing subset of the mediapm
+//! sync pipeline. Other sync concerns (hierarchy, materialization,
+//! conductor orchestration) belong in separate test modules.
 //!
 //! These tests focus on file-creation guarantees, document structure,
 //! idempotency, and pure-function logic — not on counter values

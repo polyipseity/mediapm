@@ -3,4 +3,6 @@
 mod builtins;
 mod demo;
 mod demo_online;
-mod sync;
+// CAUTION: This is tool-sync integration (MediaPmService::sync_tools()).
+// Do NOT put workflow-sync or state-sync tests here.
+mod tool_sync;
