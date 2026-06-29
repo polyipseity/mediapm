@@ -139,7 +139,7 @@ cas.put(bytes).await?;
 ```
 
 Newtype around `CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>`.
-WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) saved to `<store_dir>/metadata.json`.
+WAL + blob store + metadata constraints persisted on disk; blob metadata in-memory (rebuilt from WAL on open). Metadata (entries + constraints) are saved per fan-out directory alongside blob files (see `FileSystemBlobStore` aux-file API).
 
 Override of `FileSystemCas::object_path_for_hash` returns `Option<PathBuf>` (returns `None` for in-memory stores, `Some(path)` for filesystem stores).
 

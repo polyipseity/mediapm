@@ -18,8 +18,8 @@ use crate::storage::metadata_store::MetadataEntry;
 ///
 /// Wraps [`CasStore`] with a [`FileWal`] for WAL persistence, a
 /// [`FileSystemBlobStore`] for payload persistence, and a
-/// [`FileSystemMetadataStore`] for metadata + constraint lookup with persistent
-/// snapshot storage at `<dir>/metadata.json`.
+/// [`FileSystemMetadataStore`] for metadata + constraint lookup with per-
+/// directory persistent snapshots alongside blob files.
 #[derive(Clone)]
 pub struct FileSystemCas(
     pub(crate) CasStore<FileWal, FileSystemMetadataStore, FileSystemBlobStore>,
@@ -46,8 +46,7 @@ impl FileSystemCas {
         let wal = FileWal::create(dir.to_path_buf()).await?;
         let start_pos = wal.consumed_position().await;
         let blob = FileSystemBlobStore::create(dir.join("blobs"), verify_strategies).await?;
-        let metadata_path = dir.join("metadata.json");
-        let metadata = FileSystemMetadataStore::new(metadata_path);
+        let metadata = FileSystemMetadataStore::new(blob.clone());
         metadata.rebuild_from_wal(&wal).await?;
         let store = CasStore::new(wal, metadata, blob, start_pos, defaults::CACHE_TTL);
         Ok(Self(store))
