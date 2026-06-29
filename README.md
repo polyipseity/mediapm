@@ -83,7 +83,7 @@ cargo test-all    # test entire workspace
 MEDIAPM_DEMO_ONLINE_TIMEOUT_SECS=300 cargo run -p mediapm --example demo_online
 ```
 
-Inspect generated artifacts under `src/mediapm/examples/.artifacts/demo-online/`.
+Inspect generated artifacts under `src/mediapm/examples/artifacts/demo-online/`.
 
 `demo_online` is a full-sync integration example for normal validation runs.
 When setting `MEDIAPM_DEMO_ONLINE_RUN_SYNC` explicitly, use `true`.

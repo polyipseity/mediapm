@@ -366,7 +366,7 @@ Examples live under `src/mediapm-conductor/examples/`.
 - `demo.rs` should exercise all official builtins (`echo`, `fs`, `import`, `export`, `archive`) at least once.
 - `demo.rs` should keep generated `conductor.ncl` newcomer-friendly by including explicit default grouped runtime storage values as schema fields (not comments): `conductor_dir = .conductor`, `conductor_state_config = .conductor/state.ncl`, `cas_store_dir = .conductor/store/`.
 - When demonstrating filesystem flows in `demo.rs`, prefer compact pipelines that keep builtin `import` at the beginning and builtin `export` at the end, while minimizing intermediate filesystem-oriented steps.
-- `demo.rs` should persist orchestration state snapshots to a file under `examples/.artifacts/demo/` and print only the file path (not full state JSON payloads) to stdout.
+- `demo.rs` should persist orchestration state snapshots to a file under `examples/artifacts/demo/` and print only the file path (not full state JSON payloads) to stdout.
 - Non-demo examples should prefer ephemeral behavior unless persistence is essential to the teaching goal.
 - Keep example tool definitions consistent with current schema invariants.
 

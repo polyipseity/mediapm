@@ -2572,7 +2572,7 @@ mod tests {
     #[test]
     fn artifact_root_is_stable() {
         let text = super::display_path(&super::artifact_root());
-        assert!(text.ends_with("src/mediapm/examples/.artifacts/demo-online"));
+        assert!(text.ends_with("src/mediapm/examples/artifacts/demo-online"));
     }
 
     /// Ensures demo runtime config surfaces the explicit default

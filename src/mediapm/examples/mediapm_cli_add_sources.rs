@@ -2,7 +2,7 @@
 //!
 //! Uses `MediaPmService::add_local_source` and `add_media_source` directly
 //! instead of spawning the CLI. Writes generated documents under
-//! `src/mediapm/examples/.artifacts/cli-add-sources/` and emits a small
+//! `src/mediapm/examples/artifacts/cli-add-sources/` and emits a small
 //! `manifest.json` with resulting media ids and config locations.
 
 use std::error::Error;

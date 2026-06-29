@@ -56,7 +56,7 @@ const DEMO_MATERIALIZATION_PREFERENCE_ORDER: [MaterializationMethod; 4] = [
     MaterializationMethod::Copy,
 ];
 
-/// Manifest persisted under `examples/.artifacts/demo/manifest.json`.
+/// Manifest persisted under `examples/artifacts/demo/manifest.json`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -1253,7 +1253,7 @@ mod tests {
     #[test]
     fn artifact_root_is_stable() {
         let text = super::display_path(&super::artifact_root());
-        assert!(text.ends_with("src/mediapm/examples/.artifacts/demo"));
+        assert!(text.ends_with("src/mediapm/examples/artifacts/demo"));
     }
 
     /// Verifies sync-mode parser defaults to true and recognizes explicit false
