@@ -253,8 +253,9 @@ pub(crate) async fn resolve_download_plan(
 
     for (os, values) in &entry.platforms {
         let urls: Vec<String> = values.iter().map(|pv| pv.url.to_string()).collect();
-        per_os_actions
-            .insert(*os, OsDownloadAction { os: *os, urls, archive_format: entry.archive_format });
+        let archive_format =
+            values.iter().find_map(|pv| pv.archive_format).unwrap_or(entry.archive_format);
+        per_os_actions.insert(*os, OsDownloadAction { os: *os, urls, archive_format });
     }
 
     // Verify host OS has at least one action.

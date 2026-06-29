@@ -67,7 +67,8 @@ pub(crate) const fn current_tool_os() -> ToolOs {
     }
 }
 
-/// Per-platform download value with URL, architecture, and optional checksum.
+/// Per-platform download value with URL, architecture, optional checksum,
+/// and optional per-platform archive format override.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PlatformValue {
     /// Download URL for this platform.
@@ -76,6 +77,13 @@ pub(crate) struct PlatformValue {
     pub arch: &'static str,
     /// Optional SHA-256 checksum hex string.
     pub checksum_sha256: Option<&'static str>,
+    /// Per-platform archive format override.
+    ///
+    /// When `Some`, this overrides the tool-level `archive_format` for this
+    /// specific platform. This is needed when one platform uses a different
+    /// archive format (e.g. rsgain Linux uses `.tar.xz` while other platforms
+    /// use `.zip`).
+    pub archive_format: Option<&'static str>,
 }
 
 /// Per-OS list of platform download entries.
