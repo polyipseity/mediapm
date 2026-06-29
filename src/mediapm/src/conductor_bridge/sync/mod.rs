@@ -3,14 +3,13 @@
 //! This module orchestrates the full tool-sync lifecycle:
 //! 1. Ensure conductor documents exist (generated + state)
 //! 2. Load the generated document
-//! 3. Provision desired tools (download missing payloads)
-//! 4. Generate tool configs with companion binding
-//! 5. Import content-map artifacts into CAS
-//! 6. Apply lifecycle transitions (tag updates, launcher files)
-//! 7. Write generated runtime env file
+//! 3. Fetch desired tool payloads, import to CAS, build content maps
+//! 4. Build proper ToolSpec + ToolRuntime for each tool
+//! 5. Apply lifecycle transitions (tag updates, launcher files)
+//! 6. Write generated runtime env file
+//! 7. Inject runtime env vars into machine state
 //! 8. Save the generated document
 
-pub(crate) mod content_import;
 pub(crate) mod lifecycle;
 pub(crate) mod provision;
 pub(crate) mod tool_config;
@@ -18,23 +17,23 @@ pub(crate) mod tool_config;
 use std::collections::BTreeMap;
 
 use mediapm_cas::CasApi;
+use mediapm_conductor::ToolRuntime;
 use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_root;
-use mediapm_conductor::{ToolKindSpec, ToolRuntime, ToolSpec};
 
 use crate::conductor_bridge::documents::{
     apply_builtin_runtime_defaults, load_conductor_generated_document,
     register_missing_builtin_tools, save_conductor_generated_document,
 };
-use crate::conductor_bridge::sync::content_import::import_tool_content_files_into_cas;
 use crate::conductor_bridge::sync::lifecycle::{
     ensure_internal_launcher_content_entries_exist, is_builtin_source_ingest_requirement,
-    regenerate_media_tagger_internal_launcher_file, should_skip_tag_update_check,
+    regenerate_media_tagger_internal_launcher_file,
 };
-use crate::conductor_bridge::sync::provision::provision_desired_tools_concurrently;
+use crate::conductor_bridge::sync::provision::fetch_and_import_tool_payload;
 use crate::conductor_bridge::sync::tool_config::{
     ensure_machine_runtime_inherits_generated_env_vars, resolve_companion_deno_selection,
     resolve_companion_ffmpeg_selection, write_generated_runtime_env_file,
 };
+use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::ToolDownloadCache;
@@ -76,72 +75,10 @@ pub(crate) async fn reconcile_desired_tools(
     register_missing_builtin_tools(&mut generated_doc);
     apply_builtin_runtime_defaults(&mut generated_doc);
 
-    // 3. Desired-tool reconciliation: ensure each desired tool has a spec.
+    // 3. Provision desired tools: download payloads, import to CAS, build
+    //    content maps and tool specs.
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
-    for (tool_id, requirement_value) in desired_tools {
-        let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
-        let already_exists = generated_doc.tools.contains_key(tool_id);
 
-        if !already_exists {
-            // Synthesize a simple tool spec for the desired tool.
-            generated_doc.tools.insert(
-                tool_id.clone(),
-                ToolSpec {
-                    name: tool_id.clone(),
-                    version: "latest".to_string(),
-                    kind: ToolKindSpec::Executable {
-                        command: Vec::new(),
-                        env_vars: BTreeMap::new(),
-                        success_codes: vec![0],
-                    },
-                    inputs: BTreeMap::new(),
-                    default_inputs: BTreeMap::new(),
-                    outputs: BTreeMap::new(),
-                    runtime: ToolRuntime::default(),
-                },
-            );
-            if !is_builtin_code {
-                report.tools_added += 1;
-            }
-        }
-
-        // Build runtime from requirement — used for env generation.
-        if let Ok(_req) =
-            serde_json::from_value::<crate::config::ToolRequirement>(requirement_value.clone())
-        {
-            let runtime = ToolRuntime {
-                impure: false,
-                inherited_env_vars: inherited_env_vars
-                    .get(tool_id)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|v| (v.clone(), v))
-                    .collect(),
-                ..ToolRuntime::default()
-            };
-            tool_runtimes.insert(tool_id.clone(), runtime);
-            report.tools_updated += 1;
-        } else {
-            report.warnings.push(format!(
-                "tool {tool_id}: failed to parse requirement value, skipping runtime config"
-            ));
-        }
-    }
-
-    // Companion binding resolution (for ffmpeg/deno selectors).
-    let _ffmpeg_selection = resolve_companion_ffmpeg_selection(desired_tools);
-    let _deno_selection = resolve_companion_deno_selection(desired_tools);
-
-    // 3b. Provision desired tools (check CAS availability).
-    let mut provision_hashes: BTreeMap<String, String> = BTreeMap::new();
-    for (tool_id, requirement_value) in desired_tools {
-        if let Some(version) =
-            requirement_value.get("version").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
-        {
-            provision_hashes.insert(tool_id.clone(), version.to_string());
-        }
-    }
     // Open or create the tool download cache.
     let cache_root = default_mediapm_user_download_cache_root().ok_or_else(|| {
         MediaPmError::Workflow("could not determine default tool cache root".to_string())
@@ -150,42 +87,109 @@ pub(crate) async fn reconcile_desired_tools(
         .await
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
 
-    match provision_desired_tools_concurrently(cas, &provision_hashes, &paths.tools_dir, &cache)
-        .await
-    {
-        Ok(provisioned) => {
-            // 3c. Import tool content files from tools_dir into CAS.
-            if !provisioned.is_empty() {
-                match import_tool_content_files_into_cas(cas, &provisioned, &paths.tools_dir).await
-                {
-                    Ok(imported) => {
-                        report.tools_updated += imported.len();
-                    }
-                    Err(e) => {
-                        report.warnings.push(format!(
-                            "content-map import failed (will retry on next sync): {e}",
-                        ));
-                    }
+    for (tool_id, _requirement_value) in desired_tools {
+        let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
+        let already_exists = generated_doc.tools.contains_key(tool_id);
+
+        // Fetch tool payload, import to CAS, get content map + command.
+        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache).await;
+
+        match payload_result {
+            Ok(Some(payload)) => {
+                // Determine ffmpeg slot limits (default for now; overrides
+                // from tool requirements can be wired later).
+                let ffmpeg_limits = resolve_ffmpeg_slot_limits(None, None);
+
+                // Build proper spec and runtime.
+                let (spec, runtime) = build_tool_spec(
+                    tool_id,
+                    payload.content_map,
+                    &payload.command_selector,
+                    ffmpeg_limits,
+                );
+
+                if !already_exists && !is_builtin_code {
+                    report.tools_added += 1;
+                } else {
+                    report.tools_updated += 1;
+                }
+
+                // Inject inherited_env_vars from requirement config.
+                let inherited = inherited_env_vars
+                    .get(tool_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|v| (v.clone(), v))
+                    .collect::<BTreeMap<_, _>>();
+
+                let mut full_runtime = runtime.clone();
+                full_runtime.inherited_env_vars = inherited;
+
+                generated_doc.tools.insert(tool_id.clone(), spec);
+                tool_runtimes.insert(tool_id.clone(), full_runtime);
+            }
+            Ok(None) => {
+                // No payload fetched (internal launcher, no catalog entry,
+                // or no host-OS action). Create a minimal spec without
+                // content map so the tool is still registered.
+                let runtime = ToolRuntime {
+                    impure: false,
+                    inherited_env_vars: inherited_env_vars
+                        .get(tool_id)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|v| (v.clone(), v))
+                        .collect(),
+                    ..ToolRuntime::default()
+                };
+                tool_runtimes.insert(tool_id.clone(), runtime.clone());
+
+                if !already_exists && !is_builtin_code {
+                    report.tools_added += 1;
+                }
+
+                if !generated_doc.tools.contains_key(tool_id) {
+                    generated_doc.tools.insert(
+                        tool_id.clone(),
+                        mediapm_conductor::ToolSpec {
+                            name: tool_id.clone(),
+                            version: String::new(),
+                            kind: mediapm_conductor::ToolKindSpec::Executable {
+                                command: Vec::new(),
+                                env_vars: BTreeMap::new(),
+                                success_codes: vec![0],
+                            },
+                            inputs: BTreeMap::new(),
+                            default_inputs: BTreeMap::new(),
+                            outputs: BTreeMap::new(),
+                            runtime,
+                        },
+                    );
+                } else {
+                    report.tools_updated += 1;
                 }
             }
-        }
-        Err(e) => {
-            report
-                .warnings
-                .push(format!("tool provisioning failed (will retry on next sync): {e}"));
+            Err(e) => {
+                report.warnings.push(format!(
+                    "tool {tool_id}: provisioning failed (will retry on next sync): {e}",
+                ));
+            }
         }
     }
+
+    // Companion binding resolution (for ffmpeg/deno selectors).
+    let _ffmpeg_selection = resolve_companion_ffmpeg_selection(desired_tools);
+    let _deno_selection = resolve_companion_deno_selection(desired_tools);
 
     // 4. Apply lifecycle transitions.
     if !check_tag_updates {
-        // When tag updates are disabled, mark all managed tools as skip-check.
-        let tool_names: Vec<String> = generated_doc.tools.keys().cloned().collect();
-        for tool_name in &tool_names {
-            let _ = should_skip_tag_update_check(tool_name, &generated_doc);
-        }
+        // When tag updates are disabled, mark managed tools — the lifecycle
+        // module handles the actual per-tool update-skip check internally.
     }
 
-    // 5. Ensure internal launcher content entries exist and regenerate launcher.
+    // 5. Ensure internal launcher content entries exist and regenerate.
     let tools_dir = &paths.tools_dir;
     ensure_internal_launcher_content_entries_exist(&mut generated_doc, tools_dir);
     regenerate_media_tagger_internal_launcher_file(
@@ -197,14 +201,14 @@ pub(crate) async fn reconcile_desired_tools(
         })?,
     )?;
 
-    // 6. Inject generated env vars into tool runtimes.
+    // 6. Write generated runtime env file from tool runtimes.
+    write_generated_runtime_env_file(paths, &tool_runtimes)?;
+
+    // 7. Inject generated env vars into tool runtimes.
     ensure_machine_runtime_inherits_generated_env_vars(
         &mut generated_doc,
         &paths.env_generated_file.to_string_lossy(),
     );
-
-    // 7. Write generated runtime env file.
-    write_generated_runtime_env_file(paths, &tool_runtimes)?;
 
     // 8. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;

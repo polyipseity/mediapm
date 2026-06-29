@@ -11,9 +11,6 @@
 //! - [`template`] — command-template validation, environment-variable substitution, sandbox-path normalization
 //! - [`launcher`] — media-tagger launcher binary path resolution
 
-#![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
-
 pub(crate) mod launcher;
 pub(crate) mod option_constants;
 pub(crate) mod option_tokens;
@@ -35,8 +32,10 @@ use crate::conductor_bridge::constants::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FfmpegSlotLimits {
     /// Maximum number of ffmpeg input content / cover-art slots.
+    #[allow(dead_code)]
     pub(crate) max_input_slots: u32,
     /// Maximum number of ffmpeg indexed output-file slots.
+    #[allow(dead_code)]
     pub(crate) max_output_slots: u32,
 }
 
@@ -54,10 +53,15 @@ pub(crate) fn resolve_ffmpeg_slot_limits(
 }
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] for one managed tool.
+///
+/// `content_map` maps sandbox-relative paths to CAS hash hex strings
+/// (output of the fetch + CAS-import step in the sync pipeline).
+/// `command_path` is the sandbox-relative path to the main executable.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn build_tool_spec(
     tool_name: &str,
     content_map: BTreeMap<String, String>,
+    command_path: &str,
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
     let inputs = build_tool_inputs(tool_name, ffmpeg_slot_limits);
@@ -73,13 +77,17 @@ pub(crate) fn build_tool_spec(
     };
 
     let spec = ToolSpec {
-        kind: ToolKindSpec::Builtin { name: tool_name.to_string(), version: String::new() },
+        kind: ToolKindSpec::Executable {
+            command: vec![command_path.to_string()],
+            env_vars: BTreeMap::new(),
+            success_codes: vec![0],
+        },
         name: tool_name.to_string(),
         version: String::new(),
         inputs,
         default_inputs,
         outputs,
-        runtime: ToolRuntime::default(),
+        runtime: runtime.clone(),
     };
 
     (spec, runtime)
@@ -88,12 +96,12 @@ pub(crate) fn build_tool_spec(
 // ── Default policy helpers ───────────────────────────────────────────────
 
 #[must_use]
-pub(super) fn default_max_concurrent_calls(tool_name: &str) -> usize {
+fn default_max_concurrent_calls(tool_name: &str) -> usize {
     usize::from(tool_name.eq_ignore_ascii_case("yt-dlp"))
 }
 
 #[must_use]
-pub(super) fn default_max_retries(tool_name: &str) -> usize {
+fn default_max_retries(tool_name: &str) -> usize {
     usize::from(tool_name.eq_ignore_ascii_case("yt-dlp"))
 }
 

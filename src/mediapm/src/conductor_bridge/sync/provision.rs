@@ -1,110 +1,167 @@
-//! Concurrent tool payload provisioning.
+//! Tool payload provisioning: download, extract, and import to CAS.
 //!
-//! This module handles downloading and verifying tool payloads concurrently,
-//! with progress reporting via pulse-bar events.
+//! This module provides [`fetch_and_import_tool_payload`] which handles the
+//! full lifecycle for one tool: look up catalog → resolve download plan →
+//! download → extract → walk files → CAS import → content map.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use bytes::Bytes;
 use mediapm_cas::CasApi;
 
 use crate::error::MediaPmError;
-use crate::tools::catalog::{current_tool_os, tool_catalog_entry};
+use crate::tools::catalog::{ARCHIVE_BINARY, current_tool_os, tool_catalog_entry};
 use crate::tools::downloader::{
     ToolDownloadCache, extract_archive, fetch_bytes_from_candidates, resolve_download_plan,
 };
 
-/// Progress event emitted by the provision worker.
-#[allow(dead_code)]
+/// Result of fetching and importing a tool payload into CAS.
 #[derive(Debug, Clone)]
-pub(super) enum ProvisionWorkerEvent {
-    /// One tool finished provisioning (tool name, result).
-    Finished(String, Result<(), String>),
+pub(super) struct FetchedToolPayload {
+    /// Content map: sandbox-relative path → CAS hash hex string.
+    pub(super) content_map: BTreeMap<String, String>,
+    /// Sandbox-relative path to the main executable.
+    pub(super) command_selector: String,
 }
 
-/// Callback invoked with download progress for one tool payload.
-#[allow(dead_code)]
-pub(super) type DownloadProgressCallback = Box<dyn Fn(u64, u64) + Send + 'static>;
-
-/// Provisions desired tools concurrently, downloading needed payloads.
+/// Fetches a tool payload, extracts it, imports individual files to CAS,
+/// and returns the content map + command selector.
 ///
-/// Iterates over each desired tool, resolves its catalog entry, downloads
-/// missing payloads via the tool download cache, extracts them under
-/// `tools_cache_root`, and returns the subset of entries whose payloads
-/// were successfully provisioned. Missing or failed entries are logged as
-/// warnings.
-pub(super) async fn provision_desired_tools_concurrently(
+/// Returns `Ok(None)` when the tool has no catalog entry, is an internal
+/// launcher, or has no matching host-OS download action.
+pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
-    desired_tools: &BTreeMap<String, String>,
-    tools_cache_root: &Path,
+    tool_id: &str,
     cache: &ToolDownloadCache,
-) -> Result<BTreeMap<String, String>, MediaPmError> {
-    let mut result = BTreeMap::new();
-    let _ = cas; // retained in signature for future CAS integration
+) -> Result<Option<FetchedToolPayload>, MediaPmError> {
+    let Some(entry) = tool_catalog_entry(tool_id) else {
+        tracing::warn!("tool {tool_id}: no catalog entry found, skipping provisioning");
+        return Ok(None);
+    };
 
-    for (tool_id, hash_or_version) in desired_tools {
-        // Look up catalog entry.
-        let Some(entry) = tool_catalog_entry(tool_id) else {
-            tracing::warn!("tool {tool_id}: no catalog entry found, skipping provisioning");
-            continue;
-        };
+    let plan = resolve_download_plan(entry, cache).await.map_err(|e| {
+        MediaPmError::Workflow(format!("tool {tool_id}: failed to resolve download plan: {e}"))
+    })?;
 
-        // Resolve download plan.
-        let plan = match resolve_download_plan(entry, cache).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("tool {tool_id}: failed to resolve download plan: {e}, skipping");
-                continue;
-            }
-        };
-
-        // Internal launcher tools need no download.
-        if plan.internal_launcher {
-            result.insert(tool_id.clone(), hash_or_version.clone());
-            continue;
-        }
-
-        // Determine host OS action.
-        let host_os = current_tool_os();
-        let Some(action) = plan.per_os_actions.get(&host_os) else {
-            tracing::warn!(
-                "tool {tool_id}: no download action for host OS {:?}, skipping",
-                host_os,
-            );
-            continue;
-        };
-
-        // Download payload (with cache).
-        let cache_key = format!("{}_{}", entry.id, entry.latest);
-        let bytes = if let Some(cached) = cache.lookup_bytes(&cache_key).await {
-            cached
-        } else {
-            match fetch_bytes_from_candidates(&action.urls, None).await {
-                Ok(bytes) => {
-                    cache.store_bytes(&cache_key, &bytes).await;
-                    bytes
-                }
-                Err(e) => {
-                    tracing::warn!("tool {tool_id}: download failed: {e}, skipping");
-                    continue;
-                }
-            }
-        };
-
-        // Compute BLAKE3 hash.
-        let hash = blake3::hash(&bytes);
-        let hash_hex = hash.to_hex().as_str().to_string();
-
-        // Extract to tools_cache_root/<tool_id>.
-        let target_dir = tools_cache_root.join(tool_id);
-        tokio::fs::create_dir_all(&target_dir).await.ok();
-        if let Err(e) = extract_archive(&bytes, action.archive_format, &target_dir) {
-            tracing::warn!("tool {tool_id}: extraction failed: {e}, skipping");
-            continue;
-        }
-
-        result.insert(tool_id.clone(), hash_hex);
+    if plan.internal_launcher {
+        return Ok(None);
     }
 
-    Ok(result)
+    let host_os = current_tool_os();
+    let Some(action) = plan.per_os_actions.get(&host_os) else {
+        tracing::warn!("tool {tool_id}: no download action for host OS {:?}, skipping", host_os);
+        return Ok(None);
+    };
+
+    // Download payload (with cache).
+    let cache_key = format!("{}_{}", entry.id, entry.latest);
+    let bytes = if let Some(cached) = cache.lookup_bytes(&cache_key).await {
+        cached
+    } else {
+        let downloaded = fetch_bytes_from_candidates(&action.urls, None)
+            .await
+            .map_err(|e| MediaPmError::Workflow(format!("tool {tool_id}: download failed: {e}")))?;
+        cache.store_bytes(&cache_key, &downloaded).await;
+        downloaded
+    };
+
+    // Extract to a temp directory.
+    let temp_dir = tempfile::tempdir().map_err(|source| MediaPmError::Io {
+        operation: "creating temp directory for tool extraction".to_string(),
+        path: PathBuf::new(),
+        source,
+    })?;
+    extract_archive(&bytes, action.archive_format, temp_dir.path())?;
+
+    // For binary format, rename `tool` → `<tool_id>`.
+    if action.archive_format == ARCHIVE_BINARY {
+        let exe_name = if cfg!(target_os = "windows") { "tool.exe" } else { "tool" };
+        let old_path = temp_dir.path().join(exe_name);
+        let new_path = temp_dir.path().join(tool_id);
+        if old_path.exists() {
+            std::fs::rename(&old_path, &new_path).map_err(|source| MediaPmError::Io {
+                operation: format!("renaming extracted binary from {exe_name} to {tool_id}"),
+                path: old_path,
+                source,
+            })?;
+        }
+    }
+
+    // Walk extracted files and import each to CAS.
+    let mut content_map: BTreeMap<String, String> = BTreeMap::new();
+    walk_and_import_to_cas(cas, temp_dir.path(), temp_dir.path(), &mut content_map).await?;
+
+    // Determine command_selector.
+    let command_selector = if action.archive_format == ARCHIVE_BINARY {
+        format!("./{tool_id}")
+    } else {
+        find_command_selector(temp_dir.path(), tool_id).unwrap_or_else(|| format!("./{tool_id}"))
+    };
+
+    Ok(Some(FetchedToolPayload { content_map, command_selector }))
+}
+
+/// Recursively walks a directory, reads each file, imports it to CAS,
+/// and records the mapping `./relative/path → hash_hex` in `content_map`.
+async fn walk_and_import_to_cas(
+    cas: &impl CasApi,
+    root: &Path,
+    dir: &Path,
+    content_map: &mut BTreeMap<String, String>,
+) -> Result<(), MediaPmError> {
+    for entry in std::fs::read_dir(dir).map_err(|source| MediaPmError::Io {
+        operation: format!("reading directory '{}'", dir.display()),
+        path: dir.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| MediaPmError::Io {
+            operation: format!("reading entry in '{}'", dir.display()),
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_dir() {
+            Box::pin(walk_and_import_to_cas(cas, root, &path, content_map)).await?;
+        } else if path.is_file() {
+            let relative = path.strip_prefix(root).unwrap_or(&path);
+            let key = format!("./{}", relative.to_string_lossy());
+            let file_bytes = std::fs::read(&path).map_err(|source| MediaPmError::Io {
+                operation: format!("reading file '{}' for CAS import", path.display()),
+                path: path.clone(),
+                source,
+            })?;
+            let hash = cas
+                .put(Bytes::from(file_bytes))
+                .await
+                .map_err(|e| MediaPmError::Workflow(format!("CAS put failed for '{key}': {e}")))?;
+            content_map.insert(key, hash.to_hex());
+        }
+    }
+    Ok(())
+}
+
+/// Finds the sandbox-relative path to an executable named `tool_id` within
+/// the extracted tree. Returns the relative path with `./` prefix.
+fn find_command_selector(root: &Path, tool_id: &str) -> Option<String> {
+    let target_name =
+        if cfg!(target_os = "windows") { format!("{tool_id}.exe") } else { tool_id.to_string() };
+    find_file_relative(root, root, &target_name).map(|rel| format!("./{}", rel.to_string_lossy()))
+}
+
+/// Recursively searches for a file with the given name, returning its path
+/// relative to `root`.
+fn find_file_relative(root: &Path, dir: &Path, target: &str) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()? {
+        let entry = entry.ok()?;
+        let path = entry.path();
+        if path.is_dir() {
+            if let found @ Some(_) = find_file_relative(root, &path, target) {
+                return found;
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(target) {
+            return path.strip_prefix(root).ok().map(|p| p.to_path_buf());
+        }
+    }
+    None
 }

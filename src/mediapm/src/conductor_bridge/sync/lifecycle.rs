@@ -1,26 +1,13 @@
 //! Tool lifecycle transitions.
 //!
-//! This module manages tag-update checks, content-map hash validation, and
-//! internal launcher file regeneration for managed tools.
+//! This module manages content-map hash validation and internal launcher
+//! file regeneration for managed tools.
 
 use std::path::Path;
 
 use mediapm_conductor::NickelDocument;
 
 use crate::error::MediaPmError;
-
-/// Tools that always recheck for tag updates regardless of provisioning
-/// recency.
-const ALWAYS_RECHECK_TOOLS: &[&str] = &["yt-dlp", "InternalLauncher"];
-
-/// Returns true when the tool's tag update check should be skipped (healthy
-/// tools with recent successful provisioning), except for yt-dlp and
-/// `InternalLauncher` tools which always recheck.
-#[must_use]
-pub(super) fn should_skip_tag_update_check(tool_name: &str, _document: &NickelDocument) -> bool {
-    // yt-dlp and InternalLauncher always recheck; all others skip the check.
-    !ALWAYS_RECHECK_TOOLS.iter().any(|name| tool_name.eq_ignore_ascii_case(name))
-}
 
 /// Returns true when the tool name identifies a builtin source-ingest
 /// tool that requires special content-ingestion handling.
