@@ -10,10 +10,11 @@
 //! not need to survive process death.
 
 use super::blob_store::InMemoryBlobStore;
-use super::metadata_store::InMemoryMetadataStore;
+use super::metadata_store::{InMemoryMetadataStore, MetadataStore};
 use super::store::CasStore;
 use super::wal::{InMemoryWal, WalPosition};
 use crate::defaults;
+use crate::hash::Hash;
 
 /// Fully-assembled in-memory CAS store.
 ///
@@ -46,6 +47,16 @@ impl std::ops::Deref for InMemoryCas {
     type Target = CasStore<InMemoryWal, InMemoryMetadataStore, InMemoryBlobStore>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+/// Test helper: simulate metadata loss while preserving blobs.
+#[doc(hidden)]
+impl InMemoryCas {
+    /// Remove the metadata entry for `hash`, leaving blob data and the
+    /// (already-consumed) WAL intact. Call only after `flush()`.
+    pub async fn simulate_metadata_loss_for_test(&self, hash: Hash) {
+        self.metadata_store().delete(&hash).await.ok();
     }
 }
 

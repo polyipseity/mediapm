@@ -498,3 +498,237 @@ pub(super) async fn resolve_delta_chain<M: MetadataStore, B: BlobStore>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        api::ObjectEncoding,
+        delta::object::StoredObject,
+        error::CasError,
+        hash::Hash,
+        storage::{
+            blob_store::{BlobStore, InMemoryBlobStore},
+            metadata_store::{InMemoryMetadataStore, MetadataEntry},
+            wal::InMemoryWal,
+        },
+    };
+    use bytes::Bytes;
+
+    /// Blob store wrapper that separates full and delta blob paths into
+    /// independent [`InMemoryBlobStore`]s, mimicking the filesystem layout
+    /// where `<hash>` serves full reads and `<hash>.diff` serves delta reads.
+    #[derive(Clone)]
+    struct SplitBlobStore {
+        full: InMemoryBlobStore,
+        delta: InMemoryBlobStore,
+    }
+
+    impl SplitBlobStore {
+        fn new() -> Self {
+            Self { full: InMemoryBlobStore::new(), delta: InMemoryBlobStore::new() }
+        }
+    }
+
+    #[async_trait]
+    impl BlobStore for SplitBlobStore {
+        async fn write(
+            &self,
+            hash: Hash,
+            encoding: ObjectEncoding,
+            data: Bytes,
+        ) -> Result<(), CasError> {
+            match encoding {
+                ObjectEncoding::Full => self.full.write(hash, encoding, data).await,
+                ObjectEncoding::Delta { .. } => self.delta.write(hash, encoding, data).await,
+            }
+        }
+
+        async fn read(&self, hash: &Hash) -> Result<Bytes, CasError> {
+            self.full.read(hash).await
+        }
+
+        async fn read_delta(&self, hash: &Hash) -> Result<Bytes, CasError> {
+            self.delta.read_delta(hash).await
+        }
+
+        async fn delete(&self, hash: &Hash) -> Result<(), CasError> {
+            self.full.delete(hash).await?;
+            self.delta.delete(hash).await
+        }
+    }
+
+    type TestView = ComposedReadView<InMemoryMetadataStore, InMemoryWal, SplitBlobStore>;
+
+    fn make_view() -> TestView {
+        ComposedReadView::new(
+            InMemoryMetadataStore::new(),
+            InMemoryWal::new(),
+            SplitBlobStore::new(),
+        )
+    }
+
+    async fn put_full(view: &TestView, data: &[u8]) -> Hash {
+        let hash = Hash::from_content(data);
+        view.metadata
+            .put(hash, MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full })
+            .await
+            .unwrap();
+        view.blob.write(hash, ObjectEncoding::Full, Bytes::copy_from_slice(data)).await.unwrap();
+        hash
+    }
+
+    async fn put_delta(view: &TestView, base_data: &[u8], delta_data: &[u8]) -> (Hash, Hash) {
+        let base_hash = Hash::from_content(base_data);
+        let data_hash = Hash::from_content(delta_data);
+
+        // Insert base as full blob.
+        view.metadata
+            .put(
+                base_hash,
+                MetadataEntry { len: base_data.len() as u64, encoding: ObjectEncoding::Full },
+            )
+            .await
+            .unwrap();
+        view.blob
+            .write(base_hash, ObjectEncoding::Full, Bytes::copy_from_slice(base_data))
+            .await
+            .unwrap();
+
+        // Create a delta blob.
+        let diff = crate::delta::patch::DeltaPatch::diff(base_data, delta_data).unwrap();
+        let stored =
+            StoredObject::delta(base_hash, delta_data.len() as u64, diff.encode().to_vec());
+        let encoded = stored.encode();
+        view.blob
+            .write(data_hash, ObjectEncoding::Delta { base_hash }, Bytes::from(encoded))
+            .await
+            .unwrap();
+
+        (base_hash, data_hash)
+    }
+
+    fn assert_not_found<T: std::fmt::Debug>(result: Result<T, CasError>) {
+        match result {
+            Err(CasError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Full-blob orphan recovery via ReadView trait
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_recovers_orphan_full_blob() {
+        let view = make_view();
+        let hash = put_full(&view, b"unit-orphan-full").await;
+        view.metadata.delete(&hash).await.unwrap();
+
+        let retrieved = view.get(&hash).await.unwrap();
+        assert_eq!(&retrieved[..], b"unit-orphan-full");
+    }
+
+    #[tokio::test]
+    async fn stat_recovers_orphan_full_blob() {
+        let view = make_view();
+        let hash = put_full(&view, b"unit-orphan-stat").await;
+        view.metadata.delete(&hash).await.unwrap();
+
+        let meta = view.stat(&hash).await.unwrap();
+        assert_eq!(meta.len, 16);
+    }
+
+    #[tokio::test]
+    async fn get_to_writer_recovers_orphan_full_blob() {
+        let view = make_view();
+        let hash = put_full(&view, b"unit-orphan-stream").await;
+        view.metadata.delete(&hash).await.unwrap();
+
+        let mut buf = Vec::new();
+        view.get_to_writer(&hash, &mut buf).await.unwrap();
+        assert_eq!(&Bytes::from(buf)[..], b"unit-orphan-stream");
+    }
+
+    // -----------------------------------------------------------------------
+    // Delta-blob orphan recovery — read is correctly separated from
+    // read_delta so delta-encoded blobs never shadow full-blob recovery.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_recovers_orphan_delta_blob() {
+        let view = make_view();
+        let (_base_hash, data_hash) = put_delta(&view, b"base-data", b"delta-data").await;
+
+        // Remove metadata from both the delta and base so recovery kicks in.
+        view.metadata.delete(&data_hash).await.unwrap();
+
+        let retrieved = view.get(&data_hash).await.unwrap();
+        assert_eq!(&retrieved[..], b"delta-data");
+    }
+
+    #[tokio::test]
+    async fn stat_recovers_orphan_delta_blob() {
+        let view = make_view();
+        let (_base_hash, data_hash) = put_delta(&view, b"base-stat", b"delta-stat").await;
+
+        view.metadata.delete(&data_hash).await.unwrap();
+
+        let meta = view.stat(&data_hash).await.unwrap();
+        assert_eq!(meta.len, 10); // "delta-stat".len()
+    }
+
+    #[tokio::test]
+    async fn get_to_writer_recovers_orphan_delta_blob() {
+        let view = make_view();
+        let (_base_hash, data_hash) = put_delta(&view, b"base-stream", b"delta-stream").await;
+
+        view.metadata.delete(&data_hash).await.unwrap();
+
+        let mut buf = Vec::new();
+        view.get_to_writer(&data_hash, &mut buf).await.unwrap();
+        assert_eq!(&Bytes::from(buf)[..], b"delta-stream");
+    }
+
+    // -----------------------------------------------------------------------
+    // Negative path — missing objects are not recovered
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn missing_hash_not_recovered() {
+        let view = make_view();
+        let hash = Hash::from_content(b"never-put-unit");
+        let result = view.get(&hash).await;
+        assert_not_found(result);
+    }
+
+    #[tokio::test]
+    async fn missing_stat_not_recovered() {
+        let view = make_view();
+        let hash = Hash::from_content(b"never-put-stat-unit");
+        let result = view.stat(&hash).await;
+        assert_not_found(result);
+    }
+
+    #[tokio::test]
+    async fn missing_get_to_writer_not_recovered() {
+        let view = make_view();
+        let hash = Hash::from_content(b"never-put-stream-unit");
+        let mut buf = Vec::new();
+        let result = view.get_to_writer(&hash, &mut buf).await;
+        assert_not_found(result);
+    }
+
+    // -----------------------------------------------------------------------
+    // Orphan recovery does not affect normal paths
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn normal_path_unaffected() {
+        let view = make_view();
+        let hash = put_full(&view, b"normal-unit-path").await;
+
+        let retrieved = view.get(&hash).await.unwrap();
+        assert_eq!(&retrieved[..], b"normal-unit-path");
+    }
+}
