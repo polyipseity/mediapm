@@ -49,6 +49,11 @@ impl StoredObject {
         &self.state.payload
     }
 
+    /// Returns a reference to the inner delta state.
+    pub(crate) fn state(&self) -> &DeltaState {
+        &self.state
+    }
+
     /// Encodes this stored object's delta payload to wire format.
     pub(crate) fn encode(&self) -> Vec<u8> {
         encode_delta_state(self.state.clone())

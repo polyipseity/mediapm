@@ -20,6 +20,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::api::ObjectEncoding;
 use crate::defaults;
+use crate::delta::object::StoredObject;
 use crate::error::CasError;
 use crate::hash::Hash;
 
@@ -93,6 +94,95 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
         Self { pending: PendingOps::new(), metadata, wal, blob }
     }
 
+    /// Try to recover a blob whose metadata was lost but whose file still
+    /// exists in the blob store.
+    ///
+    /// Returns `Ok(Some(data))` when a full blob is found and its metadata
+    /// entry is inserted. Returns `Ok(None)` when a delta blob is found
+    /// (metadata inserted, caller should retry resolution) or when no blob
+    /// exists at all.
+    async fn try_orphan_recovery(&self, hash: &Hash) -> Result<Option<Bytes>, CasError> {
+        // Try full blob first (most common case).
+        match self.blob.read(hash).await {
+            Ok(data) => {
+                self.metadata
+                    .put(
+                        *hash,
+                        MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
+                    )
+                    .await?;
+                return Ok(Some(data));
+            }
+            Err(CasError::NotFound(_)) => {} // fall through to delta
+            Err(e) => return Err(e),
+        }
+
+        // Try delta blob.
+        match self.blob.read_delta(hash).await {
+            Ok(delta_bytes) => {
+                let stored = StoredObject::decode_delta(&delta_bytes)?;
+                self.metadata
+                    .put(
+                        *hash,
+                        MetadataEntry {
+                            len: stored.state().content_len,
+                            encoding: ObjectEncoding::Delta { base_hash: stored.state().base_hash },
+                        },
+                    )
+                    .await?;
+                // Precover ancestor chain so resolve_delta_chain succeeds.
+                self.precover_delta_chain(*hash, stored.state().base_hash).await?;
+                Ok(None)
+            }
+            Err(CasError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Walk the delta chain forward from `hash`→`base_hash`, recovering
+    /// missing metadata for each ancestor. This ensures that
+    /// `resolve_delta_chain` won't fail on missing base metadata during
+    /// the subsequent call by the read path.
+    async fn precover_delta_chain(&self, hash: Hash, mut base_hash: Hash) -> Result<(), CasError> {
+        for _ in 0..MAX_DELTA_CHAIN_DEPTH {
+            if self.metadata.get(&base_hash).await?.is_some() {
+                return Ok(());
+            }
+            // Full blob?
+            if let Ok(data) = self.blob.read(&base_hash).await {
+                self.metadata
+                    .put(
+                        base_hash,
+                        MetadataEntry { len: data.len() as u64, encoding: ObjectEncoding::Full },
+                    )
+                    .await?;
+                return Ok(());
+            }
+            // Delta blob?
+            if let Ok(delta_bytes) = self.blob.read_delta(&base_hash).await {
+                let stored = StoredObject::decode_delta(&delta_bytes)?;
+                self.metadata
+                    .put(
+                        base_hash,
+                        MetadataEntry {
+                            len: stored.state().content_len,
+                            encoding: ObjectEncoding::Delta { base_hash: stored.state().base_hash },
+                        },
+                    )
+                    .await?;
+                base_hash = stored.state().base_hash;
+                continue;
+            }
+            // Neither exists — resolution will produce its own error.
+            return Ok(());
+        }
+        Err(CasError::TooLarge {
+            hash,
+            size: MAX_DELTA_CHAIN_DEPTH as u64,
+            limit: MAX_DELTA_CHAIN_DEPTH as u64,
+        })
+    }
+
     /// Inner fetch: Metadata + Blob → WAL fallback with transparent delta
     /// reconstruction.
     ///
@@ -113,7 +203,29 @@ impl<M: MetadataStore, J: Wal, B: BlobStore> ComposedReadView<M, J, B> {
                     // normally be hit. Fall through to blob read.
                     Ok(None)
                 }
-                PendingState::Tombstone | PendingState::NotPresent => Ok(None),
+                PendingState::Tombstone => Ok(None),
+                PendingState::NotPresent => {
+                    // Orphan recovery before giving up.
+                    match self.try_orphan_recovery(hash).await? {
+                        Some(data) => return Ok(Some(data)),
+                        None => {
+                            // Possibly delta metadata was inserted — retry resolution.
+                            if let Some(entry) = self.metadata.get(hash).await? {
+                                return resolve_full_bytes(
+                                    hash,
+                                    &entry,
+                                    &self.metadata,
+                                    &self.blob,
+                                    "delta self-reference detected",
+                                    "delta chain: base",
+                                )
+                                .await
+                                .map(Some);
+                            }
+                            Ok(None)
+                        }
+                    }
+                }
             };
         };
 
@@ -192,8 +304,39 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
                     // Materialized large object — stream from blob.
                     self.blob.read_to_writer(hash, writer).await
                 }
-                PendingState::Tombstone | PendingState::NotPresent => {
-                    Err(CasError::NotFound(*hash))
+                PendingState::Tombstone => Err(CasError::NotFound(*hash)),
+                PendingState::NotPresent => {
+                    // Orphan recovery before giving up.
+                    match self.try_orphan_recovery(hash).await? {
+                        Some(data) => {
+                            writer.write_all(&data).await?;
+                            return Ok(());
+                        }
+                        None => {
+                            // Possibly delta metadata was inserted — retry resolution.
+                            if let Some(entry) = self.metadata.get(hash).await? {
+                                match entry.encoding {
+                                    ObjectEncoding::Full => {
+                                        return self.blob.read_to_writer(hash, writer).await;
+                                    }
+                                    ObjectEncoding::Delta { .. } => {
+                                        let bytes = resolve_full_bytes(
+                                            hash,
+                                            &entry,
+                                            &self.metadata,
+                                            &self.blob,
+                                            "delta self-reference detected",
+                                            "delta chain: base",
+                                        )
+                                        .await?;
+                                        writer.write_all(&bytes).await?;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                            Err(CasError::NotFound(*hash))
+                        }
+                    }
                 }
             };
         };
@@ -250,7 +393,20 @@ impl<M: MetadataStore + Send + Sync, J: Wal + Send + Sync, B: BlobStore + Send +
             PendingState::PresentExternal { content_len } => {
                 return Ok(ObjectMeta { len: content_len, encoding: ObjectEncoding::Full });
             }
-            PendingState::Tombstone | PendingState::NotPresent => {}
+            PendingState::Tombstone => {}
+            PendingState::NotPresent => {
+                // Orphan recovery before giving up.
+                if let Some(data) = self.try_orphan_recovery(hash).await? {
+                    return Ok(ObjectMeta {
+                        len: data.len() as u64,
+                        encoding: ObjectEncoding::Full,
+                    });
+                }
+                // Delta metadata may have been inserted.
+                if let Some(entry) = self.metadata.get(hash).await? {
+                    return Ok(entry.as_meta());
+                }
+            }
         }
 
         Err(CasError::NotFound(*hash))
