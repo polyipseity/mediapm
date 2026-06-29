@@ -193,7 +193,6 @@ pub struct PlatformInheritedEnvVars {
 /// Path-override fields use `Option` (`None` = use computed default from
 /// [`MediaPmPaths`](crate::paths::MediaPmPaths)).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MediaRuntimeStorage {
     /// Override for `mediapm.ncl` `runtime.mediapm_dir`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,9 +203,6 @@ pub struct MediaRuntimeStorage {
     /// Tool requirement metadata.
     #[serde(default)]
     pub tools: BTreeMap<String, ToolRequirement>,
-    /// Managed tool version requirements.
-    #[serde(default)]
-    pub tool_configs: BTreeMap<String, Value>,
     /// Materialization method preference order.
     #[serde(
         default = "defaults::default_materialization_preference_order",
@@ -306,7 +302,6 @@ impl Default for MediaRuntimeStorage {
             mediapm_dir: None,
             hierarchy_root_dir: None,
             tools: BTreeMap::new(),
-            tool_configs: BTreeMap::new(),
             materialization_preference_order: defaults::default_materialization_preference_order(),
             verify_on_read: defaults::default_verify_on_read(),
             verify_on_read_sample_denominator: defaults::default_verify_on_read_sample_denominator(

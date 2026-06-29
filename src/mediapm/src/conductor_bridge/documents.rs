@@ -146,7 +146,7 @@ pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
 /// Applies default runtime configuration (impure flag) for each builtin
 /// whose [`ToolSpec`] already exists in the document but lacks runtime
 /// overrides.
-pub(crate) fn register_missing_builtin_tool_configs(document: &mut NickelDocument) {
+pub(crate) fn apply_builtin_runtime_defaults(document: &mut NickelDocument) {
     for builtin in mediapm_conductor::tools::ALL_BUILTINS {
         if let Some(spec) = document.tools.get_mut(builtin.name) {
             // Set impure flag from builtin registration data.

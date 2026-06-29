@@ -321,8 +321,11 @@ pub fn merge_runtime_storage(
             .clone()
             .or_else(|| config_value.hierarchy_root_dir.clone()),
         materialization_preference_order: override_value.materialization_preference_order.clone(),
-        tools: override_value.tools.clone(),
-        tool_configs: override_value.tool_configs.clone(),
+        tools: {
+            let mut m = config_value.tools.clone();
+            m.extend(override_value.tools.clone());
+            m
+        },
         verify_on_read: override_value.verify_on_read.clone(),
         verify_on_read_sample_denominator: override_value.verify_on_read_sample_denominator,
         verify_on_read_stale_timeout_secs: override_value.verify_on_read_stale_timeout_secs,

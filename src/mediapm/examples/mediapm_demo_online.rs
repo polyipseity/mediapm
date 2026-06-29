@@ -1212,7 +1212,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         reconstructed_cache_ttl_seconds: 3600,
         retry_impure: false,
         tools: BTreeMap::new(),
-        tool_configs: BTreeMap::new(),
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;

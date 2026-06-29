@@ -30,13 +30,10 @@ pub(super) fn is_builtin_source_ingest_requirement(tool_name: &str) -> bool {
 }
 
 /// Checks whether a content-map hash value is still referenced by any
-/// tool config in the document.
+/// tool runtime in the document.
 #[allow(dead_code)]
 #[must_use]
-pub(super) fn is_hash_still_referenced_by_tool_configs(
-    hash: &str,
-    document: &NickelDocument,
-) -> bool {
+pub(super) fn is_hash_in_tool_content_maps(hash: &str, document: &NickelDocument) -> bool {
     document.tools.values().any(|spec| spec.runtime.content_map.values().any(|v| v == hash))
 }
 

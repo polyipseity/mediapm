@@ -22,7 +22,7 @@ use mediapm_conductor::cache_user_level::default_mediapm_user_download_cache_roo
 use mediapm_conductor::{ToolKindSpec, ToolRuntime, ToolSpec};
 
 use crate::conductor_bridge::documents::{
-    load_conductor_generated_document, register_missing_builtin_tool_configs,
+    apply_builtin_runtime_defaults, load_conductor_generated_document,
     register_missing_builtin_tools, save_conductor_generated_document,
 };
 use crate::conductor_bridge::sync::content_import::import_tool_content_files_into_cas;
@@ -74,7 +74,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     // 2. Register missing builtin tool definitions and config stubs.
     register_missing_builtin_tools(&mut generated_doc);
-    register_missing_builtin_tool_configs(&mut generated_doc);
+    apply_builtin_runtime_defaults(&mut generated_doc);
 
     // 3. Desired-tool reconciliation: ensure each desired tool has a spec.
     let mut tool_runtimes: BTreeMap<String, ToolRuntime> = BTreeMap::new();
