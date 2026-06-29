@@ -15,7 +15,7 @@ global.rs                  — MediaPmGlobalPaths, MEDIAPM_USER_AGENT
 paths.rs                   — MediaPmPaths (17 fields), MediaPmPathOverrides
 source_metadata.rs         — Online/local metadata probes
 hierarchy.rs               — Hierarchy preset builders, node mutation
-metadata_cache.rs          — JSONC metadata cache, TTL-based expiry
+metadata_cache.rs          — JSON metadata cache, TTL-based expiry
 service.rs                 — MediaPmService<Cas> orchestration
 service_standalone.rs      — Standalone helpers (document loading, path resolution)
 test_util.rs               — Shared test Tokio runtime
@@ -147,7 +147,7 @@ Direct CAS→output-path writes; no staging commit. Materialized paths marked re
 
 ## Metadata Cache
 
-`metadata_cache.rs` — single JSONC file at `<runtime_root>/cache/mediapm/`. BLAKE3-hex keys, 86400s TTL, timer-based batch flush (~300s cooldown). Graceful degradation on I/O/serialization errors.
+`metadata_cache.rs` — single JSON file at `<runtime_root>/cache/mediapm/`. BLAKE3-hex keys, 86400s TTL, timer-based batch flush (~300s cooldown). Graceful degradation on I/O/serialization errors.
 
 ## CAS Integrity Verification
 
