@@ -1,22 +1,14 @@
 //! Versioned persistence for metadata constraint data and entries.
 //!
-//! Currently only V1 is supported. The module dispatches to the correct
-//! version handler based on the file format version marker.
-//!
-//! Functions are async (wrapping blocking I/O via `spawn_blocking`) so callers
-//! stay in the async runtime.
+//! Currently only V1 is supported.
 
 mod v1;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
 use crate::hash::Hash;
-
-/// The current format version used when saving new files.
-pub(crate) const FORMAT_VERSION: u32 = 1;
 
 /// Return type for snapshot load functions: (constraints, entries).
 pub(crate) type SnapshotData = (
@@ -24,36 +16,17 @@ pub(crate) type SnapshotData = (
     BTreeMap<Hash, (u64, ObjectEncoding)>, // entries: hash → (len, encoding)
 );
 
-/// Load snapshot (constraints + entries) from `path` in the given `version` format.
+/// Parse snapshot data from raw bytes (V1).
 ///
-/// Returns empty maps if the file doesn't exist.
-pub(crate) async fn load(path: &Path, version: u32) -> Result<SnapshotData, CasError> {
-    let owned = path.to_owned();
-    tokio::task::spawn_blocking(move || match_version(version, &owned))
-        .await
-        .map_err(|e| CasError::Io(std::io::Error::other(e)))?
+/// Returns empty maps for empty input.
+pub(crate) fn load_from_bytes(data: &[u8]) -> Result<SnapshotData, CasError> {
+    v1::parse_v1_snapshot(data).map(Option::unwrap_or_default)
 }
 
-fn match_version(version: u32, path: &Path) -> Result<SnapshotData, CasError> {
-    match version {
-        1 => v1::load(path),
-        v => Err(CasError::CorruptObject {
-            hash: None,
-            details: format!("unsupported snapshot file version: {v}"),
-        }),
-    }
-}
-
-/// Save snapshot (constraints + entries) to `path` in the current format (V1).
-pub(crate) async fn save(
-    path: &Path,
+/// Serialize snapshot (constraints + entries) to `Vec<u8>` in V1 format.
+pub(crate) fn save_to_vec(
     constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
     entries: &BTreeMap<Hash, (u64, ObjectEncoding)>,
-) -> Result<(), CasError> {
-    let owned = path.to_owned();
-    let constraints_clone = constraints.clone();
-    let entries_clone = entries.clone();
-    tokio::task::spawn_blocking(move || v1::save(&owned, &constraints_clone, &entries_clone))
-        .await
-        .map_err(|e| CasError::Io(std::io::Error::other(e)))?
+) -> Result<Vec<u8>, CasError> {
+    v1::serialize_v1_snapshot(constraints, entries)
 }

@@ -1,11 +1,10 @@
 //! V1 persistence format for the CAS metadata store.
 //!
-//! Stores constraints and metadata entries together in a single versioned
-//! JSON file. The `entries` field uses `#[serde(default)]` so old files
-//! (constraints-only) remain loadable.
+//! Stores constraints and metadata entries together in a versioned JSON
+//! structure (serialized to/from `Vec<u8>`). The `entries` field uses
+//! `#[serde(default)]` so old files (constraints-only) remain loadable.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 
 use crate::api::ObjectEncoding;
 use crate::error::CasError;
@@ -40,23 +39,18 @@ struct SnapshotFile {
     entries: BTreeMap<String, EntryData>,
 }
 
-/// Load snapshot (constraints + entries) from a V1 file.
+/// Parse V1 snapshot data from raw bytes.
 ///
-/// Returns empty maps if the file does not exist.
-pub(crate) fn load(path: &Path) -> Result<SnapshotData, CasError> {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((BTreeMap::new(), BTreeMap::new()));
-        }
-        Err(e) => return Err(CasError::Io(e)),
-    };
+/// Returns `None` if the data is empty (no snapshot file).
+pub(crate) fn parse_v1_snapshot(data: &[u8]) -> Result<Option<SnapshotData>, CasError> {
+    if data.is_empty() {
+        return Ok(None);
+    }
 
-    let file: SnapshotFile =
-        serde_json::from_slice(&data).map_err(|e| CasError::CorruptObject {
-            hash: None,
-            details: format!("failed to parse snapshot file: {e}"),
-        })?;
+    let file: SnapshotFile = serde_json::from_slice(data).map_err(|e| CasError::CorruptObject {
+        hash: None,
+        details: format!("failed to parse snapshot file: {e}"),
+    })?;
 
     if file.version != 1 {
         return Err(CasError::CorruptObject {
@@ -108,21 +102,14 @@ pub(crate) fn load(path: &Path) -> Result<SnapshotData, CasError> {
         entries.insert(hash, (data.len, encoding));
     }
 
-    Ok((constraints, entries))
+    Ok(Some((constraints, entries)))
 }
 
-/// Save snapshot (constraints + entries) to a V1 file.
-///
-/// Creates parent directories if needed. Writes atomically via temp+rename.
-pub(crate) fn save(
-    path: &Path,
+/// Serialize V1 snapshot (constraints + entries) to a `Vec<u8>`.
+pub(crate) fn serialize_v1_snapshot(
     constraints: &BTreeMap<Hash, BTreeSet<Hash>>,
     entries: &BTreeMap<Hash, (u64, ObjectEncoding)>,
-) -> Result<(), CasError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(CasError::Io)?;
-    }
-
+) -> Result<Vec<u8>, CasError> {
     let mut file =
         SnapshotFile { version: 1, constraints: BTreeMap::new(), entries: BTreeMap::new() };
 
@@ -139,11 +126,5 @@ pub(crate) fn save(
         file.entries.insert(hash.to_string(), EntryData { len: *len, encoding: encoding_str });
     }
 
-    // Atomic write via temp+rename.
-    let tmp_path = path.with_extension("tmp");
-    let json =
-        serde_json::to_vec_pretty(&file).map_err(|e| CasError::Io(std::io::Error::other(e)))?;
-    std::fs::write(&tmp_path, &json).map_err(CasError::Io)?;
-    std::fs::rename(&tmp_path, path).map_err(CasError::Io)?;
-    Ok(())
+    serde_json::to_vec_pretty(&file).map_err(|e| CasError::Io(std::io::Error::other(e)))
 }
