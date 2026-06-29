@@ -200,8 +200,9 @@ pub struct MediaRuntimeStorage {
     /// Override for hierarchy root directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hierarchy_root_dir: Option<String>,
-    /// Tool requirement metadata.
-    #[serde(default)]
+    /// Tool requirement metadata (serde-skipped; tools are now at
+    /// [`MediaPmDocument::tools`](MediaPmDocument)).
+    #[serde(default, skip)]
     pub tools: BTreeMap<String, ToolRequirement>,
     /// Materialization method preference order.
     #[serde(
@@ -445,12 +446,12 @@ pub struct MediaPmDocument {
     /// Hierarchy declaration.
     #[serde(default)]
     pub hierarchy: Vec<hierarchy_types::HierarchyNode>,
+    /// Managed tool requirement declarations keyed by tool id.
+    #[serde(default)]
+    pub tools: BTreeMap<String, ToolRequirement>,
     /// Runtime configuration overrides.
     #[serde(default)]
     pub runtime: MediaRuntimeStorage,
-    /// Conductor config (opaque passthrough).
-    #[serde(default)]
-    pub conductor: BTreeMap<String, Value>,
 }
 
 impl Default for MediaPmDocument {
@@ -459,8 +460,8 @@ impl Default for MediaPmDocument {
             version: defaults::MEDIAPM_DOCUMENT_VERSION,
             media: BTreeMap::new(),
             hierarchy: Vec::new(),
+            tools: BTreeMap::new(),
             runtime: MediaRuntimeStorage::default(),
-            conductor: BTreeMap::new(),
         }
     }
 }
@@ -496,6 +497,11 @@ impl MediaPmDocument {
                 }
             }
         }
+        // Remove tool entries without meaningful version or tag.
+        self.tools.retain(|_, tool_req| {
+            normalized_version(tool_req.version.as_ref()).is_some()
+                || normalized_tag(tool_req.tag.as_ref()).is_some()
+        });
     }
 }
 

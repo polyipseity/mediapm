@@ -144,7 +144,10 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// [`MediaPmError::Serialization`] if it cannot be parsed.
     pub fn resolve_effective_runtime_storage(&self) -> Result<MediaRuntimeStorage, MediaPmError> {
         let effective_paths = MediaPmPaths::from_root(&self.paths.root_dir);
-        let doc = ensure_and_load_mediapm_document(&effective_paths)?;
+        let mut doc = ensure_and_load_mediapm_document(&effective_paths)?;
+        // Tools now live at the document level (not inside runtime).
+        // Populate runtime.tools so merge_runtime_storage sees them.
+        doc.runtime.tools = doc.tools;
         Ok(merge_runtime_storage(&doc.runtime, &self.runtime_storage_overrides))
     }
 
@@ -540,7 +543,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             ..ToolRequirement::default()
         };
 
-        document.runtime.tools.insert(tool_id.to_string(), requirement);
+        document.tools.insert(tool_id.to_string(), requirement);
 
         save_mediapm_document(&effective_paths.mediapm_ncl, &document)?;
         Ok(())
@@ -556,7 +559,7 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let mut document =
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
-        if document.runtime.tools.remove(tool_id).is_none() {
+        if document.tools.remove(tool_id).is_none() {
             return Err(MediaPmError::Workflow(format!("tool requirement '{tool_id}' not found")));
         }
 

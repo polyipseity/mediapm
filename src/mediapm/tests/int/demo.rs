@@ -89,11 +89,11 @@ async fn add_tool_requirement_persists_single_call() -> Result<(), mediapm::Medi
     service.add_tool_requirement("media-tagger", None, None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
-    assert!(doc.runtime.tools.contains_key("media-tagger"), "media-tagger should be registered");
+    assert!(doc.tools.contains_key("media-tagger"), "media-tagger should be registered");
     // rsgain was not added in this test — only one tool per test to avoid
     // a second `ensure_and_load_mediapm_document` call.
-    assert!(!doc.runtime.tools.contains_key("rsgain"), "rsgain should not be present");
+    assert!(!doc.tools.contains_key("rsgain"), "rsgain should not be present");
     // import is a builtin, not a managed catalog tool.
-    assert!(!doc.runtime.tools.contains_key("import"), "builtins are not in tool catalog");
+    assert!(!doc.tools.contains_key("import"), "builtins are not in tool catalog");
     Ok(())
 }

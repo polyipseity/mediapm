@@ -108,7 +108,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
     let paths = service.paths();
     let mut document = load_mediapm_document(&paths.mediapm_ncl)?;
     document.media.clear();
-    document.runtime.tools = TOOL_NAMES
+    document.tools = TOOL_NAMES
         .iter()
         .map(|name| (name.to_string(), tool_requirement_for(name)))
         .collect::<BTreeMap<_, _>>();

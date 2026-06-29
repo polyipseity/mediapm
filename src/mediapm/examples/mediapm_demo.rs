@@ -467,7 +467,7 @@ fn configure_document_for_local_tool_chain(
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
 
-    document.runtime.tools = BTreeMap::from([
+    document.tools = BTreeMap::from([
         (
             "import".to_string(),
             ToolRequirement {
@@ -755,7 +755,7 @@ fn configure_document_for_local_tool_chain(
     };
 
     save_mediapm_document(&mediapm_ncl, &document)?;
-    Ok((document.runtime.tools.len(), configured_step_count))
+    Ok((document.tools.len(), configured_step_count))
 }
 
 fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
@@ -829,11 +829,11 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
 fn configure_document_for_tools_only_precheck(workspace_root: &Path) -> ExampleResult<usize> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
-    document.runtime.tools = local_demo_tool_requirements();
+    document.tools = local_demo_tool_requirements();
     document.media.clear();
     document.hierarchy.clear();
     save_mediapm_document(&mediapm_ncl, &document)?;
-    Ok(document.runtime.tools.keys().filter(|name| !name.eq_ignore_ascii_case("import")).count())
+    Ok(document.tools.keys().filter(|name| !name.eq_ignore_ascii_case("import")).count())
 }
 
 fn seed_old_synced_tools_state_for_update_precheck(

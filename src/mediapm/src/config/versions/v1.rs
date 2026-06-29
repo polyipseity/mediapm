@@ -33,12 +33,12 @@ pub(super) struct MediaPmDocumentEnvelopeV1 {
     /// Hierarchy node declarations.
     #[serde(default)]
     pub(super) hierarchy: Vec<hierarchy_types::HierarchyNode>,
+    /// Managed tool requirement declarations keyed by tool id.
+    #[serde(default)]
+    pub(super) tools: BTreeMap<String, ToolRequirement>,
     /// Runtime configuration overrides.
     #[serde(default)]
     pub(super) runtime: MediaRuntimeStorage,
-    /// Conductor config.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) conductor: Option<BTreeMap<String, Value>>,
 }
 
 /// V1 state envelope for `state.ncl` files.
@@ -146,8 +146,8 @@ impl From<MediaPmDocumentEnvelopeV1> for MediaPmDocument {
             version: envelope.version,
             media: envelope.media,
             hierarchy: envelope.hierarchy,
+            tools: envelope.tools,
             runtime: envelope.runtime,
-            conductor: envelope.conductor.unwrap_or_default(),
         }
     }
 }
@@ -245,8 +245,8 @@ impl Migrate for MediaPmDocument {
             version: 1,
             media: self.media.clone(),
             hierarchy: self.hierarchy.clone(),
+            tools: self.tools.clone(),
             runtime: self.runtime.clone(),
-            conductor: if self.conductor.is_empty() { None } else { Some(self.conductor.clone()) },
         };
 
         serde_json::to_value(envelope).map_err(|err| {

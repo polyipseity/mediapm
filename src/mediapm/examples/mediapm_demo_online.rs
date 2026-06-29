@@ -681,7 +681,7 @@ fn assert_materialized_output_hardlinked_to_cas(
 fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Vec<String>> {
     let mediapm_ncl = workspace_root.join("mediapm.ncl");
     let mut document = load_mediapm_document(&mediapm_ncl)?;
-    document.runtime.tools = BTreeMap::from([
+    document.tools = BTreeMap::from([
         (
             "yt-dlp".to_string(),
             ToolRequirement {

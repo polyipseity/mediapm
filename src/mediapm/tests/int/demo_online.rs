@@ -69,13 +69,13 @@ async fn add_one_remote_tool_requirement_persists() -> Result<(), mediapm::Media
     service.add_tool_requirement("yt-dlp", None, None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
-    assert!(doc.runtime.tools.contains_key("yt-dlp"));
+    assert!(doc.tools.contains_key("yt-dlp"));
     // Other tools were not added in this test — only one tool per test.
-    assert!(!doc.runtime.tools.contains_key("ffmpeg"));
-    assert!(!doc.runtime.tools.contains_key("media-tagger"));
-    assert!(!doc.runtime.tools.contains_key("rsgain"));
-    assert!(!doc.runtime.tools.contains_key("sd"));
+    assert!(!doc.tools.contains_key("ffmpeg"));
+    assert!(!doc.tools.contains_key("media-tagger"));
+    assert!(!doc.tools.contains_key("rsgain"));
+    assert!(!doc.tools.contains_key("sd"));
     // import is a builtin, not a managed catalog tool.
-    assert!(!doc.runtime.tools.contains_key("import"), "builtins are not in tool catalog");
+    assert!(!doc.tools.contains_key("import"), "builtins are not in tool catalog");
     Ok(())
 }

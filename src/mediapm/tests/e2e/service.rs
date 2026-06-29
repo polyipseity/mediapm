@@ -102,8 +102,8 @@ async fn add_tool_without_version_persists() -> Result<(), mediapm::MediaPmError
     service.add_tool_requirement("ffmpeg", None, None)?;
 
     let doc = read_doc(&service.paths().mediapm_ncl);
-    assert!(doc.runtime.tools.contains_key("ffmpeg"), "ffmpeg should be registered");
-    assert!(!doc.runtime.tools.contains_key("yt-dlp"), "yt-dlp was not added in this test");
+    assert!(doc.tools.contains_key("ffmpeg"), "ffmpeg should be registered");
+    assert!(!doc.tools.contains_key("yt-dlp"), "yt-dlp was not added in this test");
 
     Ok(())
 }
