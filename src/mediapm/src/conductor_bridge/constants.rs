@@ -5,7 +5,6 @@
 //! The canonical definitions live here; all consumers import from this module.
 
 #![allow(dead_code)]
-// TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
 // ── Reserved input keys ──────────────────────────────────────────────────
 
