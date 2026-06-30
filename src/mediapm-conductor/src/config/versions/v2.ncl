@@ -60,7 +60,7 @@ let ToolContentMapV2 = { _ : NonEmptyStringV2 } in
 let ToolRuntimeV2 = {
   content_map | ToolContentMapV2 | optional,
   impure | Bool | optional,
-  inherited_env_vars | { _ : String } | optional,
+  inherited_env_vars | Array String | optional,
   max_concurrent_calls | IntegerNumberV2 | optional,
   max_retries | IntegerNumberV2 | optional,
 }
@@ -69,7 +69,7 @@ in
 # ||| Runtime configuration for the conductor itself (not per-tool).
 let ConductorRuntimeConfigV2 = {
   retry_impure | Bool | optional,
-  platform_inherited_env_var_names | { _ : Array String } | optional,
+  platform_inherited_env_vars | { _ : Array String } | optional,
 }
 in
 
@@ -168,7 +168,10 @@ let migrate_v1_to_v2_fn = fun data =>
                 default_inputs =
                   if std.record.has_field "input_defaults" tc then tc.input_defaults else null,
                 inherited_env_vars =
-                  if std.record.has_field "env_vars" tc then tc.env_vars else null,
+                  if std.record.has_field "env_vars" tc then
+                    std.record.fields tc.env_vars
+                  else
+                    null,
                 max_concurrent_calls =
                   if std.record.has_field "max_concurrent_calls" tc then tc.max_concurrent_calls else null,
                 max_retries =
@@ -317,7 +320,7 @@ let migrate_v1_to_v2_fn = fun data =>
       let rt = data.runtime in
       {
         retry_impure = if std.record.has_field "retry_impure" rt then (rt.retry_impure | Bool) else null,
-        platform_inherited_env_var_names =
+        platform_inherited_env_vars =
           if std.record.has_field "inherited_env_vars" rt then rt.inherited_env_vars else null,
       }
     else

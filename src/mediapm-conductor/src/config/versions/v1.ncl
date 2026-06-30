@@ -389,7 +389,11 @@ let migrate_v2_to_v1 = fun data =>
                   []
               in
               let impure_val = if t.runtime != null && std.record.has_field "impure" t.runtime then (t.runtime.impure | Bool) else false in
-              let env_val = if t.runtime != null && std.record.has_field "inherited_env_vars" t.runtime then (t.runtime.inherited_env_vars | { _ : String }) else {} in
+              let env_val = if t.runtime != null && std.record.has_field "inherited_env_vars" t.runtime then
+                let names = t.runtime.inherited_env_vars | Array String in
+                std.array.fold_left (fun acc name => acc & { "%{name}" = name }) {} names
+              else
+                {} in
               acc
               & {
                 "%{t.name}" = {
@@ -470,7 +474,10 @@ let migrate_v2_to_v1 = fun data =>
                 max_retries = rt.max_retries,
                 description = null,
                 input_defaults = {},
-                env_vars = rt.inherited_env_vars,
+                env_vars = if std.is_array rt.inherited_env_vars then
+                  std.array.fold_left (fun acc name => acc & { "%{name}" = name }) {} rt.inherited_env_vars
+                else
+                  {},
                 content_map = rt.content_map,
               }
             }

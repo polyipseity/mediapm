@@ -95,9 +95,9 @@ pub(crate) struct ToolRuntimeLatest {
     /// Impure flag.
     #[serde(default)]
     pub(crate) impure: bool,
-    /// Inherited env vars.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) inherited_env_vars: BTreeMap<String, String>,
+    /// Inherited env var names to resolve from host environment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) inherited_env_vars: Vec<String>,
     /// Max concurrent calls.
     #[serde(default)]
     pub(crate) max_concurrent_calls: usize,
@@ -114,7 +114,7 @@ pub(crate) struct ConductorRuntimeConfigLatest {
     pub(crate) retry_impure: Option<bool>,
     /// Platform-keyed inherited env var names.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) platform_inherited_env_var_names: BTreeMap<String, Vec<String>>,
+    pub(crate) platform_inherited_env_vars: BTreeMap<String, Vec<String>>,
 }
 
 /// Latest persisted tool kind (tagged by `kind` field).
@@ -502,7 +502,7 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
     fn from(rt: ConductorRuntimeConfigLatest) -> Self {
         super::super::ConductorRuntimeConfig {
             retry_impure: rt.retry_impure,
-            platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
+            platform_inherited_env_vars: rt.platform_inherited_env_vars,
         }
     }
 }
@@ -511,7 +511,7 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
     fn from(rt: super::super::ConductorRuntimeConfig) -> Self {
         ConductorRuntimeConfigLatest {
             retry_impure: rt.retry_impure,
-            platform_inherited_env_var_names: rt.platform_inherited_env_var_names,
+            platform_inherited_env_vars: rt.platform_inherited_env_vars,
         }
     }
 }

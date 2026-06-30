@@ -172,11 +172,12 @@ pub struct ToolRuntime {
     /// each call unique and prevents cache hits across runs.
     #[serde(default)]
     pub impure: bool,
-    /// Environment variables inherited by this tool's process.
+    /// Environment variable names to inherit from the host process.
     ///
-    /// These are merged with runtime-wide inherited env vars and host defaults.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inherited_env_vars: BTreeMap<String, String>,
+    /// These are resolved at `to_unified()` time against the current host
+    /// environment and merged with runtime-wide inherited env vars.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherited_env_vars: Vec<String>,
     /// Maximum concurrent calls allowed for this tool.
     ///
     /// `0` means unlimited.
@@ -199,7 +200,7 @@ pub struct ConductorRuntimeConfig {
     /// lists of environment variable *names* to inherit from the host process.
     /// These are resolved at `to_unified()` time against the current platform.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub platform_inherited_env_var_names: BTreeMap<String, Vec<String>>,
+    pub platform_inherited_env_vars: BTreeMap<String, Vec<String>>,
 }
 
 /// Kind of tool definition.

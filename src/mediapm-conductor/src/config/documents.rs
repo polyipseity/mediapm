@@ -210,7 +210,7 @@ impl NickelDocument {
                             "unknown"
                         };
                         if let Some(platform_names) =
-                            self.runtime.platform_inherited_env_var_names.get(current_platform)
+                            self.runtime.platform_inherited_env_vars.get(current_platform)
                         {
                             for name in platform_names {
                                 if let Ok(val) = std::env::var(name) {
@@ -219,8 +219,12 @@ impl NickelDocument {
                             }
                         }
 
-                        // 3. Tool-level overrides
-                        env_vars.extend(spec.runtime.inherited_env_vars.clone());
+                        // 3. Tool-level inherited env var names
+                        for name in &spec.runtime.inherited_env_vars {
+                            if let Ok(val) = std::env::var(name) {
+                                env_vars.insert(name.clone(), val);
+                            }
+                        }
                         env_vars
                     },
                     outputs: BTreeMap::new(),
