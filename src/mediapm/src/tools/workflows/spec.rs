@@ -4,6 +4,9 @@
 //! helpers, and template-literal utilities consumed by each per-tool
 //! workflow module. No tool-specific constants live here.
 
+#![allow(dead_code)]
+// TODO: Step-synthesis template helpers are unused until Stream A is wired.
+
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec};

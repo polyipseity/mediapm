@@ -4,8 +4,6 @@
 //! (string-replacement) tool. Does not produce workflow steps — sd is a
 //! utility tool used internally by step expansions.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec};
