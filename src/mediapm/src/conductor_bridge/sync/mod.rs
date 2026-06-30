@@ -7,9 +7,7 @@
 //! 4. Build proper ToolSpec + ToolRuntime for each tool
 //! 5. Apply lifecycle transitions (tag updates, launcher files)
 //! 6. Write generated runtime env file
-//! 7. Inject runtime env vars into machine state
-//! 8. Save the generated document
-
+/// 7. Save the generated document
 pub(crate) mod lifecycle;
 pub(crate) mod provision;
 pub(crate) mod tool_config;
@@ -30,8 +28,8 @@ use crate::conductor_bridge::sync::lifecycle::{
 };
 use crate::conductor_bridge::sync::provision::fetch_and_import_tool_payload;
 use crate::conductor_bridge::sync::tool_config::{
-    ensure_machine_runtime_inherits_generated_env_vars, resolve_companion_deno_selection,
-    resolve_companion_ffmpeg_selection, write_generated_runtime_env_file,
+    resolve_companion_deno_selection, resolve_companion_ffmpeg_selection,
+    write_generated_runtime_env_file,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::error::MediaPmError;
@@ -115,13 +113,7 @@ pub(crate) async fn reconcile_desired_tools(
                 }
 
                 // Inject inherited_env_vars from requirement config.
-                let inherited = inherited_env_vars
-                    .get(tool_id)
-                    .cloned()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|v| (v.clone(), v))
-                    .collect::<BTreeMap<_, _>>();
+                let inherited = inherited_env_vars.get(tool_id).cloned().unwrap_or_default();
 
                 let mut full_runtime = runtime.clone();
                 full_runtime.inherited_env_vars = inherited;
@@ -138,10 +130,7 @@ pub(crate) async fn reconcile_desired_tools(
                     inherited_env_vars: inherited_env_vars
                         .get(tool_id)
                         .cloned()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|v| (v.clone(), v))
-                        .collect(),
+                        .unwrap_or_default(),
                     ..ToolRuntime::default()
                 };
                 tool_runtimes.insert(tool_id.clone(), runtime.clone());
@@ -204,13 +193,7 @@ pub(crate) async fn reconcile_desired_tools(
     // 6. Write generated runtime env file from tool runtimes.
     write_generated_runtime_env_file(paths, &tool_runtimes)?;
 
-    // 7. Inject generated env vars into tool runtimes.
-    ensure_machine_runtime_inherits_generated_env_vars(
-        &mut generated_doc,
-        &paths.env_generated_file.to_string_lossy(),
-    );
-
-    // 8. Save generated document.
+    // 7. Save generated document.
     save_conductor_generated_document(paths, &generated_doc)?;
 
     Ok(report)

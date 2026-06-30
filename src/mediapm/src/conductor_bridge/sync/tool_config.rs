@@ -120,48 +120,6 @@ pub(super) fn write_generated_runtime_env_file(
     )
 }
 
-/// Ensures the machine runtime inherits generated environment variables.
-///
-/// Reads the generated env file and adds each entry to every tool spec's
-/// `inherited_env_vars` so tool processes receive the resolved binary paths.
-pub(super) fn ensure_machine_runtime_inherits_generated_env_vars(
-    document: &mut mediapm_conductor::NickelDocument,
-    generated_env_path: &str,
-) {
-    let Ok(content) = std::fs::read_to_string(generated_env_path) else {
-        return; // File not yet generated; nothing to inherit.
-    };
-
-    let mut generated_vars: BTreeMap<String, String> = BTreeMap::new();
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(eq_pos) = line.find('=') {
-            let name = line[..eq_pos].trim().to_string();
-            let value = line[eq_pos + 1..].trim().to_string();
-            if !name.is_empty() {
-                generated_vars.insert(name, value);
-            }
-        }
-    }
-
-    if generated_vars.is_empty() {
-        return;
-    }
-
-    for tool_spec in document.tools.values_mut() {
-        for (name, value) in &generated_vars {
-            tool_spec
-                .runtime
-                .inherited_env_vars
-                .entry(name.clone())
-                .or_insert_with(|| value.clone());
-        }
-    }
-}
-
 /// Renders one dotenv value as a double-quoted literal with escapes.
 #[must_use]
 fn render_dotenv_quoted_value(value: &str) -> String {
