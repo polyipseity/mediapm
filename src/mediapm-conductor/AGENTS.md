@@ -18,7 +18,7 @@ Follow this together with the workspace root `AGENTS.md` and relevant `.agents/i
 ## Orchestration contract
 
 - Keep conductor as a functional orchestration engine over CAS: deterministic planning/keying in pure logic, with process/filesystem effects isolated to execution boundaries.
-- Keep user intent and machine-managed runtime state separated across `conductor.ncl` and `conductor.machine.ncl`; unresolved non-mergeable conflicts fail fast and require manual resolution.
+- Keep user intent and machine-managed runtime state separated across `conductor.ncl` and `conductor.generated.ncl`; unresolved non-mergeable conflicts fail fast and require manual resolution.
 - Runtime orchestration remains async + actor-oriented (`ractor`) with explicit message contracts and predictable supervision behavior.
 
 ## Current Stack and Entry Points
@@ -54,7 +54,7 @@ Key ecosystem (from `Cargo.toml`):
 Conductor uses two config documents plus one runtime state document:
 
 - User-edited config: `conductor.ncl`
-- Program-edited config: `conductor.machine.ncl`
+- Program-edited config: `conductor.generated.ncl`
 - Volatile runtime state: resolved from grouped runtime path config (`RunWorkflowOptions.runtime_storage_paths`), default `.conductor/state.ncl`
 
 Grouped runtime path defaults:
@@ -72,21 +72,21 @@ Schema export behavior contract:
 Document contract:
 
 - `conductor.ncl` is treated as user-edited input and is not machine-mutated.
-- `conductor.machine.ncl` stores machine-managed setup/config declarations.
-- `conductor.ncl` and `conductor.machine.ncl` may define grouped runtime storage fields under one `runtime` record: `runtime.conductor_dir`, `runtime.conductor_state_config`, `runtime.cas_store_dir`, and optional platform-keyed inherited host env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS locator string (filesystem path or URL).
+- `conductor.generated.ncl` stores machine-managed setup/config declarations.
+- `conductor.ncl` and `conductor.generated.ncl` may define grouped runtime storage fields under one `runtime` record: `runtime.conductor_dir`, `runtime.conductor_state_config`, `runtime.cas_store_dir`, and optional platform-keyed inherited host env-name map `runtime.inherited_env_vars`. The `cas_store_dir` field accepts any CAS locator string (filesystem path or URL).
 - Runtime inherited env-name defaults are host-specific (`SYSTEMROOT`, `WINDIR`, `TEMP`, `TMP` on Windows; empty list elsewhere) and merge user, machine, and invocation-option values with case-insensitive de-duplication.
 - resolved state path (default `.conductor/state.ncl`) stores volatile runtime state only and may define only `version`, `impure_timestamps`, and `state_pointer`.
 - All three files must define explicit top-level numeric `version` markers.
-- `conductor.ncl` and `conductor.machine.ncl` share the full schema surface; resolved runtime state path (default `.conductor/state.ncl`) is a strict volatile subset.
+- `conductor.ncl` and `conductor.generated.ncl` share the full schema surface; resolved runtime state path (default `.conductor/state.ncl`) is a strict volatile subset.
 - Effective configuration is resolved by merging all three documents.
 - Conflicts must fail fast with explicit workflow errors.
-- End-user automation for setup operations (for example add-tool/import-tool and add-external-data/import-data flows) must mutate only `conductor.machine.ncl`.
+- End-user automation for setup operations (for example add-tool/import-tool and add-external-data/import-data flows) must mutate only `conductor.generated.ncl`.
 - Once setup is recorded through machine-document automation, do not require duplicate tool declarations in `conductor.ncl` just to make workflows runnable.
 
 Dual-file ownership model summary:
 
 - `conductor.ncl` is human-owned intent and workflow/tool declarations.
-- `conductor.machine.ncl` is machine-owned operational state such as content maps and machine-derived runtime metadata.
+- `conductor.generated.ncl` is machine-owned operational state such as content maps and machine-derived runtime metadata.
 - Conductor embeds Nickel evaluation in-process (`nickel-lang-core`) and does not delegate schema evaluation to an out-of-process secondary interpreter.
 
 ## Conductor Builtin Tool Strategy
@@ -487,7 +487,7 @@ The data flow between CAS, Conductor, Builtins, and MediaPM, viewed from the Con
 
 | Invariant | Applies To | Description |
 |---|---|---|
-| **3-document config** | Conductor, MediaPM | User intent (`conductor.ncl`) + machine setup (`conductor.machine.ncl`) + volatile state (`state.ncl`). Machine documents are never user-edited. |
+| **3-document config** | Conductor, MediaPM | User intent (`conductor.ncl`) + machine setup (`conductor.generated.ncl`) + volatile state (`state.ncl`). Machine documents are never user-edited. |
 | **Deterministic workflow keys** | Conductor | Instance key = hash(tool_id + sorted inputs + impure_timestamp). Equivalent calls produce same key regardless of content-map details or persistence flags. |
 | **Explicit version markers** | Conductor, Builtins, MediaPM | Every persisted document carries top-level `version: u32`. Sequential migrations only. |
 | **Fail-fast validation** | Conductor, Builtins | Validation before execution; undeclared config keys, missing required tool inputs, and unresolvable template expressions are errors. |
@@ -762,7 +762,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 |---|---|
 | **Public Trait** | `ConductorApi` |
 | **Implementation** | `SimpleConductor` |
-| **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.machine.ncl`, state `state.ncl`) |
+| **Schemas** | 3-document (user `conductor.ncl`, machine `conductor.generated.ncl`, state `state.ncl`) |
 | **Execution** | Actor-based (ractor), step-stream batch dispatch, adaptive scheduling, `CasExistenceBitmap` cache probe |
 | **State model** | `src/mediapm-conductor/src/config/mod.rs`, `src/mediapm-conductor/src/state/mod.rs` |
 | **Versioned config schema** | `src/mediapm-conductor/src/config/versions/` |
@@ -829,7 +829,7 @@ All progress messages must fit within the terminal width; detected via `terminal
 
 ### N.4 Document Merging Conflict Resolution (§2.4)
 
-**Issue**: `conductor.ncl` and `conductor.machine.ncl` may define conflicting values for the same field. The merge semantics for different field types (scalar, record, array) differ.
+**Issue**: `conductor.ncl` and `conductor.generated.ncl` may define conflicting values for the same field. The merge semantics for different field types (scalar, record, array) differ.
 
 **Current behavior**: Nickel merging semantics apply: non-mergeable conflicts (scalar vs. scalar, different types) fail fast. Machine document takes priority for mergeable fields (records are deep-merged, arrays are concatenated). The exact merge behavior for each field is defined by Nickel's `&` operator.
 

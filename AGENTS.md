@@ -80,7 +80,7 @@ Get up and running in minutes:
 
 - `src/mediapm-cas/` provides the CAS identity model and async API contracts. CAS topology visualization implementation also belongs in this crate.
 - `src/mediapm-conductor/` provides the orchestration state model and persistence-merge logic. Key cross-crate invariants:
-  - `conductor.ncl` is user-owned intent; `conductor.machine.ncl` is machine-managed runtime state; unresolvable conflicts fail fast.
+  - `conductor.ncl` is user-owned intent; `conductor.generated.ncl` is machine-managed runtime state; unresolvable conflicts fail fast.
   - All three config documents must carry explicit top-level numeric `version` markers; the runtime state document is volatile-only.
   - Builtin tool definitions in persisted config are strict (`kind`, `name`, `version` only); extra fields are rejected on decode.
   - Instance identity excludes content-map payload details and merged persistence flags; output persistence merged across equivalent calls: `save` uses AND, `force_full` uses OR.

@@ -55,7 +55,7 @@ Tag-update policy:
 
 - `mediapm.ncl` — desired state: media sources, hierarchy, tool requirements.
 - `.mediapm/state.ncl` — machine-managed realized state.
-- `mediapm.conductor.ncl` / `mediapm.conductor.machine.ncl` — conductor runtime docs.
+- `mediapm.conductor.ncl` / `mediapm.conductor.generated.ncl` — conductor runtime docs.
 
 See `src/mediapm/examples/` for annotated bootstrapping and tool-addition examples.
 
