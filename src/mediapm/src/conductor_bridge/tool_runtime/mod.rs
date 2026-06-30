@@ -71,7 +71,7 @@ pub(crate) fn build_tool_spec(
     let runtime = ToolRuntime {
         content_map,
         impure: false,
-        inherited_env_vars: BTreeMap::new(),
+        inherited_env_vars: Vec::new(),
         max_concurrent_calls: default_max_concurrent_calls(tool_name),
         max_retries: default_max_retries(tool_name),
     };
