@@ -8,7 +8,7 @@
 //! State contract:
 //! - desired state: `mediapm.ncl`,
 //! - conductor runtime docs: `mediapm.conductor.ncl`,
-//!   `mediapm.conductor.machine.ncl` (both configurable),
+//!   `mediapm.conductor.generated.ncl` (both configurable),
 //! - realized state: `.mediapm/state.ncl` by default (configurable).
 
 pub mod builtins;

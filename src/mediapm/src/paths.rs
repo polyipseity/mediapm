@@ -43,8 +43,8 @@ pub struct MediaPmPaths {
     pub mediapm_ncl: PathBuf,
     /// Conductor user Nickel document used by mediapm orchestration.
     pub conductor_user_ncl: PathBuf,
-    /// Conductor machine/generated Nickel document.
-    pub conductor_machine_ncl: PathBuf,
+    /// Conductor generated Nickel document.
+    pub conductor_generated_ncl: PathBuf,
     /// Conductor volatile runtime state document path.
     pub conductor_state_config: PathBuf,
     /// Conductor execution-sandbox temporary directory.
@@ -81,7 +81,7 @@ impl MediaPmPaths {
         Self {
             mediapm_ncl: root_dir.join("mediapm.ncl"),
             conductor_user_ncl: root_dir.join("mediapm.conductor.ncl"),
-            conductor_machine_ncl: root_dir.join("mediapm.conductor.machine.ncl"),
+            conductor_generated_ncl: root_dir.join("mediapm.conductor.generated.ncl"),
             conductor_state_config: runtime_root.join("state.conductor.ncl"),
             conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir: runtime_root.join("config").join("conductor"),
@@ -164,8 +164,8 @@ impl MediaPmPaths {
             .clone()
             .map_or_else(|| self.conductor_user_ncl.clone(), |raw| resolve_path(config_dir, raw));
 
-        let conductor_machine_ncl = overrides.conductor_generated_config.clone().map_or_else(
-            || self.conductor_machine_ncl.clone(),
+        let conductor_generated_ncl = overrides.conductor_generated_config.clone().map_or_else(
+            || self.conductor_generated_ncl.clone(),
             |raw| resolve_path(config_dir, raw),
         );
 
@@ -204,7 +204,7 @@ impl MediaPmPaths {
             root_dir: self.root_dir.clone(),
             mediapm_ncl: self.mediapm_ncl.clone(),
             conductor_user_ncl,
-            conductor_machine_ncl,
+            conductor_generated_ncl,
             conductor_state_config,
             conductor_tmp_dir: tmp_dir.clone(),
             conductor_schema_dir,
@@ -287,7 +287,9 @@ mod tests {
             mediapm_dir: Some(PathBuf::from(".mediapm-runtime")),
             hierarchy_root_dir: Some(PathBuf::from("library-custom")),
             conductor_config: Some(PathBuf::from("configs/custom.conductor.ncl")),
-            conductor_generated_config: Some(PathBuf::from("configs/custom.conductor.machine.ncl")),
+            conductor_generated_config: Some(PathBuf::from(
+                "configs/custom.conductor.generated.ncl",
+            )),
             conductor_state_config: Some(PathBuf::from("state/custom.state.ncl")),
             conductor_schema_dir: Some(PathBuf::from("schemas/conductor")),
             media_state_config: Some(PathBuf::from("state/custom.state.mediapm.ncl")),
@@ -309,8 +311,8 @@ mod tests {
             root.path().join("configs").join("custom.conductor.ncl")
         );
         assert_eq!(
-            resolved.conductor_machine_ncl,
-            root.path().join("configs").join("custom.conductor.machine.ncl")
+            resolved.conductor_generated_ncl,
+            root.path().join("configs").join("custom.conductor.generated.ncl")
         );
         assert_eq!(
             resolved.conductor_state_config,

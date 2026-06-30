@@ -29,7 +29,7 @@ struct AddHierarchyManifest {
     manifest_path: PathBuf,
     mediapm_ncl: PathBuf,
     conductor_user_ncl: PathBuf,
-    conductor_machine_ncl: PathBuf,
+    conductor_generated_ncl: PathBuf,
     local_media_id: String,
     remote_media_id: String,
     hierarchy_node_count: usize,
@@ -98,7 +98,7 @@ async fn run_add_hierarchy_example() -> ExampleResult<AddHierarchyManifest> {
         manifest_path: manifest_path.clone(),
         mediapm_ncl: paths.mediapm_ncl.clone(),
         conductor_user_ncl: paths.conductor_user_ncl.clone(),
-        conductor_machine_ncl: paths.conductor_machine_ncl.clone(),
+        conductor_generated_ncl: paths.conductor_generated_ncl.clone(),
         local_media_id,
         remote_media_id,
         hierarchy_node_count: document.hierarchy.len(),
@@ -117,7 +117,7 @@ async fn main() -> ExampleResult<()> {
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
     println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor machine: {}", manifest.conductor_machine_ncl.display());
+    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
     println!("hierarchy node count: {}", manifest.hierarchy_node_count);
@@ -141,7 +141,10 @@ mod tests {
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
-        assert!(manifest.conductor_machine_ncl.exists(), "conductor machine config should exist");
+        assert!(
+            manifest.conductor_generated_ncl.exists(),
+            "conductor generated config should exist"
+        );
 
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.hierarchy.len(), 2, "example should add two hierarchy nodes");
@@ -248,7 +251,7 @@ mod tests {
         let user_bytes =
             fs::read(&manifest.conductor_user_ncl).expect("read conductor user config");
         let _machine_bytes =
-            fs::read(&manifest.conductor_machine_ncl).expect("read conductor machine config");
+            fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
 
         let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
         // Conductor machine workflow population requires an explicit `mediapm sync` run;

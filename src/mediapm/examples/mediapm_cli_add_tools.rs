@@ -30,7 +30,7 @@ struct AddToolsManifest {
     manifest_path: PathBuf,
     mediapm_ncl: PathBuf,
     conductor_user_ncl: PathBuf,
-    conductor_machine_ncl: PathBuf,
+    conductor_generated_ncl: PathBuf,
     logical_tool_names: Vec<String>,
     tool_ids: Vec<String>,
 }
@@ -114,7 +114,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         .collect::<BTreeMap<_, _>>();
     save_mediapm_document(&paths.mediapm_ncl, &document)?;
 
-    let machine_bytes = fs::read(&paths.conductor_machine_ncl)?;
+    let machine_bytes = fs::read(&paths.conductor_generated_ncl)?;
     let mut machine: NickelDocument = decode_document(&machine_bytes)?;
 
     let mut tool_ids = Vec::new();
@@ -153,7 +153,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         );
     }
 
-    fs::write(&paths.conductor_machine_ncl, encode_document(machine)?)?;
+    fs::write(&paths.conductor_generated_ncl, encode_document(machine)?)?;
 
     let manifest_path = root.join("manifest.json");
     let manifest = AddToolsManifest {
@@ -161,7 +161,7 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
         manifest_path: manifest_path.clone(),
         mediapm_ncl: paths.mediapm_ncl.clone(),
         conductor_user_ncl: paths.conductor_user_ncl.clone(),
-        conductor_machine_ncl: paths.conductor_machine_ncl.clone(),
+        conductor_generated_ncl: paths.conductor_generated_ncl.clone(),
         logical_tool_names: TOOL_NAMES.iter().map(|v| (*v).to_string()).collect(),
         tool_ids,
     };
@@ -177,7 +177,7 @@ async fn main() -> ExampleResult<()> {
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
     println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor machine: {}", manifest.conductor_machine_ncl.display());
+    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
     println!("logical tools: {}", manifest.logical_tool_names.join(", "));
     println!("tool ids: {}", manifest.tool_ids.join(", "));
 
@@ -199,7 +199,10 @@ mod tests {
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
-        assert!(manifest.conductor_machine_ncl.exists(), "conductor machine config should exist");
+        assert!(
+            manifest.conductor_generated_ncl.exists(),
+            "conductor generated config should exist"
+        );
 
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert!(document.media.is_empty(), "tools example should leave media empty");
@@ -209,7 +212,7 @@ mod tests {
             "tools example should register every managed tool requirement"
         );
 
-        let machine_bytes = fs::read(&manifest.conductor_machine_ncl).expect("read machine doc");
+        let machine_bytes = fs::read(&manifest.conductor_generated_ncl).expect("read machine doc");
         let machine: NickelDocument = decode_document(&machine_bytes).expect("decode machine doc");
 
         for tool_id in &manifest.tool_ids {

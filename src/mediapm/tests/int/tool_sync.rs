@@ -56,15 +56,15 @@ async fn sync_creates_state_document() -> Result<(), mediapm::MediaPmError> {
     Ok(())
 }
 
-/// Sync creates `conductor.machine.ncl` with tools registered.
+/// Sync creates `conductor.generated.ncl` with tools registered.
 #[tokio::test]
 async fn sync_creates_generated_document() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
-    let generated_path = &service.paths().conductor_machine_ncl;
-    assert!(generated_path.exists(), "conductor.machine.ncl should exist");
-    let bytes = std::fs::read(generated_path).expect("conductor.machine.ncl should be readable");
+    let generated_path = &service.paths().conductor_generated_ncl;
+    assert!(generated_path.exists(), "conductor.generated.ncl should exist");
+    let bytes = std::fs::read(generated_path).expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
     assert!(!doc.tools.is_empty(), "generated doc must have tools");
     Ok(())
@@ -91,8 +91,8 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
     let root = tempdir().expect("tempdir");
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
-    let bytes = std::fs::read(&service.paths().conductor_machine_ncl)
-        .expect("conductor.machine.ncl should be readable");
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
     for id in &["echo", "fs", "import", "export", "archive"] {
         let tool =

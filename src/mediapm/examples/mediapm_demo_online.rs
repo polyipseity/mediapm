@@ -184,7 +184,7 @@ struct DemoManifest {
     yt_dlp_max_concurrent_calls: i32,
     yt_dlp_max_retries: i32,
     mediapm_ncl_path: String,
-    conductor_machine_ncl_path: String,
+    conductor_generated_ncl_path: String,
     workflow_id: String,
     workflow_step_count: usize,
     tool_update_precheck_executed: bool,
@@ -1161,8 +1161,8 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
         // Default: `mediapm.conductor.ncl`.
         conductor_config: Some("mediapm.conductor.ncl".to_string()),
         // Machine-managed conductor config path relative to workspace root.
-        // Default: `mediapm.conductor.machine.ncl`.
-        conductor_generated_config: Some("mediapm.conductor.machine.ncl".to_string()),
+        // Default: `mediapm.conductor.generated.ncl`.
+        conductor_generated_config: Some("mediapm.conductor.generated.ncl".to_string()),
         // Volatile conductor state path relative to workspace root.
         // Default: `.mediapm/state.conductor.ncl`.
         conductor_state_config: Some(".mediapm/state.conductor.ncl".to_string()),
@@ -1236,7 +1236,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     service.refresh_runtime_configuration()?;
 
     let mut machine: NickelDocument =
-        decode_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+        decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in logical_tool_ids {
@@ -1286,7 +1286,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
+    fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
     save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
@@ -2309,7 +2309,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
     // (profile timing intentionally omitted: no print_profile_timing API in new conductor)
 
     eprintln!("[demo_online] running post-sync verification and artifact summary...");
-    let machine = load_machine(&sync_service.paths().conductor_machine_ncl)?;
+    let machine = load_machine(&sync_service.paths().conductor_generated_ncl)?;
     let tool_binaries = resolve_tool_binaries(&machine, &logical_tool_ids)?;
     configure_demo_ffprobe_command(&machine, &tool_binaries)?;
 
@@ -2359,7 +2359,7 @@ async fn run_online_demo(sync_timeout: Duration) -> ExampleResult<DemoRunPaths> 
         yt_dlp_max_concurrent_calls,
         yt_dlp_max_retries,
         mediapm_ncl_path: display_path(&sync_service.paths().mediapm_ncl),
-        conductor_machine_ncl_path: display_path(&sync_service.paths().conductor_machine_ncl),
+        conductor_generated_ncl_path: display_path(&sync_service.paths().conductor_generated_ncl),
         workflow_id,
         workflow_step_count,
         tool_update_precheck_executed: true,

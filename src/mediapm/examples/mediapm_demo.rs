@@ -98,7 +98,7 @@ struct DemoManifest {
     profile_path: String,
     mediapm_ncl_path: String,
     conductor_user_ncl_path: String,
-    conductor_machine_ncl_path: String,
+    conductor_generated_ncl_path: String,
     mediapm_state_ncl_path: String,
     library_root_path: String,
     store_size_without_delta_bytes: u64,
@@ -842,7 +842,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
     service.refresh_runtime_configuration()?;
 
     let mut machine: NickelDocument =
-        decode_document(fs::read(&service.paths().conductor_machine_ncl)?.as_slice())?;
+        decode_document(fs::read(&service.paths().conductor_generated_ncl)?.as_slice())?;
     let mut lock = load_mediapm_state_document(&service.paths().mediapm_state_ncl)?;
 
     for logical_tool_name in local_demo_tool_requirements().into_keys() {
@@ -896,7 +896,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
         );
     }
 
-    fs::write(&service.paths().conductor_machine_ncl, encode_document(machine)?)?;
+    fs::write(&service.paths().conductor_generated_ncl, encode_document(machine)?)?;
     save_mediapm_state_document(&service.paths().mediapm_state_ncl, &lock)?;
 
     Ok(())
@@ -991,7 +991,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         MediaPmService::new(conductor, MediaPmPaths::from_root(&workspace_root))
     };
     if run_sync {
-        clear_machine_workflows(&service.paths().conductor_machine_ncl)?;
+        clear_machine_workflows(&service.paths().conductor_generated_ncl)?;
     }
 
     let maybe_summary = if run_sync { Some(service.sync_library(false).await?) } else { None };
@@ -1077,7 +1077,7 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
         profile_path: display_path(&service.paths().runtime_root.join("profile.json")),
         mediapm_ncl_path: display_path(&service.paths().mediapm_ncl),
         conductor_user_ncl_path: display_path(&service.paths().conductor_user_ncl),
-        conductor_machine_ncl_path: display_path(&service.paths().conductor_machine_ncl),
+        conductor_generated_ncl_path: display_path(&service.paths().conductor_generated_ncl),
         mediapm_state_ncl_path: display_path(&service.paths().mediapm_state_ncl),
         library_root_path: display_path(&effective_paths.hierarchy_root_dir),
         store_size_without_delta_bytes: store_size_stats.without_delta_bytes,

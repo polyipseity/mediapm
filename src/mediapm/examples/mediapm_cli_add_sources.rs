@@ -25,7 +25,7 @@ struct AddSourcesManifest {
     manifest_path: PathBuf,
     mediapm_ncl: PathBuf,
     conductor_user_ncl: PathBuf,
-    conductor_machine_ncl: PathBuf,
+    conductor_generated_ncl: PathBuf,
     local_media_id: String,
     remote_media_id: String,
 }
@@ -81,7 +81,7 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
     let paths = service.paths();
     let mediapm_ncl = paths.mediapm_ncl.clone();
     let conductor_user_ncl = paths.conductor_user_ncl.clone();
-    let conductor_machine_ncl = paths.conductor_machine_ncl.clone();
+    let conductor_generated_ncl = paths.conductor_generated_ncl.clone();
     let manifest_path = root.join("manifest.json");
 
     let manifest = AddSourcesManifest {
@@ -89,7 +89,7 @@ async fn run_add_sources_example() -> ExampleResult<AddSourcesManifest> {
         manifest_path: manifest_path.clone(),
         mediapm_ncl,
         conductor_user_ncl,
-        conductor_machine_ncl,
+        conductor_generated_ncl,
         local_media_id,
         remote_media_id,
     };
@@ -105,7 +105,7 @@ async fn main() -> ExampleResult<()> {
     println!("manifest: {}", manifest.manifest_path.display());
     println!("mediapm.ncl: {}", manifest.mediapm_ncl.display());
     println!("conductor user: {}", manifest.conductor_user_ncl.display());
-    println!("conductor machine: {}", manifest.conductor_machine_ncl.display());
+    println!("conductor generated: {}", manifest.conductor_generated_ncl.display());
     println!("local media id: {}", manifest.local_media_id);
     println!("remote media id: {}", manifest.remote_media_id);
 
@@ -128,7 +128,10 @@ mod tests {
 
         assert!(manifest.mediapm_ncl.exists(), "mediapm config should exist");
         assert!(manifest.conductor_user_ncl.exists(), "conductor user config should exist");
-        assert!(manifest.conductor_machine_ncl.exists(), "conductor machine config should exist");
+        assert!(
+            manifest.conductor_generated_ncl.exists(),
+            "conductor generated config should exist"
+        );
 
         let document = load_mediapm_document(&manifest.mediapm_ncl).expect("load mediapm.ncl");
         assert_eq!(document.media.len(), 2, "example should register exactly two media sources");
@@ -193,7 +196,7 @@ mod tests {
         let user_bytes =
             fs::read(&manifest.conductor_user_ncl).expect("read conductor user config");
         let machine_bytes =
-            fs::read(&manifest.conductor_machine_ncl).expect("read conductor machine config");
+            fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
 
         let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
         let machine =

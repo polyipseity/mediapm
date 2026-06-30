@@ -1050,7 +1050,7 @@ fn inject_conductor_passthrough_defaults(
         &mut injected,
         args,
         "--config-machine",
-        effective_paths.conductor_machine_ncl.to_string_lossy().to_string(),
+        effective_paths.conductor_generated_ncl.to_string_lossy().to_string(),
     );
     append_passthrough_option_if_missing(
         &mut injected,
@@ -1264,7 +1264,7 @@ mod tests {
         assert!(injected.contains(&"--config".to_string()));
         assert!(injected.contains(&"/tmp/demo-root/mediapm.conductor.ncl".to_string()));
         assert!(injected.contains(&"--config-machine".to_string()));
-        assert!(injected.contains(&"/tmp/demo-root/mediapm.conductor.machine.ncl".to_string()));
+        assert!(injected.contains(&"/tmp/demo-root/mediapm.conductor.generated.ncl".to_string()));
         assert!(injected.contains(&"--config-state".to_string()));
         assert!(injected.contains(&"/tmp/demo-root/.mediapm/state.conductor.ncl".to_string()));
         assert!(injected.contains(&"--cas-store-dir".to_string()));

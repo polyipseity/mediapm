@@ -20,8 +20,8 @@ async fn managed_tools_exist_in_generated_document() -> Result<(), mediapm::Medi
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
 
-    let bytes = std::fs::read(&service.paths().conductor_machine_ncl)
-        .expect("conductor.machine.ncl should be readable");
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
 
     // At least one managed tool must appear after a successful sync.
@@ -40,8 +40,8 @@ async fn external_tool_content_map_keys_have_os_prefix() -> Result<(), mediapm::
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
 
-    let bytes = std::fs::read(&service.paths().conductor_machine_ncl)
-        .expect("conductor.machine.ncl should be readable");
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
 
     for (tool_id, spec) in &doc.tools {
@@ -69,8 +69,8 @@ async fn external_tool_command_is_non_empty() -> Result<(), mediapm::MediaPmErro
     let mut service = MediaPmService::new_fs_at(root.path()).await?;
     service.sync_tools().await?;
 
-    let bytes = std::fs::read(&service.paths().conductor_machine_ncl)
-        .expect("conductor.machine.ncl should be readable");
+    let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
+        .expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
 
     for (tool_id, spec) in &doc.tools {

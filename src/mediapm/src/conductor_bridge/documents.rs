@@ -59,7 +59,7 @@ fn save_conductor_document(
 pub(crate) fn load_conductor_generated_document(
     paths: &MediaPmPaths,
 ) -> Result<NickelDocument, MediaPmError> {
-    load_conductor_document(&paths.conductor_machine_ncl, "conductor generated NCL")
+    load_conductor_document(&paths.conductor_generated_ncl, "conductor generated NCL")
 }
 
 /// Saves the conductor generated document (`.ncl`) to disk (only if changed).
@@ -67,7 +67,7 @@ pub(crate) fn save_conductor_generated_document(
     paths: &MediaPmPaths,
     document: &NickelDocument,
 ) -> Result<(), MediaPmError> {
-    save_conductor_document(&paths.conductor_machine_ncl, document, "conductor generated NCL")
+    save_conductor_document(&paths.conductor_generated_ncl, document, "conductor generated NCL")
 }
 
 /// Loads the conductor runtime state document (`.ncl`) from disk.
