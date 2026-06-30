@@ -6,12 +6,12 @@
 #![allow(dead_code)]
 // TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
+pub(crate) mod ffmpeg;
+pub(crate) mod media_tagger;
+pub(crate) mod rsgain;
+pub(crate) mod sd;
 pub(crate) mod spec;
-
-mod ffmpeg;
-mod media_tagger;
-mod rsgain;
-mod yt_dlp;
+pub(crate) mod yt_dlp;
 mod yt_dlp_inputs;
 
 use mediapm_conductor::{OutputCaptureSpec, OutputSaveMode};
