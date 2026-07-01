@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 // TODO: Stream A stubs — wired when provisioning pipeline is complete.
 
+pub(crate) mod deno;
 pub(crate) mod ffmpeg;
 pub(crate) mod media_tagger;
 pub(crate) mod rsgain;

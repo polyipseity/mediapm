@@ -51,6 +51,9 @@ pub(crate) fn build_tool_spec(
     ffmpeg_slot_limits: FfmpegSlotLimits,
 ) -> (ToolSpec, ToolRuntime) {
     match tool_name {
+        n if n.eq_ignore_ascii_case("deno") => {
+            workflows::deno::build_deno_spec(content_map, command_path)
+        }
         n if n.eq_ignore_ascii_case("yt-dlp") => {
             workflows::yt_dlp::build_yt_dlp_spec(content_map, command_path)
         }
