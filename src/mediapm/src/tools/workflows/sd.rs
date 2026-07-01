@@ -203,6 +203,21 @@ mod tests {
     }
 
     #[test]
+    fn build_sd_spec_preserves_content_map() {
+        let mut content_map = BTreeMap::new();
+        content_map.insert("linux/sd".into(), "abc".into());
+        content_map.insert("macos/sd".into(), "def".into());
+        content_map.insert("windows/sd.exe".into(), "ghi".into());
+
+        let (_spec, runtime) = build_sd_spec(content_map.clone(), "sd");
+
+        assert_eq!(runtime.content_map.len(), 3);
+        assert_eq!(runtime.content_map["linux/sd"], "abc");
+        assert_eq!(runtime.content_map["macos/sd"], "def");
+        assert_eq!(runtime.content_map["windows/sd.exe"], "ghi");
+    }
+
+    #[test]
     fn build_sd_spec_returns_executable_kind() {
         let content_map = BTreeMap::new();
         let (spec, _runtime) = build_sd_spec(content_map, "sd");

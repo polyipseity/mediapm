@@ -72,3 +72,56 @@ pub(crate) fn build_tool_spec(
         _ => panic!("unknown managed tool: {tool_name}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::conductor_bridge::constants::OUTPUT_SANDBOX_ARTIFACTS;
+
+    /// All six managed tool names resolve through the dispatcher without panic.
+    #[test]
+    fn build_tool_spec_resolves_all_managed_tools() {
+        let content_map = BTreeMap::new();
+        let limits = FfmpegSlotLimits::default();
+
+        for tool_name in &["deno", "yt-dlp", "ffmpeg", "rsgain", "media-tagger", "sd"] {
+            let (spec, runtime) =
+                build_tool_spec(tool_name, content_map.clone(), tool_name, limits);
+            assert_eq!(spec.name, *tool_name);
+            assert_eq!(runtime.content_map, content_map);
+        }
+    }
+
+    /// Sandbox artifacts folder varies per tool: yt-dlp uses `downloads`,
+    /// media-tagger uses `coverart`, others use `inputs`.
+    #[test]
+    fn sandbox_artifacts_folder_differs_by_tool() {
+        let content_map = BTreeMap::new();
+        let limits = FfmpegSlotLimits::default();
+
+        let yt_dlp_outputs =
+            build_tool_spec("yt-dlp", content_map.clone(), "yt-dlp", limits).0.outputs;
+        assert_eq!(
+            yt_dlp_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:downloads",
+            "yt-dlp sandbox folder"
+        );
+
+        let mt_outputs =
+            build_tool_spec("media-tagger", content_map.clone(), "media-tagger", limits).0.outputs;
+        assert_eq!(
+            mt_outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:coverart",
+            "media-tagger sandbox folder"
+        );
+
+        for tool_name in &["ffmpeg", "rsgain", "sd", "deno"] {
+            let outputs =
+                build_tool_spec(tool_name, content_map.clone(), tool_name, limits).0.outputs;
+            assert_eq!(
+                outputs[OUTPUT_SANDBOX_ARTIFACTS].capture, "folder:inputs",
+                "{tool_name} sandbox folder"
+            );
+        }
+    }
+}

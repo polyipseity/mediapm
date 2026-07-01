@@ -666,6 +666,14 @@ mod tests {
     }
 
     #[test]
+    fn build_ffmpeg_outputs_include_standard_captures() {
+        let outputs = build_ffmpeg_outputs(2);
+        assert!(outputs.contains_key("stdout"), "missing stdout output");
+        assert!(outputs.contains_key("stderr"), "missing stderr output");
+        assert!(outputs.contains_key("process_code"), "missing process_code output");
+    }
+
+    #[test]
     fn build_ffmpeg_defaults_include_static_and_dynamic_entries() {
         let defaults = build_ffmpeg_default_input_defaults(2, 2);
         assert_eq!(defaults.get("hide_banner").map(String::as_str), Some("true"));

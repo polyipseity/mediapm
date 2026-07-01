@@ -14,7 +14,8 @@ use std::collections::BTreeMap;
 use mediapm_conductor::{OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec};
 
 use crate::conductor_bridge::constants::{
-    INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT, OUTPUT_SANDBOX_ARTIFACTS,
+    INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
+    OUTPUT_SANDBOX_ARTIFACTS,
 };
 
 use super::spec::assemble_tool_spec;
@@ -37,13 +38,22 @@ fn build_deno_command(command_path: &str) -> Vec<String> {
 
 /// Builds the deno input spec map.
 ///
-/// Only the common leading-args and trailing-args inputs are defined — deno
-/// has no tool-specific option inputs in the mediapm workflow model.
+/// Includes the common leading-args and trailing-args inputs plus an unused
+/// `INPUT_CONTENT` slot for consistency with the legacy fallthrough path.
+/// deno has no tool-specific option inputs in the mediapm workflow model.
 #[must_use]
 fn build_deno_inputs() -> BTreeMap<String, ToolInputSpec> {
     BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
+            ToolInputSpec {
+                kind: ToolInputKind::String,
+                description: String::new(),
+                required: false,
+            },
+        ),
+        (
+            INPUT_CONTENT.to_string(),
             ToolInputSpec {
                 kind: ToolInputKind::String,
                 description: String::new(),
@@ -114,12 +124,13 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 
 /// Builds default input values for deno.
 ///
-/// Both leading and trailing args default to empty — deno receives no
+/// Leading/trailing args and content all default to empty — deno receives no
 /// mandatory arguments from mediapm.
 #[must_use]
 fn build_deno_default_input_defaults() -> BTreeMap<String, String> {
     BTreeMap::from([
         (INPUT_LEADING_ARGS.to_string(), String::new()),
+        (INPUT_CONTENT.to_string(), String::new()),
         (INPUT_TRAILING_ARGS.to_string(), String::new()),
     ])
 }
@@ -160,11 +171,12 @@ mod tests {
     }
 
     #[test]
-    fn build_deno_inputs_has_only_common_inputs() {
+    fn build_deno_inputs_has_common_inputs_and_content() {
         let inputs = build_deno_inputs();
-        assert_eq!(inputs.len(), 2);
-        assert!(inputs.contains_key("leading_args"));
-        assert!(inputs.contains_key("trailing_args"));
+        assert_eq!(inputs.len(), 3);
+        assert!(inputs.contains_key(INPUT_LEADING_ARGS));
+        assert!(inputs.contains_key(INPUT_CONTENT));
+        assert!(inputs.contains_key(INPUT_TRAILING_ARGS));
     }
 
     #[test]

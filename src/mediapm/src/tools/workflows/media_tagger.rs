@@ -337,6 +337,14 @@ mod tests {
     }
 
     #[test]
+    fn build_media_tagger_outputs_include_standard_captures() {
+        let outputs = build_media_tagger_outputs();
+        assert!(outputs.contains_key("stdout"), "missing stdout output");
+        assert!(outputs.contains_key("stderr"), "missing stderr output");
+        assert!(outputs.contains_key("process_code"), "missing process_code output");
+    }
+
+    #[test]
     fn build_media_tagger_defaults_include_cache_and_endpoints() {
         let defaults = build_media_tagger_default_input_defaults();
         assert_eq!(defaults.get("strict_identification").map(String::as_str), Some("true"));
