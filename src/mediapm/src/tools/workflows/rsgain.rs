@@ -218,7 +218,7 @@ fn build_rsgain_command(command_path: &str) -> Vec<String> {
     for extension in SUPPORTED_RSGAIN_INPUT_EXTENSIONS {
         let input_path = rsgain_input_file_path(extension);
         command.push(format!(
-            "${{*inputs.{INPUT_RSGAIN_INPUT_EXTENSION} == \"{extension}\" ? {INPUT_CONTENT}:file({input_path}) | ''}}"
+            "${{*inputs.{INPUT_RSGAIN_INPUT_EXTENSION} == \"{extension}\" ? inputs.{INPUT_CONTENT}:file({input_path}) | ''}}"
         ));
     }
     command

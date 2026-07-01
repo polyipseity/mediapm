@@ -180,7 +180,9 @@ fn build_media_tagger_command(command_path: &str) -> Vec<String> {
         command_path.to_string(),
         format!("${{*inputs.{INPUT_LEADING_ARGS}}}"),
         format!("${{*inputs.{INPUT_CONTENT} ? --input | ''}}"),
-        format!("${{*inputs.{INPUT_CONTENT} ? {INPUT_CONTENT}:file(inputs/input.media) | ''}}"),
+        format!(
+            "${{*inputs.{INPUT_CONTENT} ? inputs.{INPUT_CONTENT}:file(inputs/input.media) | ''}}"
+        ),
         "--output".to_string(),
         MEDIA_TAGGER_OUTPUT_FILE.to_string(),
     ];
