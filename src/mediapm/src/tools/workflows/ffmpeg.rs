@@ -57,6 +57,8 @@ pub(crate) fn synthesize_ffmpeg_step(
                 name: OUTPUT_PRIMARY.to_string(),
                 capture: "file:output.*".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
     }
@@ -509,6 +511,8 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
             name: OUTPUT_CONTENT.to_string(),
             capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
             save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
         },
     );
     for index in 0..max_output_slots {
@@ -520,6 +524,8 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
                 name: capture_name,
                 capture: format!("file_regex:{path_regex}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
         outputs.insert(
@@ -528,6 +534,8 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
                 name: format!("{OUTPUT_CONTENT}_{index}"),
                 capture: format!("file_regex:{path_regex}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
     }
@@ -537,15 +545,29 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
             name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             capture: "folder:inputs".to_string(),
             save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
         },
     );
     outputs.insert(
         "stdout".to_string(),
-        OutputCaptureSpec { name: "stdout".to_string(), capture: "stdout".to_string(), save: true },
+        OutputCaptureSpec {
+            name: "stdout".to_string(),
+            capture: "stdout".to_string(),
+            save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
+        },
     );
     outputs.insert(
         "stderr".to_string(),
-        OutputCaptureSpec { name: "stderr".to_string(), capture: "stderr".to_string(), save: true },
+        OutputCaptureSpec {
+            name: "stderr".to_string(),
+            capture: "stderr".to_string(),
+            save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
+        },
     );
     outputs.insert(
         "process_code".to_string(),
@@ -553,6 +575,8 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
             name: "process_code".to_string(),
             capture: "process_code".to_string(),
             save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
         },
     );
     outputs

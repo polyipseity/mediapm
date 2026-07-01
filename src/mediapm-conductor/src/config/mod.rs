@@ -126,6 +126,16 @@ const fn default_save_output() -> bool {
     true
 }
 
+/// Default for `OutputCaptureSpec.allow_empty`: skip on missing.
+const fn default_allow_empty() -> bool {
+    false
+}
+
+/// Default for `OutputCaptureSpec.include_topmost_folder`: include folder name.
+const fn default_include_topmost_folder() -> bool {
+    true
+}
+
 /// Capture/output spec for a step.
 ///
 /// Describes how output bytes are captured from a tool execution:
@@ -143,11 +153,28 @@ pub struct OutputCaptureSpec {
     /// Whether to persist this output to CAS. Defaults to `true`.
     #[serde(default = "default_save_output")]
     pub save: bool,
+    /// Whether an empty capture result (e.g. missing file) is acceptable.
+    /// When `true`, an empty result is stored as empty bytes instead of
+    /// silently skipping the output.
+    #[serde(default = "default_allow_empty")]
+    pub allow_empty: bool,
+    /// Whether `folder:` capture listings include the topmost folder name.
+    /// When `true` (default), paths in the listing are relative to the
+    /// sandbox root (including the topmost folder). When `false`, paths
+    /// are relative to the captured folder itself.
+    #[serde(default = "default_include_topmost_folder")]
+    pub include_topmost_folder: bool,
 }
 
 impl Default for OutputCaptureSpec {
     fn default() -> Self {
-        Self { name: String::new(), capture: String::new(), save: true }
+        Self {
+            name: String::new(),
+            capture: String::new(),
+            save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
+        }
     }
 }
 

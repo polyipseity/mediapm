@@ -55,6 +55,31 @@ pub(crate) struct OutputCaptureSpecLatest {
     pub(crate) name: String,
     /// Capture source selector.
     pub(crate) capture: String,
+    /// Whether to persist this output to CAS.
+    #[serde(default = "default_save_output", skip_serializing_if = "is_true")]
+    pub(crate) save: bool,
+    /// Whether an empty capture result is acceptable.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) allow_empty: bool,
+    /// Whether `folder:` listings include the topmost folder name.
+    #[serde(default = "default_include_topmost_folder", skip_serializing_if = "is_true")]
+    pub(crate) include_topmost_folder: bool,
+}
+
+const fn default_save_output() -> bool {
+    true
+}
+
+const fn default_include_topmost_folder() -> bool {
+    true
+}
+
+const fn is_true(v: &bool) -> bool {
+    *v
+}
+
+const fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// Latest persisted tool input kind.
@@ -551,7 +576,16 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
             .into_iter()
             .map(|(name, o)| {
                 let name_clone = name.clone();
-                (name, OutputCaptureSpec { name: name_clone, capture: o.capture, save: true })
+                (
+                    name,
+                    OutputCaptureSpec {
+                        name: name_clone,
+                        capture: o.capture,
+                        save: o.save,
+                        allow_empty: o.allow_empty,
+                        include_topmost_folder: o.include_topmost_folder,
+                    },
+                )
             })
             .collect(),
         runtime: tool_runtime_from_latest(spec.runtime),
@@ -593,7 +627,16 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
             .into_iter()
             .map(|(name, o)| {
                 let name_clone = name.clone();
-                (name, OutputCaptureSpecLatest { name: name_clone, capture: o.capture })
+                (
+                    name,
+                    OutputCaptureSpecLatest {
+                        name: name_clone,
+                        capture: o.capture,
+                        save: o.save,
+                        allow_empty: o.allow_empty,
+                        include_topmost_folder: o.include_topmost_folder,
+                    },
+                )
             })
             .collect(),
         runtime: tool_runtime_to_latest(spec.runtime),
@@ -650,7 +693,16 @@ fn step_spec_from_latest(step: WorkflowStepSpecLatest) -> WorkflowStepSpec {
             .into_iter()
             .map(|(name, o)| {
                 let name_clone = name.clone();
-                (name, OutputCaptureSpec { name: name_clone, capture: o.capture, save: true })
+                (
+                    name,
+                    OutputCaptureSpec {
+                        name: name_clone,
+                        capture: o.capture,
+                        save: o.save,
+                        allow_empty: o.allow_empty,
+                        include_topmost_folder: o.include_topmost_folder,
+                    },
+                )
             })
             .collect(),
         max_retries: step.max_retries,
@@ -668,7 +720,16 @@ fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
             .into_iter()
             .map(|(name, o)| {
                 let name_clone = name.clone();
-                (name, OutputCaptureSpecLatest { name: name_clone, capture: o.capture })
+                (
+                    name,
+                    OutputCaptureSpecLatest {
+                        name: name_clone,
+                        capture: o.capture,
+                        save: o.save,
+                        allow_empty: o.allow_empty,
+                        include_topmost_folder: o.include_topmost_folder,
+                    },
+                )
             })
             .collect(),
         max_retries: step.max_retries,
@@ -767,6 +828,8 @@ mod tests {
                                 name: "output".to_string(),
                                 capture: "stdout".to_string(),
                                 save: false,
+                                allow_empty: false,
+                                include_topmost_folder: true,
                             },
                         )]),
                         runtime: ToolRuntime {

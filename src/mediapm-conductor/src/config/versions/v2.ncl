@@ -49,6 +49,9 @@ in
 let OutputCaptureSpecV2 = {
   name | NonEmptyStringV2,
   capture | NonEmptyStringV2,
+  save | Bool | optional,
+  allow_empty | Bool | optional,
+  include_topmost_folder | Bool | optional,
 }
 in
 

@@ -85,6 +85,8 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: OUTPUT_CONTENT.to_string(),
                 capture: format!("file:{SANDBOX_INPUT_FILE}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -93,6 +95,8 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: "folder:inputs".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -101,6 +105,8 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "stdout".to_string(),
                 capture: "stdout".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -109,6 +115,8 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "stderr".to_string(),
                 capture: "stderr".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -117,6 +125,8 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "process_code".to_string(),
                 capture: "process_code".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
     ])

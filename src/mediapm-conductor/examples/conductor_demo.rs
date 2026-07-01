@@ -56,6 +56,8 @@ fn build_document() -> NickelDocument {
                         name: "result".into(),
                         capture: "full".to_string(),
                         save: true,
+                        allow_empty: false,
+                        include_topmost_folder: true,
                     },
                 )]),
                 max_retries: 0,

@@ -57,6 +57,8 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
             name: name.to_string(),
             capture: name.to_string(),
             save: true,
+            allow_empty: false,
+            include_topmost_folder: true,
         })
         .map(|spec| (spec.name.clone(), spec))
         .collect::<std::collections::BTreeMap<String, OutputCaptureSpec>>();
@@ -75,9 +77,9 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
             capture if capture.starts_with("file:") => {
                 let relative_path = &capture[5..];
                 let full_path = sandbox_dir.join(relative_path);
-                // Don't error if file doesn't exist — may be optional.
                 match tokio::fs::read(&full_path).await {
                     Ok(data) => data,
+                    Err(_) if spec.allow_empty => Vec::new(),
                     Err(_) => continue,
                 }
             }
@@ -97,6 +99,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                             path.display()
                         ))
                     })?,
+                    None if spec.allow_empty => Vec::new(),
                     None => continue,
                 }
             }
@@ -104,11 +107,20 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
                 let relative_path = &capture[7..];
                 let full_path = sandbox_dir.join(relative_path);
                 let file_paths = walk_and_collect_file_paths(&full_path).await?;
-                let file_list: Vec<String> = file_paths
-                    .iter()
-                    .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .collect();
+                let file_list: Vec<String> = if spec.include_topmost_folder {
+                    file_paths
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(sandbox_dir).ok())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect()
+                } else {
+                    let prefix = sandbox_dir.join(relative_path);
+                    file_paths
+                        .iter()
+                        .filter_map(|p| p.strip_prefix(&prefix).ok())
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect()
+                };
                 serde_json::to_vec(&file_list).map_err(|e| {
                     ConductorError::Workflow(format!("failed to serialize folder listing: {e}"))
                 })?

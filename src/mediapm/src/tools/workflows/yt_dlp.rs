@@ -60,6 +60,8 @@ pub(crate) fn synthesize_yt_dlp_step(
                 name: OUTPUT_PRIMARY.to_string(),
                 capture: "file:primary.*".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
         outputs.insert(
@@ -68,6 +70,8 @@ pub(crate) fn synthesize_yt_dlp_step(
                 name: "subtitles".to_string(),
                 capture: "file:subtitles/*".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
         outputs.insert(
@@ -76,6 +80,8 @@ pub(crate) fn synthesize_yt_dlp_step(
                 name: "thumbnails".to_string(),
                 capture: "file:thumbnails/*".to_string(),
                 save: false,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
     }
@@ -365,6 +371,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: OUTPUT_CONTENT.to_string(),
                 capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -373,6 +381,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "primary".to_string(),
                 capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -381,6 +391,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: format!("folder:{SANDBOX_DOWNLOADS_DIR}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -389,6 +401,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "stdout".to_string(),
                 capture: "stdout".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -397,6 +411,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "stderr".to_string(),
                 capture: "stderr".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
         (
@@ -405,6 +421,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: "process_code".to_string(),
                 capture: "process_code".to_string(),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         ),
     ]);
@@ -421,6 +439,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: output_name.to_string(),
                 capture: format!("folder_regex:{path_regex}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
     }
@@ -439,6 +459,8 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
                 name: output_name.to_string(),
                 capture: format!("file_regex:{path_regex}"),
                 save: true,
+                allow_empty: false,
+                include_topmost_folder: true,
             },
         );
     }

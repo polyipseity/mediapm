@@ -80,11 +80,23 @@ pub(crate) fn variant_to_output_capture_spec(
     match config {
         DecodedOutputVariantConfig::Generic(g) => {
             let (capture, save) = generic_variant_capture_and_save(g);
-            OutputCaptureSpec { name: name.to_string(), capture, save }
+            OutputCaptureSpec {
+                name: name.to_string(),
+                capture,
+                save,
+                allow_empty: false,
+                include_topmost_folder: true,
+            }
         }
         DecodedOutputVariantConfig::YtDlp(y) => {
             let (capture, save) = yt_dlp_variant_capture_and_save(y);
-            OutputCaptureSpec { name: name.to_string(), capture, save }
+            OutputCaptureSpec {
+                name: name.to_string(),
+                capture,
+                save,
+                allow_empty: false,
+                include_topmost_folder: true,
+            }
         }
     }
 }
