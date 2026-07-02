@@ -455,4 +455,61 @@ mod tests {
             assert!(vars.contains_key("TMPDIR"));
         }
     }
+
+    // ── InputBinding ──────────────────────────────────────────────────────
+
+    /// Verifies `InputBinding::default()` is `String("")`.
+    #[test]
+    fn input_binding_default_is_empty_string() {
+        let binding = InputBinding::default();
+        assert_eq!(binding, InputBinding::String(String::new()));
+    }
+
+    /// Verifies `From<String>` produces the `String` variant.
+    #[test]
+    fn input_binding_from_string() {
+        let binding = InputBinding::from("hello".to_string());
+        assert_eq!(binding, InputBinding::String("hello".to_string()));
+    }
+
+    /// Verifies `From<Vec<String>>` produces the `Vec` variant.
+    #[test]
+    fn input_binding_from_vec() {
+        let binding = InputBinding::from(vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(binding, InputBinding::Vec(vec!["a".to_string(), "b".to_string()]));
+    }
+
+    /// Verifies `InputBinding::String` serializes to a plain JSON string.
+    #[test]
+    fn input_binding_string_serde() {
+        let binding = InputBinding::String("test-value".to_string());
+        let json = serde_json::to_string(&binding).expect("serialize");
+        assert_eq!(json, "\"test-value\"");
+        let back: InputBinding = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, binding);
+    }
+
+    /// Verifies `InputBinding::Vec` serializes to a JSON array of strings.
+    #[test]
+    fn input_binding_vec_serde() {
+        let binding = InputBinding::Vec(vec!["x".to_string(), "y".to_string()]);
+        let json = serde_json::to_string(&binding).expect("serialize");
+        assert_eq!(json, "[\"x\",\"y\"]");
+        let back: InputBinding = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, binding);
+    }
+
+    /// Verifies that an empty JSON string deserializes as `String("")`.
+    #[test]
+    fn input_binding_empty_string_deser() {
+        let binding: InputBinding = serde_json::from_str("\"\"").expect("deserialize empty string");
+        assert_eq!(binding, InputBinding::String(String::new()));
+    }
+
+    /// Verifies that an empty JSON array deserializes as `Vec(vec![])`.
+    #[test]
+    fn input_binding_empty_vec_deser() {
+        let binding: InputBinding = serde_json::from_str("[]").expect("deserialize empty array");
+        assert_eq!(binding, InputBinding::Vec(vec![]));
+    }
 }

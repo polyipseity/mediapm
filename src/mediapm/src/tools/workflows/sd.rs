@@ -210,8 +210,8 @@ mod tests {
     #[test]
     fn build_sd_defaults_include_empty_pattern_and_replacement() {
         let defaults = build_sd_default_input_defaults();
-        assert_eq!(defaults.get("pattern").map(String::as_str), Some(""));
-        assert_eq!(defaults.get("replacement").map(String::as_str), Some(""));
+        assert_eq!(defaults.get("pattern"), Some(&InputBinding::String(String::new())));
+        assert_eq!(defaults.get("replacement"), Some(&InputBinding::String(String::new())));
     }
 
     #[test]

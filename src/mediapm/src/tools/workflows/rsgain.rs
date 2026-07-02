@@ -381,12 +381,12 @@ mod tests {
     #[test]
     fn build_rsgain_defaults_match_expected_loudness_profile() {
         let defaults = build_rsgain_default_input_defaults();
-        assert_eq!(defaults.get("target_lufs").map(String::as_str), Some("-18"));
-        assert_eq!(defaults.get("album").map(String::as_str), Some("false"));
-        assert_eq!(defaults.get("tagmode").map(String::as_str), Some("i"));
-        assert_eq!(defaults.get("true_peak").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("clip_mode").map(String::as_str), Some("p"));
-        assert_eq!(defaults.get("max_peak").map(String::as_str), Some("0"));
+        assert_eq!(defaults.get("target_lufs"), Some(&InputBinding::String("-18".to_string())));
+        assert_eq!(defaults.get("album"), Some(&InputBinding::String("false".to_string())));
+        assert_eq!(defaults.get("tagmode"), Some(&InputBinding::String("i".to_string())));
+        assert_eq!(defaults.get("true_peak"), Some(&InputBinding::String("true".to_string())));
+        assert_eq!(defaults.get("clip_mode"), Some(&InputBinding::String("p".to_string())));
+        assert_eq!(defaults.get("max_peak"), Some(&InputBinding::String("0".to_string())));
     }
 
     #[test]

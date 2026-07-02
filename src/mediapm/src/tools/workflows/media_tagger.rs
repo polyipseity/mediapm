@@ -362,9 +362,18 @@ mod tests {
     #[test]
     fn build_media_tagger_defaults_include_cache_and_endpoints() {
         let defaults = build_media_tagger_default_input_defaults();
-        assert_eq!(defaults.get("strict_identification").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("embed_only_one_front_image").map(String::as_str), Some("false"));
-        assert_eq!(defaults.get("cache_expiry_seconds").map(String::as_str), Some("86400"));
+        assert_eq!(
+            defaults.get("strict_identification"),
+            Some(&InputBinding::String("true".to_string()))
+        );
+        assert_eq!(
+            defaults.get("embed_only_one_front_image"),
+            Some(&InputBinding::String("false".to_string()))
+        );
+        assert_eq!(
+            defaults.get("cache_expiry_seconds"),
+            Some(&InputBinding::String("86400".to_string()))
+        );
     }
 
     #[test]

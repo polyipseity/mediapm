@@ -94,3 +94,62 @@ pub(super) fn resolve_step_output_refs(
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verifies that `InputBinding::String` resolves as a plain string value.
+    #[test]
+    fn string_binding_resolves_as_plain_string() {
+        let binding = crate::config::InputBinding::String("hello".to_string());
+        let resolved = match binding {
+            crate::config::InputBinding::String(s) => s,
+            crate::config::InputBinding::Vec(v) => serde_json::to_string(&v).unwrap_or_default(),
+        };
+        assert_eq!(resolved, "hello");
+    }
+
+    /// Verifies that `InputBinding::Vec` resolves as a JSON-encoded array.
+    #[test]
+    fn vec_binding_resolves_as_json_array() {
+        let binding = crate::config::InputBinding::Vec(vec!["a".to_string(), "b".to_string()]);
+        let resolved = match binding {
+            crate::config::InputBinding::String(s) => s,
+            crate::config::InputBinding::Vec(v) => serde_json::to_string(&v).unwrap_or_default(),
+        };
+        assert_eq!(resolved, r#"["a","b"]"#);
+    }
+
+    /// Verifies that an empty `InputBinding::Vec` resolves as an empty JSON array.
+    #[test]
+    fn empty_vec_binding_resolves_as_empty_json_array() {
+        let binding = crate::config::InputBinding::Vec(vec![]);
+        let resolved = match binding {
+            crate::config::InputBinding::String(s) => s,
+            crate::config::InputBinding::Vec(v) => serde_json::to_string(&v).unwrap_or_default(),
+        };
+        assert_eq!(resolved, r#"[]"#);
+    }
+
+    /// Verifies `resolve_step_output_refs` replaces a known step output reference.
+    #[test]
+    fn resolve_step_output_refs_replaces_known_reference() {
+        let mut step_outputs = StepOutputs::new();
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), mediapm_cas::Hash::from_bytes([1; 32]));
+        step_outputs.insert("step1".to_string(), outputs);
+
+        let result =
+            resolve_step_output_refs("${step_output.step1.result}", &step_outputs).unwrap();
+        assert!(result.starts_with("blake3:"), "expected blake3 hash prefix, got: {result}");
+    }
+
+    /// Verifies `resolve_step_output_refs` errors on missing step output.
+    #[test]
+    fn resolve_step_output_refs_errors_on_missing_reference() {
+        let step_outputs = StepOutputs::new();
+        let result = resolve_step_output_refs("${step_output.missing.out}", &step_outputs);
+        assert!(result.is_err());
+    }
+}

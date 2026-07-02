@@ -706,8 +706,8 @@ mod tests {
     #[test]
     fn build_ffmpeg_defaults_include_static_and_dynamic_entries() {
         let defaults = build_ffmpeg_default_input_defaults(2, 2);
-        assert_eq!(defaults.get("hide_banner").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("codec_copy").map(String::as_str), Some("true"));
+        assert_eq!(defaults.get("hide_banner"), Some(&InputBinding::String("true".to_string())));
+        assert_eq!(defaults.get("codec_copy"), Some(&InputBinding::String("true".to_string())));
         assert!(defaults.contains_key(&ffmpeg_input_content_name(0)));
         assert!(defaults.contains_key(&ffmpeg_input_content_name(1)));
         assert!(defaults.contains_key(&ffmpeg_output_path_input_name(0)));

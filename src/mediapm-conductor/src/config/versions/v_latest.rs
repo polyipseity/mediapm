@@ -877,7 +877,7 @@ mod tests {
                         runtime: ToolRuntime {
                             content_map: BTreeMap::new(),
                             impure: true,
-                            inherited_env_vars: BTreeMap::new(),
+                            inherited_env_vars: Vec::new(),
                             max_concurrent_calls: 2,
                             max_retries: 1,
                         },

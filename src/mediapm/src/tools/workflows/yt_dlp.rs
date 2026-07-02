@@ -554,24 +554,45 @@ mod tests {
     #[test]
     fn build_yt_dlp_defaults_prefer_single_best_thumbnail() {
         let defaults = build_yt_dlp_default_input_defaults();
-        assert_eq!(defaults.get("write_subs").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("write_auto_subs").map(String::as_str), Some("false"));
-        assert_eq!(defaults.get("sub_langs").map(String::as_str), Some("all"));
-        assert!(
-            defaults.get("extractor_args").map_or(false, |v| v.contains("skip=translated_subs"))
-        );
-        assert_eq!(defaults.get("write_thumbnail").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("write_all_thumbnails").map(String::as_str), Some("false"));
-        assert_eq!(defaults.get("clean_info_json").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("write_comments").map(String::as_str), Some("false"));
-        assert_eq!(defaults.get("write_chapters").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("write_url_link").map(String::as_str), Some("true"));
-        assert_eq!(defaults.get("write_desktop_link").map(String::as_str), Some("true"));
+        assert_eq!(defaults.get("write_subs"), Some(&InputBinding::String("true".to_string())));
         assert_eq!(
-            defaults.get("download_archive").map(String::as_str),
-            Some("downloads/archive.txt")
+            defaults.get("write_auto_subs"),
+            Some(&InputBinding::String("false".to_string()))
         );
-        assert_eq!(defaults.get("embed_thumbnail").map(String::as_str), Some("false"));
+        assert_eq!(defaults.get("sub_langs"), Some(&InputBinding::String("all".to_string())));
+        assert!(defaults.get("extractor_args").map_or(false, |v| {
+            matches!(v, InputBinding::String(s) if s.contains("skip=translated_subs"))
+        }));
+        assert_eq!(
+            defaults.get("write_thumbnail"),
+            Some(&InputBinding::String("true".to_string()))
+        );
+        assert_eq!(
+            defaults.get("write_all_thumbnails"),
+            Some(&InputBinding::String("false".to_string()))
+        );
+        assert_eq!(
+            defaults.get("clean_info_json"),
+            Some(&InputBinding::String("true".to_string()))
+        );
+        assert_eq!(
+            defaults.get("write_comments"),
+            Some(&InputBinding::String("false".to_string()))
+        );
+        assert_eq!(defaults.get("write_chapters"), Some(&InputBinding::String("true".to_string())));
+        assert_eq!(defaults.get("write_url_link"), Some(&InputBinding::String("true".to_string())));
+        assert_eq!(
+            defaults.get("write_desktop_link"),
+            Some(&InputBinding::String("true".to_string()))
+        );
+        assert_eq!(
+            defaults.get("download_archive"),
+            Some(&InputBinding::String("downloads/archive.txt".to_string()))
+        );
+        assert_eq!(
+            defaults.get("embed_thumbnail"),
+            Some(&InputBinding::String("false".to_string()))
+        );
     }
 
     #[test]
