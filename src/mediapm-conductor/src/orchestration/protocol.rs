@@ -35,7 +35,7 @@ pub(crate) struct UnifiedToolSpec {
     /// Declared input contract keyed by input name.
     pub inputs: BTreeMap<String, ToolInputSpec>,
     /// Per-tool default input values contributed by merged tool config.
-    pub default_inputs: BTreeMap<String, String>,
+    pub default_inputs: BTreeMap<String, crate::config::InputBinding>,
     /// The command to execute split into parts (exe + args).
     /// Empty for builtin-only tools.
     pub command_parts: Vec<String>,

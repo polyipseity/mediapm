@@ -136,6 +136,36 @@ const fn default_include_topmost_folder() -> bool {
     true
 }
 
+/// Input binding: a single string or an array of strings.
+///
+/// Used in `default_inputs` to support both scalar and list defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputBinding {
+    /// Single string value.
+    String(String),
+    /// Array of string values (JSON-encoded for template splat resolution).
+    Vec(Vec<String>),
+}
+
+impl Default for InputBinding {
+    fn default() -> Self {
+        Self::String(String::new())
+    }
+}
+
+impl From<String> for InputBinding {
+    fn from(s: String) -> Self {
+        Self::String(s)
+    }
+}
+
+impl From<Vec<String>> for InputBinding {
+    fn from(v: Vec<String>) -> Self {
+        Self::Vec(v)
+    }
+}
+
 /// Capture/output spec for a step.
 ///
 /// Describes how output bytes are captured from a tool execution:
@@ -273,7 +303,7 @@ pub struct ToolSpec {
     pub inputs: BTreeMap<String, ToolInputSpec>,
     /// Default input values applied when workflow steps omit matching keys.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub default_inputs: BTreeMap<String, String>,
+    pub default_inputs: BTreeMap<String, InputBinding>,
     /// Declared output specifications for this tool keyed by output name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, OutputCaptureSpec>,

@@ -39,12 +39,19 @@ pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
     let all_keys: BTreeSet<&String> = tool_spec.inputs.keys().collect();
 
     for key in all_keys {
-        let value = request
+        let value: String = request
             .step
             .inputs
             .get(key)
-            .or_else(|| tool_spec.default_inputs.get(key))
             .cloned()
+            .or_else(|| {
+                tool_spec.default_inputs.get(key).map(|binding| match binding {
+                    crate::config::InputBinding::String(s) => s.clone(),
+                    crate::config::InputBinding::Vec(v) => {
+                        serde_json::to_string(v).unwrap_or_default()
+                    }
+                })
+            })
             .unwrap_or_default();
 
         // Resolve all template references via the full engine.

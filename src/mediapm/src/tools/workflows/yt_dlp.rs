@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowStepSpec,
+    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+    WorkflowStepSpec,
 };
 
 use crate::conductor_bridge::constants::*;
@@ -470,16 +471,16 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 
 /// Builds yt-dlp default input values.
 #[must_use]
-fn build_yt_dlp_default_input_defaults() -> BTreeMap<String, String> {
+fn build_yt_dlp_default_input_defaults() -> BTreeMap<String, InputBinding> {
     let mut defaults = BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), String::new()),
-        (INPUT_TRAILING_ARGS.to_string(), String::new()),
+        (INPUT_LEADING_ARGS.to_string(), InputBinding::Vec(vec![])),
+        (INPUT_TRAILING_ARGS.to_string(), InputBinding::Vec(vec![])),
     ]);
     for option_input in YT_DLP_OPTION_INPUTS {
         defaults.entry((*option_input).to_string()).or_default();
     }
     for (key, value) in YT_DLP_INPUT_DEFAULTS {
-        defaults.insert(key.to_string(), value.to_string());
+        defaults.insert(key.to_string(), InputBinding::String(value.to_string()));
     }
     defaults
 }

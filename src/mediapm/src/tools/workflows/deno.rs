@@ -11,7 +11,9 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec};
+use mediapm_conductor::{
+    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+};
 
 use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS, OUTPUT_CONTENT,
@@ -137,11 +139,11 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 /// Leading/trailing args and content all default to empty — deno receives no
 /// mandatory arguments from mediapm.
 #[must_use]
-fn build_deno_default_input_defaults() -> BTreeMap<String, String> {
+fn build_deno_default_input_defaults() -> BTreeMap<String, InputBinding> {
     BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), String::new()),
-        (INPUT_CONTENT.to_string(), String::new()),
-        (INPUT_TRAILING_ARGS.to_string(), String::new()),
+        (INPUT_LEADING_ARGS.to_string(), InputBinding::Vec(vec![])),
+        (INPUT_CONTENT.to_string(), InputBinding::String(String::new())),
+        (INPUT_TRAILING_ARGS.to_string(), InputBinding::Vec(vec![])),
     ])
 }
 

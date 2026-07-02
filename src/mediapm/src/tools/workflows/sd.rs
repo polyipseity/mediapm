@@ -6,7 +6,9 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec};
+use mediapm_conductor::{
+    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+};
 
 use crate::conductor_bridge::constants::{
     INPUT_CONTENT, INPUT_LEADING_ARGS, INPUT_SD_PATTERN, INPUT_SD_REPLACEMENT, INPUT_TRAILING_ARGS,
@@ -140,13 +142,13 @@ fn build_sd_outputs() -> BTreeMap<String, OutputCaptureSpec> {
 
 /// Builds default input values for sd.
 #[must_use]
-fn build_sd_default_input_defaults() -> BTreeMap<String, String> {
+fn build_sd_default_input_defaults() -> BTreeMap<String, InputBinding> {
     let mut defaults = BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), String::new()),
-        (INPUT_TRAILING_ARGS.to_string(), String::new()),
+        (INPUT_LEADING_ARGS.to_string(), InputBinding::Vec(vec![])),
+        (INPUT_TRAILING_ARGS.to_string(), InputBinding::Vec(vec![])),
     ]);
     for (key, value) in SD_INPUT_DEFAULTS {
-        defaults.insert(key.to_string(), value.to_string());
+        defaults.insert(key.to_string(), InputBinding::String(value.to_string()));
     }
     defaults
 }

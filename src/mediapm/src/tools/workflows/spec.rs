@@ -9,7 +9,9 @@
 
 use std::collections::BTreeMap;
 
-use mediapm_conductor::{OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec};
+use mediapm_conductor::{
+    InputBinding, OutputCaptureSpec, ToolInputSpec, ToolKindSpec, ToolRuntime, ToolSpec,
+};
 
 /// Describes how one option input is rendered as CLI tokens.
 ///
@@ -140,7 +142,7 @@ pub(crate) fn assemble_tool_spec(
     command: Vec<String>,
     inputs: BTreeMap<String, ToolInputSpec>,
     outputs: BTreeMap<String, OutputCaptureSpec>,
-    default_inputs: BTreeMap<String, String>,
+    default_inputs: BTreeMap<String, InputBinding>,
     impure: bool,
     max_concurrent_calls: usize,
     max_retries: usize,

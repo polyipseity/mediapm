@@ -76,13 +76,22 @@ let ConductorRuntimeConfigV2 = {
 }
 in
 
+# ||| Input binding: a single string or an array of strings.
+# ||| Used in default_inputs to support both scalar and list defaults.
+let InputBindingV2 =
+  std.contract.any_of [
+    String,
+    Array String,
+  ]
+in
+
 # ||| Builtin tool kind: identity is (name, version).
 let BuiltinToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "builtin"),
   name | NonEmptyStringV2,
   version | NonEmptyStringV2,
   inputs | { _ : ToolInputSpecV2 } | optional,
-  default_inputs | { _ : String } | optional,
+  default_inputs | { _ : InputBindingV2 } | optional,
   outputs | { _ : OutputCaptureSpecV2 } | optional,
   runtime | ToolRuntimeV2 | optional,
 }
@@ -97,7 +106,7 @@ let ExecutableToolSpecV2 = {
   env_vars | { _ : String } | optional,
   success_codes | Array IntegerNumberV2 | optional,
   inputs | { _ : ToolInputSpecV2 } | optional,
-  default_inputs | { _ : String } | optional,
+  default_inputs | { _ : InputBindingV2 } | optional,
   outputs | { _ : OutputCaptureSpecV2 } | optional,
   runtime | ToolRuntimeV2 | optional,
 }
@@ -214,7 +223,7 @@ let migrate_v1_to_v2_fn = fun data =>
                       )
                     else
                       {},
-                  default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : String }),
+                  default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : InputBindingV2 }),
                   runtime =
                     if config_rt == null then
                       null
@@ -251,7 +260,7 @@ let migrate_v1_to_v2_fn = fun data =>
                       )
                     else
                       {},
-                  default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : String }),
+                  default_inputs = if config_rt == null then {} else (config_rt.default_inputs | { _ : InputBindingV2 }),
                   runtime = {
                     impure = if std.record.has_field "is_impure" t then (t.is_impure | Bool) else false,
                     content_map = if config_rt == null then null else config_rt.content_map,

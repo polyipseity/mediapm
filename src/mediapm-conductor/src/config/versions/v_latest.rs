@@ -111,6 +111,40 @@ pub(crate) struct ToolInputSpecLatest {
     pub(crate) required: bool,
 }
 
+/// Latest persisted input binding (string or array of strings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum InputBindingLatest {
+    /// Single string value.
+    String(String),
+    /// Array of string values.
+    Vec(Vec<String>),
+}
+
+impl Default for InputBindingLatest {
+    fn default() -> Self {
+        Self::String(String::new())
+    }
+}
+
+impl From<InputBindingLatest> for super::super::InputBinding {
+    fn from(b: InputBindingLatest) -> Self {
+        match b {
+            InputBindingLatest::String(s) => super::super::InputBinding::String(s),
+            InputBindingLatest::Vec(v) => super::super::InputBinding::Vec(v),
+        }
+    }
+}
+
+impl From<super::super::InputBinding> for InputBindingLatest {
+    fn from(b: super::super::InputBinding) -> Self {
+        match b {
+            super::super::InputBinding::String(s) => InputBindingLatest::String(s),
+            super::super::InputBinding::Vec(v) => InputBindingLatest::Vec(v),
+        }
+    }
+}
+
 /// Latest persisted tool runtime config.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ToolRuntimeLatest {
@@ -183,7 +217,7 @@ pub(crate) struct ToolSpecLatest {
     /// Declared inputs.
     pub(crate) inputs: BTreeMap<String, ToolInputSpecLatest>,
     /// Default input values.
-    pub(crate) default_inputs: BTreeMap<String, String>,
+    pub(crate) default_inputs: BTreeMap<String, InputBindingLatest>,
     /// Declared output specs keyed by output name.
     pub(crate) outputs: BTreeMap<String, OutputCaptureSpecLatest>,
     /// Runtime config.
@@ -570,7 +604,11 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
                 )
             })
             .collect(),
-        default_inputs: spec.default_inputs,
+        default_inputs: spec
+            .default_inputs
+            .into_iter()
+            .map(|(k, v)| (k, super::super::InputBinding::from(v)))
+            .collect(),
         outputs: spec
             .outputs
             .into_iter()
@@ -621,7 +659,11 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
                 )
             })
             .collect(),
-        default_inputs: spec.default_inputs,
+        default_inputs: spec
+            .default_inputs
+            .into_iter()
+            .map(|(k, v)| (k, InputBindingLatest::from(v)))
+            .collect(),
         outputs: spec
             .outputs
             .into_iter()

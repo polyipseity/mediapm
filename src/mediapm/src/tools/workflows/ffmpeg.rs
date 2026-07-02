@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowStepSpec,
+    InputBinding, OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowStepSpec,
 };
 
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
@@ -587,14 +587,14 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
 fn build_ffmpeg_default_input_defaults(
     max_input_slots: u32,
     max_output_slots: u32,
-) -> BTreeMap<String, String> {
+) -> BTreeMap<String, InputBinding> {
     use crate::conductor_bridge::constants::{
         INPUT_FFMETADATA_CONTENT, INPUT_LEADING_ARGS, INPUT_TRAILING_ARGS,
     };
 
     let mut defaults = BTreeMap::from([
-        (INPUT_LEADING_ARGS.to_string(), String::new()),
-        (INPUT_TRAILING_ARGS.to_string(), String::new()),
+        (INPUT_LEADING_ARGS.to_string(), InputBinding::Vec(vec![])),
+        (INPUT_TRAILING_ARGS.to_string(), InputBinding::Vec(vec![])),
     ]);
 
     for option_input in FFMPEG_OPTION_INPUTS {
@@ -602,19 +602,22 @@ fn build_ffmpeg_default_input_defaults(
     }
 
     for (key, value) in FFMPEG_STATIC_DEFAULTS {
-        defaults.insert(key.to_string(), value.to_string());
+        defaults.insert(key.to_string(), InputBinding::String(value.to_string()));
     }
 
     for index in 0..max_input_slots {
-        defaults.insert(ffmpeg_input_content_name(index), String::new());
+        defaults.insert(ffmpeg_input_content_name(index), InputBinding::String(String::new()));
     }
     for index in 1..max_input_slots {
-        defaults.insert(ffmpeg_cover_slot_enabled_input_name(index), String::new());
+        defaults.insert(
+            ffmpeg_cover_slot_enabled_input_name(index),
+            InputBinding::String(String::new()),
+        );
     }
     for index in 0..max_output_slots {
-        defaults.insert(ffmpeg_output_path_input_name(index), String::new());
+        defaults.insert(ffmpeg_output_path_input_name(index), InputBinding::String(String::new()));
     }
-    defaults.insert(INPUT_FFMETADATA_CONTENT.to_string(), String::new());
+    defaults.insert(INPUT_FFMETADATA_CONTENT.to_string(), InputBinding::String(String::new()));
 
     defaults
 }
