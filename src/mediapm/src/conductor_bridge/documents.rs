@@ -144,7 +144,7 @@ pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
 /// overrides.
 pub(crate) fn apply_builtin_runtime_defaults(document: &mut NickelDocument) {
     for builtin in mediapm_conductor::tools::ALL_BUILTINS {
-        if let Some(spec) = document.tools.get_mut(builtin.name) {
+        if let Some(spec) = document.tools.get_mut(builtin.builtin_id) {
             // Set impure flag from builtin registration data.
             if builtin.is_impure && !spec.runtime.impure {
                 spec.runtime.impure = true;
