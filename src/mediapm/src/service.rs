@@ -556,8 +556,10 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             crate::service_standalone::ensure_and_load_mediapm_document(&effective_paths)?;
 
         let requirement = ToolRequirement {
-            version: version.map(|v| MediaMetadataValue::Literal(v.to_string())),
-            tag: tag.map(str::to_string),
+            version: version.map_or(MediaMetadataValue::Literal(String::new()), |v| {
+                MediaMetadataValue::Literal(v.to_string())
+            }),
+            tag: tag.unwrap_or_default().to_string(),
             ..ToolRequirement::default()
         };
 

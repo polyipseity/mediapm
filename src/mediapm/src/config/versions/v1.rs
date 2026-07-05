@@ -216,26 +216,34 @@ impl From<MediaPmStateWireV1> for ManagedWorkflowStepState {
 impl From<ToolRegistryStateWireV1> for ToolRequirement {
     fn from(wire: ToolRegistryStateWireV1) -> Self {
         Self {
-            version: wire.version.clone().map(source_types::MediaMetadataValue::Literal),
-            tag: wire.tag.clone(),
+            version: wire.version.clone().map_or(
+                source_types::MediaMetadataValue::Literal(String::new()),
+                source_types::MediaMetadataValue::Literal,
+            ),
+            tag: wire.tag.clone().unwrap_or_default(),
             dependencies: ToolRequirementDependencies {
                 ffmpeg_version: wire
                     .dependencies
                     .as_ref()
                     .and_then(|d| d.ffmpeg_version.clone())
-                    .map(source_types::MediaMetadataValue::Literal),
+                    .map_or(
+                        source_types::MediaMetadataValue::Literal(String::new()),
+                        source_types::MediaMetadataValue::Literal,
+                    ),
                 deno_version: wire
                     .dependencies
                     .as_ref()
                     .and_then(|d| d.deno_version.clone())
-                    .map(source_types::MediaMetadataValue::Literal),
-                sd_version: wire
-                    .dependencies
-                    .as_ref()
-                    .and_then(|d| d.sd_version.clone())
-                    .map(source_types::MediaMetadataValue::Literal),
+                    .map_or(
+                        source_types::MediaMetadataValue::Literal(String::new()),
+                        source_types::MediaMetadataValue::Literal,
+                    ),
+                sd_version: wire.dependencies.as_ref().and_then(|d| d.sd_version.clone()).map_or(
+                    source_types::MediaMetadataValue::Literal(String::new()),
+                    source_types::MediaMetadataValue::Literal,
+                ),
             },
-            recheck_seconds: wire.recheck_seconds,
+            recheck_seconds: wire.recheck_seconds.unwrap_or(0),
             max_input_slots: wire
                 .max_input_slots
                 .unwrap_or(crate::config::defaults::default_ffmpeg_max_input_slots()),
@@ -351,35 +359,27 @@ impl Migrate for MediaPmState {
                         tag: tool_req.normalized_tag(),
                         dependencies: {
                             let deps = ToolRequirementDependenciesWireV1 {
-                                ffmpeg_version: tool_req
-                                    .dependencies
-                                    .ffmpeg_version
-                                    .as_ref()
-                                    .and_then(|v| match v {
-                                        source_types::MediaMetadataValue::Literal(s) => {
-                                            let t = s.trim().to_string();
-                                            if t.is_empty() { None } else { Some(t) }
-                                        }
-                                        _ => None,
-                                    }),
-                                deno_version: tool_req.dependencies.deno_version.as_ref().and_then(
-                                    |v| match v {
-                                        source_types::MediaMetadataValue::Literal(s) => {
-                                            let t = s.trim().to_string();
-                                            if t.is_empty() { None } else { Some(t) }
-                                        }
-                                        _ => None,
-                                    },
-                                ),
-                                sd_version: tool_req.dependencies.sd_version.as_ref().and_then(
-                                    |v| match v {
-                                        source_types::MediaMetadataValue::Literal(s) => {
-                                            let t = s.trim().to_string();
-                                            if t.is_empty() { None } else { Some(t) }
-                                        }
-                                        _ => None,
-                                    },
-                                ),
+                                ffmpeg_version: match &tool_req.dependencies.ffmpeg_version {
+                                    source_types::MediaMetadataValue::Literal(s) => {
+                                        let t = s.trim().to_string();
+                                        if t.is_empty() { None } else { Some(t) }
+                                    }
+                                    _ => None,
+                                },
+                                deno_version: match &tool_req.dependencies.deno_version {
+                                    source_types::MediaMetadataValue::Literal(s) => {
+                                        let t = s.trim().to_string();
+                                        if t.is_empty() { None } else { Some(t) }
+                                    }
+                                    _ => None,
+                                },
+                                sd_version: match &tool_req.dependencies.sd_version {
+                                    source_types::MediaMetadataValue::Literal(s) => {
+                                        let t = s.trim().to_string();
+                                        if t.is_empty() { None } else { Some(t) }
+                                    }
+                                    _ => None,
+                                },
                             };
                             if deps.ffmpeg_version.is_none()
                                 && deps.deno_version.is_none()
@@ -390,7 +390,7 @@ impl Migrate for MediaPmState {
                                 Some(deps)
                             }
                         },
-                        recheck_seconds: tool_req.recheck_seconds,
+                        recheck_seconds: Some(tool_req.recheck_seconds),
                         max_input_slots: Some(tool_req.max_input_slots),
                         max_output_slots: Some(tool_req.max_output_slots),
                     },

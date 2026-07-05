@@ -10,32 +10,6 @@ use serde_json::Value;
 
 use super::nickel_io::{parse_non_negative_integral_u32, parse_non_negative_integral_u64};
 
-/// Deserializes optional `u64` values while accepting integral floating-point
-/// numbers exported by Nickel (for example `3600.0`).
-pub fn deserialize_optional_u64_from_number<'de, D>(
-    deserializer: D,
-) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let raw = Option::<Value>::deserialize(deserializer)?;
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-
-    if let Some(value) = raw.as_u64() {
-        return Ok(Some(value));
-    }
-
-    if let Some(value) = raw.as_f64()
-        && let Some(normalized) = parse_non_negative_integral_u64(value)
-    {
-        return Ok(Some(normalized));
-    }
-
-    Err(serde::de::Error::custom("value must be a non-negative integer representable as u64"))
-}
-
 /// Deserializes one non-negative integral number into `u64`.
 #[allow(dead_code)]
 pub fn deserialize_u64_from_number<'de, D>(deserializer: D) -> Result<u64, D::Error>

@@ -31,6 +31,12 @@ pub enum MediaMetadataValue {
     Fallback(Vec<MediaMetadataValueCandidate>),
 }
 
+impl Default for MediaMetadataValue {
+    fn default() -> Self {
+        Self::Literal(String::new())
+    }
+}
+
 /// One metadata value candidate entry used by fallback lists.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]

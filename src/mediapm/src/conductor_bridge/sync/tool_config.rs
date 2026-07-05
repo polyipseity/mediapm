@@ -9,7 +9,8 @@ use std::fmt::Write;
 
 use mediapm_conductor::ToolRuntime;
 
-use crate::config::{MediaMetadataValue, ToolRequirement};
+use crate::config::ToolRequirement;
+use crate::config::source_types;
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 
@@ -33,12 +34,12 @@ pub(super) fn resolve_companion_ffmpeg_selection(
 ) -> Option<String> {
     for value in requirements.values() {
         if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone())
-            && let Some(version) = requirement.dependencies.ffmpeg_version
-            && let MediaMetadataValue::Literal(v) = version
+            && let source_types::MediaMetadataValue::Literal(v) =
+                &requirement.dependencies.ffmpeg_version
             && !v.is_empty()
             && !v.eq_ignore_ascii_case("inherit")
         {
-            return Some(v);
+            return Some(v.clone());
         }
     }
     None
@@ -55,12 +56,12 @@ pub(super) fn resolve_companion_deno_selection(
 ) -> Option<String> {
     for value in requirements.values() {
         if let Ok(requirement) = serde_json::from_value::<ToolRequirement>(value.clone())
-            && let Some(version) = requirement.dependencies.deno_version
-            && let MediaMetadataValue::Literal(v) = version
+            && let source_types::MediaMetadataValue::Literal(v) =
+                &requirement.dependencies.deno_version
             && !v.is_empty()
             && !v.eq_ignore_ascii_case("inherit")
         {
-            return Some(v);
+            return Some(v.clone());
         }
     }
     None

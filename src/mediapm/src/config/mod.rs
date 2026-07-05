@@ -350,21 +350,17 @@ impl Default for MediaRuntimeStorage {
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirement {
     /// Version metadata value or selector binding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub version: Option<MediaMetadataValue>,
+    #[serde(default)]
+    pub version: MediaMetadataValue,
     /// Tag metadata value or selector binding.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tag: Option<String>,
+    #[serde(default)]
+    pub tag: String,
     /// Cross-tool dependency version selectors.
     #[serde(default)]
     pub dependencies: ToolRequirementDependencies,
-    /// Recheck interval seconds (None = use default heuristic).
-    #[serde(
-        default,
-        deserialize_with = "custom_deserializers::deserialize_optional_u64_from_number",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub recheck_seconds: Option<u64>,
+    /// Recheck interval seconds (0 = use default heuristic).
+    #[serde(default, deserialize_with = "custom_deserializers::deserialize_u64_from_number")]
+    pub recheck_seconds: u64,
     /// Max ffmpeg input slot count.
     #[serde(
         default = "defaults::default_ffmpeg_max_input_slots",
@@ -384,39 +380,39 @@ pub struct ToolRequirement {
 #[serde(deny_unknown_fields)]
 pub struct ToolRequirementDependencies {
     /// Selector or literal version for ffmpeg dependency.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ffmpeg_version: Option<MediaMetadataValue>,
+    #[serde(default)]
+    pub ffmpeg_version: MediaMetadataValue,
     /// Selector or literal version for deno dependency.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deno_version: Option<MediaMetadataValue>,
+    #[serde(default)]
+    pub deno_version: MediaMetadataValue,
     /// Selector or literal version for sd (stable-diffusion) dependency.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sd_version: Option<MediaMetadataValue>,
+    #[serde(default)]
+    pub sd_version: MediaMetadataValue,
 }
 
 impl ToolRequirement {
     /// Returns the normalized version string from the version selector.
     #[must_use]
     pub fn normalized_version(&self) -> Option<String> {
-        self.version.as_ref().and_then(|v| {
-            if let MediaMetadataValue::Literal(s) = v {
+        match &self.version {
+            MediaMetadataValue::Literal(s) => {
                 let trimmed = s.trim();
                 if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
-            } else {
-                None
             }
-        })
+            _ => None,
+        }
     }
 
     /// Returns the normalized tag string.
     #[must_use]
     pub fn normalized_tag(&self) -> Option<String> {
-        self.tag.as_ref().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+        let trimmed = self.tag.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     }
 
-    /// Returns metadata recheck seconds or None (caller uses heuristic).
+    /// Returns metadata recheck seconds (0 = use default heuristic).
     #[must_use]
-    pub const fn metadata_recheck_seconds(&self) -> Option<u64> {
+    pub const fn metadata_recheck_seconds(&self) -> u64 {
         self.recheck_seconds
     }
 }
@@ -425,7 +421,11 @@ impl ToolRequirement {
 #[must_use]
 #[allow(dead_code)]
 pub fn tool_requirement_dependencies_is_empty(deps: &ToolRequirementDependencies) -> bool {
-    deps.ffmpeg_version.is_none() && deps.deno_version.is_none() && deps.sd_version.is_none()
+    let is_empty_literal =
+        |v: &MediaMetadataValue| matches!(v, MediaMetadataValue::Literal(s) if s.is_empty());
+    is_empty_literal(&deps.ffmpeg_version)
+        && is_empty_literal(&deps.deno_version)
+        && is_empty_literal(&deps.sd_version)
 }
 
 // ---------------------------------------------------------------------------
@@ -498,8 +498,8 @@ impl MediaPmDocument {
         }
         // Remove tool entries without meaningful version or tag.
         self.tools.retain(|_, tool_req| {
-            normalized_version(tool_req.version.as_ref()).is_some()
-                || normalized_tag(tool_req.tag.as_ref()).is_some()
+            normalized_version(&tool_req.version).is_some()
+                || normalized_tag(&tool_req.tag).is_some()
         });
     }
 }
@@ -606,8 +606,8 @@ impl MediaPmState {
     /// Normalizes string fields and removes empty tool entries.
     pub fn normalize(&mut self) {
         self.tools.retain(|_, tool_req| {
-            normalized_version(tool_req.version.as_ref()).is_some()
-                || normalized_tag(tool_req.tag.as_ref()).is_some()
+            normalized_version(&tool_req.version).is_some()
+                || normalized_tag(&tool_req.tag).is_some()
         });
         self.tool_registry.retain(|_, entry| {
             entry.version.as_ref().is_none_or(|v| !v.trim().is_empty())
@@ -619,8 +619,8 @@ impl MediaPmState {
 
 /// Helper: normalize a version metadata selector to trimmed Option.
 #[must_use]
-fn normalized_version(version: Option<&MediaMetadataValue>) -> Option<String> {
-    match version? {
+fn normalized_version(version: &MediaMetadataValue) -> Option<String> {
+    match version {
         MediaMetadataValue::Literal(s) => {
             let trimmed = s.trim().to_string();
             if trimmed.is_empty() { None } else { Some(trimmed) }
@@ -631,7 +631,7 @@ fn normalized_version(version: Option<&MediaMetadataValue>) -> Option<String> {
 
 /// Helper: normalize a tag string to trimmed Option.
 #[must_use]
-fn normalized_tag(tag: Option<&String>) -> Option<String> {
-    let trimmed = tag?.trim().to_string();
+fn normalized_tag(tag: &str) -> Option<String> {
+    let trimmed = tag.trim().to_string();
     if trimmed.is_empty() { None } else { Some(trimmed) }
 }
