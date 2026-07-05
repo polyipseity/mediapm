@@ -691,12 +691,8 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
             .tools
             .iter()
             .map(|(id, req)| {
-                let value = serde_json::json!({
-                    "version": req.version.as_ref().map(|v| match v {
-                        MediaMetadataValue::Literal(s) => s.as_str(),
-                        _ => "",
-                    }),
-                    "tag": req.tag,
+                let value = serde_json::to_value(req.clone()).unwrap_or_else(|e| {
+                    panic!("ToolRequirement serialization should not fail: {e}")
                 });
                 (id.clone(), value)
             })
