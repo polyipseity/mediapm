@@ -89,9 +89,7 @@ where
         // Apply conductor runtime config defaults to options
         let options = {
             let mut opts = options;
-            if !opts.retry_impure
-                && let Some(true) = unified.runtime.retry_impure
-            {
+            if !opts.retry_impure && unified.runtime.retry_impure {
                 opts.retry_impure = true;
             }
             opts

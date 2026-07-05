@@ -576,7 +576,8 @@ impl From<NickelDocument> for NickelEnvelopeLatest {
 impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig {
     fn from(rt: ConductorRuntimeConfigLatest) -> Self {
         super::super::ConductorRuntimeConfig {
-            retry_impure: rt.retry_impure,
+            // `None` (absent in config) resolves to `false` at the boundary.
+            retry_impure: rt.retry_impure.unwrap_or(false),
             platform_inherited_env_vars: rt.platform_inherited_env_vars,
         }
     }
@@ -585,7 +586,7 @@ impl From<ConductorRuntimeConfigLatest> for super::super::ConductorRuntimeConfig
 impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest {
     fn from(rt: super::super::ConductorRuntimeConfig) -> Self {
         ConductorRuntimeConfigLatest {
-            retry_impure: rt.retry_impure,
+            retry_impure: Some(rt.retry_impure),
             platform_inherited_env_vars: rt.platform_inherited_env_vars,
         }
     }

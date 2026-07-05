@@ -272,11 +272,17 @@ pub struct ToolRuntime {
 }
 
 /// Runtime configuration for the conductor itself (not per-tool).
+///
+/// This is a serde-deserialization boundary type. Fields with meaningful
+/// defaults are resolved to their resolved values at the boundary — no
+/// `Option<T>` wraps a value that has a sensible default.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConductorRuntimeConfig {
     /// Whether impure tool calls may be retried automatically.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_impure: Option<bool>,
+    ///
+    /// `None` (absent in config) resolves to `false` at the boundary.
+    #[serde(default)]
+    pub retry_impure: bool,
     /// Platform-keyed inherited env var names.
     ///
     /// Maps platform name strings (e.g. "linux", "macos", "windows") to
