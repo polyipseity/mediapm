@@ -22,9 +22,21 @@ pub fn default_mediapm_document_version() -> u32 {
 /// does not provide an explicit override.
 pub const DEFAULT_FFMPEG_MAX_INPUT_SLOTS: u32 = 16;
 
+/// Serde default function for max ffmpeg input slots.
+#[must_use]
+pub fn default_ffmpeg_max_input_slots() -> u32 {
+    DEFAULT_FFMPEG_MAX_INPUT_SLOTS
+}
+
 /// Default max number of ffmpeg indexed output slots when `tools.ffmpeg`
 /// does not provide an explicit override.
 pub const DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS: u32 = 4;
+
+/// Serde default function for max ffmpeg output slots.
+#[must_use]
+pub fn default_ffmpeg_max_output_slots() -> u32 {
+    DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS
+}
 
 /// Default runtime materialization fallback order.
 ///

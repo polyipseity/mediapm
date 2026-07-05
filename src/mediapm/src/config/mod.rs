@@ -367,18 +367,16 @@ pub struct ToolRequirement {
     pub recheck_seconds: Option<u64>,
     /// Max ffmpeg input slot count.
     #[serde(
-        default,
-        deserialize_with = "custom_deserializers::deserialize_optional_runtime_slot_count",
-        skip_serializing_if = "Option::is_none"
+        default = "defaults::default_ffmpeg_max_input_slots",
+        deserialize_with = "custom_deserializers::deserialize_u32_from_number"
     )]
-    pub max_input_slots: Option<u32>,
+    pub max_input_slots: u32,
     /// Max ffmpeg output slot count.
     #[serde(
-        default,
-        deserialize_with = "custom_deserializers::deserialize_optional_runtime_slot_count",
-        skip_serializing_if = "Option::is_none"
+        default = "defaults::default_ffmpeg_max_output_slots",
+        deserialize_with = "custom_deserializers::deserialize_u32_from_number"
     )]
-    pub max_output_slots: Option<u32>,
+    pub max_output_slots: u32,
 }
 
 /// Selector-based dependency version requirements for managed tools.
@@ -414,18 +412,6 @@ impl ToolRequirement {
     #[must_use]
     pub fn normalized_tag(&self) -> Option<String> {
         self.tag.as_ref().map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
-    }
-
-    /// Returns effective max input slots or the default.
-    #[must_use]
-    pub fn max_input_slots_or_default(self) -> u32 {
-        self.max_input_slots.unwrap_or(defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS)
-    }
-
-    /// Returns effective max output slots or the default.
-    #[must_use]
-    pub fn max_output_slots_or_default(self) -> u32 {
-        self.max_output_slots.unwrap_or(defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS)
     }
 
     /// Returns metadata recheck seconds or None (caller uses heuristic).

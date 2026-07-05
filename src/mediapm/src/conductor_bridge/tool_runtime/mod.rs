@@ -13,12 +13,7 @@ use std::collections::BTreeMap;
 
 use mediapm_conductor::{ToolRuntime, ToolSpec};
 
-use crate::{
-    conductor_bridge::constants::{
-        DEFAULT_FFMPEG_MAX_INPUT_SLOTS, DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
-    },
-    tools::workflows,
-};
+use crate::tools::workflows;
 
 /// ffmpeg slot-limit configuration derived from tool requirements.
 #[derive(Debug, Clone, Copy, Default)]
@@ -31,15 +26,8 @@ pub(crate) struct FfmpegSlotLimits {
 
 /// Resolves ffmpeg slot limits from config default or overrides.
 #[must_use]
-#[allow(clippy::cast_possible_truncation)]
-pub(crate) fn resolve_ffmpeg_slot_limits(
-    max_input: Option<u32>,
-    max_output: Option<u32>,
-) -> FfmpegSlotLimits {
-    FfmpegSlotLimits {
-        max_input_slots: max_input.unwrap_or(DEFAULT_FFMPEG_MAX_INPUT_SLOTS as u32),
-        max_output_slots: max_output.unwrap_or(DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS as u32),
-    }
+pub(crate) fn resolve_ffmpeg_slot_limits(max_input: u32, max_output: u32) -> FfmpegSlotLimits {
+    FfmpegSlotLimits { max_input_slots: max_input, max_output_slots: max_output }
 }
 
 /// Builds a full [`ToolSpec`] and [`ToolRuntime`] for one managed tool by

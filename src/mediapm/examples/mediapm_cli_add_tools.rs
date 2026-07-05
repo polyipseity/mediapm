@@ -93,8 +93,6 @@ fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
         tag: Some("latest".to_string()),
         dependencies,
         recheck_seconds: None,
-        max_input_slots: None,
-        max_output_slots: None,
     }
 }
 

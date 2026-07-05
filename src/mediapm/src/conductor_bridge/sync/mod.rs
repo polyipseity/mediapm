@@ -32,6 +32,7 @@ use crate::conductor_bridge::sync::tool_config::{
     write_generated_runtime_env_file,
 };
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
+use crate::config::defaults;
 use crate::error::MediaPmError;
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::ToolDownloadCache;
@@ -96,7 +97,10 @@ pub(crate) async fn reconcile_desired_tools(
             Ok(Some(payload)) => {
                 // Determine ffmpeg slot limits (default for now; overrides
                 // from tool requirements can be wired later).
-                let ffmpeg_limits = resolve_ffmpeg_slot_limits(None, None);
+                let ffmpeg_limits = resolve_ffmpeg_slot_limits(
+                    defaults::DEFAULT_FFMPEG_MAX_INPUT_SLOTS,
+                    defaults::DEFAULT_FFMPEG_MAX_OUTPUT_SLOTS,
+                );
 
                 // Build proper spec and runtime.
                 let (spec, runtime) = build_tool_spec(

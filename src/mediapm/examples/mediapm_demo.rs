@@ -475,8 +475,6 @@ fn configure_document_for_local_tool_chain(
                 tag: None,
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -486,8 +484,6 @@ fn configure_document_for_local_tool_chain(
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -501,8 +497,6 @@ fn configure_document_for_local_tool_chain(
                     sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -512,8 +506,6 @@ fn configure_document_for_local_tool_chain(
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -527,8 +519,6 @@ fn configure_document_for_local_tool_chain(
                     sd_version: None,
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
     ]);
@@ -767,8 +757,6 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                 tag: None,
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -778,8 +766,6 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -793,8 +779,6 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                     sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -804,8 +788,6 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -819,8 +801,6 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
                     sd_version: None,
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
     ])

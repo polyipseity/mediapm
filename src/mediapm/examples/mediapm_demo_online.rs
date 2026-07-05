@@ -690,8 +690,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     sd_version: None,
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -701,8 +699,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -712,8 +708,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -727,8 +721,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -738,8 +730,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: Some("latest".to_string()),
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -753,8 +743,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                     sd_version: None,
                 },
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
         (
@@ -764,8 +752,6 @@ fn configure_document_for_online_demo(workspace_root: &Path) -> ExampleResult<Ve
                 tag: None,
                 dependencies: ToolRequirementDependencies::default(),
                 recheck_seconds: None,
-                max_input_slots: None,
-                max_output_slots: None,
             },
         ),
     ]);
