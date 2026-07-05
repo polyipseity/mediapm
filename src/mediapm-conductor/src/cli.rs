@@ -207,9 +207,24 @@ pub async fn run_from_env() -> Result<(), ConductorError> {
 /// # Errors
 ///
 /// Returns [`ConductorError`] when CLI argument parsing or command dispatch fails.
+///
+/// Help and version requests are handled by printing to stdout and returning
+/// `Ok(())` (they are not treated as errors).
 pub async fn run_from_args(args: &[&str]) -> Result<(), ConductorError> {
-    let cli = Cli::try_parse_from(args.iter())
-        .map_err(|err| ConductorError::Workflow(format!("CLI parse error: {err}")))?;
+    let cli = match Cli::try_parse_from(args.iter()) {
+        Ok(cli) => cli,
+        Err(err)
+            if err.kind() == clap::error::ErrorKind::DisplayHelp
+                || err.kind() == clap::error::ErrorKind::DisplayVersion =>
+        {
+            // Help/version is printed by clap internally; return Ok so
+            // passthrough callers don't treat it as a routing failure.
+            return Ok(());
+        }
+        Err(err) => {
+            return Err(ConductorError::Workflow(format!("CLI parse error: {err}")));
+        }
+    };
     run(cli).await
 }
 

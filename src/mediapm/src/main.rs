@@ -1175,7 +1175,7 @@ mod tests {
             "add",
             "yt-dlp",
             "--insert-position",
-            "last",
+            "end",
             "https://example.com/media",
         ]);
         assert!(parsed.is_ok(), "media add should parse insert-position values");
