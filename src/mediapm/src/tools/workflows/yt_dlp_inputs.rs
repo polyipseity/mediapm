@@ -30,8 +30,8 @@ pub(crate) fn decode_yt_dlp_output_variant_config(
 pub(crate) struct StepOutputBinding {
     /// Logical output name targeted by this binding.
     pub output_name: String,
-    /// Optional zip-member path inside a folder output.
-    pub zip_member: Option<String>,
+    /// Zip-member path inside a folder output (empty = none).
+    pub zip_member: String,
 }
 
 /// Resolves one step output binding from the next step's input consumption
@@ -58,10 +58,16 @@ pub(crate) fn resolve_step_output_binding(
             ),
         };
         if name == "primary" {
-            return Some(StepOutputBinding { output_name: name.clone(), zip_member: None });
+            return Some(StepOutputBinding {
+                output_name: name.clone(),
+                zip_member: String::new(),
+            });
         }
         if is_folder {
-            return Some(StepOutputBinding { output_name: name.clone(), zip_member: None });
+            return Some(StepOutputBinding {
+                output_name: name.clone(),
+                zip_member: String::new(),
+            });
         }
     }
     None

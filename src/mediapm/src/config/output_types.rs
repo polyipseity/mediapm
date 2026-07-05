@@ -56,15 +56,15 @@ pub struct GenericOutputVariantConfig {
     /// Optional explicit capture kind override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_kind: Option<OutputCaptureKind>,
-    /// Optional archive member name for zip-folder variants.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zip_member: Option<String>,
-    /// Optional numeric index (used by ffmpeg output slots).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub idx: Option<u32>,
-    /// Optional file extension override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extension: Option<String>,
+    /// Archive member name for zip-folder variants.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zip_member: String,
+    /// Numeric index (used by ffmpeg output slots).
+    #[serde(default)]
+    pub idx: u32,
+    /// File extension override.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub extension: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,21 +109,21 @@ pub struct YtDlpOutputVariantConfig {
     /// Optional explicit capture kind override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capture_kind: Option<OutputCaptureKind>,
-    /// Optional language filter hint (for subtitle variants).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub langs: Option<String>,
-    /// Optional thumbnail id filter (for thumbnail variants).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thumbnail_ids: Option<String>,
-    /// Optional subtitle format override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sub_format: Option<String>,
-    /// Optional subtitle conversion format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub convert: Option<String>,
-    /// Optional archive member name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zip_member: Option<String>,
+    /// Language filter hint (for subtitle variants).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub langs: String,
+    /// Thumbnail id filter (for thumbnail variants).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thumbnail_ids: String,
+    /// Subtitle format override.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sub_format: String,
+    /// Subtitle conversion format.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub convert: String,
+    /// Archive member name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub zip_member: String,
 }
 
 // ---------------------------------------------------------------------------
