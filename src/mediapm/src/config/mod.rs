@@ -515,9 +515,9 @@ pub struct ManagedWorkflowStepState {
     /// Pre-seeded CAS hash pointers keyed by variant name.
     #[serde(default)]
     pub variant_hashes: BTreeMap<String, String>,
-    /// Optional number of completed steps.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub steps_completed: Option<u32>,
+    /// Number of completed steps (0 = none).
+    #[serde(default)]
+    pub steps_completed: u32,
     /// Optional last impure sync timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_impure_sync_at: Option<MediaPmImpureTimestamp>,
@@ -544,9 +544,9 @@ pub struct ToolRegistryEntry {
     /// CAS content hash of the fetched payload.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fetch_hash: Option<String>,
-    /// Unix-epoch seconds when the payload was deployed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub deployed_at: Option<u64>,
+    /// Unix-epoch seconds when the payload was deployed (0 = not yet deployed).
+    #[serde(default)]
+    pub deployed_at: u64,
 }
 
 /// Active instance of a managed tool deployed to the local filesystem.
@@ -575,8 +575,8 @@ pub struct MediaPmState {
     #[serde(default)]
     pub tools: BTreeMap<String, ToolRequirement>,
     /// Hash of the state snapshot at last materialization.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_materialized_state_hash: Option<String>,
+    #[serde(default)]
+    pub last_materialized_state_hash: String,
     /// Set of files currently managed (tracked for cleanup).
     #[serde(default)]
     pub managed_files: BTreeSet<String>,
@@ -594,7 +594,7 @@ impl Default for MediaPmState {
             version: defaults::MEDIAPM_DOCUMENT_VERSION,
             media: BTreeMap::new(),
             tools: BTreeMap::new(),
-            last_materialized_state_hash: None,
+            last_materialized_state_hash: String::new(),
             managed_files: BTreeSet::new(),
             tool_registry: BTreeMap::new(),
             active_tools: BTreeMap::new(),

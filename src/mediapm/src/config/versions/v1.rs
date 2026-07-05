@@ -184,7 +184,7 @@ impl From<MediaPmStateEnvelopeV1> for MediaPmState {
         MediaPmState {
             media: envelope.media_state.into_iter().map(|(key, wire)| (key, wire.into())).collect(),
             tools: envelope.tools.into_iter().map(|(key, wire)| (key, wire.into())).collect(),
-            last_materialized_state_hash: envelope.last_materialized_state_hash,
+            last_materialized_state_hash: envelope.last_materialized_state_hash.unwrap_or_default(),
             managed_files: envelope.managed_files,
             tool_registry: envelope
                 .tool_registry
@@ -205,7 +205,7 @@ impl From<MediaPmStateWireV1> for ManagedWorkflowStepState {
     fn from(wire: MediaPmStateWireV1) -> Self {
         Self {
             variant_hashes: wire.variant_hashes,
-            steps_completed: wire.steps_completed,
+            steps_completed: wire.steps_completed.unwrap_or(0),
             last_impure_sync_at: wire
                 .last_impure_sync_at
                 .map(|ts| MediaPmImpureTimestamp { utc_epoch_seconds: ts.utc_epoch_seconds }),
@@ -252,7 +252,7 @@ impl From<ToolRegistryEntryWireV1> for ToolRegistryEntry {
             version: wire.version,
             tag: wire.tag,
             fetch_hash: wire.fetch_hash,
-            deployed_at: wire.deployed_at,
+            deployed_at: wire.deployed_at.unwrap_or(0),
         }
     }
 }
@@ -331,7 +331,7 @@ impl Migrate for MediaPmState {
                     key.clone(),
                     MediaPmStateWireV1 {
                         variant_hashes: state.variant_hashes.clone(),
-                        steps_completed: state.steps_completed,
+                        steps_completed: Some(state.steps_completed),
                         last_impure_sync_at: state.last_impure_sync_at.as_ref().map(|ts| {
                             MediaPmImpureTimestampWireV1 { utc_epoch_seconds: ts.utc_epoch_seconds }
                         }),
@@ -408,7 +408,7 @@ impl Migrate for MediaPmState {
                         version: entry.version.clone(),
                         tag: entry.tag.clone(),
                         fetch_hash: entry.fetch_hash.clone(),
-                        deployed_at: entry.deployed_at,
+                        deployed_at: Some(entry.deployed_at),
                     },
                 )
             })
@@ -433,7 +433,7 @@ impl Migrate for MediaPmState {
             version: 1,
             media_state,
             tools,
-            last_materialized_state_hash: self.last_materialized_state_hash.clone(),
+            last_materialized_state_hash: Some(self.last_materialized_state_hash.clone()),
             managed_files: self.managed_files.clone(),
             tool_registry,
             active_tools,

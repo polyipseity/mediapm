@@ -161,7 +161,7 @@ pub(crate) fn mark_media_step_for_regeneration(
     if let Some(step_state) = state.media.get_mut(media_id) {
         // Clear variant hashes to force regeneration
         step_state.variant_hashes.clear();
-        step_state.steps_completed = Some(u32::try_from(step_index).unwrap_or(u32::MAX));
+        step_state.steps_completed = u32::try_from(step_index).unwrap_or(u32::MAX);
     }
 }
 
@@ -327,7 +327,7 @@ mod tests {
             "test-source".to_string(),
             crate::config::ManagedWorkflowStepState {
                 variant_hashes: BTreeMap::from([("media".to_string(), "hash123".to_string())]),
-                steps_completed: Some(3),
+                steps_completed: 3,
                 last_impure_sync_at: None,
             },
         );
