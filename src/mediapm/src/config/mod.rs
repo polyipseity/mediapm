@@ -273,7 +273,7 @@ pub struct MediaRuntimeStorage {
     #[serde(default = "defaults::default_verify_materialization")]
     pub verify_materialization: bool,
     /// Retry impure workflows flag.
-    #[serde(default)]
+    #[serde(default = "defaults::default_retry_impure")]
     pub retry_impure: bool,
     /// Hierarchy filename sanitization mode.
     #[serde(default = "defaults::default_path_sanitization")]
@@ -335,7 +335,7 @@ impl Default for MediaRuntimeStorage {
             mediapm_schema_dir: None,
             profiler_enabled: defaults::default_profiler_enabled(),
             verify_materialization: defaults::default_verify_materialization(),
-            retry_impure: false,
+            retry_impure: defaults::default_retry_impure(),
             path_sanitization: defaults::default_path_sanitization(),
         }
     }

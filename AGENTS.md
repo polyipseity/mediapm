@@ -51,7 +51,7 @@ Get up and running in minutes:
   - async I/O/orchestration with runtime adapters (Tokio default);
   - actor-first concurrency with explicit supervision behavior;
   - type-system-enforced invariants where practical; prefer typing-enforcement over repeated runtime validation — it simplifies code and eliminates entire classes of defects by making invariants compile-time guaranteed;
-  - resolve `Option` at configuration boundaries: user-facing config types use plain values with serde defaults, not `Option<T>`. Optional semantics are resolved at the serde deserialization boundary so downstream code never handles `Option`;
+  - resolve `Option` at configuration boundaries: user-facing config types use plain values with serde defaults, not `Option<T>`. Optional semantics are resolved at the serde deserialization boundary so downstream code never handles `Option`; all serde defaults are centralized in `src/mediapm/src/config/defaults.rs` — field-level `#[serde(default = "...")]` must reference a `defaults::` function, not inline literals;
   - pragmatic macro usage (reduce boilerplate, do not hide critical flow);
   - documentation is part of the API contract.- Git safety: NEVER run `git reset` (especially `--hard` or `--keep`). It destroys uncommitted work irreversibly. Use `git revert` to undo published changes, or `git restore` to discard working-tree changes.- Technology baseline:
   - actor/orchestration: `ractor`,

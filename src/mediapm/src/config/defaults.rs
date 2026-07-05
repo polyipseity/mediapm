@@ -4,8 +4,6 @@
 //! throughout the config layer. Boundary callers may also reference them
 //! directly when constructing config objects outside deserialization.
 
-use std::collections::BTreeMap;
-
 use super::MaterializationMethod;
 use super::hierarchy_types::SanitizeNamesConfig;
 
@@ -71,29 +69,13 @@ pub const DEFAULT_PROFILER_ENABLED: bool = false;
 /// Default verify-materialization state.
 pub const DEFAULT_VERIFY_MATERIALIZATION: bool = false;
 
+/// Default retry-impure flag.
+pub const DEFAULT_RETRY_IMPURE: bool = false;
+
 /// Default path sanitization mode.
 #[must_use]
 pub fn default_path_sanitization() -> SanitizeNamesConfig {
     SanitizeNamesConfig::Inherit
-}
-
-/// Default reserved-character replacement mapping for path sanitization.
-///
-/// Maps every rejected filename character to `_`.
-#[must_use]
-#[allow(dead_code)]
-pub fn default_path_sanitization_mapping() -> BTreeMap<char, char> {
-    BTreeMap::from([
-        ('<', '_'),
-        ('>', '_'),
-        (':', '_'),
-        ('"', '_'),
-        ('|', '_'),
-        ('?', '_'),
-        ('*', '_'),
-        ('/', '_'),
-        ('\\', '_'),
-    ])
 }
 
 /// Serde default function returning the materialization preference order.
@@ -142,4 +124,10 @@ pub fn default_profiler_enabled() -> bool {
 #[must_use]
 pub fn default_verify_materialization() -> bool {
     DEFAULT_VERIFY_MATERIALIZATION
+}
+
+/// Serde default function returning the retry-impure flag.
+#[must_use]
+pub fn default_retry_impure() -> bool {
+    DEFAULT_RETRY_IMPURE
 }
