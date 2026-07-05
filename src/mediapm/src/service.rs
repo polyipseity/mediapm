@@ -117,21 +117,39 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
     /// [`MediaPmError::Serialization`] if it cannot be parsed.
     pub fn resolve_effective_paths(&self) -> Result<MediaPmPaths, MediaPmError> {
         let merged = self.resolve_effective_runtime_storage()?;
-        let mut overrides = MediaPmPathOverrides {
-            mediapm_dir: None,
-            hierarchy_root_dir: None,
-            conductor_config: None,
-            conductor_generated_config: None,
-            conductor_state_config: None,
-            conductor_schema_dir: None,
-            media_state_config: None,
-            env_file: None,
-            env_generated_file: None,
-            mediapm_schema_dir: None,
+        let overrides = MediaPmPathOverrides {
+            mediapm_dir: merged.mediapm_dir.as_ref().map(|d| Path::new(d).to_path_buf()),
+            hierarchy_root_dir: merged
+                .hierarchy_root_dir
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            conductor_config: merged.conductor_config.as_ref().map(|d| Path::new(d).to_path_buf()),
+            conductor_generated_config: merged
+                .conductor_generated_config
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            conductor_state_config: merged
+                .conductor_state_config
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            conductor_schema_dir: merged
+                .conductor_schema_dir
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            media_state_config: merged
+                .media_state_config
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            env_file: merged.env_file.as_ref().map(|d| Path::new(d).to_path_buf()),
+            env_generated_file: merged
+                .env_generated_file
+                .as_ref()
+                .map(|d| Path::new(d).to_path_buf()),
+            mediapm_schema_dir: merged
+                .mediapm_schema_dir
+                .as_ref()
+                .map(|inner| inner.as_ref().map(|d| Path::new(d).to_path_buf())),
         };
-        if let Some(ref dir) = merged.mediapm_dir {
-            overrides.mediapm_dir = Some(Path::new(dir).to_path_buf());
-        }
         Ok(self.paths.with_overrides(&overrides))
     }
 

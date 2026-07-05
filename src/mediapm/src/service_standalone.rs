@@ -61,27 +61,35 @@ pub(crate) fn ensure_and_load_mediapm_document(
 ///
 /// This is the standalone version that does not require a service instance.
 #[must_use]
-pub(crate) fn resolve_effective_paths_for_root(
+pub fn resolve_effective_paths_for_root(
     root_dir: &Path,
     runtime_storage_overrides: &MediaRuntimeStorage,
 ) -> MediaPmPaths {
-    let mut paths = MediaPmPaths::from_root(root_dir);
-    if let Some(ref mediapm_dir) = runtime_storage_overrides.mediapm_dir {
-        let overrides = MediaPmPathOverrides {
-            mediapm_dir: Some(mediapm_dir.into()),
-            hierarchy_root_dir: None,
-            conductor_config: None,
-            conductor_generated_config: None,
-            conductor_state_config: None,
-            conductor_schema_dir: None,
-            media_state_config: None,
-            env_file: None,
-            env_generated_file: None,
-            mediapm_schema_dir: None,
-        };
-        paths = paths.with_overrides(&overrides);
-    }
-    paths
+    let overrides = MediaPmPathOverrides {
+        mediapm_dir: runtime_storage_overrides.mediapm_dir.as_ref().map(|d| d.into()),
+        hierarchy_root_dir: runtime_storage_overrides.hierarchy_root_dir.as_ref().map(|d| d.into()),
+        conductor_config: runtime_storage_overrides.conductor_config.as_ref().map(|d| d.into()),
+        conductor_generated_config: runtime_storage_overrides
+            .conductor_generated_config
+            .as_ref()
+            .map(|d| d.into()),
+        conductor_state_config: runtime_storage_overrides
+            .conductor_state_config
+            .as_ref()
+            .map(|d| d.into()),
+        conductor_schema_dir: runtime_storage_overrides
+            .conductor_schema_dir
+            .as_ref()
+            .map(|d| d.into()),
+        media_state_config: runtime_storage_overrides.media_state_config.as_ref().map(|d| d.into()),
+        env_file: runtime_storage_overrides.env_file.as_ref().map(|d| d.into()),
+        env_generated_file: runtime_storage_overrides.env_generated_file.as_ref().map(|d| d.into()),
+        mediapm_schema_dir: runtime_storage_overrides
+            .mediapm_schema_dir
+            .as_ref()
+            .map(|inner| inner.as_ref().map(|d| d.into())),
+    };
+    MediaPmPaths::from_root(root_dir).with_overrides(&overrides)
 }
 
 /// Loads runtime dotenv files for a given resolved root path.

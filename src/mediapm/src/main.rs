@@ -22,6 +22,7 @@ use mediapm::{
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
     ensure_global_directory_layout, global_tool_cache_clear, global_tool_cache_prune_expired,
     global_tool_cache_status, load_runtime_dotenv, media_id_from_uri,
+    resolve_effective_paths_for_root,
 };
 #[cfg(feature = "cli")]
 use url::Url;
@@ -91,7 +92,7 @@ async fn main_cli() -> anyhow::Result<()> {
     match cli.command {
         Command::Sync(args) => {
             let root = &cli.root;
-            let paths = MediaPmPaths::from_root(root);
+            let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
             let mut service =
                 MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -114,7 +115,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             ToolCommand::Add { name } => {
                 let root = &cli.root;
-                let paths = MediaPmPaths::from_root(root);
+                let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -126,7 +127,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             ToolCommand::Sync(args) => {
                 let root = &cli.root;
-                let paths = MediaPmPaths::from_root(root);
+                let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -151,7 +152,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             ToolCommand::Remove { name } => {
                 let root = &cli.root;
-                let paths = MediaPmPaths::from_root(root);
+                let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -171,7 +172,7 @@ async fn main_cli() -> anyhow::Result<()> {
             }
             ToolCommand::RefreshRuntime => {
                 let root = &cli.root;
-                let paths = MediaPmPaths::from_root(root);
+                let paths = resolve_effective_paths_for_root(root, &rt);
                 load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
                 let service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -184,7 +185,7 @@ async fn main_cli() -> anyhow::Result<()> {
         },
         Command::Media { command } => {
             let root = &cli.root;
-            let paths = MediaPmPaths::from_root(root);
+            let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
             let mut service =
                 MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
@@ -284,7 +285,7 @@ async fn main_cli() -> anyhow::Result<()> {
         }
         Command::Hierarchy { command } => {
             let root = &cli.root;
-            let paths = MediaPmPaths::from_root(root);
+            let paths = resolve_effective_paths_for_root(root, &rt);
             load_runtime_dotenv(&paths.env_file, &paths.env_generated_file);
             let mut service =
                 MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;

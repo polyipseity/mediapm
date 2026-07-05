@@ -55,7 +55,7 @@ pub use global::{
 pub use materializer::MaterializeReport;
 pub use paths::MediaPmPaths;
 pub use service::MediaPmService;
-pub use service_standalone::registered_builtin_ids;
+pub use service_standalone::{registered_builtin_ids, resolve_effective_paths_for_root};
 
 /// Media package descriptor returned by source processing.
 #[derive(Debug, Clone, PartialEq, Eq)]
