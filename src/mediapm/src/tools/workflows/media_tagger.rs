@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
     WorkflowStepSpec,
 };
 
@@ -129,7 +129,7 @@ pub(crate) fn synthesize_media_tagger_step(
             mediapm_conductor::OutputCaptureSpec {
                 name: OUTPUT_PRIMARY.to_string(),
                 capture: "file:tagged.*".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -246,7 +246,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
                 capture: format!("file:{MEDIA_TAGGER_OUTPUT_FILE}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -256,7 +256,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: "folder:coverart".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -266,7 +266,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stdout".to_string(),
                 capture: "stdout".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -276,7 +276,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stderr".to_string(),
                 capture: "stderr".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -286,7 +286,7 @@ fn build_media_tagger_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "process_code".to_string(),
                 capture: "process_code".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },

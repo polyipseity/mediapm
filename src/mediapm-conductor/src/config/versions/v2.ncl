@@ -45,11 +45,20 @@ let ToolInputSpecV2 = {
 }
 in
 
+# ||| Save mode: "false" (do not persist), "true" (persist normally), or "full" (force full persistence).
+let SaveModeV2 =
+  std.contract.any_of [
+    std.contract.from_predicate (fun value => value == "false"),
+    std.contract.from_predicate (fun value => value == "true"),
+    std.contract.from_predicate (fun value => value == "full"),
+  ]
+in
+
 # ||| Output capture specification for workflow steps.
 let OutputCaptureSpecV2 = {
   name | NonEmptyStringV2,
   capture | NonEmptyStringV2,
-  save | Bool | optional,
+  save | SaveModeV2 | optional,
   allow_empty | Bool | optional,
   include_topmost_folder | Bool | optional,
 }

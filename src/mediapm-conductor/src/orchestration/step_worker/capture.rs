@@ -56,7 +56,7 @@ pub(super) async fn capture_outputs<C: CasApi + Send + Sync>(
         .map(|name| OutputCaptureSpec {
             name: name.to_string(),
             capture: name.to_string(),
-            save: true,
+            save: crate::config::SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         })

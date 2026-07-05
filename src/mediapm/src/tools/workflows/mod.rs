@@ -15,7 +15,7 @@ pub(crate) mod spec;
 pub(crate) mod yt_dlp;
 mod yt_dlp_inputs;
 
-use mediapm_conductor::{OutputCaptureSpec, OutputSaveMode};
+use mediapm_conductor::{OutputCaptureSpec, OutputSaveMode, SaveMode};
 
 use crate::config::{
     DecodedOutputVariantConfig, GenericOutputVariantConfig, MediaSourceSpec, MediaStep,
@@ -101,19 +101,20 @@ pub(crate) fn variant_to_output_capture_spec(
     }
 }
 
-fn generic_variant_capture_and_save(config: &GenericOutputVariantConfig) -> (String, bool) {
+fn generic_variant_capture_and_save(config: &GenericOutputVariantConfig) -> (String, SaveMode) {
     let capture = match config.capture_kind {
         Some(OutputCaptureKind::Folder) => format!("file:{}/*", config.kind),
         _ => format!("file:{}", config.kind),
     };
     let save = match config.save {
-        OutputSaveConfig::Bool(b) => b,
-        OutputSaveConfig::Full => true,
+        OutputSaveConfig::Bool(true) => SaveMode::True,
+        OutputSaveConfig::Bool(false) => SaveMode::False,
+        OutputSaveConfig::Full => SaveMode::Full,
     };
     (capture, save)
 }
 
-fn yt_dlp_variant_capture_and_save(config: &YtDlpOutputVariantConfig) -> (String, bool) {
+fn yt_dlp_variant_capture_and_save(config: &YtDlpOutputVariantConfig) -> (String, SaveMode) {
     use crate::config::YtDlpOutputKind;
     let capture = match config.kind {
         YtDlpOutputKind::Primary => "file:primary.*".to_string(),
@@ -128,8 +129,9 @@ fn yt_dlp_variant_capture_and_save(config: &YtDlpOutputVariantConfig) -> (String
         YtDlpOutputKind::Links => "file:links/*".to_string(),
     };
     let save = match config.save {
-        OutputSaveConfig::Bool(b) => b,
-        OutputSaveConfig::Full => true,
+        OutputSaveConfig::Bool(true) => SaveMode::True,
+        OutputSaveConfig::Bool(false) => SaveMode::False,
+        OutputSaveConfig::Full => SaveMode::Full,
     };
     (capture, save)
 }

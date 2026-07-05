@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, ToolInputSpec, ToolRuntime, ToolSpec, WorkflowStepSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputSpec, ToolRuntime, ToolSpec,
+    WorkflowStepSpec,
 };
 
 use crate::conductor_bridge::tool_runtime::FfmpegSlotLimits;
@@ -56,7 +57,7 @@ pub(crate) fn synthesize_ffmpeg_step(
             mediapm_conductor::OutputCaptureSpec {
                 name: OUTPUT_PRIMARY.to_string(),
                 capture: "file:output.*".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -510,7 +511,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
         OutputCaptureSpec {
             name: OUTPUT_CONTENT.to_string(),
             capture: format!("file_regex:{}", ffmpeg_output_file_regex(0)),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         },
@@ -523,7 +524,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
             OutputCaptureSpec {
                 name: capture_name,
                 capture: format!("file_regex:{path_regex}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -533,7 +534,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
             OutputCaptureSpec {
                 name: format!("{OUTPUT_CONTENT}_{index}"),
                 capture: format!("file_regex:{path_regex}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -544,7 +545,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
         OutputCaptureSpec {
             name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
             capture: "folder:inputs".to_string(),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         },
@@ -554,7 +555,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
         OutputCaptureSpec {
             name: "stdout".to_string(),
             capture: "stdout".to_string(),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         },
@@ -564,7 +565,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
         OutputCaptureSpec {
             name: "stderr".to_string(),
             capture: "stderr".to_string(),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         },
@@ -574,7 +575,7 @@ fn build_ffmpeg_outputs(max_output_slots: u32) -> BTreeMap<String, OutputCapture
         OutputCaptureSpec {
             name: "process_code".to_string(),
             capture: "process_code".to_string(),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         },

@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
 };
 
 use crate::conductor_bridge::constants::{
@@ -86,7 +86,7 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
                 capture: format!("file:{SANDBOX_INPUT_FILE}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -96,7 +96,7 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: "folder:inputs".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -106,7 +106,7 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stdout".to_string(),
                 capture: "stdout".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -116,7 +116,7 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stderr".to_string(),
                 capture: "stderr".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -126,7 +126,7 @@ fn build_deno_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "process_code".to_string(),
                 capture: "process_code".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },

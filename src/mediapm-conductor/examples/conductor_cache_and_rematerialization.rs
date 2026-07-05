@@ -59,7 +59,7 @@ fn build_document() -> NickelDocument {
                             mediapm_conductor::OutputCaptureSpec {
                                 name: "result".to_string(),
                                 capture: "false".to_string(),
-                                save: true,
+                                save: mediapm_conductor::SaveMode::True,
                                 allow_empty: false,
                                 include_topmost_folder: true,
                             },
@@ -95,7 +95,7 @@ fn build_document() -> NickelDocument {
                             mediapm_conductor::OutputCaptureSpec {
                                 name: "result".to_string(),
                                 capture: "full".to_string(),
-                                save: true,
+                                save: mediapm_conductor::SaveMode::True,
                                 allow_empty: false,
                                 include_topmost_folder: true,
                             },

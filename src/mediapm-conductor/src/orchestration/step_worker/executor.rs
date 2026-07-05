@@ -98,8 +98,10 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     // Merge tool-level outputs (defaults) with step-level outputs (overrides).
     let merged_outputs = merge_output_specs(&tool_spec.outputs, &request.step.outputs);
     let persistence = {
-        let any_unsaved = merged_outputs.values().any(|o| !o.save);
-        PersistenceFlags { save: !any_unsaved, force_full: false }
+        use crate::config::SaveMode;
+        let any_unsaved = merged_outputs.values().any(|o| o.save == SaveMode::False);
+        let any_full = merged_outputs.values().any(|o| o.save == SaveMode::Full);
+        PersistenceFlags { save: !any_unsaved, force_full: any_full }
     };
     let outputs =
         capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir, persistence).await?;

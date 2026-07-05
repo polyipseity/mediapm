@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    NickelDocument, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolKindSpec, ToolRuntime,
-    ToolSpec, WorkflowSpec, WorkflowStepSpec,
+    NickelDocument, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolKindSpec,
+    ToolRuntime, ToolSpec, WorkflowSpec, WorkflowStepSpec,
 };
 
 /// Latest persisted Nickel schema marker supported by the Rust bridge.
@@ -48,6 +48,24 @@ pub(crate) enum OutputPolicyLatest {
     Full,
 }
 
+/// Latest persisted save mode: `"false"`, `"true"`, or `"full"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SaveModeLatest {
+    /// Do not persist this output.
+    False,
+    /// Persist this output normally.
+    True,
+    /// Force full persistence even when empty or the step fails.
+    Full,
+}
+
+impl Default for SaveModeLatest {
+    fn default() -> Self {
+        Self::True
+    }
+}
+
 /// Latest persisted output capture spec.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct OutputCaptureSpecLatest {
@@ -56,8 +74,8 @@ pub(crate) struct OutputCaptureSpecLatest {
     /// Capture source selector.
     pub(crate) capture: String,
     /// Whether to persist this output to CAS.
-    #[serde(default = "default_save_output", skip_serializing_if = "is_true")]
-    pub(crate) save: bool,
+    #[serde(default = "default_save_output", skip_serializing_if = "is_save_mode_true_latest")]
+    pub(crate) save: SaveModeLatest,
     /// Whether an empty capture result is acceptable.
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) allow_empty: bool,
@@ -66,12 +84,16 @@ pub(crate) struct OutputCaptureSpecLatest {
     pub(crate) include_topmost_folder: bool,
 }
 
-const fn default_save_output() -> bool {
-    true
+const fn default_save_output() -> SaveModeLatest {
+    SaveModeLatest::True
 }
 
 const fn default_include_topmost_folder() -> bool {
     true
+}
+
+const fn is_save_mode_true_latest(v: &SaveModeLatest) -> bool {
+    matches!(*v, SaveModeLatest::True)
 }
 
 const fn is_true(v: &bool) -> bool {
@@ -619,7 +641,11 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
                     OutputCaptureSpec {
                         name: name_clone,
                         capture: o.capture,
-                        save: o.save,
+                        save: match o.save {
+                            SaveModeLatest::False => SaveMode::False,
+                            SaveModeLatest::True => SaveMode::True,
+                            SaveModeLatest::Full => SaveMode::Full,
+                        },
                         allow_empty: o.allow_empty,
                         include_topmost_folder: o.include_topmost_folder,
                     },
@@ -674,7 +700,11 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
                     OutputCaptureSpecLatest {
                         name: name_clone,
                         capture: o.capture,
-                        save: o.save,
+                        save: match o.save {
+                            SaveMode::False => SaveModeLatest::False,
+                            SaveMode::True => SaveModeLatest::True,
+                            SaveMode::Full => SaveModeLatest::Full,
+                        },
                         allow_empty: o.allow_empty,
                         include_topmost_folder: o.include_topmost_folder,
                     },
@@ -740,7 +770,11 @@ fn step_spec_from_latest(step: WorkflowStepSpecLatest) -> WorkflowStepSpec {
                     OutputCaptureSpec {
                         name: name_clone,
                         capture: o.capture,
-                        save: o.save,
+                        save: match o.save {
+                            SaveModeLatest::False => SaveMode::False,
+                            SaveModeLatest::True => SaveMode::True,
+                            SaveModeLatest::Full => SaveMode::Full,
+                        },
                         allow_empty: o.allow_empty,
                         include_topmost_folder: o.include_topmost_folder,
                     },
@@ -767,7 +801,11 @@ fn step_spec_to_latest(step: WorkflowStepSpec) -> WorkflowStepSpecLatest {
                     OutputCaptureSpecLatest {
                         name: name_clone,
                         capture: o.capture,
-                        save: o.save,
+                        save: match o.save {
+                            SaveMode::False => SaveModeLatest::False,
+                            SaveMode::True => SaveModeLatest::True,
+                            SaveMode::Full => SaveModeLatest::Full,
+                        },
                         allow_empty: o.allow_empty,
                         include_topmost_folder: o.include_topmost_folder,
                     },
@@ -869,7 +907,7 @@ mod tests {
                             OutputCaptureSpec {
                                 name: "output".to_string(),
                                 capture: "stdout".to_string(),
-                                save: false,
+                                save: SaveMode::False,
                                 allow_empty: false,
                                 include_topmost_folder: true,
                             },

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use mediapm_conductor::{
-    InputBinding, OutputCaptureSpec, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
+    InputBinding, OutputCaptureSpec, SaveMode, ToolInputKind, ToolInputSpec, ToolRuntime, ToolSpec,
     WorkflowStepSpec,
 };
 
@@ -60,7 +60,7 @@ pub(crate) fn synthesize_yt_dlp_step(
             mediapm_conductor::OutputCaptureSpec {
                 name: OUTPUT_PRIMARY.to_string(),
                 capture: "file:primary.*".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -70,7 +70,7 @@ pub(crate) fn synthesize_yt_dlp_step(
             mediapm_conductor::OutputCaptureSpec {
                 name: "subtitles".to_string(),
                 capture: "file:subtitles/*".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -80,7 +80,7 @@ pub(crate) fn synthesize_yt_dlp_step(
             mediapm_conductor::OutputCaptureSpec {
                 name: "thumbnails".to_string(),
                 capture: "file:thumbnails/*".to_string(),
-                save: false,
+                save: SaveMode::False,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -371,7 +371,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_CONTENT.to_string(),
                 capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -381,7 +381,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "primary".to_string(),
                 capture: format!("file_regex:{YT_DLP_OUTPUT_CONTENT_REGEX}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -391,7 +391,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: OUTPUT_SANDBOX_ARTIFACTS.to_string(),
                 capture: format!("folder:{SANDBOX_DOWNLOADS_DIR}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -401,7 +401,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stdout".to_string(),
                 capture: "stdout".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -411,7 +411,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "stderr".to_string(),
                 capture: "stderr".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -421,7 +421,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: "process_code".to_string(),
                 capture: "process_code".to_string(),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -439,7 +439,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: output_name.to_string(),
                 capture: format!("folder_regex:{path_regex}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },
@@ -459,7 +459,7 @@ fn build_yt_dlp_outputs() -> BTreeMap<String, OutputCaptureSpec> {
             OutputCaptureSpec {
                 name: output_name.to_string(),
                 capture: format!("file_regex:{path_regex}"),
-                save: true,
+                save: SaveMode::True,
                 allow_empty: false,
                 include_topmost_folder: true,
             },

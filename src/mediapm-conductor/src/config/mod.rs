@@ -121,9 +121,38 @@ pub struct ToolInputSpec {
     pub required: bool,
 }
 
-/// Default for `OutputCaptureSpec.save`: persist to CAS.
-const fn default_save_output() -> bool {
-    true
+/// Whether to persist a captured output to CAS: `"false"`, `"true"`, or `"full"`.
+///
+/// - `False`: do not persist this output.
+/// - `True` (default): persist this output normally.
+/// - `Full`: persist even when empty or the step fails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SaveMode {
+    /// Do not persist this output.
+    False,
+    /// Persist this output normally.
+    True,
+    /// Force full persistence even when empty or the step fails.
+    Full,
+}
+
+impl Default for SaveMode {
+    fn default() -> Self {
+        Self::True
+    }
+}
+
+/// Default for `OutputCaptureSpec.save`: persist.
+const fn default_save_mode() -> SaveMode {
+    SaveMode::True
+}
+
+fn is_save_mode_true(v: &SaveMode) -> bool {
+    match v {
+        SaveMode::True => true,
+        _ => false,
+    }
 }
 
 /// Default for `OutputCaptureSpec.allow_empty`: skip on missing.
@@ -180,9 +209,9 @@ pub struct OutputCaptureSpec {
     /// Capture source selector (`stdout`, `stderr`, `process_code`, `file:<path>`,
     /// `file_regex:<pattern>`, etc.).
     pub capture: String,
-    /// Whether to persist this output to CAS. Defaults to `true`.
-    #[serde(default = "default_save_output")]
-    pub save: bool,
+    /// Whether to persist this output to CAS. One of `"false"`, `"true"`, `"full"`.
+    #[serde(default = "default_save_mode", skip_serializing_if = "is_save_mode_true")]
+    pub save: SaveMode,
     /// Whether an empty capture result (e.g. missing file) is acceptable.
     /// When `true`, an empty result is stored as empty bytes instead of
     /// silently skipping the output.
@@ -201,7 +230,7 @@ impl Default for OutputCaptureSpec {
         Self {
             name: String::new(),
             capture: String::new(),
-            save: true,
+            save: SaveMode::True,
             allow_empty: false,
             include_topmost_folder: true,
         }
