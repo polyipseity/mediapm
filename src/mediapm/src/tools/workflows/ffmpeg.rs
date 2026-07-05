@@ -28,12 +28,11 @@ use super::{
 ///
 #[must_use]
 pub(crate) fn synthesize_ffmpeg_step(
-    source: &MediaSourceSpec,
+    _source: &MediaSourceSpec,
     step_index: usize,
     step: &MediaStep,
 ) -> Vec<WorkflowStepSpec> {
-    let step_id =
-        qualify_step_id(source.id.as_deref().unwrap_or("unknown"), &format!("ffmpeg_{step_index}"));
+    let step_id = qualify_step_id("unknown", &format!("ffmpeg_{step_index}"));
 
     let mut inputs = BTreeMap::new();
     inputs.insert(

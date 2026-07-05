@@ -138,14 +138,14 @@ fn yt_dlp_variant_capture_and_save(config: &YtDlpOutputVariantConfig) -> (String
 
 /// Returns managed workflow name for a source entry.
 #[must_use]
-pub(crate) fn managed_workflow_name(source: &MediaSourceSpec) -> String {
-    source.id.clone().unwrap_or_default()
+pub(crate) fn managed_workflow_name(_source: &MediaSourceSpec) -> String {
+    String::new()
 }
 
 /// Returns the default source-URI input binding for a media step.
 #[must_use]
-pub(crate) fn source_uri_input(source: &MediaSourceSpec) -> (String, String) {
-    (INPUT_SOURCE_URL.to_string(), source.id.clone().unwrap_or_default())
+pub(crate) fn source_uri_input(_source: &MediaSourceSpec) -> (String, String) {
+    (INPUT_SOURCE_URL.to_string(), String::new())
 }
 
 /// Returns step-option input bindings as `(input_key, value_string)` entries.

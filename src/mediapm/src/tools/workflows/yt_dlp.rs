@@ -35,8 +35,7 @@ pub(crate) fn synthesize_yt_dlp_step(
     step_index: usize,
     step: &MediaStep,
 ) -> Vec<WorkflowStepSpec> {
-    let step_id =
-        qualify_step_id(source.id.as_deref().unwrap_or("unknown"), &format!("yt_dlp_{step_index}"));
+    let step_id = qualify_step_id("unknown", &format!("yt_dlp_{step_index}"));
 
     let mut inputs = BTreeMap::from([source_uri_input(source)]);
     for (k, v) in step_option_input_bindings(step) {

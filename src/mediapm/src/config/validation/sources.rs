@@ -30,12 +30,6 @@ fn validate_source(
     media_id: &str,
     _available_variants: &BTreeSet<String>,
 ) -> Result<(), MediaPmError> {
-    if let Some(ref id) = source.id {
-        return Err(MediaPmError::InvalidSource(format!(
-            "media source '{media_id}' may not define 'id' field (found '{id}'); use hierarchy ids instead"
-        )));
-    }
-
     if source.steps.is_empty() {
         return Err(MediaPmError::InvalidSource(format!(
             "media source '{media_id}' must define at least one processing step"

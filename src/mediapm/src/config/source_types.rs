@@ -78,9 +78,6 @@ pub struct MediaMetadataRegexTransform {
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaSourceSpec {
-    /// Legacy media id override (rejected by validation; use hierarchy ids).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
     /// Human-readable description.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
@@ -90,9 +87,6 @@ pub struct MediaSourceSpec {
     /// Artist.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub artist: String,
-    /// Optional explicit conductor workflow id override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workflow_id: Option<String>,
     /// Metadata keyed by attribute name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MediaMetadataValue>,

@@ -205,11 +205,9 @@ async fn main_cli() -> anyhow::Result<()> {
                                 args.release_mbid.as_deref(),
                             );
                             let source_spec = MediaSourceSpec {
-                                id: None,
                                 title: args.title.clone().unwrap_or_default(),
                                 description: args.description.clone().unwrap_or_default(),
                                 artist: args.artist.clone().unwrap_or_default(),
-                                workflow_id: None,
                                 metadata: args.album.as_deref().map_or_else(
                                     std::collections::BTreeMap::new,
                                     |album| {

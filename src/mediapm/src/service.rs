@@ -389,14 +389,12 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
         let steps = local_source_default_steps(&hash_text, None, None);
 
         let source = MediaSourceSpec {
-            id: None,
             title: title.filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_default(),
             description: description
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
                 .unwrap_or_default(),
             artist: String::new(),
-            workflow_id: None,
             metadata: BTreeMap::new(),
             variant_hashes: BTreeMap::new(),
             steps,

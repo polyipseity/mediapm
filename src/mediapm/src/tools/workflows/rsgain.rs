@@ -33,14 +33,13 @@ use super::{
 ///
 #[must_use]
 pub(crate) fn synthesize_rsgain_step_chain(
-    source: &MediaSourceSpec,
+    _source: &MediaSourceSpec,
     step_index: usize,
     step: &MediaStep,
 ) -> Vec<WorkflowStepSpec> {
     let mut steps = Vec::new();
 
-    let step_id =
-        qualify_step_id(source.id.as_deref().unwrap_or("unknown"), &format!("rsgain_{step_index}"));
+    let step_id = qualify_step_id("unknown", &format!("rsgain_{step_index}"));
 
     let mut inputs = BTreeMap::new();
     for (k, v) in step_option_input_bindings(step) {

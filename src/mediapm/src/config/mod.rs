@@ -417,17 +417,6 @@ impl ToolRequirement {
     }
 }
 
-/// Returns true when `ToolRequirementDependencies` has no active selector.
-#[must_use]
-#[allow(dead_code)]
-pub fn tool_requirement_dependencies_is_empty(deps: &ToolRequirementDependencies) -> bool {
-    let is_empty_literal =
-        |v: &MediaMetadataValue| matches!(v, MediaMetadataValue::Literal(s) if s.is_empty());
-    is_empty_literal(&deps.ffmpeg_version)
-        && is_empty_literal(&deps.deno_version)
-        && is_empty_literal(&deps.sd_version)
-}
-
 // ---------------------------------------------------------------------------
 // MediaPmDocument (top-level config)
 // ---------------------------------------------------------------------------
