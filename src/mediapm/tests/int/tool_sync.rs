@@ -94,7 +94,7 @@ async fn sync_registers_builtins() -> Result<(), mediapm::MediaPmError> {
     let bytes = std::fs::read(&service.paths().conductor_generated_ncl)
         .expect("conductor.generated.ncl should be readable");
     let doc: NickelDocument = decode_document(&bytes).expect("valid Nickel document");
-    for id in &["echo", "fs", "import", "export", "archive"] {
+    for id in &["echo@1.0.0", "fs@1.0.0", "import@1.0.0", "export@1.0.0", "archive@1.0.0"] {
         let tool =
             doc.tools.get(*id).unwrap_or_else(|| panic!("builtin {id} should be registered"));
         assert!(
