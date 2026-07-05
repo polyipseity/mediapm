@@ -68,19 +68,21 @@ pub async fn run_from_env() -> anyhow::Result<()> {
 ///
 /// Returns anyhow errors from argument parsing and CAS operations.
 pub async fn run_from_passthrough_args(args: &[String]) -> anyhow::Result<()> {
-    let cli = match Cli::try_parse_from(args.iter().map(String::as_str)) {
-        Ok(cli) => cli,
-        Err(e)
-            if e.kind() == clap::error::ErrorKind::DisplayHelp
-                || e.kind() == clap::error::ErrorKind::DisplayVersion =>
-        {
-            // Help/version is printed by clap internally; return Ok so
-            // passthrough callers don't treat it as a routing failure.
-            return Ok(());
-        }
-        Err(e) => return Err(e.into()),
-    };
+    if passthrough_requests_help_or_version(args) {
+        let mut cmd = Cli::command();
+        cmd.print_help()?;
+        return Ok(());
+    }
+    let cli = Cli::try_parse_from(args.iter().map(String::as_str))?;
     run(cli).await
+}
+
+/// Returns true when passthrough argv explicitly requests help/version text.
+fn passthrough_requests_help_or_version(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version")
+            || arg.split_once('=').is_some_and(|(flag, _)| matches!(flag, "--help" | "--version"))
+    })
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
