@@ -72,27 +72,29 @@ fn tool_id_for(logical_tool_name: &str) -> String {
 fn tool_requirement_for(logical_tool_name: &str) -> ToolRequirement {
     let dependencies = match logical_tool_name {
         "yt-dlp" | "media-tagger" => ToolRequirementDependencies {
-            ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
+            ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
             deno_version: if logical_tool_name == "yt-dlp" {
-                Some(MediaMetadataValue::Literal("inherit".to_string()))
+                MediaMetadataValue::Literal("inherit".to_string())
             } else {
-                None
+                MediaMetadataValue::default()
             },
-            sd_version: None,
+            sd_version: MediaMetadataValue::default(),
         },
         "rsgain" => ToolRequirementDependencies {
-            ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
-            deno_version: None,
-            sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
+            ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
+            deno_version: MediaMetadataValue::default(),
+            sd_version: MediaMetadataValue::Literal("inherit".to_string()),
         },
         _ => ToolRequirementDependencies::default(),
     };
 
     ToolRequirement {
-        version: None,
-        tag: Some("latest".to_string()),
+        version: MediaMetadataValue::default(),
+        tag: "latest".to_string(),
         dependencies,
-        recheck_seconds: None,
+        recheck_seconds: 0,
+        max_input_slots: 16,
+        max_output_slots: 4,
     }
 }
 

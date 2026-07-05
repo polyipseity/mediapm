@@ -471,54 +471,64 @@ fn configure_document_for_local_tool_chain(
         (
             "import".to_string(),
             ToolRequirement {
-                version: None,
-                tag: None,
+                version: MediaMetadataValue::default(),
+                tag: String::new(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "ffmpeg".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "rsgain".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
-                    deno_version: None,
-                    sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
+                    ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
+                    deno_version: MediaMetadataValue::default(),
+                    sd_version: MediaMetadataValue::Literal("inherit".to_string()),
                 },
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "sd".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "media-tagger".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
-                    deno_version: None,
-                    sd_version: None,
+                    ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
+                    deno_version: MediaMetadataValue::default(),
+                    sd_version: MediaMetadataValue::default(),
                 },
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
     ]);
@@ -577,15 +587,11 @@ fn configure_document_for_local_tool_chain(
     document.media = BTreeMap::from([(
         DEMO_MEDIA_ID.to_string(),
         MediaSourceSpec {
-            id: None,
-            description: Some(
-                "Local demo pipeline exercising import, ffmpeg, rsgain, and media-tagger"
-                    .to_string(),
-            ),
-            title: Some(DEMO_METADATA_TITLE.to_string()),
-            artist: None,
-            workflow_id: None,
-            metadata: Some(BTreeMap::from([
+            description: "Local demo pipeline exercising import, ffmpeg, rsgain, and media-tagger"
+                .to_string(),
+            title: DEMO_METADATA_TITLE.to_string(),
+            artist: String::new(),
+            metadata: BTreeMap::from([
                 ("title".to_string(), MediaMetadataValue::Literal(DEMO_METADATA_TITLE.to_string())),
                 (
                     "artist".to_string(),
@@ -601,7 +607,7 @@ fn configure_document_for_local_tool_chain(
                 ),
                 ("video_ext".to_string(), MediaMetadataValue::Literal(".m4a".to_string())),
                 ("video_ext_untagged".to_string(), MediaMetadataValue::Literal(".mp4".to_string())),
-            ])),
+            ]),
             variant_hashes: BTreeMap::new(),
             steps,
         },
@@ -753,54 +759,64 @@ fn local_demo_tool_requirements() -> BTreeMap<String, ToolRequirement> {
         (
             "import".to_string(),
             ToolRequirement {
-                version: None,
-                tag: None,
+                version: MediaMetadataValue::default(),
+                tag: String::new(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "ffmpeg".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "rsgain".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
-                    deno_version: None,
-                    sd_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
+                    ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
+                    deno_version: MediaMetadataValue::default(),
+                    sd_version: MediaMetadataValue::Literal("inherit".to_string()),
                 },
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "sd".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies::default(),
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
         (
             "media-tagger".to_string(),
             ToolRequirement {
-                version: None,
-                tag: Some("latest".to_string()),
+                version: MediaMetadataValue::default(),
+                tag: "latest".to_string(),
                 dependencies: ToolRequirementDependencies {
-                    ffmpeg_version: Some(MediaMetadataValue::Literal("inherit".to_string())),
-                    deno_version: None,
-                    sd_version: None,
+                    ffmpeg_version: MediaMetadataValue::Literal("inherit".to_string()),
+                    deno_version: MediaMetadataValue::default(),
+                    sd_version: MediaMetadataValue::default(),
                 },
-                recheck_seconds: None,
+                recheck_seconds: 0,
+                max_input_slots: 16,
+                max_output_slots: 4,
             },
         ),
     ])
@@ -870,7 +886,7 @@ fn seed_old_synced_tools_state_for_update_precheck(
                 version: Some("old".to_string()),
                 tag: None,
                 fetch_hash: Some(stale_hash.to_string()),
-                deployed_at: Some(unix_timestamp_seconds()),
+                deployed_at: unix_timestamp_seconds(),
             },
         );
     }
@@ -948,14 +964,19 @@ async fn generate_demo_artifacts(run_sync: bool) -> ExampleResult<DemoRunPaths> 
             "demo preflight add_local_source media '{auto_added_media_id}' missing from mediapm.ncl"
         ))
     })?;
-    let auto_added_source_title =
-        auto_added_source.title.clone().filter(|value| !value.trim().is_empty()).ok_or_else(
-            || std::io::Error::other("demo preflight add_local_source produced empty title"),
-        )?;
-    let auto_added_source_description =
-        auto_added_source.description.clone().filter(|value| !value.trim().is_empty()).ok_or_else(
-            || std::io::Error::other("demo preflight add_local_source produced empty description"),
-        )?;
+    let auto_added_source_title = auto_added_source.title.clone();
+    if auto_added_source_title.trim().is_empty() {
+        return Err(
+            std::io::Error::other("demo preflight add_local_source produced empty title").into()
+        );
+    }
+    let auto_added_source_description = auto_added_source.description.clone();
+    if auto_added_source_description.trim().is_empty() {
+        return Err(std::io::Error::other(
+            "demo preflight add_local_source produced empty description",
+        )
+        .into());
+    }
 
     let (configured_tool_count, configured_step_count) =
         configure_document_for_local_tool_chain(&workspace_root, &source_hash_text)?;
