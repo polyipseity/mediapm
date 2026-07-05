@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use super::super::{
     ActiveToolInstance, ManagedWorkflowStepState, MediaPmDocument, MediaPmImpureTimestamp,
-    MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement, hierarchy_types,
-    source_types,
+    MediaPmState, MediaRuntimeStorage, ToolRegistryEntry, ToolRequirement,
+    ToolRequirementDependencies, hierarchy_types, source_types,
 };
 use super::Migrate;
 
@@ -96,6 +96,33 @@ pub(super) struct ToolRegistryStateWireV1 {
     /// Optional tool tag string (from tag selector).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tag: Option<String>,
+    /// Cross-tool dependency version selectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) dependencies: Option<ToolRequirementDependenciesWireV1>,
+    /// Recheck interval seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) recheck_seconds: Option<u64>,
+    /// Max ffmpeg input slot count.
+    #[serde(default)]
+    pub(super) max_input_slots: Option<u32>,
+    /// Max ffmpeg output slot count.
+    #[serde(default)]
+    pub(super) max_output_slots: Option<u32>,
+}
+
+/// V1 wire representation of tool requirement dependency selectors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ToolRequirementDependenciesWireV1 {
+    /// Selector version string for ffmpeg dependency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) ffmpeg_version: Option<String>,
+    /// Selector version string for deno dependency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) deno_version: Option<String>,
+    /// Selector version string for sd dependency.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) sd_version: Option<String>,
 }
 
 /// V1 wire representation of a tool registry entry (fetch/deployment metadata).
@@ -191,7 +218,30 @@ impl From<ToolRegistryStateWireV1> for ToolRequirement {
         Self {
             version: wire.version.clone().map(source_types::MediaMetadataValue::Literal),
             tag: wire.tag.clone(),
-            ..ToolRequirement::default()
+            dependencies: ToolRequirementDependencies {
+                ffmpeg_version: wire
+                    .dependencies
+                    .as_ref()
+                    .and_then(|d| d.ffmpeg_version.clone())
+                    .map(source_types::MediaMetadataValue::Literal),
+                deno_version: wire
+                    .dependencies
+                    .as_ref()
+                    .and_then(|d| d.deno_version.clone())
+                    .map(source_types::MediaMetadataValue::Literal),
+                sd_version: wire
+                    .dependencies
+                    .as_ref()
+                    .and_then(|d| d.sd_version.clone())
+                    .map(source_types::MediaMetadataValue::Literal),
+            },
+            recheck_seconds: wire.recheck_seconds,
+            max_input_slots: wire
+                .max_input_slots
+                .unwrap_or(crate::config::defaults::default_ffmpeg_max_input_slots()),
+            max_output_slots: wire
+                .max_output_slots
+                .unwrap_or(crate::config::defaults::default_ffmpeg_max_output_slots()),
         }
     }
 }
@@ -299,6 +349,50 @@ impl Migrate for MediaPmState {
                     ToolRegistryStateWireV1 {
                         version: tool_req.normalized_version(),
                         tag: tool_req.normalized_tag(),
+                        dependencies: {
+                            let deps = ToolRequirementDependenciesWireV1 {
+                                ffmpeg_version: tool_req
+                                    .dependencies
+                                    .ffmpeg_version
+                                    .as_ref()
+                                    .and_then(|v| match v {
+                                        source_types::MediaMetadataValue::Literal(s) => {
+                                            let t = s.trim().to_string();
+                                            if t.is_empty() { None } else { Some(t) }
+                                        }
+                                        _ => None,
+                                    }),
+                                deno_version: tool_req.dependencies.deno_version.as_ref().and_then(
+                                    |v| match v {
+                                        source_types::MediaMetadataValue::Literal(s) => {
+                                            let t = s.trim().to_string();
+                                            if t.is_empty() { None } else { Some(t) }
+                                        }
+                                        _ => None,
+                                    },
+                                ),
+                                sd_version: tool_req.dependencies.sd_version.as_ref().and_then(
+                                    |v| match v {
+                                        source_types::MediaMetadataValue::Literal(s) => {
+                                            let t = s.trim().to_string();
+                                            if t.is_empty() { None } else { Some(t) }
+                                        }
+                                        _ => None,
+                                    },
+                                ),
+                            };
+                            if deps.ffmpeg_version.is_none()
+                                && deps.deno_version.is_none()
+                                && deps.sd_version.is_none()
+                            {
+                                None
+                            } else {
+                                Some(deps)
+                            }
+                        },
+                        recheck_seconds: tool_req.recheck_seconds,
+                        max_input_slots: Some(tool_req.max_input_slots),
+                        max_output_slots: Some(tool_req.max_output_slots),
                     },
                 )
             })
