@@ -32,6 +32,9 @@ pub const TOOL_NAME: &str = META.tool_name;
 /// Stable builtin identifier registered in phase topology surfaces.
 pub const TOOL_ID: &str = META.tool_id;
 
+/// Versioned builtin identifier (e.g. "echo@1.0.0") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "echo@1.0.0";
+
 /// Canonical semantic version for this builtin implementation.
 pub const TOOL_VERSION: &str = META.tool_version;
 

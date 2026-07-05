@@ -41,6 +41,9 @@ pub use mediapm_utils::{
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
+/// Versioned builtin identifier (e.g. "archive@1.0.0") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "archive@1.0.0";
+
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
 

@@ -36,6 +36,9 @@ use reqwest::blocking::Client;
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
+/// Versioned builtin identifier (e.g. "import@1.0.0") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "import@1.0.0";
+
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
 
