@@ -177,9 +177,9 @@ impl NickelDocument {
 
         let tools: BTreeMap<String, UnifiedToolSpec> = self
             .tools
-            .values()
-            .map(|spec| {
-                let id = spec.id();
+            .iter()
+            .map(|(name, spec)| {
+                let id = name.clone();
                 let (command_parts, success_codes) = match &spec.kind {
                     ToolKindSpec::Executable { command, env_vars: _, success_codes } => {
                         (command.clone(), success_codes.clone())
@@ -282,7 +282,6 @@ mod tests {
                         success_codes: vec![0],
                     },
                     name: "tool-a".to_string(),
-                    version: "1.0.0".to_string(),
                     inputs: BTreeMap::new(),
                     default_inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
@@ -304,7 +303,6 @@ mod tests {
                         success_codes: vec![0],
                     },
                     name: "tool-b".to_string(),
-                    version: "2.0.0".to_string(),
                     inputs: BTreeMap::new(),
                     default_inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
@@ -331,12 +329,8 @@ mod tests {
         let tools = BTreeMap::from([(
             "echo".to_string(),
             ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
-                },
+                kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".to_string() },
                 name: "echo".to_string(),
-                version: "1.0.0".to_string(),
                 inputs: BTreeMap::new(),
                 default_inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),

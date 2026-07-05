@@ -162,7 +162,6 @@ pub(crate) fn assemble_tool_spec(
             success_codes: vec![0],
         },
         name: tool_name.to_string(),
-        version: String::new(),
         inputs,
         default_inputs,
         outputs,

@@ -435,66 +435,42 @@ fn build_ffmpeg_inputs(
     let mut inputs = BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
     ]);
 
     for option_input in FFMPEG_OPTION_INPUTS {
         inputs.insert(
             (*option_input).to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
 
     for index in 0..max_input_slots {
         inputs.insert(
             ffmpeg_input_content_name(index),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
     for index in 1..max_input_slots {
         inputs.insert(
             ffmpeg_cover_slot_enabled_input_name(index),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
     for index in 0..max_output_slots {
         inputs.insert(
             ffmpeg_output_path_input_name(index),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
     inputs.insert(
         INPUT_FFMETADATA_CONTENT.to_string(),
-        ToolInputSpec { kind: ToolInputKind::String, description: String::new(), required: false },
+        ToolInputSpec { kind: ToolInputKind::String, required: false },
     );
 
     inputs

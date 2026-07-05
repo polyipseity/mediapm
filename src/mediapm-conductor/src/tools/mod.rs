@@ -31,8 +31,8 @@ pub struct BuiltinRegistration {
     pub id: &'static str,
     /// Short tool name (e.g. `"echo"`).
     pub name: &'static str,
-    /// Semver version string.
-    pub version: &'static str,
+    /// Versioned builtin identifier (e.g. `"echo@1.0.0"`).
+    pub builtin_id: &'static str,
     /// Whether this tool produces side effects.
     pub is_impure: bool,
     /// Human-readable one-line description.
@@ -44,35 +44,35 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
     BuiltinRegistration {
         id: mediapm_conductor_builtin_archive::TOOL_ID,
         name: mediapm_conductor_builtin_archive::TOOL_NAME,
-        version: mediapm_conductor_builtin_archive::TOOL_VERSION,
+        builtin_id: mediapm_conductor_builtin_archive::TOOL_BUILTIN_ID,
         is_impure: false,
         summary: "pure archive builtin runtime transforming bytes to bytes",
     },
     BuiltinRegistration {
         id: mediapm_conductor_builtin_echo::TOOL_ID,
         name: mediapm_conductor_builtin_echo::TOOL_NAME,
-        version: mediapm_conductor_builtin_echo::TOOL_VERSION,
+        builtin_id: mediapm_conductor_builtin_echo::TOOL_BUILTIN_ID,
         is_impure: false,
         summary: "echo-like builtin returning text as stdout/stderr string-map",
     },
     BuiltinRegistration {
         id: mediapm_conductor_builtin_export::TOOL_ID,
         name: mediapm_conductor_builtin_export::TOOL_NAME,
-        version: mediapm_conductor_builtin_export::TOOL_VERSION,
+        builtin_id: mediapm_conductor_builtin_export::TOOL_BUILTIN_ID,
         is_impure: true,
         summary: "export builtin runtime that writes file/folder payloads to host paths",
     },
     BuiltinRegistration {
         id: mediapm_conductor_builtin_fs::TOOL_ID,
         name: mediapm_conductor_builtin_fs::TOOL_NAME,
-        version: mediapm_conductor_builtin_fs::TOOL_VERSION,
+        builtin_id: mediapm_conductor_builtin_fs::TOOL_BUILTIN_ID,
         is_impure: true,
         summary: "filesystem operation builtin runtime with impure side-effecting behavior",
     },
     BuiltinRegistration {
         id: mediapm_conductor_builtin_import::TOOL_ID,
         name: mediapm_conductor_builtin_import::TOOL_NAME,
-        version: mediapm_conductor_builtin_import::TOOL_VERSION,
+        builtin_id: mediapm_conductor_builtin_import::TOOL_BUILTIN_ID,
         is_impure: true,
         summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
     },
@@ -80,12 +80,10 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
 
 /// Returns the set of registered builtin tool IDs.
 ///
-/// Each builtin is identified by its canonical `name` (e.g. `"echo"`).
-/// The version is not part of the ID; version matching is the caller's
-/// responsibility.
+/// Each builtin is identified by its versioned `builtin_id` (e.g. `"echo@1.0.0"`).
 #[must_use]
 pub fn registered_builtin_ids() -> HashSet<String> {
-    ALL_BUILTINS.iter().map(|e| e.name.to_string()).collect()
+    ALL_BUILTINS.iter().map(|e| e.builtin_id.to_string()).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -152,12 +150,12 @@ mod tests {
         assert!(executable_name.starts_with("sd"));
     }
 
-    /// Every registered builtin has its name present in the ID set.
+    /// Every registered builtin has its builtin_id present in the ID set.
     #[test]
     fn all_builtins_are_listed_in_registered_ids() {
         let ids = super::registered_builtin_ids();
         for entry in super::ALL_BUILTINS {
-            assert!(ids.contains(entry.name), "missing: {}", entry.name);
+            assert!(ids.contains(entry.builtin_id), "missing: {}", entry.builtin_id);
         }
         assert_eq!(ids.len(), super::ALL_BUILTINS.len());
     }

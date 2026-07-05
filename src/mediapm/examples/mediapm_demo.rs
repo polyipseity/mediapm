@@ -860,7 +860,6 @@ fn seed_old_synced_tools_state_for_update_precheck(
             stale_tool_id.clone(),
             ToolSpec {
                 name: stale_tool_id.clone(),
-                version: "old".to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec![format!("./{stale_relative_path}")],
                     env_vars: BTreeMap::new(),

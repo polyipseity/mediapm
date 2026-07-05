@@ -23,16 +23,11 @@ mod prop;
 /// Creates an echo@1.0.0 `ToolSpec`.
 fn echo_tool(name: &str) -> ToolSpec {
     ToolSpec {
-        kind: ToolKindSpec::Builtin { name: "echo".into(), version: "1.0.0".into() },
+        kind: ToolKindSpec::Builtin { builtin_id: format!("echo@1.0.0") },
         name: name.into(),
-        version: "1.0.0".into(),
         inputs: BTreeMap::from([(
             "text".into(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         )]),
         default_inputs: BTreeMap::new(),
         outputs: BTreeMap::new(),

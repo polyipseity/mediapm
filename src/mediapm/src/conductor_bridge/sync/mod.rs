@@ -144,7 +144,6 @@ pub(crate) async fn reconcile_desired_tools(
                         tool_id.clone(),
                         mediapm_conductor::ToolSpec {
                             name: tool_id.clone(),
-                            version: String::new(),
                             kind: mediapm_conductor::ToolKindSpec::Executable {
                                 command: Vec::new(),
                                 env_vars: BTreeMap::new(),

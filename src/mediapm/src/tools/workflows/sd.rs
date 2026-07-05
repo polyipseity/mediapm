@@ -42,43 +42,20 @@ fn build_sd_inputs() -> BTreeMap<String, ToolInputSpec> {
     BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
-        (
-            INPUT_CONTENT.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
-        ),
+        (INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
         (
             INPUT_SD_PATTERN.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_SD_REPLACEMENT.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
     ])
 }

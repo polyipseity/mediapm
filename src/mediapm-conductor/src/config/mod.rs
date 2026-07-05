@@ -113,9 +113,6 @@ pub struct ToolInputSpec {
     /// Declared value kind for this input.
     #[serde(default)]
     pub kind: ToolInputKind,
-    /// Human-readable description of this input.
-    #[serde(default)]
-    pub description: String,
     /// Whether this input is required for every tool call.
     #[serde(default)]
     pub required: bool,
@@ -300,10 +297,8 @@ pub struct ConductorRuntimeConfig {
 pub enum ToolKindSpec {
     /// Built-in tool known to conductor-builtins crates.
     Builtin {
-        /// Builtin name.
-        name: String,
-        /// Builtin semantic version.
-        version: String,
+        /// Versioned builtin identifier (e.g. "echo@1.0.0").
+        builtin_id: String,
     },
     /// External executable command (on PATH or with an absolute path).
     Executable {
@@ -323,10 +318,8 @@ pub enum ToolKindSpec {
 pub struct ToolSpec {
     /// Tool kind (builtin, executable).
     pub kind: ToolKindSpec,
-    /// Logical tool name.
+    /// Logical tool name (display-only).
     pub name: String,
-    /// Tool semantic version.
-    pub version: String,
     /// Declared input specifications keyed by input name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, ToolInputSpec>,
@@ -339,14 +332,6 @@ pub struct ToolSpec {
     /// Runtime configuration (`content_map`, impure, concurrency, retry, etc.).
     #[serde(default)]
     pub runtime: ToolRuntime,
-}
-
-impl ToolSpec {
-    /// Returns the fully qualified tool identifier: `name@version`.
-    #[must_use]
-    pub fn id(&self) -> String {
-        format!("{}@{}", self.name, self.version)
-    }
 }
 
 impl Default for ToolKindSpec {
@@ -427,21 +412,6 @@ pub fn default_runtime_inherited_env_vars() -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Verifies `ToolSpec.id()` produces the expected `name@version` format.
-    #[test]
-    fn tool_spec_id_format() {
-        let spec = ToolSpec {
-            kind: ToolKindSpec::Builtin { name: "echo".to_string(), version: "1.0.0".to_string() },
-            name: "echo".to_string(),
-            version: "1.0.0".to_string(),
-            inputs: BTreeMap::new(),
-            default_inputs: BTreeMap::new(),
-            outputs: BTreeMap::new(),
-            runtime: ToolRuntime::default(),
-        };
-        assert_eq!(spec.id(), "echo@1.0.0");
-    }
 
     /// Verifies `ImpureTimestamp` round-trips through Unix nanoseconds.
     #[test]

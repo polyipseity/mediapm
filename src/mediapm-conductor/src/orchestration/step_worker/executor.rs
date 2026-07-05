@@ -106,7 +106,7 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let outputs =
         capture_outputs(cas, &merged_outputs, &execution_result, &sandbox_dir, persistence).await?;
 
-    let tool_id = format!("{}@{}", tool_spec.inputs.len(), "?"); // simplified tool id for now
+    let tool_id = request.step.tool.clone();
     let instance = ToolCallInstance {
         instance_key: instance_key.clone(),
         tool_id,

@@ -24,19 +24,11 @@ fn build_document() -> NickelDocument {
         tools: BTreeMap::from([(
             "echo@1.0.0".to_string(),
             ToolSpec {
-                kind: ToolKindSpec::Builtin {
-                    name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
-                },
+                kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".to_string() },
                 name: "echo@1.0.0".to_string(),
-                version: "1.0.0".to_string(),
                 inputs: BTreeMap::from([(
                     "text".to_string(),
-                    ToolInputSpec {
-                        kind: ToolInputKind::String,
-                        description: String::new(),
-                        required: false,
-                    },
+                    ToolInputSpec { kind: ToolInputKind::String, required: false },
                 )]),
                 default_inputs: BTreeMap::new(),
                 outputs: BTreeMap::new(),

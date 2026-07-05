@@ -17,9 +17,8 @@ fn conductor_document_serialization_invariants() {
     doc.tools.insert(
         "test-tool".into(),
         ToolSpec {
-            kind: ToolKindSpec::Builtin { name: "echo".into(), version: "1.0.0".into() },
+            kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".into() },
             name: "echo".into(),
-            version: "1.0.0".into(),
             runtime: ToolRuntime::default(),
             ..Default::default()
         },

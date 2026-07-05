@@ -129,13 +129,12 @@ async fn run_add_tools_example() -> ExampleResult<AddToolsManifest> {
             .to_string_lossy()
             .replace('\\', "/");
 
-        let (name, version) = tool_id.split_once('@').unwrap_or((&tool_id, "latest"));
+        let (name, _version) = tool_id.split_once('@').unwrap_or((&tool_id, "latest"));
 
         machine.tools.insert(
             name.to_string(),
             ToolSpec {
                 name: name.to_string(),
-                version: version.to_string(),
                 kind: ToolKindSpec::Executable {
                     command: vec![relative_payload_path.clone()],
                     env_vars: BTreeMap::new(),
@@ -216,12 +215,7 @@ mod tests {
         let machine: NickelDocument = decode_document(&machine_bytes).expect("decode machine doc");
 
         for tool_id in &manifest.tool_ids {
-            let (name, version) = tool_id.split_once('@').unwrap_or((tool_id, "latest"));
-            let tool = machine
-                .tools
-                .iter()
-                .find(|t| t.name == name && t.version == version)
-                .expect("expected tool '{tool_id}'");
+            let tool = machine.tools.get(tool_id).expect("expected tool '{tool_id}'");
             assert!(
                 !tool.runtime.content_map.is_empty(),
                 "expected content map entries for dummy tool '{tool_id}'"

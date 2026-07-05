@@ -126,11 +126,7 @@ pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
                 builtin_id.clone(),
                 ToolSpec {
                     name: builtin_id.clone(),
-                    version: "latest".to_string(),
-                    kind: ToolKindSpec::Builtin {
-                        name: builtin_id.clone(),
-                        version: "latest".to_string(),
-                    },
+                    kind: ToolKindSpec::Builtin { builtin_id: builtin_id.clone() },
                     inputs: std::collections::BTreeMap::new(),
                     default_inputs: std::collections::BTreeMap::new(),
                     outputs: std::collections::BTreeMap::new(),

@@ -186,7 +186,6 @@ where
                 success_codes: vec![0],
             },
             name: name.to_string(),
-            version: "0.1.0".to_string(),
             inputs: BTreeMap::new(),
             default_inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),

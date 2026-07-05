@@ -326,37 +326,21 @@ fn build_yt_dlp_inputs() -> BTreeMap<String, ToolInputSpec> {
     let mut inputs = BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_SOURCE_URL.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
     ]);
     for option_input in YT_DLP_OPTION_INPUTS {
         inputs.insert(
             (*option_input).to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
     inputs

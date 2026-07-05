@@ -106,7 +106,7 @@ pub(super) async fn run_builtin(
     sandbox_dir: &Path,
 ) -> Result<ExecutionResult, ConductorError> {
     match tool_name {
-        "echo" => {
+        n if n == mediapm_conductor_builtin_echo::TOOL_BUILTIN_ID => {
             let result = mediapm_conductor_builtin_echo::execute(args, &BTreeMap::new())
                 .map_err(|e| ConductorError::Workflow(format!("echo builtin failed: {e}")))?;
             // Serialize the StringMap to JSON stdout.
@@ -114,13 +114,13 @@ pub(super) async fn run_builtin(
                 .map_err(|e| ConductorError::Workflow(format!("echo serialization failed: {e}")))?;
             Ok(ExecutionResult { stdout, stderr: Vec::new(), exit_code: 0 })
         }
-        "fs" => {
+        n if n == mediapm_conductor_builtin_fs::TOOL_BUILTIN_ID => {
             mediapm_conductor_builtin_fs::execute_string_map(sandbox_dir, args, &BTreeMap::new())
                 .map_err(|e| ConductorError::Workflow(format!("fs builtin failed: {e}")))?;
             // fs impure — success payload is the filesystem side effect.
             Ok(ExecutionResult { stdout: Vec::new(), stderr: Vec::new(), exit_code: 0 })
         }
-        "import" => {
+        n if n == mediapm_conductor_builtin_import::TOOL_BUILTIN_ID => {
             let bytes = mediapm_conductor_builtin_import::execute_content_map(
                 outermost_config_dir,
                 args,
@@ -129,7 +129,7 @@ pub(super) async fn run_builtin(
             .map_err(|e| ConductorError::Workflow(format!("import builtin failed: {e}")))?;
             Ok(ExecutionResult { stdout: bytes, stderr: Vec::new(), exit_code: 0 })
         }
-        "archive" => {
+        n if n == mediapm_conductor_builtin_archive::TOOL_BUILTIN_ID => {
             let bytes = mediapm_conductor_builtin_archive::execute_content_map(
                 args,
                 &BTreeMap::<String, Vec<u8>>::new(),
@@ -137,7 +137,7 @@ pub(super) async fn run_builtin(
             .map_err(|e| ConductorError::Workflow(format!("archive builtin failed: {e}")))?;
             Ok(ExecutionResult { stdout: bytes, stderr: Vec::new(), exit_code: 0 })
         }
-        "export" => {
+        n if n == mediapm_conductor_builtin_export::TOOL_BUILTIN_ID => {
             let result = mediapm_conductor_builtin_export::execute_string_map(
                 outermost_config_dir,
                 args,

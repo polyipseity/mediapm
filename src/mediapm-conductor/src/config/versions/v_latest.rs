@@ -125,9 +125,6 @@ pub(crate) struct ToolInputSpecLatest {
     /// Declared value kind.
     #[serde(default)]
     pub(crate) kind: ToolInputKindLatest,
-    /// Description.
-    #[serde(default)]
-    pub(crate) description: String,
     /// Whether this input is required.
     #[serde(default)]
     pub(crate) required: bool,
@@ -204,10 +201,8 @@ pub(crate) struct ConductorRuntimeConfigLatest {
 pub(crate) enum ToolKindLatest {
     /// Builtin tool.
     Builtin {
-        /// Builtin name.
-        name: String,
-        /// Builtin version.
-        version: String,
+        /// Versioned builtin identifier (e.g. "echo@1.0.0").
+        builtin_id: String,
     },
     /// External executable command.
     Executable {
@@ -232,10 +227,8 @@ pub(crate) enum ToolKindLatest {
 pub(crate) struct ToolSpecLatest {
     /// Tool kind.
     pub(crate) kind: ToolKindLatest,
-    /// Logical tool name.
+    /// Logical tool name (display-only).
     pub(crate) name: String,
-    /// Tool version.
-    pub(crate) version: String,
     /// Declared inputs.
     pub(crate) inputs: BTreeMap<String, ToolInputSpecLatest>,
     /// Default input values.
@@ -253,8 +246,9 @@ impl Serialize for ToolSpecLatest {
         let mut map = serializer.serialize_map(None)?;
 
         match &self.kind {
-            ToolKindLatest::Builtin { .. } => {
+            ToolKindLatest::Builtin { builtin_id } => {
                 map.serialize_entry("kind", "builtin")?;
+                map.serialize_entry("builtin_id", builtin_id)?;
             }
             ToolKindLatest::Executable { command, env_vars, success_codes } => {
                 map.serialize_entry("kind", "executable")?;
@@ -269,7 +263,6 @@ impl Serialize for ToolSpecLatest {
         }
 
         map.serialize_entry("name", &self.name)?;
-        map.serialize_entry("version", &self.version)?;
 
         if !self.inputs.is_empty() {
             map.serialize_entry("inputs", &self.inputs)?;
@@ -347,14 +340,15 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
             .ok_or_else(|| D::Error::missing_field("name"))?
             .to_string();
 
-        let version = map
-            .get("version")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| D::Error::missing_field("version"))?
-            .to_string();
-
         let kind = match kind_str {
-            "builtin" => ToolKindLatest::Builtin { name: name.clone(), version: version.clone() },
+            "builtin" => {
+                let builtin_id = map
+                    .get("builtin_id")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| D::Error::missing_field("builtin_id"))?
+                    .to_string();
+                ToolKindLatest::Builtin { builtin_id }
+            }
             "executable" => {
                 let command: Vec<String> = map
                     .get("command")
@@ -422,7 +416,7 @@ impl<'de> Deserialize<'de> for ToolSpecLatest {
             .map_err(|e| D::Error::custom(format!("invalid runtime: {e}")))?
             .unwrap_or_default();
 
-        Ok(ToolSpecLatest { kind, name, version, inputs, default_inputs, outputs, runtime })
+        Ok(ToolSpecLatest { kind, name, inputs, default_inputs, outputs, runtime })
     }
 }
 
@@ -600,13 +594,12 @@ impl From<super::super::ConductorRuntimeConfig> for ConductorRuntimeConfigLatest
 fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
     ToolSpec {
         kind: match spec.kind {
-            ToolKindLatest::Builtin { name, version } => ToolKindSpec::Builtin { name, version },
+            ToolKindLatest::Builtin { builtin_id } => ToolKindSpec::Builtin { builtin_id },
             ToolKindLatest::Executable { command, env_vars, success_codes } => {
                 ToolKindSpec::Executable { command, env_vars, success_codes }
             }
         },
         name: spec.name,
-        version: spec.version,
         inputs: spec
             .inputs
             .into_iter()
@@ -620,7 +613,6 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
                             ToolInputKindLatest::Env => ToolInputKind::Env,
                             ToolInputKindLatest::StringList => ToolInputKind::StringList,
                         },
-                        description: input.description,
                         required: input.required,
                     },
                 )
@@ -659,13 +651,12 @@ fn tool_spec_from_latest(spec: ToolSpecLatest) -> ToolSpec {
 fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
     ToolSpecLatest {
         kind: match spec.kind {
-            ToolKindSpec::Builtin { name, version } => ToolKindLatest::Builtin { name, version },
+            ToolKindSpec::Builtin { builtin_id } => ToolKindLatest::Builtin { builtin_id },
             ToolKindSpec::Executable { command, env_vars, success_codes } => {
                 ToolKindLatest::Executable { command, env_vars, success_codes }
             }
         },
         name: spec.name,
-        version: spec.version,
         inputs: spec
             .inputs
             .into_iter()
@@ -679,7 +670,6 @@ fn tool_spec_to_latest(spec: ToolSpec) -> ToolSpecLatest {
                             ToolInputKind::Env => ToolInputKindLatest::Env,
                             ToolInputKind::StringList => ToolInputKindLatest::StringList,
                         },
-                        description: input.description,
                         required: input.required,
                     },
                 )
@@ -830,14 +820,10 @@ mod tests {
         let envelope = NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
             tools: BTreeMap::from([(
-                "echo".to_string(),
+                "echo@1.0.0".to_string(),
                 ToolSpecLatest {
-                    kind: ToolKindLatest::Builtin {
-                        name: "echo".to_string(),
-                        version: "1.0.0".to_string(),
-                    },
+                    kind: ToolKindLatest::Builtin { builtin_id: "echo@1.0.0".to_string() },
                     name: "echo".to_string(),
-                    version: "1.0.0".to_string(),
                     inputs: BTreeMap::new(),
                     default_inputs: BTreeMap::new(),
                     outputs: BTreeMap::new(),
@@ -854,8 +840,8 @@ mod tests {
 
         assert_eq!(envelope.version, back.version);
         assert_eq!(envelope.tools.len(), back.tools.len());
-        assert!(back.tools.contains_key("echo"));
-        assert_eq!(back.tools["echo"].name, "echo".to_string());
+        assert!(back.tools.contains_key("echo@1.0.0"));
+        assert_eq!(back.tools["echo@1.0.0"].name, "echo".to_string());
     }
 
     /// Verifies that a document containing both Builtin and Executable tools
@@ -866,14 +852,10 @@ mod tests {
         let doc = NickelDocument {
             tools: BTreeMap::from([
                 (
-                    "echo".to_string(),
+                    "echo@1.0.0".to_string(),
                     ToolSpec {
-                        kind: ToolKindSpec::Builtin {
-                            name: "echo".to_string(),
-                            version: "1.0.0".to_string(),
-                        },
+                        kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".to_string() },
                         name: "echo".to_string(),
-                        version: "1.0.0".to_string(),
                         inputs: BTreeMap::new(),
                         default_inputs: BTreeMap::new(),
                         outputs: BTreeMap::new(),
@@ -892,14 +874,9 @@ mod tests {
                             success_codes: vec![0, 1],
                         },
                         name: "ffmpeg".to_string(),
-                        version: "7.0".to_string(),
                         inputs: BTreeMap::from([(
                             "input_file".to_string(),
-                            ToolInputSpec {
-                                kind: ToolInputKind::Content,
-                                description: "Input video file".to_string(),
-                                required: true,
-                            },
+                            ToolInputSpec { kind: ToolInputKind::Content, required: true },
                         )]),
                         default_inputs: BTreeMap::new(),
                         outputs: BTreeMap::from([(
@@ -933,17 +910,15 @@ mod tests {
         assert_eq!(doc.tools.len(), decoded.tools.len(), "tool count mismatch");
 
         // Verify Builtin tool round-trip.
-        let echo_orig = doc.tools.get("echo").expect("echo in original");
-        let echo_decoded = decoded.tools.get("echo").expect("echo in decoded");
+        let echo_orig = doc.tools.get("echo@1.0.0").expect("echo in original");
+        let echo_decoded = decoded.tools.get("echo@1.0.0").expect("echo in decoded");
         assert_eq!(echo_orig.kind, echo_decoded.kind, "echo kind mismatch");
         assert_eq!(echo_orig.name, echo_decoded.name, "echo name mismatch");
-        assert_eq!(echo_orig.version, echo_decoded.version, "echo version mismatch");
 
         // Verify Executable tool round-trip.
         let ffmpeg_orig = doc.tools.get("ffmpeg").expect("ffmpeg in original");
         let ffmpeg_decoded = decoded.tools.get("ffmpeg").expect("ffmpeg in decoded");
         assert_eq!(ffmpeg_orig.kind, ffmpeg_decoded.kind, "ffmpeg kind mismatch");
         assert_eq!(ffmpeg_orig.name, ffmpeg_decoded.name, "ffmpeg name mismatch");
-        assert_eq!(ffmpeg_orig.version, ffmpeg_decoded.version, "ffmpeg version mismatch");
     }
 }

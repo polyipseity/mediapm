@@ -92,13 +92,12 @@ let ExecutableToolSpecV1 = {
 in
 
 # ||| Builtin tool definition.
-# ||| Builtin identity is (`name`, `version`) and must match registered runtime
-# ||| builtin implementations in conductor-builtins crates.
+# ||| Builtin identity is `builtin_id` (e.g. "echo@1.0.0") and must match registered
+# ||| runtime builtin implementations in conductor-builtins crates.
 let BuiltinToolSpecV1 = {
   kind
     | std.contract.from_predicate (fun value => value == "builtin"),
-  name | NonEmptyStringV1,
-  version | NonEmptyStringV1,
+  builtin_id | NonEmptyStringV1,
 }
 in
 

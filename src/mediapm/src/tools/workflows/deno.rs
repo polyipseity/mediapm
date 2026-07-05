@@ -48,27 +48,12 @@ fn build_deno_inputs() -> BTreeMap<String, ToolInputSpec> {
     BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
-        (
-            INPUT_CONTENT.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
-        ),
+        (INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
         (
             INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
     ])
 }

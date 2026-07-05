@@ -232,37 +232,18 @@ fn build_rsgain_inputs() -> BTreeMap<String, ToolInputSpec> {
     let mut inputs = BTreeMap::from([
         (
             INPUT_LEADING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
         (
             INPUT_TRAILING_ARGS.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         ),
-        (
-            INPUT_CONTENT.to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
-        ),
+        (INPUT_CONTENT.to_string(), ToolInputSpec { kind: ToolInputKind::String, required: false }),
     ]);
     for option_input in RSGAIN_OPTION_INPUTS {
         inputs.insert(
             (*option_input).to_string(),
-            ToolInputSpec {
-                kind: ToolInputKind::String,
-                description: String::new(),
-                required: false,
-            },
+            ToolInputSpec { kind: ToolInputKind::String, required: false },
         );
     }
     inputs

@@ -40,7 +40,6 @@ in
 # ||| One declared tool input spec.
 let ToolInputSpecV2 = {
   kind | ToolInputKindV2 | optional,
-  description | String | optional,
   required | Bool | optional,
 }
 in
@@ -94,11 +93,11 @@ let InputBindingV2 =
   ]
 in
 
-# ||| Builtin tool kind: identity is (name, version).
+# ||| Builtin tool kind: identity is builtin_id (e.g. "echo@1.0.0").
 let BuiltinToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "builtin"),
   name | NonEmptyStringV2,
-  version | NonEmptyStringV2,
+  builtin_id | NonEmptyStringV2,
   inputs | { _ : ToolInputSpecV2 } | optional,
   default_inputs | { _ : InputBindingV2 } | optional,
   outputs | { _ : OutputCaptureSpecV2 } | optional,
@@ -110,7 +109,6 @@ in
 let ExecutableToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "executable"),
   name | NonEmptyStringV2,
-  version | NonEmptyStringV2,
   command | Array String,
   env_vars | { _ : String } | optional,
   success_codes | Array IntegerNumberV2 | optional,
