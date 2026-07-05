@@ -20,6 +20,7 @@ applyTo: "src/**/*.rs"
 - Keep async boundaries runtime-agnostic in domain/application layers (Tokio is default runtime adapter, not a domain-level dependency).
 - Use actors for concurrency orchestration with explicit supervision and typed messages.
 - Use type-level modeling (newtypes/strong enums/constrained constructors) so invalid states are hard to represent.
+- Resolve `Option` at the configuration boundary (serde deserialization): domain types use plain values with serde defaults, not `Option<T>`. Optional semantics are resolved at the very boundary — absent config keys produce a default; downstream code never handles `Option`. This avoids propagating `Option` handling through most of the codebase.
 
 ## Module layout (source of truth)
 

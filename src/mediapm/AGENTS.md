@@ -158,7 +158,7 @@ Configurable per `VerifyTriggerStrategy`: `Always`, `Modified` (default), `Sampl
 - **Content identity**: BLAKE3-256 multihash; `Hash::composite(&[Hash])` for deterministic composite hashing.
 - **MediaPM → Conductor**: MediaPM owns media defs, hierarchy, tool provisioning. Conductor owns step execution, state persistence.
 - **MediaPM → CAS**: Materialization reads from CAS; all outputs read-only after commit. Hash mismatch → no fallback.
-- **NCL→Rust sync**: Typed envelope pattern — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner. Custom deserializers for Nickel f64→u64.
+- **NCL→Rust sync**: Typed envelope pattern — `deny_unknown_fields` on envelope, `#[serde(flatten)]` inner. Custom deserializers for Nickel f64→u64. All user-facing config fields must be non-Option in domain types; absent config keys are resolved to explicit defaults at the serde boundary, so downstream code never handles `Option`.
 - **Lock→CAS referential integrity**: Prune must not remove hashes referenced by lock records.
 
 ## Testing & Validation
