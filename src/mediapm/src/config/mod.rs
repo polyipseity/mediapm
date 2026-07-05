@@ -78,6 +78,19 @@ pub enum MaterializationMethod {
     Copy,
 }
 
+impl MaterializationMethod {
+    /// Returns a human-readable label for this materialization method.
+    #[must_use]
+    pub fn as_label(&self) -> &'static str {
+        match self {
+            Self::Hardlink => "hardlink",
+            Self::Symlink => "symlink",
+            Self::Reflink => "reflink",
+            Self::Copy => "copy",
+        }
+    }
+}
+
 /// Deserializes a materialization method or named-object form from Nickel.
 #[allow(dead_code)]
 pub fn deserialize_materialization_method<'de, D>(
