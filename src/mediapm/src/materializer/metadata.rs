@@ -135,19 +135,12 @@ pub(super) async fn interpolate_path_template(
     // Replace each ${media.metadata.<key>} with its resolved value.
     for key in &placeholder_keys {
         let placeholder = format!("${{media.metadata.{key}}}");
-        let resolved = if let Some(metadata_values) = source.metadata.as_ref() {
-            if let Some(metadata_value) = metadata_values.get(key) {
-                resolve_metadata_value(metadata_value, media_id, source, lookup_context).await?
-            } else {
-                return Err(MediaPmError::Workflow(format!(
-                    "media '{media_id}' template placeholder \
-                     '${{media.metadata.{key}}}' has no matching metadata entry"
-                )));
-            }
+        let resolved = if let Some(metadata_value) = source.metadata.get(key) {
+            resolve_metadata_value(metadata_value, media_id, source, lookup_context).await?
         } else {
             return Err(MediaPmError::Workflow(format!(
                 "media '{media_id}' template placeholder \
-                 '${{media.metadata.{key}}}' but no metadata exists"
+                 '${{media.metadata.{key}}}' has no matching metadata entry"
             )));
         };
         result = result.replace(&placeholder, &resolved);

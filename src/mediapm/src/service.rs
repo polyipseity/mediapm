@@ -300,9 +300,12 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         // Build the source spec from the provided template and metadata.
         let mut source = media_source.clone();
-        source.title = title.filter(|s| !s.is_empty()).map(str::to_string).or(source.title);
-        source.description =
-            description.filter(|s| !s.is_empty()).map(str::to_string).or(source.description);
+        if let Some(t) = title.filter(|s| !s.is_empty()) {
+            source.title = t.to_string();
+        }
+        if let Some(d) = description.filter(|s| !s.is_empty()) {
+            source.description = d.to_string();
+        }
 
         document.media.insert(media_id.clone(), source);
 
@@ -387,11 +390,14 @@ impl<Cas: CasApi + CasMaintenanceApi + Send + Sync + 'static> MediaPmService<Cas
 
         let source = MediaSourceSpec {
             id: None,
-            title: title.filter(|s| !s.is_empty()).map(str::to_string),
-            description: description.filter(|s| !s.is_empty()).map(str::to_string),
-            artist: None,
+            title: title.filter(|s| !s.is_empty()).map(str::to_string).unwrap_or_default(),
+            description: description
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_default(),
+            artist: String::new(),
             workflow_id: None,
-            metadata: None,
+            metadata: BTreeMap::new(),
             variant_hashes: BTreeMap::new(),
             steps,
         };

@@ -81,21 +81,21 @@ pub struct MediaSourceSpec {
     /// Legacy media id override (rejected by validation; use hierarchy ids).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Optional human-readable description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Optional human-readable title.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    /// Optional artist.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artist: Option<String>,
+    /// Human-readable description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Human-readable title.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    /// Artist.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub artist: String,
     /// Optional explicit conductor workflow id override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_id: Option<String>,
-    /// Optional metadata keyed by attribute name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<BTreeMap<String, MediaMetadataValue>>,
+    /// Metadata keyed by attribute name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, MediaMetadataValue>,
     /// Optional pre-seeded CAS hash pointers keyed by variant name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub variant_hashes: BTreeMap<String, String>,

@@ -206,18 +206,21 @@ async fn main_cli() -> anyhow::Result<()> {
                             );
                             let source_spec = MediaSourceSpec {
                                 id: None,
-                                title: args.title.clone(),
-                                description: args.description.clone(),
-                                artist: args.artist.clone(),
+                                title: args.title.clone().unwrap_or_default(),
+                                description: args.description.clone().unwrap_or_default(),
+                                artist: args.artist.clone().unwrap_or_default(),
                                 workflow_id: None,
-                                metadata: args.album.as_deref().map(|album| {
-                                    let mut metadata = std::collections::BTreeMap::new();
-                                    metadata.insert(
-                                        "album".to_string(),
-                                        MediaMetadataValue::Literal(album.to_string()),
-                                    );
-                                    metadata
-                                }),
+                                metadata: args.album.as_deref().map_or_else(
+                                    std::collections::BTreeMap::new,
+                                    |album| {
+                                        let mut metadata = std::collections::BTreeMap::new();
+                                        metadata.insert(
+                                            "album".to_string(),
+                                            MediaMetadataValue::Literal(album.to_string()),
+                                        );
+                                        metadata
+                                    },
+                                ),
                                 variant_hashes: std::collections::BTreeMap::new(),
                                 steps,
                             };

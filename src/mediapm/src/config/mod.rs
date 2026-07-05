@@ -471,30 +471,12 @@ impl MediaPmDocument {
         // Version is already a concrete u32, no trimming needed.
         // Trimming media source titles, descriptions, etc.
         for source in self.media.values_mut() {
-            if let Some(ref mut description) = source.description {
-                let trimmed = description.trim().to_string();
-                if trimmed.is_empty() {
-                    source.description = None;
-                } else {
-                    *description = trimmed;
-                }
-            }
-            if let Some(ref mut title) = source.title {
-                let trimmed = title.trim().to_string();
-                if trimmed.is_empty() {
-                    source.title = None;
-                } else {
-                    *title = trimmed;
-                }
-            }
-            if let Some(ref mut artist) = source.artist {
-                let trimmed = artist.trim().to_string();
-                if trimmed.is_empty() {
-                    source.artist = None;
-                } else {
-                    *artist = trimmed;
-                }
-            }
+            let trimmed = source.description.trim().to_string();
+            source.description = trimmed;
+            let trimmed = source.title.trim().to_string();
+            source.title = trimmed;
+            let trimmed = source.artist.trim().to_string();
+            source.artist = trimmed;
         }
         // Remove tool entries without meaningful version or tag.
         self.tools.retain(|_, tool_req| {
