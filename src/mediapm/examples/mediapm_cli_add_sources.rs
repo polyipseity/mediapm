@@ -207,7 +207,7 @@ mod tests {
         ];
         for workflow_id in expected_workflow_ids {
             assert!(
-                machine.workflows.contains_key(&workflow_id),
+                machine.workflows.iter().any(|w| w.name == workflow_id),
                 "conductor machine config should contain managed workflow '{workflow_id}'"
             );
         }
