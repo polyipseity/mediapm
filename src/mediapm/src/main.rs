@@ -1144,14 +1144,8 @@ mod tests {
     /// Protects preset-driven media-add CLI route.
     #[test]
     fn media_add_route_with_preset_is_parsed() {
-        let parsed = Cli::try_parse_from([
-            "mediapm",
-            "media",
-            "add",
-            "--preset",
-            "yt-dlp",
-            "https://example.com/media",
-        ]);
+        let parsed =
+            Cli::try_parse_from(["mediapm", "media", "add", "yt-dlp", "https://example.com/media"]);
         assert!(parsed.is_ok(), "media add route with preset must parse");
     }
 
@@ -1172,14 +1166,14 @@ mod tests {
     /// Protects hierarchy-add local preset route with explicit root folder.
     #[test]
     fn hierarchy_add_local_route_is_parsed() {
-        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "local"]);
+        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "local"]);
         assert!(parsed.is_ok(), "hierarchy add local route must parse");
     }
 
     /// Protects hierarchy-add yt-dlp preset route.
     #[test]
     fn hierarchy_add_yt_dlp_route_is_parsed() {
-        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "--preset", "yt-dlp"]);
+        let parsed = Cli::try_parse_from(["mediapm", "hierarchy", "add", "yt-dlp"]);
         assert!(parsed.is_ok(), "hierarchy add yt-dlp route must parse");
     }
 
@@ -1197,7 +1191,6 @@ mod tests {
             "mediapm",
             "media",
             "add",
-            "--preset",
             "yt-dlp",
             "--insert-position",
             "last",
