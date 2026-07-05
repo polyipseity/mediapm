@@ -131,7 +131,7 @@ mod tests {
     use std::fs;
 
     use mediapm::{HierarchyNodeKind, MediaMetadataValue, MediaStepTool, load_mediapm_document};
-    use mediapm_conductor::decode_user_document;
+    use mediapm_conductor::decode_document;
 
     use super::run_add_hierarchy_example;
 
@@ -253,7 +253,7 @@ mod tests {
         let _machine_bytes =
             fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
 
-        let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
+        let _user = decode_document(&user_bytes).expect("decode conductor user config");
         // Conductor machine workflow population requires an explicit `mediapm sync` run;
         // config-mutation tests only verify that the declarative state files are written.
     }

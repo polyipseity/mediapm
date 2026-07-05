@@ -117,7 +117,7 @@ mod tests {
     use std::fs;
 
     use mediapm::MediaMetadataValue;
-    use mediapm_conductor::{decode_machine_document, decode_user_document};
+    use mediapm_conductor::decode_document;
 
     use super::{DUMMY_YOUTUBE_URL, run_add_sources_example};
     use mediapm::{MediaStepTool, TransformInputValue, load_mediapm_document};
@@ -198,9 +198,8 @@ mod tests {
         let machine_bytes =
             fs::read(&manifest.conductor_generated_ncl).expect("read conductor generated config");
 
-        let _user = decode_user_document(&user_bytes).expect("decode conductor user config");
-        let machine =
-            decode_machine_document(&machine_bytes).expect("decode conductor machine config");
+        let _user = decode_document(&user_bytes).expect("decode conductor user config");
+        let machine = decode_document(&machine_bytes).expect("decode conductor machine config");
 
         let expected_workflow_ids = [
             format!("mediapm.media.{}", manifest.local_media_id),
