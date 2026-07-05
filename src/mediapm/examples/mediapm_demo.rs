@@ -136,7 +136,7 @@ struct DemoRunPaths {
 }
 
 fn artifact_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join(".artifacts").join("demo")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples").join("artifacts").join("demo")
 }
 
 fn unix_timestamp_seconds() -> u64 {

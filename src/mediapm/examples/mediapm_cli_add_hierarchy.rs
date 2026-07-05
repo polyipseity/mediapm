@@ -47,7 +47,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn artifact_root() -> PathBuf {
-    let base = workspace_root().join("src/mediapm/examples/.artifacts");
+    let base = workspace_root().join("src/mediapm/examples/artifacts");
     let pid = std::process::id();
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     base.join(format!("{EXAMPLE_ARTIFACT_FOLDER}-{pid}-{stamp}"))

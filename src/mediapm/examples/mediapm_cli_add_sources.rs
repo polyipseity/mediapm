@@ -40,7 +40,7 @@ fn workspace_root() -> PathBuf {
 }
 
 fn artifact_root() -> PathBuf {
-    workspace_root().join("src/mediapm/examples/.artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
+    workspace_root().join("src/mediapm/examples/artifacts").join(EXAMPLE_ARTIFACT_FOLDER)
 }
 
 fn reset_artifact_root(root: &Path) -> ExampleResult<()> {
