@@ -36,8 +36,8 @@ use reqwest::blocking::Client;
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
-/// Versioned builtin identifier (e.g. "import@1.0.0") used in config map keys and dispatch.
-pub const TOOL_BUILTIN_ID: &str = "import@1.0.0";
+/// Versioned builtin identifier (e.g. "import@v1") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "import@v1";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
@@ -50,9 +50,9 @@ pub const IS_IMPURE: bool = META.is_impure;
 
 /// Metadata for this builtin crate.
 pub const META: BuiltinMeta = BuiltinMeta {
-    tool_id: "builtins.import@1.0.0",
+    tool_id: "builtins.import@v1",
     tool_name: "import",
-    tool_version: "1.0.0",
+    tool_version: "v1",
     is_impure: true,
     summary: "import builtin that ingests file/folder/fetch/cas_hash sources into pure bytes",
 };

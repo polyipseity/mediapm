@@ -27,11 +27,11 @@ use std::collections::HashSet;
 /// Static metadata for a registered builtin tool in this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BuiltinRegistration {
-    /// Canonical qualified tool identifier (e.g. `"builtins.echo@1.0.0"`).
+    /// Canonical qualified tool identifier (e.g. `"builtins.echo@v1"`).
     pub id: &'static str,
     /// Short tool name (e.g. `"echo"`).
     pub name: &'static str,
-    /// Versioned builtin identifier (e.g. `"echo@1.0.0"`).
+    /// Versioned builtin identifier (e.g. `"echo@v1"`).
     pub builtin_id: &'static str,
     /// Whether this tool produces side effects.
     pub is_impure: bool,
@@ -80,7 +80,7 @@ pub const ALL_BUILTINS: &[BuiltinRegistration] = &[
 
 /// Returns the set of registered builtin tool IDs.
 ///
-/// Each builtin is identified by its versioned `builtin_id` (e.g. `"echo@1.0.0"`).
+/// Each builtin is identified by its versioned `builtin_id` (e.g. `"echo@v1"`).
 #[must_use]
 pub fn registered_builtin_ids() -> HashSet<String> {
     ALL_BUILTINS.iter().map(|e| e.builtin_id.to_string()).collect()

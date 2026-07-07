@@ -7,8 +7,7 @@
 //! - `state.conductor.ncl` — conductor runtime state
 
 use mediapm_conductor::{
-    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document,
-    registered_builtin_ids,
+    NickelDocument, ToolKindSpec, ToolRuntime, ToolSpec, decode_document, encode_document, tools,
 };
 
 use crate::error::MediaPmError;
@@ -120,13 +119,13 @@ pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, 
 
 /// Registers missing builtin tool definitions into the generated document.
 pub(crate) fn register_missing_builtin_tools(document: &mut NickelDocument) {
-    for builtin_id in registered_builtin_ids() {
-        if !document.tools.contains_key(&builtin_id) {
+    for builtin in tools::ALL_BUILTINS {
+        if !document.tools.contains_key(builtin.builtin_id) {
             document.tools.insert(
-                builtin_id.clone(),
+                builtin.builtin_id.to_string(),
                 ToolSpec {
-                    name: builtin_id.clone(),
-                    kind: ToolKindSpec::Builtin { builtin_id: builtin_id.clone() },
+                    name: builtin.name.to_string(),
+                    kind: ToolKindSpec::Builtin { builtin_id: builtin.builtin_id.to_string() },
                     inputs: std::collections::BTreeMap::new(),
                     default_inputs: std::collections::BTreeMap::new(),
                     outputs: std::collections::BTreeMap::new(),

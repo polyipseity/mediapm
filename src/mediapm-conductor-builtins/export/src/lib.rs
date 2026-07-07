@@ -40,8 +40,8 @@ use mediapm_utils::{
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
-/// Versioned builtin identifier (e.g. "export@1.0.0") used in config map keys and dispatch.
-pub const TOOL_BUILTIN_ID: &str = "export@1.0.0";
+/// Versioned builtin identifier (e.g. "export@v1") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "export@v1";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
@@ -54,9 +54,9 @@ pub const IS_IMPURE: bool = META.is_impure;
 
 /// Metadata for this builtin crate.
 pub const META: BuiltinMeta = BuiltinMeta {
-    tool_id: "builtins.export@1.0.0",
+    tool_id: "builtins.export@v1",
     tool_name: "export",
-    tool_version: "1.0.0",
+    tool_version: "v1",
     is_impure: true,
     summary: "export builtin runtime that writes file/folder payloads to host paths",
 };

@@ -92,7 +92,7 @@ let ExecutableToolSpecV1 = {
 in
 
 # ||| Builtin tool definition.
-# ||| Builtin identity is `builtin_id` (e.g. "echo@1.0.0") and must match registered
+# ||| Builtin identity is `builtin_id` (e.g. "echo@v1") and must match registered
 # ||| runtime builtin implementations in conductor-builtins crates.
 let BuiltinToolSpecV1 = {
   kind

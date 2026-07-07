@@ -43,8 +43,8 @@ use mediapm_utils::builtin::{
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
-/// Versioned builtin identifier (e.g. "fs@1.0.0") used in config map keys and dispatch.
-pub const TOOL_BUILTIN_ID: &str = "fs@1.0.0";
+/// Versioned builtin identifier (e.g. "fs@v1") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "fs@v1";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
@@ -57,9 +57,9 @@ pub const IS_IMPURE: bool = META.is_impure;
 
 /// Metadata for this builtin crate.
 pub const META: BuiltinMeta = BuiltinMeta {
-    tool_id: "builtins.fs@1.0.0",
+    tool_id: "builtins.fs@v1",
     tool_name: "fs",
-    tool_version: "1.0.0",
+    tool_version: "v1",
     is_impure: true,
     summary: "filesystem operation builtin runtime with impure side-effecting behavior",
 };

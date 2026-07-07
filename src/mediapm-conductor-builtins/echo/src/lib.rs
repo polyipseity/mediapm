@@ -32,17 +32,17 @@ pub const TOOL_NAME: &str = META.tool_name;
 /// Stable builtin identifier registered in phase topology surfaces.
 pub const TOOL_ID: &str = META.tool_id;
 
-/// Versioned builtin identifier (e.g. "echo@1.0.0") used in config map keys and dispatch.
-pub const TOOL_BUILTIN_ID: &str = "echo@1.0.0";
+/// Versioned builtin identifier (e.g. "echo@v1") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "echo@v1";
 
 /// Canonical semantic version for this builtin implementation.
 pub const TOOL_VERSION: &str = META.tool_version;
 
 /// Metadata for this builtin crate.
 pub const META: BuiltinMeta = BuiltinMeta {
-    tool_id: "builtins.echo@1.0.0",
+    tool_id: "builtins.echo@v1",
     tool_name: "echo",
-    tool_version: "1.0.0",
+    tool_version: "v1",
     is_impure: false,
     summary: "echo-like builtin returning text as stdout/stderr string-map",
 };

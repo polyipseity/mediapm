@@ -41,8 +41,8 @@ pub use mediapm_utils::{
 /// Stable builtin id used by topology registration.
 pub const TOOL_ID: &str = META.tool_id;
 
-/// Versioned builtin identifier (e.g. "archive@1.0.0") used in config map keys and dispatch.
-pub const TOOL_BUILTIN_ID: &str = "archive@1.0.0";
+/// Versioned builtin identifier (e.g. "archive@v1") used in config map keys and dispatch.
+pub const TOOL_BUILTIN_ID: &str = "archive@v1";
 
 /// Builtin process name used by conductor process dispatch.
 pub const TOOL_NAME: &str = META.tool_name;
@@ -55,9 +55,9 @@ pub const IS_IMPURE: bool = META.is_impure;
 
 /// Metadata for this builtin crate.
 pub const META: BuiltinMeta = BuiltinMeta {
-    tool_id: "builtins.archive@1.0.0",
+    tool_id: "builtins.archive@v1",
     tool_name: "archive",
-    tool_version: "1.0.0",
+    tool_version: "v1",
     is_impure: false,
     summary: "pure archive builtin runtime transforming bytes to bytes",
 };

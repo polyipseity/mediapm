@@ -93,7 +93,7 @@ let InputBindingV2 =
   ]
 in
 
-# ||| Builtin tool kind: identity is builtin_id (e.g. "echo@1.0.0").
+# ||| Builtin tool kind: identity is builtin_id (e.g. "echo@v1").
 let BuiltinToolSpecV2 = {
   kind | std.contract.from_predicate (fun value => value == "builtin"),
   name | NonEmptyStringV2,
