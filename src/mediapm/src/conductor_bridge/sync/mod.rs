@@ -88,13 +88,23 @@ pub(crate) async fn reconcile_desired_tools(
 
     for (tool_id, _requirement_value) in desired_tools {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
-        let already_exists = generated_doc.tools.contains_key(tool_id);
+        let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         // Fetch tool payload, import to CAS, get content map + command.
         let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache).await;
 
         match payload_result {
             Ok(Some(payload)) => {
+                // Compute content-addressed hash from content_map before it's
+                // moved into build_tool_spec.
+                let content_hash = if payload.content_map.is_empty() {
+                    None
+                } else {
+                    let json = serde_json::to_string(&payload.content_map)
+                        .expect("content_map serializes to JSON");
+                    Some(blake3::hash(json.as_bytes()).to_hex())
+                };
+
                 // Determine ffmpeg slot limits (default for now; overrides
                 // from tool requirements can be wired later).
                 let ffmpeg_limits = resolve_ffmpeg_slot_limits(
@@ -122,8 +132,15 @@ pub(crate) async fn reconcile_desired_tools(
                 let mut full_runtime = runtime.clone();
                 full_runtime.inherited_env_vars = inherited;
 
-                generated_doc.tools.insert(tool_id.clone(), spec);
-                tool_runtimes.insert(tool_id.clone(), full_runtime);
+                // Use content-addressed key: "{name}@{hash}".
+                let tool_key = if let Some(ref hash) = content_hash {
+                    format!("{}@{}", tool_id, hash)
+                } else {
+                    tool_id.to_string()
+                };
+
+                generated_doc.tools.insert(tool_key.clone(), spec);
+                tool_runtimes.insert(tool_key.clone(), full_runtime);
             }
             Ok(None) => {
                 // No payload fetched (internal launcher, no catalog entry,

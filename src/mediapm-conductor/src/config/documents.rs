@@ -188,6 +188,7 @@ impl NickelDocument {
                 };
 
                 let unified = UnifiedToolSpec {
+                    name: spec.name.clone(),
                     is_impure: spec.runtime.impure,
                     max_concurrent_calls: spec.runtime.max_concurrent_calls,
                     max_retries: spec.runtime.max_retries,

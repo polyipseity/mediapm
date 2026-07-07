@@ -19,7 +19,9 @@ use crate::state::OrchestrationState;
 use ractor::rpc::CallResult;
 
 use super::config::{default_worker_pool_size, rpc_timeout_ms};
-use super::protocol::{StepExecutionRequest, StepOutputs, UnifiedNickelDocument};
+use super::protocol::{
+    StepExecutionRequest, StepOutputs, UnifiedNickelDocument, find_tool_by_name,
+};
 use super::step_worker::{StepWorkerMessage, spawn_step_worker_pool};
 
 // ---------------------------------------------------------------------------
@@ -184,7 +186,7 @@ where
                     ConductorError::Internal(format!("step '{step_id}' not found in workflow"))
                 })?;
 
-                let tool_spec = unified.tools.get(&step.tool).ok_or_else(|| {
+                let tool_spec = find_tool_by_name(&unified.tools, &step.tool).ok_or_else(|| {
                     ConductorError::Workflow(format!(
                         "step '{}' references unknown tool '{}'",
                         step.id, step.tool,

@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use mediapm_cas::CasApi;
 
 use crate::error::ConductorError;
-use crate::orchestration::protocol::{StepExecutionRequest, StepOutputs};
+use crate::orchestration::protocol::{StepExecutionRequest, StepOutputs, find_tool_by_name};
 use crate::state::ResolvedInput;
 
 use super::template::{TemplateContext, resolve_template};
@@ -15,12 +15,13 @@ use super::template::{TemplateContext, resolve_template};
 pub(super) async fn resolve_step_inputs<C: CasApi + Send + Sync>(
     request: &StepExecutionRequest,
 ) -> Result<Vec<ResolvedInput>, ConductorError> {
-    let tool_spec = request.unified.tools.get(&request.step.tool).ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "step '{}' references unknown tool '{}'",
-            request.step.id, request.step.tool,
-        ))
-    })?;
+    let tool_spec =
+        find_tool_by_name(&request.unified.tools, &request.step.tool).ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "step '{}' references unknown tool '{}'",
+                request.step.id, request.step.tool,
+            ))
+        })?;
 
     let mut resolved = Vec::new();
 

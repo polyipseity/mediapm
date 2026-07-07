@@ -18,12 +18,23 @@ use crate::config::{
 };
 pub(super) use crate::state::{OrchestrationState, ToolCallInstance};
 
+/// Finds a tool spec by its name field (not by map key).
+#[must_use]
+pub(crate) fn find_tool_by_name<'a>(
+    tools: &'a BTreeMap<String, UnifiedToolSpec>,
+    name: &str,
+) -> Option<&'a UnifiedToolSpec> {
+    tools.values().find(|spec| spec.name == name)
+}
+
 /// Collected output hash slots keyed by producing step id and declared output name.
 pub(super) type StepOutputs = BTreeMap<String, BTreeMap<String, Hash>>;
 
 /// One tool definition after document unification.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct UnifiedToolSpec {
+    /// Tool name (e.g. "ffmpeg").
+    pub name: String,
     /// Whether the tool is treated as impure for tool call instance-key invalidation.
     pub is_impure: bool,
     /// Maximum concurrent calls allowed for this tool.

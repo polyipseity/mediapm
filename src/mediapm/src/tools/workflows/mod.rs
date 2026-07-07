@@ -62,13 +62,13 @@ pub(crate) fn conductor_output_save_mode(config: OutputSaveConfig) -> OutputSave
 /// Resolves the managed conductor tool id for one media-step tool.
 #[must_use]
 pub(crate) fn resolve_step_tool_id(tool: MediaStepTool) -> String {
-    format!("{}-managed", tool.as_str())
+    tool.as_str().to_string()
 }
 
 /// Resolves the managed conductor tool id for a dependency tool.
 #[must_use]
 pub(crate) fn resolve_selected_dependency_tool_id(tool_name: &str) -> String {
-    format!("{tool_name}-managed")
+    tool_name.to_string()
 }
 
 /// Builds a step-output capture spec from one decoded variant config.

@@ -10,7 +10,9 @@ use mediapm_cas::CasApi;
 
 use crate::config::OutputCaptureSpec;
 use crate::error::ConductorError;
-use crate::orchestration::protocol::{StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec};
+use crate::orchestration::protocol::{
+    StepExecutionBundle, StepExecutionRequest, UnifiedToolSpec, find_tool_by_name,
+};
 use crate::state::{PersistenceFlags, ResolvedInput, ToolCallInstance};
 
 use super::cache::{derive_instance_key, probe_cache};
@@ -63,12 +65,13 @@ pub(super) async fn execute_step<C: CasApi + Send + Sync>(
     let resolved_inputs = resolve_step_inputs::<C>(&request).await?;
 
     // Derive tool call instance key from tool + resolved inputs.
-    let tool_spec = request.unified.tools.get(&request.step.tool).ok_or_else(|| {
-        ConductorError::Workflow(format!(
-            "step '{}' references unknown tool '{}'",
-            request.step.id, request.step.tool,
-        ))
-    })?;
+    let tool_spec =
+        find_tool_by_name(&request.unified.tools, &request.step.tool).ok_or_else(|| {
+            ConductorError::Workflow(format!(
+                "step '{}' references unknown tool '{}'",
+                request.step.id, request.step.tool,
+            ))
+        })?;
 
     let instance_key = derive_instance_key(&resolved_inputs, request.impure_timestamp);
 

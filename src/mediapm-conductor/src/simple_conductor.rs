@@ -19,7 +19,7 @@ use crate::config::documents::{NickelDocument, SourceDocument, merge_documents};
 use crate::config::versions;
 use crate::error::ConductorError;
 use crate::orchestration::node::ConductorActorClient;
-use crate::orchestration::protocol::UnifiedNickelDocument;
+use crate::orchestration::protocol::{UnifiedNickelDocument, find_tool_by_name};
 use crate::state::OrchestrationState;
 
 /// Concrete facade over the conductor orchestration runtime.
@@ -244,7 +244,7 @@ where
     ) -> Result<i32, ConductorError> {
         let (unified, _state) = load_unified_config_and_state(self.storage_paths())?;
 
-        let tool_spec = unified.tools.get(tool).ok_or_else(|| {
+        let tool_spec = find_tool_by_name(&unified.tools, tool).ok_or_else(|| {
             ConductorError::Workflow(format!("tool '{tool}' not found in unified config"))
         })?;
 

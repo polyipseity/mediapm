@@ -109,7 +109,20 @@ pub(crate) fn list_tools(paths: &MediaPmPaths) -> Result<Vec<ConductorToolRow>, 
 
     let mut rows: Vec<ConductorToolRow> = tools
         .keys()
-        .map(|name| ConductorToolRow { name: name.clone(), version: String::new(), managed: true })
+        .map(|key| {
+            // Parse "{name}@{hash}" format. Bare keys (no '@hash') use the
+            // key as the name with an empty version.
+            if let Some(at_pos) = key.rfind('@') {
+                let (name, version) = key.split_at(at_pos);
+                ConductorToolRow {
+                    name: name.to_string(),
+                    version: version[1..].to_string(), // skip '@'
+                    managed: true,
+                }
+            } else {
+                ConductorToolRow { name: key.clone(), version: String::new(), managed: true }
+            }
+        })
         .collect();
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(rows)
