@@ -63,7 +63,7 @@ State Persistence (state.ncl)
 
 ## C. Integration Boundaries — Conductor↔Builtins
 
-**Entry Point**: Conductor discovers builtins at compile time via `registered_builtin_ids()` → `["import@1.0.0", "fs@1.0.0", ...]`.
+**Entry Point**: Conductor discovers builtins at compile time via `registered_builtin_ids()` → `["import@v1", "fs@v1", ...]`.
 
 **Operations**:
 

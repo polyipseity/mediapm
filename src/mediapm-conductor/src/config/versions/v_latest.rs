@@ -201,7 +201,7 @@ pub(crate) struct ConductorRuntimeConfigLatest {
 pub(crate) enum ToolKindLatest {
     /// Builtin tool.
     Builtin {
-        /// Versioned builtin identifier (e.g. "echo@1.0.0").
+        /// Versioned builtin identifier (e.g. "echo@v1").
         builtin_id: String,
     },
     /// External executable command.
@@ -821,9 +821,9 @@ mod tests {
         let envelope = NickelEnvelopeLatest {
             version: NICKEL_VERSION_LATEST,
             tools: BTreeMap::from([(
-                "echo@1.0.0".to_string(),
+                "echo@v1".to_string(),
                 ToolSpecLatest {
-                    kind: ToolKindLatest::Builtin { builtin_id: "echo@1.0.0".to_string() },
+                    kind: ToolKindLatest::Builtin { builtin_id: "echo@v1".to_string() },
                     name: "echo".to_string(),
                     inputs: BTreeMap::new(),
                     default_inputs: BTreeMap::new(),
@@ -841,8 +841,8 @@ mod tests {
 
         assert_eq!(envelope.version, back.version);
         assert_eq!(envelope.tools.len(), back.tools.len());
-        assert!(back.tools.contains_key("echo@1.0.0"));
-        assert_eq!(back.tools["echo@1.0.0"].name, "echo".to_string());
+        assert!(back.tools.contains_key("echo@v1"));
+        assert_eq!(back.tools["echo@v1"].name, "echo".to_string());
     }
 
     /// Verifies that a document containing both Builtin and Executable tools
@@ -853,9 +853,9 @@ mod tests {
         let doc = NickelDocument {
             tools: BTreeMap::from([
                 (
-                    "echo@1.0.0".to_string(),
+                    "echo@v1".to_string(),
                     ToolSpec {
-                        kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".to_string() },
+                        kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
                         name: "echo".to_string(),
                         inputs: BTreeMap::new(),
                         default_inputs: BTreeMap::new(),
@@ -911,8 +911,8 @@ mod tests {
         assert_eq!(doc.tools.len(), decoded.tools.len(), "tool count mismatch");
 
         // Verify Builtin tool round-trip.
-        let echo_orig = doc.tools.get("echo@1.0.0").expect("echo in original");
-        let echo_decoded = decoded.tools.get("echo@1.0.0").expect("echo in decoded");
+        let echo_orig = doc.tools.get("echo@v1").expect("echo in original");
+        let echo_decoded = decoded.tools.get("echo@v1").expect("echo in decoded");
         assert_eq!(echo_orig.kind, echo_decoded.kind, "echo kind mismatch");
         assert_eq!(echo_orig.name, echo_decoded.name, "echo name mismatch");
 

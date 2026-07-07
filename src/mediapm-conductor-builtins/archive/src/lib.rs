@@ -833,7 +833,7 @@ mod tests {
     #[test]
     fn descriptor_json_contains_tool_id() {
         let json = describe_json();
-        assert!(json.contains("builtins.archive@1.0.0"));
+        assert!(json.contains("builtins.archive@v1"));
     }
 
     /// Verifies text-mode transform replaces patterns in ZIP entries.

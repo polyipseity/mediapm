@@ -23,10 +23,10 @@ use support::{ExampleResult, create_ephemeral_run_dir, write_text_file};
 fn build_document() -> NickelDocument {
     NickelDocument {
         tools: BTreeMap::from([(
-            "echo@1.0.0".into(),
+            "echo@v1".into(),
             ToolSpec {
-                kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".into() },
-                name: "echo@1.0.0".into(),
+                kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".into() },
+                name: "echo".into(),
                 inputs: BTreeMap::from([(
                     "text".into(),
                     ToolInputSpec { kind: ToolInputKind::String, required: false },
@@ -43,7 +43,7 @@ fn build_document() -> NickelDocument {
             impure: false,
             steps: vec![WorkflowStepSpec {
                 id: "greeting".into(),
-                tool: "echo@1.0.0".into(),
+                tool: "echo@v1".into(),
                 inputs: BTreeMap::from([("text".into(), "Hello from conductor demo!".into())]),
                 outputs: BTreeMap::from([(
                     "result".into(),

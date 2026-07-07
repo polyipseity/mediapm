@@ -13,8 +13,8 @@ async fn run_workflow_bootstraps_missing_documents() {
     let tc = TestConductor::new();
 
     let doc = NickelDocument {
-        tools: BTreeMap::from([("echo@1.0.0".into(), echo_tool("echo@1.0.0"))]),
-        workflows: vec![echo_workflow("default", "echo@1.0.0", "hello")],
+        tools: BTreeMap::from([("echo@v1".into(), echo_tool("echo@v1"))]),
+        workflows: vec![echo_workflow("default", "echo@v1", "hello")],
         ..NickelDocument::default()
     };
     let config_path = tc.path().join("conductor.ncl");
@@ -43,7 +43,7 @@ async fn run_workflow_rejects_fractional_success_codes() {
         br#"{
     version = 1,
     tools = {
-        "bad-success-codes@1.0.0" = {
+        "bad-success-codes@v1" = {
             kind = "executable",
             command = ["bin/tool"],
             env_vars = {},
@@ -59,7 +59,7 @@ async fn run_workflow_rejects_fractional_success_codes() {
     },
     workflows = {
         default = {
-            steps = [{ id = "s", tool = "bad-success-codes@1.0.0" }],
+            steps = [{ id = "s", tool = "bad-success-codes@v1" }],
         },
     },
 }

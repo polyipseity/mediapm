@@ -9,9 +9,9 @@ fn builtins_are_registered() {
     let ids = registered_builtin_ids();
 
     assert_eq!(ids.len(), 5);
-    assert!(ids.contains(&"echo@1.0.0".to_string()));
-    assert!(ids.contains(&"fs@1.0.0".to_string()));
-    assert!(ids.contains(&"import@1.0.0".to_string()));
-    assert!(ids.contains(&"export@1.0.0".to_string()));
-    assert!(ids.contains(&"archive@1.0.0".to_string()));
+    assert!(ids.contains(&"echo@v1".to_string()));
+    assert!(ids.contains(&"fs@v1".to_string()));
+    assert!(ids.contains(&"import@v1".to_string()));
+    assert!(ids.contains(&"export@v1".to_string()));
+    assert!(ids.contains(&"archive@v1".to_string()));
 }

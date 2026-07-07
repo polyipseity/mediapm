@@ -20,10 +20,10 @@ mod prop;
 // Shared harness helpers
 // ---------------------------------------------------------------------------
 
-/// Creates an echo@1.0.0 `ToolSpec`.
+/// Creates an echo@v1 `ToolSpec`.
 fn echo_tool(name: &str) -> ToolSpec {
     ToolSpec {
-        kind: ToolKindSpec::Builtin { builtin_id: format!("echo@1.0.0") },
+        kind: ToolKindSpec::Builtin { builtin_id: format!("echo@v1") },
         name: name.into(),
         inputs: BTreeMap::from([(
             "text".into(),
@@ -67,12 +67,12 @@ fn single_echo_doc(tool_id: &str, workflow_name: &str) -> NickelDocument {
 fn dual_echo_doc() -> NickelDocument {
     NickelDocument {
         tools: BTreeMap::from([
-            ("echo-v1@1.0.0".into(), echo_tool("echo-v1@1.0.0")),
-            ("echo-v2@1.0.0".into(), echo_tool("echo-v2@1.0.0")),
+            ("echo-v1@v1".into(), echo_tool("echo-v1@v1")),
+            ("echo-v2@v1".into(), echo_tool("echo-v2@v1")),
         ]),
         workflows: vec![
-            echo_workflow("default", "echo-v1@1.0.0", "default"),
-            echo_workflow("updated", "echo-v2@1.0.0", "updated"),
+            echo_workflow("default", "echo-v1@v1", "default"),
+            echo_workflow("updated", "echo-v2@v1", "updated"),
         ],
         ..NickelDocument::default()
     }

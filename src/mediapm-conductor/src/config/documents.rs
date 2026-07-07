@@ -329,7 +329,7 @@ mod tests {
         let tools = BTreeMap::from([(
             "echo".to_string(),
             ToolSpec {
-                kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".to_string() },
+                kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".to_string() },
                 name: "echo".to_string(),
                 inputs: BTreeMap::new(),
                 default_inputs: BTreeMap::new(),

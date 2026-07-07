@@ -303,7 +303,7 @@ pub struct ConductorRuntimeConfig {
 pub enum ToolKindSpec {
     /// Built-in tool known to conductor-builtins crates.
     Builtin {
-        /// Versioned builtin identifier (e.g. "echo@1.0.0").
+        /// Versioned builtin identifier (e.g. "echo@v1").
         builtin_id: String,
     },
     /// External executable command (on PATH or with an absolute path).

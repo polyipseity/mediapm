@@ -6,7 +6,7 @@ use mediapm_conductor::api::RunWorkflowOptions;
 #[tokio::test]
 async fn workflow_lifecycle_cache_gc_tool_update() {
     let tc = TestConductor::new();
-    tc.write_config(single_echo_doc("echo@1.0.0", "default"));
+    tc.write_config(single_echo_doc("echo@v1", "default"));
 
     // ---- Phase 1: first execution ----
     let s = tc
@@ -43,7 +43,7 @@ async fn workflow_lifecycle_cache_gc_tool_update() {
     // ---- Phase 5: new tool_id + new workflow ----
     tc.write_config(dual_echo_doc());
 
-    // "default" in dual doc targets echo-v1@1.0.0 — cache hit from old run
+    // "default" in dual doc targets echo-v1@v1 — cache hit from old run
     let s = tc
         .conductor()
         .run_workflow("default", RunWorkflowOptions::default())

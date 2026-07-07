@@ -20,7 +20,7 @@ use mediapm_conductor::{AuxData, ImpureTimestamp, OrchestrationState, ToolCallIn
 fn sample_instance(key: &str) -> ToolCallInstance {
     ToolCallInstance {
         instance_key: key.to_string(),
-        tool_id: "echo@1.0.0".to_string(),
+        tool_id: "echo@v1".to_string(),
         inputs: Vec::new(),
         outputs: Vec::new(),
         worker_index: 0,

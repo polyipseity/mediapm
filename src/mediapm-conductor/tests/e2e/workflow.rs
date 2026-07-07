@@ -7,7 +7,7 @@ use mediapm_conductor::api::RunWorkflowOptions;
 #[tokio::test]
 async fn deterministic_workflow_hits_cache_on_second_run() {
     let tc = TestConductor::new();
-    tc.write_config(single_echo_doc("echo@1.0.0", "default"));
+    tc.write_config(single_echo_doc("echo@v1", "default"));
 
     let first = tc
         .conductor()

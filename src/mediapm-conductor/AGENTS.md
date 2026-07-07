@@ -116,7 +116,7 @@ Tool preset download invariant:
 
 When editing tool/config schema behavior, preserve these invariants:
 
-1. Tool name is immutable identity and must include version in name (example: `compose@1.0.0`).
+1. Tool name is immutable identity and must include version in name (example: `compose@v1`).
 
 2. Tool-level `version` field is not used.
 

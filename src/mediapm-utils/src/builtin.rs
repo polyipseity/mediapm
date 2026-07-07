@@ -49,11 +49,11 @@ pub fn describe_json_compact(
 /// Metadata describing a builtin tool identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltinMeta {
-    /// Stable qualified tool identifier (e.g. `builtins.echo@1.0.0`).
+    /// Stable qualified tool identifier (e.g. `builtins.echo@v1`).
     pub tool_id: &'static str,
     /// Short tool process name (e.g. `echo`).
     pub tool_name: &'static str,
-    /// Canonical semver string (e.g. `1.0.0`).
+    /// Canonical version string (e.g. `v1`).
     pub tool_version: &'static str,
     /// Whether this tool has side effects.
     pub is_impure: bool,
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn describe_contains_all_keys() {
-        let result = describe("tool-1", "Tool One", "1.0.0", false, "A test tool.");
+        let result = describe("tool-1", "Tool One", "v1", false, "A test tool.");
         assert_eq!(result.len(), 5);
         assert!(result.contains_key("tool_id"));
         assert!(result.contains_key("tool_name"));

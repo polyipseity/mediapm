@@ -22,10 +22,10 @@ fn build_document() -> NickelDocument {
     // A small fan-out/fan-in workflow with multiple steps.
     NickelDocument {
         tools: BTreeMap::from([(
-            "echo@1.0.0".into(),
+            "echo@v1".into(),
             ToolSpec {
-                kind: ToolKindSpec::Builtin { builtin_id: "echo@1.0.0".into() },
-                name: "echo@1.0.0".into(),
+                kind: ToolKindSpec::Builtin { builtin_id: "echo@v1".into() },
+                name: "echo".into(),
                 inputs: BTreeMap::from([(
                     "text".into(),
                     ToolInputSpec { kind: ToolInputKind::String, required: false },
@@ -43,7 +43,7 @@ fn build_document() -> NickelDocument {
             steps: vec![
                 WorkflowStepSpec {
                     id: "step_a".into(),
-                    tool: "echo@1.0.0".into(),
+                    tool: "echo@v1".into(),
                     inputs: BTreeMap::from([("text".into(), "step_a".into())]),
                     outputs: BTreeMap::from([(
                         "result".into(),
@@ -60,7 +60,7 @@ fn build_document() -> NickelDocument {
                 },
                 WorkflowStepSpec {
                     id: "step_b".into(),
-                    tool: "echo@1.0.0".into(),
+                    tool: "echo@v1".into(),
                     inputs: BTreeMap::from([("text".into(), "step_b".into())]),
                     outputs: BTreeMap::from([(
                         "result".into(),
@@ -77,7 +77,7 @@ fn build_document() -> NickelDocument {
                 },
                 WorkflowStepSpec {
                     id: "step_c".into(),
-                    tool: "echo@1.0.0".into(),
+                    tool: "echo@v1".into(),
                     inputs: BTreeMap::from([(
                         "text".into(),
                         "join:${step_output.step_a.result}+${step_output.step_b.result}".into(),

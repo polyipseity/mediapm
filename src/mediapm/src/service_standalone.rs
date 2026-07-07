@@ -27,11 +27,11 @@ use crate::paths::{MediaPmPathOverrides, MediaPmPaths};
 #[must_use]
 pub fn registered_builtin_ids() -> Vec<String> {
     vec![
-        "echo@1.0.0".to_string(),
-        "fs@1.0.0".to_string(),
-        "import@1.0.0".to_string(),
-        "export@1.0.0".to_string(),
-        "archive@1.0.0".to_string(),
+        "echo@v1".to_string(),
+        "fs@v1".to_string(),
+        "import@v1".to_string(),
+        "export@v1".to_string(),
+        "archive@v1".to_string(),
     ]
 }
 
@@ -280,11 +280,11 @@ mod tests {
     #[test]
     fn registered_builtin_ids_returns_expected_set() {
         let ids = registered_builtin_ids();
-        assert!(ids.contains(&"echo@1.0.0".to_string()));
-        assert!(ids.contains(&"fs@1.0.0".to_string()));
-        assert!(ids.contains(&"import@1.0.0".to_string()));
-        assert!(ids.contains(&"export@1.0.0".to_string()));
-        assert!(ids.contains(&"archive@1.0.0".to_string()));
+        assert!(ids.contains(&"echo@v1".to_string()));
+        assert!(ids.contains(&"fs@v1".to_string()));
+        assert!(ids.contains(&"import@v1".to_string()));
+        assert!(ids.contains(&"export@v1".to_string()));
+        assert!(ids.contains(&"archive@v1".to_string()));
         assert_eq!(ids.len(), 5);
     }
 

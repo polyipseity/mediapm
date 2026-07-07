@@ -192,7 +192,7 @@ mod tests {
         let instance_key = "test-key".to_string();
         let instance = ToolCallInstance {
             instance_key: instance_key.clone(),
-            tool_id: "echo@1.0.0".to_string(),
+            tool_id: "echo@v1".to_string(),
             inputs: Vec::new(),
             outputs: Vec::new(),
             worker_index: 0,
@@ -222,7 +222,7 @@ mod tests {
         let instance_key = "test-key".to_string();
         let instance = ToolCallInstance {
             instance_key: instance_key.clone(),
-            tool_id: "echo@1.0.0".to_string(),
+            tool_id: "echo@v1".to_string(),
             inputs: Vec::new(),
             outputs: vec![OutputRef {
                 name: "result".to_string(),
