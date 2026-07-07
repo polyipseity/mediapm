@@ -34,6 +34,7 @@ use crate::conductor_bridge::sync::tool_config::{
 use crate::conductor_bridge::tool_runtime::{build_tool_spec, resolve_ffmpeg_slot_limits};
 use crate::config::defaults;
 use crate::error::MediaPmError;
+use crate::output::ProgressGroup;
 use crate::paths::MediaPmPaths;
 use crate::tools::downloader::ToolDownloadCache;
 
@@ -85,6 +86,11 @@ pub(crate) async fn reconcile_desired_tools(
     let cache = ToolDownloadCache::open(&cache_root)
         .await
         .map_err(|e| MediaPmError::Workflow(format!("failed to open tool download cache: {e}")))?;
+
+    // Progress bar for the per-tool provisioning loop.
+    let total_tools = desired_tools.len() as u64;
+    let group = ProgressGroup::new();
+    let pb = group.add_bar(total_tools, "syncing tools");
 
     for (tool_id, _requirement_value) in desired_tools {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
@@ -186,7 +192,12 @@ pub(crate) async fn reconcile_desired_tools(
                 ));
             }
         }
+
+        pb.advance(1);
     }
+
+    pb.finish_success("tools synced");
+    group.join_and_clear();
 
     // Companion binding resolution (for ffmpeg/deno selectors).
     let _ffmpeg_selection = resolve_companion_ffmpeg_selection(desired_tools);
