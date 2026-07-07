@@ -187,6 +187,7 @@ See `src/mediapm/AGENTS.md` for runtime path defaults, media schema rules, tool 
 - `.agents/instructions/rust-workflow.instructions.md` — Rust editing and validation guidance
 - `.agents/instructions/mediapm-architecture.instructions.md` — crate boundaries and cross-crate invariants
 - `.agents/instructions/mediapm-testing-and-docstrings.instructions.md` — test expectations and Rustdoc/docstring depth requirements
+- `.agents/instructions/cli-output-style.instructions.md` — StatusIcon, print_result, progress bar, and output formatting conventions for the mediapm crate
 - `.agents/instructions/spec-development-index.instructions.md` — index linking to per-crate AGENTS.md for all specification and edge-case content (replaces the deleted `crate-specifications.md` and `elaboration-pass-edge-cases.md`)
 - `src/mediapm-cas/AGENTS.md`, `src/mediapm-conductor/AGENTS.md`, `src/mediapm/AGENTS.md` — crate-level detailed behavioral contracts
 - `.editorconfig`, `.gitattributes`, `.markdownlint.jsonc`, `.agents/.markdownlint.jsonc` — formatting and line-ending rules
