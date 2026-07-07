@@ -48,7 +48,8 @@ musicbrainz_rs = { workspace = true, features = [
   "rustls",
 ], optional = true }
 nickel-lang-core.workspace = true
-pulsebar.workspace = true
+indicatif.workspace = true
+console.workspace = true
 regex.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 serde.workspace = true
