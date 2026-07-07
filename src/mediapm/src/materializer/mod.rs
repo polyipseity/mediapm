@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use mediapm_cas::{FileSystemCas, Hash};
-use pulsebar::MultiProgress;
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
@@ -26,6 +25,7 @@ use crate::config::hierarchy_types::{
 use crate::config::source_types::MediaSourceSpec;
 use crate::config::{MediaPmDocument, MediaPmState};
 use crate::error::MediaPmError;
+use crate::output::ProgressGroup;
 use crate::paths::MediaPmPaths;
 
 use self::metadata::MaterializationLookupContext;
@@ -140,11 +140,8 @@ pub async fn sync_hierarchy(
     // --- Concurrent materialization ---
     let worker_count = hierarchy_worker_count();
     let semaphore = Arc::new(Semaphore::new(worker_count));
-    let mp = MultiProgress::new();
-    let pb = mp
-        .add_bar(flattened.len() as u64)
-        .with_message("materializing")
-        .with_format("{spinner:.green} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}");
+    let group = ProgressGroup::new();
+    let pb = group.add_bar(flattened.len() as u64, "materializing");
 
     let mut join_set = tokio::task::JoinSet::new();
     let document_arc = Arc::new(document.clone());
@@ -187,6 +184,7 @@ pub async fn sync_hierarchy(
     }
 
     pb.finish_success("materialization complete");
+    group.join_and_clear();
 
     // --- Stale path cleanup ---
     let stale_result = remove_stale_paths(hierarchy_root, &flattened)?;
