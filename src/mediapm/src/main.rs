@@ -17,6 +17,8 @@ use clap_complete::Shell;
 #[cfg(feature = "cli")]
 use mediapm::MediaPmService;
 #[cfg(feature = "cli")]
+use mediapm::output::{StatusIcon, print_hint, print_result, print_status_report, print_warning};
+#[cfg(feature = "cli")]
 use mediapm::{
     AddInsertPosition, MediaHierarchyPreset, MediaMetadataValue, MediaPmGlobalPaths, MediaPmPaths,
     MediaRuntimeStorage, MediaSourceSpec, MediaStep, MediaStepTool, TransformInputValue,
@@ -120,9 +122,13 @@ async fn main_cli() -> anyhow::Result<()> {
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.add_tool_requirement(&name, None, None)?;
-                println!(
-                    "added tool requirement '{name}' (tag = latest); run 'tool sync' to download"
+                print_result(
+                    StatusIcon::Success,
+                    "tool added",
+                    &[("name", &name as &dyn std::fmt::Display), ("tag", &"latest")],
+                    None,
                 );
+                print_hint("run 'mediapm tool sync' to download and register");
                 Ok(())
             }
             ToolCommand::Sync(args) => {
@@ -133,15 +139,19 @@ async fn main_cli() -> anyhow::Result<()> {
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 let check_tag_updates = args.tag_update_policy.resolve(true);
                 let summary = service.sync_tools_with_tag_update_checks(check_tag_updates).await?;
-                println!(
-                    "tool sync complete: added={}, updated={}, pruned={}, removed={}",
-                    summary.added_tools,
-                    summary.updated_tools,
-                    summary.pruned_tools,
-                    summary.removed_tools,
+                print_result(
+                    StatusIcon::Success,
+                    "tools synced",
+                    &[
+                        ("added", &summary.added_tools as &dyn std::fmt::Display),
+                        ("updated", &summary.updated_tools),
+                        ("pruned", &summary.pruned_tools),
+                        ("removed", &summary.removed_tools),
+                    ],
+                    None,
                 );
                 for warning in &summary.warnings {
-                    eprintln!("warning: {warning}");
+                    print_warning(warning);
                 }
                 Ok(())
             }
@@ -157,9 +167,13 @@ async fn main_cli() -> anyhow::Result<()> {
                 let mut service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.remove_tool_requirement(&name)?;
-                println!(
-                    "removed tool requirement '{name}'; run 'tool sync' to reconcile runtime state"
+                print_result(
+                    StatusIcon::Success,
+                    "tool removed",
+                    &[("name", &name as &dyn std::fmt::Display)],
+                    None,
                 );
+                print_hint("run 'mediapm tool sync' to reconcile runtime state");
                 Ok(())
             }
             ToolCommand::Prune { id, metadata } => {
@@ -177,9 +191,7 @@ async fn main_cli() -> anyhow::Result<()> {
                 let service =
                     MediaPmService::new_fs_at_with_runtime_storage_overrides(root, rt).await?;
                 service.refresh_runtime_configuration()?;
-                println!(
-                    "refreshed mediapm-managed conductor runtime configuration and dotenv files"
-                );
+                print_result(StatusIcon::Success, "runtime refreshed", &[], None);
                 Ok(())
             }
         },
@@ -244,16 +256,26 @@ async fn main_cli() -> anyhow::Result<()> {
                             )?
                         }
                     };
-                    println!("registered media source id={media_id}");
-                    eprintln!(
-                        "hint: run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)"
+                    print_result(
+                        StatusIcon::Success,
+                        "media added",
+                        &[("id", &media_id as &dyn std::fmt::Display)],
+                        None,
+                    );
+                    print_hint(
+                        "run 'mediapm sync' to apply workflow/hierarchy changes (and 'mediapm tool sync' first if tools are out of date)",
                     );
                     Ok(())
                 }
                 MediaCommand::Remove { media_id } => {
                     service.remove_media_source(&media_id)?;
-                    println!("removed media source id={media_id}");
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    print_result(
+                        StatusIcon::Success,
+                        "media removed",
+                        &[("id", &media_id as &dyn std::fmt::Display)],
+                        None,
+                    );
+                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
                     Ok(())
                 }
                 MediaCommand::Invalidate(args) => {
@@ -266,19 +288,27 @@ async fn main_cli() -> anyhow::Result<()> {
                         invalidate_calls,
                         regenerate,
                     )?;
-                    println!(
-                        "invalidated media id={} step_index={}: workflow_id={}, removed_instances={}, regenerated_step={}",
-                        args.media_id,
-                        args.step_index,
-                        summary.workflow_id,
-                        summary.removed_instances.len(),
-                        summary.regenerated_step,
+                    print_result(
+                        StatusIcon::Success,
+                        "media invalidated",
+                        &[
+                            ("id", &args.media_id as &dyn std::fmt::Display),
+                            ("step", &args.step_index),
+                            ("workflow", &summary.workflow_id as &dyn std::fmt::Display),
+                            ("removed", &summary.removed_instances.len()),
+                            (
+                                "regenerated",
+                                &(if summary.regenerated_step { "yes" } else { "no" })
+                                    as &dyn std::fmt::Display,
+                            ),
+                        ],
+                        None,
                     );
                     for warning in &summary.warnings {
-                        eprintln!("warning: {warning}");
+                        print_warning(warning);
                     }
-                    eprintln!(
-                        "hint: run 'mediapm sync' to apply invalidation effects to materialized outputs"
+                    print_hint(
+                        "run 'mediapm sync' to apply invalidation effects to materialized outputs",
                     );
                     Ok(())
                 }
@@ -302,14 +332,19 @@ async fn main_cli() -> anyhow::Result<()> {
                         args.preset.into(),
                         args.insert_position.into(),
                     )?;
-                    println!(
-                        "registered hierarchy preset={}",
-                        match args.preset {
-                            HierarchyPresetArg::Local => "local",
-                            HierarchyPresetArg::YtDlp => "yt-dlp",
-                        },
+                    print_result(
+                        StatusIcon::Success,
+                        "hierarchy added",
+                        &[(
+                            "preset",
+                            &(match args.preset {
+                                HierarchyPresetArg::Local => "local",
+                                HierarchyPresetArg::YtDlp => "yt-dlp",
+                            }) as &dyn std::fmt::Display,
+                        )],
+                        None,
                     );
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
                     Ok(())
                 }
                 // `--preset` is accepted for forward-compatibility / CLI
@@ -322,8 +357,13 @@ async fn main_cli() -> anyhow::Result<()> {
                         root_folder.trim_end_matches('/')
                     ));
                     let removed = service.remove_media_hierarchy_preset_by_media_id(&media_id)?;
-                    println!("removed hierarchy nodes for media id={media_id}: count={removed}");
-                    eprintln!("hint: run 'mediapm sync' to apply workflow/hierarchy changes");
+                    print_result(
+                        StatusIcon::Success,
+                        "hierarchy removed",
+                        &[("id", &media_id as &dyn std::fmt::Display), ("count", &removed)],
+                        None,
+                    );
+                    print_hint("run 'mediapm sync' to apply workflow/hierarchy changes");
                     Ok(())
                 }
             }
@@ -333,38 +373,55 @@ async fn main_cli() -> anyhow::Result<()> {
                 let paths = MediaPmGlobalPaths::resolve_default().ok_or_else(|| {
                     anyhow::anyhow!("could not resolve global user directory for this environment")
                 })?;
-                println!("global_dir={}", paths.root_dir.display());
-                println!("tool_cache_dir={}", paths.tool_cache_dir.display());
-                println!("tool_cache_store={}", paths.tool_cache_store_dir.display());
-                println!("tool_cache_index={}", paths.tool_cache_index.display());
+                print_status_report(&[
+                    ("root_dir", &paths.root_dir.display() as &dyn std::fmt::Display),
+                    ("tool_cache_dir", &paths.tool_cache_dir.display()),
+                    ("tool_cache_store", &paths.tool_cache_store_dir.display()),
+                    ("tool_cache_index", &paths.tool_cache_index.display()),
+                ]);
                 Ok(())
             }
             GlobalCommand::Init => {
                 ensure_global_directory_layout()?;
                 let paths = MediaPmGlobalPaths::resolve_default().unwrap();
-                println!("initialized global_dir={}", paths.root_dir.display());
+                print_result(
+                    StatusIcon::Success,
+                    "global dir initialized",
+                    &[("path", &paths.root_dir.display() as &dyn std::fmt::Display)],
+                    None,
+                );
                 Ok(())
             }
             GlobalCommand::ToolCache { command } => match command {
                 GlobalToolCacheCommand::Status => {
                     let status = global_tool_cache_status()?;
-                    println!("tool_cache_dir={}", status.tool_cache_dir.display());
-                    println!("store_dir={}", status.store_dir.display());
-                    println!("index={}", status.index.display());
-                    println!("entry_count={}", status.entry_count);
+                    print_status_report(&[
+                        (
+                            "tool_cache_dir",
+                            &status.tool_cache_dir.display() as &dyn std::fmt::Display,
+                        ),
+                        ("store_dir", &status.store_dir.display()),
+                        ("index", &status.index.display()),
+                        ("entry_count", &status.entry_count),
+                    ]);
                     Ok(())
                 }
                 GlobalToolCacheCommand::Prune => {
                     let summary = global_tool_cache_prune_expired()?;
-                    println!(
-                        "prune complete: removed_entries={}, removed_payloads={}",
-                        summary.removed_entries, summary.removed_payloads
+                    print_result(
+                        StatusIcon::Success,
+                        "tool cache pruned",
+                        &[
+                            ("removed_entries", &summary.removed_entries as &dyn std::fmt::Display),
+                            ("removed_payloads", &summary.removed_payloads),
+                        ],
+                        None,
                     );
                     Ok(())
                 }
                 GlobalToolCacheCommand::Clear => {
                     global_tool_cache_clear()?;
-                    println!("cleared global tool-cache directory");
+                    print_result(StatusIcon::Success, "tool cache cleared", &[], None);
                     Ok(())
                 }
             },
