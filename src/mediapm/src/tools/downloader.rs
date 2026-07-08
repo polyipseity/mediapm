@@ -15,6 +15,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use futures_util::StreamExt;
+
 use mediapm_conductor::cache::CachePruneReport;
 use mediapm_conductor::cache_user_level::UserLevelCache;
 
@@ -71,17 +73,22 @@ pub(crate) async fn fetch_bytes_from_candidates(
         match request.send().await {
             Ok(response) if response.status().is_success() => {
                 let total = response.content_length();
-                let bytes = response
-                    .bytes()
-                    .await
-                    .map_err(|e| MediaPmError::Workflow(format!("download error: {e}")))?;
-                if let Some(ref cb) = progress {
-                    cb(DownloadProgressSnapshot {
-                        downloaded_bytes: bytes.len() as u64,
-                        total_bytes: total,
-                    });
+                let mut downloaded = 0u64;
+                let mut buffer = Vec::new();
+                let mut stream = response.bytes_stream();
+                while let Some(chunk_result) = stream.next().await {
+                    let chunk = chunk_result
+                        .map_err(|e| MediaPmError::Workflow(format!("download error: {e}")))?;
+                    downloaded += chunk.len() as u64;
+                    buffer.extend_from_slice(&chunk);
+                    if let Some(ref cb) = progress {
+                        cb(DownloadProgressSnapshot {
+                            downloaded_bytes: downloaded,
+                            total_bytes: total,
+                        });
+                    }
                 }
-                return Ok(bytes.to_vec());
+                return Ok(buffer);
             }
             Ok(response) => {
                 tracing::warn!("HTTP {} for {}, skipping", response.status(), url);

@@ -38,6 +38,7 @@ clap = { workspace = true, features = ["derive", "std"], optional = true }
 clap_complete = { workspace = true, optional = true }
 dotenvy.workspace = true
 ffmetadata = { workspace = true, optional = true }
+futures-util.workspace = true
 flate2.workspace = true
 libc.workspace = true
 mediapm-cas = { path = "../mediapm-cas", default-features = false }
@@ -50,7 +51,7 @@ musicbrainz_rs = { workspace = true, features = [
 nickel-lang-core.workspace = true
 regex.workspace = true
 console.workspace = true
-reqwest = { workspace = true, features = ["json"] }
+reqwest = { workspace = true, features = ["json", "stream"] }
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
