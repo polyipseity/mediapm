@@ -39,7 +39,6 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 
 #[cfg(feature = "progress")]
 mod inner {
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use std::time::Duration;
@@ -180,12 +179,6 @@ mod inner {
         pub fn abandon(&self) {
             self.inner.abandon();
         }
-
-        /// Returns whether the bar is in a finished state.
-        #[must_use]
-        pub fn is_finished(&self) -> bool {
-            self.inner.is_finished()
-        }
     }
 
     // ---- ProgressGroup ----------------------------------------------------
@@ -194,14 +187,13 @@ mod inner {
     pub struct ProgressGroup {
         inner: MultiProgress,
         overall: Option<ProgressHandle>,
-        children: Mutex<Vec<ProgressHandle>>,
     }
 
     impl ProgressGroup {
         /// Create a new group with no overall bar.
         #[must_use]
         pub fn new() -> Self {
-            Self { inner: MultiProgress::new(), overall: None, children: Mutex::new(Vec::new()) }
+            Self { inner: MultiProgress::new(), overall: None }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
@@ -217,8 +209,7 @@ mod inner {
             inner.set_prefix(label.to_string());
             let overall_handle = mp.add(inner);
             let handle = ProgressHandle { inner: overall_handle };
-            let group =
-                Self { inner: mp, overall: Some(handle.clone()), children: Mutex::new(Vec::new()) };
+            let group = Self { inner: mp, overall: Some(handle.clone()) };
             (group, handle)
         }
 
@@ -237,9 +228,7 @@ mod inner {
             } else {
                 self.inner.add(inner)
             };
-            let handle = ProgressHandle { inner: bar };
-            self.children.lock().unwrap().push(handle.clone());
-            handle
+            ProgressHandle { inner: bar }
         }
 
         /// Block until all bars in the group reach a finished state.
@@ -249,34 +238,15 @@ mod inner {
         /// dropped and all bars are finished.
         pub fn join(&self) {}
 
-        /// Finish and clear all bars in the group, then clear the terminal.
+        /// Clear the terminal display after all bars are done.
         ///
-        /// Children are finished first (top-to-bottom), then the overall bar.
-        /// Bars that are already finished (via [`finish`](ProgressHandle::finish)
-        /// / [`finish_success`](ProgressHandle::finish_success) / [`finish_error`](ProgressHandle::finish_error))
-        /// are left visible so their final message can be read; unfinished bars
-        /// are force-cleared to stop ticker threads safely.
+        /// Call this after all bars have been finished (via [`finish`](ProgressHandle::finish)
+        /// / [`finish_success`](ProgressHandle::finish_success) / [`finish_and_clear`](ProgressHandle::finish_and_clear)).
+        /// Unfinished bars will have their tickers stopped when their handles
+        /// are dropped — [`clear`](MultiProgress::clear) only wipes the
+        /// terminal display so stale bar lines don't pollute scrollback.
         pub fn join_and_clear(&self) {
-            self.finish_or_clear_all();
-        }
-
-        /// Ensure every tracked bar has stopped its ticker.
-        ///
-        /// Bars that are already finished (``is_finished()``) are left in their
-        /// current visible state; unfinished bars are cleared so their ticker
-        /// thread shuts down.
-        fn finish_or_clear_all(&self) {
-            let children = self.children.lock().unwrap();
-            for child in children.iter() {
-                if !child.is_finished() {
-                    child.finish_and_clear();
-                }
-            }
-            if let Some(ref overall) = self.overall {
-                if !overall.is_finished() {
-                    overall.finish_and_clear();
-                }
-            }
+            self.inner.clear().ok();
         }
     }
 
@@ -288,10 +258,10 @@ mod inner {
 
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
-            // Safety net: if the caller forgot `join_and_clear()` or took an
-            // early-exit error path, stop all tickers so bars don't persist
-            // after the group is destroyed.
-            self.finish_or_clear_all();
+            // Safety net: clear terminal so stale bars don't pollute scrollback
+            // if the caller forgot `join_and_clear()` or took an early-exit
+            // error path.
+            self.inner.clear().ok();
         }
     }
 }
