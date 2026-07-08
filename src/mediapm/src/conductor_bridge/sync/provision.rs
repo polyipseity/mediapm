@@ -138,7 +138,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         per_os_exec.insert(os_label.to_string(), exec_path);
         os_pb.advance(1);
     }
-    os_pb.finish();
+    os_pb.finish_and_clear();
 
     // Build ${context.os == "..." ? ./.../... : ...} template.
     let command_selector = build_os_conditional_selector(&per_os_exec);
