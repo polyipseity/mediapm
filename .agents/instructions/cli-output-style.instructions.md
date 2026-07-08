@@ -90,7 +90,7 @@ The active template is chosen automatically via `apply_bar_style()` which checks
 
 | Element | Style |
 |---|---|
-| Spinner | green, braille dots (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`) |
+| Spinner | green, braille dots (`⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`); auto-animated via `enable_steady_tick(100ms)` |
 | Prefix | bold, right-aligned to 12 chars |
 | Elapsed | cyan |
 | Bar fill (child) | cyan on blue |
@@ -106,6 +106,21 @@ output::progress::progress_enabled();            // query current state
 ```
 
 Suppressed automatically when stderr is not a TTY or when `--quiet` / `MEDIAPM_QUIET` is active.
+
+### Spinner animation
+
+Every progress bar created through `ProgressHandle::new()`, `ProgressGroup::with_overall()`, or `ProgressGroup::add_bar()` automatically enables a steady tick at 100 ms intervals, which keeps the spinner animating even during long periods without position updates (e.g., slow downloads). No manual `tick()` calls are needed.
+
+### Cleaning up progress bars
+
+All progress bars **must** be finalized after the operation completes:
+
+```rust
+pb.finish_success("done");
+group.join_and_clear();   // clears bars from terminal, then group drops draw thread
+```
+
+`join_and_clear()` clears the bars from the terminal and prevents residual progress artifacts from appearing in subsequent output. Callers should ensure all bars are in a finished state first (via `finish()`, `finish_success()`, or `finish_error()`). The draw thread terminates when the group is dropped at end of scope.
 
 ### Formatting helpers
 
