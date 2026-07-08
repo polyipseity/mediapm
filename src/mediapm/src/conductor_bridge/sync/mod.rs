@@ -89,8 +89,7 @@ pub(crate) async fn reconcile_desired_tools(
 
     // Progress bar for the per-tool provisioning loop.
     let total_tools = desired_tools.len() as u64;
-    let group = ProgressGroup::new();
-    let pb = group.add_bar(total_tools, "syncing tools");
+    let (group, pb) = ProgressGroup::with_overall("syncing tools", total_tools);
 
     for (tool_id, _requirement_value) in desired_tools {
         let is_builtin_code = is_builtin_source_ingest_requirement(tool_id);
