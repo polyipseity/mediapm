@@ -88,14 +88,6 @@ pub(crate) struct ResolvedDownloadPlan {
 }
 
 /// Snapshot of download progress at one point in time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DownloadProgressSnapshot {
-    /// Bytes downloaded so far.
-    pub downloaded_bytes: u64,
-    /// Total expected bytes, if known.
-    pub total_bytes: Option<u64>,
-}
-
-/// Callback invoked with progress snapshots during transfer.
-pub(crate) type DownloadProgressCallback =
-    std::sync::Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
+pub(crate) use mediapm_utils::progress::{
+    DownloadProgressSnapshot, ProgressCallback as DownloadProgressCallback,
+};

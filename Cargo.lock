@@ -2004,7 +2004,6 @@ dependencies = [
  "dotenvy",
  "ffmetadata",
  "flate2",
- "indicatif",
  "libc",
  "mediapm-cas",
  "mediapm-conductor",
@@ -2149,6 +2148,8 @@ name = "mediapm-utils"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "console",
+ "indicatif",
  "serde",
  "serde_json",
  "tempfile",

@@ -23,6 +23,8 @@
 
 pub mod builtin;
 pub mod path;
+#[cfg(feature = "progress")]
+pub mod progress;
 pub mod types;
 
 #[cfg(feature = "nickel")]
