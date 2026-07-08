@@ -41,6 +41,8 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 mod inner {
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use std::time::Duration;
+
     use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
     // ---- global toggle ----------------------------------------------------
@@ -115,6 +117,7 @@ mod inner {
         pub fn new(total: u64) -> Self {
             let pb = ProgressBar::new(total);
             apply_bar_style(&pb);
+            pb.enable_steady_tick(Duration::from_millis(100));
             Self { inner: pb }
         }
 
@@ -193,6 +196,7 @@ mod inner {
             let inner = ProgressBar::new(total);
             inner.set_style(overall_bar_style());
             inner.set_prefix(label.to_string());
+            inner.enable_steady_tick(Duration::from_millis(100));
             let overall_handle = mp.add(inner.clone());
             let group = Self { inner: mp, overall: Some(inner) };
             (group, ProgressHandle { inner: overall_handle })
@@ -204,15 +208,26 @@ mod inner {
             let inner = ProgressBar::new(total);
             apply_bar_style(&inner);
             inner.set_prefix(label.to_string());
+            inner.enable_steady_tick(Duration::from_millis(100));
             let bar = self.inner.insert(0, inner);
             ProgressHandle { inner: bar }
         }
 
         /// Block until all bars in the group reach a finished state.
+        ///
+        /// In indicatif 0.17 `MultiProgress` has no blocking join, so this is
+        /// effectively a no-op. The draw thread terminates when the group is
+        /// dropped and all bars are finished.
         pub fn join(&self) {}
 
         /// Block until all bars finish, then clear them from the terminal.
-        pub fn join_and_clear(&self) {}
+        ///
+        /// Callers should ensure all bars are in a finished state (via
+        /// `finish()` / `finish_success()` / `finish_error()`) before calling
+        /// this method.
+        pub fn join_and_clear(&self) {
+            self.inner.clear().expect("progress bar clear should not fail");
+        }
     }
 
     impl Default for ProgressGroup {
