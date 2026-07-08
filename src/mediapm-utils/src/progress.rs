@@ -69,6 +69,8 @@ mod inner {
     const COMPACT_BAR_TEMPLATE: &str =
         "{spinner:.green} {prefix} [{elapsed_precise}] {pos}/{len} {msg}";
 
+    const COMPACT_OVERALL_BAR_TEMPLATE: &str = "{prefix} [{elapsed_precise}] {pos}/{len} {msg}";
+
     fn child_bar_style() -> ProgressStyle {
         ProgressStyle::with_template(CHILD_BAR_TEMPLATE)
             .expect("invalid child bar template")
@@ -80,6 +82,19 @@ mod inner {
         ProgressStyle::with_template(OVERALL_BAR_TEMPLATE)
             .expect("invalid overall bar template")
             .progress_chars("█░")
+    }
+
+    fn compact_overall_bar_style() -> ProgressStyle {
+        ProgressStyle::with_template(COMPACT_OVERALL_BAR_TEMPLATE)
+            .expect("invalid compact overall bar template")
+    }
+
+    fn apply_overall_bar_style(pb: &ProgressBar) {
+        if terminal_width() < 60 {
+            pb.set_style(compact_overall_bar_style());
+        } else {
+            pb.set_style(overall_bar_style());
+        }
     }
 
     fn compact_bar_style() -> ProgressStyle {
@@ -205,7 +220,7 @@ mod inner {
         pub fn with_overall(label: &str, total: u64) -> (Self, ProgressHandle) {
             let mp = MultiProgress::new();
             let inner = ProgressBar::new(total);
-            inner.set_style(overall_bar_style());
+            apply_overall_bar_style(&inner);
             inner.set_prefix(label.to_string());
             let overall_handle = mp.add(inner);
             let handle = ProgressHandle { inner: overall_handle };
