@@ -258,7 +258,6 @@ mod inner {
         /// are force-cleared to stop ticker threads safely.
         pub fn join_and_clear(&self) {
             self.finish_or_clear_all();
-            self.inner.clear().expect("progress bar clear should not fail");
         }
 
         /// Ensure every tracked bar has stopped its ticker.
@@ -290,10 +289,9 @@ mod inner {
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
             // Safety net: if the caller forgot `join_and_clear()` or took an
-            // early-exit error path, stop all tickers first, then clear the
-            // terminal so bars don't persist after the group is destroyed.
+            // early-exit error path, stop all tickers so bars don't persist
+            // after the group is destroyed.
             self.finish_or_clear_all();
-            let _ = self.inner.clear();
         }
     }
 }
