@@ -58,8 +58,8 @@ async fn add_local_source_with_explicit_title_and_description() -> Result<(), me
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     let source = doc.media.get(&media_id).expect("source exists");
-    assert_eq!(source.title.as_deref(), Some("Demo Fixture"));
-    assert_eq!(source.description.as_deref(), Some("A local test fixture for demo"));
+    assert_eq!(source.title.as_str(), "Demo Fixture");
+    assert_eq!(source.description.as_str(), "A local test fixture for demo");
     Ok(())
 }
 

@@ -143,7 +143,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     overrides.tools.insert(
         "demo-tool".to_string(),
         ToolRequirement {
-            version: Some(mediapm::MediaMetadataValue::Literal("1.0".to_string())),
+            version: mediapm::MediaMetadataValue::Literal("1.0".to_string()),
             ..Default::default()
         },
     );
@@ -153,7 +153,7 @@ async fn sync_tool_requires_sync_false_when_present() -> Result<(), mediapm::Med
     state.tools.insert(
         "demo-tool".to_string(),
         ToolRequirement {
-            version: Some(mediapm::MediaMetadataValue::Literal("1.0".to_string())),
+            version: mediapm::MediaMetadataValue::Literal("1.0".to_string()),
             ..Default::default()
         },
     );
@@ -182,7 +182,7 @@ async fn sync_collects_missing_tool() -> Result<(), mediapm::MediaPmError> {
     overrides.tools.insert(
         "media-tagger".to_string(),
         ToolRequirement {
-            version: Some(mediapm::MediaMetadataValue::Literal("2.0.0".to_string())),
+            version: mediapm::MediaMetadataValue::Literal("2.0.0".to_string()),
             ..Default::default()
         },
     );

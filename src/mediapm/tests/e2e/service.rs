@@ -57,8 +57,8 @@ async fn add_source_with_metadata() -> Result<(), mediapm::MediaPmError> {
 
     let doc = read_doc(&service.paths().mediapm_ncl);
     let source = doc.media.get(&media_id).expect("source exists");
-    assert_eq!(source.title.as_deref(), Some("My Title"));
-    assert_eq!(source.description.as_deref(), Some("A test asset description"));
+    assert_eq!(source.title.as_str(), "My Title");
+    assert_eq!(source.description.as_str(), "A test asset description");
 
     Ok(())
 }
