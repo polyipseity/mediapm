@@ -13,6 +13,7 @@ cli = [
   "dep:clap",
   "dep:clap_complete",
   "mediapm-cas/cli",
+  "mediapm-utils/progress",
   "tool-presets",
   "fetch",
 ]

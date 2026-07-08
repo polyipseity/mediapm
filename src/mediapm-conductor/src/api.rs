@@ -169,12 +169,31 @@ pub trait ConductorApi<C: CasApi>: Send + Sync {
 }
 
 /// Options for a single workflow run.
-#[derive(Debug, Clone, Default)]
 pub struct RunWorkflowOptions {
     /// Number of retry attempts for impure steps.
     pub retry_impure: bool,
     /// Optional tool selector override (managed tool id).
     pub tool_selector: Option<String>,
+    /// Optional callback invoked after each step completes.
+    /// Arguments: (completed_steps, total_steps, step_name).
+    /// Must be `Send + Sync` so that `&RunWorkflowOptions` is `Send` across await points.
+    pub step_progress: Option<Box<dyn Fn(usize, usize, &str) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RunWorkflowOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunWorkflowOptions")
+            .field("retry_impure", &self.retry_impure)
+            .field("tool_selector", &self.tool_selector)
+            .field("step_progress", &self.step_progress.as_ref().map(|_| "…"))
+            .finish()
+    }
+}
+
+impl Default for RunWorkflowOptions {
+    fn default() -> Self {
+        Self { retry_impure: false, tool_selector: None, step_progress: None }
+    }
 }
 
 // ---------------------------------------------------------------------------

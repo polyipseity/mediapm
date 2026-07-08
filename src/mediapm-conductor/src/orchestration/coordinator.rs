@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use mediapm_cas::{CasApi, CasMaintenanceApi};
 
-use crate::api::{RunSummary, RuntimeDiagnostics};
+use crate::api::{RunSummary, RunWorkflowOptions, RuntimeDiagnostics};
 use crate::config::{ImpureTimestamp, WorkflowStepSpec};
 use crate::error::ConductorError;
 use crate::state::OrchestrationState;
@@ -161,6 +161,7 @@ where
         workflow_name: &str,
         unified: &UnifiedNickelDocument,
         state: &mut OrchestrationState,
+        options: &RunWorkflowOptions,
     ) -> Result<RunSummary, ConductorError> {
         self.ensure_workers().await?;
 
@@ -255,6 +256,9 @@ where
                         failed_steps += 1;
                         tracing::error!("step '{step_id}' RPC failed: {e}");
                     }
+                }
+                if let Some(ref callback) = options.step_progress {
+                    callback(executed_steps + failed_steps, total_steps, &step_id);
                 }
             }
         }

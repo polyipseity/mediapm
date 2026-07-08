@@ -31,7 +31,6 @@ pub(crate) enum ConductorMessage {
         /// Workflow name to execute.
         workflow_name: String,
         /// Run options.
-        #[expect(dead_code)]
         options: RunWorkflowOptions,
         /// Unified configuration documents.
         unified: UnifiedNickelDocument,
@@ -101,12 +100,13 @@ where
         match message {
             ConductorMessage::RunWorkflow {
                 workflow_name,
-                options: _,
+                options,
                 unified,
                 state: mut ws_state,
                 reply,
             } => {
-                let summary = state.run_workflow(&workflow_name, &unified, &mut ws_state).await;
+                let summary =
+                    state.run_workflow(&workflow_name, &unified, &mut ws_state, &options).await;
                 let _ = reply.send(summary);
             }
             ConductorMessage::GetRuntimeDiagnostics { reply } => {
