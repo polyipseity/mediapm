@@ -39,6 +39,7 @@ pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
 
 #[cfg(feature = "progress")]
 mod inner {
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use std::time::Duration;
@@ -157,19 +158,33 @@ mod inner {
             self.inner.finish();
         }
 
-        /// Mark as finished with a success message.
+        /// Mark as finished with a success message (keeps it visible).
         pub fn finish_success(&self, msg: impl Into<String>) {
             self.inner.finish_with_message(msg.into());
         }
 
-        /// Mark as finished with an error message.
+        /// Mark as finished with an error message (keeps it visible).
         pub fn finish_error(&self, msg: impl Into<String>) {
             self.inner.abandon_with_message(msg.into());
+        }
+
+        /// Finish and clear the bar from the display.
+        ///
+        /// Stops the ticker and marks the bar as hidden. Call this instead of
+        /// [`finish`](Self::finish) when the bar should disappear immediately.
+        pub fn finish_and_clear(&self) {
+            self.inner.finish_and_clear();
         }
 
         /// Abandon the bar — leaves it visible but stops all updates.
         pub fn abandon(&self) {
             self.inner.abandon();
+        }
+
+        /// Returns whether the bar is in a finished state.
+        #[must_use]
+        pub fn is_finished(&self) -> bool {
+            self.inner.is_finished()
         }
     }
 
@@ -178,13 +193,15 @@ mod inner {
     /// A vertical stack of progress bars.
     pub struct ProgressGroup {
         inner: MultiProgress,
+        overall: Option<ProgressHandle>,
+        children: Mutex<Vec<ProgressHandle>>,
     }
 
     impl ProgressGroup {
         /// Create a new group with no overall bar.
         #[must_use]
         pub fn new() -> Self {
-            Self { inner: MultiProgress::new() }
+            Self { inner: MultiProgress::new(), overall: None, children: Mutex::new(Vec::new()) }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
@@ -199,19 +216,30 @@ mod inner {
             inner.set_style(overall_bar_style());
             inner.set_prefix(label.to_string());
             let overall_handle = mp.add(inner);
-            let group = Self { inner: mp };
-            (group, ProgressHandle { inner: overall_handle })
+            let handle = ProgressHandle { inner: overall_handle };
+            let group =
+                Self { inner: mp, overall: Some(handle.clone()), children: Mutex::new(Vec::new()) };
+            (group, handle)
         }
 
-        /// Add a child bar above the overall bar (if any).
+        /// Add a child bar.
+        ///
+        /// When the group has an overall bar, the child is inserted above it.
+        /// Otherwise children stack in insertion order.
         #[must_use]
         pub fn add_bar(&self, total: u64, label: &str) -> ProgressHandle {
             let inner = ProgressBar::new(total);
             apply_bar_style(&inner);
             inner.set_prefix(label.to_string());
             inner.enable_steady_tick(Duration::from_millis(100));
-            let bar = self.inner.insert(0, inner);
-            ProgressHandle { inner: bar }
+            let bar = if let Some(ref overall) = self.overall {
+                self.inner.insert_before(&overall.inner, inner)
+            } else {
+                self.inner.add(inner)
+            };
+            let handle = ProgressHandle { inner: bar };
+            self.children.lock().unwrap().push(handle.clone());
+            handle
         }
 
         /// Block until all bars in the group reach a finished state.
@@ -221,13 +249,35 @@ mod inner {
         /// dropped and all bars are finished.
         pub fn join(&self) {}
 
-        /// Block until all bars finish, then clear them from the terminal.
+        /// Finish and clear all bars in the group, then clear the terminal.
         ///
-        /// Callers should ensure all bars are in a finished state (via
-        /// `finish()` / `finish_success()` / `finish_error()`) before calling
-        /// this method.
+        /// Children are finished first (top-to-bottom), then the overall bar.
+        /// Bars that are already finished (via [`finish`](ProgressHandle::finish)
+        /// / [`finish_success`](ProgressHandle::finish_success) / [`finish_error`](ProgressHandle::finish_error))
+        /// are left visible so their final message can be read; unfinished bars
+        /// are force-cleared to stop ticker threads safely.
         pub fn join_and_clear(&self) {
+            self.finish_or_clear_all();
             self.inner.clear().expect("progress bar clear should not fail");
+        }
+
+        /// Ensure every tracked bar has stopped its ticker.
+        ///
+        /// Bars that are already finished (``is_finished()``) are left in their
+        /// current visible state; unfinished bars are cleared so their ticker
+        /// thread shuts down.
+        fn finish_or_clear_all(&self) {
+            let children = self.children.lock().unwrap();
+            for child in children.iter() {
+                if !child.is_finished() {
+                    child.finish_and_clear();
+                }
+            }
+            if let Some(ref overall) = self.overall {
+                if !overall.is_finished() {
+                    overall.finish_and_clear();
+                }
+            }
         }
     }
 
@@ -240,8 +290,9 @@ mod inner {
     impl Drop for ProgressGroup {
         fn drop(&mut self) {
             // Safety net: if the caller forgot `join_and_clear()` or took an
-            // early-exit error path, clean up the terminal so bars don't
-            // persist after the group is destroyed.
+            // early-exit error path, stop all tickers first, then clear the
+            // terminal so bars don't persist after the group is destroyed.
+            self.finish_or_clear_all();
             let _ = self.inner.clear();
         }
     }
