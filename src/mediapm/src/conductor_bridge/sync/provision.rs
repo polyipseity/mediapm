@@ -27,10 +27,12 @@ use mediapm_cas::CasApi;
 use zip::write::SimpleFileOptions;
 
 use crate::error::MediaPmError;
+use crate::output::ProgressGroup;
 use crate::tools::catalog::{ARCHIVE_BINARY, tool_catalog_entry};
 use crate::tools::downloader::{
     ToolDownloadCache, extract_archive, fetch_bytes_from_candidates, resolve_download_plan,
 };
+use crate::tools::models::DownloadProgressCallback;
 
 /// Result of fetching and importing a tool payload into CAS.
 #[derive(Debug, Clone)]
@@ -51,12 +53,16 @@ pub(super) struct FetchedToolPayload {
 /// per-OS temp directory, imports files to CAS with `./{os}/` key prefixes,
 /// and builds an OS-conditional command-selector template.
 ///
+/// `group` is an optional [`ProgressGroup`] for per-OS download sub-bars.
+/// Pass `&ProgressGroup::new()` when no grouping is needed.
+///
 /// Returns `Ok(None)` when the tool has no catalog entry or is an internal
 /// launcher.
 pub(super) async fn fetch_and_import_tool_payload(
     cas: &impl CasApi,
     tool_id: &str,
     cache: &ToolDownloadCache,
+    group: &ProgressGroup,
 ) -> Result<Option<FetchedToolPayload>, MediaPmError> {
     let Some(entry) = tool_catalog_entry(tool_id) else {
         tracing::warn!("tool {tool_id}: no catalog entry found, skipping provisioning");
@@ -86,16 +92,29 @@ pub(super) async fn fetch_and_import_tool_payload(
     // Maps OS label → executable path relative to that OS extraction root.
     let mut per_os_exec: BTreeMap<String, String> = BTreeMap::new();
 
+    let total_os_actions = plan.per_os_actions.len() as u64;
+    let os_pb = group.add_bar(total_os_actions, tool_id);
+
     for (os, action) in &plan.per_os_actions {
         let os_label = os.as_str();
+        os_pb.set_message(os_label.to_string());
 
         // ── download (per-OS cache key) ────────────────────────────────
         let cache_key = format!("{}_{}_{}", entry.id, os_label, entry.latest);
         let bytes = if let Some(cached) = cache.lookup_bytes(&cache_key).await {
             cached
         } else {
+            let cb: DownloadProgressCallback = {
+                let os_pb = os_pb.clone();
+                std::sync::Arc::new(move |snap| {
+                    if let Some(total) = snap.total_bytes {
+                        os_pb.set_total(total);
+                    }
+                    os_pb.set_position(snap.downloaded_bytes);
+                })
+            };
             let downloaded =
-                fetch_bytes_from_candidates(&action.urls, None).await.map_err(|e| {
+                fetch_bytes_from_candidates(&action.urls, Some(cb)).await.map_err(|e| {
                     MediaPmError::Workflow(format!(
                         "tool {tool_id}: download failed for {os_label}: {e}"
                     ))
@@ -117,6 +136,7 @@ pub(super) async fn fetch_and_import_tool_payload(
         .await?;
         content_map.extend(os_content_map);
         per_os_exec.insert(os_label.to_string(), exec_path);
+        os_pb.advance(1);
     }
 
     // Build ${context.os == "..." ? ./.../... : ...} template.

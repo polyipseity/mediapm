@@ -97,7 +97,7 @@ pub(crate) async fn reconcile_desired_tools(
         let already_exists = generated_doc.tools.values().any(|s| s.name == *tool_id);
 
         // Fetch tool payload, import to CAS, get content map + command.
-        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache).await;
+        let payload_result = fetch_and_import_tool_payload(cas, tool_id, &cache, &group).await;
 
         match payload_result {
             Ok(Some(payload)) => {
