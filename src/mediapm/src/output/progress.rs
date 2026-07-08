@@ -6,6 +6,5 @@
 
 #[doc(inline)]
 pub use mediapm_utils::progress::{
-    ProgressGroup, ProgressHandle, format_bytes, format_count, progress_enabled,
-    set_progress_enabled,
+    ProgressGroup, ProgressHandle, progress_enabled, set_progress_enabled,
 };

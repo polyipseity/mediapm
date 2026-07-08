@@ -13,7 +13,7 @@
 //! | [`ProgressHandle`] | ❌ | ✅ |
 //! | [`ProgressGroup`] | ❌ | ✅ |
 //! | [`set_progress_enabled`] / [`progress_enabled`] | ❌ | ✅ |
-//! | [`format_bytes`] / [`format_count`] | ❌ | ✅ |
+//! | … | ❌ | ✅ |
 
 use std::sync::Arc;
 
@@ -178,27 +178,28 @@ mod inner {
     /// A vertical stack of progress bars.
     pub struct ProgressGroup {
         inner: MultiProgress,
-        #[expect(dead_code)]
-        overall: Option<ProgressBar>,
     }
 
     impl ProgressGroup {
         /// Create a new group with no overall bar.
         #[must_use]
         pub fn new() -> Self {
-            Self { inner: MultiProgress::new(), overall: None }
+            Self { inner: MultiProgress::new() }
         }
 
         /// Create a group with an overall aggregate bar pinned at the bottom.
+        ///
+        /// The overall bar has no [`{spinner}`] in its template, so
+        /// [`enable_steady_tick`] is intentionally **not** called — the bar
+        /// only redraws when its position or message changes.
         #[must_use]
         pub fn with_overall(label: &str, total: u64) -> (Self, ProgressHandle) {
             let mp = MultiProgress::new();
             let inner = ProgressBar::new(total);
             inner.set_style(overall_bar_style());
             inner.set_prefix(label.to_string());
-            inner.enable_steady_tick(Duration::from_millis(100));
-            let overall_handle = mp.add(inner.clone());
-            let group = Self { inner: mp, overall: Some(inner) };
+            let overall_handle = mp.add(inner);
+            let group = Self { inner: mp };
             (group, ProgressHandle { inner: overall_handle })
         }
 
@@ -236,23 +237,15 @@ mod inner {
         }
     }
 
-    // ---- formatting helpers -----------------------------------------------
-
-    /// Format a byte count for human display, e.g. `"650.23 MiB"`.
-    #[must_use]
-    pub fn format_bytes(bytes: u64) -> String {
-        indicatif::HumanBytes(bytes).to_string()
-    }
-
-    /// Format an integer count with SI suffix, e.g. `"1.2M"`, `"42"`.
-    #[must_use]
-    pub fn format_count(count: u64) -> String {
-        indicatif::HumanCount(count).to_string()
+    impl Drop for ProgressGroup {
+        fn drop(&mut self) {
+            // Safety net: if the caller forgot `join_and_clear()` or took an
+            // early-exit error path, clean up the terminal so bars don't
+            // persist after the group is destroyed.
+            let _ = self.inner.clear();
+        }
     }
 }
 
 #[cfg(feature = "progress")]
-pub use inner::{
-    ProgressGroup, ProgressHandle, format_bytes, format_count, progress_enabled,
-    set_progress_enabled,
-};
+pub use inner::{ProgressGroup, ProgressHandle, progress_enabled, set_progress_enabled};
