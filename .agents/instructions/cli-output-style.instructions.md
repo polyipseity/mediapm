@@ -1,12 +1,24 @@
 ---
-description: "Use when editing CLI output, progress bars, or result formatting in the mediapm crate. Covers StatusIcon usage, print_result field conventions, progress bar construction, and styling rules."
+description: "Use when editing CLI output, progress bars, or result formatting. Covers StatusIcon usage, print_result field conventions, progress bar construction, styling rules, and crate architecture."
 name: "CLI Output Style"
-applyTo: "src/mediapm/src/**/*.rs"
+applyTo: "src/**/*.rs"
 ---
 
 # CLI Output Style Policy
 
-Every user-facing line in the `mediapm` CLI follows precise conventions for consistency. This file documents the actual implemented output system at `src/mediapm/src/output/`.
+Every user-facing line in mediapm CLI tools follows precise conventions for consistency.
+
+## Architecture — Where types live
+
+| Type / module | Crate | Feature gate | Available to |
+|---|---|---|---|
+| `mediapm_utils::progress::DownloadProgressSnapshot` | `mediapm-utils` | always | All crates |
+| `mediapm_utils::progress::ProgressCallback` | `mediapm-utils` | always | All crates |
+| `mediapm_utils::progress::{ProgressGroup, ProgressHandle}` | `mediapm-utils` | `progress` | Crates with indicatif |
+| `mediapm_utils::progress::{set_progress_enabled, format_bytes, ...}` | `mediapm-utils` | `progress` | Crates with indicatif |
+| `crate::output::report::{StatusIcon, print_result, ...}` | `mediapm` | `cli` | `mediapm` crate only |
+
+**Rule**: The conductor *library* (`mediapm-conductor`) must not depend on indicatif. It receives progress via `Fn` callbacks (`ProgressCallback`). The conductor *CLI binary* can use indicatif via `mediapm-utils/progress`. The `mediapm` crate uses indicatif via `mediapm-utils/progress`.
 
 ## Library Stack
 
@@ -18,7 +30,21 @@ Every user-facing line in the `mediapm` CLI follows precise conventions for cons
 
 Do not add `owo-colors`, `colored`, `termion`, or other styling crates. `console::style()` is the single styling entry point.
 
-## Progress Bars (`output::progress`)
+## Shared types (`mediapm-utils::progress`)
+
+### Download-progress types (always available, no indicatif)
+
+```rust
+pub struct DownloadProgressSnapshot {
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+}
+pub type ProgressCallback = Arc<dyn Fn(DownloadProgressSnapshot) + Send + Sync>;
+```
+
+Used at the conductor library boundary. The conductor library's `run_workflow` and related APIs take callbacks; they never import `indicatif`.
+
+## Progress Bars (`mediapm::output::progress` / `mediapm-utils::progress`)
 
 ### Core types
 

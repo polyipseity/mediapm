@@ -49,6 +49,12 @@ Key ecosystem (from `Cargo.toml`):
 - When adding or changing CLI commands, update `ConductorApi` and actor-client routing in the same change if behavior must be available programmatically.
 - CLI-only ergonomics (argument parsing, editor/environment precedence, output formatting) may differ, but validation and mutation semantics must match API paths.
 
+## Progress bar boundary (no indicatif in library)
+
+- The conductor **library** must never depend on `indicatif`. Progress is communicated upward via `RunWorkflowOptions.step_progress: Option<Box<dyn Fn(usize, usize, &str) + Send + Sync>>` (completed, total, step_name).
+- The conductor **CLI binary** (`src/mediapm-conductor/src/cli.rs`) can create `ProgressGroup` from `mediapm-utils/progress` and wrap it in a callback.
+- `DownloadProgressSnapshot` and `ProgressCallback` from `mediapm-utils` are available in the library for download progress.
+
 ## Configuration Document Model
 
 Conductor uses two config documents plus one runtime state document:

@@ -15,8 +15,15 @@ Crate: `mediapm-utils`
 
 ## Conventions
 
-- Keep this crate dependency-free beyond `clap` (optional). It is the lowest-common-denominator shared utility for all builtins.
+- Keep this crate dependency-free beyond `clap` (optional) and `indicatif`/`console` (optional, behind `progress` feature). It is the lowest-common-denominator shared utility for all builtins.
 - `StringMap` (`BTreeMap<String, String>`) is the canonical argument-payload type across all builtin API/CLI contracts.
 - `BinaryInputMap` (`BTreeMap<String, Vec<u8>>`) is the canonical binary-payload type for content-oriented operations.
 - New shared utilities should go here only if used by multiple builtins. Builtin-specific code stays in the respective builtin crate.
 - Path utilities in `path` must remain cross-platform and avoid host-specific assumptions beyond POSIX/macOS/Windows norms.
+
+## Optional `progress` feature
+
+- When enabled, pulls in `indicatif` + `console` and provides `ProgressGroup`, `ProgressHandle`, `format_bytes`, `format_count`, `set_progress_enabled`, `progress_enabled`.
+- `DownloadProgressSnapshot` and `ProgressCallback` are **always** available (no feature gate).
+- The conductor *library* must NOT depend on this feature — it uses `Fn` callbacks instead.
+- The conductor *CLI binary* and the `mediapm` crate enable this feature.
