@@ -165,6 +165,7 @@ pub async fn sync_hierarchy(
 
     // Collect results.
     let mut report = MaterializeReport::default();
+    let mut materialize_error: Option<MediaPmError> = None;
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(entry_result)) => {
@@ -174,17 +175,28 @@ pub async fn sync_hierarchy(
                     report.skipped_paths += 1;
                 }
             }
-            Ok(Err(e)) => return Err(e),
+            Ok(Err(e)) => {
+                materialize_error = Some(e);
+                break;
+            }
             Err(e) => {
-                return Err(MediaPmError::Workflow(format!(
+                materialize_error = Some(MediaPmError::Workflow(format!(
                     "hierarchy materialization task panicked: {e}"
                 )));
+                break;
             }
         }
     }
 
-    pb.finish_success("materialization complete");
+    if materialize_error.is_some() {
+        pb.finish_error("materialization failed");
+    } else {
+        pb.finish_success("materialization complete");
+    }
     group.join_and_clear();
+    if let Some(e) = materialize_error {
+        return Err(e);
+    }
 
     // --- Stale path cleanup ---
     let stale_result = remove_stale_paths(hierarchy_root, &flattened)?;
