@@ -2378,3 +2378,82 @@ fn progress_group_children_advance_independently() {
     let lines: Vec<&str> = contents.lines().collect();
     assert!(lines[4].contains("overall"), "overall visible: {0}", lines[4]);
 }
+
+// ── Child bar elapsed: starts at zero ──────────────────────────────────────
+
+#[test]
+fn child_bar_elapsed_starts_at_zero() {
+    let (mp, term) = mk();
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let child = group.add_bar(3, "tool-a");
+    child.tick();
+    overall.tick();
+    let contents = term.contents();
+    assert!(contents.contains("[00:00:00]"), "elapsed must start at 0, got:\n{contents}");
+    assert!(contents.contains("tool-a"), "tool-a must appear");
+}
+
+// ── Child bar elapsed: frozen after finish ─────────────────────────────────
+
+#[test]
+fn child_bar_elapsed_frozen_after_finish() {
+    let (mp, term) = mk();
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let child = group.add_bar(3, "tool-a");
+    child.set_position(3);
+    child.finish();
+    child.tick();
+    overall.tick();
+    let contents = term.contents();
+    assert!(
+        contents.contains("[00:00:00]"),
+        "elapsed must stay at 0 after finish, got:\n{contents}"
+    );
+    assert!(contents.contains("3/3"), "bar must show final position 3/3");
+}
+
+// ── Child bar elapsed: frozen after finish_success ─────────────────────────
+
+#[test]
+fn child_bar_elapsed_frozen_after_finish_success() {
+    let (mp, term) = mk();
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let child = group.add_bar(3, "tool-a");
+    child.set_position(3);
+    child.finish_success("done");
+    child.tick();
+    overall.tick();
+    let contents = term.contents();
+    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_success");
+    assert!(contents.contains("done"), "success message must appear");
+}
+
+// ── Child bar elapsed: frozen after finish_error ───────────────────────────
+
+#[test]
+fn child_bar_elapsed_frozen_after_finish_error() {
+    let (mp, term) = mk();
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let child = group.add_bar(3, "tool-a");
+    child.set_position(1);
+    child.finish_error("fail");
+    child.tick();
+    overall.tick();
+    let contents = term.contents();
+    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after finish_error");
+}
+
+// ── Child bar elapsed: frozen after abandon ────────────────────────────────
+
+#[test]
+fn child_bar_elapsed_frozen_after_abandon() {
+    let (mp, term) = mk();
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 4, "overall", 5);
+    let child = group.add_bar(3, "tool-a");
+    child.set_position(2);
+    child.abandon();
+    child.tick();
+    overall.tick();
+    let contents = term.contents();
+    assert!(contents.contains("[00:00:00]"), "elapsed must stay at 0 after abandon");
+}
