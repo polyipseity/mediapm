@@ -1043,4 +1043,45 @@ mod tests {
 
         set_progress_enabled(prev);
     }
+
+    #[test]
+    fn recording_handle_finish_does_not_generate_clear() {
+        // Verify that finish_success / finish_error don't produce
+        // FinishAndClear or Abandon operations (which would clear the bar).
+        let h = RecordingProgressHandle::new(10);
+        h.finish_success("done");
+        h.finish_error("fail");
+        for op in h.ops() {
+            match op {
+                ProgressOp::FinishSuccess { .. } | ProgressOp::FinishError { .. } => {}
+                other => panic!("unexpected op: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn progress_group_join_leaves_handles_intact() {
+        // join() is a no-op — handles must still be usable afterward.
+        let g = ProgressGroup::new();
+        let h = g.add_bar(42, "child");
+        h.advance(10);
+        h.set_total(50);
+        h.finish_success("done");
+        g.join();
+        assert_eq!(h.total(), 50, "handle total preserved after join");
+    }
+
+    #[test]
+    fn progress_group_finish_success_and_error_preserve_group() {
+        // Finish calls on a handle must preserve the total and the group must
+        // remain functional (join() must not panic).
+        let g = ProgressGroup::new();
+        let h = g.add_bar(10, "test");
+        h.finish_success("completed");
+        assert_eq!(h.total(), 10, "handle total preserved after finish_success");
+        // Second finish on the same slot must not corrupt state.
+        h.finish_error("timed out");
+        assert_eq!(h.total(), 10, "handle total preserved after finish_error");
+        g.join(); // join must not panic on any state
+    }
 }

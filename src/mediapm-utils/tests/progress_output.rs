@@ -1834,3 +1834,159 @@ fn progress_group_disabled_returns_noop() {
     // Restore for other tests.
     mediapm_utils::progress::set_progress_enabled(prev);
 }
+
+// ── Bar visibility after finish ─────────────────────────────────────────────
+//
+// These tests verify that finished bars stay visible after `join()` and that
+// `join_and_clear()` removes them.  See the production `join()` / `join_and_clear()`
+// doc comments for the intended distinction.
+
+#[test]
+fn progress_group_child_finish_keeps_bar_visible() {
+    // Terminal H=5, W=80 so the full child and overall templates fit.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+
+    let c = group.add_bar(5, "fetch");
+    c.tick();
+    overall.tick();
+    // Finish the child — it must remain visible in the terminal.
+    c.finish_success("done");
+    c.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== child_finish_keeps_bar_visible, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("fetch"), "finished bar still visible: {0}", lines[3]);
+    assert!(lines[3].contains("done"), "finished bar shows message: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_finish_all_bars_content_persists() {
+    // Terminal H=5, W=80.  Overall at line[4], child slot at line[3].
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 2);
+
+    let c1 = group.add_bar(3, "alpha");
+    let c2 = group.add_bar(5, "beta");
+    c1.advance(3);
+    c2.advance(5);
+    c1.tick();
+    c2.tick();
+    overall.tick();
+    // Finish all bars.
+    c1.finish_success("done");
+    c2.finish_success("ok");
+    overall.finish_success("all done");
+    c1.tick();
+    c2.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== finish_all_bars_content_persists, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("beta"), "child bar visible: {0}", lines[3]);
+    assert!(lines[3].contains("5/5"), "child shows complete: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+    assert!(lines[4].contains("2/2"), "overall shows complete: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_finish_error_shows_error_state() {
+    // Terminal H=5, W=80.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 5);
+
+    let c = group.add_bar(5, "wget");
+    c.tick();
+    overall.tick();
+    c.finish_error("timeout");
+    c.tick();
+    overall.tick();
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== finish_error_shows_error_state, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("wget"), "finished bar still visible: {0}", lines[3]);
+    assert!(lines[3].contains("timeout"), "error message shown: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+}
+
+#[test]
+fn progress_group_join_and_clear_removes_bars() {
+    // Terminal H=5, W=80.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+
+    let c = group.add_bar(5, "fetch");
+    c.finish_success("done");
+    c.tick();
+    overall.tick();
+    // join_and_clear must remove all bars from the terminal.
+    group.join_and_clear();
+    let contents = term.contents();
+    eprintln!("=== join_and_clear_removes_bars, H=5, W=80 ===");
+    eprintln!("contents = {contents:?}");
+    assert!(contents.is_empty(), "expected empty terminal after join_and_clear, got: {contents:?}");
+}
+
+#[test]
+fn progress_group_consumer_lifecycle_keeps_finished_bars() {
+    // Terminal H=5, W=80.  Simulate the exact consumer pattern:
+    // create group with overall, do sequential work, finish children,
+    // finish overall, then join.  All bars must remain visible.
+    let (mp, term) = mk_with_size(5, 80);
+    let (group, overall) = ProgressGroup::with_mp_and_overall(mp, 5, "overall", 3);
+
+    let c1 = group.add_bar(5, "fetch");
+    c1.advance(5);
+    c1.tick();
+    overall.tick();
+    c1.finish_success("fetched");
+
+    let c2 = group.add_bar(2, "parse");
+    c2.advance(2);
+    c2.tick();
+    overall.tick();
+    c2.finish_success("parsed");
+
+    overall.advance(3);
+    overall.finish_success("all done");
+    overall.tick();
+    // group.join() would be called here — it's a no-op.
+
+    let contents = term.contents();
+    let lines: Vec<&str> = contents.lines().collect();
+    eprintln!("=== consumer_lifecycle_keeps_finished_bars, H=5, W=80 ===");
+    for (i, line) in lines.iter().enumerate() {
+        eprintln!("line[{i}] = {line:?}");
+    }
+    assert_eq!(lines.len(), 5, "always 5 lines");
+    assert!(lines[0].trim().is_empty(), "line 0 is blank");
+    assert!(lines[1].trim().is_empty(), "line 1 is blank");
+    assert!(lines[2].trim().is_empty(), "line 2 is blank");
+    assert!(lines[3].contains("parse"), "child bar visible: {0}", lines[3]);
+    assert!(lines[3].contains("2/2"), "child shows complete: {0}", lines[3]);
+    assert!(lines[4].contains("overall"), "overall bar visible: {0}", lines[4]);
+    assert!(lines[4].contains("3/3"), "overall shows complete: {0}", lines[4]);
+}
